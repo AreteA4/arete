@@ -281,6 +281,7 @@ export function useStateView<T, TKey>(
     isLoading: enabled && snapshot.isLoading,
     isRefreshing: enabled && snapshot.isRefreshing,
     error: status === 'error' ? snapshot.error : undefined,
+    cursor: snapshot.cursor,
     refresh,
   } as ViewHookResult<T>;
 }
@@ -329,6 +330,7 @@ export function useListView<T>(
     isLoading: enabled && snapshot.isLoading,
     isRefreshing: enabled && snapshot.isRefreshing,
     error: status === 'error' ? snapshot.error : undefined,
+    cursor: snapshot.cursor,
     refresh,
   } as ViewHookResult<T[]>;
 }

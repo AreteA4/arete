@@ -150,6 +150,12 @@ The acknowledgement advertises the window the view can still serve:
 will take, so a consumer holding `next - 1` is fully caught up. To resume at
 offset 4211 you would send `after: "0f8c2b31-...:4211"`.
 
+The official SDKs assemble this for you: every update from a replayable view
+carries a `cursor` field holding exactly that string, and each SDK resumes
+from the last one it delivered when a dropped socket reconnects. Store the
+cursor in the same transaction as the data it came with, and a restart picks
+up where the write did.
+
 ### Epochs
 
 The epoch identifies one tape lifetime. Offsets restart at zero whenever a

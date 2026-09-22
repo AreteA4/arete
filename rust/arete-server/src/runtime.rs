@@ -405,15 +405,22 @@ impl Runtime {
                     let health = health_monitor.clone();
                     let reconnection_config = self.config.reconnection.clone().unwrap_or_default();
                     let parser_snapshot_runtime = snapshot_runtime.clone();
+                    let parser_journal = journal.clone();
                     parser_handle = Some(tokio::spawn(
                         async move {
                             let parser = async move {
                                 parser_setup(mutations_tx, health, reconnection_config).await
                             };
-                            let result = match parser_snapshot_runtime {
-                                Some(runtime) => runtime.scope(parser).await,
-                                None => parser.await,
+                            let scoped = async move {
+                                match parser_snapshot_runtime {
+                                    Some(runtime) => runtime.scope(parser).await,
+                                    None => parser.await,
+                                }
                             };
+                            // The tape is in scope even with snapshots off, so
+                            // a runtime that abandons its checkpoint can still
+                            // mark the hole it just created.
+                            let result = parser_journal.scope(scoped).await;
                             if let Err(e) = result {
                                 error!("Vixen parser runtime error: {}", e);
                             }

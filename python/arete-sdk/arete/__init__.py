@@ -55,6 +55,7 @@ from arete.views import (  # noqa: E402
     InitialDataTimeoutError,
     ListViewHandle,
     StateViewHandle,
+    StreamGapError,
     ViewDef,
     ViewsNamespace,
 )
@@ -224,6 +225,7 @@ __all__ = [
     # views & updates
     "Update",
     "RichUpdate",
+    "StreamGapError",
     "ViewDef",
     "ViewsNamespace",
     "DEFAULT_INITIAL_DATA_TIMEOUT",

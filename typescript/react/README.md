@@ -256,6 +256,8 @@ During reconnect, hooks preserve their committed data and set `isRefreshing`. A 
 
 `await result.refresh()` resolves after the refreshed subscription's next complete snapshot is committed. Registration, send, and subscription failures reject, clear `isRefreshing`, and appear in `result.error`. A view refresh with no active matching subscription remains a no-op.
 
+On a replayable append view, `result.cursor` is the `{epoch}:{offset}` position of the last event delivered to that hook. Persist it with whatever you derive from the data and pass it back as `after` to resume; `after` is exclusive and is never a `_seq` value. State and list views project membership rather than a tape, so their hooks have no cursor. A server refusal of a cursor (`cursor-expired`, `cursor-epoch-changed`, `cursor-unknown`, `invalid-cursor`, `replay-gap`, `replay-lagged`) arrives in `result.error` under its wire `code`, each with a different recovery.
+
 State views support:
 
 - `.use(key)` — subscribe to one keyed entity using the generated key type (for example `{ roundId: bigint }`)

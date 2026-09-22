@@ -797,6 +797,85 @@ describe('ConnectionManager auth', () => {
     expect(JSON.parse(MockWebSocket.instances[1]!.sent[0]!)).toEqual(active);
   });
 
+  it('resumes an append subscription from the last delivered cursor after a drop', async () => {
+    const epoch = '0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b';
+    const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+    const active = subscription('trades', { view: 'Trade/append' }, false);
+
+    await manager.connect();
+    manager.subscribe(active);
+
+    const socket = MockWebSocket.instances[0]!;
+    await socket.onmessage?.({
+      data: JSON.stringify({
+        protocolVersion: 2,
+        subscriptionId: 'trades',
+        op: 'subscribed',
+        mode: 'append',
+        query: { view: 'Trade/append' },
+        replayWindow: { epoch, earliest: 4209, next: 4212 },
+      }),
+    });
+    await socket.onmessage?.({
+      data: JSON.stringify({
+        protocolVersion: 2,
+        subscriptionId: 'trades',
+        mode: 'append',
+        entity: 'Trade/append',
+        op: 'patch',
+        key: 'pool1',
+        data: { amount: 100 },
+        offset: 4210,
+      }),
+    });
+
+    manager.disconnect();
+    await manager.connect();
+
+    expect(JSON.parse(MockWebSocket.instances[1]!.sent[0]!)).toEqual({
+      ...active,
+      query: { view: 'Trade/append', after: `${epoch}:4210` },
+    });
+  });
+
+  it('forgets a subscription\'s cursor state when it unsubscribes', async () => {
+    const epoch = '0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b';
+    const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+    await manager.connect();
+    manager.subscribe(subscription('trades', { view: 'Trade/append' }, false));
+
+    const socket = MockWebSocket.instances[0]!;
+    await socket.onmessage?.({
+      data: JSON.stringify({
+        protocolVersion: 2,
+        subscriptionId: 'trades',
+        op: 'subscribed',
+        mode: 'append',
+        query: { view: 'Trade/append' },
+        replayWindow: { epoch, earliest: 0, next: 1 },
+      }),
+    });
+    await socket.onmessage?.({
+      data: JSON.stringify({
+        protocolVersion: 2,
+        subscriptionId: 'trades',
+        mode: 'append',
+        entity: 'Trade/append',
+        op: 'patch',
+        key: 'pool1',
+        data: { amount: 100 },
+        offset: 0,
+      }),
+    });
+    expect(manager.cursors.last('trades')).toBe(`${epoch}:0`);
+
+    // Otherwise every subscription id a page ever used is retained for the
+    // life of the tab, which a React app churns through on every mount.
+    manager.unsubscribe('trades');
+    expect(manager.cursors.last('trades')).toBeUndefined();
+    manager.disconnect();
+  });
+
   it('reports an established socket error as reconnecting rather than terminal', async () => {
     const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
     const states: string[] = [];

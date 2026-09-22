@@ -426,26 +426,59 @@ pub fn take_restored() -> Option<RestoredState> {
         .flatten()
 }
 
+/// Where the generated Yellowstone runtime should resume its stream.
+///
+/// `Option<u64>` cannot express this: "no checkpoint to resume from" and
+/// "gave up on the checkpoint" are both `None`, and only the second one
+/// loses data. Naming them apart is what lets the caller mark the hole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconnectPosition {
+    /// Resume from this slot; nothing is lost.
+    Slot(u64),
+    /// Start live because nothing has been processed yet.
+    Live,
+    /// Start live after abandoning a checkpoint the provider would not serve.
+    /// Every slot between `abandoned` and the live tip is lost.
+    LiveAfterGap { abandoned: u64 },
+}
+
+impl ReconnectPosition {
+    /// The `from_slot` to put on the subscription request.
+    pub fn from_slot(self) -> Option<u64> {
+        match self {
+            Self::Slot(slot) => Some(slot),
+            Self::Live | Self::LiveAfterGap { .. } => None,
+        }
+    }
+}
+
 /// Select a reconnect checkpoint for the generated Yellowstone runtime.
 ///
 /// A restored replay never falls back to live: retries advance only to slots
 /// the main parser stream has finished processing. Without a restored replay,
-/// the existing live fallback remains available after repeated short-lived
-/// connections.
+/// repeated short-lived connections eventually give up on the checkpoint —
+/// unless `live_fallback_attempts` is `None`, which refuses to trade data for
+/// availability.
 #[doc(hidden)]
 pub fn select_reconnect_from_slot(
     restored_watermark: Option<u64>,
     processed_watermark: u64,
     attempt: u32,
-    live_fallback_attempts: u32,
-) -> Option<u64> {
+    live_fallback_attempts: Option<u32>,
+) -> ReconnectPosition {
     if let Some(restored_watermark) = restored_watermark {
-        return Some(restored_watermark.max(processed_watermark));
+        return ReconnectPosition::Slot(restored_watermark.max(processed_watermark));
     }
-    if attempt >= live_fallback_attempts {
-        return None;
+    if processed_watermark == 0 {
+        // Nothing has been processed, so starting live loses nothing.
+        return ReconnectPosition::Live;
     }
-    (processed_watermark > 0).then_some(processed_watermark)
+    match live_fallback_attempts {
+        Some(limit) if attempt >= limit => ReconnectPosition::LiveAfterGap {
+            abandoned: processed_watermark,
+        },
+        _ => ReconnectPosition::Slot(processed_watermark),
+    }
 }
 
 fn now_epoch_ms() -> u64 {
@@ -786,6 +819,13 @@ impl SnapshotService {
         // Dumped inside the same consistency guard as the cache, so a restore
         // can never leave the cache ahead of the tape.
         let journal_dump = self.journal.dump().await;
+        if trigger == SnapshotTrigger::Shutdown {
+            // Publishing continues after the guard releases — the parser is
+            // aborted only once this snapshot is encoded and stored — so
+            // without this the file would not hold every offset that reached a
+            // subscriber, and the restore below would adopt its epoch anyway.
+            self.journal.seal();
+        }
         let applied_batches = self.runtime.state.applied_batches.load(Ordering::Relaxed);
         drop(consistency_guard);
 

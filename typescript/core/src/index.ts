@@ -207,9 +207,15 @@ export type {
   Frame,
   FrameMode,
   FrameOp,
+  ReplayWindow,
 } from './frame';
 
-export { createUpdateStream, createEntityStream, createRichUpdateStream } from './stream';
+export {
+  createUpdateStream,
+  createEntityStream,
+  createRichUpdateStream,
+  StreamGapError,
+} from './stream';
 export {
   createTypedStateView,
   createTypedListView,
@@ -275,9 +281,15 @@ export type {
   ConnectionStateCallback,
   SocketIssue,
   SocketIssueCallback,
+  ReplayErrorCode,
 } from './types';
 
-export { DEFAULT_CONFIG, DEFAULT_MAX_ENTRIES_PER_VIEW, AreteError } from './types';
+export {
+  DEFAULT_CONFIG,
+  DEFAULT_MAX_ENTRIES_PER_VIEW,
+  AreteError,
+  isReplayErrorCode,
+} from './types';
 
 export type {
   OperationKind,

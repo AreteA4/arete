@@ -632,7 +632,20 @@ fn spawn_connection_loop(
 
                     let (mut ws_tx, mut ws_rx) = ws.split();
                     let subs = subscriptions.read().await.all();
-                    for sub in subs {
+                    for mut sub in subs {
+                        // Replay from where delivery stopped instead of the
+                        // `after` the consumer originally asked for, which
+                        // would duplicate everything already seen (or, with no
+                        // `after`, silently start at the live tail).
+                        //
+                        // Only the wire frame carries the cursor: the registry
+                        // keeps the requested query, whose canonical identity
+                        // is the dedup/refcount key for every stream sharing
+                        // this subscription. Moving `after` there would rename
+                        // the subscription on every reconnect.
+                        if let Some(cursor) = store.resume_cursor(&sub.subscription_id).await {
+                            sub.query.after = Some(cursor);
+                        }
                         store.begin_refresh(&sub.subscription_id).await;
                         let client_msg = ClientMessage::Subscribe(sub);
                         if let Ok(msg) = serde_json::to_string(&client_msg) {
@@ -971,7 +984,14 @@ async fn process_server_payload(
             store.apply_frame(frame).await?;
             Ok(None)
         }
-        ServerMessage::Error(error) => Ok(Some(protocol_error_to_socket_issue(error))),
+        ServerMessage::Error(error) => {
+            // A replay refusal ends delivery for one subscription: it reaches
+            // that subscription's stream through the store, keeping its wire
+            // code. The socket-issue channel still sees every error for
+            // connection-wide observers.
+            store.apply_error_frame(&error).await;
+            Ok(Some(protocol_error_to_socket_issue(error)))
+        }
     }
 }
 

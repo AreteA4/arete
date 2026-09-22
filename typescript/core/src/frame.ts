@@ -22,11 +22,27 @@ interface IdentifiedFrame {
   subscriptionId: string;
 }
 
+/**
+ * Offsets an append view can still replay. Offsets restart whenever a tape is
+ * rebuilt, so they only mean anything inside `epoch`.
+ */
+export interface ReplayWindow {
+  epoch: string;
+  /** Oldest retained offset. */
+  earliest: number;
+  /** Offset the next event will take; a consumer at `next - 1` is caught up. */
+  next: number;
+  /** Last offset before a known discontinuity. */
+  gapAfter?: number;
+}
+
 export interface SubscribedFrame extends IdentifiedFrame {
   op: 'subscribed';
   query: SubscriptionQuery;
   mode: FrameMode;
   sort?: SortConfig;
+  /** Present on append views backed by the journal. */
+  replayWindow?: ReplayWindow;
 }
 
 export interface UnsubscribedFrame extends IdentifiedFrame {
@@ -41,6 +57,8 @@ export interface EntityFrame<T = unknown> extends IdentifiedFrame {
   data: T | null;
   append?: string[];
   seq?: string;
+  /** Dense, monotonic position on the view's tape. Absent on state/list views. */
+  offset?: number;
 }
 
 export interface SnapshotEntity<T = unknown> {
@@ -71,6 +89,10 @@ export interface ErrorFrame {
   retry_after?: number;
   suggested_action?: string;
   docs_url?: string;
+  /** Present on cursor refusals: what the view can still serve. */
+  replayWindow?: ReplayWindow;
+  /** Present on `replay-lagged`: cursor of the last record delivered before the gap. */
+  recoverFrom?: string;
 }
 
 export type Frame<T = unknown> =
@@ -111,6 +133,19 @@ function isSubscriptionId(value: unknown): value is string {
 
 function isMode(value: unknown): value is FrameMode {
   return typeof value === 'string' && FRAME_MODES.has(value);
+}
+
+function isOffset(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0;
+}
+
+function isReplayWindow(value: unknown): value is ReplayWindow {
+  return isRecord(value)
+    && typeof value['epoch'] === 'string'
+    && value['epoch'].length > 0
+    && isOffset(value['earliest'])
+    && isOffset(value['next'])
+    && (value['gapAfter'] === undefined || isOffset(value['gapAfter']));
 }
 
 function isSort(value: unknown): value is SortConfig {
@@ -191,7 +226,9 @@ export function isValidFrame(frame: unknown): frame is Frame {
       && typeof frame['fatal'] === 'boolean'
       && (frame['message'] === undefined || typeof frame['message'] === 'string')
       && (frame['error'] === undefined || typeof frame['error'] === 'string')
-      && (frame['retryable'] === undefined || typeof frame['retryable'] === 'boolean');
+      && (frame['retryable'] === undefined || typeof frame['retryable'] === 'boolean')
+      && (frame['replayWindow'] === undefined || isReplayWindow(frame['replayWindow']))
+      && (frame['recoverFrom'] === undefined || typeof frame['recoverFrom'] === 'string');
   }
 
   if (!hasV2Identity(frame) || typeof frame['op'] !== 'string') return false;
@@ -199,7 +236,8 @@ export function isValidFrame(frame: unknown): frame is Frame {
   if (frame['op'] === 'subscribed') {
     return isQuery(frame['query'])
       && isMode(frame['mode'])
-      && (frame['sort'] === undefined || isSort(frame['sort']));
+      && (frame['sort'] === undefined || isSort(frame['sort']))
+      && (frame['replayWindow'] === undefined || isReplayWindow(frame['replayWindow']));
   }
   if (!isMode(frame['mode']) || typeof frame['entity'] !== 'string') return false;
   if (frame['op'] === 'snapshot') {
@@ -217,7 +255,44 @@ export function isValidFrame(frame: unknown): frame is Frame {
     && typeof frame['key'] === 'string'
     && 'data' in frame
     && (frame['seq'] === undefined || typeof frame['seq'] === 'string')
+    && (frame['offset'] === undefined || isOffset(frame['offset']))
     && (frame['append'] === undefined
       || (Array.isArray(frame['append'])
         && frame['append'].every((entry) => typeof entry === 'string')));
+}
+
+/**
+ * Builds the `{epoch}:{offset}` cursor a consumer stores and sends back as
+ * `query.after`. An offset only means something inside the epoch the
+ * acknowledgement named, so the epoch has to be carried across frames.
+ */
+export class CursorTracker {
+  private readonly epochs = new Map<string, string>();
+  private readonly cursors = new Map<string, string>();
+
+  /** Records the frame and returns the cursor it carries, if any. */
+  observe(frame: Frame): string | undefined {
+    if (isSubscribedFrame(frame)) {
+      const epoch = frame.replayWindow?.epoch;
+      if (epoch === undefined) this.epochs.delete(frame.subscriptionId);
+      else this.epochs.set(frame.subscriptionId, epoch);
+      return undefined;
+    }
+    if (!isEntityFrame(frame) || frame.offset === undefined) return undefined;
+    const epoch = this.epochs.get(frame.subscriptionId);
+    if (epoch === undefined) return undefined;
+    const cursor = `${epoch}:${frame.offset}`;
+    this.cursors.set(frame.subscriptionId, cursor);
+    return cursor;
+  }
+
+  /** The last cursor delivered on a subscription, for resuming after a drop. */
+  last(subscriptionId: string): string | undefined {
+    return this.cursors.get(subscriptionId);
+  }
+
+  forget(subscriptionId: string): void {
+    this.epochs.delete(subscriptionId);
+    this.cursors.delete(subscriptionId);
+  }
 }

@@ -1,0 +1,61 @@
+{
+  "name": "replayable append cursors",
+  "meaning": "An append view backed by the server's event journal delivers a tape, not a membership projection. Every frame carries the offset it was retained at, the acknowledgement carries the window the view can still serve, and the resumable cursor a consumer stores is `{epoch}:{offset}`.",
+  "cursorFormat": "{epoch}:{offset}",
+  "server": [
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "trades",
+      "op": "subscribed",
+      "mode": "append",
+      "query": { "view": "Trade/append" },
+      "replayWindow": {
+        "epoch": "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b",
+        "earliest": 4209,
+        "next": 4212
+      }
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "trades",
+      "mode": "append",
+      "entity": "Trade/append",
+      "op": "patch",
+      "key": "pool1",
+      "data": { "amount": 100 },
+      "seq": "381471241:000000000007",
+      "offset": 4209
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "trades",
+      "mode": "append",
+      "entity": "Trade/append",
+      "op": "patch",
+      "key": "pool1",
+      "data": { "amount": 125 },
+      "seq": "381471241:000000000007",
+      "offset": 4210
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "trades",
+      "mode": "append",
+      "entity": "Trade/append",
+      "op": "patch",
+      "key": "pool2",
+      "data": { "amount": 5 },
+      "seq": "381471242:000000000000",
+      "offset": 4211
+    }
+  ],
+  "expected": {
+    "cursors": [
+      "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b:4209",
+      "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b:4210",
+      "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b:4211"
+    ],
+    "resumeCursor": "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b:4211",
+    "note": "The first two frames share a `seq`: its second component is the transaction index, so events decoded from one transaction are indistinguishable by seq. Only the offset separates them, which is why the cursor is built from the offset and not from seq."
+  }
+}

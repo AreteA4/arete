@@ -953,34 +953,50 @@ fn snapshot_config_from_env_round_trip() {
 
 #[test]
 fn restored_reconnects_keep_a_safe_replay_checkpoint() {
-    const FALLBACK_ATTEMPTS: u32 = 3;
+    use snapshot::ReconnectPosition::{Live, LiveAfterGap, Slot};
+    const FALLBACK: Option<u32> = Some(3);
 
     // A restored replay keeps its original cut until the main parser—not the
     // independent live slot subscription—has processed further slots.
     assert_eq!(
-        snapshot::select_reconnect_from_slot(Some(100), 0, 0, FALLBACK_ATTEMPTS),
-        Some(100)
+        snapshot::select_reconnect_from_slot(Some(100), 0, 0, FALLBACK),
+        Slot(100)
     );
     assert_eq!(
-        snapshot::select_reconnect_from_slot(Some(100), 140, 1, FALLBACK_ATTEMPTS),
-        Some(140)
+        snapshot::select_reconnect_from_slot(Some(100), 140, 1, FALLBACK),
+        Slot(140)
     );
 
     // Repeated short-lived connections must not switch an unfinished
     // restored replay to live mode.
     assert_eq!(
-        snapshot::select_reconnect_from_slot(Some(100), 140, 99, FALLBACK_ATTEMPTS),
-        Some(140)
+        snapshot::select_reconnect_from_slot(Some(100), 140, 99, FALLBACK),
+        Slot(140)
     );
 
-    // Cold/live runtimes retain the existing bounded fallback behavior.
+    // A cold runtime with nothing processed loses nothing by starting live.
     assert_eq!(
-        snapshot::select_reconnect_from_slot(None, 140, 2, FALLBACK_ATTEMPTS),
-        Some(140)
+        snapshot::select_reconnect_from_slot(None, 0, 99, FALLBACK),
+        Live
+    );
+
+    // With a checkpoint, the bounded fallback still applies — but giving up
+    // on it is reported as the data loss it is, not as an ordinary live
+    // start. The two were indistinguishable while this returned `Option`.
+    assert_eq!(
+        snapshot::select_reconnect_from_slot(None, 140, 2, FALLBACK),
+        Slot(140)
     );
     assert_eq!(
-        snapshot::select_reconnect_from_slot(None, 140, 3, FALLBACK_ATTEMPTS),
-        None
+        snapshot::select_reconnect_from_slot(None, 140, 3, FALLBACK),
+        LiveAfterGap { abandoned: 140 }
+    );
+
+    // Fail-closed refuses the trade: ingestion stalls on the checkpoint
+    // rather than skipping to the tip.
+    assert_eq!(
+        snapshot::select_reconnect_from_slot(None, 140, 9_999, None),
+        Slot(140)
     );
 }
 
@@ -1123,7 +1139,8 @@ async fn restore_preserves_the_advertised_replay_window() {
             Ok::<_, std::convert::Infallible>(replayed[0].payload.clone())
         })
         .await
-        .unwrap();
+        .unwrap()
+        .expect("a restored tape keeps issuing offsets");
     assert_eq!(next, 600);
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -1245,7 +1262,8 @@ async fn an_unclean_restart_retires_cursors_it_cannot_honour() {
                 Ok::<_, std::convert::Infallible>(Arc::new(bytes::Bytes::from_static(b"{}")))
             })
             .await
-            .unwrap();
+            .unwrap()
+            .expect("a restored tape keeps issuing offsets");
         let _ = index;
     }
     assert!(journal2.window("Token/append").await.next > held.offset);

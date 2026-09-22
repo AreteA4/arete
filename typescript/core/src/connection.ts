@@ -1,5 +1,5 @@
 import type { Frame } from './frame';
-import { parseFrame, parseFrameFromBlob } from './frame';
+import { CursorTracker, parseFrame, parseFrameFromBlob } from './frame';
 import type {
   AuthConfig,
   AuthTokenTarget,
@@ -304,6 +304,12 @@ export class ConnectionManager {
   private currentState: ConnectionState = 'disconnected';
   private subscriptionQueue: Map<string, Subscription> = new Map();
   private activeSubscriptions: Map<string, Subscription> = new Map();
+  /**
+   * Replay positions per subscription. Shared with the frame processor rather
+   * than duplicated: both observe the same frame stream, and this one is
+   * pruned on unsubscribe, so the processor gets that pruning for free.
+   */
+  readonly cursors = new CursorTracker();
   private socketGeneration = 0;
   private pendingConnect: {
     generation: number;
@@ -1361,6 +1367,7 @@ export class ConnectionManager {
 
   unsubscribe(subscriptionId: string): void {
     this.subscriptionQueue.delete(subscriptionId);
+    this.cursors.forget(subscriptionId);
 
     if (this.activeSubscriptions.has(subscriptionId)) {
       this.activeSubscriptions.delete(subscriptionId);
@@ -1418,9 +1425,15 @@ export class ConnectionManager {
 
   private resubscribeActive(): void {
     for (const subscription of this.activeSubscriptions.values()) {
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify(subscription));
-      }
+      if (this.ws?.readyState !== WebSocket.OPEN) continue;
+      // Re-sending the original `after` would replay what was already
+      // delivered; sending none would skip whatever the drop cost us.
+      const after = this.cursors.last(subscription.subscriptionId);
+      this.ws.send(JSON.stringify(
+        after === undefined
+          ? subscription
+          : { ...subscription, query: { ...subscription.query, after } }
+      ));
     }
   }
 
@@ -1448,6 +1461,7 @@ export class ConnectionManager {
   }
 
   private notifyFrameHandlers(frame: Frame): void {
+    this.cursors.observe(frame);
     for (const handler of this.frameHandlers) {
       handler(frame);
     }

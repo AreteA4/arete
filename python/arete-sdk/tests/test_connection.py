@@ -190,6 +190,57 @@ async def test_reconnect_resubscribes_active_leases_with_same_id():
 
 
 @pytest.mark.asyncio
+async def test_reconnect_resumes_an_append_view_from_the_last_delivered_cursor():
+    """A dropped socket must not replay the original window or skip the tail."""
+    epoch = "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b"
+    queries = []
+    connection_count = 0
+
+    async def handler(conn):
+        nonlocal connection_count
+        connection_count += 1
+        index = connection_count
+        async for raw in conn:
+            message = json.loads(raw)
+            if message.get("type") != "subscribe":
+                continue
+            queries.append(message["query"])
+            if index > 1:
+                continue
+            sid = message["subscriptionId"]
+            await conn.send(json.dumps({
+                "protocolVersion": 2,
+                "subscriptionId": sid,
+                "op": "subscribed",
+                "query": message["query"],
+                "mode": "append",
+                "replayWindow": {"epoch": epoch, "earliest": 4209, "next": 4212},
+            }))
+            await conn.send(json.dumps({
+                "protocolVersion": 2,
+                "subscriptionId": sid,
+                "mode": "append",
+                "entity": "Trade/append",
+                "op": "patch",
+                "key": "pool1",
+                "data": {"amount": 100},
+                "offset": 4209,
+            }))
+            await conn.close(code=1001)
+            return
+
+    async with serve_ws(handler) as url:
+        manager, _store, registry = make_manager(url)
+        async with managed(manager):
+            await manager.connect()
+            registry.subscribe({"view": "Trade/append", "after": f"{epoch}:4000"})
+
+            await wait_until(lambda: len(queries) >= 2)
+            assert queries[0] == {"view": "Trade/append", "after": f"{epoch}:4000"}
+            assert queries[1] == {"view": "Trade/append", "after": f"{epoch}:4209"}
+
+
+@pytest.mark.asyncio
 async def test_subscription_queued_before_connect_is_flushed_on_open():
     received = []
 

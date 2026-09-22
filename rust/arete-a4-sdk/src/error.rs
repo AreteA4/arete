@@ -23,6 +23,93 @@ impl std::fmt::Display for SocketIssue {
     }
 }
 
+/// Why delivery on a subscription stopped.
+///
+/// The six wire variants are the server's replay refusals; each has its own
+/// recovery, so they stay distinguishable instead of collapsing into one
+/// "replay failed". [`GapCode::LocalLag`] is raised by this SDK when a
+/// consumer's own bounded queue evicted cursor-bearing updates before the
+/// consumer read them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GapCode {
+    /// The cursor is older than the retained window. Resubscribe with no
+    /// `after`: `after` is exclusive, so `after: earliest` would skip the
+    /// oldest retained record.
+    CursorExpired,
+    /// The cursor belongs to a tape lifetime that no longer exists. Discard it.
+    CursorEpochChanged,
+    /// An offset this view never issued.
+    CursorUnknown,
+    /// Not an `{epoch}:{offset}` string at all.
+    InvalidCursor,
+    /// Replaying would cross a known discontinuity.
+    ReplayGap,
+    /// The server skipped records in flight; delivery on that subscription
+    /// stopped.
+    ReplayLagged,
+    /// This consumer's queue overflowed and `skipped` updates were evicted
+    /// before it read them. Never sent by the server.
+    LocalLag { skipped: u64 },
+    /// A record on a replayable view did not deserialize into the consumer's
+    /// type. Skipping it would put a hole behind an advancing cursor, so
+    /// delivery stops at it instead. `recover_from` is that record's own
+    /// cursor: resuming from it accepts the loss, and a consumer that fixes
+    /// its type replays from the cursor it stored earlier.
+    Undecodable,
+}
+
+impl GapCode {
+    pub fn from_wire(code: &str) -> Option<Self> {
+        Some(match code {
+            "cursor-expired" => Self::CursorExpired,
+            "cursor-epoch-changed" => Self::CursorEpochChanged,
+            "cursor-unknown" => Self::CursorUnknown,
+            "invalid-cursor" => Self::InvalidCursor,
+            "replay-gap" => Self::ReplayGap,
+            "replay-lagged" => Self::ReplayLagged,
+            _ => return None,
+        })
+    }
+
+    pub fn as_wire(&self) -> &'static str {
+        match self {
+            Self::CursorExpired => "cursor-expired",
+            Self::CursorEpochChanged => "cursor-epoch-changed",
+            Self::CursorUnknown => "cursor-unknown",
+            Self::InvalidCursor => "invalid-cursor",
+            Self::ReplayGap => "replay-gap",
+            Self::ReplayLagged => "replay-lagged",
+            Self::LocalLag { .. } => "local-lag",
+            Self::Undecodable => "undecodable",
+        }
+    }
+}
+
+/// Delivery on a subscription stopped. Always the final item of the stream
+/// that reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("stream gap ({code}){}", match .recover_from {
+    Some(cursor) => format!("; recover from {cursor}"),
+    None => "; resubscribe without a cursor".to_string(),
+})]
+pub struct StreamGap {
+    pub code: GapCode,
+    /// The cursor to resume from. `None` means no position is safe to resume
+    /// from and the consumer must resubscribe with no `after`.
+    pub recover_from: Option<String>,
+    /// What the view can still serve, when the server said.
+    pub replay_window: Option<crate::frame::ReplayWindow>,
+}
+
+impl std::fmt::Display for GapCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LocalLag { skipped } => write!(f, "local-lag: {skipped} updates evicted"),
+            other => f.write_str(other.as_wire()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthErrorCode {
     TokenMissing,

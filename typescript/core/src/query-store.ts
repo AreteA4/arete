@@ -31,6 +31,7 @@ interface QueryRecord {
   isRefreshing: boolean;
   resolved: boolean;
   error?: AreteError;
+  cursor?: string;
   mode?: FrameMode;
   sort?: SortConfig;
   staged?: StagedSnapshot;
@@ -123,6 +124,11 @@ export class QueryStore {
     return this.records.get(subscriptionId)?.queryKey;
   }
 
+  /** The current failure without rebuilding the snapshot's data. */
+  getError(subscriptionId: string): AreteError | undefined {
+    return this.records.get(subscriptionId)?.error;
+  }
+
   getSnapshot<T>(subscriptionId: string): QuerySnapshot<T> | undefined {
     const record = this.records.get(subscriptionId);
     if (!record) return undefined;
@@ -141,6 +147,7 @@ export class QueryStore {
       data,
       isLoading: record.isLoading,
       isRefreshing: record.isRefreshing,
+      ...(record.cursor ? { cursor: record.cursor } : {}),
       ...(record.error ? { error: record.error } : {}),
     };
     record.cachedSnapshot = snapshot as QuerySnapshot<unknown>;
@@ -260,6 +267,7 @@ export class QueryStore {
   ): void {
     const record = this.records.get(subscriptionId);
     if (!record) return;
+    if (update.cursor !== undefined) record.cursor = update.cursor;
 
     if (update.type === 'remove') {
       const lastKnown = this.storage.get<unknown>(record.subscription.query.view, key) ?? undefined;
@@ -267,7 +275,7 @@ export class QueryStore {
       record.sequences.delete(key);
       this.touch(record);
       this.emitUpdate(record, update);
-      this.emitRichUpdate(record, { type: 'removed', key, lastKnown });
+      this.emitRichUpdate(record, { type: 'removed', key, lastKnown, cursor: update.cursor });
       return;
     }
 
@@ -284,14 +292,29 @@ export class QueryStore {
     if (richUpdate) this.emitRichUpdate(record, richUpdate);
   }
 
-  deleteGlobal(view: string, key: string, lastKnown?: unknown): void {
+  deleteGlobal(
+    view: string,
+    key: string,
+    lastKnown?: unknown,
+    subscriptionId?: string,
+    cursor?: string
+  ): void {
     for (const record of this.records.values()) {
       if (record.subscription.query.view !== view || !record.keys.includes(key)) continue;
       record.keys = record.keys.filter((entry) => entry !== key);
       record.sequences.delete(key);
+      // A delete fans out to every subscription on the view, but only the one
+      // the frame named read it at this offset. Handing the position to the
+      // others would let a consumer still replaying checkpoint past events it
+      // has not been given.
+      const owned = cursor !== undefined && record.subscription.subscriptionId === subscriptionId;
+      if (owned) record.cursor = cursor;
       this.touch(record);
-      this.emitUpdate(record, { type: 'delete', key });
-      this.emitRichUpdate(record, { type: 'deleted', key, lastKnown });
+      this.emitUpdate(record, owned ? { type: 'delete', key, cursor } : { type: 'delete', key });
+      this.emitRichUpdate(
+        record,
+        owned ? { type: 'deleted', key, lastKnown, cursor } : { type: 'deleted', key, lastKnown }
+      );
     }
   }
 

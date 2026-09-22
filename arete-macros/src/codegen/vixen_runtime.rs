@@ -42,6 +42,44 @@ impl RuntimeGenConfig {
     }
 }
 
+/// Generate the per-attempt resume decision at the top of the reconnect loop.
+///
+/// Shared by `generate_spec_function` and `generate_multi_pipeline_spec_function`
+/// so the two cannot drift: this block decides whether a reconnect loses data,
+/// and a copy that forgets to mark the hole loses it silently.
+fn generate_reconnect_position() -> TokenStream {
+    quote! {
+        let position = arete::runtime::arete_server::snapshot::select_reconnect_from_slot(
+            restored_from_slot,
+            processed_slot_tracker.get(),
+            attempt,
+            reconnection_config.live_fallback_attempts,
+        );
+        let from_slot = match position {
+            arete::runtime::arete_server::snapshot::ReconnectPosition::Slot(slot) => {
+                arete::runtime::tracing::info!("Resuming from slot {}", slot);
+                Some(slot)
+            }
+            arete::runtime::arete_server::snapshot::ReconnectPosition::Live => None,
+            arete::runtime::arete_server::snapshot::ReconnectPosition::LiveAfterGap { abandoned } => {
+                // The provider keeps rejecting us shortly after connect; most
+                // likely the checkpoint is outside its replay window.
+                // Subscribing live loses every slot between here and the tip,
+                // so mark the tape before the first live event lands on it —
+                // dense offsets would otherwise present the hole as an
+                // unbroken continuation.
+                arete::runtime::tracing::warn!(
+                    attempt,
+                    abandoned,
+                    "Repeated short-lived connections; abandoning the resume checkpoint and subscribing live. Slots after this one are lost; ReconnectionConfig::fail_closed refuses this trade"
+                );
+                arete::runtime::arete_server::journal::mark_stream_gap().await;
+                None
+            }
+        };
+    }
+}
+
 /// Generate the `tokio::spawn` block for the slot scheduler background task.
 ///
 /// This is used by both `generate_spec_function` and `generate_multi_pipeline_spec_function`
@@ -536,10 +574,6 @@ pub(crate) fn generate_managed_grpc_helpers() -> TokenStream {
 
         const RECONNECT_BACKOFF_RESET_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
         const HTTP2_KEEPALIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-        /// After this many consecutive short-lived connection attempts, a
-        /// cold/live runtime drops `from_slot` instead of crash-looping. A
-        /// restored snapshot replay never takes this lossy fallback.
-        const FROM_SLOT_LIVE_FALLBACK_ATTEMPTS: u32 = 3;
 
         fn install_managed_yellowstone_grpc_settings(settings: ManagedYellowstoneGrpcSettings) {
             let _ = MANAGED_YELLOWSTONE_GRPC_SETTINGS.set(settings);
@@ -1640,6 +1674,7 @@ pub fn generate_spec_function(
     let managed_grpc_helpers = generate_managed_grpc_helpers();
     let slot_scheduler_task = generate_slot_scheduler_task();
     let slot_subscription_task = generate_slot_subscription_task();
+    let reconnect_position = generate_reconnect_position();
     quote! {
         #managed_grpc_helpers
 
@@ -1763,34 +1798,7 @@ pub fn generate_spec_function(
             #slot_subscription_task
 
             loop {
-                let from_slot = arete::runtime::arete_server::snapshot::select_reconnect_from_slot(
-                    restored_from_slot,
-                    processed_slot_tracker.get(),
-                    attempt,
-                    FROM_SLOT_LIVE_FALLBACK_ATTEMPTS,
-                );
-                if restored_from_slot.is_some() && attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
-                    // Correctness takes priority over the live fallback while
-                    // snapshot replay is active. The checkpoint advances only
-                    // with events completed by the main parser stream.
-                    arete::runtime::tracing::warn!(
-                        attempt,
-                        from_slot = ?from_slot,
-                        "Snapshot replay still active after repeated short-lived connections; retrying from processed checkpoint"
-                    );
-                } else if restored_from_slot.is_none() && attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
-                    // The provider keeps rejecting us shortly after connect;
-                    // most likely the requested slot is outside its replay
-                    // window. Subscribe live rather than crash-looping.
-                    arete::runtime::tracing::warn!(
-                        attempt,
-                        "Repeated short-lived connections; subscribing live without from_slot"
-                    );
-                }
-
-                if from_slot.is_some() {
-                    arete::runtime::tracing::info!("Resuming from slot {}", from_slot.unwrap());
-                }
+                #reconnect_position
 
                 let vixen_config = ShipsternConfig {
                     source: YellowstoneGrpcConfig {
@@ -3040,6 +3048,7 @@ pub fn generate_multi_pipeline_spec_function(
     let managed_grpc_helpers = generate_managed_grpc_helpers();
     let slot_scheduler_task = generate_slot_scheduler_task();
     let slot_subscription_task = generate_slot_subscription_task();
+    let reconnect_position = generate_reconnect_position();
     let program_runtime_definitions = generate_program_runtime_definitions_fn(pipelines);
 
     quote! {
@@ -3166,34 +3175,7 @@ pub fn generate_multi_pipeline_spec_function(
             #slot_subscription_task
 
             loop {
-                let from_slot = arete::runtime::arete_server::snapshot::select_reconnect_from_slot(
-                    restored_from_slot,
-                    processed_slot_tracker.get(),
-                    attempt,
-                    FROM_SLOT_LIVE_FALLBACK_ATTEMPTS,
-                );
-                if restored_from_slot.is_some() && attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
-                    // Correctness takes priority over the live fallback while
-                    // snapshot replay is active. The checkpoint advances only
-                    // with events completed by the main parser stream.
-                    arete::runtime::tracing::warn!(
-                        attempt,
-                        from_slot = ?from_slot,
-                        "Snapshot replay still active after repeated short-lived connections; retrying from processed checkpoint"
-                    );
-                } else if restored_from_slot.is_none() && attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
-                    // The provider keeps rejecting us shortly after connect;
-                    // most likely the requested slot is outside its replay
-                    // window. Subscribe live rather than crash-looping.
-                    arete::runtime::tracing::warn!(
-                        attempt,
-                        "Repeated short-lived connections; subscribing live without from_slot"
-                    );
-                }
-
-                if from_slot.is_some() {
-                    arete::runtime::tracing::info!("Resuming from slot {}", from_slot.unwrap());
-                }
+                #reconnect_position
 
                 let vixen_config = ShipsternConfig {
                     source: YellowstoneGrpcConfig {
