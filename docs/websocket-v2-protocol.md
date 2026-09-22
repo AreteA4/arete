@@ -121,10 +121,13 @@ per-view cursor assigned when the event is retained.
 }
 ```
 
-`offset` is the value to persist and send back as `after`. `seq` is not
-usable as a replay cursor: its second component is the transaction index, so
-every event decoded from one transaction shares a `seq`. Offsets are scoped
-to one view and are not comparable across views.
+`offset` is the position within the tape. The cursor you send back as `after`
+is `{epoch}:{offset}`, where the epoch comes from the acknowledgement's
+`replayWindow`.
+
+`seq` is not usable as a replay cursor: its second component is the
+transaction index, so every event decoded from one transaction shares a
+`seq`. Offsets are scoped to one view and are not comparable across views.
 
 The acknowledgement advertises the window the view can still serve:
 
@@ -134,12 +137,30 @@ The acknowledgement advertises the window the view can still serve:
   "subscriptionId": "trades",
   "op": "subscribed",
   "mode": "append",
-  "replayWindow": { "earliest": 3200, "next": 4212 }
+  "replayWindow": {
+    "epoch": "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b",
+    "earliest": 3200,
+    "next": 4212
+  }
 }
 ```
 
 `earliest` is the oldest retained offset; `next` is the offset the next event
-will take, so a consumer holding `next - 1` is fully caught up.
+will take, so a consumer holding `next - 1` is fully caught up. To resume at
+offset 4211 you would send `after: "0f8c2b31-...:4211"`.
+
+### Epochs
+
+The epoch identifies one tape lifetime. Offsets restart at zero whenever a
+tape is built without restoring one — snapshots disabled, a rejected or
+corrupt blob, any cold start — and because offsets are dense, an old cursor
+would otherwise land inside the new window and replay unrelated events as a
+continuation of the stream you were reading.
+
+A cursor whose epoch is not the view's current epoch is refused with
+`cursor-epoch-changed`. Discard it and resubscribe without `after`. A restore
+from a snapshot adopts the snapshot's epoch, so cursors held across a normal
+restart stay valid.
 
 `after` is exclusive. A cursor below `earliest` is refused with
 `cursor-expired`, which repeats the window so the consumer knows what it
@@ -150,7 +171,7 @@ lost:
   "type": "error",
   "code": "cursor-expired",
   "retryable": false,
-  "replayWindow": { "earliest": 3200, "next": 4212 }
+  "replayWindow": { "epoch": "0f8c2b31-...", "earliest": 3200, "next": 4212 }
 }
 ```
 
@@ -158,25 +179,30 @@ Recover by resubscribing **without** `after`, which replays the whole
 retained window. Do not resubscribe with `after` set to `earliest`: because
 `after` is exclusive that skips the oldest retained record.
 
-A cursor at or above `next` is refused with `invalid-cursor` rather than
+A cursor at or above `next` is refused with `cursor-unknown` rather than
 treated as caught up — accepting an offset the view has never issued would
 suppress delivery until its offsets reached that value. An `after` that is
-not a replay offset at all is refused the same way.
+not an `{epoch}:{offset}` cursor at all is refused with `invalid-cursor`.
 
-`take`, `skip` and `snapshotLimit` describe a membership window and do not
-apply to a tape; a replayable subscription requesting any of them is refused
-with `invalid-subscription`. `key`, `partition` and `filters` are honoured,
-on replayed and live records alike.
+### Gaps
+
+If a restore hydrates state but starts the stream live, events between the
+retained tape and the first live append are lost. Offsets stay dense across
+that hole, so the window alone would look continuous. Replaying across it is
+refused with `replay-gap`, and `replayWindow.gapAfter` marks the last offset
+before the hole. Resubscribe without `after` to accept the gap, or from a
+cursor after it.
 
 If delivery falls behind the server's fan-out buffer, the gap is reported as
 `replay-lagged` and **delivery on that subscription stops**. The error
-carries `recoverFrom`: the last offset delivered *before* the gap.
+carries `recoverFrom`: the cursor for the last record delivered *before* the
+gap.
 
 ```json
 {
   "type": "error",
   "code": "replay-lagged",
-  "recoverFrom": 4180
+  "recoverFrom": "0f8c2b31-...:4180"
 }
 ```
 
@@ -190,8 +216,18 @@ would advance the consumer's checkpoint past the skipped records, making
 them unrecoverable. The subscription stays registered until you unsubscribe,
 so reuse of the same `subscriptionId` requires unsubscribing first.
 
-Retention is bounded by count and age, and the retained tape is captured in
-the state snapshot, so the advertised window survives a normal restart.
+### Query options and retention
+
+`take`, `skip` and `snapshotLimit` describe a membership window and do not
+apply to a tape; a replayable subscription requesting any of them is refused
+with `invalid-subscription`. `key`, `partition` and `filters` are honoured,
+on replayed and live records alike.
+
+Retention is bounded by bytes, record count and age, whichever bites first.
+The byte bound is the one to budget against: frame size is stack-dependent,
+so a record count cannot be reasoned about against a memory limit. The
+retained tape is captured in the state snapshot, so the advertised window
+survives a normal restart.
 
 ## Live Frames
 
@@ -330,7 +366,7 @@ Protocol and subscription errors are non-fatal unless explicitly marked otherwis
 }
 ```
 
-Stable protocol codes include `malformed-message`, `invalid-subscription`, `invalid-unsubscription`, `duplicate-subscription-id`, `unknown-subscription-id`, `subscription-rejected`, `cursor-expired`, `invalid-cursor`, and `replay-lagged`. Authentication, quota, and rate-limit errors keep their existing codes and use the same v2 envelope.
+Stable protocol codes include `malformed-message`, `invalid-subscription`, `invalid-unsubscription`, `duplicate-subscription-id`, `unknown-subscription-id`, `subscription-rejected`, `cursor-expired`, `cursor-epoch-changed`, `cursor-unknown`, `invalid-cursor`, `replay-gap`, and `replay-lagged`. Authentication, quota, and rate-limit errors keep their existing codes and use the same v2 envelope.
 
 ## Conformance Fixtures
 

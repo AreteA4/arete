@@ -9,7 +9,7 @@
 
 use arete_interpreter::vm::VmContext;
 use arete_interpreter::Mutation;
-use arete_server::journal::{EventJournal, JournalConfig};
+use arete_server::journal::{Cursor, EventJournal, JournalConfig};
 use arete_server::materialized_view::{SortConfig, SortOrder, ViewPipeline};
 use arete_server::snapshot::{self, SnapshotConfig, SnapshotService, SnapshotTrigger};
 use arete_server::{
@@ -938,6 +938,7 @@ fn make_append_view_index() -> ViewIndex {
 fn enabled_journal() -> Arc<EventJournal> {
     Arc::new(EventJournal::new(JournalConfig {
         enabled: true,
+        max_bytes_per_view: u64::MAX,
         max_records_per_view: 10_000,
         max_age: Duration::from_secs(3_600),
     }))
@@ -1031,9 +1032,18 @@ async fn restore_preserves_the_advertised_replay_window() {
     );
 
     // A cursor held across the restart still replays, in order, from the
-    // right place.
+    // right place — including its epoch, which the restore adopts.
+    let held = Cursor {
+        epoch: journal.epoch().await,
+        offset: 549,
+    };
+    assert_eq!(
+        journal2.epoch().await,
+        held.epoch,
+        "a restored tape continues the same lifetime, so old cursors stay valid"
+    );
     let replayed = journal2
-        .replay_after("Token/append", Some(549))
+        .replay_after("Token/append", Some(&held))
         .await
         .expect("a cursor inside the restored window is serviceable");
     assert_eq!(replayed.len(), 50);
@@ -1042,9 +1052,12 @@ async fn restore_preserves_the_advertised_replay_window() {
 
     // Offsets continue from the restored tape rather than restarting at zero,
     // so a restart cannot make an old cursor ambiguous.
-    let next = journal2
-        .append("Token/append", "mint0", replayed[0].payload.clone())
-        .await;
+    let (next, _payload) = journal2
+        .append_with("Token/append", "mint0", |_offset| {
+            Ok::<_, std::convert::Infallible>(replayed[0].payload.clone())
+        })
+        .await
+        .unwrap();
     assert_eq!(next, 600);
 
     let _ = std::fs::remove_dir_all(&dir);

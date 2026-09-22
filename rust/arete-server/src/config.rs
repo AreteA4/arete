@@ -340,6 +340,12 @@ pub struct ServerConfig {
     pub program_read_binding_target_id: Option<String>,
     /// State snapshot settings. `None` falls back to `SnapshotConfig::from_env()`.
     pub snapshots: Option<crate::snapshot::SnapshotConfig>,
+    /// Event journal settings. `None` falls back to `JournalConfig::from_env()`.
+    ///
+    /// Set this per runtime when several deployments share one process: the
+    /// env vars are process-wide, so they cannot enable replay for one stack
+    /// or size a busy stack differently from a quiet one.
+    pub journal: Option<crate::journal::JournalConfig>,
 }
 
 impl ServerConfig {

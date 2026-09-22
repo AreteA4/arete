@@ -3,7 +3,7 @@
 //! to answer.
 
 use arete_interpreter::Mutation;
-use arete_server::journal::{EventJournal, JournalConfig, ReplayError, ReplayWindow};
+use arete_server::journal::{Cursor, EventJournal, JournalConfig, ReplayError};
 use arete_server::{
     BusManager, Delivery, EntityCache, EntityCacheConfig, Filters, Mode, MutationBatch, Projection,
     Projector, SlotContext, ViewIndex, ViewSpec,
@@ -63,9 +63,17 @@ async fn drain(tx: &mpsc::Sender<MutationBatch>) {
 fn journal_for(max_records: usize) -> Arc<EventJournal> {
     Arc::new(EventJournal::new(JournalConfig {
         enabled: true,
+        max_bytes_per_view: u64::MAX,
         max_records_per_view: max_records,
         max_age: Duration::from_secs(3_600),
     }))
+}
+
+async fn cursor_at(journal: &EventJournal, offset: u64) -> Cursor {
+    Cursor {
+        epoch: journal.epoch().await,
+        offset,
+    }
 }
 
 async fn run_projector(
@@ -113,17 +121,14 @@ async fn every_event_after_a_cursor_replays_in_order_exactly_once() {
     );
 
     let window = journal.window("Trade/append").await;
-    assert_eq!(
-        window,
-        ReplayWindow {
-            earliest: 0,
-            next: EVENTS
-        }
-    );
+    assert_eq!(window.earliest, 0);
+    assert_eq!(window.next, EVENTS);
+    assert_eq!(window.gap_after, None);
 
     // Resume from well past the cache's capacity.
+    let resume = cursor_at(&journal, 499).await;
     let replayed = journal
-        .replay_after("Trade/append", Some(499))
+        .replay_after("Trade/append", Some(&resume))
         .await
         .expect("cursor is inside the retained window");
     assert_eq!(replayed.len() as u64, EVENTS - 500);
@@ -182,19 +187,17 @@ async fn a_cursor_evicted_by_retention_is_reported_with_the_window() {
 
     let window = journal.window("Trade/append").await;
     assert_eq!(
-        window,
-        ReplayWindow {
-            earliest: EVENTS - 100,
-            next: EVENTS
-        },
+        (window.earliest, window.next),
+        (EVENTS - 100, EVENTS),
         "retention trims the oldest records without rewinding offsets"
     );
 
+    let stale = cursor_at(&journal, 10).await;
     let error = journal
-        .replay_after("Trade/append", Some(10))
+        .replay_after("Trade/append", Some(&stale))
         .await
         .expect_err("a cursor below the window cannot be served");
-    assert_eq!(error, ReplayError::CursorExpired(window));
+    assert!(matches!(error, ReplayError::CursorExpired(_)));
 
     // The documented recovery is to resubscribe without a cursor, which
     // replays the whole retained window. Passing `window.earliest` would skip
@@ -224,49 +227,115 @@ async fn a_cursor_this_view_never_issued_is_refused() {
     // Accepting a future cursor would look like "caught up" and then suppress
     // every later record until the offsets reached it.
     for forged in [window.next, window.next + 500, u64::MAX] {
+        let cursor = cursor_at(&journal, forged).await;
         let error = journal
-            .replay_after("Trade/append", Some(forged))
+            .replay_after("Trade/append", Some(&cursor))
             .await
             .expect_err("a cursor beyond the window is not caught up");
-        assert_eq!(error, ReplayError::CursorBeyondWindow(window));
+        assert!(matches!(error, ReplayError::CursorBeyondWindow(_)));
     }
 
     // The newest issued offset is still serviceable, and is simply empty.
-    let caught_up = journal
-        .replay_after("Trade/append", Some(window.next - 1))
+    let caught_up = cursor_at(&journal, window.next - 1).await;
+    assert!(journal
+        .replay_after("Trade/append", Some(&caught_up))
         .await
-        .expect("the latest issued cursor is valid");
-    assert!(caught_up.is_empty());
+        .expect("the latest issued cursor is valid")
+        .is_empty());
 
     drop(tx);
     handle.await.unwrap();
 }
 
+/// A tape that restarts from zero would otherwise accept an old cursor as soon
+/// as its offsets grew past it, replaying unrelated events as a continuation.
 #[tokio::test]
-async fn a_quiet_view_stops_advertising_records_the_age_bound_retired() {
-    // One second of retention, and no further appends to trigger pruning.
+async fn a_cursor_from_a_previous_tape_lifetime_is_refused() {
+    let first = journal_for(10_000);
+    let (_cache, tx, handle) = run_projector(first.clone(), 50).await;
+    let held = cursor_at(&first, 20).await;
+    drop(tx);
+    handle.await.unwrap();
+
+    // Cold start: snapshots disabled or the blob rejected. Offsets restart.
+    let second = journal_for(10_000);
+    let (_cache2, tx2, handle2) = run_projector(second.clone(), 50).await;
+
+    let window = second.window("Trade/append").await;
+    assert!(
+        held.offset >= window.earliest && held.offset < window.next,
+        "the stale offset lands inside the new window, which is what makes \
+         this undetectable without an epoch"
+    );
+
+    let error = second
+        .replay_after("Trade/append", Some(&held))
+        .await
+        .expect_err("a cursor from another lifetime is not a valid offset here");
+    assert!(matches!(error, ReplayError::EpochMismatch(_)));
+
+    drop(tx2);
+    handle2.await.unwrap();
+}
+
+/// Restoring state but starting the stream live loses events, and dense
+/// offsets would present the hole as continuous.
+#[tokio::test]
+async fn a_replay_across_a_restore_gap_is_refused() {
+    let journal = journal_for(10_000);
+    let (_cache, tx, handle) = run_projector(journal.clone(), 20).await;
+    drop(tx);
+    handle.await.unwrap();
+
+    journal.mark_gap().await;
+
+    let (_cache2, tx2, handle2) = run_projector(journal.clone(), 5).await;
+
+    let window = journal.window("Trade/append").await;
+    assert_eq!(window.gap_after, Some(19));
+
+    let before = cursor_at(&journal, 10).await;
+    let error = journal
+        .replay_after("Trade/append", Some(&before))
+        .await
+        .expect_err("crossing the hole would look like an unbroken stream");
+    assert!(matches!(error, ReplayError::GapCrossed(_)));
+
+    // After the hole the tape is trustworthy again.
+    let after = cursor_at(&journal, 20).await;
+    assert_eq!(
+        journal
+            .replay_after("Trade/append", Some(&after))
+            .await
+            .expect("a cursor after the hole is serviceable")
+            .len(),
+        4
+    );
+
+    drop(tx2);
+    handle2.await.unwrap();
+}
+
+/// Frame size is stack-dependent, so the byte bound is the one an operator can
+/// budget against; the record count is only a backstop.
+#[tokio::test]
+async fn retention_is_bounded_by_bytes_before_record_count() {
     let journal = Arc::new(EventJournal::new(JournalConfig {
         enabled: true,
+        max_bytes_per_view: 8 * 1024,
         max_records_per_view: 10_000,
-        max_age: Duration::from_secs(1),
+        max_age: Duration::from_secs(3_600),
     }));
-    let (_cache, tx, handle) = run_projector(journal.clone(), 5).await;
+    let (_cache, tx, handle) = run_projector(journal.clone(), 500).await;
 
-    assert_eq!(journal.window("Trade/append").await.next, 5);
-    tokio::time::sleep(Duration::from_millis(1_100)).await;
-
-    // Reading the window prunes, so a view that went quiet does not keep
-    // advertising and replaying expired records.
     let window = journal.window("Trade/append").await;
+    assert_eq!(window.next, 500);
+    let retained = window.next - window.earliest;
     assert!(
-        window.is_empty(),
-        "the age bound holds without further appends, got {window:?}"
+        retained < 500,
+        "the byte bound trims well before the 10,000-record backstop, retained {retained}"
     );
-    assert!(journal
-        .replay_after("Trade/append", None)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(retained > 0, "a window is always left to serve");
 
     drop(tx);
     handle.await.unwrap();

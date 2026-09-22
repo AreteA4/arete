@@ -238,20 +238,25 @@ impl Runtime {
             let entity_cache = EntityCache::new();
             entity_cache_handle = Some(entity_cache.clone());
 
-            // Retained event tape for replayable append subscriptions. A bad
+            // Retained event tape for replayable append subscriptions. The
+            // builder wins over the process env so one host can enable replay
+            // for a single deployment and size it independently. A bad
             // configuration disables replay rather than failing startup, the
             // same posture snapshots take below.
-            let journal = Arc::new(crate::journal::EventJournal::new(
-                match crate::journal::JournalConfig::from_env() {
+            let journal_config = match self.config.journal.clone() {
+                Some(config) => config,
+                None => match crate::journal::JournalConfig::from_env() {
                     Ok(config) => config,
                     Err(e) => {
                         error!("Invalid journal configuration; event replay disabled: {e:#}");
                         crate::journal::JournalConfig::default()
                     }
                 },
-            ));
+            };
+            let journal = Arc::new(crate::journal::EventJournal::new(journal_config));
             if journal.is_enabled() {
                 info!(
+                    max_bytes_per_view = journal.config().max_bytes_per_view,
                     max_records_per_view = journal.config().max_records_per_view,
                     max_age_secs = journal.config().max_age.as_secs(),
                     "Event replay enabled for append views"

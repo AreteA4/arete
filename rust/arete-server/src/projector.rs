@@ -222,17 +222,14 @@ impl Projector {
 
             // Replayable append views carry the offset the record is about to
             // take, so a live subscriber can checkpoint the same cursor a
-            // replay would hand it.
+            // replay would hand it. The frame is built inside the journal's
+            // lock so the published offset is always the one the record gets.
             let journal = self
                 .journal
                 .as_ref()
                 .filter(|journal| journal.is_enabled() && spec.mode == Mode::Append);
-            let offset = match journal {
-                Some(journal) => Some(journal.next_offset(&spec.id).await),
-                None => None,
-            };
 
-            let frame = SourceFrame {
+            let mut frame = SourceFrame {
                 mode: spec.mode,
                 export: spec.id.clone(),
                 op: "patch",
@@ -240,21 +237,27 @@ impl Projector {
                 data: wire_data,
                 append: append.clone(),
                 seq,
-                offset,
+                offset: None,
             };
 
-            json_buffer.clear();
-            serde_json::to_writer(&mut *json_buffer, &frame)?;
-            let payload = Arc::new(Bytes::copy_from_slice(json_buffer));
-
-            if let Some(journal) = journal {
-                let appended = journal.append(&spec.id, &key, payload.clone()).await;
-                debug_assert_eq!(
-                    Some(appended),
-                    offset,
-                    "the reserved offset must be the one the record takes"
-                );
-            }
+            let payload = match journal {
+                Some(journal) => {
+                    let (_offset, payload) = journal
+                        .append_with(&spec.id, &key, |offset| {
+                            frame.offset = Some(offset);
+                            json_buffer.clear();
+                            serde_json::to_writer(&mut *json_buffer, &frame)?;
+                            Ok::<_, anyhow::Error>(Arc::new(Bytes::copy_from_slice(json_buffer)))
+                        })
+                        .await?;
+                    payload
+                }
+                None => {
+                    json_buffer.clear();
+                    serde_json::to_writer(&mut *json_buffer, &frame)?;
+                    Arc::new(Bytes::copy_from_slice(json_buffer))
+                }
+            };
 
             self.entity_cache
                 .upsert_with_append(&spec.id, &key, projected, &frame.append)

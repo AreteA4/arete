@@ -393,6 +393,13 @@ impl ServerBuilder {
         self
     }
 
+    /// Retain published events for replayable append subscriptions on this
+    /// runtime, overriding `ARETE_JOURNAL_*` for this instance only.
+    pub fn journal(mut self, config: crate::journal::JournalConfig) -> Self {
+        self.config.journal = Some(config);
+        self
+    }
+
     /// Enable reconnection with default configuration
     pub fn reconnection(mut self) -> Self {
         self.config.reconnection = Some(ReconnectionConfig::default());
