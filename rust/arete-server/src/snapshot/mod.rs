@@ -47,7 +47,7 @@ use tracing::{debug, info, info_span, warn, Instrument};
 
 /// Rough Solana slot duration, used only to convert snapshot age into an
 /// estimated slot distance for the staleness clamp.
-const ESTIMATED_SLOT_MILLIS: u64 = 400;
+const ESTIMATED_SLOT_MILLIS: u64 = 200;
 /// How long a snapshot cycle waits for in-flight VM updates and their queued
 /// projection batches to finish.
 const CONSISTENCY_CUT_TIMEOUT: Duration = Duration::from_secs(10);
