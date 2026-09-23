@@ -420,27 +420,29 @@ impl Runtime {
                     let reconnection_config = self.config.reconnection.clone().unwrap_or_default();
                     let parser_snapshot_runtime = snapshot_runtime.clone();
                     let parser_journal = journal.clone();
-                    parser_handle = Some(tokio::spawn(
-                        async move {
-                            let parser = async move {
-                                parser_setup(mutations_tx, health, reconnection_config).await
-                            };
-                            let scoped = async move {
-                                match parser_snapshot_runtime {
-                                    Some(runtime) => runtime.scope(parser).await,
-                                    None => parser.await,
-                                }
-                            };
-                            // The tape is in scope even with snapshots off, so
-                            // a runtime that abandons its checkpoint can still
-                            // mark the hole it just created.
-                            let result = parser_journal.scope(scoped).await;
-                            if let Err(e) = result {
-                                error!("Vixen parser runtime error: {}", e);
+                    // The parser runs for the lifetime of the server, like
+                    // the projector. A span on the task would be the current
+                    // span of every update it processes, and OpenTelemetry
+                    // keeps an open span's events until it closes: for a task
+                    // that runs as long as the server, an unbounded buffer.
+                    parser_handle = Some(tokio::spawn(async move {
+                        let parser = async move {
+                            parser_setup(mutations_tx, health, reconnection_config).await
+                        };
+                        let scoped = async move {
+                            match parser_snapshot_runtime {
+                                Some(runtime) => runtime.scope(parser).await,
+                                None => parser.await,
                             }
+                        };
+                        // The tape is in scope even with snapshots off, so
+                        // a runtime that abandons its checkpoint can still
+                        // mark the hole it just created.
+                        let result = parser_journal.scope(scoped).await;
+                        if let Err(e) = result {
+                            error!(%program_id, "Vixen parser runtime error: {}", e);
                         }
-                        .instrument(info_span!("vixen.parser", %program_id)),
-                    ));
+                    }));
                 } else {
                     info!("Spec provided but no parser_setup configured - skipping parser runtime");
                 }
