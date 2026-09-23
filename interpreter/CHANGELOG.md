@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.22.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.22.0...arete-interpreter-v0.22.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **interpreter:** size every entity's state table from the VM's config ([e6211c8](https://github.com/AreteA4/arete/commit/e6211c8b1ce2505a997f0c187da3fb8434b7bb6f))
+
+
+### Performance Improvements
+
+* cut per-event cost in the VM and projector ([11a7e39](https://github.com/AreteA4/arete/commit/11a7e39b43e56760d12901dac3fc03718e1ff6d9))
+* demote per-event spans and logs to debug ([7288944](https://github.com/AreteA4/arete/commit/7288944fb2c8d8591bf40e7c8735e66f75b93eb3))
+* **interpreter:** build canonical lines only when they will be recorded ([6341d40](https://github.com/AreteA4/arete/commit/6341d408849dcdec4e7e1073b5dbf7f8e56586f0))
+* **interpreter:** evict state-table entries in O(1) ([2ac6c6f](https://github.com/AreteA4/arete/commit/2ac6c6f72ecf0edafed86fe0b679b81676cd893f))
+* **interpreter:** move the state register into its table when no hook needs it ([3665666](https://github.com/AreteA4/arete/commit/3665666c1af012d22030364061fff3bdcefd8c34))
+* **interpreter:** reuse one VM context per computed-field evaluator ([e8ce8a4](https://github.com/AreteA4/arete/commit/e8ce8a42b05fcf5496f9ec3860c3694ef9a5fd13))
+* **interpreter:** take entities out of the state table instead of copying ([569dbec](https://github.com/AreteA4/arete/commit/569dbecc6e774fa8f2ba4fb10383f9ea60236268))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.22.0 to 0.22.1
+
 ## [0.22.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.21.0...arete-interpreter-v0.22.0) (2026-09-22)
 
 

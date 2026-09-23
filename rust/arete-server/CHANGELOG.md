@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.22.1](https://github.com/AreteA4/arete/compare/arete-server-v0.22.0...arete-server-v0.22.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **server:** apply a derived view's filter to its sorted cache ([6f4849e](https://github.com/AreteA4/arete/commit/6f4849ec01392178fcd6a1c5b1305a048e6e1df3))
+* **server:** drop the parser task's lifetime span ([f12648d](https://github.com/AreteA4/arete/commit/f12648dfdb1cfc9cdb1fb7aebf830fd0896bb982))
+
+
+### Performance Improvements
+
+* cut per-event cost in the VM and projector ([11a7e39](https://github.com/AreteA4/arete/commit/11a7e39b43e56760d12901dac3fc03718e1ff6d9))
+* demote per-event spans and logs to debug ([7288944](https://github.com/AreteA4/arete/commit/7288944fb2c8d8591bf40e7c8735e66f75b93eb3))
+* **server:** copy an entity only into derived views that keep it ([3856e49](https://github.com/AreteA4/arete/commit/3856e4902d1bd5e183492003837c17d18e92ed25))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.22.0 to 0.22.1
+
 ## [0.22.0](https://github.com/AreteA4/arete/compare/arete-server-v0.21.0...arete-server-v0.22.0) (2026-09-22)
 
 
