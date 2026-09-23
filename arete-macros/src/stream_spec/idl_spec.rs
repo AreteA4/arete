@@ -324,7 +324,8 @@ pub fn process_idl_spec(
             .collect();
 
         for entity_struct in &entity_structs {
-            let entity_name = parse::parse_entity_name(&entity_struct.attrs)
+            let entity_name = parse::parse_entity_attribute(&entity_struct.attrs)?
+                .name
                 .unwrap_or_else(|| entity_struct.ident.to_string());
             entity_names.push(entity_name.clone());
 
@@ -1006,7 +1007,8 @@ fn collect_pda_registrations_per_entity(
     let mut per_entity_regs: HashMap<String, Vec<parse::RegisterPdaAttribute>> = HashMap::new();
 
     for entity_struct in entity_structs {
-        let entity_name = parse::parse_entity_name(&entity_struct.attrs)
+        let entity_name = parse::parse_entity_attribute(&entity_struct.attrs)?
+            .name
             .unwrap_or_else(|| entity_struct.ident.to_string());
         let mut entity_regs: Vec<parse::RegisterPdaAttribute> = Vec::new();
 
