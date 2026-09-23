@@ -297,11 +297,14 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                     );
                                 }
                             } else {
+                                // Stamped with the live tip, which can be ahead
+                                // of the parser, so it must not advance the
+                                // resume watermark.
                                 let slot_context = arete::runtime::arete_server::SlotContext::new(
                                     current_slot,
                                     next_async_resolver_slot_index(async_resolver_order.as_ref()),
                                 );
-                                let mut batch = arete::runtime::arete_server::MutationBatch::with_slot_context(
+                                let mut batch = arete::runtime::arete_server::MutationBatch::scheduled(
                                     arete::runtime::smallvec::SmallVec::from_vec(url_mutations),
                                     slot_context,
                                 );

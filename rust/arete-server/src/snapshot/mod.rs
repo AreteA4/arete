@@ -312,9 +312,10 @@ struct SnapshotRuntimeState {
     restored: StdMutex<Option<RestoredState>>,
     resume_gate: StdMutex<Option<ResumeGate>>,
     processing_barrier: SnapshotBarrier,
-    /// Highest slot among mutation batches this runtime's projector has
+    /// Highest slot of parsed stream input this runtime's projector has
     /// applied. This is the safe `from_slot` resume point (`SlotTracker` is
-    /// not: it follows the raw slot subscription, not parser progress).
+    /// not: it follows the raw slot subscription, not parser progress, which
+    /// is also why scheduled batches stamped from it are excluded).
     resume_watermark: AtomicU64,
     applied_batches: AtomicU64,
 }
