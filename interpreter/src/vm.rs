@@ -552,6 +552,10 @@ pub struct VmContext {
     segment_misses: Vec<SegmentMiss>,
     pending_pda_reprocess_updates: Vec<PendingAccountUpdate>,
     scheduled_callbacks: Vec<(u64, ScheduledCallback)>,
+    /// The entity a handler segment took out of its table with
+    /// `ReadOrInitState` and has not written back yet: state id, key and the
+    /// register holding it. See [`VmContext::execute_handler_segment`].
+    taken_entity: Option<(u32, Value, Register)>,
 }
 
 /// Event field that restricts a replayed event to one handler segment.
@@ -1196,6 +1200,20 @@ impl StateTable {
         result
     }
 
+    /// Take an entity out of the table for a handler to change, marking it
+    /// used. The handler puts it back with [`Self::insert_with_eviction`].
+    ///
+    /// Reading a copy instead leaves two copies of the entity, one of which
+    /// the write then drops; for an entity carrying arrays that is most of
+    /// what a handler costs.
+    pub fn take_and_touch(&self, key: &Value) -> Option<Value> {
+        let result = self.data.remove(key).map(|(_, value)| value);
+        if result.is_some() {
+            self.touch(key);
+        }
+        result
+    }
+
     /// Check if an update is fresh and update the version tracker.
     /// Returns true if the update should be processed (is fresh).
     /// Returns false if the update is stale and should be skipped.
@@ -1446,6 +1464,7 @@ impl VmContext {
             segment_misses: Vec::new(),
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
+            taken_entity: None,
         };
         vm.states.insert(
             0,
@@ -1526,6 +1545,7 @@ impl VmContext {
             segment_misses: Vec::new(),
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
+            taken_entity: None,
         }
     }
 
@@ -1554,6 +1574,7 @@ impl VmContext {
             segment_misses: Vec::new(),
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
+            taken_entity: None,
         };
         vm.states.insert(
             0,
@@ -2893,8 +2914,48 @@ impl VmContext {
         Ok(output)
     }
 
+    /// Run one handler segment, making sure the entity it read goes back into
+    /// its table.
+    ///
+    /// `ReadOrInitState` takes the entity out of the table rather than
+    /// copying it, and `UpdateState` writes it back. Compiled handlers always
+    /// do both, and between them the only way out is a failing opcode. On
+    /// that path the register's value is put back, so the entity keeps any
+    /// changes made before the failure; with a copy the table kept it as it
+    /// was read. Either way nothing about the failed event is emitted.
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     fn execute_handler_segment(
+        &mut self,
+        handler: &[OpCode],
+        event_value: &Value,
+        event_type: &str,
+        override_state_id: u32,
+        entity_name: &str,
+        entity_evaluator: Option<
+            &Box<dyn Fn(&mut Value, Option<u64>, i64) -> ComputedEvaluatorResult + Send + Sync>,
+        >,
+        non_emitted_fields: Option<&HashSet<String>>,
+    ) -> Result<Vec<Mutation>> {
+        let result = self.run_handler_segment(
+            handler,
+            event_value,
+            event_type,
+            override_state_id,
+            entity_name,
+            entity_evaluator,
+            non_emitted_fields,
+        );
+        if let Some((state_id, key, register)) = self.taken_entity.take() {
+            let value = self.registers[register].clone();
+            if let Some(state) = self.states.get(&state_id) {
+                state.insert_with_eviction(key, value);
+            }
+        }
+        result
+    }
+
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
+    fn run_handler_segment(
         &mut self,
         handler: &[OpCode],
         event_value: &Value,
@@ -3169,19 +3230,25 @@ impl VmContext {
                             }
                         }
                     }
-                    let existing_state = state.get_and_touch(&key_value);
-                    let value = existing_state.clone().unwrap_or_else(|| default.clone());
+                    let existing_state = state.take_and_touch(&key_value);
+                    if existing_state.is_some() {
+                        self.taken_entity = Some((actual_state_id, key_value.clone(), *dest));
+                    }
 
-                    self.emit_debug(|| VmDebugEvent::ReadOrInitState {
-                        entity_name: entity_name.to_string(),
-                        event_type: event_type.to_string(),
-                        key: key_value,
-                        existing_state,
-                        loaded_state: value.clone(),
-                        skipped_reason: None,
-                    });
+                    if self.is_debug_enabled() {
+                        let loaded_state =
+                            existing_state.clone().unwrap_or_else(|| default.clone());
+                        self.emit_debug(|| VmDebugEvent::ReadOrInitState {
+                            entity_name: entity_name.to_string(),
+                            event_type: event_type.to_string(),
+                            key: key_value,
+                            existing_state: existing_state.clone(),
+                            loaded_state,
+                            skipped_reason: None,
+                        });
+                    }
 
-                    self.registers[*dest] = value;
+                    self.registers[*dest] = existing_state.unwrap_or_else(|| default.clone());
                     pc += 1;
                 }
                 OpCode::UpdateState {
@@ -3197,6 +3264,15 @@ impl VmContext {
                     let key_value = self.registers[*key].clone();
                     let value_data = self.registers[*value].clone();
 
+                    if self
+                        .taken_entity
+                        .as_ref()
+                        .is_some_and(|(taken_state, taken_key, _)| {
+                            *taken_state == actual_state_id && *taken_key == key_value
+                        })
+                    {
+                        self.taken_entity = None;
+                    }
                     state.insert_with_eviction(key_value, value_data);
                     pc += 1;
                 }
@@ -6576,6 +6652,109 @@ mod tests {
         assert_eq!(table.data.len(), 3);
         table.insert_with_eviction(json!("e"), json!({ "key": "e" }));
         assert_eq!(state_keys(&table), vec![json!("c"), json!("d"), json!("e")]);
+    }
+
+    /// A handler that sets `amount` on the entity at "k" and then fails, or
+    /// with `fail: false` writes it back.
+    fn read_set_then_maybe_fail(fail: bool) -> Vec<OpCode> {
+        let mut handler = vec![
+            OpCode::LoadConstant {
+                value: json!("k"),
+                dest: 0,
+            },
+            OpCode::ReadOrInitState {
+                state_id: 0,
+                key: 0,
+                default: json!({}),
+                dest: 2,
+            },
+            OpCode::LoadConstant {
+                value: json!(7),
+                dest: 3,
+            },
+            OpCode::SetField {
+                object: 2,
+                path: "amount".to_string(),
+                value: 3,
+            },
+        ];
+        if fail {
+            handler.extend([
+                OpCode::LoadConstant {
+                    value: json!("not a timestamp"),
+                    dest: 4,
+                },
+                OpCode::UpdateTemporalIndex {
+                    state_id: 0,
+                    index_name: "t".to_string(),
+                    lookup_value: 0,
+                    primary_key: 0,
+                    timestamp: 4,
+                },
+            ]);
+        }
+        handler.push(OpCode::UpdateState {
+            state_id: 0,
+            key: 0,
+            value: 2,
+        });
+        handler
+    }
+
+    #[test]
+    fn a_handler_that_fails_after_reading_its_entity_puts_it_back() {
+        let mut vm = VmContext::new();
+        let table = vm.states.get(&0).unwrap();
+        table.insert_with_eviction(json!("k"), json!({ "amount": 1, "owner": "o" }));
+
+        let result = vm.execute_handler(
+            &read_set_then_maybe_fail(true),
+            &json!({}),
+            "Test",
+            0,
+            "Test",
+            None,
+            None,
+        );
+
+        assert!(result.is_err());
+        // Taken out to be changed, then put back with the change made before
+        // the failure: the entity is never lost.
+        assert_eq!(
+            vm.get_entity_state(0, &json!("k")),
+            Some(json!({ "amount": 7, "owner": "o" }))
+        );
+        assert!(vm.taken_entity.is_none());
+    }
+
+    #[test]
+    fn changing_an_entity_in_a_full_table_evicts_nothing() {
+        let mut vm = VmContext::new_with_config(StateTableConfig {
+            max_entries: 3,
+            ..StateTableConfig::default()
+        });
+        let table = vm.states.get(&0).unwrap();
+        for key in ["a", "k", "c"] {
+            table.insert_with_eviction(json!(key), json!({ "key": key }));
+        }
+
+        vm.execute_handler(
+            &read_set_then_maybe_fail(false),
+            &json!({}),
+            "Test",
+            0,
+            "Test",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let table = vm.states.get(&0).unwrap();
+        assert_eq!(state_keys(table), vec![json!("a"), json!("c"), json!("k")]);
+        assert_eq!(
+            vm.get_entity_state(0, &json!("k")),
+            Some(json!({ "key": "k", "amount": 7 }))
+        );
     }
 
     #[test]
