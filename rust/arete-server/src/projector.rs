@@ -335,18 +335,28 @@ impl Projector {
         let sorted_caches = self.view_index.sorted_caches();
         let mut caches = sorted_caches.write().await;
 
-        // Only a cache that would keep the entity gets a copy of it: once a
-        // view is full, most updates sort below its last entry. The last one
-        // gets the entity itself.
-        let keeping: SmallVec<[&str; 4]> = derived_views
-            .iter()
-            .filter(|spec| {
-                caches
-                    .get(&spec.id)
-                    .is_some_and(|cache| cache.would_keep(entity_key, &entity_data, max_entries))
-            })
-            .map(|spec| spec.id.as_str())
-            .collect();
+        // A derived view holds only the entities its filter passes, so one
+        // that stops passing leaves it. Of the rest, only a view that would
+        // keep the entity gets a copy of it: once a view is full, most updates
+        // sort below its last entry. The last one gets the entity itself.
+        let mut keeping: SmallVec<[&str; 4]> = SmallVec::new();
+        for spec in &derived_views {
+            let Some(cache) = caches.get_mut(&spec.id) else {
+                continue;
+            };
+            let passes = spec
+                .pipeline
+                .as_ref()
+                .and_then(|pipeline| pipeline.filter.as_ref())
+                .is_none_or(|filter| filter.matches(&entity_data));
+            if !passes {
+                cache.remove(entity_key);
+                continue;
+            }
+            if cache.would_keep(entity_key, &entity_data, max_entries) {
+                keeping.push(spec.id.as_str());
+            }
+        }
         let mut entity_data = Some(entity_data);
         for (index, view_id) in keeping.iter().enumerate() {
             let Some(cache) = caches.get_mut(*view_id) else {
