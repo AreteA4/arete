@@ -2225,7 +2225,7 @@ impl VmContext {
     #[cfg_attr(feature = "otel", instrument(
         name = "vm.process_event",
         skip(self, bytecode, event_value, log),
-        level = "info",
+        level = "debug",
         fields(
             event_type = %event_type,
             slot = context.as_ref().and_then(|c| c.slot),
@@ -2518,7 +2518,7 @@ impl VmContext {
 
                         let lookup_keys = self.take_last_lookup_index_keys();
                         if !lookup_keys.is_empty() {
-                            tracing::info!(
+                            tracing::debug!(
                                 keys = ?lookup_keys,
                                 entity = %entity_name,
                                 "vm.process_event: flushing pending updates for lookup_keys"
@@ -4877,7 +4877,7 @@ impl VmContext {
                 if let Some(ref new_val) = new_value {
                     if Some(new_val) != old_value.as_ref() {
                         Self::set_nested_field_value(&mut patch, path, new_val.clone())?;
-                        tracing::info!(
+                        tracing::debug!(
                             entity_name = %op.entity_name,
                             primary_key = %op.primary_key,
                             field_path = %path,
@@ -4954,6 +4954,7 @@ impl VmContext {
     #[cfg_attr(feature = "otel", instrument(
         name = "vm.update_pda_lookup",
         skip(self),
+        level = "debug",
         fields(
             pda = %pda_address,
             seed = %seed_value,
@@ -4986,7 +4987,7 @@ impl VmContext {
             .unwrap_or(false);
 
         if !mapping_changed && old_seed.is_none() {
-            tracing::info!(
+            tracing::debug!(
                 pda = %pda_address,
                 seed = %seed_value,
                 "[PDA] First-time PDA reverse lookup established"
@@ -5175,6 +5176,7 @@ impl VmContext {
     #[cfg_attr(feature = "otel", instrument(
         name = "vm.queue_account_update",
         skip(self, update),
+        level = "debug",
         fields(
             pda = %update.pda_address,
             account_type = %update.account_type,

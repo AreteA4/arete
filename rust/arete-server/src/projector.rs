@@ -9,7 +9,7 @@ use serde_json::Value;
 use smallvec::SmallVec;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info_span, instrument};
+use tracing::{debug, debug_span, error, instrument};
 
 #[cfg(feature = "otel")]
 use crate::metrics::Metrics;
@@ -88,14 +88,14 @@ impl Projector {
 
             let batch_size = batch.len();
             let slot_context = batch.slot_context;
-            let batch_span = info_span!(
+            let batch_span = debug_span!(
                 parent: &batch.span,
                 "projector.batch",
                 batch.mutations = batch_size,
                 batch.position = tracing::field::Empty,
                 frames_published = tracing::field::Empty,
             );
-            if let Some(context) = slot_context {
+            if let (Some(context), false) = (slot_context, batch_span.is_disabled()) {
                 batch_span.record("batch.position", context.to_seq_string());
             }
             let _span_guard = batch_span.enter();
@@ -166,6 +166,7 @@ impl Projector {
 
     #[instrument(
         name = "projector.mutation",
+        level = "debug",
         skip(self, mutation, slot_context, json_buffer),
         fields(export = %mutation.export)
     )]
@@ -347,6 +348,7 @@ impl Projector {
 
     #[instrument(
         name = "projector.publish",
+        level = "debug",
         skip(self, spec, message),
         fields(view_id = %spec.id, mode = ?spec.mode)
     )]
