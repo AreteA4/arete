@@ -1,6 +1,6 @@
 use crate::account_policy::{redact_identity, AccountPolicyError, AccountPolicyRegistry};
 use crate::compression::CompressedPayload;
-use crate::websocket::auth::{AuthContext, AuthDeny};
+use crate::websocket::auth::{AuthContext, AuthDeny, AuthErrorCode};
 use crate::websocket::rate_limiter::{RateLimitResult, WebSocketRateLimiter};
 use arete_auth::Limits;
 use bytes::Bytes;
@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -748,6 +750,17 @@ impl ClientManager {
                 client_id, ctx.expires_at
             );
         }
+        // Say why before the socket closes. The sender task drains the queue
+        // and then closes, so this is the last frame the client sees; the SDKs
+        // read a `token-expired:` reason as "mint a new token and reconnect".
+        let _ = client.sender.try_send(Message::Close(Some(CloseFrame {
+            code: CloseCode::Policy,
+            reason: format!(
+                "{}: Authentication token expired",
+                AuthErrorCode::TokenExpired.as_str()
+            )
+            .into(),
+        })));
         true
     }
 
@@ -2102,6 +2115,38 @@ mod tests {
             .expect("send_to_client deadlocked on an expired token");
         assert_eq!(result, Err(SendError::ClientDisconnected));
         assert!(!manager.has_client(client_id));
+    }
+
+    #[tokio::test]
+    async fn expired_client_is_told_why_before_its_socket_closes() {
+        let manager = ClientManager::new();
+        let (sender, mut queue) = mpsc::channel(8);
+        let client_id = Uuid::new_v4();
+        let mut context = create_test_auth_context("user-1", Limits::default());
+        context.expires_at = 1;
+        manager.clients.insert(
+            client_id,
+            ClientInfo::new(
+                client_id,
+                sender,
+                Some(context),
+                create_test_socket_addr("127.0.0.1"),
+            ),
+        );
+
+        assert!(manager.check_and_remove_expired(client_id));
+
+        let Some(Message::Close(Some(frame))) = queue.recv().await else {
+            panic!("the client's queue should end with a close frame");
+        };
+        assert_eq!(frame.code, CloseCode::Policy);
+        assert_eq!(
+            frame.reason.as_str(),
+            "token-expired: Authentication token expired"
+        );
+        // Removing the client dropped its sender, so the queue ends here and
+        // the sender task closes the socket.
+        assert!(queue.recv().await.is_none());
     }
 
     #[test]
