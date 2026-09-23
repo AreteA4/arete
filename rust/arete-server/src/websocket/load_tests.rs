@@ -1807,9 +1807,11 @@ struct Summary {
     outcomes: BTreeMap<&'static str, usize>,
     server: ServerCounters,
     usage: UsageTotals,
-    /// Burst updates handed to the projector. All of them are applied when
-    /// this equals `sourceUpdates`, since the burst ends with an acknowledged
-    /// flush marker; it is lower only when the deadline cut the burst short.
+    /// Burst updates the projector applied. All of them when this equals
+    /// `sourceUpdates`, since the burst ends with an acknowledged flush marker.
+    /// When the deadline cuts the burst short, updates still queued for the
+    /// projector are not counted; the one it may be applying at that moment
+    /// is.
     published_updates: u64,
     publish_ms: f64,
     achieved_source_rate_per_sec: f64,
@@ -1913,9 +1915,12 @@ async fn run_scenario(scenario: Scenario, environment: &RunEnvironment) -> (Summ
         harness.publish(&workload.burst, scenario.source_rate_per_sec),
     )
     .await;
+    // Sent is not applied: a deadline can cut the burst short with batches
+    // still waiting in the projector's channel.
+    let queued = (harness.tx.max_capacity() - harness.tx.capacity()) as u64;
     let publish = PublishReport {
         elapsed: burst_start.elapsed(),
-        updates: harness.published.load(Ordering::Relaxed) - seeded,
+        updates: harness.published.load(Ordering::Relaxed) - seeded - queued,
     };
     if published.is_err() {
         problems.push(format!(
