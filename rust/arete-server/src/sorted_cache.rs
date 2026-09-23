@@ -221,8 +221,9 @@ impl SortedViewCache {
     pub fn upsert(&mut self, entity_key: String, entity: Value) -> UpsertResult {
         let sort_value = self.extract_sort_value(&entity);
 
-        // Check if entity already exists
-        if let Some((old_sort_key, old_entity)) = self.entities.get(&entity_key).cloned() {
+        // Check if entity already exists. Taken out rather than copied: every
+        // branch below puts the merged entity back.
+        if let Some((old_sort_key, old_entity)) = self.entities.remove(&entity_key) {
             let effective_sort_value = if matches!(sort_value, SortValue::Null)
                 && !matches!(old_sort_key.sort_value, SortValue::Null)
             {
@@ -274,6 +275,27 @@ impl SortedViewCache {
         let position = self.find_position(&entity_key);
 
         UpsertResult::Inserted { position }
+    }
+
+    /// Whether upserting `entity` under `entity_key` into a cache bounded at
+    /// `max_entries` would keep it: the cache already holds the key, has
+    /// room, or the entity sorts before its current last entry.
+    ///
+    /// Lets a caller skip copying an entity that [`Self::upsert_bounded`]
+    /// would evict straight away, which in a busy view is most of them.
+    pub fn would_keep(&self, entity_key: &str, entity: &Value, max_entries: usize) -> bool {
+        if self.entities.contains_key(entity_key) || self.sorted.len() < max_entries {
+            return true;
+        }
+        let Some((last, ())) = self.sorted.last_key_value() else {
+            return true;
+        };
+        let candidate = SortKey {
+            sort_value: self.extract_sort_value(entity),
+            entity_key: entity_key.to_string(),
+            order: self.order,
+        };
+        candidate < *last
     }
 
     /// Upsert an entity, then evict from the bottom of the sort order so the
@@ -681,6 +703,39 @@ mod tests {
         assert_eq!(keys(&mut cache), ["e10", "e9", "e8", "e7"]);
         assert!(cache.get("e1").is_none());
         assert!(cache.get("e6").is_none());
+    }
+
+    #[test]
+    fn would_keep_matches_what_a_bounded_upsert_keeps() {
+        let mut cache = SortedViewCache::new(
+            "test/top".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+        for i in 1..=10 {
+            let entity = json!({"score": i});
+            let expected = cache.would_keep(&format!("e{i}"), &entity, 4);
+            cache.upsert_bounded(format!("e{i}"), entity, 4);
+            assert!(expected, "an entity above a full cache's tail is kept");
+        }
+        // e7 is the tail of [e10, e9, e8, e7].
+        for (key, score, kept) in [("e0", 0, false), ("e6", 6, false), ("e11", 11, true)] {
+            let entity = json!({"score": score});
+            assert_eq!(cache.would_keep(key, &entity, 4), kept, "{key}");
+            let mut copy = SortedViewCache::new(
+                "test/top".to_string(),
+                vec!["score".to_string()],
+                SortOrder::Desc,
+            );
+            for existing in keys(&mut cache) {
+                let value = cache.get(&existing).unwrap().clone();
+                copy.upsert_bounded(existing, value, 4);
+            }
+            copy.upsert_bounded(key.to_string(), entity, 4);
+            assert_eq!(copy.get(key).is_some(), kept, "{key}");
+        }
+        // A held entity is always kept, even when its new value sorts last.
+        assert!(cache.would_keep("e8", &json!({"score": -1}), 4));
     }
 
     #[test]

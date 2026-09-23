@@ -335,14 +335,36 @@ impl Projector {
         let sorted_caches = self.view_index.sorted_caches();
         let mut caches = sorted_caches.write().await;
 
-        for derived_spec in derived_views {
-            if let Some(cache) = caches.get_mut(&derived_spec.id) {
-                cache.upsert_bounded(entity_key.to_string(), entity_data.clone(), max_entries);
-                debug!(
-                    "Updated sorted cache for derived view {} with key {}",
-                    derived_spec.id, entity_key
-                );
-            }
+        // Only a cache that would keep the entity gets a copy of it: once a
+        // view is full, most updates sort below its last entry. The last one
+        // gets the entity itself.
+        let keeping: SmallVec<[&str; 4]> = derived_views
+            .iter()
+            .filter(|spec| {
+                caches
+                    .get(&spec.id)
+                    .is_some_and(|cache| cache.would_keep(entity_key, &entity_data, max_entries))
+            })
+            .map(|spec| spec.id.as_str())
+            .collect();
+        let mut entity_data = Some(entity_data);
+        for (index, view_id) in keeping.iter().enumerate() {
+            let Some(cache) = caches.get_mut(*view_id) else {
+                continue;
+            };
+            let entity = if index + 1 == keeping.len() {
+                entity_data.take()
+            } else {
+                entity_data.clone()
+            };
+            let Some(entity) = entity else {
+                continue;
+            };
+            cache.upsert_bounded(entity_key.to_string(), entity, max_entries);
+            debug!(
+                "Updated sorted cache for derived view {} with key {}",
+                view_id, entity_key
+            );
         }
     }
 
