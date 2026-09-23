@@ -1538,7 +1538,14 @@ async fn run_client(ctx: ClientContext, signals: ClientSignals) -> ClientReport 
             .await;
             break;
         }
-        let Ok(next) = timeout_at(ctx.deadline, socket.next()).await else {
+        // `timeout_at` polls the socket first, so a steady stream of ready
+        // frames would otherwise carry this reader past its deadline.
+        let next = if Instant::now() < ctx.deadline {
+            timeout_at(ctx.deadline, socket.next()).await.ok()
+        } else {
+            None
+        };
+        let Some(next) = next else {
             recorder.failures.push(format!(
                 "timed out with {} rows still different from the final state",
                 view.mismatched
@@ -1565,6 +1572,14 @@ async fn run_client(ctx: ClientContext, signals: ClientSignals) -> ClientReport 
         };
 
         open = false;
+        if *stopping.borrow() {
+            // The runner has ended the run; this is its shutdown, not a drop.
+            recorder.failures.push(format!(
+                "the run ended with {} rows still different from the final state",
+                view.mismatched
+            ));
+            break;
+        }
         recorder.disconnects.push(DisconnectReport {
             at_ms: ms(burst_start.elapsed()),
             reason: reason.clone(),
