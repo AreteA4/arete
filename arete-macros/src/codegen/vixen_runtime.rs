@@ -92,6 +92,7 @@ pub(crate) fn generate_slot_scheduler_task() -> TokenStream {
             let bytecode = bytecode_arc.clone();
             let runtime_resolver = runtime_resolver.clone();
             let slot_tracker = slot_tracker.clone();
+            let processed_slot_tracker = processed_slot_tracker.clone();
             let mutations_tx = mutations_tx.clone();
             let async_resolver_order = async_resolver_order.clone();
             let snapshot_barrier = snapshot_barrier.clone();
@@ -271,13 +272,20 @@ pub(crate) fn generate_slot_scheduler_task() -> TokenStream {
                                 vm_guard.take_resolver_requests()
                             };
 
+                            // Callbacks fire on the live tip, but what they
+                            // write is stamped with the parser's position. The
+                            // stamp becomes the entity's `_seq`: at the tip,
+                            // clients would treat every later parser update
+                            // below it as stale, and would report slots the
+                            // parser has not reached as processed.
+                            let stamp_slot = processed_slot_tracker.get();
                             let url_mutations = runtime_resolver
                                 .resolve_and_apply(
                                     &vm,
                                     bytecode.as_ref(),
                                     requests,
                                     Some(arete::runtime::arete_interpreter::UpdateContext {
-                                        slot: Some(current_slot),
+                                        slot: Some(stamp_slot),
                                         timestamp: Some(current_time_seconds()),
                                         ..arete::runtime::arete_interpreter::UpdateContext::default()
                                     }),
@@ -297,11 +305,10 @@ pub(crate) fn generate_slot_scheduler_task() -> TokenStream {
                                     );
                                 }
                             } else {
-                                // Stamped with the live tip, which can be ahead
-                                // of the parser, so it must not advance the
-                                // resume watermark.
+                                // Not parsed input, so it must not advance the
+                                // resume watermark even at the parser's slot.
                                 let slot_context = arete::runtime::arete_server::SlotContext::new(
-                                    current_slot,
+                                    stamp_slot,
                                     next_async_resolver_slot_index(async_resolver_order.as_ref()),
                                 );
                                 let mut batch = arete::runtime::arete_server::MutationBatch::scheduled(

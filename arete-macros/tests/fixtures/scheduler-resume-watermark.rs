@@ -24,6 +24,9 @@ use std::time::Duration;
 __runtime_helpers!();
 
 const PARSER_SLOT: u64 = 100;
+/// Parsed, but its batch not yet applied by the projector: the parser marks a
+/// slot processed when it handles it, ahead of the resume watermark.
+const PROCESSED_SLOT: u64 = 120;
 const TIP_SLOT: u64 = 500;
 
 /// Stands in for the URL/token resolver: the scheduled callback resolves to a
@@ -144,6 +147,8 @@ async fn run() {
     let bytecode_arc = Arc::new(MultiEntityBytecode::new().build());
     let runtime_resolver: vm::SharedRuntimeResolver = Arc::new(Resolver);
     let slot_tracker = SlotTracker::new();
+    let processed_slot_tracker = SlotTracker::new();
+    processed_slot_tracker.record(PROCESSED_SLOT);
     let async_resolver_order = Arc::new(AtomicU64::new(0));
     let snapshot_barrier: Option<arete::runtime::arete_server::snapshot::SnapshotBarrier> = None;
     let slot_scheduler = Arc::new(Mutex::new(SlotScheduler::new()));
@@ -190,12 +195,21 @@ async fn run() {
         .await
         .expect("scheduler fired")
         .unwrap();
-    assert_eq!(batch.slot_context.map(|ctx| ctx.slot), Some(TIP_SLOT));
     tx.send(batch).await.unwrap();
 
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
     tx.send(MutationBatch::flush_marker(ack_tx)).await.unwrap();
     ack_rx.await.unwrap();
+
+    // Clients order and stale-check by `_seq`, and read the processed slot from
+    // it: the scheduler's write must claim the parser's position, not the tip.
+    let live = cache.get_all("Token/list").await;
+    let seq = live[0].1["_seq"].as_str().expect("_seq").to_string();
+    assert_eq!(
+        seq.split(':').next(),
+        Some(PROCESSED_SLOT.to_string().as_str()),
+        "scheduler write stamped {seq}"
+    );
     assert!(snapshots
         .snapshot_now(SnapshotTrigger::Shutdown)
         .await
@@ -220,7 +234,11 @@ async fn run() {
     assert_eq!(entities[0].1["price"], 99);
     // ...but the stream resumes where the parser stopped, not at the tip.
     let resume = restored.runtime().take_restored().unwrap().resume_watermark;
-    assert_eq!(resume, Some(PARSER_SLOT), "resumed at the scheduler's tip");
+    assert_eq!(
+        resume,
+        Some(PARSER_SLOT),
+        "resumed past the slot the projector applied"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
