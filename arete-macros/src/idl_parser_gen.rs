@@ -420,7 +420,9 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
         }
     });
 
-    // CPI events have no accounts — expose event fields directly under "data"
+    // A CPI event instruction's own accounts are only the event authority, so none are decoded
+    // here: the runtime attaches the emitting instruction's accounts
+    // (`arete::transaction_metadata::CpiEventAccounts`).
     let to_value_with_accounts_arms_ev = idl.events.iter().map(|ev| {
         let variant_name = format_ident!("Event_{}", ev.name);
 
