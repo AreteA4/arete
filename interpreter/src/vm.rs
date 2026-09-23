@@ -6471,8 +6471,13 @@ impl VmContext {
         specs: Vec<ComputedFieldSpec>,
     ) -> impl Fn(&mut Value, Option<u64>, i64) -> ComputedEvaluatorResult + Send + Sync + 'static
     {
+        // Evaluation reads only the context's slot and timestamp
+        // (`evaluate_computed_fields_from_ast` takes `&self`), so one context
+        // serves every call. Building one per call allocated a whole VM,
+        // caches included, on every entity update.
+        let vm = std::sync::Mutex::new(VmContext::new());
         move |state: &mut Value, context_slot: Option<u64>, context_timestamp: i64| {
-            let mut vm = VmContext::new();
+            let mut vm = vm.lock().unwrap_or_else(|e| e.into_inner());
             vm.current_context = Some(UpdateContext {
                 slot: context_slot,
                 timestamp: Some(context_timestamp),
