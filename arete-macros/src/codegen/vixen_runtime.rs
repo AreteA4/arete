@@ -279,7 +279,7 @@ pub(crate) fn generate_slot_scheduler_task() -> TokenStream {
                             // fields and the published stamp use the same
                             // slot, and neither falls behind parser writes the
                             // projector has already queued.
-                            let applied_slot = std::sync::atomic::AtomicU64::new(0);
+                            let applied_slot = std::sync::OnceLock::new();
                             let url_mutations = runtime_resolver
                                 .resolve_and_apply(
                                     &vm,
@@ -287,7 +287,7 @@ pub(crate) fn generate_slot_scheduler_task() -> TokenStream {
                                     requests,
                                     Box::new(|| {
                                         let slot = processed_slot_tracker.get();
-                                        applied_slot.store(slot, std::sync::atomic::Ordering::Relaxed);
+                                        let _ = applied_slot.set(slot);
                                         Some(arete::runtime::arete_interpreter::UpdateContext {
                                             slot: Some(slot),
                                             timestamp: Some(current_time_seconds()),
@@ -321,8 +321,15 @@ pub(crate) fn generate_slot_scheduler_task() -> TokenStream {
                                 // already ahead of ours. Not parsed input, so
                                 // it must not advance the resume watermark even
                                 // at the parser's slot.
+                                // A resolver may apply without asking for the
+                                // context; then nothing was derived from it and
+                                // the position now, still after the fetch, is
+                                // the stamp.
                                 let slot_context = arete::runtime::arete_server::SlotContext::new(
-                                    applied_slot.load(std::sync::atomic::Ordering::Relaxed),
+                                    applied_slot
+                                        .get()
+                                        .copied()
+                                        .unwrap_or_else(|| processed_slot_tracker.get()),
                                     next_async_resolver_slot_index(async_resolver_order.as_ref()),
                                 );
                                 let mut batch = arete::runtime::arete_server::MutationBatch::scheduled(

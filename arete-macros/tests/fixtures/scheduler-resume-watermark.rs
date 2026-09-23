@@ -53,6 +53,32 @@ impl vm::RuntimeResolver for Resolver {
     }
 }
 
+/// A resolver that applies on its own and never asks for the update context,
+/// which the trait allows.
+struct IgnoresContext {
+    processed: SlotTracker,
+}
+impl vm::RuntimeResolver for IgnoresContext {
+    fn resolve_batch<'a>(
+        &'a self,
+        _: &'a [vm::RuntimeResolverRequest],
+    ) -> vm::ResolverBatchFuture<'a> {
+        Box::pin(async { Ok(Default::default()) })
+    }
+    fn resolve_and_apply<'a>(
+        &'a self,
+        _: &'a Mutex<vm::vm::VmContext>,
+        _: &'a MultiEntityBytecode,
+        _: Vec<vm::ResolverRequest>,
+        _: vm::ApplyContextFn<'a>,
+    ) -> vm::ResolverApplyFuture<'a> {
+        Box::pin(async move {
+            self.processed.record(PROCESSED_AFTER_FETCH);
+            vec![token("mint1", 99)]
+        })
+    }
+}
+
 fn token(id: &str, price: u64) -> Mutation {
     serde_json::from_value(json!({
         "export": "Token",
@@ -114,9 +140,11 @@ async fn service(
     .unwrap()
 }
 
-async fn run() {
-    let dir =
-        std::env::temp_dir().join(format!("arete-scheduler-watermark-{}", std::process::id()));
+async fn run(ignores_context: bool) {
+    let dir = std::env::temp_dir().join(format!(
+        "arete-scheduler-watermark-{}-{ignores_context}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     let config = SnapshotConfig {
         enabled: true,
@@ -172,9 +200,12 @@ async fn run() {
     let slot_tracker = SlotTracker::new();
     let processed_slot_tracker = SlotTracker::new();
     processed_slot_tracker.record(PROCESSED_SLOT);
-    let runtime_resolver: vm::SharedRuntimeResolver = Arc::new(Resolver {
-        processed: processed_slot_tracker.clone(),
-    });
+    let processed = processed_slot_tracker.clone();
+    let runtime_resolver: vm::SharedRuntimeResolver = if ignores_context {
+        Arc::new(IgnoresContext { processed })
+    } else {
+        Arc::new(Resolver { processed })
+    };
     let async_resolver_order = Arc::new(AtomicU64::new(0));
     let snapshot_barrier: Option<arete::runtime::arete_server::snapshot::SnapshotBarrier> = None;
     let slot_scheduler = Arc::new(Mutex::new(SlotScheduler::new()));
@@ -243,13 +274,16 @@ async fn run() {
         Some(PROCESSED_AFTER_FETCH.to_string().as_str()),
         "scheduler write stamped {seq}"
     );
-    // ...and the state it publishes was derived at that same slot.
     assert_eq!(live[0].1["price"], 99);
-    assert_eq!(
-        live[0].1["computed_slot"],
-        json!(PROCESSED_AFTER_FETCH),
-        "resolver result applied under a different slot than its stamp {seq}"
-    );
+    // ...and the state it publishes was derived at that same slot. A resolver
+    // that never asks for the context derives nothing from it.
+    if !ignores_context {
+        assert_eq!(
+            live[0].1["computed_slot"],
+            json!(PROCESSED_AFTER_FETCH),
+            "resolver result applied under a different slot than its stamp {seq}"
+        );
+    }
     assert!(snapshots
         .snapshot_now(SnapshotTrigger::Shutdown)
         .await
@@ -284,5 +318,9 @@ async fn run() {
 }
 
 fn main() {
-    tokio::runtime::Runtime::new().unwrap().block_on(run());
+    for ignores_context in [false, true] {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(run(ignores_context));
+    }
 }
