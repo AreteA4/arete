@@ -1099,7 +1099,12 @@ impl Default for VersionTracker {
 #[derive(Debug)]
 pub struct StateTable {
     pub data: DashMap<Value, Value>,
-    access_times: DashMap<Value, i64>,
+    /// Keys in access order, least recently used first, so eviction and
+    /// touching are O(1). Only keys written through [`insert_with_eviction`]
+    /// are tracked; eviction skips any that were removed some other way.
+    ///
+    /// [`insert_with_eviction`]: StateTable::insert_with_eviction
+    recency: std::sync::Mutex<lru::LruCache<Value, ()>>,
     pub lookup_indexes: HashMap<String, LookupIndex>,
     pub temporal_indexes: HashMap<String, TemporalIndex>,
     pub pda_reverse_lookups: HashMap<String, PdaReverseLookup>,
@@ -1135,12 +1140,16 @@ impl StateTable {
         self.config.max_array_length
     }
 
+    fn recency(&self) -> std::sync::MutexGuard<'_, lru::LruCache<Value, ()>> {
+        self.recency.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn touch(&self, key: &Value) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        self.access_times.insert(key.clone(), now);
+        let mut recency = self.recency();
+        // `get` promotes an existing key; only a new key needs its own copy.
+        if recency.get(key).is_none() {
+            recency.put(key.clone(), ());
+        }
     }
 
     fn evict_lru(&self, count: usize) -> usize {
@@ -1148,22 +1157,17 @@ impl StateTable {
             return 0;
         }
 
-        let mut entries: Vec<(Value, i64)> = self
-            .access_times
-            .iter()
-            .map(|entry| (entry.key().clone(), *entry.value()))
-            .collect();
-
-        entries.sort_by_key(|(_, ts)| *ts);
-
-        let to_evict: Vec<Value> = entries.iter().take(count).map(|(k, _)| k.clone()).collect();
-
+        let mut recency = self.recency();
         let mut evicted = 0;
-        for key in to_evict {
-            self.data.remove(&key);
-            self.access_times.remove(&key);
-            evicted += 1;
+        while evicted < count {
+            let Some((key, ())) = recency.pop_lru() else {
+                break;
+            };
+            if self.data.remove(&key).is_some() {
+                evicted += 1;
+            }
         }
+        drop(recency);
 
         #[cfg(feature = "otel")]
         if evicted > 0 {
@@ -1266,16 +1270,13 @@ impl StateTable {
     ///
     /// Everything is cloned; serialization happens outside any VM lock.
     /// Transient race buffers (`pending_updates`, `pending_instruction_events`)
-    /// and `access_times` are intentionally excluded — replay from the resume
-    /// watermark regenerates them.
+    /// are intentionally excluded — replay from the resume watermark
+    /// regenerates them. Entities are dumped most recently used first, like
+    /// the other LRU-backed collections, so restore keeps eviction order.
     pub fn dump(&self) -> crate::snapshot::StateTableSnapshot {
         crate::snapshot::StateTableSnapshot {
             entity_name: self.entity_name.clone(),
-            data: self
-                .data
-                .iter()
-                .map(|entry| (entry.key().clone(), entry.value().clone()))
-                .collect(),
+            data: self.dump_entities_most_recent_first(),
             lookup_indexes: self
                 .lookup_indexes
                 .iter()
@@ -1317,22 +1318,39 @@ impl StateTable {
         }
     }
 
-    /// Rebuild a table from a snapshot. `access_times` are reset to "now",
-    /// which only affects LRU tie-breaking after restore.
+    /// Entities in access order, most recent first; any not tracked (never
+    /// written through [`Self::insert_with_eviction`]) come last.
+    fn dump_entities_most_recent_first(&self) -> Vec<(Value, Value)> {
+        let recency = self.recency();
+        let mut dumped = Vec::with_capacity(self.data.len());
+        for (key, ()) in recency.iter() {
+            if let Some(value) = self.data.get(key) {
+                dumped.push((key.clone(), value.clone()));
+            }
+        }
+        drop(recency);
+        if dumped.len() < self.data.len() {
+            let tracked: HashSet<Value> = dumped.iter().map(|(key, _)| key.clone()).collect();
+            for entry in self.data.iter() {
+                if !tracked.contains(entry.key()) {
+                    dumped.push((entry.key().clone(), entry.value().clone()));
+                }
+            }
+        }
+        dumped
+    }
+
+    /// Rebuild a table from a snapshot. Entities are dumped most recently
+    /// used first, so inserting them in reverse restores the access order.
     pub fn from_snapshot(
         snapshot: &crate::snapshot::StateTableSnapshot,
         config: StateTableConfig,
     ) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-
         let data = DashMap::new();
-        let access_times = DashMap::new();
-        for (key, value) in &snapshot.data {
+        let mut recency = lru::LruCache::unbounded();
+        for (key, value) in snapshot.data.iter().rev() {
             data.insert(key.clone(), value.clone());
-            access_times.insert(key.clone(), now);
+            recency.put(key.clone(), ());
         }
 
         let mut lookup_indexes = HashMap::new();
@@ -1384,7 +1402,7 @@ impl StateTable {
 
         StateTable {
             data,
-            access_times,
+            recency: std::sync::Mutex::new(recency),
             lookup_indexes,
             temporal_indexes,
             pda_reverse_lookups,
@@ -1433,7 +1451,7 @@ impl VmContext {
             0,
             StateTable {
                 data: DashMap::new(),
-                access_times: DashMap::new(),
+                recency: std::sync::Mutex::new(lru::LruCache::unbounded()),
                 lookup_indexes: HashMap::new(),
                 temporal_indexes: HashMap::new(),
                 pda_reverse_lookups: HashMap::new(),
@@ -1541,7 +1559,7 @@ impl VmContext {
             0,
             StateTable {
                 data: DashMap::new(),
-                access_times: DashMap::new(),
+                recency: std::sync::Mutex::new(lru::LruCache::unbounded()),
                 lookup_indexes: HashMap::new(),
                 temporal_indexes: HashMap::new(),
                 pda_reverse_lookups: HashMap::new(),
@@ -3033,7 +3051,7 @@ impl VmContext {
                         .entry(actual_state_id)
                         .or_insert_with(|| StateTable {
                             data: DashMap::new(),
-                            access_times: DashMap::new(),
+                            recency: std::sync::Mutex::new(lru::LruCache::unbounded()),
                             lookup_indexes: HashMap::new(),
                             temporal_indexes: HashMap::new(),
                             pda_reverse_lookups: HashMap::new(),
@@ -6510,6 +6528,92 @@ mod tests {
     /// not they moved. Marking each write dirty made the patch a full copy of
     /// the account; most of a DLMM pair's mapped fields (mints, bin step, pair
     /// type) never change after creation.
+    fn small_state_table(max_entries: usize) -> StateTable {
+        StateTable::from_snapshot(
+            &crate::snapshot::StateTableSnapshot::default(),
+            StateTableConfig {
+                max_entries,
+                ..StateTableConfig::default()
+            },
+        )
+    }
+
+    fn state_keys(table: &StateTable) -> Vec<Value> {
+        let mut keys: Vec<Value> = table.data.iter().map(|entry| entry.key().clone()).collect();
+        keys.sort_by_key(|key| key.to_string());
+        keys
+    }
+
+    #[test]
+    fn state_table_evicts_the_least_recently_used_entity() {
+        let table = small_state_table(3);
+        for key in ["a", "b", "c"] {
+            table.insert_with_eviction(json!(key), json!({ "key": key }));
+        }
+        // Reading "a" leaves "b" as the least recently used.
+        assert!(table.get_and_touch(&json!("a")).is_some());
+        table.insert_with_eviction(json!("d"), json!({ "key": "d" }));
+        assert_eq!(state_keys(&table), vec![json!("a"), json!("c"), json!("d")]);
+
+        // Rewriting a resident key never evicts, and makes it the most recent.
+        table.insert_with_eviction(json!("c"), json!({ "key": "c", "v": 2 }));
+        assert_eq!(table.data.len(), 3);
+        table.insert_with_eviction(json!("e"), json!({ "key": "e" }));
+        assert_eq!(state_keys(&table), vec![json!("c"), json!("d"), json!("e")]);
+    }
+
+    #[test]
+    fn state_table_access_order_survives_a_snapshot_round_trip() {
+        let table = small_state_table(3);
+        for key in ["a", "b", "c"] {
+            table.insert_with_eviction(json!(key), json!({ "key": key }));
+        }
+        assert!(table.get_and_touch(&json!("a")).is_some());
+
+        let snapshot = table.dump();
+        let dumped: Vec<Value> = snapshot.data.iter().map(|(key, _)| key.clone()).collect();
+        assert_eq!(
+            dumped,
+            vec![json!("a"), json!("c"), json!("b")],
+            "most recent first"
+        );
+
+        let restored = StateTable::from_snapshot(
+            &snapshot,
+            StateTableConfig {
+                max_entries: 3,
+                ..StateTableConfig::default()
+            },
+        );
+        restored.insert_with_eviction(json!("d"), json!({ "key": "d" }));
+        assert_eq!(
+            state_keys(&restored),
+            vec![json!("a"), json!("c"), json!("d")]
+        );
+    }
+
+    /// Run with `cargo test --release -p arete-interpreter
+    /// state_table_insert_at_capacity_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing report, not an assertion"]
+    fn state_table_insert_at_capacity_cost() {
+        let table = small_state_table(DEFAULT_MAX_STATE_TABLE_ENTRIES);
+        for index in 0..DEFAULT_MAX_STATE_TABLE_ENTRIES {
+            table.insert_with_eviction(json!(format!("{index:044}")), json!({ "amount": index }));
+        }
+        let inserts = 50_000;
+        let started = std::time::Instant::now();
+        for index in 0..inserts {
+            table
+                .insert_with_eviction(json!(format!("new{index:041}")), json!({ "amount": index }));
+        }
+        let per_insert = started.elapsed().as_secs_f64() * 1e6 / inserts as f64;
+        println!(
+            "insert into a full {DEFAULT_MAX_STATE_TABLE_ENTRIES}-entry table: {per_insert:.2} us"
+        );
+        assert_eq!(table.data.len(), DEFAULT_MAX_STATE_TABLE_ENTRIES);
+    }
+
     #[test]
     fn rewriting_a_field_with_its_current_value_keeps_it_out_of_the_patch() {
         const STATE: Register = 1;
