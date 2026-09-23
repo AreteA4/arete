@@ -34,7 +34,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
@@ -521,6 +521,9 @@ struct Harness {
     usage: mpsc::UnboundedReceiver<WebSocketUsageEvent>,
     /// Updates handed to the projector so far, seeding included.
     published: AtomicU64,
+    /// A flush marker is in the projector's channel or being applied, and has
+    /// not been acknowledged yet.
+    marker_pending: AtomicBool,
 }
 
 impl Harness {
@@ -596,6 +599,7 @@ impl Harness {
             probe,
             usage,
             published: AtomicU64::new(0),
+            marker_pending: AtomicBool::new(false),
         }
     }
 
@@ -625,7 +629,9 @@ impl Harness {
             .send(MutationBatch::flush_marker(ack))
             .await
             .expect("the projector outlives the publisher");
+        self.marker_pending.store(true, Ordering::Relaxed);
         applied.await.expect("the projector acknowledges flushes");
+        self.marker_pending.store(false, Ordering::Relaxed);
     }
 
     /// Wait until timed delivery has flushed `expected` source updates, the
@@ -1962,8 +1968,12 @@ async fn run_scenario(scenario: Scenario, environment: &RunEnvironment) -> (Summ
     )
     .await;
     // Sent is not applied: a deadline can cut the burst short with batches
-    // still waiting in the projector's channel.
-    let queued = (harness.tx.max_capacity() - harness.tx.capacity()) as u64;
+    // still waiting in the projector's channel. The flush marker is sent
+    // last, so while it is outstanding and anything is queued, it is one of
+    // them and not a source update.
+    let in_channel = (harness.tx.max_capacity() - harness.tx.capacity()) as u64;
+    let marker_queued = harness.marker_pending.load(Ordering::Relaxed) && in_channel > 0;
+    let queued = in_channel - u64::from(marker_queued);
     let publish = PublishReport {
         elapsed: burst_start.elapsed(),
         updates: harness.published.load(Ordering::Relaxed) - seeded - queued,
