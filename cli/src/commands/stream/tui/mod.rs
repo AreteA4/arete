@@ -20,7 +20,12 @@ use self::app::{App, TuiAction, ViewMode};
 use super::token;
 use super::StreamArgs;
 
-pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
+pub async fn run_tui(
+    url: String,
+    refresh: Option<token::SessionRefresh>,
+    view: &str,
+    args: &StreamArgs,
+) -> Result<()> {
     // Connect WebSocket
     let (ws, _) = connect_async(&url).await.map_err(|err| {
         let redacted = token::redact_hs_token_for_display(&url);
@@ -51,6 +56,8 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     // Dropped frame counter (shared with WS task)
     let dropped_frames = Arc::new(AtomicU64::new(0));
     let dropped_frames_ws = Arc::clone(&dropped_frames);
+
+    let mut refresher = token::SessionRefresher::start(refresh);
 
     // Spawn WS reader task
     let ws_handle = tokio::spawn(async move {
@@ -94,6 +101,15 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                 _ = ping_interval.tick() => {
                     if let Ok(msg) = serde_json::to_string(&ClientMessage::Ping) {
                         let _ = ws_tx.send(Message::Text(msg)).await;
+                    }
+                }
+                // The TUI owns the terminal, so a failed mint goes unreported;
+                // the refresher tries again on its own.
+                event = refresher.next() => {
+                    if let token::RefreshEvent::Token(token) = event {
+                        if let Ok(msg) = serde_json::to_string(&ClientMessage::RefreshAuth { token }) {
+                            let _ = ws_tx.send(Message::Text(msg)).await;
+                        }
                     }
                 }
             }
