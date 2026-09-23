@@ -281,7 +281,7 @@ pub(crate) fn generate_slot_scheduler_task() -> TokenStream {
                             // projector has already queued.
                             let applied_slot = std::sync::atomic::AtomicU64::new(0);
                             let url_mutations = runtime_resolver
-                                .resolve_and_apply_with_context(
+                                .resolve_and_apply(
                                     &vm,
                                     bytecode.as_ref(),
                                     requests,
@@ -1191,7 +1191,12 @@ pub fn generate_vm_handler(
                 };
 
                 self.runtime_resolver
-                    .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests, apply_context)
+                    .resolve_and_apply(
+                        &self.vm,
+                        self.bytecode.as_ref(),
+                        requests,
+                        Box::new(move || apply_context),
+                    )
                     .await
             }
 
@@ -2247,7 +2252,12 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                 };
 
                 self.runtime_resolver
-                    .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests, apply_context)
+                    .resolve_and_apply(
+                        &self.vm,
+                        self.bytecode.as_ref(),
+                        requests,
+                        Box::new(move || apply_context),
+                    )
                     .await
             }
 

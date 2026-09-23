@@ -61,9 +61,10 @@ pub use resolvers::{
     InstructionContext, KeyResolution, ResolveContext, ReverseLookupUpdater, TokenMetadata,
 };
 pub use runtime_resolvers::{
-    InProcessResolver, ResolverApplyFuture, ResolverBatchFuture, ResolverBatchResult,
-    RuntimeResolver, RuntimeResolverBatchRequest, RuntimeResolverBatchResponse,
-    RuntimeResolverRequest, RuntimeResolverResponse, SharedRuntimeResolver,
+    ApplyContextFn, InProcessResolver, ResolverApplyFuture, ResolverBatchFuture,
+    ResolverBatchResult, RuntimeResolver, RuntimeResolverBatchRequest,
+    RuntimeResolverBatchResponse, RuntimeResolverRequest, RuntimeResolverResponse,
+    SharedRuntimeResolver,
 };
 pub use transaction_metadata::{
     SolanaTransactionConfig, SolanaTransactionMetadata, SolanaTransactionVersion,

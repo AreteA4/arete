@@ -111,22 +111,15 @@ pub trait RuntimeResolver: Send + Sync {
         requests: &'a [RuntimeResolverRequest],
     ) -> ResolverBatchFuture<'a>;
 
+    /// Fetch what `requests` need and apply the results to `vm`.
+    ///
+    /// `apply_context` is the update context the results are applied under. It
+    /// is called once, after the fetch, while the VM is locked for the apply,
+    /// so a caller whose context depends on progress made during the fetch
+    /// (the slot scheduler's processed slot) decides it there, and the state it
+    /// applies agrees with the batch it publishes. A caller with a fixed
+    /// context passes `Box::new(move || context)`.
     fn resolve_and_apply<'a>(
-        &'a self,
-        vm: &'a std::sync::Mutex<VmContext>,
-        bytecode: &'a MultiEntityBytecode,
-        requests: Vec<ResolverRequest>,
-        apply_context: Option<UpdateContext>,
-    ) -> ResolverApplyFuture<'a> {
-        self.resolve_and_apply_with_context(vm, bytecode, requests, Box::new(move || apply_context))
-    }
-
-    /// [`resolve_and_apply`](Self::resolve_and_apply), with the update context
-    /// decided after the fetch, at the moment the results are applied. A
-    /// caller whose context depends on progress made during the fetch (the
-    /// slot scheduler's processed slot) reads it here, so the state it applies
-    /// and the batch it publishes agree.
-    fn resolve_and_apply_with_context<'a>(
         &'a self,
         vm: &'a std::sync::Mutex<VmContext>,
         bytecode: &'a MultiEntityBytecode,
