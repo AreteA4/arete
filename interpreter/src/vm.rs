@@ -556,6 +556,12 @@ pub struct VmContext {
     /// `ReadOrInitState` and has not written back yet: state id, key and the
     /// register holding it. See [`VmContext::execute_handler_segment`].
     taken_entity: Option<(u32, Value, Register)>,
+    /// Whether a handler's state register must still hold the entity after
+    /// the event; see [`VmContext::retain_state_register`].
+    retain_state_register: bool,
+    /// The register `UpdateState` moved into its table in this segment, with
+    /// the table and key, for `EmitMutation` to read the entity from there.
+    moved_state: Option<(Register, u32, Value)>,
 }
 
 /// Event field that restricts a replayed event to one handler segment.
@@ -1465,6 +1471,8 @@ impl VmContext {
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
+            retain_state_register: true,
+            moved_state: None,
         };
         vm.states.insert(
             0,
@@ -1496,6 +1504,19 @@ impl VmContext {
 
     pub fn set_debugger(&mut self, debugger: Arc<dyn VmDebugger>) {
         self.debugger = Some(debugger);
+    }
+
+    /// Whether the entity a handler writes back stays in its state register
+    /// after the event. On by default.
+    ///
+    /// Instruction hooks (`InstructionContext::with_metrics`) read and change
+    /// the entity in the state register after the event, so a caller that
+    /// runs them needs it there. Otherwise `UpdateState` can move the entity
+    /// into its table instead of copying it, and the next handler has no copy
+    /// to drop. For an entity carrying arrays those are most of a handler's
+    /// cost.
+    pub fn retain_state_register(&mut self, retain: bool) {
+        self.retain_state_register = retain;
     }
 
     pub fn clear_debugger(&mut self) {
@@ -1546,6 +1567,8 @@ impl VmContext {
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
+            retain_state_register: true,
+            moved_state: None,
         }
     }
 
@@ -1575,6 +1598,8 @@ impl VmContext {
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
+            retain_state_register: true,
+            moved_state: None,
         };
         vm.states.insert(
             0,
@@ -2175,8 +2200,10 @@ impl VmContext {
         state_reg: Register,
         tracker: &DirtyTracker,
     ) -> Result<Value> {
-        let full_state = &self.registers[state_reg];
+        Self::partial_state_with_tracker(&self.registers[state_reg], tracker)
+    }
 
+    fn partial_state_with_tracker(full_state: &Value, tracker: &DirtyTracker) -> Result<Value> {
         if tracker.is_empty() {
             return Ok(json!({}));
         }
@@ -2968,6 +2995,7 @@ impl VmContext {
         non_emitted_fields: Option<&HashSet<String>>,
     ) -> Result<Vec<Mutation>> {
         self.reset_registers();
+        self.moved_state = None;
 
         let mut pc: usize = 0;
         let mut output = Vec::new();
@@ -3262,7 +3290,19 @@ impl VmContext {
                         .get(&actual_state_id)
                         .ok_or("State table not found")?;
                     let key_value = self.registers[*key].clone();
-                    let value_data = self.registers[*value].clone();
+                    // Moved rather than copied when nothing after this reads
+                    // the register but the mutation built from it, which then
+                    // reads the table.
+                    let move_state = !self.retain_state_register
+                        && handler[pc + 1..].iter().all(
+                            |op| matches!(op, OpCode::EmitMutation { state, .. } if state == value),
+                        );
+                    let value_data = if move_state {
+                        self.moved_state = Some((*value, actual_state_id, key_value.clone()));
+                        std::mem::take(&mut self.registers[*value])
+                    } else {
+                        self.registers[*value].clone()
+                    };
 
                     if self
                         .taken_entity
@@ -3429,8 +3469,19 @@ impl VmContext {
                             ));
                         }
                     } else {
-                        let patch =
-                            self.extract_partial_state_with_tracker(*state, &dirty_tracker)?;
+                        let patch = match &self.moved_state {
+                            Some((register, state_id, key)) if register == state => {
+                                let table =
+                                    self.states.get(state_id).ok_or("State table not found")?;
+                                match table.data.get(key) {
+                                    Some(entity) => {
+                                        Self::partial_state_with_tracker(&entity, &dirty_tracker)?
+                                    }
+                                    None => json!({}),
+                                }
+                            }
+                            _ => self.extract_partial_state_with_tracker(*state, &dirty_tracker)?,
+                        };
 
                         let append = dirty_tracker.appended_paths();
                         let mutation = Mutation {
@@ -6754,6 +6805,79 @@ mod tests {
         assert_eq!(
             vm.get_entity_state(0, &json!("k")),
             Some(json!({ "key": "k", "amount": 7 }))
+        );
+    }
+
+    /// `read_set_then_maybe_fail(false)` followed by `tail`.
+    fn read_set_write_then(tail: Vec<OpCode>) -> Vec<OpCode> {
+        let mut handler = read_set_then_maybe_fail(false);
+        handler.extend(tail);
+        handler
+    }
+
+    fn emit_k() -> OpCode {
+        OpCode::EmitMutation {
+            entity_name: "Test".to_string(),
+            key: 0,
+            state: 2,
+        }
+    }
+
+    fn run(vm: &mut VmContext, handler: &[OpCode]) -> Vec<Mutation> {
+        vm.execute_handler(handler, &json!({}), "Test", 0, "Test", None, None)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_state_register_not_retained_is_moved_into_the_table_with_the_same_mutation() {
+        let handler = read_set_write_then(vec![emit_k()]);
+        let seed = json!({ "amount": 1, "recent": [1, 2, 3] });
+
+        let mut retained = VmContext::new();
+        retained
+            .states
+            .get(&0)
+            .unwrap()
+            .insert_with_eviction(json!("k"), seed.clone());
+        let expected = run(&mut retained, &handler);
+        assert_eq!(
+            retained.registers[2],
+            json!({ "amount": 7, "recent": [1, 2, 3] })
+        );
+
+        let mut moved = VmContext::new();
+        moved.retain_state_register(false);
+        moved
+            .states
+            .get(&0)
+            .unwrap()
+            .insert_with_eviction(json!("k"), seed);
+        let mutations = run(&mut moved, &handler);
+
+        assert_eq!(
+            serde_json::to_value(&mutations).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        assert_eq!(moved.registers[2], Value::Null);
+        assert_eq!(
+            moved.get_entity_state(0, &json!("k")),
+            Some(json!({ "amount": 7, "recent": [1, 2, 3] }))
+        );
+    }
+
+    #[test]
+    fn a_state_register_read_after_the_write_is_copied_even_when_not_retained() {
+        let mut vm = VmContext::new();
+        vm.retain_state_register(false);
+        let handler =
+            read_set_write_then(vec![emit_k(), OpCode::CopyRegister { source: 2, dest: 5 }]);
+
+        run(&mut vm, &handler);
+
+        assert_eq!(vm.registers[5], json!({ "amount": 7 }));
+        assert_eq!(
+            vm.get_entity_state(0, &json!("k")),
+            Some(json!({ "amount": 7 }))
         );
     }
 
