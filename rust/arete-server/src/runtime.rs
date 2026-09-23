@@ -72,6 +72,20 @@ pub struct Runtime {
     metrics: Option<Arc<Metrics>>,
 }
 
+/// Load `.env.local`, else `.env`, else the nearest `.env` up the tree, into
+/// the process environment without overriding variables already set. True
+/// when a file was loaded.
+///
+/// A live runtime does this before it reads any setting, so a value that lives
+/// only in one of these files — `YELLOWSTONE_COMMITMENT`, the snapshot
+/// settings — is seen by every reader, not just the ones that run after the
+/// parser starts.
+pub fn load_env_files() -> bool {
+    dotenvy::from_filename(".env.local").is_ok()
+        || dotenvy::from_filename(".env").is_ok()
+        || dotenvy::dotenv().is_ok()
+}
+
 impl Runtime {
     #[cfg(feature = "otel")]
     pub fn new(config: ServerConfig, view_index: ViewIndex, metrics: Option<Arc<Metrics>>) -> Self {
@@ -192,6 +206,9 @@ impl Runtime {
         info!("Starting Arete runtime");
 
         let plan = self.config.runtime_plan;
+        if plan.live_runtime_enabled() && !load_env_files() {
+            warn!("No .env file found. Make sure environment variables are set.");
+        }
         // Resolved before anything starts: an invalid value must stop the
         // runtime, not leave it serving from a stream at a level nobody asked
         // for.

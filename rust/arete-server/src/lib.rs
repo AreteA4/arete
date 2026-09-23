@@ -77,7 +77,7 @@ pub use program_runtime::{
     ProgramRuntimeCatalog, ProgramRuntimeDefinition, ProgramSpecHash,
 };
 pub use projector::Projector;
-pub use runtime::{ConnectionServer, Runtime, RuntimeHandle};
+pub use runtime::{load_env_files, ConnectionServer, Runtime, RuntimeHandle};
 pub use snapshot::{SnapshotConfig, SnapshotService};
 pub use telemetry::{init as init_telemetry, TelemetryConfig};
 #[cfg(feature = "otel")]

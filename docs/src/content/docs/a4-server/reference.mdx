@@ -110,8 +110,9 @@ unrecognised value stops the runtime at startup instead of falling back.
 `processed` delivers first but can include slots the cluster later drops;
 `finalized` delivers only rooted data, about 32 slots (roughly 13 seconds) behind
 the tip.
-`confirmed` sits between them. The runtime logs the level it resolved at startup and reports it as
-`yellowstone_commitment` on `/status`.
+`confirmed` sits between them. The runtime logs the level it resolved at startup and a live runtime reports it
+as `yellowstone_commitment` on `/status`. Runtimes without live ingestion
+(`http`, `program_reads`, the Solana gateway) report `null` there.
 
 To set it per runtime rather than per process, use the builder:
 
@@ -316,7 +317,7 @@ Server::builder()
 | ------------------------ | ------ | ------------------------------------------------------------------------ |
 | `/health` or `/healthz`  | GET    | Liveness check — returns `200 OK` if server is running                   |
 | `/ready` or `/readiness` | GET    | Readiness check — returns `200 OK` if stream is healthy, `503` otherwise |
-| `/status`                | GET    | Detailed JSON status with health state and error count                   |
+| `/status`                | GET    | Health state, error count and the ingestion commitment                   |
 
 #### Example `/status` Response
 
@@ -324,7 +325,8 @@ Server::builder()
 {
   "healthy": true,
   "status": "Connected",
-  "error_count": 0
+  "error_count": 0,
+  "yellowstone_commitment": "processed"
 }
 ```
 

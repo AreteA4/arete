@@ -387,6 +387,7 @@ dependencies = [
  "bs58",
  "bytes",
  "dashmap",
+ "dotenvy",
  "flate2",
  "futures-util",
  "hex",

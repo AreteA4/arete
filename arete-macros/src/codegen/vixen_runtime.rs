@@ -1739,12 +1739,9 @@ pub fn generate_spec_function(
             use arete::runtime::yellowstone_vixen::Pipeline;
             use std::sync::{Arc, Mutex};
 
-            // Load environment variables
-            let env_loaded = arete::runtime::dotenvy::from_filename(".env.local").is_ok()
-                || arete::runtime::dotenvy::from_filename(".env").is_ok()
-                || arete::runtime::dotenvy::dotenv().is_ok();
-
-            if !env_loaded {
+            // Also loaded by `Runtime::spawn`; repeated here for a parser
+            // driven outside it. Loading never overrides a set variable.
+            if !arete::runtime::arete_server::load_env_files() {
                 arete::runtime::tracing::warn!("No .env file found. Make sure environment variables are set.");
             }
 
@@ -3120,11 +3117,9 @@ pub fn generate_multi_pipeline_spec_function(
             use arete::runtime::yellowstone_vixen::Pipeline;
             use std::sync::{Arc, Mutex};
 
-            let env_loaded = arete::runtime::dotenvy::from_filename(".env.local").is_ok()
-                || arete::runtime::dotenvy::from_filename(".env").is_ok()
-                || arete::runtime::dotenvy::dotenv().is_ok();
-
-            if !env_loaded {
+            // Also loaded by `Runtime::spawn`; repeated here for a parser
+            // driven outside it. Loading never overrides a set variable.
+            if !arete::runtime::arete_server::load_env_files() {
                 arete::runtime::tracing::warn!("No .env file found. Make sure environment variables are set.");
             }
 
