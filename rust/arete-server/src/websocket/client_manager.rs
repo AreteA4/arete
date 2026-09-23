@@ -690,6 +690,10 @@ impl ClientManager {
                     break;
                 }
             }
+            // Removing a client closes its queue. Complete the WebSocket close
+            // handshake as well so receivers do not wait forever on a socket
+            // whose server-side delivery task has already stopped.
+            let _ = ws_sender.close().await;
             clients_ref.remove(&client_id);
             debug!("WebSocket sender task for client {} stopped", client_id);
         });
