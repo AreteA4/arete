@@ -71,10 +71,14 @@ fn resolve_entity_idl<'a>(
     declared_program: Option<&syn::LitStr>,
     sources_by_type: &BTreeMap<String, Vec<parse::MapAttribute>>,
     events_by_instruction: &BTreeMap<String, Vec<(String, parse::EventAttribute, syn::Type)>>,
+    derive_from_mappings: &BTreeMap<String, Vec<parse::DeriveFromAttribute>>,
     idls: IdlLookup<'a>,
 ) -> syn::Result<Option<&'a idl_parser::IdlSpec>> {
+    // `derive_from` instructions are read by the generated instruction hooks
+    // just like map sources, so they count toward ownership too.
     let mut read: BTreeSet<&str> = sources_by_type
         .keys()
+        .chain(derive_from_mappings.keys())
         .filter_map(|source_type| source_program_name(source_type, idls))
         .collect();
 
@@ -206,6 +210,7 @@ pub fn build_ast(
         entity_program,
         sources_by_type,
         events_by_instruction,
+        derive_from_mappings,
         idls,
     )?;
     let handlers = build_handlers(
@@ -2050,11 +2055,22 @@ mod entity_ownership_tests {
 
     type Sources = BTreeMap<String, Vec<parse::MapAttribute>>;
     type Events = BTreeMap<String, Vec<(String, parse::EventAttribute, syn::Type)>>;
+    type Derives = BTreeMap<String, Vec<parse::DeriveFromAttribute>>;
 
     fn resolve<'a>(
         declared: Option<&str>,
         sources: &Sources,
         events: &Events,
+        idls: IdlLookup<'a>,
+    ) -> syn::Result<Option<&'a str>> {
+        resolve_with_derives(declared, sources, events, &Derives::new(), idls)
+    }
+
+    fn resolve_with_derives<'a>(
+        declared: Option<&str>,
+        sources: &Sources,
+        events: &Events,
+        derives: &Derives,
         idls: IdlLookup<'a>,
     ) -> syn::Result<Option<&'a str>> {
         let declared = declared.map(|name| syn::LitStr::new(name, proc_macro2::Span::call_site()));
@@ -2064,9 +2080,41 @@ mod entity_ownership_tests {
             declared.as_ref(),
             sources,
             events,
+            derives,
             idls,
         )
         .map(|idl| idl.and_then(|idl| idl.address.as_deref()))
+    }
+
+    /// Only the key names the instruction the hook reads; the attributes'
+    /// contents never affect ownership.
+    fn derive_from(instruction: &str) -> Derives {
+        BTreeMap::from([(instruction.to_string(), Vec::new())])
+    }
+
+    #[test]
+    fn a_derive_from_instruction_counts_toward_ownership() {
+        let pump = idl("pump", "PumpAddr");
+        let entropy = idl("entropy", "EntropyAddr");
+        let idls = [
+            ("pump_sdk".to_string(), &pump),
+            ("entropy_sdk".to_string(), &entropy),
+        ];
+
+        // Mapped from pump, derived from entropy: two programs, no owner.
+        let sources =
+            BTreeMap::from([("pump_sdk::accounts::BondingCurve".to_string(), Vec::new())]);
+        let derives = derive_from("entropy_sdk::instructions::Reveal");
+        let error = resolve_with_derives(None, &sources, &Events::new(), &derives, &idls)
+            .expect_err("a derived-from second program makes the owner ambiguous")
+            .to_string();
+        assert!(error.contains("`entropy`, `pump`"), "{error}");
+
+        // Derive-only from the second IDL: it owns the entity, not the first.
+        assert_eq!(
+            resolve_with_derives(None, &Sources::new(), &Events::new(), &derives, &idls).unwrap(),
+            Some("EntropyAddr")
+        );
     }
 
     /// Two pump map sources plus an entropy event that never reaches
