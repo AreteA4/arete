@@ -110,8 +110,8 @@ unrecognised value stops the runtime at startup instead of falling back.
 `processed` delivers first but can include slots the cluster later drops;
 `finalized` delivers only rooted data, about 32 slots (roughly 13 seconds) behind
 the tip.
-`confirmed` sits between them. The runtime logs the level it resolved at
-startup.
+`confirmed` sits between them. The runtime logs the level it resolved at startup and reports it as
+`yellowstone_commitment` on `/status`.
 
 To set it per runtime rather than per process, use the builder:
 

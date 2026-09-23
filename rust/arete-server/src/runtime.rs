@@ -497,6 +497,9 @@ impl Runtime {
             if let Some(target_id) = self.config.solana_gateway_target_id.clone() {
                 http_server = http_server.with_solana_gateway_target(target_id);
             }
+            if plan.live_runtime_enabled() {
+                http_server = http_server.with_commitment(commitment);
+            }
             if let Some(monitor) = health_monitor.clone() {
                 http_server = http_server.with_health_monitor(monitor);
             }

@@ -69,6 +69,7 @@ struct HttpRequestState {
     transaction_state: Arc<Option<TransactionState>>,
     solana_gateway_target_id: Arc<Option<String>>,
     program_read_binding_target_id: Arc<Option<String>>,
+    commitment: Option<crate::Commitment>,
 }
 
 /// HTTP server that exposes health endpoints
@@ -84,6 +85,7 @@ pub struct HttpHealthServer {
     transaction_config: Option<TransactionConfig>,
     solana_gateway_target_id: Option<String>,
     program_read_binding_target_id: Option<String>,
+    commitment: Option<crate::Commitment>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<crate::metrics::Metrics>>,
 }
@@ -101,6 +103,7 @@ impl HttpHealthServer {
             transaction_config: None,
             solana_gateway_target_id: None,
             program_read_binding_target_id: None,
+            commitment: None,
             #[cfg(feature = "otel")]
             metrics: None,
         }
@@ -150,6 +153,12 @@ impl HttpHealthServer {
         self
     }
 
+    /// Report the level this runtime ingests at on `/status`.
+    pub fn with_commitment(mut self, commitment: crate::Commitment) -> Self {
+        self.commitment = Some(commitment);
+        self
+    }
+
     #[cfg(feature = "otel")]
     pub fn with_metrics(mut self, metrics: Option<Arc<crate::metrics::Metrics>>) -> Self {
         self.metrics = metrics;
@@ -188,6 +197,7 @@ impl HttpHealthServer {
             transaction_state: Arc::new(transaction_state),
             solana_gateway_target_id: Arc::new(self.solana_gateway_target_id),
             program_read_binding_target_id: Arc::new(self.program_read_binding_target_id),
+            commitment: self.commitment,
         };
 
         let shutdown = self.shutdown.unwrap_or_default();
@@ -279,6 +289,7 @@ async fn handle_request_inner(
         transaction_state,
         solana_gateway_target_id,
         program_read_binding_target_id,
+        commitment,
     } = state;
     let path = req.uri().path().to_string();
 
@@ -327,7 +338,8 @@ async fn handle_request_inner(
                 let status_json = serde_json::json!({
                     "healthy": is_healthy,
                     "status": format!("{:?}", status),
-                    "error_count": error_count
+                    "error_count": error_count,
+                    "yellowstone_commitment": commitment.map(crate::Commitment::as_str),
                 });
 
                 let status_code = if is_healthy {
@@ -345,7 +357,8 @@ async fn handle_request_inner(
                 let status_json = serde_json::json!({
                     "healthy": true,
                     "status": "no_monitor",
-                    "error_count": 0
+                    "error_count": 0,
+                    "yellowstone_commitment": commitment.map(crate::Commitment::as_str),
                 });
 
                 Ok(Response::builder()
