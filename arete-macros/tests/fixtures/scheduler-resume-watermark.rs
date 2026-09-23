@@ -27,11 +27,16 @@ const PARSER_SLOT: u64 = 100;
 /// Parsed, but its batch not yet applied by the projector: the parser marks a
 /// slot processed when it handles it, ahead of the resume watermark.
 const PROCESSED_SLOT: u64 = 120;
+/// Where the parser has got to by the time the fetch returns.
+const PROCESSED_AFTER_FETCH: u64 = 130;
 const TIP_SLOT: u64 = 500;
 
 /// Stands in for the URL/token resolver: the scheduled callback resolves to a
-/// new price for the entity the parser already wrote.
-struct Resolver;
+/// new price for the entity the parser already wrote. The parser keeps going
+/// while the fetch is in flight.
+struct Resolver {
+    processed: SlotTracker,
+}
 impl vm::RuntimeResolver for Resolver {
     fn resolve_batch<'a>(
         &'a self,
@@ -46,7 +51,10 @@ impl vm::RuntimeResolver for Resolver {
         _: Vec<vm::ResolverRequest>,
         _: Option<UpdateContext>,
     ) -> vm::ResolverApplyFuture<'a> {
-        Box::pin(async { vec![token("mint1", 99)] })
+        Box::pin(async move {
+            self.processed.record(PROCESSED_AFTER_FETCH);
+            vec![token("mint1", 99)]
+        })
     }
 }
 
@@ -145,10 +153,12 @@ async fn run() {
         .unwrap()
         .insert_with_eviction(json!("mint1"), json!({"id": "mint1", "price": 10}));
     let bytecode_arc = Arc::new(MultiEntityBytecode::new().build());
-    let runtime_resolver: vm::SharedRuntimeResolver = Arc::new(Resolver);
     let slot_tracker = SlotTracker::new();
     let processed_slot_tracker = SlotTracker::new();
     processed_slot_tracker.record(PROCESSED_SLOT);
+    let runtime_resolver: vm::SharedRuntimeResolver = Arc::new(Resolver {
+        processed: processed_slot_tracker.clone(),
+    });
     let async_resolver_order = Arc::new(AtomicU64::new(0));
     let snapshot_barrier: Option<arete::runtime::arete_server::snapshot::SnapshotBarrier> = None;
     let slot_scheduler = Arc::new(Mutex::new(SlotScheduler::new()));
@@ -202,12 +212,15 @@ async fn run() {
     ack_rx.await.unwrap();
 
     // Clients order and stale-check by `_seq`, and read the processed slot from
-    // it: the scheduler's write must claim the parser's position, not the tip.
+    // it: the scheduler's write must claim the parser's position, not the tip,
+    // and the position when it is sent, not a stale one from before the fetch.
+    // Parser batches up to that position are already ahead of it in the queue,
+    // so an older stamp would make clients drop this write as stale.
     let live = cache.get_all("Token/list").await;
     let seq = live[0].1["_seq"].as_str().expect("_seq").to_string();
     assert_eq!(
         seq.split(':').next(),
-        Some(PROCESSED_SLOT.to_string().as_str()),
+        Some(PROCESSED_AFTER_FETCH.to_string().as_str()),
         "scheduler write stamped {seq}"
     );
     assert!(snapshots

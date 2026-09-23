@@ -273,19 +273,16 @@ pub(crate) fn generate_slot_scheduler_task() -> TokenStream {
                             };
 
                             // Callbacks fire on the live tip, but what they
-                            // write is stamped with the parser's position. The
-                            // stamp becomes the entity's `_seq`: at the tip,
-                            // clients would treat every later parser update
-                            // below it as stale, and would report slots the
-                            // parser has not reached as processed.
-                            let stamp_slot = processed_slot_tracker.get();
+                            // write carries the parser's position, never the
+                            // tip. Here it only feeds computed fields, so the
+                            // position before the fetch is fine.
                             let url_mutations = runtime_resolver
                                 .resolve_and_apply(
                                     &vm,
                                     bytecode.as_ref(),
                                     requests,
                                     Some(arete::runtime::arete_interpreter::UpdateContext {
-                                        slot: Some(stamp_slot),
+                                        slot: Some(processed_slot_tracker.get()),
                                         timestamp: Some(current_time_seconds()),
                                         ..arete::runtime::arete_interpreter::UpdateContext::default()
                                     }),
@@ -305,10 +302,18 @@ pub(crate) fn generate_slot_scheduler_task() -> TokenStream {
                                     );
                                 }
                             } else {
+                                // The stamp becomes the entity's `_seq`, which
+                                // clients stale-check against and read their
+                                // processed slot from, so it must follow the
+                                // projector's apply order. Read it after the
+                                // fetch, with no await before the send: a
+                                // parser handler queues its batch before it
+                                // records the slot, so every parser batch at or
+                                // below this stamp is already ahead of ours.
                                 // Not parsed input, so it must not advance the
                                 // resume watermark even at the parser's slot.
                                 let slot_context = arete::runtime::arete_server::SlotContext::new(
-                                    stamp_slot,
+                                    processed_slot_tracker.get(),
                                     next_async_resolver_slot_index(async_resolver_order.as_ref()),
                                 );
                                 let mut batch = arete::runtime::arete_server::MutationBatch::scheduled(
