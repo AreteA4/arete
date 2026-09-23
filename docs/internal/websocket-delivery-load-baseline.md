@@ -22,7 +22,7 @@ the publisher's model.
 | | |
 | --- | --- |
 | Delivery code | `3039d71b6438394fba086969bb93d4d9f95f4be6` (lag recovery, PR #248) |
-| Measured at | Harness commit `b07d3d50`, on merge commit `b491e798`. `git diff 3039d71b b491e798 -- rust interpreter arete-hash Cargo.lock` is empty, so the delivery code is exactly `3039d71b`. |
+| Measured at | Harness commit `b07d3d50`, on merge commit `b491e798`. The later harness commits change only paths no recorded run reached: a deadline during the burst's final flush marker, and a client dropped after converging. `git diff 3039d71b b491e798 -- rust interpreter arete-hash Cargo.lock` is empty, so the delivery code is exactly `3039d71b`. |
 | Production changes | None. `server.rs` gains only a `#[cfg(test)]` `DeliveryProbe` that mirrors existing `WsMetrics` calls. |
 | Measured | 2026-09-23 19:15–19:29 UTC: three debug runs, then three release runs |
 | Machine | Apple M2 (8 logical CPUs), 24 GB, macOS 15.0 (Darwin 24.0.0 arm64) |
@@ -146,8 +146,10 @@ Nothing sleeps to decide an outcome:
    moves the state away from the model, the run fails. A close before
    `stopping` is the server dropping that client, and is recorded as a
    disconnect. A scenario that allows reconnecting then reconnects the
-   client, which must hold the final state again from a fresh snapshot; the
-   runner waits for every client to hold it again before it stops the server.
+   client, which must hold the final state again from a fresh snapshot. The
+   runner stops the server only once every client holds the final state and
+   the server counts every subscriber as connected, so no drop is still in
+   flight.
 5. Every wait is bounded by the scenario deadline (180 s). A deadline produces
    a failing summary with mismatch samples, not a hang.
 

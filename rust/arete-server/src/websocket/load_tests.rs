@@ -1987,8 +1987,7 @@ async fn run_scenario(scenario: Scenario, environment: &RunEnvironment) -> (Summ
 
     // Stop the server only once every subscriber holds the final state and the
     // server has flushed everything it received, so clients read the whole
-    // tail and then an explicit close. A client dropped after converging
-    // reconnects, so every one is waited for again after quiescence.
+    // tail and then an explicit close.
     for converged in &mut converged {
         let _ = timeout_at(deadline, converged.wait_for(|held| *held)).await;
     }
@@ -1999,9 +1998,18 @@ async fn run_scenario(scenario: Scenario, environment: &RunEnvironment) -> (Summ
             deadline,
         )
         .await;
-    for converged in &mut converged {
-        let _ = timeout_at(deadline, converged.wait_for(|held| *held)).await;
-    }
+    // A client the server dropped after converging reconnects and converges
+    // again, but its flag reads true until it has read the close. The server
+    // removes a dropped client at once, though, so also wait until it counts
+    // every subscriber as connected: then no drop is still in flight.
+    let _ = timeout_at(deadline, async {
+        while !(converged.iter().all(|held| *held.borrow())
+            && harness.acceptor.client_count() >= scenario.subscribers)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     // Any close a client sees before this is the server dropping it, not the
     // end of the run.
     stopping_tx.send_replace(true);
