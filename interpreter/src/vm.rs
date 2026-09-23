@@ -3046,30 +3046,39 @@ impl VmContext {
                     dest,
                 } => {
                     let actual_state_id = override_state_id;
-                    let entity_name_owned = entity_name.to_string();
-                    self.states
-                        .entry(actual_state_id)
-                        .or_insert_with(|| StateTable {
-                            data: DashMap::new(),
-                            recency: std::sync::Mutex::new(lru::LruCache::unbounded()),
-                            lookup_indexes: HashMap::new(),
-                            temporal_indexes: HashMap::new(),
-                            pda_reverse_lookups: HashMap::new(),
-                            pending_updates: DashMap::new(),
-                            pending_instruction_events: DashMap::new(),
-                            pending_instruction_event_count: 0,
-                            last_account_data: DashMap::new(),
-                            version_tracker: VersionTracker::new(),
-                            instruction_dedup_cache: VersionTracker::with_capacity(
-                                DEFAULT_MAX_INSTRUCTION_DEDUP_ENTRIES,
-                            ),
-                            config: StateTableConfig::default(),
-                            entity_name: entity_name_owned,
-                            recent_tx_instructions: std::sync::Mutex::new(LruCache::new(
-                                NonZeroUsize::new(1000).unwrap(),
-                            )),
-                            deferred_when_ops: DashMap::new(),
-                        });
+                    if !self.states.contains_key(&actual_state_id) {
+                        // Every entity's table takes the VM's configuration,
+                        // so a configured capacity holds for all of them.
+                        let config = self
+                            .states
+                            .get(&0)
+                            .map(|table| table.config.clone())
+                            .unwrap_or_default();
+                        self.states.insert(
+                            actual_state_id,
+                            StateTable {
+                                data: DashMap::new(),
+                                recency: std::sync::Mutex::new(lru::LruCache::unbounded()),
+                                lookup_indexes: HashMap::new(),
+                                temporal_indexes: HashMap::new(),
+                                pda_reverse_lookups: HashMap::new(),
+                                pending_updates: DashMap::new(),
+                                pending_instruction_events: DashMap::new(),
+                                pending_instruction_event_count: 0,
+                                last_account_data: DashMap::new(),
+                                version_tracker: VersionTracker::new(),
+                                instruction_dedup_cache: VersionTracker::with_capacity(
+                                    DEFAULT_MAX_INSTRUCTION_DEDUP_ENTRIES,
+                                ),
+                                config,
+                                entity_name: entity_name.to_string(),
+                                recent_tx_instructions: std::sync::Mutex::new(LruCache::new(
+                                    NonZeroUsize::new(1000).unwrap(),
+                                )),
+                                deferred_when_ops: DashMap::new(),
+                            },
+                        );
+                    }
                     let key_value = self.registers[*key].clone();
                     // Warn if key is null for account state events (not instruction events or CPI events)
                     let warn_null_key = key_value.is_null()
