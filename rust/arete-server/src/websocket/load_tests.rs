@@ -1374,8 +1374,9 @@ fn close_reason(frame: Option<&CloseFrame>) -> String {
 struct ClientReport {
     client: usize,
     /// `drained`, `recovered` (lag resnapshot), `reconnected` (explicit close
-    /// then a fresh subscription), `closed-after-converging` (the server
-    /// dropped it before the run ended), or `failed`.
+    /// then a fresh subscription, before or after converging),
+    /// `closed-after-converging` (the server dropped it after it converged,
+    /// in a scenario that forbids reconnecting; also a failure), or `failed`.
     outcome: &'static str,
     converged: bool,
     delivered_operations: u64,
@@ -1479,8 +1480,10 @@ struct ClientSignals {
     ready: oneshot::Sender<Result<(), String>>,
     /// Set to the burst start once the publisher begins.
     start: watch::Receiver<Option<Instant>>,
-    /// Holding the exact final state.
-    converged: oneshot::Sender<()>,
+    /// Whether the client holds the exact final state on its current
+    /// connection. It goes back to false while a client dropped after
+    /// converging reconnects.
+    converged: watch::Sender<bool>,
     /// Set just before the runner shuts the server down.
     stopping: watch::Receiver<bool>,
 }
@@ -1524,10 +1527,12 @@ async fn run_client(ctx: ClientContext, signals: ClientSignals) -> ClientReport 
 
     let mut open = true;
     loop {
-        if view.converged() {
+        // After a reconnect the rows are still the old connection's; only a
+        // completed snapshot on this connection makes them this connection's.
+        if view.converged() && view.initial_snapshot_complete() {
             recorder.drain = Some(burst_start.elapsed());
-            let _ = converged.send(());
-            open = read_until_server_closes(
+            converged.send_replace(true);
+            match read_until_server_closes(
                 &ctx,
                 &mut socket,
                 &mut view,
@@ -1535,7 +1540,36 @@ async fn run_client(ctx: ClientContext, signals: ClientSignals) -> ClientReport 
                 &stopping,
                 burst_start,
             )
-            .await;
+            .await
+            {
+                AfterConverging::Open => {}
+                AfterConverging::Closed => open = false,
+                AfterConverging::Dropped(reason) => {
+                    // The same policy as a drop before converging: reconnect
+                    // and hold the final state again from a fresh snapshot.
+                    converged.send_replace(false);
+                    open = false;
+                    if recorder.reconnects >= ctx.max_reconnects {
+                        recorder.failures.push(format!(
+                            "disconnected after converging without an allowed reconnect: {reason}"
+                        ));
+                        break;
+                    }
+                    match connect_and_subscribe(ctx.addr, ctx.deadline).await {
+                        Ok(next_socket) => {
+                            socket = next_socket;
+                            open = true;
+                            recorder.reconnects += 1;
+                            view.new_connection();
+                            continue;
+                        }
+                        Err(error) => {
+                            recorder.failures.push(format!("reconnect failed: {error}"));
+                            break;
+                        }
+                    }
+                }
+            }
             break;
         }
         // `timeout_at` polls the socket first, so a steady stream of ready
@@ -1610,14 +1644,24 @@ async fn run_client(ctx: ClientContext, signals: ClientSignals) -> ClientReport 
     recorder.finish(ctx.index, &view)
 }
 
+/// How reading after convergence ended.
+enum AfterConverging {
+    /// Stopped reading with the socket still open (a failure was recorded).
+    Open,
+    /// The socket closed: the runner's shutdown, or a drop the scenario
+    /// forbids (recorded as a failure).
+    Closed,
+    /// The server dropped this client before the runner signalled
+    /// `stopping`, in a scenario that allows reconnecting.
+    Dropped(String),
+}
+
 /// Keep reading after converging until the server closes the stream. The
 /// runner stops the server only once it has flushed every source update, so
 /// this counts the redundant traffic a real client would still receive and
 /// proves none of it moves the state away from the final one. A close before
 /// the runner signals `stopping` is the server dropping this client, and is
 /// recorded as a disconnect.
-///
-/// Returns whether the socket is still open.
 async fn read_until_server_closes(
     ctx: &ClientContext,
     socket: &mut Socket,
@@ -1625,7 +1669,7 @@ async fn read_until_server_closes(
     recorder: &mut ClientRecorder,
     stopping: &watch::Receiver<bool>,
     burst_start: Instant,
-) -> bool {
+) -> AfterConverging {
     let mut regressed = false;
     loop {
         let reason = match timeout_at(ctx.deadline + STOP_TIMEOUT, socket.next()).await {
@@ -1633,7 +1677,7 @@ async fn read_until_server_closes(
                 recorder
                     .failures
                     .push("the server never closed the stream after the run".to_string());
-                return true;
+                return AfterConverging::Open;
             }
             Ok(Some(Ok(message))) => match recorder.observe(view, &message, None) {
                 Ok(Observed::Frame) => {
@@ -1651,14 +1695,14 @@ async fn read_until_server_closes(
                 Ok(Observed::Closed(reason)) => reason,
                 Err(error) => {
                     recorder.protocol_errors.push(error);
-                    return true;
+                    return AfterConverging::Open;
                 }
             },
             Ok(Some(Err(error))) => {
                 recorder
                     .protocol_errors
                     .push(format!("the socket failed while draining: {error}"));
-                return false;
+                return AfterConverging::Closed;
             }
             Ok(None) => "stream ended without a close frame".to_string(),
         };
@@ -1672,9 +1716,11 @@ async fn read_until_server_closes(
                 recorder
                     .failures
                     .push(format!("disconnected after converging: {reason}"));
+            } else {
+                return AfterConverging::Dropped(reason);
             }
         }
-        return false;
+        return AfterConverging::Closed;
     }
 }
 
@@ -1877,7 +1923,7 @@ async fn run_scenario(scenario: Scenario, environment: &RunEnvironment) -> (Summ
     let mut converged = Vec::with_capacity(scenario.subscribers);
     for index in 0..scenario.subscribers {
         let (ready_tx, ready_rx) = oneshot::channel();
-        let (converged_tx, converged_rx) = oneshot::channel();
+        let (converged_tx, converged_rx) = watch::channel(false);
         let ctx = ClientContext {
             index,
             addr: harness.addr,
@@ -1931,9 +1977,10 @@ async fn run_scenario(scenario: Scenario, environment: &RunEnvironment) -> (Summ
 
     // Stop the server only once every subscriber holds the final state and the
     // server has flushed everything it received, so clients read the whole
-    // tail and then an explicit close.
-    for converged in converged {
-        let _ = timeout_at(deadline, converged).await;
+    // tail and then an explicit close. A client dropped after converging
+    // reconnects, so every one is waited for again after quiescence.
+    for converged in &mut converged {
+        let _ = timeout_at(deadline, converged.wait_for(|held| *held)).await;
     }
     let quiescence = harness
         .quiesce(
@@ -1942,6 +1989,9 @@ async fn run_scenario(scenario: Scenario, environment: &RunEnvironment) -> (Summ
             deadline,
         )
         .await;
+    for converged in &mut converged {
+        let _ = timeout_at(deadline, converged.wait_for(|held| *held)).await;
+    }
     // Any close a client sees before this is the server dropping it, not the
     // end of the run.
     stopping_tx.send_replace(true);
