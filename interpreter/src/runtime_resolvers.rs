@@ -20,6 +20,9 @@ pub type ResolverBatchResult =
 pub type ResolverBatchFuture<'a> = Pin<Box<dyn Future<Output = ResolverBatchResult> + Send + 'a>>;
 pub type ResolverApplyFuture<'a> = Pin<Box<dyn Future<Output = Vec<Mutation>> + Send + 'a>>;
 pub type SharedRuntimeResolver = std::sync::Arc<dyn RuntimeResolver>;
+/// Produces the update context resolver results are applied under; called
+/// once, after the fetch, while the VM is locked for the apply.
+pub type ApplyContextFn<'a> = Box<dyn FnOnce() -> Option<UpdateContext> + Send + 'a>;
 
 #[derive(Clone, Copy)]
 struct RuntimeResolverProfileConfig {
@@ -114,6 +117,21 @@ pub trait RuntimeResolver: Send + Sync {
         bytecode: &'a MultiEntityBytecode,
         requests: Vec<ResolverRequest>,
         apply_context: Option<UpdateContext>,
+    ) -> ResolverApplyFuture<'a> {
+        self.resolve_and_apply_with_context(vm, bytecode, requests, Box::new(move || apply_context))
+    }
+
+    /// [`resolve_and_apply`](Self::resolve_and_apply), with the update context
+    /// decided after the fetch, at the moment the results are applied. A
+    /// caller whose context depends on progress made during the fetch (the
+    /// slot scheduler's processed slot) reads it here, so the state it applies
+    /// and the batch it publishes agree.
+    fn resolve_and_apply_with_context<'a>(
+        &'a self,
+        vm: &'a std::sync::Mutex<VmContext>,
+        bytecode: &'a MultiEntityBytecode,
+        requests: Vec<ResolverRequest>,
+        apply_context: ApplyContextFn<'a>,
     ) -> ResolverApplyFuture<'a> {
         Box::pin(async move {
             let total_started_at = Instant::now();
@@ -217,6 +235,7 @@ pub trait RuntimeResolver: Send + Sync {
 
             let apply_cached_started_at = Instant::now();
             let mut vm_guard = vm.lock().unwrap_or_else(|e| e.into_inner());
+            let apply_context = apply_context();
             let previous_context = if apply_context.is_some() {
                 let previous = vm_guard.current_context().cloned();
                 vm_guard.set_current_context(apply_context.clone());

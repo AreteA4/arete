@@ -3,10 +3,10 @@
 // the slot tip the scheduler stamped its batch with.
 use arete::interpreter::{
     self as vm,
-    ast::{ResolveStrategy, ResolverType},
+    ast::{ResolveStrategy, ResolverExtractSpec, ResolverType},
     compiler::MultiEntityBytecode,
     scheduler::SlotScheduler,
-    Mutation, ScheduledCallback, UpdateContext,
+    Mutation, ScheduledCallback,
 };
 use arete::runtime::{
     arete_server::{
@@ -31,29 +31,24 @@ const PROCESSED_SLOT: u64 = 120;
 const PROCESSED_AFTER_FETCH: u64 = 130;
 const TIP_SLOT: u64 = 500;
 
-/// Stands in for the URL/token resolver: the scheduled callback resolves to a
-/// new price for the entity the parser already wrote. The parser keeps going
-/// while the fetch is in flight.
+/// Stands in for the token metadata backend: the scheduled callback resolves
+/// to a new price for the entity the parser already wrote. Only the fetch is
+/// stubbed, so the real apply path runs. The parser keeps going while the
+/// fetch is in flight.
 struct Resolver {
     processed: SlotTracker,
 }
 impl vm::RuntimeResolver for Resolver {
     fn resolve_batch<'a>(
         &'a self,
-        _: &'a [vm::RuntimeResolverRequest],
+        requests: &'a [vm::RuntimeResolverRequest],
     ) -> vm::ResolverBatchFuture<'a> {
-        Box::pin(async { Ok(Default::default()) })
-    }
-    fn resolve_and_apply<'a>(
-        &'a self,
-        _: &'a Mutex<vm::vm::VmContext>,
-        _: &'a MultiEntityBytecode,
-        _: Vec<vm::ResolverRequest>,
-        _: Option<UpdateContext>,
-    ) -> vm::ResolverApplyFuture<'a> {
         Box::pin(async move {
             self.processed.record(PROCESSED_AFTER_FETCH);
-            vec![token("mint1", 99)]
+            Ok(requests
+                .iter()
+                .map(|request| (request.key().to_string(), json!({"price": 99})))
+                .collect())
         })
     }
 }
@@ -152,7 +147,28 @@ async fn run() {
         .get_state_table_mut(0)
         .unwrap()
         .insert_with_eviction(json!("mint1"), json!({"id": "mint1", "price": 10}));
-    let bytecode_arc = Arc::new(MultiEntityBytecode::new().build());
+    // A computed field that records the slot it was evaluated at, so the test
+    // can see which slot the resolver result was applied under.
+    let mut bytecode = MultiEntityBytecode::new()
+        .add_entity_with_evaluator(
+            "Token".to_string(),
+            vm::ast::TypedStreamSpec::<Value>::new(
+                "Token".to_string(),
+                vm::ast::IdentitySpec {
+                    primary_keys: vec!["id".to_string()],
+                    lookup_indexes: Vec::new(),
+                },
+                Vec::new(),
+            ),
+            0,
+            Some(|state: &mut Value, slot: Option<u64>, _: i64| {
+                state["computed_slot"] = json!(slot);
+                Ok(())
+            }),
+        )
+        .build();
+    bytecode.entities.get_mut("Token").unwrap().computed_paths = vec!["computed_slot".to_string()];
+    let bytecode_arc = Arc::new(bytecode);
     let slot_tracker = SlotTracker::new();
     let processed_slot_tracker = SlotTracker::new();
     processed_slot_tracker.record(PROCESSED_SLOT);
@@ -174,7 +190,11 @@ async fn run() {
             input_path: None,
             condition: None,
             strategy: ResolveStrategy::LastWrite,
-            extracts: Vec::new(),
+            extracts: vec![ResolverExtractSpec {
+                target_path: "price".to_string(),
+                source_path: Some("price".to_string()),
+                transform: None,
+            }],
             retry_count: 0,
         },
     );
@@ -222,6 +242,13 @@ async fn run() {
         seq.split(':').next(),
         Some(PROCESSED_AFTER_FETCH.to_string().as_str()),
         "scheduler write stamped {seq}"
+    );
+    // ...and the state it publishes was derived at that same slot.
+    assert_eq!(live[0].1["price"], 99);
+    assert_eq!(
+        live[0].1["computed_slot"],
+        json!(PROCESSED_AFTER_FETCH),
+        "resolver result applied under a different slot than its stamp {seq}"
     );
     assert!(snapshots
         .snapshot_now(SnapshotTrigger::Shutdown)
