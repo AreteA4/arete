@@ -377,6 +377,12 @@ pub(crate) fn generate_slot_subscription_task() -> TokenStream {
             let x_token = x_token.clone();
             let health_monitor = health_monitor.clone();
             let reconnection_config = reconnection_config.clone();
+            // The slot stream drives the scheduler and the readiness gate, which
+            // compare its slots against the program stream's. At a different
+            // level those comparisons carry a constant offset, and scheduler
+            // batches stamped from it advance the resume watermark past what
+            // the program stream has actually delivered.
+            let commitment = commitment;
 
             arete::runtime::tokio::spawn(async move {
                 arete::runtime::tracing::info!("[SLOT_SUB] Starting dedicated gRPC slot subscription");
@@ -445,9 +451,7 @@ pub(crate) fn generate_slot_subscription_task() -> TokenStream {
                             blocks: std::collections::HashMap::new(),
                             blocks_meta: std::collections::HashMap::new(),
                             entry: std::collections::HashMap::new(),
-                            commitment: Some(
-                                arete::runtime::yellowstone_grpc_proto::geyser::CommitmentLevel::Processed as i32
-                            ),
+                            commitment: Some(request_commitment(commitment)),
                             accounts_data_slice: vec![],
                             ping: None,
                             from_slot: None,
@@ -574,6 +578,33 @@ pub(crate) fn generate_managed_grpc_helpers() -> TokenStream {
 
         const RECONNECT_BACKOFF_RESET_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
         const HTTP2_KEEPALIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+        /// The configured level, as the program stream's source config takes it.
+        fn source_commitment(
+            commitment: arete::runtime::arete_server::Commitment,
+        ) -> arete::runtime::shipstern_core::CommitmentLevel {
+            match commitment {
+                arete::runtime::arete_server::Commitment::Processed => {
+                    arete::runtime::shipstern_core::CommitmentLevel::Processed
+                }
+                arete::runtime::arete_server::Commitment::Confirmed => {
+                    arete::runtime::shipstern_core::CommitmentLevel::Confirmed
+                }
+                arete::runtime::arete_server::Commitment::Finalized => {
+                    arete::runtime::shipstern_core::CommitmentLevel::Finalized
+                }
+            }
+        }
+
+        /// The configured level, as a raw subscribe request carries it.
+        fn request_commitment(commitment: arete::runtime::arete_server::Commitment) -> i32 {
+            use arete::runtime::yellowstone_grpc_proto::geyser::CommitmentLevel;
+            match commitment {
+                arete::runtime::arete_server::Commitment::Processed => CommitmentLevel::Processed as i32,
+                arete::runtime::arete_server::Commitment::Confirmed => CommitmentLevel::Confirmed as i32,
+                arete::runtime::arete_server::Commitment::Finalized => CommitmentLevel::Finalized as i32,
+            }
+        }
 
         fn install_managed_yellowstone_grpc_settings(settings: ManagedYellowstoneGrpcSettings) {
             let _ = MANAGED_YELLOWSTONE_GRPC_SETTINGS.set(settings);
@@ -1723,6 +1754,9 @@ pub fn generate_spec_function(
                      Example: export YELLOWSTONE_ENDPOINT=http://localhost:10000"
                 ))?;
             let x_token = std::env::var("YELLOWSTONE_X_TOKEN").ok();
+            // Per runtime rather than from the env, so a builder override for
+            // this stack holds even when another stack in the process differs.
+            let commitment = arete::runtime::arete_server::Commitment::active()?;
 
             let runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver =
                 arete::runtime::arete_interpreter::runtime_resolvers_factory::build_resolver()
@@ -1805,7 +1839,7 @@ pub fn generate_spec_function(
                         endpoint: endpoint.clone(),
                         x_token: x_token.clone(),
                         timeout: 60,
-                        commitment_level: None,
+                        commitment_level: Some(source_commitment(commitment)),
                         from_slot,
                         accept_compression: None,
                         max_decoding_message_size: None,
@@ -3100,6 +3134,9 @@ pub fn generate_multi_pipeline_spec_function(
                      Example: export YELLOWSTONE_ENDPOINT=http://localhost:10000"
                 ))?;
             let x_token = std::env::var("YELLOWSTONE_X_TOKEN").ok();
+            // Per runtime rather than from the env, so a builder override for
+            // this stack holds even when another stack in the process differs.
+            let commitment = arete::runtime::arete_server::Commitment::active()?;
 
             let runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver =
                 arete::runtime::arete_interpreter::runtime_resolvers_factory::build_resolver()
@@ -3182,7 +3219,7 @@ pub fn generate_multi_pipeline_spec_function(
                         endpoint: endpoint.clone(),
                         x_token: x_token.clone(),
                         timeout: 60,
-                        commitment_level: None,
+                        commitment_level: Some(source_commitment(commitment)),
                         from_slot,
                         accept_compression: None,
                         max_decoding_message_size: None,

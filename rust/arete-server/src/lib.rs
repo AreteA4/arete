@@ -61,7 +61,7 @@ pub use arete_auth::{
 pub use bus::{BusManager, BusMessage};
 pub use cache::{EntityCache, EntityCacheConfig};
 pub use config::{
-    HealthConfig, HttpHealthConfig, HttpServerConfig, ReconnectionConfig, RuntimePlan,
+    Commitment, HealthConfig, HttpHealthConfig, HttpServerConfig, ReconnectionConfig, RuntimePlan,
     ServerConfig, TransactionConfig, WebSocketConfig, YellowstoneConfig,
 };
 pub use health::{HealthMonitor, SlotTracker, StreamStatus};
@@ -390,6 +390,13 @@ impl ServerBuilder {
     /// server falls back to `SnapshotConfig::from_env()` (`ARETE_SNAPSHOT_*`).
     pub fn snapshots(mut self, config: crate::snapshot::SnapshotConfig) -> Self {
         self.config.snapshots = Some(config);
+        self
+    }
+
+    /// Ingest at this Yellowstone commitment, overriding
+    /// `YELLOWSTONE_COMMITMENT` for this instance only.
+    pub fn commitment(mut self, commitment: crate::Commitment) -> Self {
+        self.config.commitment = Some(commitment);
         self
     }
 

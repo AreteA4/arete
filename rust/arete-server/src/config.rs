@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -341,6 +342,109 @@ impl YellowstoneConfig {
     }
 }
 
+/// The Yellowstone commitment level a runtime ingests at.
+///
+/// Variants are declared weakest first, so `Ord` compares strength: a
+/// snapshot taken at a level at least as strong as the configured one can be
+/// resumed, a weaker one cannot.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Commitment {
+    /// Today's behaviour, and the default when nothing is configured: the
+    /// slot subscription always asked for it explicitly, and an unset level
+    /// on the program stream is served as processed.
+    #[default]
+    Processed,
+    Confirmed,
+    Finalized,
+}
+
+tokio::task_local! {
+    static ACTIVE_COMMITMENT: Commitment;
+}
+
+impl Commitment {
+    /// The one setting both local and hosted runtimes read.
+    pub const ENV: &'static str = "YELLOWSTONE_COMMITMENT";
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Processed => "processed",
+            Self::Confirmed => "confirmed",
+            Self::Finalized => "finalized",
+        }
+    }
+
+    /// Read [`Self::ENV`]. Unset is the documented default; an empty or
+    /// unrecognised value is an error rather than a silent fallback, because
+    /// a recorder that asked for finalized data and quietly got processed has
+    /// no way to notice.
+    pub fn from_env() -> Result<Self> {
+        match std::env::var(Self::ENV) {
+            Ok(value) => value.parse(),
+            Err(std::env::VarError::NotPresent) => Ok(Self::default()),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                bail!("invalid {}: not valid unicode", Self::ENV)
+            }
+        }
+    }
+
+    /// The level the runtime this code is running under was configured with.
+    ///
+    /// The generated ingestion runtime reads it here instead of from the
+    /// environment, because the value is per runtime — a builder override
+    /// for one stack must not be undone by another stack's env in the same
+    /// process. Outside a runtime (a test, a hand-driven parser) it falls back
+    /// to the env var under the same rules, so it never silently defaults
+    /// past a bad value.
+    pub fn active() -> Result<Self> {
+        match ACTIVE_COMMITMENT.try_with(|commitment| *commitment) {
+            Ok(commitment) => Ok(commitment),
+            Err(_) => Self::from_env(),
+        }
+    }
+
+    pub(crate) async fn scope<F>(self, future: F) -> F::Output
+    where
+        F: Future,
+    {
+        ACTIVE_COMMITMENT.scope(self, future).await
+    }
+}
+
+impl std::str::FromStr for Commitment {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "processed" => Ok(Self::Processed),
+            "confirmed" => Ok(Self::Confirmed),
+            "finalized" => Ok(Self::Finalized),
+            _ => bail!(
+                "invalid {}: {value:?}; expected processed, confirmed or finalized",
+                Self::ENV
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for Commitment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// Main server configuration
 #[derive(Clone, Debug, Default)]
 pub struct ServerConfig {
@@ -361,6 +465,11 @@ pub struct ServerConfig {
     /// env vars are process-wide, so they cannot enable replay for one stack
     /// or size a busy stack differently from a quiet one.
     pub journal: Option<crate::journal::JournalConfig>,
+    /// Yellowstone commitment. `None` falls back to `Commitment::from_env()`.
+    ///
+    /// Per runtime for the same reason as `journal`: two stacks sharing a
+    /// process can want different levels, and the env var is process-wide.
+    pub commitment: Option<Commitment>,
 }
 
 impl ServerConfig {
@@ -415,5 +524,42 @@ impl ServerConfig {
     pub fn with_snapshots(mut self, config: crate::snapshot::SnapshotConfig) -> Self {
         self.snapshots = Some(config);
         self
+    }
+
+    pub fn with_commitment(mut self, commitment: Commitment) -> Self {
+        self.commitment = Some(commitment);
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Commitment;
+
+    #[test]
+    fn commitment_accepts_the_three_levels_and_nothing_else() {
+        for (value, expected) in [
+            ("processed", Commitment::Processed),
+            (" Confirmed\n", Commitment::Confirmed),
+            ("FINALIZED", Commitment::Finalized),
+        ] {
+            assert_eq!(value.parse::<Commitment>().unwrap(), expected, "{value:?}");
+        }
+        // An empty value is a template that rendered an unset variable, not a
+        // request for the default.
+        for value in ["", "  ", "final", "processed,confirmed", "0"] {
+            assert!(value.parse::<Commitment>().is_err(), "{value:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_runtime_reads_its_own_level_not_the_environment() {
+        // The environment is unset in tests, so it would answer processed.
+        assert_eq!(
+            Commitment::Finalized
+                .scope(async { Commitment::active().unwrap() })
+                .await,
+            Commitment::Finalized
+        );
     }
 }

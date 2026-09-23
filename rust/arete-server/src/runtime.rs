@@ -192,6 +192,14 @@ impl Runtime {
         info!("Starting Arete runtime");
 
         let plan = self.config.runtime_plan;
+        // Resolved before anything starts: an invalid value must stop the
+        // runtime, not leave it serving from a stream at a level nobody asked
+        // for.
+        let commitment = match self.config.commitment {
+            Some(commitment) => commitment,
+            None => crate::Commitment::from_env()?,
+        };
+        info!(yellowstone_commitment = %commitment, "Ingesting at Yellowstone commitment");
         let transaction_config = if plan.transactions {
             match self.config.transactions.clone() {
                 Some(config) => config,
@@ -278,7 +286,11 @@ impl Runtime {
                         }
                     },
                 };
-                if let Some(snapshot_config) = snapshot_config.filter(|c| c.enabled) {
+                if let Some(mut snapshot_config) = snapshot_config.filter(|c| c.enabled) {
+                    // The runtime's level, whatever the snapshot config carried:
+                    // a snapshot records the level it was taken at and restore
+                    // compares against this one.
+                    snapshot_config.commitment = commitment;
                     match crate::snapshot::SnapshotService::initialize(
                         snapshot_config,
                         spec,
@@ -420,7 +432,7 @@ impl Runtime {
                             // The tape is in scope even with snapshots off, so
                             // a runtime that abandons its checkpoint can still
                             // mark the hole it just created.
-                            let result = parser_journal.scope(scoped).await;
+                            let result = commitment.scope(parser_journal.scope(scoped)).await;
                             if let Err(e) = result {
                                 error!("Vixen parser runtime error: {}", e);
                             }
