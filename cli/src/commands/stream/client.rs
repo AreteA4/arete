@@ -5,6 +5,7 @@ use arete_sdk::{
 };
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::filter::{self, Filter};
@@ -25,6 +26,7 @@ struct StreamState {
     count_only: bool,
     update_count: u64,
     entity_count: u64,
+    last_count_render: Option<Instant>,
     recorder: Option<SnapshotRecorder>,
     pending_snapshot: Option<PendingSnapshot>,
     out: output::StdoutWriter,
@@ -84,6 +86,7 @@ fn build_state(args: &StreamArgs, view: &str, url: &str) -> Result<StreamState> 
         count_only: args.count,
         update_count: 0,
         entity_count: 0,
+        last_count_render: None,
         recorder,
         pending_snapshot: None,
         out: output::StdoutWriter::new(),
@@ -230,7 +233,7 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
 
     // Clear the overwriting count line before post-stream output
     if state.count_only {
-        output::finalize_count();
+        finalize_count(&mut state)?;
     }
 
     if let OutputMode::NoDna = state.output_mode {
@@ -281,7 +284,7 @@ pub async fn replay(player: SnapshotPlayer, view: &str, args: &StreamArgs) -> Re
     }
 
     if state.count_only {
-        output::finalize_count();
+        finalize_count(&mut state)?;
     }
 
     if let OutputMode::NoDna = state.output_mode {
@@ -443,7 +446,7 @@ fn process_frame(frame: Frame, view: &str, state: &mut StreamState) -> Result<bo
         }
         state.update_count += 1;
         if state.count_only {
-            output::print_count(state.update_count)?;
+            render_count_if_due(state)?;
         } else {
             output::print_raw_frame(&mut state.out, &frame)?;
         }
@@ -588,7 +591,7 @@ fn process_removal(
 
     state.update_count += 1;
     if state.count_only {
-        output::print_count(state.update_count)?;
+        render_count_if_due(state)?;
     } else {
         match state.output_mode {
             OutputMode::NoDna => output::emit_no_dna_event(
@@ -625,7 +628,7 @@ fn emit_entity(
     };
 
     if state.count_only {
-        output::print_count(state.update_count)?;
+        render_count_if_due(state)?;
     } else {
         match state.output_mode {
             OutputMode::NoDna => output::emit_no_dna_event(
@@ -647,6 +650,28 @@ fn emit_entity(
     Ok(false)
 }
 
+/// A terminal redraw performs a blocking write and flush. At high feed rates,
+/// doing that once per frame can make `--count` itself the slow consumer, so
+/// keep accounting exact while rendering at a human-visible cadence.
+fn render_count_if_due(state: &mut StreamState) -> Result<()> {
+    const COUNT_RENDER_INTERVAL: Duration = Duration::from_millis(100);
+    let now = Instant::now();
+    if state
+        .last_count_render
+        .is_none_or(|last| now.duration_since(last) >= COUNT_RENDER_INTERVAL)
+    {
+        output::print_count(state.update_count)?;
+        state.last_count_render = Some(now);
+    }
+    Ok(())
+}
+
+fn finalize_count(state: &mut StreamState) -> Result<()> {
+    output::print_count(state.update_count)?;
+    output::finalize_count();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,6 +691,7 @@ mod tests {
             count_only: false,
             update_count: 0,
             entity_count: 0,
+            last_count_render: None,
             recorder: None,
             pending_snapshot: None,
             out: output::StdoutWriter::new(),
