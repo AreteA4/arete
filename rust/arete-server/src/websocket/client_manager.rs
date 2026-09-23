@@ -727,23 +727,28 @@ impl ClientManager {
     /// Returns true if the client has an auth context and it has expired.
     /// If expired, the client is removed from the registry.
     pub fn check_and_remove_expired(&self, client_id: Uuid) -> bool {
-        if let Some(client) = self.clients.get(&client_id) {
-            if let Some(ref ctx) = client.auth_context {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                if ctx.expires_at <= now {
-                    warn!(
-                        "Client {} token expired (expired at {}), disconnecting",
-                        client_id, ctx.expires_at
-                    );
-                    self.clients.remove(&client_id);
-                    return true;
-                }
-            }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // Check and remove under one shard lock. Calling `remove` while a
+        // `get` guard on the same key is alive deadlocks this thread, and
+        // every later caller that touches the shard queues behind it.
+        let Some((_, client)) = self.clients.remove_if(&client_id, |_, client| {
+            client
+                .auth_context
+                .as_ref()
+                .is_some_and(|ctx| ctx.expires_at <= now)
+        }) else {
+            return false;
+        };
+        if let Some(ctx) = &client.auth_context {
+            warn!(
+                "Client {} token expired (expired at {}), disconnecting",
+                client_id, ctx.expires_at
+            );
         }
-        false
+        true
     }
 
     /// Get the current number of connected clients.
@@ -2074,6 +2079,41 @@ mod tests {
             1,
             "fresh entries survive sweep"
         );
+    }
+
+    #[test]
+    fn expired_token_is_removed_without_deadlocking() {
+        let manager = ClientManager::new();
+        let mut context = create_test_auth_context("user-1", Limits::default());
+        context.expires_at = 1;
+        let client_id = insert_client(&manager, context);
+
+        // Send from another thread: a deadlock blocks that thread for good,
+        // so the test fails on the timeout instead of hanging.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let sender = manager.clone();
+        std::thread::spawn(move || {
+            let result = sender.send_to_client(client_id, Arc::new(Bytes::from_static(b"update")));
+            let _ = done_tx.send(result);
+        });
+
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("send_to_client deadlocked on an expired token");
+        assert_eq!(result, Err(SendError::ClientDisconnected));
+        assert!(!manager.has_client(client_id));
+    }
+
+    #[test]
+    fn unexpired_token_is_kept() {
+        let manager = ClientManager::new();
+        let client_id = insert_client(
+            &manager,
+            create_test_auth_context("user-1", Limits::default()),
+        );
+
+        assert!(!manager.check_and_remove_expired(client_id));
+        assert!(manager.has_client(client_id));
     }
 
     // Test WebSocketRateLimiter integration
