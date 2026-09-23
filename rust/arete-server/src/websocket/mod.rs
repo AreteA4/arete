@@ -1,6 +1,8 @@
 pub mod auth;
 pub mod client_manager;
 pub mod frame;
+#[cfg(test)]
+mod load_tests;
 pub mod rate_limiter;
 pub mod server;
 pub mod subscription;
