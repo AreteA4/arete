@@ -130,7 +130,7 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
     };
 
     let url = resolve_url(&args, config_path, view)?;
-    let url = token::ensure_hosted_ws_token(url)?;
+    let (url, refresh) = token::ensure_hosted_ws_token(url)?;
 
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
 
@@ -167,7 +167,7 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
         }
         #[cfg(feature = "tui")]
         {
-            return rt.block_on(tui::run_tui(url, view, &args));
+            return rt.block_on(tui::run_tui(url, refresh, view, &args));
         }
         #[cfg(not(feature = "tui"))]
         {
@@ -183,7 +183,7 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
         token::redact_hs_token_for_display(&url)
     );
 
-    rt.block_on(client::stream(url, view, &args))
+    rt.block_on(client::stream(url, refresh, view, &args))
 }
 
 pub fn build_subscription(view: &str, args: &StreamArgs) -> Subscription {

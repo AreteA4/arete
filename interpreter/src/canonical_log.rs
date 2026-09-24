@@ -78,6 +78,18 @@ impl CanonicalLog {
         }
         self.emitted = true;
 
+        // Most events are logged at a level the subscriber filters out. Find
+        // that out before building anything: the line, the trace ids and the
+        // span event all cost more than the event's own processing.
+        let log_enabled = level_enabled(self.level);
+        #[cfg(feature = "otel")]
+        let span_events = canonical_span_events_enabled();
+        #[cfg(not(feature = "otel"))]
+        let span_events = false;
+        if !log_enabled && !span_events {
+            return;
+        }
+
         self.data
             .insert("duration_ms".to_string(), json!(self.duration_ms()));
 
@@ -88,21 +100,26 @@ impl CanonicalLog {
             let span_ref = context.span();
             let span_context = span_ref.span_context();
             if span_context.is_valid() {
-                if canonical_span_events_enabled() {
+                if span_events {
                     span_ref.add_event(
                         "canonical_event",
                         canonical_span_event_attributes(&self.data),
                     );
                 }
-                self.data.insert(
-                    "trace_id".to_string(),
-                    json!(format!("{:032x}", span_context.trace_id())),
-                );
-                self.data.insert(
-                    "span_id".to_string(),
-                    json!(format!("{:016x}", span_context.span_id())),
-                );
+                if log_enabled {
+                    self.data.insert(
+                        "trace_id".to_string(),
+                        json!(format!("{:032x}", span_context.trace_id())),
+                    );
+                    self.data.insert(
+                        "span_id".to_string(),
+                        json!(format!("{:016x}", span_context.span_id())),
+                    );
+                }
             }
+        }
+        if !log_enabled {
+            return;
         }
 
         // Emit as a structured field so OTEL/Axiom can parse it, rather than embedding JSON in message body
@@ -128,16 +145,31 @@ impl CanonicalLog {
     }
 }
 
+/// Whether the subscriber would record a canonical line at `level`.
+fn level_enabled(level: LogLevel) -> bool {
+    match level {
+        LogLevel::Trace => tracing::enabled!(target: "arete::canonical", tracing::Level::TRACE),
+        LogLevel::Debug => tracing::enabled!(target: "arete::canonical", tracing::Level::DEBUG),
+        LogLevel::Info => tracing::enabled!(target: "arete::canonical", tracing::Level::INFO),
+        LogLevel::Warn => tracing::enabled!(target: "arete::canonical", tracing::Level::WARN),
+        LogLevel::Error => tracing::enabled!(target: "arete::canonical", tracing::Level::ERROR),
+    }
+}
+
+/// `ARETE_CANONICAL_SPAN_EVENTS`, read once: it is consulted for every event.
 #[cfg(feature = "otel")]
 fn canonical_span_events_enabled() -> bool {
-    std::env::var("ARETE_CANONICAL_SPAN_EVENTS")
-        .map(|value| {
-            matches!(
-                value.to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("ARETE_CANONICAL_SPAN_EVENTS")
+            .map(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+    })
 }
 
 #[cfg(feature = "otel")]
