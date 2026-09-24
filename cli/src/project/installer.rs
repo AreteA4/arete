@@ -3304,6 +3304,30 @@ version = "^1.0.0"
         no_gateway["chainBinding"] = Value::Null;
         no_gateway["transactionBinding"] = Value::Null;
         cases.push(("no gateway", no_gateway, "omitted managed Solana gateway"));
+        let mut blank_gateway = hosted();
+        blank_gateway["chainBinding"]["endpoint"] = json!(" ");
+        cases.push((
+            "blank gateway endpoint",
+            blank_gateway,
+            "chain binding with no endpoint",
+        ));
+        let mut relative_gateway = hosted();
+        relative_gateway["transactionBinding"]["endpoint"] = json!("/gateway/");
+        cases.push((
+            "relative gateway endpoint",
+            relative_gateway,
+            "endpoint is not an absolute HTTP(S) URL",
+        ));
+        let mut blank_jwks = hosted();
+        blank_jwks["chainBinding"]["auth"]["jwksUrl"] = json!("");
+        cases.push(("blank gateway JWKS", blank_jwks, "no auth.jwksUrl"));
+        let mut foreign_target = hosted();
+        foreign_target["transactionBinding"]["auth"]["targetId"] = json!("sgb_other");
+        cases.push((
+            "foreign gateway target",
+            foreign_target,
+            "session target does not name the binding",
+        ));
         let mut release = hosted();
         release["deploymentReleaseHash"] = json!("");
         cases.push(("blank release", release, "no exact deployment release"));

@@ -2869,13 +2869,72 @@ fn optional_gateway_descriptor(
     source: &str,
 ) -> Result<Option<serde_json::Value>> {
     match (chain, transactions) {
-        (Some(chain), Some(transactions)) => Ok(Some(serde_json::json!({
-            "chain": chain,
-            "transactions": transactions,
-        }))),
+        (Some(chain), Some(transactions)) => {
+            check_gateway_binding("chain", chain, source)?;
+            check_gateway_binding("transaction", transactions, source)?;
+            Ok(Some(serde_json::json!({
+                "chain": chain,
+                "transactions": transactions,
+            })))
+        }
         (None, None) => Ok(None),
         _ => anyhow::bail!("{source} returned only one managed Solana gateway capability binding"),
     }
+}
+
+/// A gateway binding the generated SDK can use: every identity and policy
+/// named, absolute HTTP(S) gateway, session and JWKS URLs, and a session
+/// target that names the binding itself. Presence alone would let a blank
+/// endpoint reach generated code.
+fn check_gateway_binding(
+    capability: &str,
+    binding: &RegistryCapabilityInstallBinding,
+    source: &str,
+) -> Result<()> {
+    let auth = &binding.auth;
+    let required = [
+        ("endpoint", &binding.endpoint),
+        ("authPolicy", &binding.auth_policy),
+        ("solanaGatewayBindingId", &binding.solana_gateway_binding_id),
+        ("cluster", &binding.cluster),
+        ("region", &binding.region),
+        ("auth.mode", &auth.mode),
+        ("auth.sessionEndpoint", &auth.session_endpoint),
+        ("auth.jwksUrl", &auth.jwks_url),
+        ("auth.tokenTransport", &auth.token_transport),
+        ("auth.audience", &auth.audience),
+        ("auth.targetKind", &auth.target_kind),
+        ("auth.targetId", &auth.target_id),
+    ];
+    if let Some((field, _)) = required.iter().find(|(_, value)| value.trim().is_empty()) {
+        anyhow::bail!(
+            "{source} returned a managed Solana gateway {capability} binding with no {field}"
+        );
+    }
+    for (field, value) in [
+        ("endpoint", &binding.endpoint),
+        ("auth.sessionEndpoint", &auth.session_endpoint),
+        ("auth.jwksUrl", &auth.jwks_url),
+    ] {
+        let absolute = url::Url::parse(value)
+            .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some());
+        if !absolute {
+            anyhow::bail!(
+                "{source} returned a managed Solana gateway {capability} binding whose {field} is not an absolute HTTP(S) URL"
+            );
+        }
+    }
+    if auth.target_id != binding.solana_gateway_binding_id {
+        anyhow::bail!(
+            "{source} returned a managed Solana gateway {capability} binding whose session target does not name the binding"
+        );
+    }
+    if auth.scopes.is_empty() || auth.accepted_key_classes.is_empty() {
+        anyhow::bail!(
+            "{source} returned a managed Solana gateway {capability} binding with no scopes or key classes"
+        );
+    }
+    Ok(())
 }
 
 fn program_spec_artifact_from_registry(
