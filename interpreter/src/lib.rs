@@ -90,6 +90,17 @@ pub struct Mutation {
     pub patch: Value,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub append: Vec<String>,
+    /// Which decode site produced this, as `ix:<path>` or `log:<index>`.
+    ///
+    /// Stable across a re-decode of the same transaction, because both are
+    /// pure functions of the transaction protobuf. That is what lets a replay
+    /// recognise an event it has already retained: the serialized payload
+    /// cannot be compared, since events carry a wall-clock timestamp.
+    ///
+    /// `None` for account-driven and synthetic mutations, which have no
+    /// decode site and are deduplicated by version dominance instead.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub occurrence: Option<String>,
 }
 
 /// Generic wrapper for event data that includes context metadata

@@ -184,8 +184,20 @@ impl Projector {
 
         let key = Self::extract_key(&mutation.key);
         let arete_interpreter::Mutation {
-            mut patch, append, ..
+            mut patch,
+            append,
+            occurrence,
+            ..
         } = mutation;
+
+        // What lets a resume recognise an event it already retained. Needs the
+        // slot as well as the decode site: an occurrence is only unique within
+        // the transaction it came from.
+        let origin = slot_context.map(|ctx| crate::journal::EventOrigin {
+            slot: ctx.slot,
+            index: ctx.slot_index,
+            occurrence,
+        });
 
         // Inject _seq for recency sorting if slot context is available
         if let Some(ctx) = slot_context {
@@ -244,7 +256,7 @@ impl Projector {
             let retained = match journal {
                 Some(journal) => {
                     journal
-                        .append_with(&spec.id, &key, |offset| {
+                        .append_with(&spec.id, &key, origin.clone(), |offset| {
                             frame.offset = Some(offset);
                             json_buffer.clear();
                             serde_json::to_writer(&mut *json_buffer, &frame)?;
@@ -252,13 +264,16 @@ impl Projector {
                         })
                         .await?
                 }
-                None => None,
+                None => crate::journal::Append::Untracked,
             };
             let payload = match retained {
-                Some((_offset, payload)) => payload,
+                crate::journal::Append::Retained { payload, .. } => payload,
+                // A resume re-delivered an event the tape already holds.
+                // Publishing it would hand live subscribers a duplicate too.
+                crate::journal::Append::Duplicate => continue,
                 // No tape, or a sealed one: the event still publishes, it just
                 // carries no position to resume from.
-                None => {
+                crate::journal::Append::Untracked => {
                     frame.offset = None;
                     json_buffer.clear();
                     serde_json::to_writer(&mut *json_buffer, &frame)?;

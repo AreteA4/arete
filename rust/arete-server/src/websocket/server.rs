@@ -3339,6 +3339,7 @@ mod tests {
                     key: json!(format!("pool{}", index % 4)),
                     patch: json!({"trade": index}),
                     append: vec![],
+                    occurrence: None,
                 }]
                 .into_iter()
                 .collect(),

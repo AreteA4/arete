@@ -110,8 +110,7 @@ Receiver registration happens before snapshot capture for state, list, append, a
 When the server runs with an event journal (`ARETE_JOURNAL_ENABLED=true`), an
 append view is delivered as an event tape rather than a membership
 projection. Every retained event is replayed in order, exactly once per
-replay request, instead of one row per surviving entity. See the retention
-notes below for the one case a restart can still duplicate.
+replay request, instead of one row per surviving entity.
 
 Each live frame on such a view carries an `offset`: a dense, monotonic,
 per-view cursor assigned when the event is retained.
@@ -257,11 +256,23 @@ already went out. Those offsets get re-issued for different records, so the
 restore mints a new epoch and every cursor from before it is refused with
 `cursor-epoch-changed` rather than silently served at the wrong place.
 
-One duplication case remains. A restart that resumes the stream from the
-snapshot's watermark re-decodes the transactions in the overlap, and those
-events are appended to the tape a second time under fresh offsets. A
-consumer reading across such a restart sees them twice, and cannot tell
-them apart. Delivery is exactly once within one server lifetime.
+A stream that resumes — after a restart, or after a reconnect inside one
+process — re-decodes the slot it restarted at, so the events the tape already
+holds for that slot arrive again. They are recognised and not retained a
+second time: an event's decode site is a pure function of the transaction, so
+it reproduces exactly, while the payload cannot be compared because events
+carry a wall-clock timestamp. Events from that slot which had *not* been
+retained when the stream stopped are new and do land, so the overlap is
+deduplicated rather than skipped.
+
+Two sources are exempt. Events derived from a resolver result are built
+outside the decode path and carry no decode site, and on the scheduler path
+their position comes from a process-local counter rather than from the
+stream — neither half of that identity reproduces, so those events can still
+be retained twice across a resume. Account-driven events have no decode site
+either; a re-delivered account write is normally dropped before it reaches
+the tape, by a version check that is itself bounded in capacity, so it is not
+an absolute guarantee.
 
 ## Live Frames
 
