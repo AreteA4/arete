@@ -86,6 +86,11 @@ pub struct SnapshotConfig {
     /// explicitly approved for one state-only migration. These snapshots are
     /// hydrated after structural state-id remapping and always start live.
     pub legacy_bytecode_hashes: BTreeSet<String>,
+    /// The level this runtime ingests at. Set by the runtime from its resolved
+    /// commitment rather than read here; recorded in every snapshot and
+    /// compared on restore, so state gathered at a weaker level is never
+    /// resumed into a runtime that promises a stronger one.
+    pub commitment: crate::Commitment,
 }
 
 impl Default for SnapshotConfig {
@@ -104,6 +109,7 @@ impl Default for SnapshotConfig {
             ready_max_lag_slots: 50,
             ready_max_hold: Duration::from_secs(60),
             legacy_bytecode_hashes: BTreeSet::new(),
+            commitment: crate::Commitment::default(),
         }
     }
 }
@@ -623,6 +629,24 @@ impl SnapshotService {
             );
             return Ok(false);
         }
+        // A snapshot taken at a weaker level holds state a stronger stream
+        // would never have produced — events from slots that were later
+        // skipped or forked out — and resuming cannot remove it, because the
+        // replay starts at the watermark and never revisits what came before.
+        // A stronger snapshot is safe to resume at a weaker level: everything
+        // in it is also true at the weaker one. Snapshots from before the
+        // level was recorded were taken at processed.
+        let snapshot_commitment = header.commitment.unwrap_or_default();
+        if snapshot_commitment < self.config.commitment {
+            warn!(
+                snapshot = %name,
+                snapshot_commitment = %snapshot_commitment,
+                configured_commitment = %self.config.commitment,
+                "Snapshot was taken at a weaker commitment than this runtime ingests at; \
+                 discarding (cold start)"
+            );
+            return Ok(false);
+        }
 
         let mut payload = tokio::task::spawn_blocking(move || envelope::decode_payload(&bytes))
             .await
@@ -840,6 +864,7 @@ impl SnapshotService {
             observed_slot,
             created_at_epoch_ms,
             trigger: Some(trigger),
+            commitment: Some(self.config.commitment),
             entry_counts: vm_snapshot
                 .entry_counts()
                 .into_iter()

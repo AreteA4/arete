@@ -124,13 +124,18 @@ async fn connection(
     .await
     .unwrap()
 }
-fn source(endpoint: &str, from_slot: u64) -> ManagedYellowstoneGrpcSource {
+fn source(
+    endpoint: &str,
+    from_slot: u64,
+    commitment: arete::server::Commitment,
+) -> ManagedYellowstoneGrpcSource {
     ManagedYellowstoneGrpcSource::new(
         arete::runtime::shipstern_yellowstone_grpc_source::YellowstoneGrpcConfig {
             endpoint: endpoint.into(),
             x_token: None,
             timeout: 10,
-            commitment_level: None,
+            // As the generated runtime builds it.
+            commitment_level: Some(source_commitment(commitment)),
             from_slot: Some(from_slot),
             accept_compression: None,
             max_decoding_message_size: None,
@@ -151,7 +156,13 @@ fn update(slot: u64) -> SubscribeUpdate {
         ..Default::default()
     }
 }
-async fn run() {
+async fn run(commitment: arete::server::Commitment) {
+    // The wire value Yellowstone defines for this level.
+    let wire = match commitment {
+        arete::server::Commitment::Processed => CommitmentLevel::Processed,
+        arete::server::Commitment::Confirmed => CommitmentLevel::Confirmed,
+        arete::server::Commitment::Finalized => CommitmentLevel::Finalized,
+    } as i32;
     let service = Service::default();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -168,10 +179,11 @@ async fn run() {
     );
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     let (status_tx, status_rx) = tokio::sync::oneshot::channel();
-    let first_source = source(&endpoint, 100);
+    let first_source = source(&endpoint, 100, commitment);
     let first = tokio::spawn(async move { first_source.connect(tx, status_tx).await });
     let (request, upstream) = connection(&service, 1).await;
     assert_eq!(request.from_slot, Some(100));
+    assert_eq!(request.commitment, Some(wire), "initial subscribe");
     // No client-side dedup or replay quarantine is permitted to change Arete's
     // input order, including duplicates and partial slots on reconnect.
     upstream.send(Ok(update(100))).await.unwrap();
@@ -205,20 +217,17 @@ async fn run() {
 
     let processed = arete::server::SlotTracker::new();
     processed.record(100);
-    let resume = arete::server::snapshot::select_reconnect_from_slot(
-        None,
-        processed.get(),
-        0,
-        Some(3),
-    )
-    .from_slot();
+    let resume =
+        arete::server::snapshot::select_reconnect_from_slot(None, processed.get(), 0, Some(3))
+            .from_slot();
     assert_eq!(resume, Some(100));
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     let (status_tx, status_rx) = tokio::sync::oneshot::channel();
-    let resumed_source = source(&endpoint, resume.unwrap());
+    let resumed_source = source(&endpoint, resume.unwrap(), commitment);
     let resumed = tokio::spawn(async move { resumed_source.connect(tx, status_tx).await });
     let (request, upstream) = connection(&service, 2).await;
     assert_eq!(request.from_slot, Some(100));
+    assert_eq!(request.commitment, Some(wire), "resumed subscribe");
     upstream.send(Ok(update(100))).await.unwrap();
     upstream.send(Ok(update(102))).await.unwrap();
     // The bounded downstream queue permits only one update while the consumer stalls.
@@ -254,6 +263,7 @@ async fn run() {
     __slot_task!();
     let (request, upstream) = connection(&service, 3).await;
     assert!(request.from_slot.is_none());
+    assert_eq!(request.commitment, Some(wire), "slot subscribe");
     assert_eq!(request.slots.len(), 1);
     assert_eq!(
         request.accounts["slot_hashes_sysvar"].account,
@@ -304,5 +314,13 @@ async fn run() {
     server.abort();
 }
 fn main() {
-    tokio::runtime::Runtime::new().unwrap().block_on(run());
+    for commitment in [
+        arete::server::Commitment::Processed,
+        arete::server::Commitment::Confirmed,
+        arete::server::Commitment::Finalized,
+    ] {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(run(commitment));
+    }
 }
