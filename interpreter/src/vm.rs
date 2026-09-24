@@ -4761,6 +4761,21 @@ impl VmContext {
     }
 
     fn apply_transformation(value: &Value, transformation: &Transformation) -> Result<Value> {
+        // A field the event does not carry loads as null. Encoding it keeps it
+        // null, so a null key still reaches its segment's null-key check and
+        // a null field its population strategy; failing here instead would
+        // fail the whole event.
+        if value.is_null()
+            && matches!(
+                transformation,
+                Transformation::HexEncode
+                    | Transformation::HexDecode
+                    | Transformation::Base58Encode
+                    | Transformation::Base58Decode
+            )
+        {
+            return Ok(Value::Null);
+        }
         match transformation {
             Transformation::HexEncode => {
                 if let Some(arr) = value.as_array() {
