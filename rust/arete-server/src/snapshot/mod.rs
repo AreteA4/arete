@@ -899,11 +899,17 @@ async fn rebuild_sorted_caches(view_index: &ViewIndex, entity_cache: &EntityCach
         if entities.is_empty() {
             continue;
         }
+        let filter = spec
+            .pipeline
+            .as_ref()
+            .and_then(|pipeline| pipeline.filter.as_ref());
         let mut caches = sorted_caches.write().await;
         if let Some(cache) = caches.get_mut(&spec.id) {
             let count = entities.len();
             for (key, entity) in entities {
-                cache.upsert(key, entity);
+                if filter.is_none_or(|filter| filter.matches(&entity)) {
+                    cache.upsert(key, entity);
+                }
             }
             // Trim once after the batch; the bound matches the projector's.
             cache.trim_to_max_entries(max_entries);

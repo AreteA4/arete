@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.22.3](https://github.com/AreteA4/arete/compare/arete-server-v0.22.2...arete-server-v0.22.3) (2026-09-24)
+
+
+### Miscellaneous Chores
+
+* **arete-server:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.22.2 to 0.22.3
+
+## [0.22.2](https://github.com/AreteA4/arete/compare/arete-server-v0.22.1...arete-server-v0.22.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* keep a4 stream's session token fresh, and say why an expired session closes ([8ba2edb](https://github.com/AreteA4/arete/commit/8ba2edb2400022cf35d1b479e99850f60950013f))
+* **server:** keep an expired client's close reason out of its queue ([df71151](https://github.com/AreteA4/arete/commit/df711513e3263c1efaee99c4b43dc69177dda7bb))
+* **server:** stop an expired token from deadlocking the client registry ([c644516](https://github.com/AreteA4/arete/commit/c6445167e2c2a96bc06cb6bc01e62b1efc804f08))
+* **server:** stop an expired token from deadlocking the client registry ([9a5fd18](https://github.com/AreteA4/arete/commit/9a5fd181d2487f38d8c8b9a4277fe7cbff75e4c3))
+* **server:** tell a client its session expired before closing its socket ([b0f4bf4](https://github.com/AreteA4/arete/commit/b0f4bf462c51f9e3bd0da0b23664c9f16655ad85))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.22.1 to 0.22.2
+
+## [0.22.1](https://github.com/AreteA4/arete/compare/arete-server-v0.22.0...arete-server-v0.22.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **server:** apply a derived view's filter to its sorted cache ([6f4849e](https://github.com/AreteA4/arete/commit/6f4849ec01392178fcd6a1c5b1305a048e6e1df3))
+* **server:** drop the parser task's lifetime span ([f12648d](https://github.com/AreteA4/arete/commit/f12648dfdb1cfc9cdb1fb7aebf830fd0896bb982))
+
+
+### Performance Improvements
+
+* cut per-event cost in the VM and projector ([11a7e39](https://github.com/AreteA4/arete/commit/11a7e39b43e56760d12901dac3fc03718e1ff6d9))
+* demote per-event spans and logs to debug ([7288944](https://github.com/AreteA4/arete/commit/7288944fb2c8d8591bf40e7c8735e66f75b93eb3))
+* **server:** copy an entity only into derived views that keep it ([3856e49](https://github.com/AreteA4/arete/commit/3856e4902d1bd5e183492003837c17d18e92ed25))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.22.0 to 0.22.1
+
 ## [0.22.0](https://github.com/AreteA4/arete/compare/arete-server-v0.21.0...arete-server-v0.22.0) (2026-09-22)
 
 

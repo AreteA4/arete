@@ -1,6 +1,6 @@
 use crate::account_policy::{redact_identity, AccountPolicyError, AccountPolicyRegistry};
 use crate::compression::CompressedPayload;
-use crate::websocket::auth::{AuthContext, AuthDeny};
+use crate::websocket::auth::{AuthContext, AuthDeny, AuthErrorCode};
 use crate::websocket::rate_limiter::{RateLimitResult, WebSocketRateLimiter};
 use arete_auth::Limits;
 use bytes::Bytes;
@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -192,6 +194,10 @@ pub struct ClientInfo {
     egress_tracker: std::sync::Mutex<EgressTracker>,
     /// Inbound message-rate tracking for rate limiting
     message_rate_tracker: std::sync::Mutex<MessageRateTracker>,
+    /// Why the server dropped this client, sent as the close frame once the
+    /// queue drains. It is kept out of the queue so that a full queue cannot
+    /// lose it.
+    close_frame: Arc<std::sync::OnceLock<CloseFrame>>,
 }
 
 impl ClientInfo {
@@ -210,6 +216,7 @@ impl ClientInfo {
             remote_addr,
             egress_tracker: std::sync::Mutex::new(EgressTracker::new()),
             message_rate_tracker: std::sync::Mutex::new(MessageRateTracker::new()),
+            close_frame: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -681,6 +688,7 @@ impl ClientManager {
         let (client_tx, mut client_rx) =
             mpsc::channel::<Message>(self.rate_limit_config.message_queue_size);
         let client_info = ClientInfo::new(client_id, client_tx, auth_context, remote_addr);
+        let close_frame = client_info.close_frame.clone();
 
         let clients_ref = self.clients.clone();
         tokio::spawn(async move {
@@ -692,7 +700,11 @@ impl ClientManager {
             }
             // Removing a client closes its queue. Complete the WebSocket close
             // handshake as well so receivers do not wait forever on a socket
-            // whose server-side delivery task has already stopped.
+            // whose server-side delivery task has already stopped, and say why
+            // when the server dropped the client on purpose.
+            if let Some(frame) = close_frame.get() {
+                let _ = ws_sender.send(Message::Close(Some(frame.clone()))).await;
+            }
             let _ = ws_sender.close().await;
             clients_ref.remove(&client_id);
             debug!("WebSocket sender task for client {} stopped", client_id);
@@ -727,23 +739,39 @@ impl ClientManager {
     /// Returns true if the client has an auth context and it has expired.
     /// If expired, the client is removed from the registry.
     pub fn check_and_remove_expired(&self, client_id: Uuid) -> bool {
-        if let Some(client) = self.clients.get(&client_id) {
-            if let Some(ref ctx) = client.auth_context {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                if ctx.expires_at <= now {
-                    warn!(
-                        "Client {} token expired (expired at {}), disconnecting",
-                        client_id, ctx.expires_at
-                    );
-                    self.clients.remove(&client_id);
-                    return true;
-                }
-            }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // Check and remove under one shard lock. Calling `remove` while a
+        // `get` guard on the same key is alive deadlocks this thread, and
+        // every later caller that touches the shard queues behind it.
+        let Some((_, client)) = self.clients.remove_if(&client_id, |_, client| {
+            client
+                .auth_context
+                .as_ref()
+                .is_some_and(|ctx| ctx.expires_at <= now)
+        }) else {
+            return false;
+        };
+        if let Some(ctx) = &client.auth_context {
+            warn!(
+                "Client {} token expired (expired at {}), disconnecting",
+                client_id, ctx.expires_at
+            );
         }
-        false
+        // Say why the socket closes. The sender task sends this after the
+        // queue drains, so it is the last frame the client sees; the SDKs read
+        // a `token-expired:` reason as "mint a new token and reconnect".
+        let _ = client.close_frame.set(CloseFrame {
+            code: CloseCode::Policy,
+            reason: format!(
+                "{}: Authentication token expired",
+                AuthErrorCode::TokenExpired.as_str()
+            )
+            .into(),
+        });
+        true
     }
 
     /// Get the current number of connected clients.
@@ -2074,6 +2102,77 @@ mod tests {
             1,
             "fresh entries survive sweep"
         );
+    }
+
+    #[test]
+    fn expired_token_is_removed_without_deadlocking() {
+        let manager = ClientManager::new();
+        let mut context = create_test_auth_context("user-1", Limits::default());
+        context.expires_at = 1;
+        let client_id = insert_client(&manager, context);
+
+        // Send from another thread: a deadlock blocks that thread for good,
+        // so the test fails on the timeout instead of hanging.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let sender = manager.clone();
+        std::thread::spawn(move || {
+            let result = sender.send_to_client(client_id, Arc::new(Bytes::from_static(b"update")));
+            let _ = done_tx.send(result);
+        });
+
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("send_to_client deadlocked on an expired token");
+        assert_eq!(result, Err(SendError::ClientDisconnected));
+        assert!(!manager.has_client(client_id));
+    }
+
+    #[tokio::test]
+    async fn an_expired_client_keeps_its_close_reason_when_its_queue_is_full() {
+        let manager = ClientManager::new();
+        let (sender, mut queue) = mpsc::channel(1);
+        sender
+            .try_send(Message::Text("backlog".into()))
+            .expect("room for one message");
+        let client_id = Uuid::new_v4();
+        let mut context = create_test_auth_context("user-1", Limits::default());
+        context.expires_at = 1;
+        let client = ClientInfo::new(
+            client_id,
+            sender,
+            Some(context),
+            create_test_socket_addr("127.0.0.1"),
+        );
+        let close_frame = client.close_frame.clone();
+        manager.clients.insert(client_id, client);
+
+        assert!(manager.check_and_remove_expired(client_id));
+
+        let frame = close_frame
+            .get()
+            .expect("the close reason is recorded even though the queue is full");
+        assert_eq!(frame.code, CloseCode::Policy);
+        assert_eq!(
+            frame.reason.as_str(),
+            "token-expired: Authentication token expired"
+        );
+        // The backlog is still delivered first, and removing the client
+        // dropped its sender, so the queue then ends and the sender task
+        // closes the socket with the recorded reason.
+        assert!(matches!(queue.recv().await, Some(Message::Text(_))));
+        assert!(queue.recv().await.is_none());
+    }
+
+    #[test]
+    fn unexpired_token_is_kept() {
+        let manager = ClientManager::new();
+        let client_id = insert_client(
+            &manager,
+            create_test_auth_context("user-1", Limits::default()),
+        );
+
+        assert!(!manager.check_and_remove_expired(client_id));
+        assert!(manager.has_client(client_id));
     }
 
     // Test WebSocketRateLimiter integration

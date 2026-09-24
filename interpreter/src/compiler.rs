@@ -2932,6 +2932,88 @@ mod tests {
         assert_eq!(child["activity"]["split_child_count"], json!(1));
     }
 
+    /// A hook whose `lookup_by` names a field the instruction does not carry
+    /// loads a null key. The entity's key transform must pass that null to
+    /// the segment's null-key check, which skips the hook, rather than fail
+    /// the event and lose the handler segment's update with it.
+    #[test]
+    fn a_hook_whose_lookup_field_is_absent_skips_only_its_segment() {
+        let spec: TypedStreamSpec<Value> =
+            TypedStreamSpec::from_serializable(SerializableStreamSpec {
+                ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
+                state_name: "Game".to_string(),
+                program_id: None,
+                idl: None,
+                identity: IdentitySpec {
+                    primary_keys: vec!["id.game_id".to_string()],
+                    lookup_indexes: vec![],
+                },
+                handlers: vec![instruction_handler(
+                    "game::StartGameIxState",
+                    KeyResolutionStrategy::Embedded {
+                        primary_field: FieldPath::new(&["data", "game_id"]),
+                    },
+                    vec![
+                        SerializableFieldMapping {
+                            source: MappingSource::FromSource {
+                                path: FieldPath::new(&["data", "game_id"]),
+                                default: None,
+                                transform: Some(crate::ast::Transformation::HexEncode),
+                            },
+                            ..mapping("id.game_id", &[], PopulationStrategy::SetOnce)
+                        },
+                        mapping("stats.fee", &["data", "fee"], PopulationStrategy::SetOnce),
+                    ],
+                )],
+                sections: vec![],
+                field_mappings: BTreeMap::new(),
+                resolver_hooks: vec![],
+                instruction_hooks: vec![InstructionHook {
+                    instruction_type: "game::StartGameIxState".to_string(),
+                    actions: vec![HookAction::SetField {
+                        target_field: "stats.started_slot".to_string(),
+                        source: MappingSource::FromSource {
+                            path: FieldPath::new(&["data", "slot"]),
+                            default: None,
+                            transform: None,
+                        },
+                        condition: None,
+                    }],
+                    // `game_id` is an argument, not an account.
+                    lookup_by: Some(FieldPath::new(&["accounts", "game_id"])),
+                }],
+                resolver_specs: vec![],
+                computed_fields: vec![],
+                computed_field_specs: vec![],
+                content_hash: None,
+                views: vec![],
+            });
+        let bytecode = MultiEntityBytecode::from_single("Game".to_string(), spec, 0);
+        let mut vm = VmContext::new();
+
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                json!({
+                    "accounts": { "game_account": "game_pda" },
+                    "data": { "game_id": [1, 2, 3, 4], "fee": 5, "slot": 9 },
+                }),
+                "game::StartGameIxState",
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(mutations.len(), 1, "mutations: {mutations:?}");
+        assert_eq!(mutations[0].key, json!("01020304"));
+        let game = vm.get_entity_state(0, &json!("01020304")).unwrap();
+        assert_eq!(game["id"]["game_id"], json!("01020304"));
+        assert_eq!(game["stats"]["fee"], json!(5));
+        assert_eq!(game["stats"].get("started_slot"), None);
+        // The hook's writes are not kept anywhere else either.
+        assert_eq!(vm.get_entity_state(0, &json!(null)), None);
+    }
+
     mod fingerprint {
         use super::super::{EntityBytecode, MultiEntityBytecode, OpCode};
         use crate::ast::FieldPath;

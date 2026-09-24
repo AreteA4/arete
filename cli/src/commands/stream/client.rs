@@ -6,6 +6,7 @@ use arete_sdk::{
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::filter::{self, Filter};
@@ -93,7 +94,12 @@ fn build_state(args: &StreamArgs, view: &str, url: &str) -> Result<StreamState> 
     })
 }
 
-pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
+pub async fn stream(
+    url: String,
+    refresh: Option<token::SessionRefresh>,
+    view: &str,
+    args: &StreamArgs,
+) -> Result<()> {
     // Validate args and build state before connecting (fails fast on bad --where regex etc.)
     let mut state = build_state(args, view, &url)?;
 
@@ -153,6 +159,10 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     tokio::pin!(shutdown);
 
     let mut snapshot_complete = false;
+    let mut refresher = token::SessionRefresher::start(refresh);
+    // Set when the server closes the socket on a policy (an expired or
+    // refused session): the stream failed rather than ended.
+    let mut policy_close: Option<String> = None;
 
     loop {
         tokio::select! {
@@ -175,6 +185,16 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
+                        if let Some(response) = token::parse_refresh_response(&text) {
+                            if !response.success {
+                                eprintln!(
+                                    "Warning: the server refused the refreshed session token ({}); \
+                                     the stream ends when the current token expires.",
+                                    response.error.as_deref().unwrap_or("no reason given")
+                                );
+                            }
+                            continue;
+                        }
                         match parse_server_message(text.as_bytes()) {
                             Ok(message) => {
                                 if handle_server_message(
@@ -193,8 +213,16 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                     Some(Ok(Message::Ping(payload))) => {
                         let _ = ws_tx.send(Message::Pong(payload)).await;
                     }
-                    Some(Ok(Message::Close(_))) => {
-                        eprintln!("Connection closed by server.");
+                    Some(Ok(Message::Close(frame))) => {
+                        match frame {
+                            Some(frame) if frame.code == CloseCode::Policy => {
+                                policy_close = Some(frame.reason.into_owned());
+                            }
+                            Some(frame) if !frame.reason.is_empty() => {
+                                eprintln!("Connection closed by server: {}", frame.reason);
+                            }
+                            _ => eprintln!("Connection closed by server."),
+                        }
                         break;
                     }
                     Some(Err(e)) => {
@@ -213,6 +241,16 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                     let _ = ws_tx.send(Message::Text(msg)).await;
                 }
             }
+            event = refresher.next() => match event {
+                token::RefreshEvent::Token(token) => {
+                    if let Ok(msg) = serde_json::to_string(&ClientMessage::RefreshAuth { token }) {
+                        let _ = ws_tx.send(Message::Text(msg)).await;
+                    }
+                }
+                token::RefreshEvent::Failed(error) => {
+                    eprintln!("Warning: could not refresh the session token, retrying: {error:#}");
+                }
+            },
             _ = &mut duration_future => {
                 eprintln!("Duration reached, stopping...");
                 let _ = ws_tx.close().await;
@@ -250,6 +288,9 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     // Output history/at/diff after stream ends (for non-interactive agent use)
     output_history_if_requested(&state, args)?;
 
+    if let Some(reason) = policy_close {
+        anyhow::bail!("the server closed the stream: {reason}");
+    }
     Ok(())
 }
 
@@ -776,5 +817,119 @@ mod tests {
         )
         .unwrap();
         assert!(state.entities.is_empty());
+    }
+
+    /// A hosted stream against a local server standing in for the stack.
+    mod over_a_socket {
+        use super::*;
+        use crate::api_client::test_support::MockServer;
+        use serde_json::{json, Value};
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+
+        fn stream_args(view: &str) -> StreamArgs {
+            #[derive(clap::Parser)]
+            struct Cli {
+                #[command(flatten)]
+                args: StreamArgs,
+            }
+            <Cli as clap::Parser>::try_parse_from(["a4", view])
+                .expect("stream args parse")
+                .args
+        }
+
+        fn unix_now() -> u64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_hosted_stream_refreshes_its_token_on_the_open_socket() {
+            let mint = MockServer::json(
+                200,
+                &json!({"token": "second", "expires_at": unix_now() + 3_600}).to_string(),
+            );
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}/", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let mut received = Vec::new();
+                while let Some(Ok(message)) = socket.next().await {
+                    let Message::Text(text) = message else {
+                        continue;
+                    };
+                    let message: Value = serde_json::from_str(&text).unwrap();
+                    let refreshed = message["type"] == "refresh_auth";
+                    received.push(message);
+                    if refreshed {
+                        break;
+                    }
+                }
+                socket
+                    .send(Message::Text(
+                        json!({"success": true, "expiresAt": unix_now() + 3_600}).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                // Then end the session the way an expired token would.
+                socket
+                    .close(Some(CloseFrame {
+                        code: CloseCode::Policy,
+                        reason: "token-expired: Authentication token expired".into(),
+                    }))
+                    .await
+                    .unwrap();
+                received
+            });
+
+            let refresh = token::SessionRefresh::for_test(
+                format!("{}/ws/sessions", mint.base_url()),
+                &url,
+                unix_now() + 2,
+            );
+            let args = stream_args("Ore/list");
+            let result = tokio::time::timeout(
+                Duration::from_secs(20),
+                stream(url.clone(), Some(refresh), "Ore/list", &args),
+            )
+            .await
+            .expect("the stream ends within the timeout");
+
+            let error = result.expect_err("a policy close fails the stream");
+            assert!(
+                format!("{error:#}").contains("token-expired"),
+                "the reason reaches the user: {error:#}"
+            );
+            let received = server.await.unwrap();
+            assert_eq!(received[0]["type"], "subscribe");
+            assert_eq!(received.last().unwrap()["token"], "second");
+            assert_eq!(mint.request().request_line, "POST /ws/sessions HTTP/1.1");
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_plain_close_still_ends_the_stream_cleanly() {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}/", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let _subscribe = socket.next().await;
+                socket.close(None).await.unwrap();
+            });
+
+            let args = stream_args("Ore/list");
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                stream(url, None, "Ore/list", &args),
+            )
+            .await
+            .expect("the stream ends within the timeout");
+
+            assert!(result.is_ok(), "{result:?}");
+            server.await.unwrap();
+        }
     }
 }
