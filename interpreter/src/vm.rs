@@ -3290,6 +3290,13 @@ impl VmContext {
                         .get(&actual_state_id)
                         .ok_or("State table not found")?;
                     let key_value = self.registers[*key].clone();
+                    // A null key names no entity. Storing under it would make
+                    // one entity shared by every event that misses its key,
+                    // which is never emitted and accumulates their writes.
+                    if key_value.is_null() {
+                        pc += 1;
+                        continue;
+                    }
                     // Moved rather than copied when nothing after this reads
                     // the register but the mutation built from it, which then
                     // reads the table.
@@ -4761,6 +4768,21 @@ impl VmContext {
     }
 
     fn apply_transformation(value: &Value, transformation: &Transformation) -> Result<Value> {
+        // A field the event does not carry loads as null. Encoding it keeps it
+        // null, so a null key still reaches its segment's null-key check and
+        // a null field its population strategy; failing here instead would
+        // fail the whole event.
+        if value.is_null()
+            && matches!(
+                transformation,
+                Transformation::HexEncode
+                    | Transformation::HexDecode
+                    | Transformation::Base58Encode
+                    | Transformation::Base58Decode
+            )
+        {
+            return Ok(Value::Null);
+        }
         match transformation {
             Transformation::HexEncode => {
                 if let Some(arr) = value.as_array() {
