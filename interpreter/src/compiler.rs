@@ -3010,6 +3010,8 @@ mod tests {
         assert_eq!(game["id"]["game_id"], json!("01020304"));
         assert_eq!(game["stats"]["fee"], json!(5));
         assert_eq!(game["stats"].get("started_slot"), None);
+        // The hook's writes are not kept anywhere else either.
+        assert_eq!(vm.get_entity_state(0, &json!(null)), None);
     }
 
     mod fingerprint {

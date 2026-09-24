@@ -3290,6 +3290,13 @@ impl VmContext {
                         .get(&actual_state_id)
                         .ok_or("State table not found")?;
                     let key_value = self.registers[*key].clone();
+                    // A null key names no entity. Storing under it would make
+                    // one entity shared by every event that misses its key,
+                    // which is never emitted and accumulates their writes.
+                    if key_value.is_null() {
+                        pc += 1;
+                        continue;
+                    }
                     // Moved rather than copied when nothing after this reads
                     // the register but the mutation built from it, which then
                     // reads the table.
