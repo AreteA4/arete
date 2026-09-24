@@ -146,6 +146,8 @@ pub struct App {
     pub show_raw: bool,
     pub paused: bool,
     pub disconnected: bool,
+    /// What the status bar keeps showing once the stream is disconnected.
+    disconnect_message: Option<String>,
     pub filter_input_active: bool,
     pub filter_text: String,
     pub status_message: String,
@@ -192,6 +194,7 @@ impl App {
             show_raw: false,
             paused: false,
             disconnected: false,
+            disconnect_message: None,
             filter_input_active: false,
             filter_text: String::new(),
             status_message: "Connected".to_string(),
@@ -780,6 +783,8 @@ impl App {
     pub fn status(&self) -> &str {
         if self.status_time.elapsed().as_millis() < MAX_STATUS_AGE_MS {
             &self.status_message
+        } else if let Some(message) = &self.disconnect_message {
+            message
         } else if self.paused {
             "PAUSED"
         } else {
@@ -787,14 +792,21 @@ impl App {
         }
     }
 
-    fn set_status(&mut self, msg: &str) {
+    pub fn set_status(&mut self, msg: &str) {
         self.status_message = msg.to_string();
         self.status_time = std::time::Instant::now();
     }
 
-    pub fn set_disconnected(&mut self) {
+    /// Mark the stream disconnected, with the server's reason when it gave
+    /// one. The message stays in the status bar from then on.
+    pub fn set_disconnected(&mut self, reason: Option<&str>) {
         self.disconnected = true;
-        self.set_status("Disconnected");
+        let message = match reason {
+            Some(reason) => format!("Disconnected: {reason}"),
+            None => "Disconnected".to_string(),
+        };
+        self.set_status(&message);
+        self.disconnect_message = Some(message);
     }
 
     /// Returns cached filtered keys.
@@ -916,5 +928,49 @@ fn value_contains_str(value: &Value, needle: &str) -> bool {
             .any(|(k, v)| k.to_lowercase().contains(needle) || value_contains_str(v, needle)),
         Value::Array(arr) => arr.iter().any(|v| value_contains_str(v, needle)),
         Value::Null => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn app() -> App {
+        App::new(
+            "Ore/list".to_string(),
+            "wss://ore.stack.arete.run".to_string(),
+            Arc::new(AtomicU64::new(0)),
+        )
+    }
+
+    /// Age the last status message past the window in which it shows.
+    fn let_status_expire(app: &mut App) {
+        app.status_time = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(10))
+            .expect("the clock is past ten seconds");
+    }
+
+    #[test]
+    fn the_disconnect_reason_stays_in_the_status_bar() {
+        let mut app = app();
+        app.set_disconnected(Some("token-expired: Authentication token expired"));
+        let_status_expire(&mut app);
+
+        assert_eq!(
+            app.status(),
+            "Disconnected: token-expired: Authentication token expired"
+        );
+    }
+
+    #[test]
+    fn a_disconnect_without_a_reason_still_says_so() {
+        let mut app = app();
+        app.set_disconnected(None);
+        let_status_expire(&mut app);
+
+        assert_eq!(app.status(), "Disconnected");
     }
 }

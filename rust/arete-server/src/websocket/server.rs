@@ -3595,4 +3595,142 @@ mod tests {
             socket.close(None).await.ok();
         }
     }
+
+    /// Session tokens that expire while their socket is open.
+    mod session_expiry {
+        use super::*;
+        use crate::websocket::auth::SignedSessionAuthPlugin;
+        use arete_auth::{KeyClass, SessionClaims, SigningKey, TokenSigner, TokenVerifier};
+        use futures_util::{SinkExt, StreamExt};
+        use std::time::Duration;
+        use tokio::net::{TcpListener, TcpStream};
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        use tokio_tungstenite::tungstenite::Message;
+        use tokio_tungstenite::{client_async, WebSocketStream};
+
+        struct Server {
+            addr: SocketAddr,
+            signer: TokenSigner,
+        }
+
+        impl Server {
+            async fn start() -> Self {
+                let signing_key = SigningKey::generate();
+                let verifier =
+                    TokenVerifier::new(signing_key.verifying_key(), "test-issuer", "test-audience");
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let server = WebSocketServer::new(
+                    addr,
+                    BusManager::new(),
+                    EntityCache::new(),
+                    Arc::new(ViewIndex::new()),
+                    #[cfg(feature = "otel")]
+                    None,
+                )
+                .with_auth_plugin(Arc::new(SignedSessionAuthPlugin::new(verifier)));
+                let (acceptor, _cleanup) = server.into_acceptor();
+                tokio::spawn(async move { acceptor.serve_listener(listener).await });
+                Self {
+                    addr,
+                    signer: TokenSigner::new(signing_key, "test-issuer"),
+                }
+            }
+
+            fn token(&self, ttl_seconds: u64) -> String {
+                let claims = SessionClaims::builder("test-issuer", "test-subject", "test-audience")
+                    .with_scope("read")
+                    .with_key_class(KeyClass::Secret)
+                    .with_ttl(ttl_seconds)
+                    .build();
+                self.signer.sign(claims).unwrap()
+            }
+
+            async fn connect(&self, token: &str) -> WebSocketStream<TcpStream> {
+                let stream = TcpStream::connect(self.addr).await.unwrap();
+                client_async(format!("ws://{}/?hs_token={token}", self.addr), stream)
+                    .await
+                    .unwrap()
+                    .0
+            }
+        }
+
+        async fn send_json(socket: &mut WebSocketStream<TcpStream>, message: Value) {
+            socket
+                .send(Message::Text(message.to_string().into()))
+                .await
+                .unwrap();
+        }
+
+        /// The close frame, if the server closes the socket within `wait`.
+        async fn close_within(
+            socket: &mut WebSocketStream<TcpStream>,
+            wait: Duration,
+        ) -> Option<Option<CloseFrame>> {
+            tokio::time::timeout(wait, async {
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Message::Close(frame) = message {
+                        return Some(frame);
+                    }
+                }
+                Some(None)
+            })
+            .await
+            .ok()
+            .flatten()
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn an_expired_session_is_closed_with_the_reason() {
+            let server = Server::start().await;
+            let mut socket = server.connect(&server.token(2)).await;
+
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            send_json(&mut socket, json!({"type": "ping"})).await;
+
+            let frame = close_within(&mut socket, Duration::from_secs(5))
+                .await
+                .expect("the server closes the expired session")
+                .expect("the close frame carries a reason");
+            assert_eq!(frame.code, CloseCode::Policy);
+            assert_eq!(
+                frame.reason.as_str(),
+                "token-expired: Authentication token expired"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_session_refreshed_in_band_outlives_its_first_token() {
+            let server = Server::start().await;
+            let mut socket = server.connect(&server.token(2)).await;
+
+            send_json(
+                &mut socket,
+                json!({"type": "refresh_auth", "token": server.token(3_600)}),
+            )
+            .await;
+            let reply = tokio::time::timeout(Duration::from_secs(5), async {
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Message::Text(text) = message {
+                        return serde_json::from_str::<Value>(text.as_str()).ok();
+                    }
+                }
+                None
+            })
+            .await
+            .expect("the server answers the refresh")
+            .expect("the answer is JSON");
+            assert_eq!(reply["success"], true, "refresh accepted: {reply}");
+
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            send_json(&mut socket, json!({"type": "ping"})).await;
+            assert!(
+                close_within(&mut socket, Duration::from_millis(1_500))
+                    .await
+                    .is_none(),
+                "the socket stays open on the refreshed token"
+            );
+        }
+    }
 }
