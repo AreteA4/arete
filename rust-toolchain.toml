@@ -1,0 +1,7 @@
+# The Rust toolchain for CI and release builds. Release dispatches must
+# pass this same version as their rust_toolchain input; the release
+# workflows check that they match.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
