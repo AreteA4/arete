@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.22.3](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.22.2...arete-interpreter-v0.22.3) (2026-09-24)
+
+
+### Bug Fixes
+
+* **interpreter:** let a null key skip its segment instead of failing the event ([93b11c2](https://github.com/AreteA4/arete/commit/93b11c20871f12512b2b048b53c9e0cfb90d68fb))
+* **interpreter:** let a null key skip its segment instead of failing the event ([30b98db](https://github.com/AreteA4/arete/commit/30b98dbf769d8cf197039e87c3272e570481645d))
+* **interpreter:** never store an entity under a null key ([f664939](https://github.com/AreteA4/arete/commit/f664939b5cb5560149c257cce38d725b5a0e1a0d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.22.2 to 0.22.3
+
 ## [0.22.2](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.22.1...arete-interpreter-v0.22.2) (2026-09-24)
 
 
