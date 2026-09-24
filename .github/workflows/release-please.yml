@@ -75,7 +75,13 @@ jobs:
           test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
           git show-ref --verify --quiet refs/remotes/origin/main
           git merge-base --is-ancestor "$SOURCE_COMMIT" refs/remotes/origin/main
-          test "$(gh run list --workflow ci.yml --commit "$SOURCE_COMMIT" --json conclusion --jq 'map(select(.conclusion == "success")) | length')" -gt 0
+          # A successful pull_request run on the identical tree counts as well, so
+          # the release need not wait for main's own CI run to finish.
+          if [ "$(gh run list --workflow ci.yml --commit "$SOURCE_COMMIT" --json conclusion --jq 'map(select(.conclusion == "success")) | length')" -gt 0 ]; then
+            echo "ci.yml succeeded on $SOURCE_COMMIT"
+          else
+            test "$(GITHUB_REPOSITORY_ID=${{ github.repository_id }} bash scripts/find-verified-tree.sh .github/workflows/ci.yml verified-tree-ci)" = true
+          fi
           # rust-toolchain.toml overrides the installed toolchain, so a different
           # input would be recorded as the release toolchain without being used.
           test "$RUST_TOOLCHAIN" = "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"

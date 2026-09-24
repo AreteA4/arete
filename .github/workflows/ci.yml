@@ -103,6 +103,9 @@ jobs:
       - name: Syntax-check install.sh (POSIX sh)
         run: sh -n docs/public/install.sh
 
+      - name: Require the verified-tree marker to wait for every job
+        run: bash ./scripts/check-verified-tree-needs.sh .github/workflows/ci.yml
+
   npm-cli-wrapper:
     name: npm CLI Wrapper
     runs-on: ubuntu-latest
@@ -798,3 +801,48 @@ jobs:
           cargo clippy --locked -p arete-a4-sdk --features solana-adapter -- -D warnings
           cargo clippy --locked -p arete-a4-sdk --features solana-adapter \
             --test solana_adapter --example solana_v1 -- -D warnings
+
+  # Records that this exact tree passed every job above. A pull_request run
+  # checks out the merge commit GitHub would create, so when the base branch
+  # has not moved before the merge, main gets this same tree and the release
+  # workflow can accept this run instead of waiting for main's CI. Main pushes
+  # always run in full. scripts/check-verified-tree-needs.sh keeps `needs`
+  # complete.
+  record-verified-tree:
+    name: Record verified tree
+    needs:
+      - check-crate-files
+      - lockfile-sync
+      - linked-release-versions
+      - npm-cli-wrapper
+      - npm-publish-auth
+      - rust-workspace
+      - rust-features
+      - rust-consumers
+      - rust-clippy
+      - rust
+      - generated-example-sdks
+      - ore-react
+      - typescript-core
+      - typescript-hash
+      - typescript-adapters
+      - typescript-react
+      - python-matrix
+      - python
+      - docs
+      - rust-solana-adapter
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - id: tree
+        run: echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+
+      - run: printf '%s\n' "$GITHUB_SHA" > verified-tree.txt
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-tree-ci-${{ steps.tree.outputs.tree }}
+          path: verified-tree.txt
+          retention-days: 14
