@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## [0.22.2](https://github.com/AreteA4/arete/compare/a4-cli-v0.22.1...a4-cli-v0.22.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* **cli:** keep a4 stream's session token fresh ([41d7ed5](https://github.com/AreteA4/arete/commit/41d7ed5ed441a94b00b256fdf569aaf7b4dadfc9))
+* **cli:** report refresh failures and expired sessions in the TUI ([b8725a3](https://github.com/AreteA4/arete/commit/b8725a34f930cddb6d58bd2b17e97bdf7501543d))
+* keep a4 stream's session token fresh, and say why an expired session closes ([8ba2edb](https://github.com/AreteA4/arete/commit/8ba2edb2400022cf35d1b479e99850f60950013f))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.22.1 to 0.22.2
+    * arete-mcp bumped from 0.22.1 to 0.22.2
+
 ## [0.22.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.22.0...a4-cli-v0.22.1) (2026-09-23)
 
 
