@@ -425,11 +425,7 @@ pub fn list_programs(json: bool) -> Result<()> {
 
 pub fn show_stack(reference: &str, entity: Option<&str>, json: bool) -> Result<()> {
     let client = ApiClient::new()?;
-    let typescript = resolve_stack_descriptor(&client, reference, None)?;
-    let rust = client
-        .get_registry_stack_install(&typescript.stack, Some("rust"))
-        .with_context(|| descriptor_diagnostic(&typescript.stack))?;
-    validate_stack_descriptor_identity(&typescript, &rust)?;
+    let (install_ref, typescript, rust) = resolve_stack_descriptors(&client, reference)?;
 
     if let Some(entity) = entity {
         let output = build_entity_output(&typescript, entity)?;
@@ -441,7 +437,7 @@ pub fn show_stack(reference: &str, entity: Option<&str>, json: bool) -> Result<(
         return Ok(());
     }
 
-    let output = build_stack_output(&typescript, &rust)?;
+    let output = build_stack_output(&install_ref, &typescript, &rust)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
@@ -467,13 +463,36 @@ pub fn show_program(reference: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// The TypeScript and Rust descriptors of one stack, both requested with the
+/// install reference that resolved. `descriptor.stack` names the deployed
+/// stack's public subdomain, which is not necessarily an install reference
+/// (a catalog package slug is not one), so it is never used to ask again.
+fn resolve_stack_descriptors(
+    client: &ApiClient,
+    reference: &str,
+) -> Result<(
+    String,
+    RegistryStackInstallResponse,
+    RegistryStackInstallResponse,
+)> {
+    let (install_ref, typescript) = resolve_stack_descriptor(client, reference, None)?;
+    let rust = client
+        .get_registry_stack_install(&install_ref, Some("rust"))
+        .with_context(|| descriptor_diagnostic(&install_ref))?;
+    validate_stack_descriptor_identity(&typescript, &rust)?;
+    Ok((install_ref, typescript, rust))
+}
+
+/// The descriptor for `reference`, and the exact install reference that
+/// produced it: `reference` itself, or the one a legacy display name or an
+/// owner's private stack name translated to.
 fn resolve_stack_descriptor(
     client: &ApiClient,
     reference: &str,
     language: Option<&str>,
-) -> Result<RegistryStackInstallResponse> {
+) -> Result<(String, RegistryStackInstallResponse)> {
     let direct_error = match client.get_registry_stack_install(reference, language) {
-        Ok(descriptor) => return Ok(descriptor),
+        Ok(descriptor) => return Ok((reference.to_string(), descriptor)),
         Err(error) => error,
     };
 
@@ -487,9 +506,10 @@ fn resolve_stack_descriptor(
             .find(|item| item.name.eq_ignore_ascii_case(reference))
         {
             if let Some(install_ref) = install_ref_from_websocket_url(&item.websocket_url) {
-                return client
+                let descriptor = client
                     .get_registry_stack_install(&install_ref, language)
-                    .with_context(|| descriptor_diagnostic(&install_ref));
+                    .with_context(|| descriptor_diagnostic(&install_ref))?;
+                return Ok((install_ref, descriptor));
             }
         }
     }
@@ -500,9 +520,10 @@ fn resolve_stack_descriptor(
     if let Ok(Some(install_ref)) = paginated_deployment_install_ref(reference, |limit, offset| {
         client.list_deployments_page(limit, offset)
     }) {
-        return client
+        let descriptor = client
             .get_registry_stack_install(&install_ref, language)
-            .with_context(|| descriptor_diagnostic(&install_ref));
+            .with_context(|| descriptor_diagnostic(&install_ref))?;
+        return Ok((install_ref, descriptor));
     }
 
     Err(direct_error).with_context(|| descriptor_diagnostic(reference))
@@ -597,6 +618,7 @@ fn validate_stack_descriptor_identity(
 }
 
 fn build_stack_output(
+    install_ref: &str,
     typescript: &RegistryStackInstallResponse,
     rust: &RegistryStackInstallResponse,
 ) -> Result<StackExploreOutput> {
@@ -657,7 +679,7 @@ fn build_stack_output(
         schema_version: EXPLORE_SCHEMA_VERSION,
         kind: "stack",
         name: typescript.name.clone(),
-        install_ref: typescript.stack.clone(),
+        install_ref: install_ref.to_string(),
         description: typescript.description.clone(),
         visibility: typescript.visibility.clone(),
         identity: StackIdentitySummary {
@@ -689,7 +711,7 @@ fn build_stack_output(
         },
         chain,
         transaction,
-        install_command: format!("a4 install stack {} --ts", typescript.stack),
+        install_command: format!("a4 install stack {install_ref} --ts"),
     })
 }
 
@@ -1960,7 +1982,7 @@ mod tests {
     fn stack_explore_preserves_descriptor_identities_aliases_and_selected_views() {
         let typescript = stack_descriptor();
         let rust = stack_descriptor();
-        let output = build_stack_output(&typescript, &rust).unwrap();
+        let output = build_stack_output("multi-stack", &typescript, &rust).unwrap();
         assert_eq!(output.schema_version, 1);
         assert_eq!(output.identity.stack_manifest_hash, "manifest-exact");
         assert_eq!(
@@ -2000,7 +2022,7 @@ mod tests {
             {"liveAlias": "primary", "viewId": "Position/state"}
         ]);
         let rust = typescript.clone();
-        let output = build_stack_output(&typescript, &rust).unwrap();
+        let output = build_stack_output("multi-stack", &typescript, &rust).unwrap();
         assert_eq!(output.identity.stack_manifest_hash, "manifest-exact");
         assert_eq!(output.live_specs.len(), 1);
         assert_eq!(output.live_specs[0].live_spec_hash, "live-primary");
@@ -2054,6 +2076,184 @@ mod tests {
 
         assert_eq!(output.events[0].fields[0].name, "value");
         assert_eq!(output.events[0].fields[0].field_type, json!("u64"));
+    }
+
+    /// `ApiClient::new()` pointed at a mock registry that answers `responses`
+    /// in order and records every request, with an owner credential.
+    struct MockRegistry {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        _dir: tempfile::TempDir,
+        server: crate::api_client::test_support::MockServer,
+    }
+
+    impl MockRegistry {
+        fn new(responses: Vec<(u16, String)>) -> Self {
+            let guard = crate::api_client::test_support::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let dir = tempfile::tempdir().unwrap();
+            let server = crate::api_client::test_support::MockServer::json_sequence(responses);
+            let credentials = dir.path().join("credentials.toml");
+            std::fs::write(
+                &credentials,
+                format!(
+                    "[keys]\n\"{}\" = \"a4_sk_explore_owner\"\n",
+                    server.base_url()
+                ),
+            )
+            .unwrap();
+            std::env::set_var("ARETE_API_URL", server.base_url());
+            std::env::set_var("ARETE_CREDENTIALS_PATH", &credentials);
+            std::env::set_var("ARETE_TELEMETRY_DISABLED", "1");
+            Self {
+                _guard: guard,
+                _dir: dir,
+                server,
+            }
+        }
+
+        /// The path and query of the next recorded request.
+        fn next_target(&self) -> String {
+            let request = self.server.request();
+            request
+                .request_line
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .to_string()
+        }
+    }
+
+    impl Drop for MockRegistry {
+        fn drop(&mut self) {
+            std::env::remove_var("ARETE_API_URL");
+            std::env::remove_var("ARETE_CREDENTIALS_PATH");
+        }
+    }
+
+    fn single_live_descriptor(stack: &str) -> String {
+        let mut descriptor = stack_descriptor();
+        descriptor.stack = stack.into();
+        descriptor.live_specs.truncate(1);
+        descriptor.stack_manifest["payload"]["selectedViews"] = json!([
+            {"liveAlias": "primary", "viewId": "Position/state"}
+        ]);
+        serde_json::to_string(&descriptor).unwrap()
+    }
+
+    fn install_target(reference: &str, language: Option<&str>) -> String {
+        match language {
+            Some(language) => format!(
+                "/api/registry/stacks/{reference}/install?language={language}&capabilities=managed-solana-gateway-v1"
+            ),
+            None => format!(
+                "/api/registry/stacks/{reference}/install?capabilities=managed-solana-gateway-v1"
+            ),
+        }
+    }
+
+    fn not_found() -> (u16, String) {
+        (
+            404,
+            json!({"error": "Stack not found in registry"}).to_string(),
+        )
+    }
+
+    #[test]
+    fn explore_reuses_a_catalog_slug_even_when_the_descriptor_names_a_subdomain() {
+        let registry = MockRegistry::new(vec![
+            (200, single_live_descriptor("ore-abc123")),
+            (200, single_live_descriptor("ore-abc123")),
+        ]);
+        let client = ApiClient::new().unwrap();
+        let (install_ref, typescript, rust) = resolve_stack_descriptors(&client, "ore").unwrap();
+        assert_eq!(install_ref, "ore");
+        assert_eq!(typescript.stack, "ore-abc123");
+        assert_eq!(registry.next_target(), install_target("ore", None));
+        assert_eq!(registry.next_target(), install_target("ore", Some("rust")));
+        let output = build_stack_output(&install_ref, &typescript, &rust).unwrap();
+        assert_eq!(output.install_ref, "ore");
+        assert_eq!(output.install_command, "a4 install stack ore --ts");
+    }
+
+    #[test]
+    fn explore_reuses_the_reference_a_legacy_display_name_translated_to() {
+        let listing = json!([{
+            "name": "OreMining",
+            "description": null,
+            "websocket_url": "wss://oremining-x1y2z3.stack.arete.run",
+            "entities": ["Position"]
+        }]);
+        let registry = MockRegistry::new(vec![
+            not_found(),
+            (200, listing.to_string()),
+            (200, single_live_descriptor("oremining-x1y2z3")),
+            (200, single_live_descriptor("oremining-x1y2z3")),
+        ]);
+        let client = ApiClient::new().unwrap();
+        let (install_ref, _, _) = resolve_stack_descriptors(&client, "OreMining").unwrap();
+        assert_eq!(install_ref, "oremining-x1y2z3");
+        assert_eq!(registry.next_target(), install_target("OreMining", None));
+        assert_eq!(registry.next_target(), "/api/registry");
+        assert_eq!(
+            registry.next_target(),
+            install_target("oremining-x1y2z3", None)
+        );
+        assert_eq!(
+            registry.next_target(),
+            install_target("oremining-x1y2z3", Some("rust"))
+        );
+    }
+
+    #[test]
+    fn explore_reuses_the_atom_an_owner_private_name_resolved_to() {
+        let deployments = serde_json::to_string(&vec![deployment(
+            41,
+            "Vault",
+            "vault-live",
+            DeploymentStatus::Active,
+            DeploymentPhase::Running,
+            None,
+        )])
+        .unwrap();
+        let registry = MockRegistry::new(vec![
+            not_found(),
+            (200, "[]".into()),
+            (200, deployments),
+            (200, single_live_descriptor("vault-live")),
+            (200, single_live_descriptor("vault-live")),
+        ]);
+        let client = ApiClient::new().unwrap();
+        let (install_ref, _, _) = resolve_stack_descriptors(&client, "vault").unwrap();
+        assert_eq!(install_ref, "vault-live");
+        assert_eq!(registry.next_target(), install_target("vault", None));
+        assert_eq!(registry.next_target(), "/api/registry");
+        assert!(registry.next_target().starts_with("/api/deployments?"));
+        assert_eq!(registry.next_target(), install_target("vault-live", None));
+        assert_eq!(
+            registry.next_target(),
+            install_target("vault-live", Some("rust"))
+        );
+    }
+
+    #[test]
+    fn explore_still_rejects_typescript_and_rust_identity_drift() {
+        let mut drifted: Value = serde_json::from_str(&single_live_descriptor("ore")).unwrap();
+        drifted["stackManifestHash"] = json!("drifted");
+        let registry = MockRegistry::new(vec![
+            (200, single_live_descriptor("ore")),
+            (200, drifted.to_string()),
+        ]);
+        let client = ApiClient::new().unwrap();
+        let error = resolve_stack_descriptors(&client, "ore").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("different descriptor identities"),
+            "{error:#}"
+        );
+        registry.next_target();
+        assert_eq!(registry.next_target(), install_target("ore", Some("rust")));
     }
 
     #[test]
