@@ -434,8 +434,7 @@ fn main() {{
         load_live_spec_v2(&fs::read(temp.path().join(".arete/Stream.live-spec.json")).unwrap())
             .unwrap()
             .artifact;
-    live
-        .payload
+    live.payload
         .entities
         .iter()
         .find(|entity| entity.state_name == "EntropyVar")
@@ -504,4 +503,85 @@ fn main() {
         stderr.contains("pump_sdk") && stderr.contains("entropy_sdk"),
         "the diagnostic must name the stack's programs:\n{stderr}"
     );
+}
+
+/// Build a two-IDL stack whose entity reads two pump accounts and one entropy
+/// account, with `entity_args` spliced into its `#[entity(...)]`.
+fn cross_program_entity(entity_args: &str, case_name: &str) -> (TempCrate, std::process::Output) {
+    let fixture_dir = macro_manifest_dir()
+        .parent()
+        .unwrap()
+        .join("arete-idl/tests/fixtures");
+    let pump = fs::read_to_string(fixture_dir.join("pump.json")).unwrap();
+    let entropy = fs::read_to_string(fixture_dir.join("entropy.json")).unwrap();
+    let source = format!(
+        r#"use arete_macros::arete;
+
+#[arete(idl = ["idl/pump.json", "idl/entropy.json"])]
+mod stream {{
+    #[entity({entity_args})]
+    struct Round {{
+        #[map(entropy_sdk::accounts::Var::__account_address, primary_key, strategy = SetOnce)]
+        address: String,
+
+        #[map(pump_sdk::accounts::BondingCurve::__account_address, lookup_index, strategy = SetOnce)]
+        curve: Option<String>,
+
+        #[map(pump_sdk::accounts::Global::__account_address, lookup_index, strategy = SetOnce)]
+        global: Option<String>,
+    }}
+}}
+
+fn main() {{
+    let _ = stream::create_multi_entity_bytecode();
+}}
+"#
+    );
+    let temp = TempCrate::new(
+        "artifact-native-v2",
+        case_name,
+        cargo_toml(case_name, &dependencies()),
+        &source,
+        &[("idl/pump.json", &pump), ("idl/entropy.json", &entropy)],
+    );
+    let output = temp.cargo_check();
+    (temp, output)
+}
+
+#[test]
+fn a_cross_program_entity_must_declare_its_program() {
+    let (_, output) = cross_program_entity(r#"name = "Round""#, "cross-program-undeclared");
+    assert!(
+        !output.status.success(),
+        "an entity reading pump and entropy must not pick an owner by itself"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("entity `Round` reads from several programs (`entropy`, `pump`)")
+            && stderr.contains(r#"#[entity(name = "Round", program = "pump")]"#),
+        "the diagnostic must name the entity, its programs and the fix:\n{stderr}"
+    );
+
+    // Entropy owns fewer of the entity's sources, so only the declaration can
+    // make it the owner.
+    let (temp, output) = cross_program_entity(
+        r#"name = "Round", program = "entropy""#,
+        "cross-program-declared",
+    );
+    assert!(
+        output.status.success(),
+        "a declared cross-program entity failed to build:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let live =
+        load_live_spec_v2(&fs::read(temp.path().join(".arete/Stream.live-spec.json")).unwrap())
+            .unwrap()
+            .artifact;
+    let round = live
+        .payload
+        .entities
+        .iter()
+        .find(|entity| entity.state_name == "Round")
+        .expect("Round entity");
+    assert_eq!(round.program_id.as_deref(), Some(ENTROPY_PROGRAM_ID));
 }

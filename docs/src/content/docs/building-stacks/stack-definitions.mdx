@@ -142,6 +142,15 @@ Each IDL generates its own namespaced SDK module (e.g., `ore_sdk`, `entropy_sdk`
 
 To link accounts across programs, use `lookup_index(register_from = [...])` — see the [Macro Reference](/building-stacks/rust-dsl/macros#cross-account-resolution-with-register_from) for the full syntax and examples.
 
+An entity is owned by the program it reads. An entity that reads from more than one program must declare its owner, or the stack fails to compile:
+
+```rust
+#[entity(name = "OreRound", program = "ore")]
+pub struct OreRound {
+    // Ore sections, plus a section reading entropy_sdk::accounts::Var
+}
+```
+
 ---
 
 ## Example WebSocket Frames
