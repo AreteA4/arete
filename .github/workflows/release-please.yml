@@ -137,6 +137,18 @@ jobs:
             git push origin "HEAD:$RELEASE_BRANCH"
           fi
 
+          # The push above normally triggers the pull_request CI run for the new
+          # head. Dispatch CI only if that run has not appeared, so the release PR
+          # is always tested exactly once.
+          HEAD_SHA="$(git rev-parse HEAD)"
+          for _ in $(seq 1 12); do
+            if [ "$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --event pull_request --json databaseId --jq 'length')" -gt 0 ]; then
+              echo "pull_request CI is already running for $HEAD_SHA"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "No pull_request CI appeared for $HEAD_SHA after 120 s; dispatching ci.yml"
           gh workflow run ci.yml --ref "$RELEASE_BRANCH"
 
   publish-rust:
