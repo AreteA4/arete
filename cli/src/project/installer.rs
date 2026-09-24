@@ -11,7 +11,7 @@ use crate::api_client::ApiClient;
 use crate::commands::public_artifacts::{load_local_artifact_stack_with_roots, LocalArtifactStack};
 use crate::commands::sdk::{
     generate_project_local_program, generate_project_local_stack,
-    generate_project_registry_dependency, ProjectGenerationOptions,
+    generate_project_registry_dependency, verify_resolved_stack_delivery, ProjectGenerationOptions,
 };
 
 use super::lockfile::{LockedDependency, LockedLiveSpec, LockedProgram};
@@ -26,6 +26,9 @@ use super::resolver::{
 use super::{InstallPlan, ProjectLock, ProjectManifest, GENERATOR_CONTRACT, RESOLVER_CONTRACT};
 
 const INSTALL_JOURNAL: &str = ".arete/install-journal.json";
+/// A hosted stack's exact delivery is transiently unavailable. It is not a
+/// lock integrity failure: the locked release still resolves.
+const DELIVERY_NOT_READY: &str = "delivery-not-ready";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InstallOptions<'a> {
@@ -573,6 +576,7 @@ fn resolve_saved_requirement(
     verify_resolved_kind_and_contract(kind, resolved)?;
     verify_resolved_extensions(resolved, &[InstallTarget::TypeScript])?;
     verify_resolved_release_identity(resolved)?;
+    verify_resolved_stack_delivery(resolved)?;
     let version = match resolved {
         ResolvedRegistryDependency::Stack { version, .. }
         | ResolvedRegistryDependency::Program { version, .. } => version,
@@ -881,6 +885,7 @@ fn resolve_dependencies(
             verify_resolved_kind_and_contract(request.kind, &response)?;
             verify_resolved_extensions(&response, &manifest.document.sdk.targets)?;
             verify_resolved_release_identity(&response)?;
+            verify_resolved_stack_delivery(&response)?;
             if let Some(locked) = &request.locked_package_release_hash {
                 if response.package_release_hash() != locked {
                     bail!(
@@ -1187,6 +1192,10 @@ fn describe_resolver_batch_error(
         }
         403 => anyhow::anyhow!("This account is not entitled to resolve one or more of {names}"),
         404 => anyhow::anyhow!("One or more of {names} is unavailable to this account or unknown"),
+        409 if http.code.as_deref() == Some(DELIVERY_NOT_READY) => anyhow::anyhow!(
+            "A hosted stack among {names} is published but its live delivery is not currently \
+             ready; nothing was installed and arete.lock is unchanged. Retry shortly ({http})"
+        ),
         409 if !locked.is_empty() => anyhow::anyhow!(
             "The registry could not honor the exact lock for one or more of {}; this is an \
              integrity failure, so nothing was installed. Run `a4 update` for the affected \
@@ -1221,6 +1230,9 @@ fn describe_resolver_error(
         ),
         404 => anyhow::anyhow!(
             "{kind} '{package}' is unavailable to this account or unknown; check the name, or log in as the owner if it is private ({http})"
+        ),
+        409 if http.code.as_deref() == Some(DELIVERY_NOT_READY) => anyhow::anyhow!(
+            "{kind} '{package}' is published but its live delivery is not currently ready; nothing was installed and arete.lock is unchanged. Retry shortly ({http})"
         ),
         409 if locked => anyhow::anyhow!(
             "arete.lock integrity failure for {kind} '{package}': the locked release is no longer resolvable. Nothing was changed; run `a4 update {kind} <alias>` only if you intend to advance ({http})"
@@ -2171,7 +2183,8 @@ mod private_install_tests {
     use super::*;
     use crate::api_client::test_support::{MockServer, ENV_LOCK};
 
-    const RESOLVE_PATH: &str = "/api/registry/v1/resolve";
+    /// Every project resolution opts into stack delivery.
+    const RESOLVE_PATH: &str = "/api/registry/v1/resolve?include=delivery";
     const OWNER_KEY: &str = "a4_sk_private_install_owner";
 
     /// Serialises the process-global API URL and credentials for one test.
@@ -2957,6 +2970,503 @@ output_dir = "./generated/typescript"
         );
         assert!(!manifest.with_file_name("arete.lock").exists());
         assert!(!manifest.with_file_name("generated").exists());
+    }
+
+    const HOSTED_WS: &str = "wss://ore.stack.example.test";
+    const HOSTED_HTTP: &str = "https://ore.stack.example.test";
+
+    fn ore_fixture(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("cli crate lives in the repo root")
+            .join("stacks/ore/.arete")
+            .join(name);
+        serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+    }
+
+    /// The exact release descriptor the resolver returns for one of the Ore
+    /// fixture's programs.
+    fn fixture_program_install(name: &str, program_spec: Value, marker: char) -> Value {
+        let spec_hash = program_spec["artifactHash"].clone();
+        let mut install = program_install(
+            program_spec["payload"]["programId"].as_str().unwrap(),
+            name,
+            &format!(
+                "arete:h1:program-release:sha256:{}",
+                marker.to_string().repeat(64)
+            ),
+        );
+        install["definition"]["programSpecHash"] = spec_hash.clone();
+        install["definition"]["idlContentHash"] = program_spec["payload"]["idlContentHash"].clone();
+        install["definition"]["normalizedIdlHash"] =
+            program_spec["payload"]["normalizedIdlHash"].clone();
+        install["definition"]["idlPayload"] = program_spec["payload"]["idlSnapshot"].clone();
+        install["definition"]["programSpec"] = program_spec;
+        install["release"]["programSpecHash"] = spec_hash;
+        install
+    }
+
+    fn hosted_delivery(websocket: &str, query: &str, generation: i64) -> Value {
+        let live = ore_fixture("OreStream.live-spec.json");
+        json!({
+            "mode": "hosted",
+            "deploymentReleaseHash": format!("arete:h1:deployment-release:sha256:{}", "d".repeat(64)),
+            "liveBindings": [{
+                "alias": "live",
+                "liveSpecHash": live["artifactHash"],
+                "binding": {
+                    "deploymentId": 7,
+                    "websocketEndpoint": websocket,
+                    "queryEndpoint": query,
+                    "websocketAuthPolicy": "signed_session",
+                    "queryAuthPolicy": "signed_session",
+                    "observedGeneration": generation
+                }
+            }],
+            "chainBinding": gateway_binding(vec!["read"], vec!["anonymous", "publishable", "secret"], false),
+            "transactionBinding": gateway_binding(vec!["transaction:inspect", "transaction:send"], vec!["publishable", "secret"], true)
+        })
+    }
+
+    /// The Ore fixture as a resolved registry stack, with `delivery` exactly
+    /// as given (absent when `None`).
+    fn ore_stack_dependency(delivery: Option<Value>) -> Value {
+        let manifest = ore_fixture("OreStream.stack-manifest.json");
+        let live = ore_fixture("OreStream.live-spec.json");
+        let mut dependency = json!({
+            "kind": "stack",
+            "alias": "ore",
+            "package": "ore",
+            "version": "1.0.0",
+            "packageReleaseHash": release_hash('5'),
+            "generatorContract": GENERATOR_CONTRACT,
+            "stackManifestHash": manifest["artifactHash"],
+            "stackManifest": manifest,
+            "liveSpecs": [{"alias": "live", "artifactHash": live["artifactHash"], "artifact": live}],
+            "programs": [
+                fixture_program_install("ore", ore_fixture("ore.program-spec.json"), 'a'),
+                fixture_program_install("entropy", ore_fixture("entropy.program-spec.json"), 'b')
+            ],
+            "sdkExtensions": []
+        });
+        if let Some(delivery) = delivery {
+            dependency["delivery"] = delivery;
+        }
+        dependency
+    }
+
+    fn resolution(dependencies: Vec<Value>) -> String {
+        json!({"resolverContract": RESOLVER_CONTRACT, "dependencies": dependencies}).to_string()
+    }
+
+    /// A project that already declares the Ore stack for every SDK target.
+    fn stack_project(sandbox: &RegistrySandbox, extra: &str) -> PathBuf {
+        let root = sandbox.dir.path().join("stack-project");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = root.join("arete.toml");
+        fs::write(
+            &manifest,
+            format!(
+                r#"manifest_version = 1
+
+[project]
+name = "hosted-install"
+
+[sdk]
+targets = ["typescript", "rust", "python"]
+
+[dependencies.stacks.ore]
+source = {{ registry = "ore" }}
+version = "^1.0.0"
+{extra}"#
+            ),
+        )
+        .unwrap();
+        manifest
+    }
+
+    /// Every generated text file for one target, by path relative to the
+    /// target's output root.
+    fn generated_files(manifest: &Path, target: &str) -> BTreeMap<String, String> {
+        fn collect(root: &Path, path: &Path, files: &mut BTreeMap<String, String>) {
+            for entry in fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    collect(root, &path, files);
+                } else if let Ok(contents) = fs::read_to_string(&path) {
+                    files.insert(
+                        path.strip_prefix(root).unwrap().display().to_string(),
+                        contents,
+                    );
+                }
+            }
+        }
+        let root = manifest.with_file_name("generated").join(target);
+        let mut files = BTreeMap::new();
+        collect(&root, &root, &mut files);
+        files
+    }
+
+    /// Every generated file for one target, concatenated.
+    fn generated_text(manifest: &Path, target: &str) -> String {
+        generated_files(manifest, target)
+            .into_values()
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Whether the generated TypeScript stack definition itself carries a
+    /// managed gateway (program modules carry their own read bindings).
+    fn has_stack_gateway(manifest: &Path) -> bool {
+        generated_files(manifest, "typescript")
+            .get("stacks/ore/ore-core.ts")
+            .expect("stack definition")
+            .lines()
+            .any(|line| line.starts_with("  gateway: "))
+    }
+
+    fn assert_project_untouched(manifest: &Path, original: &[u8]) {
+        assert_eq!(fs::read(manifest).unwrap(), original, "manifest unchanged");
+        assert!(!manifest.with_file_name("arete.lock").exists(), "no lock");
+        assert!(
+            !manifest.with_file_name("generated").exists(),
+            "no generated output"
+        );
+    }
+
+    #[test]
+    fn hosted_stack_install_generates_exact_endpoints_for_every_target() {
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![ore_stack_dependency(Some(hosted_delivery(
+                    HOSTED_WS,
+                    HOSTED_HTTP,
+                    4,
+                )))]),
+            )],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        install_project(&manifest, InstallOptions::default()).expect("hosted install");
+
+        let request = sandbox.request();
+        assert!(
+            request
+                .request_line
+                .starts_with(&format!("POST {RESOLVE_PATH} ")),
+            "{}",
+            request.request_line
+        );
+        let stack_manifest = ore_fixture("OreStream.stack-manifest.json");
+        let manifest_hash = stack_manifest["artifactHash"].as_str().unwrap();
+        let live_hash = ore_fixture("OreStream.live-spec.json")["artifactHash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for target in ["typescript", "rust", "python"] {
+            let text = generated_text(&manifest, target);
+            assert!(text.contains(HOSTED_WS), "{target}: websocket endpoint");
+            assert!(text.contains(HOSTED_HTTP), "{target}: query endpoint");
+            assert!(
+                text.contains("https://solana.example.test/gateway/"),
+                "{target}: gateway endpoint"
+            );
+            assert!(
+                text.contains("https://api.example.test/ws/sessions"),
+                "{target}: session endpoint"
+            );
+            assert!(
+                text.contains("https://api.example.test/.well-known/jwks.json"),
+                "{target}: JWKS"
+            );
+            assert!(text.contains(manifest_hash), "{target}: StackManifest");
+            for marker in ['a', 'b'] {
+                let release = format!(
+                    "arete:h1:program-release:sha256:{}",
+                    marker.to_string().repeat(64)
+                );
+                assert!(text.contains(&release), "{target}: program release");
+            }
+            assert!(!text.contains("TODO: Set"), "{target}: placeholder");
+            assert!(!text.contains("ws: ''"), "{target}: empty ws");
+            assert!(!text.contains("http: ''"), "{target}: empty http");
+            assert!(!text.contains("ws=\"\""), "{target}: empty ws");
+        }
+        assert!(has_stack_gateway(&manifest), "hosted stack gateway");
+        let locked = lock_of(&manifest);
+        assert_eq!(
+            locked.dependencies[0].live_specs[0].artifact_hash,
+            live_hash
+        );
+        assert_eq!(
+            locked.dependencies[0].stack_manifest_hash.as_deref(),
+            Some(manifest_hash)
+        );
+        let lock = fs::read_to_string(manifest.with_file_name("arete.lock")).unwrap();
+        for transport in [
+            "ore.stack.example.test",
+            "solana.example.test",
+            "deployment-release",
+        ] {
+            assert!(!lock.contains(transport), "lock carries {transport}");
+        }
+    }
+
+    #[test]
+    fn definition_only_stack_install_keeps_placeholders_and_no_gateway() {
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![ore_stack_dependency(Some(
+                    json!({"mode": "definition-only"}),
+                ))]),
+            )],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        install_project(&manifest, InstallOptions::default()).expect("definition-only install");
+        let typescript = generated_text(&manifest, "typescript");
+        assert!(typescript.contains("ws: '', // TODO"), "{typescript}");
+        assert!(
+            !has_stack_gateway(&manifest),
+            "a definition-only stack exposes no hosted gateway"
+        );
+        assert!(generated_text(&manifest, "rust").contains("TODO: Set URL"));
+        assert!(generated_text(&manifest, "python").contains("ws=\"\""));
+    }
+
+    #[test]
+    fn a_stack_without_a_delivery_mode_is_refused_before_anything_is_written() {
+        let sandbox = RegistrySandbox::new(
+            vec![(200, resolution(vec![ore_stack_dependency(None)]))],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        let original = fs::read(&manifest).unwrap();
+        let error = install_project(&manifest, InstallOptions::default())
+            .expect_err("a registry that ignored include=delivery must be refused");
+        sandbox.request();
+        assert!(
+            format!("{error:#}").contains("does not support stack delivery resolution"),
+            "{error:#}"
+        );
+        assert_project_untouched(&manifest, &original);
+    }
+
+    #[test]
+    fn malformed_hosted_bindings_are_refused_before_anything_is_written() {
+        let hosted = || hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4);
+        let mut cases: Vec<(&str, Value, &str)> = Vec::new();
+        let mut partial = hosted();
+        partial["liveBindings"][0]["binding"]
+            .as_object_mut()
+            .unwrap()
+            .remove("queryEndpoint");
+        cases.push(("partial binding", partial, "queryEndpoint"));
+        let mut blank = hosted();
+        blank["liveBindings"][0]["binding"]["websocketEndpoint"] = json!(" ");
+        cases.push(("blank endpoint", blank, "incomplete"));
+        let mut blank_policy = hosted();
+        blank_policy["liveBindings"][0]["binding"]["queryAuthPolicy"] = json!("");
+        cases.push(("blank policy", blank_policy, "incomplete"));
+        let mut deployment = hosted();
+        deployment["liveBindings"][0]["binding"]["deploymentId"] = json!(0);
+        cases.push(("non-positive deployment", deployment, "incomplete"));
+        let mut generation = hosted();
+        generation["liveBindings"][0]["binding"]["observedGeneration"] = json!(0);
+        cases.push(("non-positive generation", generation, "incomplete"));
+        let mut reordered = hosted();
+        reordered["liveBindings"][0]["alias"] = json!("other");
+        cases.push(("wrong alias", reordered, "alias/order mismatch"));
+        let mut mismatched = hosted();
+        mismatched["liveBindings"][0]["liveSpecHash"] =
+            json!(format!("arete:h1:live-spec:sha256:{}", "0".repeat(64)));
+        cases.push(("wrong hash", mismatched, "hash mismatch"));
+        let mut duplicate = hosted();
+        let binding = duplicate["liveBindings"][0].clone();
+        duplicate["liveBindings"]
+            .as_array_mut()
+            .unwrap()
+            .push(binding);
+        cases.push(("duplicate binding", duplicate, "do not exactly cover"));
+        let mut missing = hosted();
+        missing["liveBindings"] = json!([]);
+        cases.push(("no binding", missing, "do not exactly cover"));
+        let mut half_gateway = hosted();
+        half_gateway["transactionBinding"] = Value::Null;
+        cases.push((
+            "partial gateway",
+            half_gateway,
+            "only one managed Solana gateway",
+        ));
+        let mut no_gateway = hosted();
+        no_gateway["chainBinding"] = Value::Null;
+        no_gateway["transactionBinding"] = Value::Null;
+        cases.push(("no gateway", no_gateway, "omitted managed Solana gateway"));
+        let mut blank_gateway = hosted();
+        blank_gateway["chainBinding"]["endpoint"] = json!(" ");
+        cases.push((
+            "blank gateway endpoint",
+            blank_gateway,
+            "chain binding with no endpoint",
+        ));
+        let mut relative_gateway = hosted();
+        relative_gateway["transactionBinding"]["endpoint"] = json!("/gateway/");
+        cases.push((
+            "relative gateway endpoint",
+            relative_gateway,
+            "endpoint is not an absolute HTTP(S) URL",
+        ));
+        let mut blank_jwks = hosted();
+        blank_jwks["chainBinding"]["auth"]["jwksUrl"] = json!("");
+        cases.push(("blank gateway JWKS", blank_jwks, "no auth.jwksUrl"));
+        let mut foreign_target = hosted();
+        foreign_target["transactionBinding"]["auth"]["targetId"] = json!("sgb_other");
+        cases.push((
+            "foreign gateway target",
+            foreign_target,
+            "session target does not name the binding",
+        ));
+        let mut release = hosted();
+        release["deploymentReleaseHash"] = json!("");
+        cases.push(("blank release", release, "no exact deployment release"));
+        let mut unknown = hosted();
+        unknown["websocketUrl"] = json!(HOSTED_WS);
+        cases.push(("unknown field", unknown, "websocketUrl"));
+        cases.push((
+            "unknown mode",
+            json!({"mode": "self-hosted"}),
+            "self-hosted",
+        ));
+
+        for (case, delivery, expected) in cases {
+            let sandbox = RegistrySandbox::new(
+                vec![(200, resolution(vec![ore_stack_dependency(Some(delivery))]))],
+                false,
+            );
+            let manifest = stack_project(&sandbox, "");
+            let original = fs::read(&manifest).unwrap();
+            let error = install_project(&manifest, InstallOptions::default()).expect_err(case);
+            sandbox.request();
+            assert!(format!("{error:#}").contains(expected), "{case}: {error:#}");
+            assert_project_untouched(&manifest, &original);
+        }
+    }
+
+    #[test]
+    fn locked_reinstall_refreshes_transport_without_touching_the_lock() {
+        let moved_ws = "wss://ore.moved.example.test";
+        let moved_http = "https://ore.moved.example.test";
+        let sandbox = RegistrySandbox::new(
+            vec![
+                (
+                    200,
+                    resolution(vec![ore_stack_dependency(Some(hosted_delivery(
+                        HOSTED_WS,
+                        HOSTED_HTTP,
+                        4,
+                    )))]),
+                ),
+                (
+                    200,
+                    resolution(vec![ore_stack_dependency(Some(hosted_delivery(
+                        moved_ws, moved_http, 5,
+                    )))]),
+                ),
+            ],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        install_project(&manifest, InstallOptions::default()).expect("first install");
+        sandbox.request();
+        let lock_path = manifest.with_file_name("arete.lock");
+        let lock_before = fs::read(&lock_path).unwrap();
+        assert!(generated_text(&manifest, "typescript").contains(HOSTED_WS));
+
+        install_project(
+            &manifest,
+            InstallOptions {
+                locked: true,
+                ..InstallOptions::default()
+            },
+        )
+        .expect("locked reinstall");
+        let second = sandbox.request();
+        assert_eq!(
+            request_dependency(&second)["lockedPackageReleaseHash"],
+            release_hash('5')
+        );
+        assert_eq!(fs::read(&lock_path).unwrap(), lock_before, "lock unchanged");
+        for target in ["typescript", "rust", "python"] {
+            let text = generated_text(&manifest, target);
+            assert!(text.contains(moved_ws), "{target}: refreshed endpoint");
+            assert!(!text.contains(HOSTED_WS), "{target}: stale endpoint");
+        }
+    }
+
+    #[test]
+    fn stacks_and_programs_resolve_with_delivery_in_one_batch_request() {
+        let program =
+            serde_json::from_str::<Value>(&program_resolution("vote", "vote", "0.1.0", 'c'))
+                .unwrap()["dependencies"][0]
+                .clone();
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![
+                    ore_stack_dependency(Some(hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4))),
+                    program,
+                ]),
+            )],
+            false,
+        );
+        let manifest = stack_project(
+            &sandbox,
+            "\n[dependencies.programs.vote]\nsource = { registry = \"vote\" }\nversion = \"^0.1.0\"\n",
+        );
+        install_project(&manifest, InstallOptions::default()).expect("batch install");
+        let request = sandbox.request();
+        assert!(
+            request
+                .request_line
+                .starts_with(&format!("POST {RESOLVE_PATH} ")),
+            "{}",
+            request.request_line
+        );
+        let body: Value = serde_json::from_str(&request.body).unwrap();
+        assert_eq!(
+            body["dependencies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|dependency| (dependency["kind"].clone(), dependency["alias"].clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (json!("stack"), json!("ore")),
+                (json!("program"), json!("vote"))
+            ]
+        );
+        assert_eq!(lock_of(&manifest).dependencies.len(), 2);
+    }
+
+    #[test]
+    fn delivery_not_ready_is_not_reported_as_a_lock_integrity_failure() {
+        let error = describe_resolver_error(
+            crate::api_client::ApiHttpError {
+                status: 409,
+                status_text: "409 Conflict".into(),
+                message: "Stack 'ore' is not currently ready".into(),
+                code: Some(DELIVERY_NOT_READY.into()),
+            }
+            .into(),
+            DependencyKind::Stack,
+            "ore",
+            true,
+        );
+        let text = format!("{error:#}");
+        assert!(text.contains("not currently ready"), "{text}");
+        assert!(!text.contains("integrity"), "{text}");
     }
 
     #[test]

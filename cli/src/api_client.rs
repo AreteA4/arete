@@ -1384,6 +1384,10 @@ impl ApiClient {
     }
 
     /// Resolve a complete project dependency batch against one exact registry snapshot.
+    ///
+    /// The batch opts into `include=delivery`, so every resolved stack names
+    /// its delivery mode and a hosted stack carries its live and gateway
+    /// bindings in the same response: one request, however many stacks.
     pub fn resolve_registry_dependencies(
         &self,
         request: &crate::project::resolver::RegistryResolveRequest,
@@ -1391,7 +1395,10 @@ impl ApiClient {
         let response = self
             .with_optional_auth(
                 self.client
-                    .post(format!("{}/api/registry/v1/resolve", self.base_url))
+                    .post(format!(
+                        "{}/api/registry/v1/resolve?include=delivery",
+                        self.base_url
+                    ))
                     .json(request),
             )
             .send()
