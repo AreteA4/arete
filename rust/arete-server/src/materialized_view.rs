@@ -73,6 +73,32 @@ pub struct FilterConfig {
     pub value: Value,
 }
 
+impl FilterConfig {
+    /// Whether `entity` passes the filter. A missing field reads as null,
+    /// which passes only `Ne` against a non-null value.
+    pub fn matches(&self, entity: &Value) -> bool {
+        static NULL: Value = Value::Null;
+        let mut field = entity;
+        for segment in &self.field_path {
+            match field.get(segment) {
+                Some(value) => field = value,
+                None => {
+                    field = &NULL;
+                    break;
+                }
+            }
+        }
+        match self.op {
+            CompareOp::Eq => *field == self.value,
+            CompareOp::Ne => *field != self.value,
+            CompareOp::Gt => compare_values(field, &self.value) == std::cmp::Ordering::Greater,
+            CompareOp::Gte => compare_values(field, &self.value) != std::cmp::Ordering::Less,
+            CompareOp::Lt => compare_values(field, &self.value) == std::cmp::Ordering::Less,
+            CompareOp::Lte => compare_values(field, &self.value) != std::cmp::Ordering::Greater,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SortConfig {
     pub field_path: Vec<String>,
@@ -135,19 +161,7 @@ impl MaterializedView {
 
     /// Check if an entity matches the filter
     fn matches_filter(&self, entity: &Value, filter: &FilterConfig) -> bool {
-        let field_val = extract_field(entity, &filter.field_path);
-        match filter.op {
-            CompareOp::Eq => field_val == filter.value,
-            CompareOp::Ne => field_val != filter.value,
-            CompareOp::Gt => {
-                compare_values(&field_val, &filter.value) == std::cmp::Ordering::Greater
-            }
-            CompareOp::Gte => compare_values(&field_val, &filter.value) != std::cmp::Ordering::Less,
-            CompareOp::Lt => compare_values(&field_val, &filter.value) == std::cmp::Ordering::Less,
-            CompareOp::Lte => {
-                compare_values(&field_val, &filter.value) != std::cmp::Ordering::Greater
-            }
-        }
+        filter.matches(entity)
     }
 
     /// Determine the effect of an entity update on this view

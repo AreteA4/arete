@@ -14,7 +14,7 @@ phantom-typed object literals.
 
 ```toml
 [dependencies]
-arete-sdk = { package = "arete-a4-sdk", version = "0.22.0" } # x-release-please-version
+arete-sdk = { package = "arete-a4-sdk", version = "0.22.3" } # x-release-please-version
 ```
 
 By default the SDK uses `rustls` for TLS. Switch to native TLS with
@@ -153,7 +153,7 @@ The SDK ships no wallet adapter by default — the core only builds
 dependency graph unless you ask for it:
 
 ```toml
-arete-sdk = { package = "arete-a4-sdk", version = "0.22.0", features = ["solana-adapter"] } # x-release-please-version
+arete-sdk = { package = "arete-a4-sdk", version = "0.22.3", features = ["solana-adapter"] } # x-release-please-version
 ```
 
 ```rust
