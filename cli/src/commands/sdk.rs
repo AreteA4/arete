@@ -555,6 +555,18 @@ impl ResolvedStackSource {
         }
     }
 
+    /// Each alias's WebSocket endpoint, for the Rust and Python compositions.
+    fn composition_live_websocket_urls(&self) -> BTreeMap<String, String> {
+        match self {
+            Self::Remote(stack) => stack
+                .live_bindings
+                .iter()
+                .map(|live| (live.alias.clone(), live.binding.websocket_endpoint.clone()))
+                .collect(),
+            Self::LocalArtifacts(_) => BTreeMap::new(),
+        }
+    }
+
     fn typescript_programs(
         &self,
         stack_spec: &arete_interpreter::ast::SerializableStackSpec,
@@ -1051,6 +1063,7 @@ pub(crate) fn generate_project_registry_dependency(
             live_specs,
             programs,
             sdk_extensions,
+            delivery,
             ..
         } => {
             if alias != options.alias {
@@ -1113,6 +1126,10 @@ pub(crate) fn generate_project_registry_dependency(
                 &program_specs,
             )
             .context("Resolved registry stack has an invalid artifact closure")?;
+            // Endpoints are transport state, not lock identity: they come from
+            // the stack's explicit delivery mode on every install.
+            let transport =
+                project_stack_transport(package, &stack_manifest, live_specs, delivery.as_deref())?;
             let hosted_extensions = project_sdk_extension(sdk_extensions, options.target)?
                 .as_ref()
                 .map(resolved_extensions_artifact_from_registry)
@@ -1123,17 +1140,15 @@ pub(crate) fn generate_project_registry_dependency(
                 manifest_hash: stack_manifest_hash.clone(),
                 program_specs,
                 live_specs: verified_live_specs,
-                // Endpoint descriptors are transport state, not lock identity. The
-                // v1 project resolver deliberately permits placeholder endpoints.
-                live_bindings: Vec::new(),
+                live_bindings: transport.live_bindings,
                 stack_manifest,
-                chain_binding: None,
-                transaction_binding: None,
+                chain_binding: transport.chain_binding,
+                transaction_binding: transport.transaction_binding,
                 exact_views: true,
                 sdk_name: alias.clone(),
                 hosted_extensions,
                 programs: programs.clone(),
-                require_managed_gateway: false,
+                require_managed_gateway: transport.require_managed_gateway,
             }));
             generate_project_stack_source(&source, options)
         }
@@ -1209,7 +1224,7 @@ fn generate_project_stack_source(
                             program_reads: source.rust_program_reads()?,
                             gateway: source.hosted_gateway()?,
                         },
-                        live_urls: BTreeMap::new(),
+                        live_urls: source.composition_live_websocket_urls(),
                     }),
                 )
                 .map_err(|error| anyhow::anyhow!("Failed to compile Rust composition: {error}"))?;
@@ -1263,7 +1278,7 @@ fn generate_project_stack_source(
                             program_reads: source.python_program_reads()?,
                             gateway: source.hosted_gateway()?,
                         },
-                        live_urls: BTreeMap::new(),
+                        live_urls: source.composition_live_websocket_urls(),
                     }),
                 )
                 .map_err(|error| {
@@ -4498,14 +4513,7 @@ pub fn create_rust(
                 "multi-live extensions require a composition-wrapper extension contract; shared stack extensions are not supported"
             );
         }
-        let live_urls = match &source {
-            ResolvedStackSource::Remote(stack) => stack
-                .live_bindings
-                .iter()
-                .map(|live| (live.alias.clone(), live.binding.websocket_endpoint.clone()))
-                .collect(),
-            ResolvedStackSource::LocalArtifacts(_) => BTreeMap::new(),
-        };
+        let live_urls = source.composition_live_websocket_urls();
         let output = arete_interpreter::rust::compile_composed_public_artifacts_v2(
             composition.program_specs,
             composition.live_specs,
@@ -4791,14 +4799,7 @@ pub fn create_python(
                 "multi-live extensions require a composition-wrapper extension contract; shared stack extensions are not supported"
             );
         }
-        let live_urls = match &source {
-            ResolvedStackSource::Remote(stack) => stack
-                .live_bindings
-                .iter()
-                .map(|live| (live.alias.clone(), live.binding.websocket_endpoint.clone()))
-                .collect(),
-            ResolvedStackSource::LocalArtifacts(_) => BTreeMap::new(),
-        };
+        let live_urls = source.composition_live_websocket_urls();
         let output = arete_interpreter::python::compile_composed_public_artifacts_v2(
             composition.program_specs,
             composition.live_specs,
@@ -5099,18 +5100,12 @@ fn resolve_v2_registry_composition(
         .zip(&remote.live_specs)
         .enumerate()
     {
-        if descriptor.alias != reference.alias {
-            anyhow::bail!(
-                "Hosted liveSpecs alias/order mismatch at position {}",
-                position
-            );
-        }
-        if descriptor.live_spec_hash != reference.artifact_hash.to_string() {
-            anyhow::bail!(
-                "Hosted LiveSpec hash mismatch for alias '{}'",
-                reference.alias
-            );
-        }
+        check_hosted_live_identity(
+            position,
+            reference,
+            &descriptor.alias,
+            &descriptor.live_spec_hash,
+        )?;
         let artifact: arete_artifacts::LiveSpecArtifactV2 =
             serde_json::from_value(descriptor.artifact.clone()).with_context(|| {
                 format!(
@@ -5130,19 +5125,7 @@ fn resolve_v2_registry_composition(
                 reference.alias
             );
         }
-        if descriptor.binding.deployment_id <= 0
-            || !deployment_ids.insert(descriptor.binding.deployment_id)
-            || descriptor.binding.observed_generation <= 0
-            || descriptor.binding.websocket_endpoint.trim().is_empty()
-            || descriptor.binding.query_endpoint.trim().is_empty()
-            || descriptor.binding.websocket_auth_policy.trim().is_empty()
-            || descriptor.binding.query_auth_policy.trim().is_empty()
-        {
-            anyhow::bail!(
-                "Hosted LiveSpec binding is incomplete or non-independent for alias '{}'",
-                reference.alias
-            );
-        }
+        check_hosted_live_binding(&reference.alias, &descriptor.binding, &mut deployment_ids)?;
         live_specs.push((reference.alias.clone(), artifact));
     }
     validate_singular_plural_identity(remote, &remote.live_specs)?;
@@ -5153,6 +5136,173 @@ fn resolve_v2_registry_composition(
         live_specs,
         live_bindings: remote.live_specs.clone(),
     })
+}
+
+/// A hosted binding belongs to the StackManifest LiveSpec at the same
+/// position: same alias, same exact hash. Shared by direct stack install and
+/// project resolution, so both refuse reordered or mismatched bindings alike.
+fn check_hosted_live_identity(
+    position: usize,
+    reference: &arete_artifacts::LiveSpecReferenceV2,
+    alias: &str,
+    live_spec_hash: &str,
+) -> Result<()> {
+    if alias != reference.alias {
+        anyhow::bail!(
+            "Hosted liveSpecs alias/order mismatch at position {}",
+            position
+        );
+    }
+    if live_spec_hash != reference.artifact_hash.to_string() {
+        anyhow::bail!(
+            "Hosted LiveSpec hash mismatch for alias '{}'",
+            reference.alias
+        );
+    }
+    Ok(())
+}
+
+/// A hosted binding must name a real deployment and generation, both
+/// endpoints and both auth policies, and each alias its own deployment.
+fn check_hosted_live_binding(
+    alias: &str,
+    binding: &RegistryLiveSpecInstallBinding,
+    deployment_ids: &mut BTreeSet<i32>,
+) -> Result<()> {
+    if binding.deployment_id <= 0
+        || !deployment_ids.insert(binding.deployment_id)
+        || binding.observed_generation <= 0
+        || binding.websocket_endpoint.trim().is_empty()
+        || binding.query_endpoint.trim().is_empty()
+        || binding.websocket_auth_policy.trim().is_empty()
+        || binding.query_auth_policy.trim().is_empty()
+    {
+        anyhow::bail!(
+            "Hosted LiveSpec binding is incomplete or non-independent for alias '{}'",
+            alias
+        );
+    }
+    Ok(())
+}
+
+/// Transport for a stack resolved through the project resolver. It is
+/// delivery state, re-resolved on every install and never locked.
+struct ProjectStackTransport {
+    live_bindings: Vec<RegistryLiveSpecInstallDescriptor>,
+    chain_binding: Option<RegistryCapabilityInstallBinding>,
+    transaction_binding: Option<RegistryCapabilityInstallBinding>,
+    require_managed_gateway: bool,
+}
+
+/// The transport a resolved stack's explicit delivery mode provides, checked
+/// with the same rules as a direct install descriptor. Only an explicit
+/// `definition-only` stack generates placeholder endpoints; a hosted stack
+/// must bind every LiveSpec exactly and carry both managed gateway bindings.
+fn project_stack_transport(
+    package: &str,
+    stack_manifest: &arete_artifacts::StackManifestArtifactV2,
+    live_specs: &[crate::project::resolver::ResolvedLiveSpec],
+    delivery: Option<&crate::project::resolver::ResolvedStackDelivery>,
+) -> Result<ProjectStackTransport> {
+    use crate::project::resolver::ResolvedStackDelivery;
+
+    let Some(delivery) = delivery else {
+        anyhow::bail!(
+            "Registry did not report how stack '{package}' is delivered; it does not support \
+             stack delivery resolution. Upgrade the backend, or use a CLI compatible with it."
+        );
+    };
+    let (deployment_release_hash, bindings, chain_binding, transaction_binding) = match delivery {
+        ResolvedStackDelivery::DefinitionOnly {} => {
+            return Ok(ProjectStackTransport {
+                live_bindings: Vec::new(),
+                chain_binding: None,
+                transaction_binding: None,
+                require_managed_gateway: false,
+            })
+        }
+        ResolvedStackDelivery::Hosted {
+            deployment_release_hash,
+            live_bindings,
+            chain_binding,
+            transaction_binding,
+        } => (
+            deployment_release_hash,
+            live_bindings,
+            chain_binding,
+            transaction_binding,
+        ),
+    };
+    let source = format!("hosted stack '{package}'");
+    if deployment_release_hash.trim().is_empty() {
+        anyhow::bail!("{source} has no exact deployment release");
+    }
+    let references = &stack_manifest.payload.live_specs;
+    if bindings.is_empty()
+        || bindings.len() != references.len()
+        || live_specs.len() != references.len()
+    {
+        anyhow::bail!("Hosted liveSpecs do not exactly cover the StackManifest");
+    }
+    let mut deployment_ids = BTreeSet::new();
+    let mut live_bindings = Vec::with_capacity(bindings.len());
+    for (position, ((reference, resolved), live)) in
+        references.iter().zip(bindings).zip(live_specs).enumerate()
+    {
+        check_hosted_live_identity(
+            position,
+            reference,
+            &resolved.alias,
+            &resolved.live_spec_hash,
+        )?;
+        if live.alias != resolved.alias || live.artifact_hash != resolved.live_spec_hash {
+            anyhow::bail!(
+                "Hosted LiveSpec binding does not join its resolved LiveSpec at position {}",
+                position
+            );
+        }
+        check_hosted_live_binding(&resolved.alias, &resolved.binding, &mut deployment_ids)?;
+        live_bindings.push(RegistryLiveSpecInstallDescriptor {
+            alias: resolved.alias.clone(),
+            live_spec_hash: resolved.live_spec_hash.clone(),
+            artifact: live.artifact.clone(),
+            binding: resolved.binding.clone(),
+        });
+    }
+    managed_gateway_descriptor(
+        chain_binding.as_deref(),
+        transaction_binding.as_deref(),
+        &source,
+    )?;
+    Ok(ProjectStackTransport {
+        live_bindings,
+        chain_binding: chain_binding.as_deref().cloned(),
+        transaction_binding: transaction_binding.as_deref().cloned(),
+        require_managed_gateway: true,
+    })
+}
+
+/// Reject a resolved stack whose delivery cannot generate, before anything
+/// in the project is written.
+pub(crate) fn verify_resolved_stack_delivery(
+    dependency: &crate::project::resolver::ResolvedRegistryDependency,
+) -> Result<()> {
+    use crate::project::resolver::ResolvedRegistryDependency;
+
+    let ResolvedRegistryDependency::Stack {
+        package,
+        stack_manifest,
+        live_specs,
+        delivery,
+        ..
+    } = dependency
+    else {
+        return Ok(());
+    };
+    let stack_manifest: arete_artifacts::StackManifestArtifactV2 =
+        serde_json::from_value(stack_manifest.clone())
+            .context("Registry resolver returned an invalid V2 StackManifest")?;
+    project_stack_transport(package, &stack_manifest, live_specs, delivery.as_deref()).map(|_| ())
 }
 
 fn validate_singular_plural_identity(

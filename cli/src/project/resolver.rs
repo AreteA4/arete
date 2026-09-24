@@ -48,6 +48,10 @@ pub enum ResolvedRegistryDependency {
         live_specs: Vec<ResolvedLiveSpec>,
         programs: Vec<crate::api_client::RegistryProgramInstallResponse>,
         sdk_extensions: Vec<ResolvedSdkExtension>,
+        /// Present only because the request asked for `include=delivery`; an
+        /// absent value means the registry ignored the opt-in.
+        #[serde(default)]
+        delivery: Option<Box<ResolvedStackDelivery>>,
     },
     Program {
         alias: String,
@@ -94,6 +98,37 @@ pub struct ResolvedLiveSpec {
     pub alias: String,
     pub artifact_hash: String,
     pub artifact: serde_json::Value,
+}
+
+/// How a resolved stack is delivered. Transport state only: it is
+/// re-resolved on every install and never written to `arete.lock`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(
+    tag = "mode",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ResolvedStackDelivery {
+    /// A hosted stream served by one exact deployment release.
+    Hosted {
+        deployment_release_hash: String,
+        /// One binding per resolved LiveSpec, in the same order.
+        live_bindings: Vec<ResolvedLiveBinding>,
+        chain_binding: Option<Box<crate::api_client::RegistryCapabilityInstallBinding>>,
+        transaction_binding: Option<Box<crate::api_client::RegistryCapabilityInstallBinding>>,
+    },
+    /// The user deploys it; nothing is hosted, so endpoints stay placeholders.
+    DefinitionOnly {},
+}
+
+/// The binding for one resolved LiveSpec, joined to it by alias and hash.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolvedLiveBinding {
+    pub alias: String,
+    pub live_spec_hash: String,
+    pub binding: crate::api_client::RegistryLiveSpecInstallBinding,
 }
 
 #[derive(Debug, Clone, Deserialize)]
