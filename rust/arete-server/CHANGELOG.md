@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.22.2](https://github.com/AreteA4/arete/compare/arete-server-v0.22.1...arete-server-v0.22.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* keep a4 stream's session token fresh, and say why an expired session closes ([8ba2edb](https://github.com/AreteA4/arete/commit/8ba2edb2400022cf35d1b479e99850f60950013f))
+* **server:** keep an expired client's close reason out of its queue ([df71151](https://github.com/AreteA4/arete/commit/df711513e3263c1efaee99c4b43dc69177dda7bb))
+* **server:** stop an expired token from deadlocking the client registry ([c644516](https://github.com/AreteA4/arete/commit/c6445167e2c2a96bc06cb6bc01e62b1efc804f08))
+* **server:** stop an expired token from deadlocking the client registry ([9a5fd18](https://github.com/AreteA4/arete/commit/9a5fd181d2487f38d8c8b9a4277fe7cbff75e4c3))
+* **server:** tell a client its session expired before closing its socket ([b0f4bf4](https://github.com/AreteA4/arete/commit/b0f4bf462c51f9e3bd0da0b23664c9f16655ad85))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.22.1 to 0.22.2
+
 ## [0.22.1](https://github.com/AreteA4/arete/compare/arete-server-v0.22.0...arete-server-v0.22.1) (2026-09-23)
 
 

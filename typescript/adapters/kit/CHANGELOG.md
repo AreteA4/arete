@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.22.2](https://github.com/AreteA4/arete/compare/arete-adapter-kit-v0.22.1...arete-adapter-kit-v0.22.2) (2026-09-24)
+
+
+### Miscellaneous Chores
+
+* **arete-adapter-kit:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.22.1 to ^0.22.2
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.22.1 to ^0.22.2
+
 ## [0.22.1](https://github.com/AreteA4/arete/compare/arete-adapter-kit-v0.22.0...arete-adapter-kit-v0.22.1) (2026-09-23)
 
 
