@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## [0.22.4](https://github.com/AreteA4/arete/compare/a4-cli-v0.22.3...a4-cli-v0.22.4) (2026-09-24)
+
+
+### Bug Fixes
+
+* **cli:** generate hosted stack endpoints from the resolver ([2194d16](https://github.com/AreteA4/arete/commit/2194d16dad6da53dd149c59fc824f56f927355b0))
+* **cli:** generate hosted stack endpoints from the resolver ([a4a49ab](https://github.com/AreteA4/arete/commit/a4a49ab4ae47837264ace02683cbae10aafaeece))
+* **cli:** refuse incomplete managed gateway bindings ([b55bbb4](https://github.com/AreteA4/arete/commit/b55bbb48a8b9a9aadf0bf45e2ee5de1913b87032))
+* **cli:** reuse the resolved reference in `a4 explore stack` ([d7cb78a](https://github.com/AreteA4/arete/commit/d7cb78a88c900e36c826181622a6f9f851927134))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.22.3 to 0.22.4
+    * arete-mcp bumped from 0.22.3 to 0.22.4
+
 ## [0.22.3](https://github.com/AreteA4/arete/compare/a4-cli-v0.22.2...a4-cli-v0.22.3) (2026-09-24)
 
 

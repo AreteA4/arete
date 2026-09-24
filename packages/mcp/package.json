@@ -1,6 +1,6 @@
 {
   "name": "@usearete/mcp",
-  "version": "0.22.3",
+  "version": "0.22.4",
   "description": "Deprecated: the Arete MCP server now ships inside the a4 CLI as `a4 mcp`",
   "bin": {
     "a4-mcp": "bin/a4-mcp.js"
