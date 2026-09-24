@@ -9,7 +9,7 @@ use serde_json::Value;
 use smallvec::SmallVec;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info_span, instrument};
+use tracing::{debug, debug_span, error, instrument};
 
 #[cfg(feature = "otel")]
 use crate::metrics::Metrics;
@@ -88,14 +88,14 @@ impl Projector {
 
             let batch_size = batch.len();
             let slot_context = batch.slot_context;
-            let batch_span = info_span!(
+            let batch_span = debug_span!(
                 parent: &batch.span,
                 "projector.batch",
                 batch.mutations = batch_size,
                 batch.position = tracing::field::Empty,
                 frames_published = tracing::field::Empty,
             );
-            if let Some(context) = slot_context {
+            if let (Some(context), false) = (slot_context, batch_span.is_disabled()) {
                 batch_span.record("batch.position", context.to_seq_string());
             }
             let _span_guard = batch_span.enter();
@@ -166,6 +166,7 @@ impl Projector {
 
     #[instrument(
         name = "projector.mutation",
+        level = "debug",
         skip(self, mutation, slot_context, json_buffer),
         fields(export = %mutation.export)
     )]
@@ -349,19 +350,52 @@ impl Projector {
         let sorted_caches = self.view_index.sorted_caches();
         let mut caches = sorted_caches.write().await;
 
-        for derived_spec in derived_views {
-            if let Some(cache) = caches.get_mut(&derived_spec.id) {
-                cache.upsert_bounded(entity_key.to_string(), entity_data.clone(), max_entries);
-                debug!(
-                    "Updated sorted cache for derived view {} with key {}",
-                    derived_spec.id, entity_key
-                );
+        // A derived view holds only the entities its filter passes, so one
+        // that stops passing leaves it. Of the rest, only a view that would
+        // keep the entity gets a copy of it: once a view is full, most updates
+        // sort below its last entry. The last one gets the entity itself.
+        let mut keeping: SmallVec<[&str; 4]> = SmallVec::new();
+        for spec in &derived_views {
+            let Some(cache) = caches.get_mut(&spec.id) else {
+                continue;
+            };
+            let passes = spec
+                .pipeline
+                .as_ref()
+                .and_then(|pipeline| pipeline.filter.as_ref())
+                .is_none_or(|filter| filter.matches(&entity_data));
+            if !passes {
+                cache.remove(entity_key);
+                continue;
             }
+            if cache.would_keep(entity_key, &entity_data, max_entries) {
+                keeping.push(spec.id.as_str());
+            }
+        }
+        let mut entity_data = Some(entity_data);
+        for (index, view_id) in keeping.iter().enumerate() {
+            let Some(cache) = caches.get_mut(*view_id) else {
+                continue;
+            };
+            let entity = if index + 1 == keeping.len() {
+                entity_data.take()
+            } else {
+                entity_data.clone()
+            };
+            let Some(entity) = entity else {
+                continue;
+            };
+            cache.upsert_bounded(entity_key.to_string(), entity, max_entries);
+            debug!(
+                "Updated sorted cache for derived view {} with key {}",
+                view_id, entity_key
+            );
         }
     }
 
     #[instrument(
         name = "projector.publish",
+        level = "debug",
         skip(self, spec, message),
         fields(view_id = %spec.id, mode = ?spec.mode)
     )]

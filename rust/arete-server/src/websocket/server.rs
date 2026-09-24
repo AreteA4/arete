@@ -48,12 +48,54 @@ use crate::metrics::Metrics;
 struct WsMetrics {
     #[cfg(feature = "otel")]
     inner: Option<Arc<Metrics>>,
+    #[cfg(test)]
+    probe: Option<Arc<DeliveryProbe>>,
+}
+
+/// Test-only mirror of the delivery instruments recorded through
+/// [`WsMetrics`], so the real-socket load harness can report them without the
+/// `otel` feature. Each counter has the meaning of the metric named beside it.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct DeliveryProbe {
+    /// `arete.ws.messages.sent`
+    pub(crate) messages_sent: std::sync::atomic::AtomicU64,
+    /// `arete.ws.subscription.lagged`
+    pub(crate) lag_events: std::sync::atomic::AtomicU64,
+    /// `arete.ws.subscription.dropped_updates`
+    pub(crate) dropped_updates: std::sync::atomic::AtomicU64,
+    /// `arete.ws.subscription.resnapshots`
+    pub(crate) resnapshots: std::sync::atomic::AtomicU64,
+    /// `arete.ws.collection.coalesced_updates`
+    pub(crate) coalesced_updates: std::sync::atomic::AtomicU64,
+    /// `arete.ws.collection.coalesced_flushes`
+    pub(crate) coalesced_flushes: std::sync::atomic::AtomicU64,
+    /// `arete.ws.delivery.stopped`, by reason
+    pub(crate) delivery_stopped: std::sync::Mutex<std::collections::BTreeMap<&'static str, u64>>,
+}
+
+#[cfg(test)]
+impl DeliveryProbe {
+    fn add(counter: &std::sync::atomic::AtomicU64, value: u64) {
+        counter.fetch_add(value, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 impl WsMetrics {
     #[cfg(feature = "otel")]
     fn new(inner: Option<Arc<Metrics>>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            #[cfg(test)]
+            probe: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn probe(&self, record: impl FnOnce(&DeliveryProbe)) {
+        if let Some(probe) = &self.probe {
+            record(probe);
+        }
     }
 
     fn connection_opened(&self, metering_key: Option<&str>) {
@@ -96,6 +138,8 @@ impl WsMetrics {
     }
 
     fn message_sent(&self) {
+        #[cfg(test)]
+        self.probe(|probe| DeliveryProbe::add(&probe.messages_sent, 1));
         #[cfg(feature = "otel")]
         if let Some(metrics) = &self.inner {
             metrics.record_ws_message_sent();
@@ -138,6 +182,11 @@ impl WsMetrics {
     }
 
     fn subscription_lagged(&self, view: &str, skipped: u64) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add(&probe.lag_events, 1);
+            DeliveryProbe::add(&probe.dropped_updates, skipped);
+        });
         #[cfg(not(feature = "otel"))]
         let _ = (view, skipped);
         #[cfg(feature = "otel")]
@@ -147,6 +196,8 @@ impl WsMetrics {
     }
 
     fn subscription_resnapshot(&self, view: &str) {
+        #[cfg(test)]
+        self.probe(|probe| DeliveryProbe::add(&probe.resnapshots, 1));
         #[cfg(not(feature = "otel"))]
         let _ = view;
         #[cfg(feature = "otel")]
@@ -156,6 +207,11 @@ impl WsMetrics {
     }
 
     fn collection_coalesced(&self, view: &str, updates: u64) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add(&probe.coalesced_updates, updates);
+            DeliveryProbe::add(&probe.coalesced_flushes, 1);
+        });
         #[cfg(not(feature = "otel"))]
         let _ = (view, updates);
         #[cfg(feature = "otel")]
@@ -165,6 +221,15 @@ impl WsMetrics {
     }
 
     fn delivery_stopped(&self, view: &str, reason: &'static str) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            *probe
+                .delivery_stopped
+                .lock()
+                .expect("delivery probe lock poisoned")
+                .entry(reason)
+                .or_default() += 1;
+        });
         #[cfg(not(feature = "otel"))]
         let _ = (view, reason);
         #[cfg(feature = "otel")]
@@ -520,6 +585,14 @@ pub(crate) struct ConnectionAcceptor {
 }
 
 impl ConnectionAcceptor {
+    /// Mirror this acceptor's delivery instruments into `probe`. Must be set
+    /// before serving: each session copies the metrics handle when it starts.
+    #[cfg(test)]
+    pub(crate) fn with_delivery_probe(mut self, probe: Arc<DeliveryProbe>) -> Self {
+        self.metrics.probe = Some(probe);
+        self
+    }
+
     /// Number of clients currently connected to this server.
     pub(crate) fn client_count(&self) -> usize {
         self.client_manager.client_count()
@@ -3521,6 +3594,144 @@ mod tests {
 
             assert_eq!(collect_trades(&mut socket, 50).await.len(), 50);
             socket.close(None).await.ok();
+        }
+    }
+
+    /// Session tokens that expire while their socket is open.
+    mod session_expiry {
+        use super::*;
+        use crate::websocket::auth::SignedSessionAuthPlugin;
+        use arete_auth::{KeyClass, SessionClaims, SigningKey, TokenSigner, TokenVerifier};
+        use futures_util::{SinkExt, StreamExt};
+        use std::time::Duration;
+        use tokio::net::{TcpListener, TcpStream};
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        use tokio_tungstenite::tungstenite::Message;
+        use tokio_tungstenite::{client_async, WebSocketStream};
+
+        struct Server {
+            addr: SocketAddr,
+            signer: TokenSigner,
+        }
+
+        impl Server {
+            async fn start() -> Self {
+                let signing_key = SigningKey::generate();
+                let verifier =
+                    TokenVerifier::new(signing_key.verifying_key(), "test-issuer", "test-audience");
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let server = WebSocketServer::new(
+                    addr,
+                    BusManager::new(),
+                    EntityCache::new(),
+                    Arc::new(ViewIndex::new()),
+                    #[cfg(feature = "otel")]
+                    None,
+                )
+                .with_auth_plugin(Arc::new(SignedSessionAuthPlugin::new(verifier)));
+                let (acceptor, _cleanup) = server.into_acceptor();
+                tokio::spawn(async move { acceptor.serve_listener(listener).await });
+                Self {
+                    addr,
+                    signer: TokenSigner::new(signing_key, "test-issuer"),
+                }
+            }
+
+            fn token(&self, ttl_seconds: u64) -> String {
+                let claims = SessionClaims::builder("test-issuer", "test-subject", "test-audience")
+                    .with_scope("read")
+                    .with_key_class(KeyClass::Secret)
+                    .with_ttl(ttl_seconds)
+                    .build();
+                self.signer.sign(claims).unwrap()
+            }
+
+            async fn connect(&self, token: &str) -> WebSocketStream<TcpStream> {
+                let stream = TcpStream::connect(self.addr).await.unwrap();
+                client_async(format!("ws://{}/?hs_token={token}", self.addr), stream)
+                    .await
+                    .unwrap()
+                    .0
+            }
+        }
+
+        async fn send_json(socket: &mut WebSocketStream<TcpStream>, message: Value) {
+            socket
+                .send(Message::Text(message.to_string().into()))
+                .await
+                .unwrap();
+        }
+
+        /// The close frame, if the server closes the socket within `wait`.
+        async fn close_within(
+            socket: &mut WebSocketStream<TcpStream>,
+            wait: Duration,
+        ) -> Option<Option<CloseFrame>> {
+            tokio::time::timeout(wait, async {
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Message::Close(frame) = message {
+                        return Some(frame);
+                    }
+                }
+                Some(None)
+            })
+            .await
+            .ok()
+            .flatten()
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn an_expired_session_is_closed_with_the_reason() {
+            let server = Server::start().await;
+            let mut socket = server.connect(&server.token(2)).await;
+
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            send_json(&mut socket, json!({"type": "ping"})).await;
+
+            let frame = close_within(&mut socket, Duration::from_secs(5))
+                .await
+                .expect("the server closes the expired session")
+                .expect("the close frame carries a reason");
+            assert_eq!(frame.code, CloseCode::Policy);
+            assert_eq!(
+                frame.reason.as_str(),
+                "token-expired: Authentication token expired"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_session_refreshed_in_band_outlives_its_first_token() {
+            let server = Server::start().await;
+            let mut socket = server.connect(&server.token(2)).await;
+
+            send_json(
+                &mut socket,
+                json!({"type": "refresh_auth", "token": server.token(3_600)}),
+            )
+            .await;
+            let reply = tokio::time::timeout(Duration::from_secs(5), async {
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Message::Text(text) = message {
+                        return serde_json::from_str::<Value>(text.as_str()).ok();
+                    }
+                }
+                None
+            })
+            .await
+            .expect("the server answers the refresh")
+            .expect("the answer is JSON");
+            assert_eq!(reply["success"], true, "refresh accepted: {reply}");
+
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            send_json(&mut socket, json!({"type": "ping"})).await;
+            assert!(
+                close_within(&mut socket, Duration::from_millis(1_500))
+                    .await
+                    .is_none(),
+                "the socket stays open on the refreshed token"
+            );
         }
     }
 }

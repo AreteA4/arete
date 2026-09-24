@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.22.3](https://github.com/AreteA4/arete/compare/arete-typescript-v0.22.2...arete-typescript-v0.22.3) (2026-09-24)
+
+
+### Miscellaneous Chores
+
+* **arete-typescript:** Synchronize arete versions
+
+## [0.22.2](https://github.com/AreteA4/arete/compare/arete-typescript-v0.22.1...arete-typescript-v0.22.2) (2026-09-24)
+
+
+### Miscellaneous Chores
+
+* **arete-typescript:** Synchronize arete versions
+
+## [0.22.1](https://github.com/AreteA4/arete/compare/arete-typescript-v0.22.0...arete-typescript-v0.22.1) (2026-09-23)
+
+
+### Miscellaneous Chores
+
+* **arete-typescript:** Synchronize arete versions
+
 ## [0.22.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.21.0...arete-typescript-v0.22.0) (2026-09-22)
 
 
