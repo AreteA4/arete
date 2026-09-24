@@ -467,10 +467,12 @@ async fn run() {
                 .iter()
                 .map(|(event, _)| event.as_str())
                 .collect::<Vec<_>>();
+            // Each `Program data:` line is decoded once, by the instruction
+            // that emitted it: the outer instruction's log range also holds
+            // the inner instruction's line, which is left to the inner one.
             let mut expected_names = if variant {
                 vec![
                     "OuterIxState",
-                    "LogCpiEvent",
                     "LogCpiEvent",
                     "InnerCpiEvent",
                     "LogCpiEvent",

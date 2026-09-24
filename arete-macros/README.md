@@ -75,8 +75,12 @@ Typical patterns:
 - `#[aggregate(from = my_program_sdk::events::TradeExecuted, field = amount, strategy = Sum)]`
 - `#[derive_from(from = my_program_sdk::events::TradeExecuted, field = amount, strategy = LastWrite)]`
 - `#[event(from = my_program_sdk::events::TradeExecuted, fields = [id, amount])]`
+- `#[map(my_program_sdk::events::TradeExecuted::accounts::market, strategy = LastWrite)]`
+- `#[event(from = my_program_sdk::events::TradeExecuted, fields = [amount, accounts::market], lookup_by = id)]`
 
-When an IDL omits inline event fields, the macro resolves them from the event's backing type or a same-name struct in `types[]`. Event sources do not expose instruction accounts, so `accounts::...` is not valid on an event source.
+When an IDL omits inline event fields, the macro resolves them from the event's backing type or a same-name struct in `types[]`.
+
+A bare name on an event source is a payload field. `accounts::name` (or an `accounts.name` path in a condition) is an account of the instruction that emitted that event occurrence, which lets a record carry accounts the payload omits. For `emit_cpi!` events that is the instruction that made the self-CPI; for `emit!` events it is the instruction whose own logs hold the `Program data:` line. The IDL does not say which instruction emits an event, so the name is checked against every instruction's accounts. If the emitting instruction was not decoded (for example, its discriminator is not in the IDL), the fields stay unset and the runtime logs a warning; they are never filled from another instruction. A capture cannot hold a payload field and an account with the same name (`pool` and `accounts::pool`).
 
 The reserved fields `__signature`, `__slot`, and `__timestamp` come from the
 runtime update context rather than the IDL payload. They can be mapped onto
