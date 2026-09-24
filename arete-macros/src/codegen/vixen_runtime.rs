@@ -84,7 +84,7 @@ fn generate_reconnect_position() -> TokenStream {
 ///
 /// This is used by both `generate_spec_function` and `generate_multi_pipeline_spec_function`
 /// to avoid duplicating the ~160-line scheduler loop.
-fn generate_slot_scheduler_task() -> TokenStream {
+pub(crate) fn generate_slot_scheduler_task() -> TokenStream {
     quote! {
         {
             let scheduler = slot_scheduler.clone();
@@ -297,11 +297,14 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                     );
                                 }
                             } else {
+                                // Stamped with the live tip, which can be ahead
+                                // of the parser, so it must not advance the
+                                // resume watermark.
                                 let slot_context = arete::runtime::arete_server::SlotContext::new(
                                     current_slot,
                                     next_async_resolver_slot_index(async_resolver_order.as_ref()),
                                 );
-                                let mut batch = arete::runtime::arete_server::MutationBatch::with_slot_context(
+                                let mut batch = arete::runtime::arete_server::MutationBatch::scheduled(
                                     arete::runtime::smallvec::SmallVec::from_vec(url_mutations),
                                     slot_context,
                                 );
@@ -797,6 +800,64 @@ pub(crate) fn generate_managed_grpc_helpers() -> TokenStream {
     }
 }
 
+/// Generate the free helpers shared by the VmHandler and the slot scheduler
+/// task: projector queue reservation, async-resolver ordering, and wall time.
+/// Emitted by both VmHandler generators; a stack uses exactly one of them.
+pub(crate) fn generate_runtime_helpers() -> TokenStream {
+    quote! {
+        const PROJECTOR_ENQUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        const ASYNC_RESOLVER_SLOT_INDEX_BASE: u64 = 1_u64 << 63;
+
+        fn current_time_seconds() -> i64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64
+        }
+
+        fn async_resolver_max_concurrency() -> usize {
+            static MAX_CONCURRENCY: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            *MAX_CONCURRENCY.get_or_init(|| {
+                std::env::var("ARETE_ASYNC_RESOLVER_MAX_CONCURRENCY")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(16)
+            })
+        }
+
+        fn next_async_resolver_slot_index(counter: &std::sync::atomic::AtomicU64) -> u64 {
+            ASYNC_RESOLVER_SLOT_INDEX_BASE
+                | (counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    & (ASYNC_RESOLVER_SLOT_INDEX_BASE - 1))
+        }
+
+        async fn reserve_projector_batch_slot(
+            mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
+            operation: &str,
+        ) -> arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch> {
+            match arete::runtime::tokio::time::timeout(PROJECTOR_ENQUEUE_TIMEOUT, mutations_tx.reserve_owned()).await {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => {
+                    arete::runtime::tracing::error!(
+                        operation = %operation,
+                        "Projector queue closed while reserving mutation capacity; exiting to avoid inconsistent VM state"
+                    );
+                    std::process::exit(1);
+                }
+                Err(_) => {
+                    arete::runtime::tracing::error!(
+                        operation = %operation,
+                        timeout = ?PROJECTOR_ENQUEUE_TIMEOUT,
+                        "Timed out waiting for projector queue capacity; exiting to avoid inconsistent VM state"
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+}
+
 /// Generate the VmHandler struct and its Handler trait implementations.
 ///
 /// This is the single source of truth for VmHandler generation.
@@ -809,6 +870,7 @@ pub fn generate_vm_handler(
     let state_enum = format_ident!("{}", state_enum_name);
     let instruction_enum = format_ident!("{}", instruction_enum_name);
     let entity_name_lit = entity_name;
+    let runtime_helpers = generate_runtime_helpers();
 
     quote! {
         #[allow(dead_code)]
@@ -1010,56 +1072,7 @@ pub fn generate_vm_handler(
             }
         }
 
-        const PROJECTOR_ENQUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-        const ASYNC_RESOLVER_SLOT_INDEX_BASE: u64 = 1_u64 << 63;
-
-        fn current_time_seconds() -> i64 {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64
-        }
-
-        fn async_resolver_max_concurrency() -> usize {
-            static MAX_CONCURRENCY: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-            *MAX_CONCURRENCY.get_or_init(|| {
-                std::env::var("ARETE_ASYNC_RESOLVER_MAX_CONCURRENCY")
-                    .ok()
-                    .and_then(|value| value.parse::<usize>().ok())
-                    .filter(|value| *value > 0)
-                    .unwrap_or(16)
-            })
-        }
-
-        fn next_async_resolver_slot_index(counter: &std::sync::atomic::AtomicU64) -> u64 {
-            ASYNC_RESOLVER_SLOT_INDEX_BASE
-                | (counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    & (ASYNC_RESOLVER_SLOT_INDEX_BASE - 1))
-        }
-
-        async fn reserve_projector_batch_slot(
-            mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
-            operation: &str,
-        ) -> arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch> {
-            match arete::runtime::tokio::time::timeout(PROJECTOR_ENQUEUE_TIMEOUT, mutations_tx.reserve_owned()).await {
-                Ok(Ok(permit)) => permit,
-                Ok(Err(_)) => {
-                    arete::runtime::tracing::error!(
-                        operation = %operation,
-                        "Projector queue closed while reserving mutation capacity; exiting to avoid inconsistent VM state"
-                    );
-                    std::process::exit(1);
-                }
-                Err(_) => {
-                    arete::runtime::tracing::error!(
-                        operation = %operation,
-                        timeout = ?PROJECTOR_ENQUEUE_TIMEOUT,
-                        "Timed out waiting for projector queue capacity; exiting to avoid inconsistent VM state"
-                    );
-                    std::process::exit(1);
-                }
-            }
-        }
+        #runtime_helpers
 
         #[derive(Clone)]
         pub struct VmHandler {
@@ -1914,6 +1927,7 @@ pub fn generate_spec_function(
 }
 
 pub fn generate_vm_handler_struct() -> TokenStream {
+    let runtime_helpers = generate_runtime_helpers();
     quote! {
         #[allow(dead_code)]
         const DEFAULT_DAS_BATCH_SIZE: usize = 100;
@@ -2114,56 +2128,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
             }
         }
 
-        const PROJECTOR_ENQUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-        const ASYNC_RESOLVER_SLOT_INDEX_BASE: u64 = 1_u64 << 63;
-
-        fn current_time_seconds() -> i64 {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64
-        }
-
-        fn async_resolver_max_concurrency() -> usize {
-            static MAX_CONCURRENCY: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-            *MAX_CONCURRENCY.get_or_init(|| {
-                std::env::var("ARETE_ASYNC_RESOLVER_MAX_CONCURRENCY")
-                    .ok()
-                    .and_then(|value| value.parse::<usize>().ok())
-                    .filter(|value| *value > 0)
-                    .unwrap_or(16)
-            })
-        }
-
-        fn next_async_resolver_slot_index(counter: &std::sync::atomic::AtomicU64) -> u64 {
-            ASYNC_RESOLVER_SLOT_INDEX_BASE
-                | (counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    & (ASYNC_RESOLVER_SLOT_INDEX_BASE - 1))
-        }
-
-        async fn reserve_projector_batch_slot(
-            mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
-            operation: &str,
-        ) -> arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch> {
-            match arete::runtime::tokio::time::timeout(PROJECTOR_ENQUEUE_TIMEOUT, mutations_tx.reserve_owned()).await {
-                Ok(Ok(permit)) => permit,
-                Ok(Err(_)) => {
-                    arete::runtime::tracing::error!(
-                        operation = %operation,
-                        "Projector queue closed while reserving mutation capacity; exiting to avoid inconsistent VM state"
-                    );
-                    std::process::exit(1);
-                }
-                Err(_) => {
-                    arete::runtime::tracing::error!(
-                        operation = %operation,
-                        timeout = ?PROJECTOR_ENQUEUE_TIMEOUT,
-                        "Timed out waiting for projector queue capacity; exiting to avoid inconsistent VM state"
-                    );
-                    std::process::exit(1);
-                }
-            }
-        }
+        #runtime_helpers
 
         #[derive(Clone)]
         pub struct VmHandler {

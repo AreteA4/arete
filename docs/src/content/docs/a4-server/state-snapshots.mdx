@@ -80,7 +80,9 @@ Each cycle the server:
    finish, then briefly blocks new updates with a per-runtime consistency
    barrier.
 2. Dumps the VM entity tables, projection caches, and **resume watermark** —
-   the highest slot the projector has applied — from that same processing cut.
+   the highest slot of stream input the projector has applied — from that same
+   processing cut. Scheduled resolver callbacks do not advance it: they are
+   stamped with the live slot tip, which can be ahead of the parser.
 3. Releases processing, serializes and compresses the captured state, writes
    one atomic blob to the store (temp file + rename), and prunes old snapshots.
 
