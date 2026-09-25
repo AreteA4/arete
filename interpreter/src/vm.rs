@@ -653,6 +653,16 @@ fn value_to_cache_key(value: &Value) -> String {
     }
 }
 
+/// The key a missed lookup is queued under, and the key an index write
+/// flushes. Uses the index's own key form, so a numeric value and its decimal
+/// string (u64 values past 2^53 arrive as strings) queue and flush together.
+fn lookup_replay_key(value: &Value) -> Option<String> {
+    match value {
+        Value::String(_) | Value::Number(_) => Some(value_to_cache_key(value)),
+        _ => None,
+    }
+}
+
 pub(crate) fn resolver_cache_key(resolver: &ResolverType, input: &Value) -> String {
     match resolver {
         ResolverType::Token => format!("token:{}", value_to_cache_key(input)),
@@ -2880,6 +2890,7 @@ impl VmContext {
         non_emitted_fields: Option<&HashSet<String>>,
     ) -> Result<Vec<Mutation>> {
         self.last_pda_lookup_miss = None;
+        self.last_lookup_index_miss = None;
         self.segment_misses.clear();
 
         if !handler
@@ -3647,8 +3658,8 @@ impl VmContext {
                     index.insert(lookup_val.clone(), pk_val);
 
                     // Track lookup keys so process_event can flush queued account updates
-                    if let Some(key_str) = lookup_val.as_str() {
-                        self.last_lookup_index_keys.push(key_str.to_string());
+                    if let Some(key) = lookup_replay_key(&lookup_val) {
+                        self.last_lookup_index_keys.push(key);
                     }
 
                     pc += 1;
@@ -3749,6 +3760,11 @@ impl VmContext {
                                         self.last_pda_lookup_miss = Some(pda_str.to_string());
                                         miss_kind = Some("pda_lookup_miss".to_string());
                                     } else {
+                                        // A non-address key (for example a slot) has no
+                                        // PDA mapping to wait for, but the index entry
+                                        // it needs may still arrive in a later update.
+                                        self.last_lookup_index_miss =
+                                            lookup_replay_key(&current_value);
                                         miss_kind = Some("lookup_index_miss".to_string());
                                     }
                                 }
@@ -7560,6 +7576,133 @@ mod tests {
             .unwrap();
 
         assert_eq!(vm.registers[1], json!(42));
+    }
+
+    #[test]
+    fn test_numeric_lookup_miss_is_queued_under_its_index_key() {
+        let mut vm = VmContext::new();
+
+        let handler = vec![
+            OpCode::LoadConstant {
+                value: json!(450_355_463_u64),
+                dest: 0,
+            },
+            OpCode::LookupIndex {
+                state_id: 0,
+                index_name: "end_at_lookup_index".to_string(),
+                lookup_value: 0,
+                dest: 1,
+            },
+        ];
+
+        vm.execute_handler(&handler, &json!({}), "test", 0, "TestEntity", None, None)
+            .unwrap();
+
+        assert_eq!(vm.registers[1], Value::Null);
+        assert_eq!(vm.take_last_pda_lookup_miss(), None);
+        assert_eq!(
+            vm.take_last_lookup_index_miss().as_deref(),
+            Some("450355463")
+        );
+    }
+
+    #[test]
+    fn test_numeric_lookup_index_write_flushes_its_key() {
+        let mut vm = VmContext::new();
+
+        let handler = vec![
+            OpCode::LoadConstant {
+                value: json!(450_355_463_u64),
+                dest: 0,
+            },
+            OpCode::LoadConstant {
+                value: json!(417_840_u64),
+                dest: 1,
+            },
+            OpCode::UpdateLookupIndex {
+                state_id: 0,
+                index_name: "end_at_lookup_index".to_string(),
+                lookup_value: 0,
+                primary_key: 1,
+            },
+        ];
+
+        vm.execute_handler(&handler, &json!({}), "test", 0, "TestEntity", None, None)
+            .unwrap();
+
+        assert_eq!(vm.take_last_lookup_index_keys(), vec!["450355463"]);
+    }
+
+    #[test]
+    fn test_numeric_miss_past_2_pow_53_flushes_on_its_decimal_string() {
+        let slot = u64::MAX - 1;
+        let mut vm = VmContext::new();
+
+        let missing = vec![
+            OpCode::LoadConstant {
+                value: json!(slot),
+                dest: 0,
+            },
+            OpCode::LookupIndex {
+                state_id: 0,
+                index_name: "end_at_lookup_index".to_string(),
+                lookup_value: 0,
+                dest: 1,
+            },
+        ];
+        vm.execute_handler(&missing, &json!({}), "test", 0, "TestEntity", None, None)
+            .unwrap();
+        let queued_under = vm.take_last_lookup_index_miss();
+
+        let register = vec![
+            OpCode::LoadConstant {
+                value: json!(slot.to_string()),
+                dest: 0,
+            },
+            OpCode::LoadConstant {
+                value: json!(42),
+                dest: 1,
+            },
+            OpCode::UpdateLookupIndex {
+                state_id: 0,
+                index_name: "end_at_lookup_index".to_string(),
+                lookup_value: 0,
+                primary_key: 1,
+            },
+        ];
+        vm.execute_handler(&register, &json!({}), "test", 0, "TestEntity", None, None)
+            .unwrap();
+
+        assert_eq!(queued_under.as_deref(), Some("18446744073709551614"));
+        assert_eq!(
+            vm.take_last_lookup_index_keys(),
+            vec!["18446744073709551614"]
+        );
+    }
+
+    #[test]
+    fn test_lookup_miss_does_not_leak_into_the_next_handler() {
+        let mut vm = VmContext::new();
+
+        let missing = vec![
+            OpCode::LoadConstant {
+                value: json!(7_u64),
+                dest: 0,
+            },
+            OpCode::LookupIndex {
+                state_id: 0,
+                index_name: "end_at_lookup_index".to_string(),
+                lookup_value: 0,
+                dest: 1,
+            },
+        ];
+        vm.execute_handler(&missing, &json!({}), "test", 0, "TestEntity", None, None)
+            .unwrap();
+
+        vm.execute_handler(&[], &json!({}), "test", 0, "TestEntity", None, None)
+            .unwrap();
+
+        assert_eq!(vm.take_last_lookup_index_miss(), None);
     }
 
     #[test]
