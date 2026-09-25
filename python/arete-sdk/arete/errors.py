@@ -40,7 +40,38 @@ class SubscriptionError(AreteError):
 
 
 class AuthError(AreteError):
-    """Authentication failures with optional machine-readable error code."""
+    """Authentication failures with optional machine-readable error code.
+
+    A session refusal for the stack version the client was generated for
+    (``STACK_VERSION_RETIRED`` / ``STACK_VERSION_UNKNOWN``) also carries the
+    server's guidance, when it gave any: ``replacement_version``,
+    ``replacement_stack_manifest_hash``, ``upgrade_command`` and
+    ``retired_at``. Such a refusal is terminal: the SDK does not retry the
+    request or reconnect.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: Any = None,
+        details: Any = None,
+        *,
+        replacement_version: Optional[str] = None,
+        replacement_stack_manifest_hash: Optional[str] = None,
+        upgrade_command: Optional[str] = None,
+        retired_at: Optional[str] = None,
+    ) -> None:
+        super().__init__(message, code, details)
+        self.replacement_version = replacement_version
+        self.replacement_stack_manifest_hash = replacement_stack_manifest_hash
+        self.upgrade_command = upgrade_command
+        self.retired_at = retired_at
+
+    @property
+    def is_stack_version_refusal(self) -> bool:
+        """True when the session endpoint refused the client's stack version."""
+        code = getattr(self.code, "value", self.code)
+        return code in ("stack_version_retired", "stack_version_unknown")
 
 
 class ProcessedSlotTimeoutError(AreteError):

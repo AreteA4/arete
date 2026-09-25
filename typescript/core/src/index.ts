@@ -233,6 +233,8 @@ export type {
   DefaultViewKey,
   StackDefinition,
   StackEndpoints,
+  StackRelease,
+  StackVersionRefusal,
   ReadTransportMethod,
   ProgramAccountReadDefinition,
   ProgramAccountBatchItem,
@@ -289,6 +291,7 @@ export {
   DEFAULT_MAX_ENTRIES_PER_VIEW,
   AreteError,
   isReplayErrorCode,
+  isStackVersionRefusalCode,
 } from './types';
 
 export type {

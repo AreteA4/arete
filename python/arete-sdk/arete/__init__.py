@@ -180,6 +180,7 @@ from arete.stack import (  # noqa: E402
     ProgramOperations,
     StackDef,
     StackEndpoints,
+    StackRelease,
     flow_operation,
     instruction_operation,
     transaction_operation,
@@ -234,6 +235,7 @@ __all__ = [
     # stack binding model
     "StackDef",
     "StackEndpoints",
+    "StackRelease",
     "ProgramDef",
     "ProgramOperations",
     "ProgramOperationContext",

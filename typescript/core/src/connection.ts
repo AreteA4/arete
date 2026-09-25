@@ -11,12 +11,15 @@ import type {
   ProgramReadBindingAuthTarget,
   SocketIssue,
   SocketIssueCallback,
+  StackRelease,
+  StackVersionRefusal,
   Subscription,
   WebSocketFactoryInit,
 } from './types';
 import {
   DEFAULT_CONFIG,
   AreteError,
+  isStackVersionRefusalCode,
   parseErrorCode,
   parseWireErrorCode,
   shouldRefreshToken,
@@ -88,6 +91,68 @@ interface TokenEndpointResponse {
 interface TokenEndpointErrorResponse {
   error?: string;
   code?: string;
+  replacement?: unknown;
+  upgradeCommand?: unknown;
+  retiredAt?: unknown;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/** The structured fields of a stack version refusal, dropping malformed ones. */
+function parseStackVersionRefusal(body: TokenEndpointErrorResponse | undefined): StackVersionRefusal {
+  const replacementBody = typeof body?.replacement === 'object' && body.replacement !== null
+    ? body.replacement as Record<string, unknown>
+    : undefined;
+  const version = optionalString(replacementBody?.['version']);
+  const stackManifestHash = optionalString(replacementBody?.['stackManifestHash']);
+  const upgradeCommand = optionalString(body?.upgradeCommand);
+  const retiredAt = optionalString(body?.retiredAt);
+  return {
+    ...(version !== undefined || stackManifestHash !== undefined
+      ? {
+          replacement: {
+            ...(version !== undefined ? { version } : {}),
+            ...(stackManifestHash !== undefined ? { stackManifestHash } : {}),
+          },
+        }
+      : {}),
+    ...(upgradeCommand !== undefined ? { upgradeCommand } : {}),
+    ...(retiredAt !== undefined ? { retiredAt } : {}),
+  };
+}
+
+/** The server's message, followed by the replacement and how to install it. */
+function describeStackVersionRefusal(message: string, refusal: StackVersionRefusal): string {
+  const guidance: string[] = [];
+  const replacement = refusal.replacement?.version ?? refusal.replacement?.stackManifestHash;
+  if (replacement !== undefined) guidance.push(`Replacement: ${replacement}.`);
+  if (refusal.upgradeCommand !== undefined) guidance.push(`Upgrade with: ${refusal.upgradeCommand}`);
+  if (guidance.length === 0) return message;
+  const trimmed = message.trimEnd();
+  return `${trimmed}${/[.!?]$/.test(trimmed) ? '' : '.'} ${guidance.join(' ')}`;
+}
+
+/** A stack version refusal ends the connection: no retry or reconnect can fix it. */
+function isTerminalRefusal(error: unknown): error is AreteError {
+  return error instanceof AreteError && isStackVersionRefusalCode(error.code);
+}
+
+function normalizeStackRelease(release: StackRelease | undefined): StackRelease | undefined {
+  if (release === undefined) return undefined;
+  if (
+    typeof release.stackManifestHash !== 'string'
+    || release.stackManifestHash.length === 0
+    || typeof release.liveAlias !== 'string'
+    || release.liveAlias.length === 0
+  ) {
+    throw new AreteError(
+      'Stack release requires a non-empty stackManifestHash and liveAlias',
+      'INVALID_CONFIG'
+    );
+  }
+  return { stackManifestHash: release.stackManifestHash, liveAlias: release.liveAlias };
 }
 
 interface RefreshAuthResponseMessage {
@@ -337,6 +402,7 @@ export class ConnectionManager {
   private tokenScopes = new Set<string>();
   private requestedScopes = new Set<string>();
   private readonly hostedAreteUrl: boolean;
+  private readonly release?: StackRelease;
   private reconnectForTokenRefresh = false;
   /** Most recent reason the socket was lost, reported while reconnecting. */
   private lastDisconnectReason?: string;
@@ -353,6 +419,7 @@ export class ConnectionManager {
     this.maxReconnectAttempts =
       config.maxReconnectAttempts ?? DEFAULT_CONFIG.maxReconnectAttempts;
     this.authConfig = config.auth;
+    this.release = normalizeStackRelease(config.release);
     this.authFetch = config.fetch ?? ((input, init) => {
       if (typeof globalThis.fetch !== 'function') {
         throw new AreteError(
@@ -499,7 +566,15 @@ export class ConnectionManager {
     scopes: readonly string[],
     isCurrent: () => boolean
   ): Promise<string | undefined> {
-    const request: AuthTokenRequest = { scopes: normalizeScopes(scopes) };
+    const request: AuthTokenRequest = {
+      scopes: normalizeScopes(scopes),
+      ...(this.release
+        ? {
+            stackManifestHash: this.release.stackManifestHash,
+            liveAlias: this.release.liveAlias,
+          }
+        : {}),
+    };
     const result = await this.requestAuthToken(request, isCurrent);
     return result === undefined ? undefined : this.updateTokenState(result, request.scopes);
   }
@@ -671,9 +746,14 @@ export class ConnectionManager {
         : target;
     }
 
+    // Session requests from a stack definition without a release stay
+    // byte-for-byte what older clients send.
     return {
       websocket_url: this.websocketUrl ?? '',
       scopes: request.scopes,
+      ...(request.stackManifestHash !== undefined && request.liveAlias !== undefined
+        ? { stackManifestHash: request.stackManifestHash, liveAlias: request.liveAlias }
+        : {}),
     };
   }
 
@@ -716,6 +796,23 @@ export class ConnectionManager {
       const errorMessage = typeof parsedError?.error === 'string' && parsedError.error.length > 0
         ? parsedError.error
         : rawError || response.statusText || 'Authentication request failed';
+
+      if (isStackVersionRefusalCode(errorCode)) {
+        const refusal = parseStackVersionRefusal(parsedError);
+        throw new AreteError(
+          describeStackVersionRefusal(
+            `Token endpoint returned ${response.status}: ${errorMessage}`,
+            refusal
+          ),
+          errorCode,
+          {
+            status: response.status,
+            wireErrorCode,
+            responseBody: rawError || null,
+            ...refusal,
+          }
+        );
+      }
 
       throw new AreteError(
         `Token endpoint returned ${response.status}: ${errorMessage}`,
@@ -806,8 +903,10 @@ export class ConnectionManager {
         if (this.tokenRefreshInFlight === refresh) {
           this.scheduleTokenRefresh();
         }
-      } catch {
-        if (this.tokenRefreshInFlight === refresh) {
+      } catch (error) {
+        // A stack version refusal will not change on retry. Stop refreshing;
+        // the next connect after this session ends reports it.
+        if (this.tokenRefreshInFlight === refresh && !isTerminalRefusal(error)) {
           this.scheduleTokenRefresh();
         }
       } finally {
@@ -1120,7 +1219,7 @@ export class ConnectionManager {
       }
       if (generation === this.socketGeneration) {
         this.updateState(
-          recovering ? 'reconnecting' : 'error',
+          recovering && !isTerminalRefusal(error) ? 'reconnecting' : 'error',
           error instanceof Error ? error.message : 'Failed to get token'
         );
       }
@@ -1251,8 +1350,8 @@ export class ConnectionManager {
               );
               return;
             }
-            void this.connect(true).catch(() => {
-              this.handleReconnect();
+            void this.connect(true).catch((error: unknown) => {
+              this.recoverFromFailedConnect(error);
             });
             return;
           }
@@ -1261,6 +1360,11 @@ export class ConnectionManager {
           const closeReason = event.reason || '';
           const errorCodeMatch = closeReason.match(/^([\w-]+):/);
           const errorCode = errorCodeMatch ? parseWireErrorCode(errorCodeMatch[1]!) : null;
+
+          if (errorCode !== null && isStackVersionRefusalCode(errorCode)) {
+            this.updateState('error', `WebSocket closed (${event.code}: ${closeReason})`);
+            return;
+          }
 
           // Check for auth errors that require token refresh
           if (event.code === 1008 || errorCode) {
@@ -1278,8 +1382,8 @@ export class ConnectionManager {
                 return;
               }
               // Try to reconnect immediately with a fresh token
-              void this.connect(true).catch(() => {
-                this.handleReconnect();
+              void this.connect(true).catch((error: unknown) => {
+                this.recoverFromFailedConnect(error);
               });
               return;
             }
@@ -1526,10 +1630,19 @@ export class ConnectionManager {
         // Once a socket exists, its close event owns the next retry. Token
         // acquisition and socket construction can fail before that point.
         if (this.ws === null && this.currentState !== 'disconnected') {
-          this.handleReconnect(error instanceof Error ? error.message : undefined);
+          this.recoverFromFailedConnect(error);
         }
       });
     }, delay);
+  }
+
+  /** Schedule the next attempt after a failed reconnect, unless nothing can succeed. */
+  private recoverFromFailedConnect(error: unknown): void {
+    if (isTerminalRefusal(error)) {
+      // connect() already reported the refusal as the terminal error state.
+      return;
+    }
+    this.handleReconnect(error instanceof Error ? error.message : undefined);
   }
 
   private clearReconnectTimeout(): void {

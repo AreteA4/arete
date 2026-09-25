@@ -196,11 +196,29 @@ export type ProgramReadOverrides<
   ? { readonly [K in keyof TPrograms]?: ProgramReadOverride }
   : Record<string, never>;
 
+/**
+ * The exact served version a generated stack definition was built for: one
+ * live alias of one StackManifest.
+ */
+export interface StackRelease {
+  /** `arete:h1:stack-manifest:sha256:<64 hex>` */
+  readonly stackManifestHash: string;
+  /** The StackManifest live alias this definition serves. */
+  readonly liveAlias: string;
+}
+
 export interface StackDefinition<
   TPrograms extends Record<string, ProgramSdkDefinition> = Record<string, ProgramSdkDefinition>,
 > {
   readonly name: string;
   readonly endpoints: StackEndpoints;
+  /**
+   * Served version this definition was generated for. Present only on
+   * definitions generated from a hosted StackManifest; it is sent with the
+   * WebSocket session request for `endpoints.ws` so the session endpoint can
+   * route the client to that version.
+   */
+  readonly release?: StackRelease;
   readonly views: Record<string, ViewGroup>;
   readonly schemas?: Record<string, Schema<unknown>>;
   readonly patchSchemas?: Record<string, Schema<unknown>>;
@@ -343,6 +361,14 @@ export type AuthTokenRequest =
       readonly targetKind?: never;
       readonly targetId?: never;
       readonly programReleaseHash?: never;
+      /**
+       * Served version of the stack this session is for, when its stack
+       * definition carries one. A custom `getToken` provider can forward it
+       * to the session endpoint as `stackManifestHash`.
+       */
+      readonly stackManifestHash?: string;
+      /** Live alias paired with `stackManifestHash`, forwarded as `liveAlias`. */
+      readonly liveAlias?: string;
     }
   | ({ readonly scopes: readonly string[] } & ProgramReadBindingAuthTarget)
   | ({ readonly scopes: readonly string[] } & SolanaGatewayBindingAuthTarget);
@@ -386,6 +412,11 @@ export interface AreteConfig {
   auth?: AuthConfig;
   /** Fetch implementation used for authentication token requests. */
   fetch?: typeof fetch;
+  /**
+   * Served stack version to name in WebSocket session requests. Omitted
+   * requests are exactly what older clients send.
+   */
+  release?: StackRelease;
 }
 
 export interface SocketIssue {
@@ -446,8 +477,33 @@ export type AuthErrorCode =
   | 'QUOTA_EXCEEDED'
   // Static token errors
   | 'INVALID_STATIC_TOKEN'
+  // Stack version errors: the session endpoint no longer serves, or never
+  // served, the stack version the client was generated for. Terminal.
+  | 'STACK_VERSION_RETIRED'
+  | 'STACK_VERSION_UNKNOWN'
   // Server errors
   | 'INTERNAL_ERROR';
+
+/**
+ * Structured fields of a `STACK_VERSION_RETIRED` / `STACK_VERSION_UNKNOWN`
+ * session refusal, carried on {@link AreteError.details} alongside `status`,
+ * `wireErrorCode` and `responseBody`.
+ */
+export interface StackVersionRefusal {
+  readonly replacement?: {
+    readonly version?: string;
+    readonly stackManifestHash?: string;
+  };
+  /** Command that installs the replacement, e.g. `a4 install stack ore@1.3.0`. */
+  readonly upgradeCommand?: string;
+  /** RFC 3339 time the version was retired. */
+  readonly retiredAt?: string;
+}
+
+/** True for the session refusals that no retry or reconnect can resolve. */
+export function isStackVersionRefusalCode(code: string): boolean {
+  return code === 'STACK_VERSION_RETIRED' || code === 'STACK_VERSION_UNKNOWN';
+}
 
 /**
  * Refusals of a replay cursor. Each has a distinct recovery, so they reach the
@@ -609,6 +665,8 @@ const AUTH_ERROR_CODES_BY_WIRE: Readonly<Record<string, AuthErrorCode>> = {
   'secret-key-required': 'SECRET_KEY_REQUIRED',
   'deployment-access-denied': 'DEPLOYMENT_ACCESS_DENIED',
   'quota-exceeded': 'QUOTA_EXCEEDED',
+  'stack-version-retired': 'STACK_VERSION_RETIRED',
+  'stack-version-unknown': 'STACK_VERSION_UNKNOWN',
 };
 
 /**

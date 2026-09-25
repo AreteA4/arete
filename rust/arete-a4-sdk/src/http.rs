@@ -205,6 +205,7 @@ fn invalid_auth_error(message: &str, code: Option<AuthErrorCode>) -> AreteError 
         status: 0,
         message: message.to_string(),
         code,
+        stack_version: None,
     }
 }
 
@@ -402,10 +403,22 @@ impl HttpAuthClient {
                 }
                 body
             }
-            None => json!({
-                "websocket_url": self.websocket_url.as_deref().unwrap_or(""),
-                "scopes": scopes,
-            }),
+            None => {
+                let mut body = json!({
+                    "websocket_url": self.websocket_url.as_deref().unwrap_or(""),
+                    "scopes": scopes,
+                });
+                // Only the untargeted session names the served stack version.
+                if let Some(release) = self
+                    .auth
+                    .as_ref()
+                    .and_then(|auth| auth.stack_release.as_ref())
+                {
+                    body["stackManifestHash"] = json!(release.stack_manifest_hash);
+                    body["liveAlias"] = json!(release.live_alias);
+                }
+                body
+            }
         }
     }
 
@@ -1041,6 +1054,55 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(token.as_deref(), Some("provider-token"));
+    }
+
+    #[tokio::test]
+    async fn only_the_untargeted_session_request_names_the_stack_release() {
+        let state = EndpointState::default();
+        let endpoint = spawn_token_endpoint(state.clone()).await;
+        let auth = AuthConfig::default()
+            .with_token_endpoint(&endpoint)
+            .with_stack_release(Some(crate::auth::StackRelease {
+                stack_manifest_hash: "arete:h1:stack-manifest:sha256:aa".to_string(),
+                live_alias: "live".to_string(),
+            }));
+        let client = HttpAuthClient::new(
+            Some(auth),
+            Some("ws://127.0.0.1:9/socket".to_string()),
+            reqwest::Client::new(),
+        );
+
+        client
+            .token(&AuthTokenRequest::read(), false)
+            .await
+            .unwrap();
+        client
+            .token(
+                &AuthTokenRequest::targeted(vec!["read".to_string()], target("prb_1")),
+                false,
+            )
+            .await
+            .unwrap();
+
+        let bodies = state.bodies.lock().unwrap();
+        assert_eq!(
+            bodies[0],
+            serde_json::json!({
+                "websocket_url": "ws://127.0.0.1:9/socket",
+                "scopes": ["read"],
+                "stackManifestHash": "arete:h1:stack-manifest:sha256:aa",
+                "liveAlias": "live",
+            })
+        );
+        assert_eq!(
+            bodies[1],
+            serde_json::json!({
+                "targetKind": "program-read-binding",
+                "targetId": "prb_1",
+                "programReleaseHash": "release-hash",
+                "scopes": ["read"],
+            })
+        );
     }
 
     #[tokio::test]

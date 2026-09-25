@@ -342,6 +342,231 @@ describe('ConnectionManager auth', () => {
     });
   });
 
+  const STACK_MANIFEST_HASH =
+    'arete:h1:stack-manifest:sha256:338c718dfbb5a260392414ee5e7f2e07ceb01a07fdcccbf748822d43cdb89a09';
+  const RELEASE = { stackManifestHash: STACK_MANIFEST_HASH, liveAlias: 'live' } as const;
+
+  function sessionTokenResponse() {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    return {
+      ok: true,
+      json: async () => ({ token: makeJwt(nowSeconds + 300), expires_at: nowSeconds + 300 }),
+    };
+  }
+
+  function retiredResponse(code = 'stack-version-retired') {
+    return makeErrorResponse(
+      409,
+      JSON.stringify({
+        error: 'Stack ore 1.2.0 was retired.',
+        code,
+        replacement: {
+          version: '1.3.0',
+          stackManifestHash: 'arete:h1:stack-manifest:sha256:' + 'b'.repeat(64),
+        },
+        upgradeCommand: 'a4 install stack ore@1.3.0',
+        retiredAt: '2026-10-01T00:00:00Z',
+      }),
+      code
+    );
+  }
+
+  it('sends exactly the legacy session body when the stack has no release', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sessionTokenResponse());
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://demo.stack.arete.run',
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await manager.connect();
+
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(requestInit.body).toBe('{"websocket_url":"wss://demo.stack.arete.run","scopes":["read"]}');
+    manager.disconnect();
+  });
+
+  it('names the served stack version in the session body when the stack has a release', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sessionTokenResponse());
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://demo.stack.arete.run',
+      fetch: fetchMock as unknown as typeof fetch,
+      release: RELEASE,
+    });
+
+    await manager.connect();
+
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(requestInit.body).toBe(
+      '{"websocket_url":"wss://demo.stack.arete.run","scopes":["read"],'
+        + `"stackManifestHash":"${STACK_MANIFEST_HASH}","liveAlias":"live"}`
+    );
+    manager.disconnect();
+  });
+
+  it('never adds the stack release to targeted token requests', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ token: 'targeted-token', scopes: ['read'] }),
+    });
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://demo.stack.arete.run',
+      auth: { tokenEndpoint: 'https://auth.example/sessions' },
+      fetch: fetchMock as unknown as typeof fetch,
+      release: RELEASE,
+    });
+
+    await manager.getHttpAuthToken(programReadTarget());
+    await manager.getHttpAuthToken(solanaGatewayTarget(), ['read']);
+
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      {
+        targetKind: 'program-read-binding',
+        targetId: PROGRAM_READ_BINDING_1,
+        programReleaseHash: 'release-1',
+        scopes: ['read'],
+      },
+      {
+        targetKind: 'solana-gateway-binding',
+        targetId: SOLANA_GATEWAY_BINDING,
+        scopes: ['read'],
+      },
+    ]);
+  });
+
+  it('passes the stack release to a custom token provider for the session request only', async () => {
+    const getToken = vi.fn(async (request?: AuthTokenRequest) => ({
+      token: request?.targetKind ? 'targeted' : 'session',
+      scopes: request?.scopes,
+    }));
+    const manager = new ConnectionManager({
+      websocketUrl: 'ws://localhost:8878',
+      auth: { getToken },
+      release: RELEASE,
+    });
+
+    await manager.connect();
+    await manager.getHttpAuthToken(programReadTarget());
+
+    expect(getToken.mock.calls.map(([request]) => request)).toEqual([
+      { scopes: ['read'], stackManifestHash: STACK_MANIFEST_HASH, liveAlias: 'live' },
+      {
+        targetKind: 'program-read-binding',
+        targetId: PROGRAM_READ_BINDING_1,
+        programReleaseHash: 'release-1',
+        scopes: ['read'],
+      },
+    ]);
+    manager.disconnect();
+  });
+
+  it('rejects a malformed stack release', () => {
+    expect(() => new ConnectionManager({
+      websocketUrl: 'wss://demo.stack.arete.run',
+      release: { stackManifestHash: '', liveAlias: 'live' },
+    })).toThrowError(expect.objectContaining({ code: 'INVALID_CONFIG' }));
+  });
+
+  it('surfaces a retired stack version with its replacement and does not retry', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(retiredResponse());
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://demo.stack.arete.run',
+      fetch: fetchMock as unknown as typeof fetch,
+      release: RELEASE,
+    });
+    const states: string[] = [];
+    manager.onStateChange((state) => { states.push(state); });
+
+    const error = await manager.connect().catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(AreteError);
+    expect(error).toMatchObject({
+      code: 'STACK_VERSION_RETIRED',
+      message: 'Token endpoint returned 409: Stack ore 1.2.0 was retired. '
+        + 'Replacement: 1.3.0. Upgrade with: a4 install stack ore@1.3.0',
+      details: {
+        status: 409,
+        wireErrorCode: 'stack-version-retired',
+        replacement: {
+          version: '1.3.0',
+          stackManifestHash: 'arete:h1:stack-manifest:sha256:' + 'b'.repeat(64),
+        },
+        upgradeCommand: 'a4 install stack ore@1.3.0',
+        retiredAt: '2026-10-01T00:00:00Z',
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(MockWebSocket.instances).toHaveLength(0);
+    expect(states.at(-1)).toBe('error');
+  });
+
+  it('maps an unknown stack version refusal and keeps the server message when no guidance is given', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeErrorResponse(
+      409,
+      { error: 'Stack version is not served here', code: 'stack-version-unknown' }
+    ));
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://demo.stack.arete.run',
+      fetch: fetchMock as unknown as typeof fetch,
+      release: RELEASE,
+    });
+
+    await expect(manager.connect()).rejects.toMatchObject({
+      code: 'STACK_VERSION_UNKNOWN',
+      message: 'Token endpoint returned 409: Stack version is not served here',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops reconnecting when a fresh session is refused for the stack version', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(sessionTokenResponse())
+      .mockResolvedValue(retiredResponse());
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://demo.stack.arete.run',
+      fetch: fetchMock as unknown as typeof fetch,
+      reconnectIntervals: [10],
+      maxReconnectAttempts: 5,
+      release: RELEASE,
+    });
+    const states: Array<[string, string | undefined]> = [];
+    manager.onStateChange((state, error) => { states.push([state, error]); });
+
+    const opened = manager.connect();
+    await vi.runAllTicks();
+    await opened;
+    // The session ends; the client mints a fresh one and is refused.
+    MockWebSocket.instances[0]!.close(1008, 'token-expired: Token has expired');
+    await vi.runAllTicks();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(states.at(-1)?.[0]).toBe('error');
+    expect(states.at(-1)?.[1]).toContain('Upgrade with: a4 install stack ore@1.3.0');
+    manager.disconnect();
+  });
+
+  it('stops reconnecting when the server closes for a retired stack version', async () => {
+    vi.useFakeTimers();
+    const manager = new ConnectionManager({
+      websocketUrl: 'ws://localhost:8878',
+      reconnectIntervals: [10],
+    });
+    const states: string[] = [];
+    manager.onStateChange((state) => { states.push(state); });
+
+    const opened = manager.connect();
+    await vi.runAllTicks();
+    await opened;
+    MockWebSocket.instances[0]!.close(1008, 'stack-version-retired: Stack ore 1.2.0 was retired');
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(states.at(-1)).toBe('error');
+    manager.disconnect();
+  });
+
   it('refreshes expiring tokens in the background via in-band refresh', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-28T12:00:00Z'));

@@ -1,4 +1,4 @@
-use crate::auth::{AuthConfig, AuthToken, TokenTransport};
+use crate::auth::{AuthConfig, AuthToken, StackRelease, TokenTransport};
 use crate::chain::{derive_http_endpoint, ChainClient, ChainError, HttpChainClient};
 use crate::config::{AreteConfig, ConnectionConfig};
 use crate::connection::{ConnectionManager, ConnectionState};
@@ -707,7 +707,7 @@ impl<S: Stack> AreteBuilder<S> {
             url,
             http_url,
             transport,
-            config,
+            mut config,
             wallet,
             chain,
             transactions,
@@ -717,6 +717,15 @@ impl<S: Stack> AreteBuilder<S> {
 
         if transport == Transport::WebSocket && url.is_empty() {
             return Err(AreteError::MissingUrl);
+        }
+
+        // The generated release names the version served at the generated
+        // URL; a different URL points somewhere the generator knew nothing
+        // about, so its session request stays unversioned.
+        if url == S::url() {
+            config.auth = config
+                .auth
+                .map(|auth| auth.with_stack_release(StackRelease::of::<S>()));
         }
 
         // Effective HTTP base: explicit builder URL > generated

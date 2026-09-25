@@ -53,6 +53,7 @@ impl From<ChainError> for AreteError {
                         status,
                         message: format!("Read request to '{path}' failed: {body}"),
                         code,
+                        stack_version: None,
                     }
                 } else {
                     AreteError::ConnectionFailed(format!(

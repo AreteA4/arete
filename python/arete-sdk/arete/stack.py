@@ -59,6 +59,7 @@ from arete.views import ViewDef
 
 __all__ = [
     "StackEndpoints",
+    "StackRelease",
     "StackDef",
     "ProgramDef",
     "ProgramOperations",
@@ -84,6 +85,28 @@ class StackEndpoints:
 
     ws: str = ""
     http: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class StackRelease:
+    """The exact served version a generated stack was built for: one live
+    alias of one StackManifest.
+
+    Generated only from a hosted StackManifest. It is sent with the WebSocket
+    session request for ``endpoints.ws`` so the session endpoint can route the
+    client to that version.
+    """
+
+    #: ``arete:h1:stack-manifest:sha256:<64 hex>``
+    stack_manifest_hash: str
+    #: The StackManifest live alias this stack serves.
+    live_alias: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.stack_manifest_hash, str) or not self.stack_manifest_hash:
+            raise ValueError("StackRelease.stack_manifest_hash must be a non-empty string")
+        if not isinstance(self.live_alias, str) or not self.live_alias:
+            raise ValueError("StackRelease.live_alias must be a non-empty string")
 
 
 @dataclass
@@ -129,7 +152,9 @@ class StackDef:
     ``views`` maps entity group name → ``{view_name: ViewDef}`` (the shape
     :class:`arete.views.ViewsNamespace` consumes). ``program_reads`` keys must
     exactly match ``programs`` keys when present. ``gateway`` bindings wire
-    default chain + transaction transports at connect time.
+    default chain + transaction transports at connect time. ``release`` is
+    the served version the stack was generated for (hosted StackManifests
+    only).
     """
 
     name: str
@@ -147,6 +172,8 @@ class StackDef:
     read_arg_counts: Dict[str, Any] = field(default_factory=dict)
     create_read: Optional[Callable[[Any], Mapping[str, Any]]] = None
     create_flows: Optional[Callable[[Any], Mapping[str, Any]]] = None
+    # Served version for the WebSocket session request (hosted only).
+    release: Optional[StackRelease] = None
 
 
 def with_programs(

@@ -64,8 +64,8 @@ pub use amounts::{
     AmountError, AmountInput, AmountResolutionInput, ResolvedAmount,
 };
 pub use auth::{
-    hosted_websocket_suffixes, is_hosted_websocket_host, AuthConfig, AuthToken, TokenTransport,
-    HOSTED_WEBSOCKET_SUFFIX, HOSTED_WEBSOCKET_SUFFIXES_ENV,
+    hosted_websocket_suffixes, is_hosted_websocket_host, AuthConfig, AuthToken, StackRelease,
+    TokenTransport, HOSTED_WEBSOCKET_SUFFIX, HOSTED_WEBSOCKET_SUFFIXES_ENV,
 };
 pub use chain::{
     derive_http_endpoint, ChainClient, ChainClock, ChainError, ContextSlotOptions, HttpChainClient,
@@ -79,7 +79,7 @@ pub use collation::{collation_key, locale_compare, CollationKey};
 pub use config::{AreteConfig, ConnectionConfig};
 pub use connection::{ConnectionManager, ConnectionState, SubscriptionLease, SubscriptionOptions};
 pub use entity::Stack;
-pub use error::{AreteError, AuthErrorCode, GapCode, SocketIssue, StreamGap};
+pub use error::{AreteError, AuthErrorCode, GapCode, SocketIssue, StackVersionRefusal, StreamGap};
 pub use frame::{
     parse_frame, parse_server_message, parse_snapshot_entities, try_parse_subscribed_frame, Frame,
     Mode, Operation, ProtocolErrorFrame, ReplayWindow, ServerFrame, ServerMessage, SnapshotEntity,

@@ -21,6 +21,7 @@ from arete.auth import (
     AuthState,
     TokenTransport,
     build_websocket_url,
+    is_stack_version_refusal,
     parse_error_code_from_close_reason,
     should_refresh_token,
 )
@@ -94,6 +95,11 @@ def _is_socket_issue_message(value: Any) -> bool:
     )
 
 
+def _is_terminal(error: BaseException) -> bool:
+    """A stack version refusal: no retry or reconnect can resolve it."""
+    return is_stack_version_refusal(getattr(error, "code", None))
+
+
 def _camel_or_snake(message: Mapping[str, Any], camel: str, snake: str) -> Any:
     value = message.get(camel)
     return value if value is not None else message.get(snake)
@@ -127,7 +133,11 @@ class ConnectionManager:
         connect_factory: Optional[
             Callable[[str, Optional[Mapping[str, str]]], Awaitable[Any]]
         ] = None,
+        stack_release: Optional[Any] = None,
     ) -> None:
+        """``stack_release`` (an :class:`arete.stack.StackRelease`) names the
+        served stack version in the session request; without it the request
+        is exactly what older clients send."""
         self._websocket_url = websocket_url or None
         if auth_state is not None:
             self._auth_state = auth_state
@@ -136,7 +146,7 @@ class ConnectionManager:
                 raise AreteError(
                     "Authentication requires a WebSocket URL", "INVALID_CONFIG"
                 )
-            self._auth_state = AuthState(websocket_url, auth)
+            self._auth_state = AuthState(websocket_url, auth, stack_release=stack_release)
         else:
             self._auth_state = None
         self._auto_reconnect = auto_reconnect
@@ -326,7 +336,8 @@ class ConnectionManager:
                     error = exc if isinstance(exc, AreteError) else AreteConnectionError(
                         f"Failed to get token: {exc}", "CONNECTION_ERROR", exc
                     )
-                    if recovering and self._auto_reconnect:
+                    # A stack version refusal will not change on retry.
+                    if recovering and self._auto_reconnect and not _is_terminal(error):
                         self._set_state("reconnecting", str(error))
                         if await self._backoff_or_give_up():
                             continue
@@ -393,6 +404,9 @@ class ConnectionManager:
                     continue  # Reconnect immediately with the fresh token.
 
                 error_code = parse_error_code_from_close_reason(close_reason)
+                if is_stack_version_refusal(error_code):
+                    self._set_state("error", f"WebSocket closed ({close_code}: {close_reason})")
+                    return
                 if close_code == 1008 or error_code is not None:
                     if error_code is not None and should_refresh_token(error_code):
                         if self._auth_state is not None:
@@ -532,6 +546,11 @@ class ConnectionManager:
             if token and self.is_connected():
                 self._send_json(refresh_auth_envelope(token))
         except Exception as exc:
+            if _is_terminal(exc):
+                # Retrying cannot change the answer. Keep this session until
+                # it ends; the next connect then reports the refusal.
+                logger.warning("Token refresh refused for this stack version: %s", exc)
+                return
             logger.warning("Background token refresh failed: %s", exc)
         self._schedule_token_refresh()
 

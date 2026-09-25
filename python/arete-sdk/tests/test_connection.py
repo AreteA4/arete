@@ -412,6 +412,79 @@ async def test_a_close_reason_that_mentions_tokens_is_not_read_as_token_expiry()
             assert auth_state.cleared is False
 
 
+class RefusingAuthState:
+    """Issues one session, then is refused for the stack version."""
+
+    config = None
+
+    def __init__(self):
+        self.resolved = 0
+        self.cleared = False
+
+    async def resolve_token(self, force_refresh: bool = False):
+        from arete.auth import AuthErrorCode
+        from arete.errors import AuthError
+
+        self.resolved += 1
+        if self.resolved == 1:
+            return "tok-1"
+        raise AuthError(
+            "Token endpoint returned 409: Stack ore 1.2.0 was retired. "
+            "Replacement: 1.3.0. Upgrade with: a4 install stack ore@1.3.0",
+            AuthErrorCode.STACK_VERSION_RETIRED,
+        )
+
+    def get_refresh_delay(self):
+        return None
+
+    def clear_token(self):
+        self.cleared = True
+
+
+@pytest.mark.asyncio
+async def test_a_refused_stack_version_ends_the_connection_without_reconnecting():
+    connections = []
+
+    async def handler(conn):
+        connections.append(conn)
+        await conn.close(1008, "token-expired: Token has expired")
+
+    async with serve_ws(handler) as url:
+        auth_state = RefusingAuthState()
+        manager, _store, _registry = make_manager(
+            url, auth_state=auth_state, max_reconnect_attempts=5
+        )
+        states = []
+        manager.on_connection_state_change(lambda state, error=None: states.append((state, error)))
+        async with managed(manager):
+            await manager.connect()
+            await wait_until(lambda: manager.connection_state == "error")
+            await asyncio.sleep(0.3)
+
+            assert auth_state.resolved == 2
+            assert len(connections) == 1
+            assert manager.connection_state == "error"
+            assert "Upgrade with: a4 install stack ore@1.3.0" in states[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_a_close_for_a_retired_stack_version_is_not_reconnected():
+    connections = []
+
+    async def handler(conn):
+        connections.append(conn)
+        await conn.close(1008, "stack-version-retired: Stack ore 1.2.0 was retired")
+
+    async with serve_ws(handler) as url:
+        manager, _store, _registry = make_manager(url)
+        async with managed(manager):
+            await manager.connect()
+            await wait_until(lambda: manager.connection_state == "error")
+            await asyncio.sleep(0.3)
+
+            assert len(connections) == 1
+
+
 @pytest.mark.asyncio
 async def test_processed_slot_tracking_and_waiting():
     async def handler(conn):
