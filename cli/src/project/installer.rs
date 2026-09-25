@@ -807,8 +807,17 @@ fn redeploy_notes(
             let before = stack_manifest(previous, alias)?;
             let after = stack_manifest(next, alias)?;
             (before != after).then(|| {
+                // `a4 up <name>` prefers an [authoring.stacks] entry of the
+                // same name, so that command would not redeploy this stack.
+                let redeploy = if manifest.document.authoring.stacks.contains_key(alias) {
+                    format!(
+                        "Rename it or the [authoring.stacks] entry '{alias}' (which `a4 up {alias}` deploys instead), then redeploy it"
+                    )
+                } else {
+                    format!("Run `a4 up {alias}` to redeploy it")
+                };
                 format!(
-                    "note: stack '{alias}' now resolves StackManifest {after}, but the deployment its SDK reads was deployed from {before}. Run `a4 up {alias}` to redeploy it."
+                    "note: stack '{alias}' now resolves StackManifest {after}, but the deployment its SDK reads was deployed from {before}. {redeploy}."
                 )
             })
         })
@@ -3605,7 +3614,21 @@ version = "^1.0.0"
         let notes = redeploy_notes(&manifest, Some(&lock('a', 'a')), &lock('b', 'a'));
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(notes[0].contains("stack 'ore'"), "{}", notes[0]);
-        assert!(notes[0].contains("a4 up ore"), "{}", notes[0]);
+        assert!(notes[0].contains("Run `a4 up ore`"), "{}", notes[0]);
+
+        // An authored stack of the same name is what `a4 up ore` deploys.
+        let mut shadowed = manifest.clone();
+        shadowed.document.authoring.stacks.insert(
+            "ore".into(),
+            toml::from_str("manifest = \"./.arete/Ore.stack-manifest.json\"").unwrap(),
+        );
+        let notes = redeploy_notes(&shadowed, Some(&lock('a', 'a')), &lock('b', 'a'));
+        assert!(!notes[0].contains("Run `a4 up ore`"), "{}", notes[0]);
+        assert!(
+            notes[0].contains("[authoring.stacks] entry 'ore'"),
+            "{}",
+            notes[0]
+        );
     }
 
     #[test]
