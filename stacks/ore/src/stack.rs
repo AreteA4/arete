@@ -460,7 +460,12 @@ pub mod ore_stream {
 mod tests {
     use super::ore_stream;
     use arete::runtime::{
-        arete_interpreter::{record_slot_hash, vm::VmContext, UpdateContext},
+        arete_interpreter::{
+            record_slot_hash,
+            scheduler::build_url_from_template,
+            vm::{ResolverTarget, VmContext},
+            UpdateContext,
+        },
         serde_json::{from_value, json},
     };
 
@@ -908,6 +913,120 @@ mod tests {
             .pointer("/results/pre_reveal_winning_square")
             .and_then(|value| value.as_u64())
             .is_some());
+    }
+
+    // Runs the round's scheduled seed resolver against a response shaped like
+    // the seed API's, so the extraction of `seed` and `end_slot` is covered.
+    #[test]
+    fn seed_response_fills_the_round_only_for_its_own_end_slot() {
+        let end_slot = 123_456_800_u64;
+        record_slot_hash(end_slot, "11111111111111111111111111111111".to_string());
+
+        for (response_end_slot, fills_seed) in [(end_slot, true), (end_slot + 241, false)] {
+            let bytecode = ore_stream::create_multi_entity_bytecode();
+            let mut vm = VmContext::new();
+
+            vm.process_event(
+                &bytecode,
+                json!({
+                    "__account_address": "11111111111111111111111111111111",
+                    "round_id": 42,
+                    "start_slot": end_slot - 200,
+                    "end_slot": end_slot,
+                    "production_cost_ema": "1000",
+                }),
+                "ore::BoardState",
+                Some(&UpdateContext::new_account(100, "board".to_string(), 1)),
+                None,
+            )
+            .unwrap();
+            vm.process_event(
+                &bytecode,
+                json!({
+                    "__account_address": "SysvarRent111111111111111111111111111111111",
+                    "start_at": end_slot - 200,
+                    "end_at": end_slot,
+                    "samples": 7,
+                    "value": vec![0_u8; 32],
+                    "seed": vec![0_u8; 32],
+                    "slot_hash": vec![0_u8; 32],
+                }),
+                "entropy::VarState",
+                Some(&UpdateContext::new_account(101, "entropy".to_string(), 2)),
+                None,
+            )
+            .unwrap();
+
+            // Every Deploy writes the Round account, which creates the round's
+            // results before its seed can resolve.
+            vm.process_event(
+                &bytecode,
+                json!({
+                    "__account_address": "Eu7pY3zYr8tce7YD6xq5xvjwtsBbP42dM83CQYncJbj2",
+                    "id": 42,
+                    "deployed": vec![0_u64; 25],
+                    "top_miner": vec![0_u8; 32],
+                    "rent_payer": vec![0_u8; 32],
+                    "slot_hash": vec![0_u8; 32],
+                }),
+                "ore::RoundState",
+                Some(&UpdateContext::new_account(102, "round".to_string(), 3)),
+                None,
+            )
+            .unwrap();
+
+            let (_, callback) = vm.take_scheduled_callbacks().pop().unwrap();
+            let round = vm.get_entity_state(0, &json!(42)).unwrap();
+            let url =
+                build_url_from_template(callback.url_template.as_ref().unwrap(), &round).unwrap();
+            vm.enqueue_resolver_request(
+                String::new(),
+                callback.resolver.clone(),
+                json!(url),
+                ResolverTarget {
+                    state_id: callback.state_id,
+                    entity_name: callback.entity_name.clone(),
+                    primary_key: callback.primary_key.clone(),
+                    extracts: callback.extracts.clone(),
+                },
+            );
+            let request = vm.take_resolver_requests().pop().unwrap();
+            vm.apply_resolver_result(
+                &bytecode,
+                &request.cache_key,
+                json!({
+                    "address": vec![1_u8; 32],
+                    "end_slot": response_end_slot,
+                    "samples": 7,
+                    "commit": vec![2_u8; 32],
+                    "seed": vec![3_u8; 32],
+                }),
+            )
+            .unwrap();
+
+            let round = vm.get_entity_state(0, &json!(42)).unwrap();
+            assert_eq!(
+                round.pointer("/entropy/resolved_seed"),
+                Some(&json!(vec![3_u8; 32]))
+            );
+            assert_eq!(
+                round.pointer("/entropy/resolved_seed_end_slot"),
+                Some(&json!(response_end_slot))
+            );
+            assert_eq!(
+                round
+                    .pointer("/results/pre_reveal_seed")
+                    .is_some_and(|value| !value.is_null()),
+                fills_seed
+            );
+            assert_eq!(
+                round
+                    .pointer("/results/pre_reveal_winning_square")
+                    .and_then(|value| value.as_u64())
+                    .is_some(),
+                fills_seed
+            );
+        }
     }
 
     #[test]
