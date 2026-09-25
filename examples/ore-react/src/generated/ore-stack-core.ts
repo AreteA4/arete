@@ -10,6 +10,7 @@ export interface OreRoundEntropy {
   entropyValue: string | null;
   entropyVarAddress: string | null;
   resolvedSeed: number[] | null;
+  resolvedSeedEndSlot: bigint | null;
 }
 
 export interface OreRoundId {
@@ -27,6 +28,7 @@ export interface OreRoundResults {
   expiresAtSlotHash: SlotHashBytes | null;
   preRevealRng: bigint | null;
   preRevealRngCandidate: KeccakRngValue | null;
+  preRevealSeed: number[] | null;
   preRevealWinningSquare: bigint | null;
   rentPayer: string | null;
   rng: KeccakRngValue | null;
@@ -122,6 +124,7 @@ export const OreRoundEntropySchema = z.object({
   entropy_value: z.string().nullable().optional(),
   entropy_var_address: z.string().nullable().optional(),
   resolved_seed: z.array(z.number()).nullable().optional(),
+  resolved_seed_end_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
 }).transform((value) => ({
   entropyEndAt: value.entropy_end_at,
   entropySamples: value.entropy_samples,
@@ -131,6 +134,7 @@ export const OreRoundEntropySchema = z.object({
   entropyValue: value.entropy_value,
   entropyVarAddress: value.entropy_var_address,
   resolvedSeed: value.resolved_seed,
+  resolvedSeedEndSlot: value.resolved_seed_end_slot,
 }));
 
 export const OreRoundEntropyPatchSchema = z.object({
@@ -142,6 +146,7 @@ export const OreRoundEntropyPatchSchema = z.object({
   entropy_value: z.string().nullable().optional(),
   entropy_var_address: z.string().nullable().optional(),
   resolved_seed: z.array(z.number()).nullable().optional(),
+  resolved_seed_end_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
 }).transform((value) => ({
   ...(value.entropy_end_at !== undefined ? { entropyEndAt: value.entropy_end_at } : {}),
   ...(value.entropy_samples !== undefined ? { entropySamples: value.entropy_samples } : {}),
@@ -151,6 +156,7 @@ export const OreRoundEntropyPatchSchema = z.object({
   ...(value.entropy_value !== undefined ? { entropyValue: value.entropy_value } : {}),
   ...(value.entropy_var_address !== undefined ? { entropyVarAddress: value.entropy_var_address } : {}),
   ...(value.resolved_seed !== undefined ? { resolvedSeed: value.resolved_seed } : {}),
+  ...(value.resolved_seed_end_slot !== undefined ? { resolvedSeedEndSlot: value.resolved_seed_end_slot } : {}),
 }));
 
 export const OreRoundIdSchema = z.object({
@@ -190,6 +196,7 @@ export const OreRoundResultsSchema = z.object({
   expires_at_slot_hash: SlotHashBytesSchema.nullable().optional(),
   pre_reveal_rng: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
   pre_reveal_rng_candidate: KeccakRngValueSchema.nullable().optional(),
+  pre_reveal_seed: z.array(z.number()).nullable().optional(),
   pre_reveal_winning_square: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
   rent_payer: z.string().nullable().optional(),
   rng: KeccakRngValueSchema.nullable().optional(),
@@ -202,6 +209,7 @@ export const OreRoundResultsSchema = z.object({
   expiresAtSlotHash: value.expires_at_slot_hash,
   preRevealRng: value.pre_reveal_rng,
   preRevealRngCandidate: value.pre_reveal_rng_candidate,
+  preRevealSeed: value.pre_reveal_seed,
   preRevealWinningSquare: value.pre_reveal_winning_square,
   rentPayer: value.rent_payer,
   rng: value.rng,
@@ -216,6 +224,7 @@ export const OreRoundResultsPatchSchema = z.object({
   expires_at_slot_hash: SlotHashBytesSchema.nullable().optional(),
   pre_reveal_rng: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
   pre_reveal_rng_candidate: KeccakRngValueSchema.nullable().optional(),
+  pre_reveal_seed: z.array(z.number()).nullable().optional(),
   pre_reveal_winning_square: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
   rent_payer: z.string().nullable().optional(),
   rng: KeccakRngValueSchema.nullable().optional(),
@@ -228,6 +237,7 @@ export const OreRoundResultsPatchSchema = z.object({
   ...(value.expires_at_slot_hash !== undefined ? { expiresAtSlotHash: value.expires_at_slot_hash } : {}),
   ...(value.pre_reveal_rng !== undefined ? { preRevealRng: value.pre_reveal_rng } : {}),
   ...(value.pre_reveal_rng_candidate !== undefined ? { preRevealRngCandidate: value.pre_reveal_rng_candidate } : {}),
+  ...(value.pre_reveal_seed !== undefined ? { preRevealSeed: value.pre_reveal_seed } : {}),
   ...(value.pre_reveal_winning_square !== undefined ? { preRevealWinningSquare: value.pre_reveal_winning_square } : {}),
   ...(value.rent_payer !== undefined ? { rentPayer: value.rent_payer } : {}),
   ...(value.rng !== undefined ? { rng: value.rng } : {}),
@@ -2024,7 +2034,7 @@ export const ORE_STREAM_STACK_CORE = {
     ore: {
       name: 'ore',
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:43e4f8c4fdf9c02347c5eeec38c7a8f28bd04c6e3024337f306b0deae26b3d26',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:9301145e47adc42ac7d755cb859d0d4f6692b0955476334f6feb2be34d241747',
       programSpecHash: 'arete:h1:program-spec:sha256:41a3e99a926050fd86b09761b829570a0a2086c10766e1b6e328b901dd856f72',
       idlContentHash: 'arete:h1:idl-content:sha256:7a14fb6c2c406d74ac61bf93ff14949da4677a5f6a3d53058e550f1fe86f7bf3',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:b16f15a8d4ed1ce44127170eaf2050349573759961c33bd010a4cf59df787157',
@@ -2194,7 +2204,7 @@ export const ORE_STREAM_STACK_CORE = {
     entropy: {
       name: 'entropy',
       programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:9b85f333d143af6a90d0e5fcd5e692b066426504016639214183573fb2cf7e7e',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:384c6c2d136af9d9d93a4ab9e4bce4e0d6f92c69ecbfa27d21e69cde46edc6a8',
       programSpecHash: 'arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b',
       idlContentHash: 'arete:h1:idl-content:sha256:2b5b3ed4de83cd3803bd6b82b33cfbea0e8b7c6a7ada7b138fcb57bb2fe1a01f',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:adc67e46a2ffc5e26fcff489fa7e21d5aa0d6338243dc23330ab0e85c3e150fc',

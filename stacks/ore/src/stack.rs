@@ -70,11 +70,14 @@ pub mod ore_stream {
         #[computed(state.end_at)]
         pub expires_at: Option<u64>,
 
+        // Mainnet produces a slot every ~267 ms (measured over 216,000 slots in
+        // September 2026), not the 400 ms Solana used to target. Clients that
+        // need an exact countdown can use `expires_at` with their own slot clock.
         #[computed({
             let expires_at_slot = state.end_at.unwrap_or(0) as u64;
             let current_slot = __slot;
             if current_slot > 0 && expires_at_slot > current_slot {
-                Some(__timestamp + (((expires_at_slot - current_slot) * 400 / 1000) as i64))
+                Some(__timestamp + (((expires_at_slot - current_slot) * 267 / 1000) as i64))
             } else {
                 None
             }
@@ -174,9 +177,19 @@ pub mod ore_stream {
         })]
         pub did_hit_motherlode: Option<bool>,
 
+        // The seed API answers for the entropy Var's current round and ignores
+        // `samples`, so a late or retried request can return a later round's
+        // seed. Use the resolved seed only when the response names this round.
+        #[computed(if entropy.resolved_seed_end_slot.unwrap_or(0) as u64 == state.end_at.unwrap_or(0) as u64 {
+            entropy.resolved_seed
+        } else {
+            None
+        })]
+        pub pre_reveal_seed: Option<Vec<u8>>,
+
         // Pre-reveal RNG calculation using resolved seed from API
         // keccak_rng resolver: keccak256(slot_hash || seed || samples_le_bytes) → XOR-folded u64
-        #[computed(results.expires_at_slot_hash.keccak_rng(entropy.resolved_seed, entropy.entropy_samples))]
+        #[computed(results.expires_at_slot_hash.keccak_rng(results.pre_reveal_seed, entropy.entropy_samples))]
         pub pre_reveal_rng_candidate: Option<u64>,
 
         #[computed(results.rng.filter(|rng| !rng.is_null()).or(results.pre_reveal_rng_candidate))]
@@ -258,6 +271,17 @@ pub mod ore_stream {
             strategy = SetOnce
         )]
         pub resolved_seed: Option<Vec<u8>>,
+
+        // The end slot of the round the seed API answered for. Same URL as
+        // `resolved_seed`, so both come from one cached response.
+        #[resolve(
+            url = "https://entropy-api.onrender.com/var/{entropy.entropy_var_address}/seed?samples={entropy.entropy_samples}",
+            extract = "end_slot",
+            schedule_at = entropy.entropy_end_at,
+            condition = "entropy.entropy_value == null",
+            strategy = SetOnce
+        )]
+        pub resolved_seed_end_slot: Option<u64>,
     }
 
     // ========================================================================
@@ -532,7 +556,7 @@ mod tests {
             state
                 .pointer("/state/estimated_expires_at_unix")
                 .and_then(|value| value.as_i64()),
-            Some(1_060)
+            Some(1_040)
         );
     }
 
@@ -565,7 +589,7 @@ mod tests {
             round
                 .pointer("/state/estimated_expires_at_unix")
                 .and_then(|value| value.as_i64()),
-            Some(10_060)
+            Some(10_040)
         );
     }
 
@@ -802,6 +826,7 @@ mod tests {
             "state": { "end_at": slot.to_string() },
             "entropy": {
                 "resolved_seed": vec![0_u8; 32],
+                "resolved_seed_end_slot": slot,
                 "entropy_samples": "1",
             },
             "results": {},
@@ -840,6 +865,49 @@ mod tests {
                 .and_then(|value| value.as_u64()),
             Some(final_rng % 25)
         );
+    }
+
+    // The seed API answers for the Var's current round, so a request that
+    // completes after the next round began returns that round's seed.
+    #[test]
+    fn seed_resolved_for_another_round_is_not_used() {
+        let slot = 123_456_791;
+        record_slot_hash(slot, "11111111111111111111111111111111".to_string());
+
+        let mut state = json!({
+            "id": { "round_id": "0" },
+            "state": { "end_at": slot },
+            "entropy": {
+                "resolved_seed": vec![7_u8; 32],
+                "resolved_seed_end_slot": slot + 241,
+                "entropy_samples": 1,
+            },
+            "results": {},
+        });
+
+        ore_stream::ore_round::evaluate_computed_fields(&mut state, Some(slot), 0).unwrap();
+
+        assert!(state
+            .pointer("/results/pre_reveal_seed")
+            .is_none_or(|value| value.is_null()));
+        assert_eq!(
+            state
+                .pointer("/results/pre_reveal_winning_square")
+                .and_then(|value| value.as_u64()),
+            None
+        );
+
+        state["entropy"]["resolved_seed_end_slot"] = json!(slot);
+        ore_stream::ore_round::evaluate_computed_fields(&mut state, Some(slot), 0).unwrap();
+
+        assert_eq!(
+            state.pointer("/results/pre_reveal_seed"),
+            Some(&json!(vec![7_u8; 32]))
+        );
+        assert!(state
+            .pointer("/results/pre_reveal_winning_square")
+            .and_then(|value| value.as_u64())
+            .is_some());
     }
 
     #[test]
