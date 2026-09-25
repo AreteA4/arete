@@ -319,6 +319,173 @@ async def test_structured_socket_issue_dispatch():
 
 
 @pytest.mark.asyncio
+async def test_socket_issue_reads_the_camel_case_fields_the_server_sends():
+    async def handler(conn):
+        async for raw in conn:
+            message = json.loads(raw)
+            if message.get("type") == "subscribe":
+                await conn.send(json.dumps({
+                    "type": "error",
+                    "protocolVersion": 2,
+                    "subscriptionId": None,
+                    "error": "rate-limit-exceeded",
+                    "message": "too many subscription creates",
+                    "code": "rate-limit-exceeded",
+                    "retryable": True,
+                    "retryAfter": 30,
+                    "suggestedAction": "slow down subscription churn",
+                    "docsUrl": "https://docs.arete.run/limits",
+                    "fatal": False,
+                }))
+
+    async with serve_ws(handler) as url:
+        manager, _store, registry = make_manager(url)
+        issues = []
+        frames = []
+        manager.on_socket_issue(issues.append)
+        manager.on_frame(frames.append)
+        async with managed(manager):
+            await manager.connect()
+            registry.subscribe({"view": "Round/list"})
+            await wait_until(lambda: len(issues) >= 1)
+
+            issue = issues[0]
+            assert issue.retry_after == 30
+            assert issue.suggested_action == "slow down subscription churn"
+            assert issue.docs_url == "https://docs.arete.run/limits"
+            frame = next(f for f in frames if isinstance(f, ErrorFrame))
+            assert frame.retry_after == 30
+            assert frame.suggested_action == "slow down subscription churn"
+            assert frame.docs_url == "https://docs.arete.run/limits"
+
+
+@pytest.mark.asyncio
+async def test_socket_issue_keeps_an_unknown_code_as_sent():
+    async def handler(conn):
+        async for raw in conn:
+            message = json.loads(raw)
+            if message.get("type") == "subscribe":
+                await conn.send(json.dumps({
+                    "type": "error",
+                    "protocolVersion": 2,
+                    "subscriptionId": None,
+                    "message": "This view is no longer served",
+                    "code": "view-retired",
+                    "fatal": False,
+                }))
+
+    async with serve_ws(handler) as url:
+        manager, _store, registry = make_manager(url)
+        issues = []
+        manager.on_socket_issue(issues.append)
+        async with managed(manager):
+            await manager.connect()
+            registry.subscribe({"view": "Round/list"})
+            await wait_until(lambda: len(issues) >= 1)
+
+            assert issues[0].code == "view-retired"
+            assert issues[0].message == "This view is no longer served"
+
+
+@pytest.mark.asyncio
+async def test_a_close_reason_that_mentions_tokens_is_not_read_as_token_expiry():
+    connections = []
+
+    async def handler(conn):
+        connections.append(conn)
+        if len(connections) == 1:
+            await conn.close(1011, "Invalid view requested; token balances are not indexed")
+            return
+        async for _raw in conn:
+            pass
+
+    async with serve_ws(handler) as url:
+        auth_state = FakeAuthState()
+        manager, _store, _registry = make_manager(url, auth_state=auth_state)
+        async with managed(manager):
+            await manager.connect()
+            await wait_until(lambda: len(connections) >= 2)
+            await wait_until(manager.is_connected)
+
+            # A plain reconnect reuses the token; only a coded token expiry
+            # would have dropped it.
+            assert auth_state.cleared is False
+
+
+class RefusingAuthState:
+    """Issues one session, then is refused for the stack version."""
+
+    config = None
+
+    def __init__(self):
+        self.resolved = 0
+        self.cleared = False
+
+    async def resolve_token(self, force_refresh: bool = False):
+        from arete.auth import AuthErrorCode
+        from arete.errors import AuthError
+
+        self.resolved += 1
+        if self.resolved == 1:
+            return "tok-1"
+        raise AuthError(
+            "Token endpoint returned 409: Stack ore 1.2.0 was retired. "
+            "Replacement: 1.3.0. Upgrade with: a4 install stack ore@1.3.0",
+            AuthErrorCode.STACK_VERSION_RETIRED,
+        )
+
+    def get_refresh_delay(self):
+        return None
+
+    def clear_token(self):
+        self.cleared = True
+
+
+@pytest.mark.asyncio
+async def test_a_refused_stack_version_ends_the_connection_without_reconnecting():
+    connections = []
+
+    async def handler(conn):
+        connections.append(conn)
+        await conn.close(1008, "token-expired: Token has expired")
+
+    async with serve_ws(handler) as url:
+        auth_state = RefusingAuthState()
+        manager, _store, _registry = make_manager(
+            url, auth_state=auth_state, max_reconnect_attempts=5
+        )
+        states = []
+        manager.on_connection_state_change(lambda state, error=None: states.append((state, error)))
+        async with managed(manager):
+            await manager.connect()
+            await wait_until(lambda: manager.connection_state == "error")
+            await asyncio.sleep(0.3)
+
+            assert auth_state.resolved == 2
+            assert len(connections) == 1
+            assert manager.connection_state == "error"
+            assert "Upgrade with: a4 install stack ore@1.3.0" in states[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_a_close_for_a_retired_stack_version_is_not_reconnected():
+    connections = []
+
+    async def handler(conn):
+        connections.append(conn)
+        await conn.close(1008, "stack-version-retired: Stack ore 1.2.0 was retired")
+
+    async with serve_ws(handler) as url:
+        manager, _store, _registry = make_manager(url)
+        async with managed(manager):
+            await manager.connect()
+            await wait_until(lambda: manager.connection_state == "error")
+            await asyncio.sleep(0.3)
+
+            assert len(connections) == 1
+
+
+@pytest.mark.asyncio
 async def test_processed_slot_tracking_and_waiting():
     async def handler(conn):
         async for raw in conn:

@@ -2827,6 +2827,7 @@ mod tests {
             extension_entry,
             program_reads: Vec::new(),
             gateway: None,
+            release: None,
         };
         let output =
             compile_stack_spec(spec, Some(config)).expect("ore stack should compile to Rust");
@@ -2928,6 +2929,10 @@ pub struct RustStackConfig {
     pub program_reads: Vec<RustProgramReadConfig>,
     /// Managed-hosting transports. Local generation leaves this unset.
     pub gateway: Option<serde_json::Value>,
+    /// Served version emitted as `Stack::stack_manifest_hash` /
+    /// `Stack::live_alias`. Only StackManifest generation for a hosted
+    /// endpoint sets it; without it the generated impl is unchanged.
+    pub release: Option<crate::public_artifacts::StackRelease>,
 }
 
 #[derive(Debug, Clone)]
@@ -2973,6 +2978,7 @@ impl Default for RustStackConfig {
             extension_entry: None,
             program_reads: Vec::new(),
             gateway: None,
+            release: None,
         }
     }
 }
@@ -3183,11 +3189,19 @@ pub fn compile_public_artifacts_v2(
 ) -> Result<RustOutput, String> {
     let stack_spec =
         crate::public_artifacts::stack_spec_from_artifacts_v2(programs, live_spec, manifest)?;
-    compile_stack_spec_with_view_selection(stack_spec, config, true)
+    let mut config = config.unwrap_or_default();
+    // The served version belongs to the stack bound to a WebSocket endpoint.
+    if config.release.is_none() && config.url.is_some() {
+        config.release = crate::public_artifacts::StackRelease::for_single_live(manifest);
+    }
+    compile_stack_spec_with_view_selection(stack_spec, Some(config), true)
 }
 
 /// Generate one namespaced Rust stack module per live alias plus a manifest
 /// module that preserves alias boundaries instead of flattening views/adapters.
+///
+/// Each alias bound to a URL in `live_urls` is generated with its served
+/// version; unbound aliases get none.
 pub fn compile_composed_public_artifacts_v2(
     programs: &[arete_artifacts::ProgramSpecArtifact],
     live_specs: &[(String, arete_artifacts::LiveSpecArtifactV2)],
@@ -3213,6 +3227,10 @@ pub fn compile_composed_public_artifacts_v2(
         let mut live_config = config.stack.clone();
         live_config.module_mode = true;
         live_config.url = config.live_urls.get(&live.alias).cloned();
+        live_config.release = live_config
+            .url
+            .is_some()
+            .then(|| crate::public_artifacts::StackRelease::for_alias(manifest, &live.alias));
         let output =
             compile_stack_spec_with_view_selection(live.stack_spec, Some(live_config), true)?;
         live_stacks.push(RustAliasedStackOutput {
@@ -3611,6 +3629,7 @@ fn generate_stack_entity_rs(
         ),
         _ => String::new(),
     };
+    let release_impl = rust_release_impl(config.release.as_ref(), "    ");
     let gateway_impl = rust_gateway_impl(config.gateway.as_ref(), "    ");
 
     // StackViews struct fields
@@ -3770,7 +3789,7 @@ impl Stack for {stack}Stack {{
         {stack_kebab}
     }}
 
-    {url_impl}{http_url_impl}{gateway_impl}
+    {url_impl}{http_url_impl}{release_impl}{gateway_impl}
 }}
 
 pub struct {stack}StackViews {{
@@ -3791,6 +3810,7 @@ impl Views for {stack}StackViews {{
         programs_assoc = programs_assoc,
         url_impl = url_impl,
         http_url_impl = http_url_impl,
+        release_impl = release_impl,
         gateway_impl = gateway_impl,
         views_fields = views_fields.join("\n"),
         views_builder = views_builder_fields.join("\n"),
@@ -3924,6 +3944,22 @@ fn rust_prim(schema: &str, param_type: &str) -> RustParsedArg {
         param_type: param_type.to_string(),
         supported: true,
     }
+}
+
+/// `Stack::stack_manifest_hash` / `Stack::live_alias` overrides naming the
+/// served version; nothing when the stack has none.
+fn rust_release_impl(
+    release: Option<&crate::public_artifacts::StackRelease>,
+    indent: &str,
+) -> String {
+    let Some(release) = release else {
+        return String::new();
+    };
+    format!(
+        "\n\n{indent}fn stack_manifest_hash() -> Option<&'static str> {{\n{indent}    Some({})\n{indent}}}\n\n{indent}fn live_alias() -> Option<&'static str> {{\n{indent}    Some({})\n{indent}}}",
+        rust_string_literal(&release.stack_manifest_hash),
+        rust_string_literal(&release.live_alias),
+    )
 }
 
 /// Render a Rust string literal (quoted and escaped).

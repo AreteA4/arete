@@ -1,5 +1,14 @@
-use arete_a4_sdk::{Arete, SocketIssue, Stack, TokenTransport, ViewBuilder, Views};
-use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
+use arete_a4_sdk::{
+    Arete, AreteError, AuthErrorCode, ConnectionState, SocketIssue, Stack, StackVersionRefusal,
+    TokenTransport, ViewBuilder, Views,
+};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::post,
+    Json, Router,
+};
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -42,6 +51,37 @@ impl Stack for TestStack {
 
     fn url() -> &'static str {
         "ws://127.0.0.1:1"
+    }
+}
+
+const STACK_MANIFEST_HASH: &str =
+    "arete:h1:stack-manifest:sha256:338c718dfbb5a260392414ee5e7f2e07ceb01a07fdcccbf748822d43cdb89a09";
+
+/// Generated stacks return a fixed URL; the test server's port is only known
+/// at runtime, so it is published here before the stack is first used.
+static RELEASED_STACK_URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// A stack generated from a hosted StackManifest.
+struct ReleasedStack;
+
+impl Stack for ReleasedStack {
+    type Views = TestViews;
+    type Programs = ();
+
+    fn name() -> &'static str {
+        "released-stack"
+    }
+
+    fn url() -> &'static str {
+        RELEASED_STACK_URL.get().map(String::as_str).unwrap_or("")
+    }
+
+    fn stack_manifest_hash() -> Option<&'static str> {
+        Some(STACK_MANIFEST_HASH)
+    }
+
+    fn live_alias() -> Option<&'static str> {
+        Some("live")
     }
 }
 
@@ -256,6 +296,216 @@ async fn exposes_socket_issues_via_public_api() {
 
     client.disconnect().await;
     ws_server.shutdown().await;
+}
+
+const RETIRED_BODY: &str = r#"{"error":"Stack ore 1.2.0 was retired.","code":"stack-version-retired","replacement":{"version":"1.3.0","stackManifestHash":"arete:h1:stack-manifest:sha256:bb"},"upgradeCommand":"a4 install stack ore@1.3.0","retiredAt":"2026-10-01T00:00:00Z"}"#;
+
+/// Status, `X-Error-Code` header and body of one session endpoint answer.
+type SessionAnswer = (StatusCode, Option<&'static str>, String);
+
+/// A session endpoint that answers from a script (the last answer repeats)
+/// and records every raw request body.
+#[derive(Clone)]
+struct ScriptedSessionEndpoint {
+    bodies: Arc<Mutex<Vec<String>>>,
+    answers: Arc<Mutex<Vec<SessionAnswer>>>,
+}
+
+impl ScriptedSessionEndpoint {
+    fn bodies(&self) -> Vec<String> {
+        self.bodies.lock().expect("bodies lock").clone()
+    }
+}
+
+async fn spawn_scripted_session_endpoint(
+    answers: Vec<SessionAnswer>,
+) -> (ScriptedSessionEndpoint, String) {
+    async fn answer(
+        State(state): State<ScriptedSessionEndpoint>,
+        body: String,
+    ) -> axum::response::Response {
+        state.bodies.lock().expect("bodies lock").push(body);
+        let (status, code, body) = {
+            let mut answers = state.answers.lock().expect("answers lock");
+            if answers.len() > 1 {
+                answers.remove(0)
+            } else {
+                answers[0].clone()
+            }
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", "application/json".parse().expect("header"));
+        if let Some(code) = code {
+            headers.insert("x-error-code", code.parse().expect("header"));
+        }
+        (status, headers, body).into_response()
+    }
+
+    let state = ScriptedSessionEndpoint {
+        bodies: Arc::new(Mutex::new(Vec::new())),
+        answers: Arc::new(Mutex::new(answers)),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("session endpoint listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("session endpoint should have an address");
+    let app = Router::new()
+        .route("/ws/sessions", post(answer))
+        .with_state(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("session endpoint should run");
+    });
+    (state, format!("http://{addr}/ws/sessions"))
+}
+
+fn issued_session() -> SessionAnswer {
+    let expires_at = current_unix_timestamp() + 3600;
+    (
+        StatusCode::OK,
+        None,
+        json!({ "token": make_test_jwt(expires_at, 0), "expires_at": expires_at }).to_string(),
+    )
+}
+
+/// Accepts every connection and ends each session with a token-expired close,
+/// counting how many connections were made.
+async fn spawn_expiring_websocket_server() -> (Arc<AtomicUsize>, String) {
+    use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("websocket listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("websocket listener should have an address");
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counted = connections.clone();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            counted.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let _ = ws
+                    .close(Some(CloseFrame {
+                        code: CloseCode::Policy,
+                        reason: "token-expired: Token has expired".into(),
+                    }))
+                    .await;
+                while let Some(Ok(_)) = ws.next().await {}
+            });
+        }
+    });
+    (connections, format!("ws://{addr}"))
+}
+
+#[tokio::test]
+async fn names_the_generated_release_and_stops_when_the_version_is_retired() {
+    let (connections, ws_url) = spawn_expiring_websocket_server().await;
+    RELEASED_STACK_URL
+        .set(ws_url.clone())
+        .expect("only this test publishes the released stack URL");
+    let (endpoint, endpoint_url) = spawn_scripted_session_endpoint(vec![
+        issued_session(),
+        (
+            StatusCode::CONFLICT,
+            Some("stack-version-retired"),
+            RETIRED_BODY.to_string(),
+        ),
+    ])
+    .await;
+
+    let client = Arete::<ReleasedStack>::builder()
+        .publishable_key("a4_pk_test_123")
+        .token_endpoint(endpoint_url)
+        .reconnect_intervals(vec![Duration::from_millis(10)])
+        .connect()
+        .await
+        .expect("the first session should be issued");
+
+    // The server ends the session; the fresh session is refused.
+    timeout(Duration::from_secs(5), async {
+        while client.connection_state().await != ConnectionState::Error {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("a retired stack version should end the connection");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let versioned = format!(
+        r#"{{"websocket_url":"{ws_url}","stackManifestHash":"{STACK_MANIFEST_HASH}","liveAlias":"live"}}"#
+    );
+    assert_eq!(endpoint.bodies(), vec![versioned.clone(), versioned]);
+    assert_eq!(
+        connections.load(Ordering::SeqCst),
+        1,
+        "no reconnect after the refusal"
+    );
+    let error = client.last_error().await.expect("the refusal is recorded");
+    assert!(matches!(
+        error.as_ref(),
+        AreteError::AuthRequestFailed {
+            status: 409,
+            code: Some(AuthErrorCode::StackVersionRetired),
+            ..
+        }
+    ));
+    assert!(error
+        .to_string()
+        .ends_with("Replacement: 1.3.0. Upgrade with: a4 install stack ore@1.3.0"));
+    assert_eq!(
+        error.stack_version_refusal(),
+        Some(&StackVersionRefusal {
+            replacement_version: Some("1.3.0".to_string()),
+            replacement_stack_manifest_hash: Some("arete:h1:stack-manifest:sha256:bb".to_string()),
+            upgrade_command: Some("a4 install stack ore@1.3.0".to_string()),
+            retired_at: Some("2026-10-01T00:00:00Z".to_string()),
+        })
+    );
+    client.disconnect().await;
+}
+
+#[tokio::test]
+async fn an_overridden_url_sends_the_legacy_session_request_and_unknown_is_terminal() {
+    let (endpoint, endpoint_url) = spawn_scripted_session_endpoint(vec![(
+        StatusCode::CONFLICT,
+        Some("stack-version-unknown"),
+        r#"{"error":"Stack version is not served here","code":"stack-version-unknown"}"#
+            .to_string(),
+    )])
+    .await;
+
+    let result = Arete::<ReleasedStack>::builder()
+        .url("ws://127.0.0.1:1")
+        .publishable_key("a4_pk_test_123")
+        .token_endpoint(endpoint_url)
+        .reconnect_intervals(vec![Duration::from_millis(10)])
+        .connect()
+        .await;
+
+    let error = match result {
+        Ok(_) => panic!("an unknown stack version must not connect"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        AreteError::AuthRequestFailed {
+            code: Some(AuthErrorCode::StackVersionUnknown),
+            ..
+        }
+    ));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        endpoint.bodies(),
+        vec![r#"{"websocket_url":"ws://127.0.0.1:1"}"#.to_string()]
+    );
 }
 
 async fn spawn_token_endpoint(expiries_from_now: Vec<u64>) -> TokenEndpointHandle {

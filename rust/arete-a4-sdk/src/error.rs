@@ -139,6 +139,12 @@ pub enum AuthErrorCode {
     EgressLimitExceeded,
     QuotaExceeded,
     InvalidStaticToken,
+    /// The session endpoint no longer serves the stack version this client
+    /// was generated for. Terminal: see [`StackVersionRefusal`].
+    StackVersionRetired,
+    /// The session endpoint does not know the stack version this client was
+    /// generated for. Terminal: see [`StackVersionRefusal`].
+    StackVersionUnknown,
     InternalError,
 }
 
@@ -172,6 +178,8 @@ impl AuthErrorCode {
             "egress-limit-exceeded" => Self::EgressLimitExceeded,
             "quota-exceeded" => Self::QuotaExceeded,
             "invalid-static-token" => Self::InvalidStaticToken,
+            "stack-version-retired" => Self::StackVersionRetired,
+            "stack-version-unknown" => Self::StackVersionUnknown,
             "internal-error" => Self::InternalError,
             _ => return None,
         })
@@ -206,12 +214,20 @@ impl AuthErrorCode {
             Self::EgressLimitExceeded => "egress-limit-exceeded",
             Self::QuotaExceeded => "quota-exceeded",
             Self::InvalidStaticToken => "invalid-static-token",
+            Self::StackVersionRetired => "stack-version-retired",
+            Self::StackVersionUnknown => "stack-version-unknown",
             Self::InternalError => "internal-error",
         }
     }
 
     pub fn should_retry(self) -> bool {
         matches!(self, Self::InternalError)
+    }
+
+    /// The session endpoint refused the client's stack version. No retry,
+    /// token refresh or reconnect can change the answer.
+    pub fn is_stack_version_refusal(self) -> bool {
+        matches!(self, Self::StackVersionRetired | Self::StackVersionUnknown)
     }
 
     pub fn should_refresh_token(self) -> bool {
@@ -224,6 +240,48 @@ impl AuthErrorCode {
                 | Self::TokenInvalidAudience
                 | Self::TokenKeyNotFound
         )
+    }
+}
+
+/// Structured fields of a `stack-version-retired` / `stack-version-unknown`
+/// session refusal. Every field is optional on the wire.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StackVersionRefusal {
+    /// Version that replaces the refused one, e.g. `1.3.0`.
+    pub replacement_version: Option<String>,
+    /// StackManifest hash of the replacement.
+    pub replacement_stack_manifest_hash: Option<String>,
+    /// Command that installs the replacement, e.g. `a4 install stack ore@1.3.0`.
+    pub upgrade_command: Option<String>,
+    /// RFC 3339 time the version was retired.
+    pub retired_at: Option<String>,
+}
+
+impl StackVersionRefusal {
+    /// `message` followed by the replacement and how to install it, when the
+    /// server named them.
+    fn describe(&self, message: String) -> String {
+        let mut guidance = Vec::new();
+        if let Some(replacement) = self
+            .replacement_version
+            .as_deref()
+            .or(self.replacement_stack_manifest_hash.as_deref())
+        {
+            guidance.push(format!("Replacement: {replacement}."));
+        }
+        if let Some(command) = &self.upgrade_command {
+            guidance.push(format!("Upgrade with: {command}"));
+        }
+        if guidance.is_empty() {
+            return message;
+        }
+        let trimmed = message.trim_end();
+        let separator = if trimmed.ends_with(['.', '!', '?']) {
+            " "
+        } else {
+            ". "
+        };
+        format!("{trimmed}{separator}{}", guidance.join(" "))
     }
 }
 
@@ -259,6 +317,9 @@ pub enum AreteError {
         status: u16,
         message: String,
         code: Option<AuthErrorCode>,
+        /// Present when `code` is a stack version refusal; `message` then
+        /// already names the replacement and upgrade command.
+        stack_version: Option<Box<StackVersionRefusal>>,
     },
 
     #[error("WebSocket closed by server: {message}")]
@@ -320,6 +381,40 @@ struct ErrorPayload {
     code: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StackVersionRefusalPayload {
+    #[serde(default)]
+    replacement: Option<ReplacementPayload>,
+    #[serde(default)]
+    upgrade_command: Option<String>,
+    #[serde(default)]
+    retired_at: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplacementPayload {
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    stack_manifest_hash: Option<String>,
+}
+
+fn parse_stack_version_refusal(body: Option<&[u8]>) -> StackVersionRefusal {
+    let payload = body
+        .and_then(|body| serde_json::from_slice::<StackVersionRefusalPayload>(body).ok())
+        .unwrap_or_default();
+    let non_empty = |value: Option<String>| value.filter(|value| !value.trim().is_empty());
+    let replacement = payload.replacement.unwrap_or_default();
+    StackVersionRefusal {
+        replacement_version: non_empty(replacement.version),
+        replacement_stack_manifest_hash: non_empty(replacement.stack_manifest_hash),
+        upgrade_command: non_empty(payload.upgrade_command),
+        retired_at: non_empty(payload.retired_at),
+    }
+}
+
 impl AreteError {
     pub fn auth_code(&self) -> Option<AuthErrorCode> {
         match self {
@@ -328,6 +423,17 @@ impl AreteError {
             | Self::AuthRequestFailed { code, .. }
             | Self::ServerClosed { code, .. } => *code,
             Self::SocketIssue(issue) => issue.code,
+            _ => None,
+        }
+    }
+
+    /// The replacement and upgrade guidance of a stack version refusal.
+    pub fn stack_version_refusal(&self) -> Option<&StackVersionRefusal> {
+        match self {
+            Self::AuthRequestFailed {
+                stack_version: Some(refusal),
+                ..
+            } => Some(refusal),
             _ => None,
         }
     }
@@ -368,6 +474,13 @@ impl AreteError {
             | Self::WebSocketDisabled
             | Self::TransactionFailed(_) => false,
         }
+    }
+
+    /// The session endpoint refused this client's stack version. Terminal:
+    /// the SDK neither retries the request nor reconnects.
+    pub fn is_stack_version_refusal(&self) -> bool {
+        self.auth_code()
+            .is_some_and(AuthErrorCode::is_stack_version_refusal)
     }
 
     pub fn should_refresh_token(&self) -> bool {
@@ -426,10 +539,21 @@ impl AreteError {
                 .to_string()
         });
 
+        if code.is_some_and(AuthErrorCode::is_stack_version_refusal) {
+            let refusal = parse_stack_version_refusal(body);
+            return Self::AuthRequestFailed {
+                status,
+                message: refusal.describe(message),
+                code,
+                stack_version: Some(Box::new(refusal)),
+            };
+        }
+
         Self::AuthRequestFailed {
             status,
             message,
             code,
+            stack_version: None,
         }
     }
 
@@ -479,17 +603,26 @@ fn parse_error_payload(body: Option<&[u8]>) -> (Option<String>, Option<AuthError
     }
 }
 
+/// A close reason is `code: message`, or a bare known code such as
+/// `stack-version-retired`. Anything else carries no code.
 fn parse_close_reason(reason: &str) -> (Option<AuthErrorCode>, String) {
+    let reason = reason.trim();
     if let Some((wire_code, message)) = reason.split_once(':') {
-        let code = AuthErrorCode::from_wire(wire_code);
-        let message = message.trim();
-
-        if code.is_some() && !message.is_empty() {
-            return (code, message.to_string());
+        if let Some(code) = AuthErrorCode::from_wire(wire_code.trim()) {
+            let message = message.trim();
+            let message = if message.is_empty() {
+                wire_code.trim()
+            } else {
+                message
+            };
+            return (Some(code), message.to_string());
         }
     }
+    if let Some(code) = AuthErrorCode::from_wire(reason) {
+        return (Some(code), reason.to_string());
+    }
 
-    (None, reason.trim().to_string())
+    (None, reason.to_string())
 }
 
 #[cfg(test)]
@@ -542,6 +675,73 @@ mod tests {
     }
 
     #[test]
+    fn a_retired_stack_version_names_its_replacement_and_is_terminal() {
+        let error = AreteError::from_auth_response(
+            409,
+            Some("stack-version-retired"),
+            Some(
+                br#"{"error":"Stack ore 1.2.0 was retired.","code":"stack-version-retired","replacement":{"version":"1.3.0","stackManifestHash":"arete:h1:stack-manifest:sha256:bb"},"upgradeCommand":"a4 install stack ore@1.3.0","retiredAt":"2026-10-01T00:00:00Z"}"#,
+            ),
+            Some("Conflict"),
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "Authentication request failed (409): Stack ore 1.2.0 was retired. Replacement: 1.3.0. Upgrade with: a4 install stack ore@1.3.0"
+        );
+        assert_eq!(error.auth_code(), Some(AuthErrorCode::StackVersionRetired));
+        assert_eq!(
+            error.stack_version_refusal(),
+            Some(&StackVersionRefusal {
+                replacement_version: Some("1.3.0".to_string()),
+                replacement_stack_manifest_hash: Some(
+                    "arete:h1:stack-manifest:sha256:bb".to_string()
+                ),
+                upgrade_command: Some("a4 install stack ore@1.3.0".to_string()),
+                retired_at: Some("2026-10-01T00:00:00Z".to_string()),
+            })
+        );
+        assert!(error.is_stack_version_refusal());
+        assert!(!error.should_retry());
+        assert!(!error.should_refresh_token());
+    }
+
+    #[test]
+    fn an_unknown_stack_version_keeps_the_server_message_without_guidance() {
+        let error = AreteError::from_auth_response(
+            409,
+            None,
+            Some(br#"{"error":"Stack version is not served here","code":"stack-version-unknown"}"#),
+            Some("Conflict"),
+        );
+
+        assert!(matches!(
+            &error,
+            AreteError::AuthRequestFailed {
+                status: 409,
+                code: Some(AuthErrorCode::StackVersionUnknown),
+                message,
+                stack_version: Some(_),
+            } if message == "Stack version is not served here"
+        ));
+        assert!(error.is_stack_version_refusal());
+        assert!(!error.should_retry());
+    }
+
+    #[test]
+    fn other_auth_failures_carry_no_stack_version_refusal() {
+        let error = AreteError::from_auth_response(
+            403,
+            Some("origin-required"),
+            Some(br#"{"error":"Origin required","code":"origin-required"}"#),
+            None,
+        );
+
+        assert_eq!(error.stack_version_refusal(), None);
+        assert!(!error.is_stack_version_refusal());
+    }
+
+    #[test]
     fn parses_rate_limit_close_reason() {
         let error = AreteError::from_close_reason(
             "websocket-session-rate-limit-exceeded: WebSocket session mint rate limit exceeded",
@@ -556,6 +756,23 @@ mod tests {
             }
         ));
         assert!(!error.should_retry());
+    }
+
+    #[test]
+    fn a_bare_refusal_close_reason_is_a_terminal_code() {
+        for (reason, expected) in [
+            ("stack-version-retired", AuthErrorCode::StackVersionRetired),
+            (
+                " stack-version-unknown ",
+                AuthErrorCode::StackVersionUnknown,
+            ),
+            ("stack-version-retired:", AuthErrorCode::StackVersionRetired),
+        ] {
+            let error = AreteError::from_close_reason(reason).expect("close reason should parse");
+            assert_eq!(error.auth_code(), Some(expected), "{reason:?}");
+            assert!(error.is_stack_version_refusal(), "{reason:?}");
+            assert!(!error.should_retry(), "{reason:?}");
+        }
     }
 
     #[test]

@@ -1003,6 +1003,47 @@ describe('Arete instructions (namespaced stacks)', () => {
     client.disconnect();
   });
 
+  it('names the generated stack release in session requests for the generated endpoint only', async () => {
+    const { Arete } = await import('./index');
+    const stackManifestHash =
+      'arete:h1:stack-manifest:sha256:338c718dfbb5a260392414ee5e7f2e07ceb01a07fdcccbf748822d43cdb89a09';
+    const stack = {
+      name: 'ore',
+      endpoints: {
+        ws: 'wss://ore.stack.arete.run',
+        http: 'https://ore.stack.arete.run',
+      },
+      release: { stackManifestHash, liveAlias: 'live' },
+      views: {},
+    } as const;
+    const bodies: string[] = [];
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(String(init?.body));
+      return new Response(JSON.stringify({ token: 'session-token' }), { status: 200 });
+    });
+
+    const generated = await Arete.connect(stack, {
+      autoConnect: false,
+      fetch: fetchMock as typeof fetch,
+    });
+    await generated.getConnection().getHttpAuthToken(['read']);
+    generated.disconnect();
+
+    const overridden = await Arete.connect(stack, {
+      url: 'wss://other.stack.arete.run',
+      autoConnect: false,
+      fetch: fetchMock as typeof fetch,
+    });
+    await overridden.getConnection().getHttpAuthToken(['read']);
+    overridden.disconnect();
+
+    expect(bodies).toEqual([
+      '{"websocket_url":"wss://ore.stack.arete.run","scopes":["read"],'
+        + `"stackManifestHash":"${stackManifestHash}","liveAlias":"live"}`,
+      '{"websocket_url":"wss://other.stack.arete.run","scopes":["read"]}',
+    ]);
+  });
+
   it('does not infer HTTP transport from disabled initial connection', async () => {
     const { Arete } = await import('./index');
     const stack = {

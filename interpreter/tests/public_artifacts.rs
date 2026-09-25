@@ -6,11 +6,21 @@ use arete_artifacts::{
     ProgramSpecArtifact, SelectedViewV2, StackManifestArtifactV2,
 };
 use arete_hash::{CanonicalIdlDocument, PdaDefinitionV1, PdaSeedV1, ProgramSpecV1};
-use arete_interpreter::public_artifacts::stack_specs_from_artifacts_v2;
-use arete_interpreter::rust::compile_composed_public_artifacts_v2 as compile_rust_composition;
+use arete_interpreter::public_artifacts::{
+    stack_spec_from_artifacts_v2, stack_specs_from_artifacts_v2, StackRelease,
+};
+use arete_interpreter::python::{
+    compile_composed_public_artifacts_v2 as compile_python_composition, PythonCompositionConfig,
+    PythonStackConfig,
+};
+use arete_interpreter::rust::{
+    compile_composed_public_artifacts_v2 as compile_rust_composition, RustCompositionConfig,
+    RustStackConfig,
+};
 use arete_interpreter::typescript::{
     compile_composed_public_artifacts_v2 as compile_typescript_composition,
-    compile_public_artifacts_v2,
+    compile_public_artifacts_v2, TypeScriptCompositionConfig, TypeScriptLiveEndpoints,
+    TypeScriptStackConfig,
 };
 
 fn ore_artifacts() -> (
@@ -364,4 +374,286 @@ fn typescript_composition_keeps_independent_program_reads() {
     assert!(output
         .session_definition
         .contains("export const JURASSIC_SDK"));
+}
+
+const ORE_WS: &str = "wss://ore.stack.arete.run";
+
+fn ore_manifest_hash(manifest: &StackManifestArtifactV2) -> String {
+    let hash = manifest.artifact_hash.to_string();
+    assert!(hash.starts_with("arete:h1:stack-manifest:sha256:"));
+    hash
+}
+
+/// Every string a generated SDK uses to name a served version.
+fn names_no_release(generated: &str) -> bool {
+    [
+        "stackManifestHash",
+        "stack_manifest_hash",
+        "liveAlias",
+        "live_alias",
+        "StackRelease",
+    ]
+    .iter()
+    .all(|marker| !generated.contains(marker))
+}
+
+#[test]
+fn stack_release_names_the_manifest_hash_and_alias() {
+    let (_, _, manifest) = ore_artifacts();
+    assert_eq!(
+        StackRelease::for_single_live(&manifest),
+        Some(StackRelease {
+            stack_manifest_hash: ore_manifest_hash(&manifest),
+            live_alias: "live".to_string(),
+        })
+    );
+}
+
+#[test]
+fn hosted_typescript_generation_only_adds_the_release_to_ast_generation() {
+    let (programs, live, manifest) = ore_artifacts();
+    let hash = ore_manifest_hash(&manifest);
+    let config = TypeScriptStackConfig {
+        websocket_url: Some(ORE_WS.to_string()),
+        ..TypeScriptStackConfig::default()
+    };
+
+    let ast_only = arete_interpreter::typescript::compile_stack_spec_with_exact_views(
+        stack_spec_from_artifacts_v2(&programs, &live, &manifest).unwrap(),
+        Some(config.clone()),
+    )
+    .unwrap()
+    .full_file();
+    let hosted = compile_public_artifacts_v2(&programs, &live, &manifest, Some(config))
+        .unwrap()
+        .full_file();
+    let local = compile_public_artifacts_v2(&programs, &live, &manifest, None)
+        .unwrap()
+        .full_file();
+
+    assert!(
+        names_no_release(&ast_only),
+        "AST-only generation names no release"
+    );
+    assert!(names_no_release(&local), "no endpoint, no served version");
+    let release_block =
+        format!("  release: {{\n    stackManifestHash: '{hash}',\n    liveAlias: 'live',\n  }},\n");
+    assert_eq!(
+        hosted,
+        ast_only.replacen("  views: {\n", &format!("{release_block}  views: {{\n"), 1)
+    );
+}
+
+#[test]
+fn hosted_rust_generation_only_adds_the_release_to_ast_generation() {
+    let (programs, live, manifest) = ore_artifacts();
+    let hash = ore_manifest_hash(&manifest);
+    let config = RustStackConfig {
+        url: Some(ORE_WS.to_string()),
+        ..RustStackConfig::default()
+    };
+
+    let ast_only = arete_interpreter::rust::compile_stack_spec_with_exact_views(
+        stack_spec_from_artifacts_v2(&programs, &live, &manifest).unwrap(),
+        Some(config.clone()),
+    )
+    .unwrap();
+    let hosted = arete_interpreter::rust::compile_public_artifacts_v2(
+        &programs,
+        &live,
+        &manifest,
+        Some(config),
+    )
+    .unwrap();
+
+    assert!(names_no_release(&ast_only.entity_rs));
+    let url_fn = format!("fn url() -> &'static str {{\n        \"{ORE_WS}\"\n    }}");
+    let release_fns = format!(
+        "{url_fn}\n\n    fn stack_manifest_hash() -> Option<&'static str> {{\n        Some(\"{hash}\")\n    }}\n\n    fn live_alias() -> Option<&'static str> {{\n        Some(\"live\")\n    }}"
+    );
+    assert_eq!(
+        hosted.entity_rs,
+        ast_only.entity_rs.replacen(&url_fn, &release_fns, 1)
+    );
+    assert_eq!(hosted.lib_rs, ast_only.lib_rs);
+    assert_eq!(hosted.types_rs, ast_only.types_rs);
+    assert_eq!(hosted.programs_rs, ast_only.programs_rs);
+    assert_eq!(hosted.cargo_toml, ast_only.cargo_toml);
+}
+
+#[test]
+fn hosted_python_generation_only_adds_the_release_to_ast_generation() {
+    let (programs, live, manifest) = ore_artifacts();
+    let hash = ore_manifest_hash(&manifest);
+    let config = PythonStackConfig {
+        url: Some(ORE_WS.to_string()),
+        ..PythonStackConfig::default()
+    };
+
+    let ast_only = arete_interpreter::python::compile_stack_spec_with_exact_views(
+        stack_spec_from_artifacts_v2(&programs, &live, &manifest).unwrap(),
+        Some(config.clone()),
+    )
+    .unwrap();
+    let hosted = arete_interpreter::python::compile_public_artifacts_v2(
+        &programs,
+        &live,
+        &manifest,
+        Some(config),
+    )
+    .unwrap();
+
+    assert!(names_no_release(&ast_only.init_py));
+    let expected = ast_only
+        .init_py
+        .replacen(
+            "from arete.stack import StackDef, StackEndpoints\n",
+            "from arete.stack import StackDef, StackEndpoints, StackRelease\n",
+            1,
+        )
+        .replacen(
+            "\n)\n\n__all__",
+            &format!(
+                "\n    release=StackRelease(\n        stack_manifest_hash=\"{hash}\",\n        live_alias=\"live\",\n    ),\n)\n\n__all__"
+            ),
+            1,
+        );
+    assert_eq!(hosted.init_py, expected);
+    assert_eq!(hosted.models_py, ast_only.models_py);
+    assert_eq!(hosted.views_py, ast_only.views_py);
+    assert_eq!(hosted.programs_py, ast_only.programs_py);
+    assert_eq!(hosted.pyproject_toml, ast_only.pyproject_toml);
+}
+
+#[test]
+fn compositions_name_the_served_version_of_each_bound_alias_only() {
+    let program = program();
+    let shared = adapted_live(&program, "SharedState", "shared_pda");
+    let third = adapted_live(&program, "ThirdState", "third_pda");
+    let lives = vec![
+        ("first-live".to_string(), shared.clone()),
+        ("second_live".to_string(), shared),
+        ("third".to_string(), third),
+    ];
+    let manifest = compose_stack_manifest_v2(
+        "Jurassic",
+        std::slice::from_ref(&program),
+        lives
+            .iter()
+            .map(|(alias, live)| (alias.clone(), live))
+            .collect(),
+        vec![
+            SelectedViewV2 {
+                live_alias: "first-live".to_string(),
+                view_id: "SharedState/list".to_string(),
+            },
+            SelectedViewV2 {
+                live_alias: "third".to_string(),
+                view_id: "ThirdState/list".to_string(),
+            },
+        ],
+    )
+    .unwrap();
+    let hash = manifest.artifact_hash.to_string();
+    let bound = |alias: &str| format!("wss://{alias}.stack.arete.run");
+    // `second_live` has no served endpoint, so it names no version.
+    let live_urls = BTreeMap::from([
+        ("first-live".to_string(), bound("first-live")),
+        ("third".to_string(), bound("third")),
+    ]);
+
+    let typescript = compile_typescript_composition(
+        std::slice::from_ref(&program),
+        &lives,
+        &manifest,
+        Some(TypeScriptCompositionConfig {
+            live_endpoints: live_urls
+                .iter()
+                .map(|(alias, url)| {
+                    (
+                        alias.clone(),
+                        TypeScriptLiveEndpoints {
+                            websocket_url: Some(url.clone()),
+                            http_url: None,
+                        },
+                    )
+                })
+                .collect(),
+            ..TypeScriptCompositionConfig::default()
+        }),
+    )
+    .unwrap();
+    for live in &typescript.live_stacks {
+        let definition = &live.output.stack_definition;
+        if live_urls.contains_key(&live.alias) {
+            assert!(
+                definition.contains(&format!(
+                    "  release: {{\n    stackManifestHash: '{hash}',\n    liveAlias: '{}',\n  }},",
+                    live.alias
+                )),
+                "{definition}"
+            );
+        } else {
+            assert!(names_no_release(definition), "{definition}");
+        }
+    }
+
+    let rust = compile_rust_composition(
+        std::slice::from_ref(&program),
+        &lives,
+        &manifest,
+        Some(RustCompositionConfig {
+            live_urls: live_urls.clone(),
+            ..RustCompositionConfig::default()
+        }),
+    )
+    .unwrap();
+    for live in &rust.live_stacks {
+        let entity = &live.output.entity_rs;
+        if live_urls.contains_key(&live.alias) {
+            assert!(entity.contains(&format!(
+                "fn stack_manifest_hash() -> Option<&'static str> {{\n        Some(\"{hash}\")\n    }}"
+            )));
+            assert!(entity.contains(&format!(
+                "fn live_alias() -> Option<&'static str> {{\n        Some(\"{}\")\n    }}",
+                live.alias
+            )));
+        } else {
+            assert!(names_no_release(entity), "{entity}");
+        }
+    }
+
+    let python = compile_python_composition(
+        std::slice::from_ref(&program),
+        &lives,
+        &manifest,
+        Some(PythonCompositionConfig {
+            live_urls: live_urls.clone(),
+            ..PythonCompositionConfig::default()
+        }),
+    )
+    .unwrap();
+    for live in &python.live_stacks {
+        let init = &live.output.init_py;
+        if live_urls.contains_key(&live.alias) {
+            assert!(
+                init.contains("from arete.stack import StackDef, StackEndpoints, StackRelease\n")
+            );
+            assert!(init.contains(&format!(
+                "    release=StackRelease(\n        stack_manifest_hash=\"{hash}\",\n        live_alias=\"{}\",\n    ),\n)",
+                live.alias
+            )));
+        } else {
+            assert!(names_no_release(init), "{init}");
+        }
+    }
+
+    // Without served endpoints (local generation) no alias names a version.
+    let local =
+        compile_typescript_composition(std::slice::from_ref(&program), &lives, &manifest, None)
+            .unwrap();
+    assert!(local
+        .live_stacks
+        .iter()
+        .all(|live| names_no_release(&live.output.stack_definition)));
 }

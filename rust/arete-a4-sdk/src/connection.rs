@@ -467,12 +467,14 @@ impl RuntimeAuthState {
         &self,
         token_endpoint: &str,
     ) -> Result<AuthToken, AreteError> {
+        let release = self
+            .config
+            .as_ref()
+            .and_then(|config| config.stack_release.as_ref());
         let mut request = self
             .http_client
             .post(token_endpoint)
-            .json(&TokenEndpointRequest {
-                websocket_url: &self.websocket_url,
-            });
+            .json(&TokenEndpointRequest::new(&self.websocket_url, release));
 
         if let Some(config) = self.config.as_ref() {
             if let Some(publishable_key) = config.publishable_key.as_ref() {
@@ -819,6 +821,14 @@ fn spawn_connection_loop(
                                     Ok(None) => {
                                         refresh_timer = None;
                                     }
+                                    Err(error) if error.is_stack_version_refusal() => {
+                                        // Retrying cannot change the answer. Keep this
+                                        // session until it ends; the refusal then ends
+                                        // the connection instead of a reconnect.
+                                        tracing::warn!("Auth refresh refused for this stack version: {}", error);
+                                        refresh_timer = None;
+                                        set_last_error(&last_error, error).await;
+                                    }
                                     Err(error) => {
                                         tracing::warn!("Failed to refresh auth token in background: {}", error);
                                         refresh_timer = Some(Box::pin(sleep(Duration::from_secs(MIN_REFRESH_DELAY_SECONDS))));
@@ -846,7 +856,11 @@ fn spawn_connection_loop(
 
             let latest_error = last_error.read().await.clone();
             if let Some(error) = latest_error.as_deref() {
-                if error.should_refresh_token() && auth_state.has_refreshable_auth() {
+                if error.is_stack_version_refusal() {
+                    *state.write().await = ConnectionState::Error;
+                    report_initial_failure(&mut initial_connect_tx, error.clone());
+                    break;
+                } else if error.should_refresh_token() && auth_state.has_refreshable_auth() {
                     auth_state.clear_cached_token();
                     force_token_refresh = true;
                     immediate_reconnect = true;

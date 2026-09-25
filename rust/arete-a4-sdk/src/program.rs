@@ -265,6 +265,14 @@ impl<S: crate::Stack, P: ProgramSdk> crate::Stack for StackWithPrograms<S, P> {
     fn gateway() -> Option<crate::HostedSolanaGatewayBindings> {
         S::gateway().or_else(P::gateway)
     }
+
+    fn stack_manifest_hash() -> Option<&'static str> {
+        S::stack_manifest_hash()
+    }
+
+    fn live_alias() -> Option<&'static str> {
+        S::live_alias()
+    }
 }
 
 /// Program-less stacks bind `()`.

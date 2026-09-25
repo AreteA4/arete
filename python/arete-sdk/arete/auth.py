@@ -10,11 +10,25 @@ import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Coroutine, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Coroutine,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+)
 
 import httpx
 
 from arete.errors import AreteError, AuthError
+
+if TYPE_CHECKING:  # arete.stack imports this module through arete.gateway.
+    from arete.stack import StackRelease
 
 logger = logging.getLogger(__name__)
 
@@ -133,12 +147,26 @@ class AuthErrorCode(Enum):
     QUOTA_EXCEEDED = "quota_exceeded"
     # Static token errors
     INVALID_STATIC_TOKEN = "invalid_static_token"
+    # Stack version errors: the session endpoint no longer serves, or never
+    # served, the stack version the client was generated for. Terminal.
+    STACK_VERSION_RETIRED = "stack_version_retired"
+    STACK_VERSION_UNKNOWN = "stack_version_unknown"
     # Server errors
     INTERNAL_ERROR = "internal_error"
 
     @classmethod
     def from_wire(cls, error_code: str) -> "AuthErrorCode":
-        """Parse a kebab-case or snake_case error code string."""
+        """Parse a kebab-case or snake_case error code string.
+
+        A code this SDK does not know maps to ``INTERNAL_ERROR``; use
+        :meth:`from_wire_known` to tell the two apart.
+        """
+        known = cls.from_wire_known(error_code)
+        return known if known is not None else cls.INTERNAL_ERROR
+
+    @classmethod
+    def from_wire_known(cls, error_code: str) -> Optional["AuthErrorCode"]:
+        """Like :meth:`from_wire`, but ``None`` for a code this SDK does not know."""
         code_map = {
             "token-missing": cls.TOKEN_MISSING,
             "token-expired": cls.TOKEN_EXPIRED,
@@ -168,13 +196,15 @@ class AuthErrorCode(Enum):
             "secret-key-required": cls.SECRET_KEY_REQUIRED,
             "deployment-access-denied": cls.DEPLOYMENT_ACCESS_DENIED,
             "quota-exceeded": cls.QUOTA_EXCEEDED,
+            "stack-version-retired": cls.STACK_VERSION_RETIRED,
+            "stack-version-unknown": cls.STACK_VERSION_UNKNOWN,
             # Also support snake_case variants
             "token_missing": cls.TOKEN_MISSING,
             "token_expired": cls.TOKEN_EXPIRED,
             "token_invalid_signature": cls.TOKEN_INVALID_SIGNATURE,
             "token_invalid_format": cls.TOKEN_INVALID_FORMAT,
         }
-        return code_map.get(error_code.lower(), cls.INTERNAL_ERROR)
+        return code_map.get(error_code.strip().lower())
 
 
 def should_refresh_token(error_code: AuthErrorCode) -> bool:
@@ -188,6 +218,15 @@ def should_refresh_token(error_code: AuthErrorCode) -> bool:
         AuthErrorCode.TOKEN_KEY_NOT_FOUND,
     }
     return error_code in refresh_codes
+
+
+def is_stack_version_refusal(error_code: Optional[AuthErrorCode]) -> bool:
+    """The session endpoint refused the client's stack version: no retry,
+    token refresh or reconnect can change the answer."""
+    return error_code in (
+        AuthErrorCode.STACK_VERSION_RETIRED,
+        AuthErrorCode.STACK_VERSION_UNKNOWN,
+    )
 
 
 def should_retry_error(error_code: AuthErrorCode) -> bool:
@@ -331,12 +370,15 @@ def build_token_endpoint_request_body(
     target_kind: Optional[str] = None,
     target_id: Optional[str] = None,
     program_release_hash: Optional[str] = None,
+    stack_release: Optional["StackRelease"] = None,
 ) -> Dict[str, Any]:
     """Build the token endpoint POST body.
 
-    Untargeted: ``{"websocket_url", "scopes"}``. Targeted
-    (program-read-binding / solana-gateway-binding):
-    ``{"targetKind", "targetId", "scopes"[, "programReleaseHash"]}``.
+    Untargeted: ``{"websocket_url", "scopes"[, "stackManifestHash",
+    "liveAlias"]}`` — the served stack version is named only when
+    ``stack_release`` is given. Targeted (program-read-binding /
+    solana-gateway-binding): ``{"targetKind", "targetId", "scopes"[,
+    "programReleaseHash"]}``; a stack release is never added to it.
     """
     if target_kind is not None:
         body: Dict[str, Any] = {
@@ -347,7 +389,75 @@ def build_token_endpoint_request_body(
         if program_release_hash is not None:
             body["programReleaseHash"] = program_release_hash
         return body
-    return {"websocket_url": websocket_url or "", "scopes": list(scopes)}
+    body = {"websocket_url": websocket_url or "", "scopes": list(scopes)}
+    body.update(stack_release_fields(stack_release))
+    return body
+
+
+def stack_release_fields(stack_release: Optional["StackRelease"]) -> Dict[str, str]:
+    """The camelCase session request fields naming a served stack version."""
+    if stack_release is None:
+        return {}
+    return {
+        "stackManifestHash": stack_release.stack_manifest_hash,
+        "liveAlias": stack_release.live_alias,
+    }
+
+
+def _non_empty_string(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _stack_version_refusal_error(
+    status: int,
+    error_code: AuthErrorCode,
+    message: str,
+    error_data: Any,
+    wire_error_code: Optional[str],
+) -> AuthError:
+    """An :class:`AuthError` naming the replacement and how to install it."""
+    data = error_data if isinstance(error_data, dict) else {}
+    replacement = data.get("replacement")
+    replacement = replacement if isinstance(replacement, dict) else {}
+    replacement_version = _non_empty_string(replacement.get("version"))
+    replacement_hash = _non_empty_string(replacement.get("stackManifestHash"))
+    upgrade_command = _non_empty_string(data.get("upgradeCommand"))
+    retired_at = _non_empty_string(data.get("retiredAt"))
+
+    text = f"Token endpoint returned {status}: {message}"
+    guidance = []
+    if replacement_version or replacement_hash:
+        guidance.append(f"Replacement: {replacement_version or replacement_hash}.")
+    if upgrade_command:
+        guidance.append(f"Upgrade with: {upgrade_command}")
+    if guidance:
+        text = text.rstrip()
+        separator = " " if text.endswith((".", "!", "?")) else ". "
+        text = f"{text}{separator}{' '.join(guidance)}"
+
+    return AuthError(
+        text,
+        error_code,
+        {
+            "status": status,
+            "wire_error_code": wire_error_code,
+            "replacement": {
+                key: value
+                for key, value in (
+                    ("version", replacement_version),
+                    ("stack_manifest_hash", replacement_hash),
+                )
+                if value is not None
+            }
+            or None,
+            "upgrade_command": upgrade_command,
+            "retired_at": retired_at,
+        },
+        replacement_version=replacement_version,
+        replacement_stack_manifest_hash=replacement_hash,
+        upgrade_command=upgrade_command,
+        retired_at=retired_at,
+    )
 
 
 async def request_token_from_endpoint(
@@ -379,6 +489,7 @@ async def request_token_from_endpoint(
         raw = response.text
         error_code = None
         error_message = raw or response.reason_phrase
+        error_data = None
         try:
             error_data = json.loads(raw)
             if isinstance(error_data, dict):
@@ -395,6 +506,14 @@ async def request_token_from_endpoint(
                 error_code = AuthErrorCode.QUOTA_EXCEEDED
             else:
                 error_code = AuthErrorCode.AUTH_REQUIRED
+        if is_stack_version_refusal(error_code):
+            raise _stack_version_refusal_error(
+                response.status_code,
+                error_code,
+                error_message,
+                error_data,
+                error_code_header,
+            )
         raise AuthError(
             f"Token endpoint returned {response.status_code}: {error_message}",
             error_code,
@@ -458,9 +577,17 @@ class AuthState:
     - Automatic refresh scheduling
     """
 
-    def __init__(self, websocket_url: str, config: Optional[AuthConfig] = None):
+    def __init__(
+        self,
+        websocket_url: str,
+        config: Optional[AuthConfig] = None,
+        stack_release: Optional["StackRelease"] = None,
+    ):
         self.websocket_url = websocket_url
         self.config = config
+        # Served stack version named in the session request, when the stack
+        # definition carries one. Without it the request is unchanged.
+        self.stack_release = stack_release
         self._current_token: Optional[str] = None
         self._token_expiry: Optional[int] = None
         self._refresh_timer: Optional[asyncio.Task] = None
@@ -612,7 +739,10 @@ class AuthState:
             self._get_http_session(),
             endpoint,
             self.config,
-            {"websocket_url": self.websocket_url},
+            {
+                "websocket_url": self.websocket_url,
+                **stack_release_fields(self.stack_release),
+            },
         )
 
     def get_refresh_delay(self) -> Optional[float]:
@@ -654,22 +784,22 @@ class AuthState:
 
 
 def parse_error_code_from_close_reason(reason: str) -> Optional[AuthErrorCode]:
-    """Parse error code from WebSocket close reason (e.g., 'token-expired: Token has expired')."""
+    """Parse the error code a WebSocket close reason starts with.
+
+    The server closes with ``"<code>: <message>"`` (for example
+    ``"token-expired: Token has expired"``), or with the bare code. A colon
+    prefix that is not a wire code is kept as ``INTERNAL_ERROR`` so it is
+    still treated as a coded close.
+
+    A free-form reason is never guessed at: one that merely mentions
+    "token", "invalid" or "expired" is not a token expiry, and reading it as
+    one would drop a valid token and reconnect without backing off.
+    """
     if not reason:
         return None
 
-    # Try to extract error code from format "error-code: message"
     if ":" in reason:
         code_part = reason.split(":", 1)[0].strip()
         return AuthErrorCode.from_wire(code_part)
 
-    # Check for common patterns
-    reason_lower = reason.lower()
-    if (
-        "expired" in reason_lower
-        or "invalid" in reason_lower
-        or "token" in reason_lower
-    ):
-        return AuthErrorCode.TOKEN_EXPIRED
-
-    return None
+    return AuthErrorCode.from_wire_known(reason)

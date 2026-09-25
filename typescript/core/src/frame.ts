@@ -86,8 +86,15 @@ export interface ErrorFrame {
   code: string;
   retryable?: boolean;
   fatal: boolean;
+  /** Seconds to wait before retrying, as the server sends it. */
+  retryAfter?: number;
+  suggestedAction?: string;
+  docsUrl?: string;
+  /** @deprecated The server sends `retryAfter`; kept for older servers. */
   retry_after?: number;
+  /** @deprecated The server sends `suggestedAction`; kept for older servers. */
   suggested_action?: string;
+  /** @deprecated The server sends `docsUrl`; kept for older servers. */
   docs_url?: string;
   /** Present on cursor refusals: what the view can still serve. */
   replayWindow?: ReplayWindow;

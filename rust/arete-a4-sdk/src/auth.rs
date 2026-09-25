@@ -91,6 +91,30 @@ impl From<&str> for AuthToken {
 pub type TokenProviderFuture = Pin<Box<dyn Future<Output = Result<AuthToken, AreteError>> + Send>>;
 pub type TokenProvider = dyn Fn() -> TokenProviderFuture + Send + Sync;
 
+/// The served version a generated stack names in its WebSocket session
+/// request: one live alias of one StackManifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackRelease {
+    /// `arete:h1:stack-manifest:sha256:<64 hex>`.
+    pub stack_manifest_hash: String,
+    /// StackManifest live alias the stack serves.
+    pub live_alias: String,
+}
+
+impl StackRelease {
+    /// The release a [`crate::Stack`] was generated for, when it names both
+    /// halves.
+    pub fn of<S: crate::Stack>() -> Option<Self> {
+        match (S::stack_manifest_hash(), S::live_alias()) {
+            (Some(hash), Some(alias)) if !hash.is_empty() && !alias.is_empty() => Some(Self {
+                stack_manifest_hash: hash.to_string(),
+                live_alias: alias.to_string(),
+            }),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TokenTransport {
     #[default]
@@ -106,6 +130,9 @@ pub struct AuthConfig {
     pub(crate) publishable_key: Option<String>,
     pub(crate) token_endpoint_headers: HashMap<String, String>,
     pub(crate) token_transport: TokenTransport,
+    /// Served stack version named in untargeted session requests. Set by the
+    /// client from its generated [`crate::Stack`], never by callers.
+    pub(crate) stack_release: Option<StackRelease>,
 }
 
 impl fmt::Debug for AuthConfig {
@@ -123,6 +150,7 @@ impl fmt::Debug for AuthConfig {
                 &self.token_endpoint_headers.keys().collect::<Vec<_>>(),
             )
             .field("token_transport", &self.token_transport)
+            .field("stack_release", &self.stack_release)
             .finish()
     }
 }
@@ -163,6 +191,11 @@ impl AuthConfig {
         Fut: Future<Output = Result<AuthToken, AreteError>> + Send + 'static,
     {
         self.get_token = Some(Arc::new(move || Box::pin(provider())));
+        self
+    }
+
+    pub(crate) fn with_stack_release(mut self, release: Option<StackRelease>) -> Self {
+        self.stack_release = release;
         self
     }
 
@@ -220,9 +253,25 @@ impl TokenEndpointResponse {
     }
 }
 
+/// Untargeted WebSocket session request. Without a stack release it
+/// serializes exactly as older clients send it: `{"websocket_url": ...}`.
 #[derive(Debug, Serialize)]
 pub(crate) struct TokenEndpointRequest<'a> {
     pub websocket_url: &'a str,
+    #[serde(rename = "stackManifestHash", skip_serializing_if = "Option::is_none")]
+    pub stack_manifest_hash: Option<&'a str>,
+    #[serde(rename = "liveAlias", skip_serializing_if = "Option::is_none")]
+    pub live_alias: Option<&'a str>,
+}
+
+impl<'a> TokenEndpointRequest<'a> {
+    pub fn new(websocket_url: &'a str, release: Option<&'a StackRelease>) -> Self {
+        Self {
+            websocket_url,
+            stack_manifest_hash: release.map(|release| release.stack_manifest_hash.as_str()),
+            live_alias: release.map(|release| release.live_alias.as_str()),
+        }
+    }
 }
 
 pub(crate) fn parse_jwt_expiry(token: &str) -> Option<u64> {
@@ -398,6 +447,41 @@ mod tests {
         .expect("query auth url should build");
 
         assert!(url.contains("hs_token=abc123"));
+    }
+
+    #[test]
+    fn session_request_without_a_release_is_the_legacy_body() {
+        let body = serde_json::to_string(&TokenEndpointRequest::new(
+            "wss://demo.stack.arete.run/socket",
+            None,
+        ))
+        .expect("session request should serialize");
+
+        assert_eq!(
+            body,
+            r#"{"websocket_url":"wss://demo.stack.arete.run/socket"}"#
+        );
+    }
+
+    #[test]
+    fn session_request_names_the_stack_release() {
+        let release = StackRelease {
+            stack_manifest_hash: format!("arete:h1:stack-manifest:sha256:{}", "a".repeat(64)),
+            live_alias: "live".to_string(),
+        };
+        let body = serde_json::to_string(&TokenEndpointRequest::new(
+            "wss://demo.stack.arete.run/socket",
+            Some(&release),
+        ))
+        .expect("session request should serialize");
+
+        assert_eq!(
+            body,
+            format!(
+                r#"{{"websocket_url":"wss://demo.stack.arete.run/socket","stackManifestHash":"arete:h1:stack-manifest:sha256:{}","liveAlias":"live"}}"#,
+                "a".repeat(64)
+            )
+        );
     }
 
     #[test]

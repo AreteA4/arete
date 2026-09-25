@@ -300,6 +300,56 @@ class TestHttpOnlyMode:
 
 
 @pytest.mark.asyncio
+async def test_the_generated_release_is_named_only_for_the_generated_endpoint():
+    import httpx
+
+    from arete.auth import AuthConfig
+    from arete.stack import StackRelease
+
+    release = StackRelease(
+        stack_manifest_hash="arete:h1:stack-manifest:sha256:" + "a" * 64,
+        live_alias="live",
+    )
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"token": "minted", "expires_at": 4102444800})
+
+    stack = make_stack(
+        endpoints=StackEndpoints(ws="wss://ore.stack.arete.run"), release=release
+    )
+    auth = AuthConfig(token_endpoint="https://auth.example/ws/sessions")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        generated = await Arete.connect(
+            stack, auth=auth, http_client=http_client, auto_connect=False
+        )
+        await generated._http.get_token()
+        overridden = await Arete.connect(
+            stack,
+            url="wss://other.stack.arete.run",
+            auth=auth,
+            http_client=http_client,
+            auto_connect=False,
+        )
+        await overridden._http.get_token()
+
+    assert bodies == [
+        {
+            "websocket_url": "wss://ore.stack.arete.run",
+            "scopes": ["read"],
+            "stackManifestHash": release.stack_manifest_hash,
+            "liveAlias": "live",
+        },
+        {"websocket_url": "wss://other.stack.arete.run", "scopes": ["read"]},
+    ]
+    # The WebSocket session request carries the same release.
+    assert generated._connection._auth_state.stack_release == release
+    assert overridden._connection._auth_state.stack_release is None
+
+
+@pytest.mark.asyncio
 class TestTransportWiring:
     async def test_default_chain_and_transactions_over_stack_http_endpoint(self):
         a4 = await Arete.connect(

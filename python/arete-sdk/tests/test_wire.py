@@ -137,6 +137,26 @@ class TestParseFrame:
         assert frame.suggested_action == "slow down"
         assert frame.docs_url == "https://docs.arete.run/limits"
 
+    def test_error_frame_prefers_the_camel_case_fields_the_server_sends(self):
+        frame = parse_frame(encode({
+            "type": "error",
+            "protocolVersion": 2,
+            "subscriptionId": "s",
+            "code": "rate-limit-exceeded",
+            "fatal": False,
+            "retryable": True,
+            "retryAfter": 30,
+            "suggestedAction": "slow down",
+            "docsUrl": "https://docs.arete.run/limits",
+            "retry_after": 1,
+            "suggested_action": "stale",
+            "docs_url": "https://stale.example",
+        }))
+        assert isinstance(frame, ErrorFrame)
+        assert frame.retry_after == 30
+        assert frame.suggested_action == "slow down"
+        assert frame.docs_url == "https://docs.arete.run/limits"
+
 
 class TestGzip:
     def test_detects_gzip_magic(self):

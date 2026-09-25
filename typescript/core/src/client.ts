@@ -596,6 +596,9 @@ export class Arete<TStack extends StackDefinition> {
       maxReconnectAttempts: options.maxReconnectAttempts,
       auth: options.auth,
       fetch: this.fetchImpl,
+      // The release names the version served at the generated endpoint. A
+      // different `url` points somewhere the generator knew nothing about.
+      release: url !== null && url === this.stack.endpoints.ws ? this.stack.release : undefined,
     });
     this.processor.useCursorTracker(this.connection.cursors);
     this.subscriptionRegistry = new SubscriptionRegistry(this.connection, this.queryStore);

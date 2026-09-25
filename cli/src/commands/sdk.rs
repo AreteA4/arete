@@ -413,6 +413,31 @@ impl ResolvedStackSource {
         }
     }
 
+    /// The served version a single-live hosted stack is generated for.
+    ///
+    /// Only when the generated WebSocket endpoint is that stack's hosted
+    /// binding: a local source or a `--url` override points somewhere the
+    /// served version does not describe, and stays unversioned. The hash is
+    /// the one the registry serves the stack under, which for a normalized
+    /// V1 stack is not the hash of the local V2 normalization.
+    fn served_release(
+        &self,
+        websocket_url: Option<&str>,
+    ) -> Option<arete_interpreter::public_artifacts::StackRelease> {
+        let Self::Remote(stack) = self else {
+            return None;
+        };
+        match stack.live_bindings.as_slice() {
+            [live] if websocket_url == Some(live.binding.websocket_endpoint.as_str()) => {
+                Some(arete_interpreter::public_artifacts::StackRelease {
+                    stack_manifest_hash: stack.manifest_hash.clone(),
+                    live_alias: live.alias.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+
     fn hosted_gateway(&self) -> Result<Option<serde_json::Value>> {
         match self {
             Self::LocalArtifacts(_) => Ok(None),
@@ -1279,6 +1304,7 @@ fn generate_project_stack_source(
                             extension_entry: None,
                             program_reads: source.rust_program_reads()?,
                             gateway: source.hosted_gateway()?,
+                            release: None,
                         },
                         live_urls: source.composition_live_websocket_urls(),
                     }),
@@ -1333,6 +1359,7 @@ fn generate_project_stack_source(
                             extension_entry: None,
                             program_reads: source.python_program_reads()?,
                             gateway: source.hosted_gateway()?,
+                            release: None,
                         },
                         live_urls: source.composition_live_websocket_urls(),
                     }),
@@ -1471,6 +1498,7 @@ fn generate_project_rust_program(
             })
             .transpose()?
             .flatten(),
+        release: None,
     };
     let output = arete_interpreter::rust::compile_program_modules(stack_spec, Some(rust_config))
         .map_err(|error| anyhow::anyhow!("Failed to compile Rust program SDK: {error}"))?;
@@ -1571,6 +1599,7 @@ fn generate_project_python_program(
             })
             .transpose()?
             .flatten(),
+        release: None,
     };
     let output =
         arete_interpreter::python::compile_program_modules(stack_spec, Some(python_config))
@@ -3291,6 +3320,7 @@ fn stage_hosted_program_modules(
                 extension_import: None,
                 programs: Some(vec![program.program_config.clone()]),
                 gateway: None,
+                release: None,
             }),
         )
         .map_err(|error| anyhow::anyhow!("Failed to compile hosted program SDK: {error}"))?;
@@ -4040,6 +4070,7 @@ fn write_typescript_program_sdk(
             extension_import: None,
             programs: extensions.programs,
             gateway: extensions.gateway,
+            release: None,
         }),
     )
     .map_err(|e| anyhow::anyhow!("Failed to compile TypeScript: {}", e))?;
@@ -4190,6 +4221,7 @@ fn generate_typescript_sdk_from_source(
             extension_import: None,
             programs: source.typescript_programs(&stack_spec)?,
             gateway: source.hosted_gateway()?,
+            release: None,
         };
 
         let output = arete_interpreter::typescript::compile_program_modules(
@@ -4275,6 +4307,7 @@ fn generate_typescript_sdk_from_source(
         println!("{} Compiling TypeScript from stack...", "→".blue().bold());
 
         let stack_name = stack_spec.stack_name.clone();
+        let release = source.served_release(websocket_url.as_deref());
         let config = arete_interpreter::typescript::TypeScriptStackConfig {
             package_name: package_name.to_string(),
             generate_helpers: true,
@@ -4284,6 +4317,7 @@ fn generate_typescript_sdk_from_source(
             extension_import: None,
             programs: source.typescript_programs(&stack_spec)?,
             gateway: source.hosted_gateway()?,
+            release,
         };
 
         let output = match source {
@@ -4425,6 +4459,7 @@ fn generate_typescript_composition_sdk(
             extension_import: None,
             programs: source.typescript_programs(&program_stack)?,
             gateway: source.hosted_gateway()?,
+            release: None,
         },
         live_endpoints: source.composition_live_endpoints(),
         live_module_imports: live_module_imports.clone(),
@@ -4644,6 +4679,7 @@ pub fn create_rust(
                     extension_entry: None,
                     program_reads: source.rust_program_reads()?,
                     gateway: source.hosted_gateway()?,
+                    release: None,
                 },
                 live_urls,
             }),
@@ -4728,6 +4764,7 @@ fn generate_rust_stack_sdk(
         None => (Vec::new(), None),
     };
 
+    let release = source.served_release(stack_url.as_deref());
     let rust_config = arete_interpreter::rust::RustStackConfig {
         crate_name: crate_name.to_string(),
         sdk_version: arete_interpreter::rust::GENERATED_RUST_SDK_VERSION.to_string(),
@@ -4738,6 +4775,7 @@ fn generate_rust_stack_sdk(
         extension_entry,
         program_reads: source.rust_program_reads()?,
         gateway: source.hosted_gateway()?,
+        release,
     };
 
     let output = match source {
@@ -4931,6 +4969,7 @@ pub fn create_python(
                     extension_entry: None,
                     program_reads: source.python_program_reads()?,
                     gateway: source.hosted_gateway()?,
+                    release: None,
                 },
                 live_urls,
             }),
@@ -5017,6 +5056,7 @@ fn generate_python_stack_sdk(
         None => (Vec::new(), None),
     };
 
+    let release = source.served_release(stack_url.as_deref());
     let python_config = arete_interpreter::python::PythonStackConfig {
         package_name: package_name.to_string(),
         sdk_version: arete_interpreter::python::GENERATED_PYTHON_SDK_VERSION.to_string(),
@@ -5027,6 +5067,7 @@ fn generate_python_stack_sdk(
         extension_entry,
         program_reads: source.python_program_reads()?,
         gateway: source.hosted_gateway()?,
+        release,
     };
 
     let output = match source {
@@ -8579,6 +8620,153 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains(program_endpoints[0].as_str()));
+    }
+
+    /// Every generated file under `directory`, concatenated.
+    fn generated_sources(directory: &Path) -> String {
+        let mut sources = String::new();
+        let mut pending = vec![directory.to_path_buf()];
+        while let Some(path) = pending.pop() {
+            for entry in fs::read_dir(&path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if matches!(
+                    path.extension().and_then(|extension| extension.to_str()),
+                    Some("ts" | "rs" | "py")
+                ) {
+                    sources.push_str(&fs::read_to_string(&path).unwrap());
+                }
+            }
+        }
+        sources
+    }
+
+    #[test]
+    fn hosted_stack_sdks_name_the_served_version_of_the_generated_endpoint() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let (install, _, _) = hosted_v2_install(&["alpha"]);
+        let source = ResolvedStackSource::Remote(Box::new(remote_stack_install(install).unwrap()));
+        let ResolvedStackSource::Remote(remote) = &source else {
+            unreachable!()
+        };
+        let hash = remote.manifest_hash.clone();
+        let generated = source.default_websocket_url();
+        let overridden = Some("wss://elsewhere.example.test/ws".to_string());
+        let directory = |label: &str| {
+            std::env::temp_dir().join(format!(
+                "a4-served-release-{label}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ))
+        };
+
+        for (websocket_url, versioned) in [(generated, true), (overridden, false)] {
+            let typescript = directory("typescript");
+            generate_typescript_sdk_from_source(
+                &source,
+                &typescript,
+                "@usearete/react",
+                websocket_url.clone(),
+                source.default_http_url(),
+                None,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                false,
+            )
+            .unwrap();
+            let rust = directory("rust");
+            generate_rust_stack_sdk(
+                &source,
+                source.load_stack_spec(true).unwrap(),
+                &rust,
+                "alpha-stack",
+                false,
+                websocket_url.clone(),
+                None,
+            )
+            .unwrap();
+            let python = directory("python");
+            generate_python_stack_sdk(
+                &source,
+                source.load_stack_spec(true).unwrap(),
+                &python,
+                "alpha-stack",
+                false,
+                websocket_url,
+                None,
+            )
+            .unwrap();
+
+            let expected = [
+                (
+                    &typescript,
+                    format!(
+                        "  release: {{\n    stackManifestHash: '{hash}',\n    liveAlias: 'alpha',\n  }},"
+                    ),
+                ),
+                (
+                    &rust,
+                    format!(
+                        "fn stack_manifest_hash() -> Option<&'static str> {{\n        Some(\"{hash}\")\n    }}\n\n    fn live_alias() -> Option<&'static str> {{\n        Some(\"alpha\")\n    }}"
+                    ),
+                ),
+                (
+                    &python,
+                    format!(
+                        "    release=StackRelease(\n        stack_manifest_hash=\"{hash}\",\n        live_alias=\"alpha\",\n    ),"
+                    ),
+                ),
+            ];
+            for (output, release) in expected {
+                let sources = generated_sources(output);
+                assert_eq!(sources.contains(&release), versioned, "{release}");
+                assert_eq!(sources.contains(&hash), versioned);
+                fs::remove_dir_all(output).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn hosted_compositions_name_the_served_version_of_each_alias() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let aliases = ["alpha", "beta", "gamma"];
+        let (install, _, _) = hosted_v2_install(&aliases);
+        let source = ResolvedStackSource::Remote(Box::new(remote_stack_install(install).unwrap()));
+        let ResolvedStackSource::Remote(remote) = &source else {
+            unreachable!()
+        };
+        let hash = remote.stack_manifest.artifact_hash.to_string();
+        let directory = std::env::temp_dir().join(format!(
+            "a4-served-release-composition-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        generate_typescript_sdk_from_source(
+            &source,
+            &directory,
+            "@usearete/react",
+            None,
+            None,
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+        )
+        .unwrap();
+
+        for alias in aliases {
+            let module = fs::read_to_string(directory.join(format!("{alias}-stack.ts"))).unwrap();
+            assert!(module.contains(&format!(
+                "  release: {{\n    stackManifestHash: '{hash}',\n    liveAlias: '{alias}',\n  }},"
+            )));
+        }
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

@@ -196,11 +196,29 @@ export type ProgramReadOverrides<
   ? { readonly [K in keyof TPrograms]?: ProgramReadOverride }
   : Record<string, never>;
 
+/**
+ * The exact served version a generated stack definition was built for: one
+ * live alias of one StackManifest.
+ */
+export interface StackRelease {
+  /** `arete:h1:stack-manifest:sha256:<64 hex>` */
+  readonly stackManifestHash: string;
+  /** The StackManifest live alias this definition serves. */
+  readonly liveAlias: string;
+}
+
 export interface StackDefinition<
   TPrograms extends Record<string, ProgramSdkDefinition> = Record<string, ProgramSdkDefinition>,
 > {
   readonly name: string;
   readonly endpoints: StackEndpoints;
+  /**
+   * Served version this definition was generated for. Present only on
+   * definitions generated from a hosted StackManifest; it is sent with the
+   * WebSocket session request for `endpoints.ws` so the session endpoint can
+   * route the client to that version.
+   */
+  readonly release?: StackRelease;
   readonly views: Record<string, ViewGroup>;
   readonly schemas?: Record<string, Schema<unknown>>;
   readonly patchSchemas?: Record<string, Schema<unknown>>;
@@ -343,6 +361,14 @@ export type AuthTokenRequest =
       readonly targetKind?: never;
       readonly targetId?: never;
       readonly programReleaseHash?: never;
+      /**
+       * Served version of the stack this session is for, when its stack
+       * definition carries one. A custom `getToken` provider can forward it
+       * to the session endpoint as `stackManifestHash`.
+       */
+      readonly stackManifestHash?: string;
+      /** Live alias paired with `stackManifestHash`, forwarded as `liveAlias`. */
+      readonly liveAlias?: string;
     }
   | ({ readonly scopes: readonly string[] } & ProgramReadBindingAuthTarget)
   | ({ readonly scopes: readonly string[] } & SolanaGatewayBindingAuthTarget);
@@ -386,6 +412,11 @@ export interface AreteConfig {
   auth?: AuthConfig;
   /** Fetch implementation used for authentication token requests. */
   fetch?: typeof fetch;
+  /**
+   * Served stack version to name in WebSocket session requests. Omitted
+   * requests are exactly what older clients send.
+   */
+  release?: StackRelease;
 }
 
 export interface SocketIssue {
@@ -446,8 +477,33 @@ export type AuthErrorCode =
   | 'QUOTA_EXCEEDED'
   // Static token errors
   | 'INVALID_STATIC_TOKEN'
+  // Stack version errors: the session endpoint no longer serves, or never
+  // served, the stack version the client was generated for. Terminal.
+  | 'STACK_VERSION_RETIRED'
+  | 'STACK_VERSION_UNKNOWN'
   // Server errors
   | 'INTERNAL_ERROR';
+
+/**
+ * Structured fields of a `STACK_VERSION_RETIRED` / `STACK_VERSION_UNKNOWN`
+ * session refusal, carried on {@link AreteError.details} alongside `status`,
+ * `wireErrorCode` and `responseBody`.
+ */
+export interface StackVersionRefusal {
+  readonly replacement?: {
+    readonly version?: string;
+    readonly stackManifestHash?: string;
+  };
+  /** Command that installs the replacement, e.g. `a4 install stack ore@1.3.0`. */
+  readonly upgradeCommand?: string;
+  /** RFC 3339 time the version was retired. */
+  readonly retiredAt?: string;
+}
+
+/** True for the session refusals that no retry or reconnect can resolve. */
+export function isStackVersionRefusalCode(code: string): boolean {
+  return code === 'STACK_VERSION_RETIRED' || code === 'STACK_VERSION_UNKNOWN';
+}
 
 /**
  * Refusals of a replay cursor. Each has a distinct recovery, so they reach the
@@ -556,41 +612,68 @@ export type SocketIssueCallback = (issue: SocketIssue) => void;
  * collapsing them into a generic failure would destroy the only distinction.
  */
 export function parseErrorCode(errorCode: string): AuthErrorCode | ReplayErrorCode {
-  const codeMap: Record<string, AuthErrorCode> = {
-    'token-missing': 'TOKEN_MISSING',
-    'token-expired': 'TOKEN_EXPIRED',
-    'token-invalid-signature': 'TOKEN_INVALID_SIGNATURE',
-    'token-invalid-format': 'TOKEN_INVALID_FORMAT',
-    'token-invalid-issuer': 'TOKEN_INVALID_ISSUER',
-    'token-invalid-audience': 'TOKEN_INVALID_AUDIENCE',
-    'token-missing-claim': 'TOKEN_MISSING_CLAIM',
-    'token-key-not-found': 'TOKEN_KEY_NOT_FOUND',
-    'origin-mismatch': 'ORIGIN_MISMATCH',
-    'origin-required': 'ORIGIN_REQUIRED',
-    'origin-not-allowed': 'ORIGIN_NOT_ALLOWED',
-    'rate-limit-exceeded': 'RATE_LIMIT_EXCEEDED',
-    'websocket-session-rate-limit-exceeded': 'WEBSOCKET_SESSION_RATE_LIMIT_EXCEEDED',
-    'connection-limit-exceeded': 'CONNECTION_LIMIT_EXCEEDED',
-    'subscription-limit-exceeded': 'SUBSCRIPTION_LIMIT_EXCEEDED',
-    'snapshot-limit-exceeded': 'SNAPSHOT_LIMIT_EXCEEDED',
-    'egress-limit-exceeded': 'EGRESS_LIMIT_EXCEEDED',
-    'invalid-static-token': 'INVALID_STATIC_TOKEN',
-    'internal-error': 'INTERNAL_ERROR',
-    'auth-required': 'AUTH_REQUIRED',
-    'missing-authorization-header': 'MISSING_AUTHORIZATION_HEADER',
-    'invalid-authorization-format': 'INVALID_AUTHORIZATION_FORMAT',
-    'invalid-api-key': 'INVALID_API_KEY',
-    'expired-api-key': 'EXPIRED_API_KEY',
-    'user-not-found': 'USER_NOT_FOUND',
-    'secret-key-required': 'SECRET_KEY_REQUIRED',
-    'deployment-access-denied': 'DEPLOYMENT_ACCESS_DENIED',
-    'quota-exceeded': 'QUOTA_EXCEEDED',
-  };
-
   const normalized = errorCode.toLowerCase();
   if (isReplayErrorCode(normalized)) return normalized;
-  return codeMap[normalized] || 'INTERNAL_ERROR';
+  return authErrorCodeFromWire(normalized) ?? 'INTERNAL_ERROR';
 }
+
+/**
+ * Resolve a wire error code the way {@link parseErrorCode} does, except that a
+ * code this SDK does not know is returned as sent instead of being collapsed
+ * into `INTERNAL_ERROR`. A newer server's refusal then still reaches the
+ * consumer under its own name.
+ */
+/** Whether `code` is a wire error code this SDK knows. */
+export function isKnownWireErrorCode(code: string): boolean {
+  const normalized = code.trim().toLowerCase();
+  return isReplayErrorCode(normalized) || authErrorCodeFromWire(normalized) !== undefined;
+}
+
+export function parseWireErrorCode(errorCode: string): string | AuthErrorCode | ReplayErrorCode {
+  const trimmed = errorCode.trim();
+  const normalized = trimmed.toLowerCase();
+  if (isReplayErrorCode(normalized)) return normalized;
+  return authErrorCodeFromWire(normalized) ?? trimmed;
+}
+
+function authErrorCodeFromWire(normalized: string): AuthErrorCode | undefined {
+  return Object.prototype.hasOwnProperty.call(AUTH_ERROR_CODES_BY_WIRE, normalized)
+    ? AUTH_ERROR_CODES_BY_WIRE[normalized]
+    : undefined;
+}
+
+const AUTH_ERROR_CODES_BY_WIRE: Readonly<Record<string, AuthErrorCode>> = {
+  'token-missing': 'TOKEN_MISSING',
+  'token-expired': 'TOKEN_EXPIRED',
+  'token-invalid-signature': 'TOKEN_INVALID_SIGNATURE',
+  'token-invalid-format': 'TOKEN_INVALID_FORMAT',
+  'token-invalid-issuer': 'TOKEN_INVALID_ISSUER',
+  'token-invalid-audience': 'TOKEN_INVALID_AUDIENCE',
+  'token-missing-claim': 'TOKEN_MISSING_CLAIM',
+  'token-key-not-found': 'TOKEN_KEY_NOT_FOUND',
+  'origin-mismatch': 'ORIGIN_MISMATCH',
+  'origin-required': 'ORIGIN_REQUIRED',
+  'origin-not-allowed': 'ORIGIN_NOT_ALLOWED',
+  'rate-limit-exceeded': 'RATE_LIMIT_EXCEEDED',
+  'websocket-session-rate-limit-exceeded': 'WEBSOCKET_SESSION_RATE_LIMIT_EXCEEDED',
+  'connection-limit-exceeded': 'CONNECTION_LIMIT_EXCEEDED',
+  'subscription-limit-exceeded': 'SUBSCRIPTION_LIMIT_EXCEEDED',
+  'snapshot-limit-exceeded': 'SNAPSHOT_LIMIT_EXCEEDED',
+  'egress-limit-exceeded': 'EGRESS_LIMIT_EXCEEDED',
+  'invalid-static-token': 'INVALID_STATIC_TOKEN',
+  'internal-error': 'INTERNAL_ERROR',
+  'auth-required': 'AUTH_REQUIRED',
+  'missing-authorization-header': 'MISSING_AUTHORIZATION_HEADER',
+  'invalid-authorization-format': 'INVALID_AUTHORIZATION_FORMAT',
+  'invalid-api-key': 'INVALID_API_KEY',
+  'expired-api-key': 'EXPIRED_API_KEY',
+  'user-not-found': 'USER_NOT_FOUND',
+  'secret-key-required': 'SECRET_KEY_REQUIRED',
+  'deployment-access-denied': 'DEPLOYMENT_ACCESS_DENIED',
+  'quota-exceeded': 'QUOTA_EXCEEDED',
+  'stack-version-retired': 'STACK_VERSION_RETIRED',
+  'stack-version-unknown': 'STACK_VERSION_UNKNOWN',
+};
 
 /**
  * Determines if a WebSocket close code indicates an authentication error
