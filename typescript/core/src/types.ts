@@ -623,6 +623,12 @@ export function parseErrorCode(errorCode: string): AuthErrorCode | ReplayErrorCo
  * into `INTERNAL_ERROR`. A newer server's refusal then still reaches the
  * consumer under its own name.
  */
+/** Whether `code` is a wire error code this SDK knows. */
+export function isKnownWireErrorCode(code: string): boolean {
+  const normalized = code.trim().toLowerCase();
+  return isReplayErrorCode(normalized) || authErrorCodeFromWire(normalized) !== undefined;
+}
+
 export function parseWireErrorCode(errorCode: string): string | AuthErrorCode | ReplayErrorCode {
   const trimmed = errorCode.trim();
   const normalized = trimmed.toLowerCase();

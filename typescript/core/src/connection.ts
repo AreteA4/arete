@@ -19,6 +19,7 @@ import type {
 import {
   DEFAULT_CONFIG,
   AreteError,
+  isKnownWireErrorCode,
   isStackVersionRefusalCode,
   parseErrorCode,
   parseWireErrorCode,
@@ -132,6 +133,19 @@ function describeStackVersionRefusal(message: string, refusal: StackVersionRefus
   if (guidance.length === 0) return message;
   const trimmed = message.trimEnd();
   return `${trimmed}${/[.!?]$/.test(trimmed) ? '' : '.'} ${guidance.join(' ')}`;
+}
+
+/**
+ * The wire code a close reason carries: the `code` of `code: message`, or the
+ * whole reason when it is exactly a known wire code. A free-form reason
+ * carries none.
+ */
+function closeReasonWireCode(reason: string | undefined): string | undefined {
+  if (!reason) return undefined;
+  const prefixed = reason.match(/^([\w-]+):/)?.[1];
+  if (prefixed !== undefined) return prefixed;
+  const bare = reason.trim();
+  return isKnownWireErrorCode(bare) ? bare : undefined;
 }
 
 /** A stack version refusal ends the connection: no retry or reconnect can fix it. */
@@ -1327,15 +1341,19 @@ export class ConnectionManager {
               ? `${event.code}: ${event.reason}`
               : `code ${event.code}`;
             const errorMessage = `WebSocket closed before open (${detail})`;
-            const reasonCode = event.reason?.match(/^([\w-]+):/)?.[1];
-            this.updateState(recovering ? 'reconnecting' : 'error', errorMessage);
+            const reasonCode = closeReasonWireCode(event.reason);
+            const wireErrorCode = reasonCode === undefined
+              ? undefined
+              : parseWireErrorCode(reasonCode);
+            // A stack version refusal is terminal even mid-reconnect: carry it
+            // as the error code, so recovery stops instead of retrying.
+            const refused = wireErrorCode !== undefined && isStackVersionRefusalCode(wireErrorCode);
+            this.updateState(recovering && !refused ? 'reconnecting' : 'error', errorMessage);
             finish(() =>
-              reject(new AreteError(errorMessage, 'CONNECTION_ERROR', {
+              reject(new AreteError(errorMessage, refused ? wireErrorCode : 'CONNECTION_ERROR', {
                 closeCode: event.code,
                 closeReason: event.reason || undefined,
-                wireErrorCode: reasonCode === undefined
-                  ? undefined
-                  : parseWireErrorCode(reasonCode),
+                wireErrorCode,
               }))
             );
             return;
@@ -1358,8 +1376,8 @@ export class ConnectionManager {
 
           // Parse close reason for error codes (e.g., "token-expired: Token has expired")
           const closeReason = event.reason || '';
-          const errorCodeMatch = closeReason.match(/^([\w-]+):/);
-          const errorCode = errorCodeMatch ? parseWireErrorCode(errorCodeMatch[1]!) : null;
+          const reasonCode = closeReasonWireCode(closeReason);
+          const errorCode = reasonCode === undefined ? null : parseWireErrorCode(reasonCode);
 
           if (errorCode !== null && isStackVersionRefusalCode(errorCode)) {
             this.updateState('error', `WebSocket closed (${event.code}: ${closeReason})`);

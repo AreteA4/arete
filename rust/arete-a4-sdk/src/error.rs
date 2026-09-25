@@ -603,17 +603,26 @@ fn parse_error_payload(body: Option<&[u8]>) -> (Option<String>, Option<AuthError
     }
 }
 
+/// A close reason is `code: message`, or a bare known code such as
+/// `stack-version-retired`. Anything else carries no code.
 fn parse_close_reason(reason: &str) -> (Option<AuthErrorCode>, String) {
+    let reason = reason.trim();
     if let Some((wire_code, message)) = reason.split_once(':') {
-        let code = AuthErrorCode::from_wire(wire_code);
-        let message = message.trim();
-
-        if code.is_some() && !message.is_empty() {
-            return (code, message.to_string());
+        if let Some(code) = AuthErrorCode::from_wire(wire_code.trim()) {
+            let message = message.trim();
+            let message = if message.is_empty() {
+                wire_code.trim()
+            } else {
+                message
+            };
+            return (Some(code), message.to_string());
         }
     }
+    if let Some(code) = AuthErrorCode::from_wire(reason) {
+        return (Some(code), reason.to_string());
+    }
 
-    (None, reason.trim().to_string())
+    (None, reason.to_string())
 }
 
 #[cfg(test)]
@@ -747,6 +756,23 @@ mod tests {
             }
         ));
         assert!(!error.should_retry());
+    }
+
+    #[test]
+    fn a_bare_refusal_close_reason_is_a_terminal_code() {
+        for (reason, expected) in [
+            ("stack-version-retired", AuthErrorCode::StackVersionRetired),
+            (
+                " stack-version-unknown ",
+                AuthErrorCode::StackVersionUnknown,
+            ),
+            ("stack-version-retired:", AuthErrorCode::StackVersionRetired),
+        ] {
+            let error = AreteError::from_close_reason(reason).expect("close reason should parse");
+            assert_eq!(error.auth_code(), Some(expected), "{reason:?}");
+            assert!(error.is_stack_version_refusal(), "{reason:?}");
+            assert!(!error.should_retry(), "{reason:?}");
+        }
     }
 
     #[test]

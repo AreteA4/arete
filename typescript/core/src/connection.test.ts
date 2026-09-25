@@ -567,6 +567,89 @@ describe('ConnectionManager auth', () => {
     manager.disconnect();
   });
 
+  it('stops reconnecting when the server closes with a bare refusal code', async () => {
+    vi.useFakeTimers();
+    const manager = new ConnectionManager({
+      websocketUrl: 'ws://localhost:8878',
+      reconnectIntervals: [10],
+    });
+    const states: string[] = [];
+    manager.onStateChange((state) => { states.push(state); });
+
+    const opened = manager.connect();
+    await vi.runAllTicks();
+    await opened;
+    MockWebSocket.instances[0]!.close(1008, 'stack-version-unknown');
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(states.at(-1)).toBe('error');
+    manager.disconnect();
+  });
+
+  it('keeps treating a free-form close reason as reconnectable', async () => {
+    vi.useFakeTimers();
+    const manager = new ConnectionManager({
+      websocketUrl: 'ws://localhost:8878',
+      reconnectIntervals: [10],
+    });
+
+    const opened = manager.connect();
+    await vi.runAllTicks();
+    await opened;
+    MockWebSocket.instances[0]!.close(1011, 'going away');
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.runAllTicks();
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+    manager.disconnect();
+  });
+
+  it('stops at a refusal that closes a reconnect attempt before it opens', async () => {
+    vi.useFakeTimers();
+    let sockets = 0;
+    const websocketFactory = (url: string): WebSocket => {
+      sockets++;
+      if (sockets === 1) return new MockWebSocket(url) as unknown as WebSocket;
+      const refused = {
+        readyState: MockWebSocket.CONNECTING,
+        onopen: null,
+        onmessage: null,
+        onerror: null,
+        onclose: null as ((event: { code: number; reason: string }) => void) | null,
+        send: () => undefined,
+        close: () => undefined,
+      };
+      queueMicrotask(() => refused.onclose?.({
+        code: 1008,
+        reason: 'stack-version-retired: Stack ore 1.2.0 was retired',
+      }));
+      return refused as unknown as WebSocket;
+    };
+    const manager = new ConnectionManager({
+      websocketUrl: 'ws://localhost:8878',
+      reconnectIntervals: [10],
+      maxReconnectAttempts: 5,
+      auth: { websocketFactory },
+    });
+    const states: Array<[string, string | undefined]> = [];
+    manager.onStateChange((state, error) => { states.push([state, error]); });
+
+    const opened = manager.connect();
+    await vi.runAllTicks();
+    await opened;
+    MockWebSocket.instances[0]!.close(1011, 'going away');
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.runAllTicks();
+
+    expect(sockets).toBe(2);
+    expect(states.at(-1)).toEqual([
+      'error',
+      'WebSocket closed before open (1008: stack-version-retired: Stack ore 1.2.0 was retired)',
+    ]);
+    manager.disconnect();
+  });
+
   it('refreshes expiring tokens in the background via in-band refresh', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-28T12:00:00Z'));
