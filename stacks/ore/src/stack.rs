@@ -437,7 +437,7 @@ mod tests {
     use super::ore_stream;
     use arete::runtime::{
         arete_interpreter::{record_slot_hash, vm::VmContext, UpdateContext},
-        serde_json::{from_value, json},
+        serde_json::{from_value, json, Value},
     };
 
     #[test]
@@ -842,8 +842,22 @@ mod tests {
         );
     }
 
+    // The first Deploy of a round writes the entropy Var (`Next`) and the
+    // Board's end slot in one transaction, and the Var update can be processed
+    // first. It must wait for the Board instead of being dropped, or the round
+    // never schedules its seed resolver.
     #[test]
     fn entropy_update_waits_for_matching_board_end_slot() {
+        // Decoded account data carries slots as JSON numbers.
+        assert_entropy_update_waits_for_board(json!(200), json!(150));
+    }
+
+    #[test]
+    fn entropy_update_waits_for_matching_board_end_slot_given_as_strings() {
+        assert_entropy_update_waits_for_board(json!("200"), json!("150"));
+    }
+
+    fn assert_entropy_update_waits_for_board(end_slot: Value, start_slot: Value) {
         let bytecode = ore_stream::create_multi_entity_bytecode();
         let mut vm = VmContext::new();
         let entropy_address = "SysvarRent111111111111111111111111111111111";
@@ -853,8 +867,8 @@ mod tests {
                 &bytecode,
                 json!({
                     "__account_address": entropy_address,
-                    "start_at": "150",
-                    "end_at": "200",
+                    "start_at": start_slot,
+                    "end_at": end_slot,
                     "samples": 1,
                     "value": vec![0_u8; 32],
                     "seed": vec![0_u8; 32],
@@ -875,8 +889,8 @@ mod tests {
             json!({
                 "__account_address": "11111111111111111111111111111111",
                 "round_id": 42,
-                "start_slot": "150",
-                "end_slot": "200",
+                "start_slot": start_slot,
+                "end_slot": end_slot,
                 "production_cost_ema": "1000",
             }),
             "ore::BoardState",
@@ -886,12 +900,9 @@ mod tests {
         .unwrap();
 
         let round = vm.get_entity_state(0, &json!(42)).unwrap();
-        assert_eq!(round.pointer("/state/end_at"), Some(&json!("200")));
-        assert_eq!(round.pointer("/state/expires_at"), Some(&json!("200")));
-        assert_eq!(
-            round.pointer("/entropy/entropy_end_at"),
-            Some(&json!("200"))
-        );
+        assert_eq!(round.pointer("/state/end_at"), Some(&end_slot));
+        assert_eq!(round.pointer("/state/expires_at"), Some(&end_slot));
+        assert_eq!(round.pointer("/entropy/entropy_end_at"), Some(&end_slot));
         assert_eq!(round.pointer("/entropy/entropy_samples"), Some(&json!(1)));
         assert_eq!(
             round.pointer("/entropy/entropy_var_address"),
@@ -910,13 +921,15 @@ mod tests {
         let mut vm = VmContext::new();
         let entropy_address = "SysvarRent111111111111111111111111111111111";
 
+        // The Var carries numeric slots and the Board decimal strings; the
+        // lookup index keys both forms the same way.
         for (slot, round_id, end_slot) in [(100, 41, 200), (300, 42, 400)] {
             vm.process_event(
                 &bytecode,
                 json!({
                     "__account_address": entropy_address,
-                    "start_at": (end_slot - 50).to_string(),
-                    "end_at": end_slot.to_string(),
+                    "start_at": end_slot - 50,
+                    "end_at": end_slot,
                     "samples": round_id,
                     "value": vec![0_u8; 32],
                     "seed": vec![0_u8; 32],
