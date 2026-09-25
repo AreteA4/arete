@@ -173,8 +173,17 @@ jobs:
       - name: Test direct artifact macros
         run: cargo test --workspace --locked --test artifact_native_v2
 
+      # `--test public_artifacts` selects fewer targets than the workspace run,
+      # so cargo resolves features differently and recompiles about 80 crates
+      # first. Run the binary the workspace run already built instead: this
+      # compiles nothing and still fails if the target is removed. The test
+      # reads its fixtures with include_bytes!, so running it directly is safe.
       - name: Test V1/V2 artifacts and multi-LiveSpec composition
-        run: cargo test --workspace --locked --test public_artifacts
+        run: |
+          bin="$(cargo test --workspace --locked --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "public_artifacts" and (.target.kind | index("test")) and .executable != null) | .executable')"
+          test -n "$bin"
+          cd interpreter && "$bin"
 
       - name: Test selected views and aliased SDK composition
         run: cargo test --workspace --locked --lib --bins --tests compose_ && cargo test --workspace --locked --lib --bins --tests local_multi_live_generation
