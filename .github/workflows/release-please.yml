@@ -76,6 +76,9 @@ jobs:
           git show-ref --verify --quiet refs/remotes/origin/main
           git merge-base --is-ancestor "$SOURCE_COMMIT" refs/remotes/origin/main
           test "$(gh run list --workflow ci.yml --commit "$SOURCE_COMMIT" --json conclusion --jq 'map(select(.conclusion == "success")) | length')" -gt 0
+          # rust-toolchain.toml overrides the installed toolchain, so a different
+          # input would be recorded as the release toolchain without being used.
+          test "$RUST_TOOLCHAIN" = "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
