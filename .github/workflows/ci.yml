@@ -7,6 +7,12 @@ on:
       - main
   workflow_dispatch:
 
+# A new push to a pull request cancels its older run. Runs on main are
+# never cancelled: each commit gets its own group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check-crate-files:
     name: Check Rust Crate LICENSE and README
@@ -128,11 +134,15 @@ jobs:
       - name: Test publishing authentication selection
         run: bash ./scripts/test-npm-publish-auth.sh
 
-  rust:
-    name: Rust
+  rust-workspace:
+    name: Rust workspace tests
     runs-on: ubuntu-latest
     env:
       CARGO_INCREMENTAL: 0
+      # Line tables keep file and line numbers in panics while making the
+      # cached target directories smaller and links faster.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -146,35 +156,107 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
           rustc --version | grep -F "rustc $channel "
 
-      - name: Cache cargo registry
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Check
-        run: cargo check --workspace --locked
+          shared-key: rust-workspace
+          # Pull requests restore main's cache but never save their own, which
+          # keeps the repository under its 10 GB cache limit.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
+
+      # The three steps below re-run named targets and tests that the workspace
+      # run above already includes. Using the same workspace selection means
+      # they compile nothing new, and --test still fails if a target is removed.
+      - name: Test direct artifact macros
+        run: cargo test --workspace --locked --test artifact_native_v2
+
+      # `--test public_artifacts` selects fewer targets than the workspace run,
+      # so cargo resolves features differently and recompiles about 80 crates
+      # first. Run the binary the workspace run already built instead: this
+      # compiles nothing and still fails if the target is removed. The test
+      # reads its fixtures with include_bytes!, so running it directly is safe.
+      - name: Test V1/V2 artifacts and multi-LiveSpec composition
+        run: |
+          bin="$(cargo test --workspace --locked --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "public_artifacts" and (.target.kind | index("test")) and .executable != null) | .executable')"
+          test -n "$bin"
+          cd interpreter && "$bin"
+
+      - name: Test selected views and aliased SDK composition
+        run: cargo test --workspace --locked --lib --bins --tests compose_ && cargo test --workspace --locked --lib --bins --tests local_multi_live_generation
+
+  rust-features:
+    name: Rust feature variants
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      # Line tables keep file and line numbers in panics while making the
+      # cached target directories smaller and links faster.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install pinned Rust toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+          # Also pins cargo runs outside the checkout (the generated crates
+          # in temporary directories), which rust-toolchain.toml cannot reach.
+          echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
+          rustc --version | grep -F "rustc $channel "
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          shared-key: rust-features
+          # Pull requests restore main's cache but never save their own, which
+          # keeps the repository under its 10 GB cache limit.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Test snapshot object-store feature
         run: |
-          cargo test -p arete-server --features snapshot-object-store
-          cargo clippy -p arete-server --features snapshot-object-store -- -D warnings
+          cargo test --locked -p arete-server --features snapshot-object-store
+          cargo clippy --locked -p arete-server --features snapshot-object-store -- -D warnings
 
-      - name: Test direct artifact macros
-        run: cargo test -p arete-macros --test artifact_native_v2
+  rust-consumers:
+    name: Rust generated consumers
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      # Line tables keep file and line numbers in panics while making the
+      # cached target directories smaller and links faster.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      # The generated crates and the standalone ORE stack live outside the
+      # workspace. One target directory lets them reuse each other's compiled
+      # dependencies instead of each building its own.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Test V1/V2 artifacts and multi-LiveSpec composition
-        run: cargo test -p arete-interpreter --test public_artifacts
+      - name: Install pinned Rust toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+          # Also pins cargo runs outside the checkout (the generated crates
+          # in temporary directories), which rust-toolchain.toml cannot reach.
+          echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
+          rustc --version | grep -F "rustc $channel "
 
-      - name: Test selected views and aliased SDK composition
-        run: cargo test -p a4-cli compose_ && cargo test -p a4-cli local_multi_live_generation
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: ". -> target"
+          shared-key: rust-consumers
+          # Pull requests restore main's cache but never save their own, which
+          # keeps the repository under its 10 GB cache limit.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check generated Rust crates build against the linked SDK (pre-publication)
         run: bash ./scripts/check-generated-rust-crates.sh --mode local
@@ -188,12 +270,15 @@ jobs:
       - name: Test standalone ORE stack
         run: cargo test --manifest-path stacks/ore/Cargo.toml --locked
 
-      - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
-
-  generated-example-sdks:
-    name: Generated Example SDKs
+  rust-clippy:
+    name: Rust clippy
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      # Line tables keep file and line numbers in panics while making the
+      # cached target directories smaller and links faster.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -206,6 +291,62 @@ jobs:
           # in temporary directories), which rust-toolchain.toml cannot reach.
           echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
           rustc --version | grep -F "rustc $channel "
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          shared-key: rust-clippy
+          # Pull requests restore main's cache but never save their own, which
+          # keeps the repository under its 10 GB cache limit.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Clippy
+        run: cargo clippy --workspace --locked -- -D warnings
+
+  # The repository ruleset requires a check named exactly `Rust`. The Rust
+  # checks run as four parallel jobs; this one carries the required name
+  # and fails unless all of them succeeded. `if: always()` keeps it
+  # reporting when a job fails or is cancelled instead of being skipped.
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    needs: [rust-workspace, rust-features, rust-consumers, rust-clippy]
+    if: always()
+    steps:
+      - name: Require every Rust job to have succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Rust job results: ${RESULTS}"
+          for result in $RESULTS; do [ "$result" = "success" ] || exit 1; done
+
+  generated-example-sdks:
+    name: Generated Example SDKs
+    runs-on: ubuntu-latest
+    env:
+      # The CLI, the standalone ORE stack and the Rust example share one target
+      # directory, so the cached dependencies serve all three.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install pinned Rust toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+          # Also pins cargo runs outside the checkout (the generated crates
+          # in temporary directories), which rust-toolchain.toml cannot reach.
+          echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
+          rustc --version | grep -F "rustc $channel "
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          shared-key: generated-example-sdks
+          # Pull requests restore main's cache but never save their own, which
+          # keeps the repository under its 10 GB cache limit.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -619,15 +760,13 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
           rustc --version | grep -F "rustc $channel "
 
-      - name: Cache cargo registry
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          shared-key: rust-solana-adapter
+          # Pull requests restore main's cache but never save their own, which
+          # keeps the repository under its 10 GB cache limit.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The base install must stay unchanged for users who do not opt in.
       - name: Test base SDK without the adapter
