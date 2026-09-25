@@ -20,9 +20,11 @@ use crate::commands::public_artifacts::{
     load_local_artifact_stack_with_roots, LocalArtifactStack,
 };
 use crate::commands::stack::deployment_selection_key;
-use crate::project::installer::restore_locked_registry_cache;
+use crate::project::installer::{
+    record_stack_endpoints_and_install, restore_locked_registry_cache,
+};
 use crate::project::lockfile::LockedDependency;
-use crate::project::manifest::{DependencyKind, DependencySourceV1};
+use crate::project::manifest::{DependencyKind, DependencySourceV1, StackEndpointsV1};
 use crate::project::{registry_cache, ProjectLock, ProjectManifest};
 use crate::telemetry;
 use crate::ui;
@@ -150,6 +152,10 @@ struct StackDeploymentResult {
     composition_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     deployments: Option<Vec<DeployedTargetResult>>,
+    /// Each LiveSpec's stream endpoints in the bound composition. Not part of
+    /// the result contract; `a4 up <alias>` records them for the installed SDK.
+    #[serde(skip)]
+    live_endpoints: BTreeMap<String, StackEndpointsV1>,
 }
 
 impl StackDeploymentResult {
@@ -200,14 +206,28 @@ impl StackDeploymentResult {
                 deployment_id: binding.deployment_id,
             })
             .collect();
-        Ok(Self::new(
+        let mut result = Self::new(
             "healthy",
             true,
             &orchestration.plan,
             selection,
             Some(response.composition_id),
             Some(deployments),
-        ))
+        );
+        result.live_endpoints = response
+            .live_specs
+            .iter()
+            .map(|binding| {
+                (
+                    binding.alias.clone(),
+                    StackEndpointsV1 {
+                        websocket: binding.websocket_endpoint.clone(),
+                        query: binding.query_endpoint.clone(),
+                    },
+                )
+            })
+            .collect();
+        Ok(result)
     }
 
     fn new(
@@ -250,6 +270,7 @@ impl StackDeploymentResult {
             deployment_plan_id: selection.deployment_plan_id.clone(),
             composition_id,
             deployments,
+            live_endpoints: BTreeMap::new(),
         }
     }
 }
@@ -983,11 +1004,8 @@ pub fn up(
                 println!("{}", serde_json::to_string(&result)?);
             }
         } else {
-            if let Some(alias) = source.installed_alias() {
-                println!(
-                    "  {} The SDK `a4 install` generated for '{alias}' does not point at this deployment; pass its WebSocket endpoint to your client, e.g. `useArete(stack, {{ url }})` in TypeScript.",
-                    ui::symbols::ARROW.blue()
-                );
+            if let (Some(alias), Some(result)) = (source.installed_alias(), result.as_ref()) {
+                point_installed_sdk_at_deployment(config_path, alias, branch.as_deref(), result);
             }
             println!();
         }
@@ -1084,6 +1102,45 @@ fn resolve_local_deployment_sources(
             installed.join(", ")
         ),
         None => Ok(selected),
+    }
+}
+
+/// After deploying an installed stack, point its generated SDK at the
+/// deployment: record the endpoints in arete.toml and reinstall. A branch or
+/// preview deployment is temporary and `--json` output is a contract, so those
+/// leave the project unchanged. Any failure leaves arete.toml as it was and is
+/// reported without failing the deployment that already succeeded.
+fn point_installed_sdk_at_deployment(
+    config_path: &str,
+    alias: &str,
+    branch: Option<&str>,
+    result: &StackDeploymentResult,
+) {
+    if let Some(branch) = branch {
+        println!(
+            "  {} The SDK generated for '{alias}' does not point at branch deployment '{branch}'; pass its WebSocket endpoint to your client, e.g. `useArete(stack, {{ url }})` in TypeScript.",
+            ui::symbols::ARROW.blue()
+        );
+        return;
+    }
+    // Recording no endpoints would clear the ones arete.toml already has.
+    if result.live_endpoints.is_empty() {
+        return;
+    }
+    println!();
+    match record_stack_endpoints_and_install(config_path, alias, result.live_endpoints.clone()) {
+        Ok(true) => println!(
+            "  {} Pointed the SDK for '{alias}' at this deployment (`endpoints` under [dependencies.stacks.{alias}] in arete.toml). Remove them to read the stack's own endpoints again.",
+            ui::symbols::SUCCESS.green()
+        ),
+        Ok(false) => println!(
+            "  {} The SDK for '{alias}' already reads this deployment.",
+            ui::symbols::SUCCESS.green()
+        ),
+        Err(error) => println!(
+            "  {} Deployed, but the SDK for '{alias}' was not pointed at it: {error:#}\n    Add `endpoints` for it under [dependencies.stacks.{alias}] in arete.toml and run `a4 install`, or pass the WebSocket endpoint to your client.",
+            ui::symbols::WARNING.yellow()
+        ),
     }
 }
 

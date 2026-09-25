@@ -837,9 +837,23 @@ identity, and a missing entry is fetched again at the locked release.
 instead. The alias names the deployment unless an `[authoring.stacks]` entry
 has the same name, which takes precedence.
 
-The generated SDK does not point at your deployment. Pass the WebSocket
-endpoint `a4 up` prints to the client, for example
-`useArete(stack, { url })` in TypeScript, where `stack` is the generated stack definition.
+After the deployment is healthy, `a4 up` points the generated SDK at it: it
+records the deployment's endpoints for the stack in `arete.toml` and runs
+`a4 install`, so the SDK connects without a URL:
+
+```toml
+[dependencies.stacks.raydium-amm]
+source = { registry = "raydium-amm" }
+version = "^1.0.0"
+endpoints = { live = { websocket = "wss://raydium-amm.stack.arete.run", query = "https://raydium-amm.stack.arete.run" } }
+```
+
+`endpoints` names every LiveSpec of the StackManifest by alias. For a hosted
+stack they replace the managed stream endpoints (its managed gateway for chain
+reads and transactions stays); remove them to use the stack's own endpoints
+again. `--branch`, `--preview`, and `--json` deployments leave `arete.toml`
+unchanged; pass their endpoint to the client instead, for example
+`useArete(stack, { url })` in TypeScript.
 
 ### Private programs and stacks
 
@@ -896,6 +910,8 @@ package = "@my-org/arete-generated"
 [dependencies.stacks.ore]
 source = { registry = "ore" }
 version = "^1.4.0"
+# Optional: read the stack from your own deployment (`a4 up ore` writes this)
+# endpoints = { live = { websocket = "wss://...", query = "https://..." } }
 
 [authoring.stacks.local]
 manifest = "./.arete/MyStack.stack-manifest.json"

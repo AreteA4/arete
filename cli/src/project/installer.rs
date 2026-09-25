@@ -17,7 +17,7 @@ use crate::commands::sdk::{
 use super::lockfile::{LockedDependency, LockedLiveSpec, LockedProgram};
 use super::manifest::{
     DependencyKind, DependencyOutputsV1, DependencySourceV1, DependencyV1, InstallTarget,
-    ManifestV1, PathSourceV1, RegistrySourceV1, WorkspaceSourceV1,
+    ManifestV1, PathSourceV1, RegistrySourceV1, StackEndpointsV1, WorkspaceSourceV1,
 };
 use super::paths::ProjectPaths;
 use super::registry_cache;
@@ -130,6 +130,7 @@ pub fn install_without_saving(
             version: Some(requirement.unwrap_or_else(|| "*".into())),
             targets: Some(vec![target]),
             outputs,
+            endpoints: BTreeMap::new(),
         };
         match kind {
             DependencyKind::Stack => manifest.dependencies.stacks.insert(alias, dependency),
@@ -248,11 +249,17 @@ pub fn add_and_install(
     } else if options.output.is_some() {
         bail!("--output requires exactly one of --ts, --rust, or --python");
     }
+    // Installing a declared package again keeps the deployment `a4 up`
+    // recorded for it.
+    let endpoints = existing
+        .map(|existing| existing.endpoints.clone())
+        .unwrap_or_default();
     let dependency = DependencyV1 {
         source: DependencySourceV1::Registry(RegistrySourceV1 { registry: package }),
         version: Some(requirement),
         targets,
         outputs,
+        endpoints,
     };
     match kind {
         DependencyKind::Stack => {
@@ -527,7 +534,97 @@ fn dependency_manifest_item(dependency: &DependencyV1) -> Item {
         outputs.fmt();
         table.insert("outputs", value(outputs));
     }
+    if !dependency.endpoints.is_empty() {
+        table.insert("endpoints", endpoints_manifest_item(&dependency.endpoints));
+    }
     Item::Table(table)
+}
+
+/// `endpoints = { <live> = { websocket = "...", query = "..." } }`, inline so
+/// it fits a dependency written as a table or as an inline table.
+fn endpoints_manifest_item(endpoints: &BTreeMap<String, StackEndpointsV1>) -> Item {
+    let mut table = InlineTable::new();
+    for (live, endpoint) in endpoints {
+        let mut entry = InlineTable::new();
+        entry.insert("websocket", endpoint.websocket.clone().into());
+        entry.insert("query", endpoint.query.clone().into());
+        entry.fmt();
+        table.insert(live, entry.into());
+    }
+    table.fmt();
+    value(table)
+}
+
+/// arete.toml with one stack dependency's `endpoints` replaced, leaving every
+/// other byte as written.
+fn render_stack_endpoints(
+    original: &[u8],
+    alias: &str,
+    endpoints: &BTreeMap<String, StackEndpointsV1>,
+) -> Result<String> {
+    let mut document = parse_editable_manifest(original)?;
+    let path = ["dependencies", "stacks", alias, "endpoints"];
+    if endpoints.is_empty() {
+        let dependency = document
+            .as_item_mut()
+            .get_mut("dependencies")
+            .and_then(|item| item.get_mut("stacks"))
+            .and_then(|item| item.get_mut(alias))
+            .and_then(Item::as_table_like_mut);
+        if let Some(dependency) = dependency {
+            dependency.remove("endpoints");
+        }
+    } else {
+        insert_manifest_item(
+            document.as_item_mut(),
+            &path,
+            endpoints_manifest_item(endpoints),
+        )?;
+    }
+    Ok(document.to_string())
+}
+
+/// Points an installed stack's generated SDK at the user's own deployment:
+/// records `endpoints` for it in arete.toml and reinstalls, restoring
+/// arete.toml if the install does not commit. Returns false when arete.toml
+/// already records these endpoints and arete.lock is fresh.
+pub(crate) fn record_stack_endpoints_and_install(
+    manifest_path: impl AsRef<Path>,
+    alias: &str,
+    endpoints: BTreeMap<String, StackEndpointsV1>,
+) -> Result<bool> {
+    let manifest_path = manifest_path.as_ref();
+    let original = fs::read(manifest_path)
+        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
+    let loaded = ProjectManifest::load(manifest_path)?;
+    let mut manifest = loaded.document;
+    let dependency = manifest
+        .dependencies
+        .stacks
+        .get_mut(alias)
+        .ok_or_else(|| anyhow::anyhow!("arete.toml declares no stack '{alias}'"))?;
+    let lock_fresh = ProjectLock::load_optional(loaded.root.join("arete.lock"))?
+        .is_some_and(|lock| lock.is_fresh(&loaded.manifest_hash));
+    if dependency.endpoints == endpoints && lock_fresh {
+        return Ok(false);
+    }
+    dependency.endpoints = endpoints.clone();
+    manifest.validate()?;
+    let replacement_manifest_hash = manifest.resolution_hash()?;
+    let replacement = render_stack_endpoints(&original, alias, &endpoints)?;
+    write_manifest_atomic(manifest_path, replacement.as_bytes())?;
+    let result = install_project(manifest_path, InstallOptions::default());
+    if result.is_err() {
+        let install_committed =
+            ProjectLock::load_optional(manifest_path.with_file_name("arete.lock"))
+                .ok()
+                .flatten()
+                .is_some_and(|lock| lock.is_fresh(&replacement_manifest_hash));
+        if !install_committed {
+            write_manifest_atomic(manifest_path, &original)?;
+        }
+    }
+    result.map(|()| true)
 }
 
 fn split_package_requirement(value: &str) -> Result<(String, Option<String>)> {
@@ -1562,6 +1659,9 @@ fn generate_all(
             typescript_package: &manifest.document.sdk.typescript.package,
             rust_module: manifest.document.sdk.rust.module_mode,
             python_module: manifest.document.sdk.python.module_mode,
+            stack_endpoints: manifest
+                .dependency(output.kind, &output.alias)
+                .map(|dependency| &dependency.endpoints),
         };
         match dependency {
             ResolvedProjectDependency::LocalStack {
@@ -2178,6 +2278,7 @@ version = "^1.0.0"
             version: Some("^2.0.0".into()),
             targets: Some(vec![InstallTarget::TypeScript]),
             outputs: DependencyOutputsV1::default(),
+            endpoints: BTreeMap::new(),
         };
 
         let rendered = render_manifest_addition(
@@ -3273,6 +3374,161 @@ version = "^1.0.0"
         );
         assert!(generated_text(&manifest, "rust").contains("TODO: Set URL"));
         assert!(generated_text(&manifest, "python").contains("ws=\"\""));
+    }
+
+    const MINE_WS: &str = "wss://mine.example.test";
+    const MINE_HTTP: &str = "https://mine.example.test";
+
+    fn mine_endpoints() -> BTreeMap<String, StackEndpointsV1> {
+        BTreeMap::from([(
+            "live".to_string(),
+            StackEndpointsV1 {
+                websocket: MINE_WS.into(),
+                query: MINE_HTTP.into(),
+            },
+        )])
+    }
+
+    fn endpoints_line(live: &str) -> String {
+        format!(
+            "endpoints = {{ {live} = {{ websocket = \"{MINE_WS}\", query = \"{MINE_HTTP}\" }} }}\n"
+        )
+    }
+
+    fn definition_only_resolution() -> (u16, String) {
+        (
+            200,
+            resolution(vec![ore_stack_dependency(Some(
+                json!({"mode": "definition-only"}),
+            ))]),
+        )
+    }
+
+    #[test]
+    fn a_definition_only_stack_reads_the_deployment_arete_toml_records() {
+        let sandbox = RegistrySandbox::new(vec![definition_only_resolution()], false);
+        let manifest = stack_project(&sandbox, &endpoints_line("live"));
+        install_project(&manifest, InstallOptions::default()).expect("install");
+        for target in ["typescript", "rust", "python"] {
+            let text = generated_text(&manifest, target);
+            assert!(text.contains(MINE_WS), "{target}: websocket endpoint");
+            assert!(!text.contains("TODO: Set"), "{target}: placeholder");
+        }
+        let typescript = generated_text(&manifest, "typescript");
+        assert!(
+            typescript.contains(&format!("ws: '{MINE_WS}'")),
+            "{typescript}"
+        );
+        assert!(
+            typescript.contains(&format!("http: '{MINE_HTTP}'")),
+            "{typescript}"
+        );
+        assert!(
+            !has_stack_gateway(&manifest),
+            "a deployment of a definition-only stack adds no managed gateway"
+        );
+    }
+
+    #[test]
+    fn recorded_endpoints_replace_a_hosted_stream_and_keep_its_gateway() {
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![ore_stack_dependency(Some(hosted_delivery(
+                    HOSTED_WS,
+                    HOSTED_HTTP,
+                    4,
+                )))]),
+            )],
+            false,
+        );
+        let manifest = stack_project(&sandbox, &endpoints_line("live"));
+        install_project(&manifest, InstallOptions::default()).expect("install");
+        let typescript = generated_text(&manifest, "typescript");
+        assert!(
+            typescript.contains(&format!("ws: '{MINE_WS}'")),
+            "{typescript}"
+        );
+        assert!(
+            typescript.contains(&format!("http: '{MINE_HTTP}'")),
+            "{typescript}"
+        );
+        assert!(has_stack_gateway(&manifest), "the managed gateway stays");
+        for target in ["rust", "python"] {
+            assert!(
+                generated_text(&manifest, target).contains(MINE_WS),
+                "{target}: websocket endpoint"
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_endpoints_must_name_every_live_spec() {
+        let sandbox = RegistrySandbox::new(vec![definition_only_resolution()], false);
+        let manifest = stack_project(&sandbox, &endpoints_line("other"));
+        let original = fs::read(&manifest).unwrap();
+        let error = install_project(&manifest, InstallOptions::default())
+            .expect_err("endpoints for an unknown LiveSpec");
+        assert!(
+            format!("{error:#}").contains("its StackManifest has LiveSpecs [live]"),
+            "{error:#}"
+        );
+        assert_project_untouched(&manifest, &original);
+    }
+
+    #[test]
+    fn stack_endpoints_are_recorded_in_place_and_installed() {
+        let sandbox = RegistrySandbox::new(
+            vec![definition_only_resolution(), definition_only_resolution()],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        let written = fs::read_to_string(&manifest).unwrap();
+        fs::write(&manifest, format!("# kept as written\n{written}")).unwrap();
+        install_project(&manifest, InstallOptions::default()).expect("install");
+
+        assert!(record_stack_endpoints_and_install(&manifest, "ore", mine_endpoints()).unwrap());
+        let text = fs::read_to_string(&manifest).unwrap();
+        assert!(text.starts_with("# kept as written\n"), "{text}");
+        let project = ProjectManifest::load(&manifest).unwrap();
+        assert_eq!(
+            project.document.dependencies.stacks["ore"].endpoints,
+            mine_endpoints()
+        );
+        assert!(lock_of(&manifest).is_fresh(&project.manifest_hash));
+        assert!(generated_text(&manifest, "typescript").contains(&format!("ws: '{MINE_WS}'")));
+
+        // Recording the same deployment again needs no install.
+        assert!(!record_stack_endpoints_and_install(&manifest, "ore", mine_endpoints()).unwrap());
+        // Rewriting the dependency entry (as installing it again does) keeps
+        // the recorded deployment.
+        let rendered = render_manifest_addition(
+            text.as_bytes(),
+            DependencyKind::Stack,
+            "ore",
+            &project.document.dependencies.stacks["ore"],
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(rendered.contains(MINE_WS), "{rendered}");
+    }
+
+    #[test]
+    fn a_failed_endpoint_install_leaves_arete_toml_as_it_was() {
+        let sandbox = RegistrySandbox::new(
+            vec![
+                definition_only_resolution(),
+                (409, json!({"error": "conflict"}).to_string()),
+            ],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        install_project(&manifest, InstallOptions::default()).expect("install");
+        let original = fs::read(&manifest).unwrap();
+        record_stack_endpoints_and_install(&manifest, "ore", mine_endpoints())
+            .expect_err("the resolver refused");
+        assert_eq!(fs::read(&manifest).unwrap(), original);
     }
 
     #[test]

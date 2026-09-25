@@ -423,6 +423,19 @@ pub struct DependencyV1 {
     pub targets: Option<Vec<InstallTarget>>,
     #[serde(default)]
     pub outputs: DependencyOutputsV1,
+    /// Where the generated SDK reads a registry stack, per LiveSpec alias,
+    /// instead of the endpoints the stack's delivery provides: the user's own
+    /// deployment, which `a4 up <alias>` records.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub endpoints: BTreeMap<String, StackEndpointsV1>,
+}
+
+/// One LiveSpec's stream endpoints in a user's own deployment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StackEndpointsV1 {
+    pub websocket: String,
+    pub query: String,
 }
 
 impl DependencyV1 {
@@ -474,6 +487,27 @@ impl DependencyV1 {
                         "workspace dependency '{alias}' refers to missing same-kind authoring entry '{workspace}'"
                     );
                 }
+            }
+        }
+
+        if !self.endpoints.is_empty() {
+            if kind != DependencyKind::Stack
+                || !matches!(self.source, DependencySourceV1::Registry(_))
+            {
+                bail!("dependency '{alias}' declares endpoints; only a registry stack can");
+            }
+            for (live, endpoints) in &self.endpoints {
+                validate_live_alias(live, alias)?;
+                validate_endpoint(
+                    &endpoints.websocket,
+                    &["ws", "wss"],
+                    &format!("dependency '{alias}' endpoints.{live}.websocket"),
+                )?;
+                validate_endpoint(
+                    &endpoints.query,
+                    &["http", "https"],
+                    &format!("dependency '{alias}' endpoints.{live}.query"),
+                )?;
             }
         }
 
@@ -698,6 +732,36 @@ fn validate_targets(targets: &[InstallTarget], field: &str, require_non_empty: b
     Ok(())
 }
 
+/// A LiveSpec alias as a StackManifest spells it (artifact rules, which allow
+/// upper case), used as an `endpoints` key.
+fn validate_live_alias(live: &str, dependency: &str) -> Result<()> {
+    let valid = !live.is_empty()
+        && live.len() <= 64
+        && live.bytes().any(|byte| byte.is_ascii_alphanumeric())
+        && live
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    if !valid {
+        bail!(
+            "dependency '{dependency}' endpoints key '{live}' is not a LiveSpec alias (1-64 ASCII letters, digits, '-' or '_')"
+        );
+    }
+    Ok(())
+}
+
+/// An absolute endpoint URL with one of the allowed schemes and a host.
+fn validate_endpoint(endpoint: &str, schemes: &[&str], field: &str) -> Result<()> {
+    let url =
+        url::Url::parse(endpoint).with_context(|| format!("{field} is not a URL: '{endpoint}'"))?;
+    if !schemes.contains(&url.scheme()) || url.host_str().is_none_or(str::is_empty) {
+        bail!(
+            "{field} must be a {} URL with a host, not '{endpoint}'",
+            schemes.join(" or ")
+        );
+    }
+    Ok(())
+}
+
 fn validate_alias(alias: &str, kind: &str) -> Result<()> {
     let valid = !alias.is_empty()
         && alias.len() <= 64
@@ -747,6 +811,104 @@ mod tests {
         let manifest: ManifestV1 = toml::from_str(source)?;
         manifest.validate()?;
         Ok(manifest)
+    }
+
+    fn with_endpoints(dependency: &str, endpoints: &str) -> Result<ManifestV1> {
+        parse(&format!(
+            r#"
+manifest_version = 1
+[project]
+name = "example"
+[authoring.stacks.mine]
+manifest = "./.arete/Mine.stack-manifest.json"
+[dependencies.stacks.dep]
+{dependency}
+endpoints = {endpoints}
+"#
+        ))
+    }
+
+    #[test]
+    fn a_registry_stack_records_its_deployment_endpoints_per_live_spec() {
+        let manifest = with_endpoints(
+            "source = { registry = \"ore\" }\nversion = \"^1.0.0\"",
+            r#"{ live = { websocket = "wss://ore.stack.example", query = "https://ore.stack.example" }, Other_2 = { websocket = "ws://127.0.0.1:8878", query = "http://127.0.0.1:8878" } }"#,
+        )
+        .expect("endpoints validate");
+        let endpoints = &manifest.dependencies.stacks["dep"].endpoints;
+        assert_eq!(endpoints["live"].websocket, "wss://ore.stack.example");
+        assert_eq!(endpoints["Other_2"].query, "http://127.0.0.1:8878");
+
+        let written = manifest.to_toml_pretty().unwrap();
+        let reparsed = parse(&written).unwrap();
+        assert_eq!(&reparsed.dependencies.stacks["dep"].endpoints, endpoints);
+    }
+
+    #[test]
+    fn a_manifest_without_endpoints_keeps_its_resolution_hash_shape() {
+        let manifest = parse(
+            "manifest_version = 1\n[project]\nname = \"example\"\n\
+             [dependencies.stacks.ore]\nsource = { registry = \"ore\" }\nversion = \"^1.0.0\"\n",
+        )
+        .unwrap();
+        let encoded = serde_json::to_string(&manifest).unwrap();
+        assert!(!encoded.contains("endpoints"), "{encoded}");
+    }
+
+    #[test]
+    fn endpoints_belong_to_registry_stacks_with_stream_urls() {
+        let registry = "source = { registry = \"ore\" }\nversion = \"^1.0.0\"";
+        let good = r#"{ live = { websocket = "wss://ore.stack.example", query = "https://ore.stack.example" } }"#;
+        let cases = [
+            (
+                "source = { workspace = \"mine\" }",
+                good,
+                "only a registry stack",
+            ),
+            (
+                registry,
+                r#"{ live = { websocket = "https://ore.stack.example", query = "https://ore.stack.example" } }"#,
+                "must be a ws or wss URL",
+            ),
+            (
+                registry,
+                r#"{ live = { websocket = "wss://ore.stack.example", query = "wss://ore.stack.example" } }"#,
+                "must be a http or https URL",
+            ),
+            (
+                registry,
+                r#"{ live = { websocket = "not a url", query = "https://ore.stack.example" } }"#,
+                "is not a URL",
+            ),
+            (
+                registry,
+                r#"{ "bad alias" = { websocket = "wss://ore.stack.example", query = "https://ore.stack.example" } }"#,
+                "is not a LiveSpec alias",
+            ),
+        ];
+        for (dependency, endpoints, expected) in cases {
+            let error = format!("{:#}", with_endpoints(dependency, endpoints).unwrap_err());
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+        let program = parse(&format!(
+            "manifest_version = 1\n[project]\nname = \"example\"\n\
+             [dependencies.programs.token]\nsource = {{ registry = \"spl-token\" }}\nversion = \"^1.0.0\"\n\
+             endpoints = {good}\n"
+        ))
+        .unwrap_err();
+        assert!(
+            format!("{program:#}").contains("only a registry stack"),
+            "{program:#}"
+        );
+        let unknown = with_endpoints(
+            registry,
+            r#"{ live = { websocket = "wss://ore.stack.example", query = "https://ore.stack.example", auth = "x" } }"#,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{unknown:#}").contains("unknown field"),
+            "{unknown:#}"
+        );
     }
 
     #[test]
