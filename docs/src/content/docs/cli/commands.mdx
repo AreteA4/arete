@@ -852,8 +852,8 @@ endpoints = { live = { websocket = "wss://raydium-amm.stack.arete.run", query = 
 stack they replace the managed stream endpoints (its managed gateway for chain
 reads and transactions stays); remove them to use the stack's own endpoints
 again. `--branch`, `--preview`, and `--json` deployments leave `arete.toml`
-unchanged; pass their endpoint to the client instead, for example
-`useArete(stack, { url })` in TypeScript.
+unchanged; pass their endpoints to the client instead, for example
+`useArete(stack, { url, httpUrl })` in TypeScript.
 
 ### Private programs and stacks
 

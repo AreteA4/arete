@@ -72,6 +72,59 @@ impl LocalDeploymentSource {
             DeploymentArtifacts::Files { .. } => None,
         }
     }
+
+    /// The Program Releases an installed stack's arete.lock pins. A
+    /// StackManifest file pins none: the platform selects its releases.
+    fn release_pins(&self) -> Option<ReleasePins<'_>> {
+        let DeploymentArtifacts::Installed { locked, .. } = &self.artifacts else {
+            return None;
+        };
+        Some(ReleasePins {
+            alias: &locked.alias,
+            releases: locked
+                .programs
+                .iter()
+                .filter_map(|program| {
+                    program
+                        .program_release_hash
+                        .clone()
+                        .map(|release| (program.program_spec_hash.clone(), release))
+                })
+                .collect(),
+        })
+    }
+}
+
+/// Program Releases by ProgramSpec hash that a deployment must use exactly.
+#[derive(Debug)]
+struct ReleasePins<'a> {
+    alias: &'a str,
+    releases: BTreeMap<String, String>,
+}
+
+/// Refuses a platform release selection that differs from what arete.lock
+/// pins, before any build starts.
+fn require_pinned_releases(
+    pins: Option<&ReleasePins<'_>>,
+    selection: &ValidatedDeploymentSelection,
+) -> Result<()> {
+    let Some(pins) = pins else {
+        return Ok(());
+    };
+    for release in &selection.releases {
+        if let Some(pinned) = pins.releases.get(&release.program_spec_hash) {
+            if *pinned != release.program_release_hash {
+                anyhow::bail!(
+                    "The platform selected Program Release {} for ProgramSpec {}, but arete.lock pins {pinned} for stack '{}'. Run `a4 update stack {}` to move to the platform's current release, then deploy again",
+                    release.program_release_hash,
+                    release.program_spec_hash,
+                    pins.alias,
+                    pins.alias
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn generate_short_uuid() -> String {
@@ -939,12 +992,7 @@ pub fn up(
         branch
     };
 
-    let sources = resolve_local_deployment_sources(
-        config_path,
-        stack_name,
-        &registry_cache::root()?,
-        !local_only,
-    )?;
+    let sources = resolve_local_deployment_sources(config_path, stack_name, None, !local_only)?;
     if sources.is_empty() {
         anyhow::bail!("No stacks found to deploy");
     }
@@ -968,6 +1016,7 @@ pub fn up(
                     &stack,
                     branch.as_deref(),
                     source.deployment_name.as_deref(),
+                    source.release_pins().as_ref(),
                     allow_unverified_programs,
                     json,
                 )?;
@@ -996,6 +1045,7 @@ pub fn up(
             stack,
             branch.as_deref(),
             source.deployment_name.as_deref(),
+            source.release_pins().as_ref(),
             allow_unverified_programs,
             json,
         )?);
@@ -1024,7 +1074,7 @@ pub fn up(
 fn resolve_local_deployment_sources(
     config_path: &str,
     stack_name: Option<&str>,
-    cache_root: &Path,
+    cache_root: Option<&Path>,
     restore_cache: bool,
 ) -> Result<Vec<LocalDeploymentSource>> {
     if let Some(target) = stack_name.filter(|target| target.ends_with(".stack-manifest.json")) {
@@ -1083,12 +1133,14 @@ fn resolve_local_deployment_sources(
     if !selected.is_empty() {
         return Ok(selected);
     }
+    // Only registry stacks deploy by alias; a local stack deploys by path.
     let installed = manifest
         .document
         .dependencies
         .stacks
-        .keys()
-        .cloned()
+        .iter()
+        .filter(|(_, dependency)| matches!(dependency.source, DependencySourceV1::Registry(_)))
+        .map(|(alias, _)| alias.clone())
         .collect::<Vec<_>>();
     match stack_name {
         Some(name) if manifest.dependency(DependencyKind::Stack, name).is_some() => Ok(vec![
@@ -1118,7 +1170,7 @@ fn point_installed_sdk_at_deployment(
 ) {
     if let Some(branch) = branch {
         println!(
-            "  {} The SDK generated for '{alias}' does not point at branch deployment '{branch}'; pass its WebSocket endpoint to your client, e.g. `useArete(stack, {{ url }})` in TypeScript.",
+            "  {} The SDK generated for '{alias}' does not point at branch deployment '{branch}'; pass its endpoints to your client, e.g. `useArete(stack, {{ url, httpUrl }})` in TypeScript.",
             ui::symbols::ARROW.blue()
         );
         return;
@@ -1138,7 +1190,7 @@ fn point_installed_sdk_at_deployment(
             ui::symbols::SUCCESS.green()
         ),
         Err(error) => println!(
-            "  {} Deployed, but the SDK for '{alias}' was not pointed at it: {error:#}\n    Add `endpoints` for it under [dependencies.stacks.{alias}] in arete.toml and run `a4 install`, or pass the WebSocket endpoint to your client.",
+            "  {} Deployed, but the SDK for '{alias}' was not pointed at it: {error:#}\n    Add `endpoints` for it under [dependencies.stacks.{alias}] in arete.toml and run `a4 install`, or pass its endpoints to your client.",
             ui::symbols::WARNING.yellow()
         ),
     }
@@ -1147,7 +1199,7 @@ fn point_installed_sdk_at_deployment(
 fn installed_deployment_source(
     manifest: &ProjectManifest,
     alias: &str,
-    cache_root: &Path,
+    cache_root: Option<&Path>,
     restore_cache: bool,
 ) -> Result<LocalDeploymentSource> {
     let dependency = manifest
@@ -1175,6 +1227,13 @@ fn installed_deployment_source(
         .ok_or_else(|| {
             anyhow::anyhow!("arete.lock pins no stack '{alias}'. Run `a4 install` first")
         })?;
+    // Resolved only here, so deploying a StackManifest file never needs a home
+    // directory.
+    let cache_root = match cache_root {
+        Some(root) => root.to_path_buf(),
+        None => registry_cache::root()?,
+    };
+    let cache_root = cache_root.as_path();
     let missing = installed_stack_artifact_paths(cache_root, &locked)?
         .into_iter()
         .filter(|path| !path.is_file())
@@ -1205,7 +1264,7 @@ fn dry_run_artifact_stack<A: HostedDeploymentApi + ?Sized>(
     stack: &LocalArtifactStack,
     branch: Option<&str>,
 ) -> Result<StackDeploymentResult> {
-    dry_run_artifact_stack_with_deployment_name(client, stack, branch, None, false, false)
+    dry_run_artifact_stack_with_deployment_name(client, stack, branch, None, None, false, false)
 }
 
 fn dry_run_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
@@ -1213,6 +1272,7 @@ fn dry_run_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
     stack: &LocalArtifactStack,
     branch: Option<&str>,
     deployment_name: Option<&str>,
+    release_pins: Option<&ReleasePins<'_>>,
     allow_unverified_programs: bool,
     quiet: bool,
 ) -> Result<StackDeploymentResult> {
@@ -1226,6 +1286,7 @@ fn dry_run_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
         ))
         .map_err(|error| program_registration_guidance(stack, error))?;
     let selection = validate_preflight_response(&plan, stack, &response)?;
+    require_pinned_releases(release_pins, &selection)?;
     let result = StackDeploymentResult::preflight(&plan, &selection)?;
     if !quiet {
         ui::print_section("Dry Run - No changes will be made");
@@ -1311,7 +1372,7 @@ fn deploy_artifact_stack<A: HostedDeploymentApi + ?Sized>(
     stack: LocalArtifactStack,
     branch: Option<&str>,
 ) -> Result<StackDeploymentResult> {
-    deploy_artifact_stack_with_deployment_name(client, stack, branch, None, false, false)
+    deploy_artifact_stack_with_deployment_name(client, stack, branch, None, None, false, false)
 }
 
 fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
@@ -1319,6 +1380,7 @@ fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
     stack: LocalArtifactStack,
     branch: Option<&str>,
     deployment_name: Option<&str>,
+    release_pins: Option<&ReleasePins<'_>>,
     allow_unverified_programs: bool,
     quiet: bool,
 ) -> Result<StackDeploymentResult> {
@@ -1334,6 +1396,7 @@ fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
         ))
         .map_err(|error| program_registration_guidance(&stack, error))?;
     let selection = validate_plan_response(&plan, &stack, &response)?;
+    require_pinned_releases(release_pins, &selection)?;
     let deployment_plan_id = selection
         .deployment_plan_id
         .clone()
@@ -2325,9 +2388,10 @@ mod tests {
         let stack = local_stack(&["first"]);
         let api = FakeHostedApi::new(&stack);
 
-        let result =
-            dry_run_artifact_stack_with_deployment_name(&api, &stack, None, None, false, true)
-                .unwrap();
+        let result = dry_run_artifact_stack_with_deployment_name(
+            &api, &stack, None, None, None, false, true,
+        )
+        .unwrap();
 
         assert_eq!(result.schema, STACK_DEPLOYMENT_RESULT_SCHEMA);
         assert_eq!(api.calls.borrow().as_slice(), &[ApiCall::Preflight]);
@@ -2342,7 +2406,7 @@ mod tests {
         let api = FakeHostedApi::new(&stack);
 
         let result =
-            deploy_artifact_stack_with_deployment_name(&api, stack, None, None, false, true)
+            deploy_artifact_stack_with_deployment_name(&api, stack, None, None, None, false, true)
                 .unwrap();
 
         assert_eq!(result.schema, STACK_DEPLOYMENT_RESULT_SCHEMA);
@@ -2655,7 +2719,12 @@ mod tests {
             stack_name: Option<&str>,
             restore_cache: bool,
         ) -> Result<Vec<LocalDeploymentSource>> {
-            resolve_local_deployment_sources(&self.config, stack_name, &self.cache, restore_cache)
+            resolve_local_deployment_sources(
+                &self.config,
+                stack_name,
+                Some(&self.cache),
+                restore_cache,
+            )
         }
     }
 
@@ -2710,6 +2779,48 @@ mod tests {
             .to_string();
         assert!(error.contains("local dependency"), "{error}");
         assert!(error.contains(".stack-manifest.json"), "{error}");
+    }
+
+    #[test]
+    fn an_installed_stack_deploys_only_the_program_releases_its_lock_pins() {
+        let project = InstalledProject::new("pins", false, true);
+        let mut sources = project.resolve(Some("ore"), false).unwrap();
+        let DeploymentArtifacts::Installed { locked, .. } = &mut sources[0].artifacts else {
+            panic!("installed source");
+        };
+        let spec = locked.programs[0].program_spec_hash.clone();
+        let pinned = format!("arete:h1:program-release:sha256:{}", "a".repeat(64));
+        locked.programs[0].program_release_hash = Some(pinned.clone());
+        let pins = sources[0].release_pins().unwrap();
+        let selection = |release: &str| ValidatedDeploymentSelection {
+            deployment_plan_id: None,
+            selection_digest: selection_digest(),
+            releases: vec![SelectedProgramRelease {
+                program_id: "program".into(),
+                program_spec_hash: spec.clone(),
+                program_release_hash: release.into(),
+                release_profile: "hosted-managed".into(),
+                operational_status: "ready".into(),
+            }],
+        };
+
+        require_pinned_releases(Some(&pins), &selection(&pinned)).unwrap();
+        let other = format!("arete:h1:program-release:sha256:{}", "b".repeat(64));
+        let error = require_pinned_releases(Some(&pins), &selection(&other))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&pinned) && error.contains(&other), "{error}");
+        assert!(error.contains("a4 update stack ore"), "{error}");
+        // A StackManifest file pins nothing; the platform's selection stands.
+        require_pinned_releases(None, &selection(&other)).unwrap();
+    }
+
+    #[test]
+    fn only_registry_stacks_are_suggested_as_installed_aliases() {
+        let project = InstalledProject::new("registry-only", true, true);
+        let error = project.resolve(None, false).unwrap_err().to_string();
+        assert!(error.contains("(ore)"), "{error}");
+        assert!(!error.contains("mine"), "{error}");
     }
 
     #[test]
