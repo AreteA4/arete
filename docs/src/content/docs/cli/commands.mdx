@@ -818,6 +818,21 @@ same identifier, for example a stack `my-vault` and an entity `MyVaultStack`,
 or programs `token-2022` and `token_2022`, generation fails with an error that
 names both. Rename one of them.
 
+### When a hosted stack version is retired
+
+A hosted stack keeps serving the version each SDK was generated for, until
+that version is retired. `a4 install` tells you when this affects a
+dependency, and names the command that installs the version served now:
+
+- **Being retired.** The version is still served, and `a4 install` warns with
+  the date it is served until.
+- **Retired.** `a4 install` still installs it: `arete.lock` is unchanged, and
+  the SDK is generated as before. Its connection, however, is refused with an
+  error that names the served version.
+
+To move to the served version, run the command `a4 install` prints, for
+example `a4 install stack ore@1.1.0`, then rebuild your application.
+
 ### Deploying an installed stack
 
 A catalog stack without a hosted stream (a definition-only package) installs
