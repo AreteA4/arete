@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## [0.23.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.22.4...a4-cli-v0.23.0) (2026-09-25)
+
+
+### Features
+
+* **cli:** deploy installed stacks with `a4 up <alias>` ([4e681b0](https://github.com/AreteA4/arete/commit/4e681b050a817934234b59cde0b5ef8985b84705))
+* **cli:** deploy installed stacks with `a4 up <alias>` and point their SDK at the deployment ([07e109e](https://github.com/AreteA4/arete/commit/07e109e9d2fb3b4502e0577fb9b56f8f82c55882))
+* **cli:** point an installed stack's SDK at the user's deployment ([904bd98](https://github.com/AreteA4/arete/commit/904bd9827f56bd9efb383f0cf4a6557aaf17cf26))
+* **interpreter:** emit the served stack version in hosted SDKs ([1c8ee5c](https://github.com/AreteA4/arete/commit/1c8ee5cfb759733a37a9340af8d4977ebf29193c))
+* **sdk:** name the served stack version when minting sessions ([aa06836](https://github.com/AreteA4/arete/commit/aa068362d434fb38f2998677fca763f3dba53714))
+
+
+### Bug Fixes
+
+* **cli:** ask for a redeploy when a recorded stack changes version ([64efb7b](https://github.com/AreteA4/arete/commit/64efb7b6fd9f8a55d6b0bdf1cabb9d37304e6633))
+* **cli:** hold installed deploys to their pinned releases ([c56f29e](https://github.com/AreteA4/arete/commit/c56f29e8f93008183c84ad76466987be33f5482e))
+* **cli:** name the authored stack that shadows a redeploy ([e3f8621](https://github.com/AreteA4/arete/commit/e3f862133bb8a931cdeb5cd468308f4e71ea5ae4))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.22.4 to 0.23.0
+    * arete-mcp bumped from 0.22.4 to 0.23.0
+
 ## [0.22.4](https://github.com/AreteA4/arete/compare/a4-cli-v0.22.3...a4-cli-v0.22.4) (2026-09-24)
 
 
