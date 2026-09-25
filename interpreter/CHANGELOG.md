@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.23.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.23.0...arete-interpreter-v0.23.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **interpreter:** replay updates whose numeric lookup key missed ([0711e9a](https://github.com/AreteA4/arete/commit/0711e9ac5e3fd487f4ef9a4bf43741038bd5d3b9))
+* **interpreter:** replay updates whose numeric lookup key missed ([d7215e2](https://github.com/AreteA4/arete/commit/d7215e203efd2f789b0f984b4518d3ecdea41b10))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.23.0 to 0.23.1
+
 ## [0.23.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.22.4...arete-interpreter-v0.23.0) (2026-09-25)
 
 
