@@ -3,7 +3,7 @@ use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::api_client::{
@@ -15,9 +15,15 @@ use crate::api_client::{
     STACK_DEPLOYMENT_PLAN_REQUEST_SCHEMA, STACK_DEPLOYMENT_PLAN_SCHEMA,
     STACK_DEPLOYMENT_PREFLIGHT_SCHEMA,
 };
-use crate::commands::public_artifacts::{load_local_artifact_stack_with_roots, LocalArtifactStack};
+use crate::commands::public_artifacts::{
+    installed_stack_artifact_paths, load_installed_artifact_stack,
+    load_local_artifact_stack_with_roots, LocalArtifactStack,
+};
 use crate::commands::stack::deployment_selection_key;
-use crate::project::ProjectManifest;
+use crate::project::installer::restore_locked_registry_cache;
+use crate::project::lockfile::LockedDependency;
+use crate::project::manifest::{DependencyKind, DependencySourceV1};
+use crate::project::{registry_cache, ProjectLock, ProjectManifest};
 use crate::telemetry;
 use crate::ui;
 
@@ -25,9 +31,45 @@ const STACK_DEPLOYMENT_RESULT_SCHEMA: &str = "arete.stack-deployment-result/v1";
 
 #[derive(Debug)]
 struct LocalDeploymentSource {
-    path: PathBuf,
-    artifact_roots: Vec<PathBuf>,
+    artifacts: DeploymentArtifacts,
     deployment_name: Option<String>,
+}
+
+#[derive(Debug)]
+enum DeploymentArtifacts {
+    /// A StackManifest file and the roots its ProgramSpecs and LiveSpecs are
+    /// read from.
+    Files {
+        path: PathBuf,
+        artifact_roots: Vec<PathBuf>,
+    },
+    /// A stack installed from the registry, deployed from the registry cache
+    /// entries `arete.lock` pins.
+    Installed {
+        cache_root: PathBuf,
+        locked: Box<LockedDependency>,
+    },
+}
+
+impl LocalDeploymentSource {
+    fn load(&self) -> Result<LocalArtifactStack> {
+        match &self.artifacts {
+            DeploymentArtifacts::Files {
+                path,
+                artifact_roots,
+            } => load_local_artifact_stack_with_roots(path, artifact_roots),
+            DeploymentArtifacts::Installed { cache_root, locked } => {
+                load_installed_artifact_stack(cache_root, locked)
+            }
+        }
+    }
+
+    fn installed_alias(&self) -> Option<&str> {
+        match &self.artifacts {
+            DeploymentArtifacts::Installed { locked, .. } => Some(&locked.alias),
+            DeploymentArtifacts::Files { .. } => None,
+        }
+    }
 }
 
 fn generate_short_uuid() -> String {
@@ -876,7 +918,12 @@ pub fn up(
         branch
     };
 
-    let sources = resolve_local_deployment_sources(config_path, stack_name)?;
+    let sources = resolve_local_deployment_sources(
+        config_path,
+        stack_name,
+        &registry_cache::root()?,
+        !local_only,
+    )?;
     if sources.is_empty() {
         anyhow::bail!("No stacks found to deploy");
     }
@@ -886,7 +933,7 @@ pub fn up(
 
     if dry_run {
         for source in &sources {
-            let stack = load_local_artifact_stack_with_roots(&source.path, &source.artifact_roots)?;
+            let stack = source.load()?;
             if local_only {
                 show_local_artifact_dry_run_with_deployment_name(
                     &stack,
@@ -922,7 +969,7 @@ pub fn up(
     }
 
     for source in sources {
-        let stack = load_local_artifact_stack_with_roots(&source.path, &source.artifact_roots)?;
+        let stack = source.load()?;
         let result = Some(deploy_artifact_stack_with_deployment_name(
             &client,
             stack,
@@ -936,6 +983,12 @@ pub fn up(
                 println!("{}", serde_json::to_string(&result)?);
             }
         } else {
+            if let Some(alias) = source.installed_alias() {
+                println!(
+                    "  {} The SDK `a4 install` generated for '{alias}' does not point at this deployment; pass its WebSocket endpoint to your client, e.g. `useArete(stack, {{ url }})` in TypeScript.",
+                    ui::symbols::ARROW.blue()
+                );
+            }
             println!();
         }
     }
@@ -945,9 +998,16 @@ pub fn up(
     Ok(())
 }
 
+/// What `a4 up [name]` deploys: an explicit StackManifest path, the
+/// `[authoring.stacks]` entries (all, or the one named), or, when the name is
+/// no authored stack, the installed registry stack with that alias. An
+/// installed stack deploys from the registry cache entries `arete.lock` pins;
+/// missing entries are restored from the registry when `restore_cache` allows.
 fn resolve_local_deployment_sources(
     config_path: &str,
     stack_name: Option<&str>,
+    cache_root: &Path,
+    restore_cache: bool,
 ) -> Result<Vec<LocalDeploymentSource>> {
     if let Some(target) = stack_name.filter(|target| target.ends_with(".stack-manifest.json")) {
         let path = std::fs::canonicalize(target).map_err(|error| {
@@ -958,8 +1018,10 @@ fn resolve_local_deployment_sources(
             .ok_or_else(|| anyhow::anyhow!("StackManifest has no parent directory"))?
             .to_path_buf();
         return Ok(vec![LocalDeploymentSource {
-            path,
-            artifact_roots: vec![root],
+            artifacts: DeploymentArtifacts::Files {
+                path,
+                artifact_roots: vec![root],
+            },
             deployment_name: None,
         }]);
     }
@@ -989,8 +1051,10 @@ fn resolve_local_deployment_sources(
                     .collect::<Result<Vec<_>>>()?
             };
             Ok(LocalDeploymentSource {
-                path,
-                artifact_roots,
+                artifacts: DeploymentArtifacts::Files {
+                    path,
+                    artifact_roots,
+                },
                 deployment_name: authored
                     .deployment_name
                     .clone()
@@ -998,14 +1062,84 @@ fn resolve_local_deployment_sources(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    if selected.is_empty() {
-        if let Some(name) = stack_name {
+    if !selected.is_empty() {
+        return Ok(selected);
+    }
+    let installed = manifest
+        .document
+        .dependencies
+        .stacks
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    match stack_name {
+        Some(name) if manifest.dependency(DependencyKind::Stack, name).is_some() => Ok(vec![
+            installed_deployment_source(&manifest, name, cache_root, restore_cache)?,
+        ]),
+        Some(name) => anyhow::bail!(
+            "No authored or installed stack named '{name}'. Add it under `[authoring.stacks]`, install it with `a4 install stack <package>`, or pass a .stack-manifest.json path"
+        ),
+        None if !installed.is_empty() => anyhow::bail!(
+            "No `[authoring.stacks]` to deploy. Deploy an installed stack by its alias: `a4 up <alias>` ({})",
+            installed.join(", ")
+        ),
+        None => Ok(selected),
+    }
+}
+
+fn installed_deployment_source(
+    manifest: &ProjectManifest,
+    alias: &str,
+    cache_root: &Path,
+    restore_cache: bool,
+) -> Result<LocalDeploymentSource> {
+    let dependency = manifest
+        .dependency(DependencyKind::Stack, alias)
+        .expect("caller checked the dependency");
+    if !matches!(dependency.source, DependencySourceV1::Registry(_)) {
+        anyhow::bail!(
+            "Stack '{alias}' is a local dependency ({}); deploy its StackManifest with `a4 up <path>.stack-manifest.json`",
+            dependency.source.stable_description()
+        );
+    }
+    let lock_path = manifest.root.join("arete.lock");
+    let lock = ProjectLock::load_optional(&lock_path)?
+        .filter(|lock| lock.is_fresh(&manifest.manifest_hash))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Stack '{alias}' is not installed: {} is missing or stale. Run `a4 install` first",
+                lock_path.display()
+            )
+        })?;
+    let locked = lock
+        .dependencies
+        .into_iter()
+        .find(|entry| entry.kind == DependencyKind::Stack && entry.alias == alias)
+        .ok_or_else(|| {
+            anyhow::anyhow!("arete.lock pins no stack '{alias}'. Run `a4 install` first")
+        })?;
+    let missing = installed_stack_artifact_paths(cache_root, &locked)?
+        .into_iter()
+        .filter(|path| !path.is_file())
+        .collect::<Vec<_>>();
+    if let Some(first) = missing.first() {
+        if !restore_cache {
             anyhow::bail!(
-                "No authored stack named '{name}'. Add it under `[authoring.stacks]` or pass a .stack-manifest.json path"
+                "Installed stack '{alias}' is missing {} registry cache entr{} (first: {}). Run `a4 install` to restore them",
+                missing.len(),
+                if missing.len() == 1 { "y" } else { "ies" },
+                first.display()
             );
         }
+        restore_locked_registry_cache(manifest, &locked)?;
     }
-    Ok(selected)
+    Ok(LocalDeploymentSource {
+        artifacts: DeploymentArtifacts::Installed {
+            cache_root: cache_root.to_path_buf(),
+            locked: Box::new(locked),
+        },
+        deployment_name: Some(alias.to_string()),
+    })
 }
 
 #[cfg(test)]
@@ -2414,5 +2548,126 @@ mod tests {
         let error = HostedDeploymentPlan::from_stack(&stack, None).unwrap_err();
         assert!(error.to_string().contains("program-only"));
         assert!(error.to_string().contains("Program Read"));
+    }
+
+    /// A project that installed the ORE fixture as registry stack `ore` (and,
+    /// optionally, a local stack `mine`), with its registry cache in `cache/`.
+    struct InstalledProject {
+        root: PathBuf,
+        config: String,
+        cache: PathBuf,
+    }
+
+    impl InstalledProject {
+        fn new(name: &str, local_stack: bool, fresh_lock: bool) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "arete-up-installed-{name}-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let mut toml = "manifest_version = 1\n\n[project]\nname = \"up-test\"\n\n\
+                [dependencies.stacks.ore]\nsource = { registry = \"ore\" }\nversion = \"^1.0.0\"\n"
+                .to_string();
+            if local_stack {
+                toml.push_str(
+                    "\n[dependencies.stacks.mine]\nsource = { path = \"mine.stack-manifest.json\" }\n",
+                );
+            }
+            let config = root.join("arete.toml");
+            std::fs::write(&config, toml).unwrap();
+            let cache = root.join("cache");
+            let locked = crate::commands::public_artifacts::cache_ore_stack_fixture(&cache, "ore");
+            let manifest = ProjectManifest::load(&config).unwrap();
+            let manifest_hash = if fresh_lock {
+                manifest.manifest_hash.clone()
+            } else {
+                format!("arete-manifest-v1:{}", "0".repeat(64))
+            };
+            let mut lock = ProjectLock::empty(manifest_hash);
+            lock.dependencies.push(locked);
+            lock.write_atomic(root.join("arete.lock")).unwrap();
+            Self {
+                config: config.display().to_string(),
+                root,
+                cache,
+            }
+        }
+
+        fn resolve(
+            &self,
+            stack_name: Option<&str>,
+            restore_cache: bool,
+        ) -> Result<Vec<LocalDeploymentSource>> {
+            resolve_local_deployment_sources(&self.config, stack_name, &self.cache, restore_cache)
+        }
+    }
+
+    impl Drop for InstalledProject {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn an_installed_stack_alias_deploys_the_locked_stack_manifest_from_the_cache() {
+        let project = InstalledProject::new("alias", false, true);
+        let sources = project.resolve(Some("ore"), false).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].deployment_name.as_deref(), Some("ore"));
+        assert_eq!(sources[0].installed_alias(), Some("ore"));
+
+        let stack = sources[0].load().unwrap();
+        let lock = ProjectLock::load(project.root.join("arete.lock")).unwrap();
+        assert_eq!(
+            Some(stack.manifest_hash.as_str()),
+            lock.dependencies[0].stack_manifest_hash.as_deref()
+        );
+        let plan = HostedDeploymentPlan::from_stack_with_deployment_name(&stack, None, Some("ore"))
+            .unwrap();
+        assert_eq!(plan.stack_name, "ore");
+        assert_eq!(plan.stack_manifest_hash, stack.manifest_hash);
+    }
+
+    #[test]
+    fn missing_cache_entries_need_an_install_when_restoring_is_not_allowed() {
+        let project = InstalledProject::new("offline", false, true);
+        std::fs::remove_dir_all(project.cache.join("live-spec")).unwrap();
+        let error = project.resolve(Some("ore"), false).unwrap_err().to_string();
+        assert!(error.contains("missing 1 registry cache entry"), "{error}");
+        assert!(error.contains("a4 install"), "{error}");
+    }
+
+    #[test]
+    fn a_stale_lock_is_not_deployed() {
+        let project = InstalledProject::new("stale", false, false);
+        let error = project.resolve(Some("ore"), false).unwrap_err().to_string();
+        assert!(error.contains("missing or stale"), "{error}");
+    }
+
+    #[test]
+    fn a_local_stack_dependency_is_deployed_by_its_manifest_path() {
+        let project = InstalledProject::new("local", true, true);
+        let error = project
+            .resolve(Some("mine"), false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("local dependency"), "{error}");
+        assert!(error.contains(".stack-manifest.json"), "{error}");
+    }
+
+    #[test]
+    fn unknown_and_unnamed_deploys_point_at_installed_stacks() {
+        let project = InstalledProject::new("names", false, true);
+        let unknown = project
+            .resolve(Some("ghost"), false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            unknown.contains("No authored or installed stack named 'ghost'"),
+            "{unknown}"
+        );
+        let unnamed = project.resolve(None, false).unwrap_err().to_string();
+        assert!(unnamed.contains("a4 up <alias>"), "{unnamed}");
+        assert!(unnamed.contains("ore"), "{unnamed}");
     }
 }

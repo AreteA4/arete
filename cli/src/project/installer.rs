@@ -20,6 +20,7 @@ use super::manifest::{
     ManifestV1, PathSourceV1, RegistrySourceV1, WorkspaceSourceV1,
 };
 use super::paths::ProjectPaths;
+use super::registry_cache;
 use super::resolver::{
     RegistryDependencyRequest, RegistryResolveRequest, ResolvedRegistryDependency,
 };
@@ -830,88 +831,139 @@ fn resolve_dependencies(
     }
 
     if !registry_requests.is_empty() {
-        let request = RegistryResolveRequest {
-            manifest_version: manifest.document.manifest_version,
-            dependencies: registry_requests.clone(),
-            targets: manifest.document.sdk.targets.clone(),
-            generator_contract: GENERATOR_CONTRACT.into(),
-        };
-        // A batch failure names one package only when the batch *is* one
-        // package. Attributing a multi-dependency failure to the first entry
-        // reported the wrong package and, with a batch-wide `locked` flag,
-        // could tell the user to `a4 update` a dependency that is not locked.
-        let single = match registry_requests.as_slice() {
-            [only] => Some((
-                only.kind,
-                only.package.clone(),
-                only.locked_package_release_hash.is_some(),
-            )),
-            _ => None,
-        };
-        let response = ApiClient::new()?
-            .resolve_registry_dependencies(&request)
-            .map_err(|error| match &single {
-                Some((kind, package, locked)) => {
-                    describe_resolver_error(error, *kind, package, *locked)
-                }
-                None => describe_resolver_batch_error(error, &registry_requests),
-            })?;
-        if response.resolver_contract != RESOLVER_CONTRACT {
-            bail!(
-                "Registry returned resolver contract '{}'; expected '{}'",
-                response.resolver_contract,
-                RESOLVER_CONTRACT
-            );
-        }
-        if response.dependencies.len() != registry_requests.len() {
-            bail!("Registry resolver did not return exactly one dependency per request");
-        }
-        for (request, response) in registry_requests.into_iter().zip(response.dependencies) {
-            if response.alias() != request.alias {
-                bail!(
-                    "Resolver response order mismatch: expected '{}', received '{}'",
-                    request.alias,
-                    response.alias()
-                );
-            }
-            if response.package() != request.package {
-                bail!(
-                    "Resolver response package mismatch for '{}': expected '{}', received '{}'",
-                    request.alias,
-                    request.package,
-                    response.package()
-                );
-            }
-            verify_resolved_kind_and_contract(request.kind, &response)?;
-            verify_resolved_extensions(&response, &manifest.document.sdk.targets)?;
-            verify_resolved_release_identity(&response)?;
-            verify_resolved_stack_delivery(&response)?;
-            if let Some(locked) = &request.locked_package_release_hash {
-                if response.package_release_hash() != locked {
-                    bail!(
-                        "Registry resolved '{}' to release {} but arete.lock pins {}; run `a4 update {} {}` to advance intentionally",
-                        request.alias,
-                        response.package_release_hash(),
-                        locked,
-                        request.kind,
-                        request.alias
-                    );
-                }
-            }
-            let dependency = manifest
-                .dependency(request.kind, &request.alias)
-                .expect("request came from manifest");
-            resolved.push(ResolvedProjectDependency::Registry {
-                kind: request.kind,
-                source: dependency.source.stable_description(),
-                requirement: request.requirement,
-                targets: dependency.selected_targets(&manifest.document.sdk).to_vec(),
-                resolved: Box::new(response),
-            });
-        }
+        resolved.extend(resolve_registry_requests(manifest, registry_requests)?);
     }
     resolved.sort_by(|left, right| (left.kind(), left.alias()).cmp(&(right.kind(), right.alias())));
     Ok(resolved)
+}
+
+/// Resolves registry dependencies in one resolver batch and verifies each
+/// response against its request (and, when locked, the pinned release).
+fn resolve_registry_requests(
+    manifest: &ProjectManifest,
+    registry_requests: Vec<RegistryDependencyRequest>,
+) -> Result<Vec<ResolvedProjectDependency>> {
+    let mut resolved = Vec::with_capacity(registry_requests.len());
+    let request = RegistryResolveRequest {
+        manifest_version: manifest.document.manifest_version,
+        dependencies: registry_requests.clone(),
+        targets: manifest.document.sdk.targets.clone(),
+        generator_contract: GENERATOR_CONTRACT.into(),
+    };
+    // A batch failure names one package only when the batch *is* one
+    // package. Attributing a multi-dependency failure to the first entry
+    // reported the wrong package and, with a batch-wide `locked` flag,
+    // could tell the user to `a4 update` a dependency that is not locked.
+    let single = match registry_requests.as_slice() {
+        [only] => Some((
+            only.kind,
+            only.package.clone(),
+            only.locked_package_release_hash.is_some(),
+        )),
+        _ => None,
+    };
+    let response = ApiClient::new()?
+        .resolve_registry_dependencies(&request)
+        .map_err(|error| match &single {
+            Some((kind, package, locked)) => {
+                describe_resolver_error(error, *kind, package, *locked)
+            }
+            None => describe_resolver_batch_error(error, &registry_requests),
+        })?;
+    if response.resolver_contract != RESOLVER_CONTRACT {
+        bail!(
+            "Registry returned resolver contract '{}'; expected '{}'",
+            response.resolver_contract,
+            RESOLVER_CONTRACT
+        );
+    }
+    if response.dependencies.len() != registry_requests.len() {
+        bail!("Registry resolver did not return exactly one dependency per request");
+    }
+    for (request, response) in registry_requests.into_iter().zip(response.dependencies) {
+        if response.alias() != request.alias {
+            bail!(
+                "Resolver response order mismatch: expected '{}', received '{}'",
+                request.alias,
+                response.alias()
+            );
+        }
+        if response.package() != request.package {
+            bail!(
+                "Resolver response package mismatch for '{}': expected '{}', received '{}'",
+                request.alias,
+                request.package,
+                response.package()
+            );
+        }
+        verify_resolved_kind_and_contract(request.kind, &response)?;
+        verify_resolved_extensions(&response, &manifest.document.sdk.targets)?;
+        verify_resolved_release_identity(&response)?;
+        verify_resolved_stack_delivery(&response)?;
+        if let Some(locked) = &request.locked_package_release_hash {
+            if response.package_release_hash() != locked {
+                bail!(
+                    "Registry resolved '{}' to release {} but arete.lock pins {}; run `a4 update {} {}` to advance intentionally",
+                    request.alias,
+                    response.package_release_hash(),
+                    locked,
+                    request.kind,
+                    request.alias
+                );
+            }
+        }
+        let dependency = manifest
+            .dependency(request.kind, &request.alias)
+            .expect("request came from manifest");
+        resolved.push(ResolvedProjectDependency::Registry {
+            kind: request.kind,
+            source: dependency.source.stable_description(),
+            requirement: request.requirement,
+            targets: dependency.selected_targets(&manifest.document.sdk).to_vec(),
+            resolved: Box::new(response),
+        });
+    }
+    Ok(resolved)
+}
+
+/// Restores the registry cache entries of one installed dependency by
+/// resolving exactly the release `arete.lock` pins. `a4 up <alias>` deploys an
+/// installed stack from the cache, so a cleared cache is refilled here rather
+/// than by a full `a4 install`.
+pub(crate) fn restore_locked_registry_cache(
+    manifest: &ProjectManifest,
+    locked: &LockedDependency,
+) -> Result<()> {
+    let dependency = manifest
+        .dependency(locked.kind, &locked.alias)
+        .ok_or_else(|| anyhow::anyhow!("arete.toml has no {} '{}'", locked.kind, locked.alias))?;
+    let DependencySourceV1::Registry(RegistrySourceV1 { registry }) = &dependency.source else {
+        bail!(
+            "{} '{}' is local and has no registry artifacts to restore",
+            locked.kind,
+            locked.alias
+        );
+    };
+    let package_release_hash = locked.package_release_hash.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "arete.lock pins no release for {} '{}'",
+            locked.kind,
+            locked.alias
+        )
+    })?;
+    let request = RegistryDependencyRequest {
+        kind: locked.kind,
+        alias: locked.alias.clone(),
+        package: registry.clone(),
+        requirement: dependency.version.clone().expect("validated version"),
+        locked_package_release_hash: Some(package_release_hash),
+    };
+    for dependency in resolve_registry_requests(manifest, vec![request])? {
+        if let ResolvedProjectDependency::Registry { resolved, .. } = &dependency {
+            cache_registry_dependency(resolved)?;
+        }
+    }
+    Ok(())
 }
 
 fn resolve_path_dependency(
@@ -1605,22 +1657,9 @@ fn cache_program_install(
 }
 
 fn cache_immutable_json(kind: &str, hash: &str, value: &serde_json::Value) -> Result<()> {
-    if hash.is_empty()
-        || !hash
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'-' | b'_'))
-    {
-        bail!("Cannot cache invalid {kind} identity '{hash}'");
-    }
-    let directory = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine Arete cache directory"))?
-        .join(".arete")
-        .join("cache")
-        .join("registry")
-        .join("v1")
-        .join(kind);
-    fs::create_dir_all(&directory)?;
-    let path = directory.join(format!("{hash}.json"));
+    let path = registry_cache::file(&registry_cache::root()?, kind, hash)?;
+    let directory = path.parent().expect("cache files live in a kind directory");
+    fs::create_dir_all(directory)?;
     if path.exists() {
         let cached = fs::read(&path)
             .ok()

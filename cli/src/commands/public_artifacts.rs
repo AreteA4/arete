@@ -11,6 +11,9 @@ use arete_artifacts::{
     DEFAULT_LIVE_ALIAS, STACK_MANIFEST_SCHEMA_V2,
 };
 
+use crate::project::lockfile::LockedDependency;
+use crate::project::registry_cache;
+
 #[derive(Debug, Clone)]
 pub(crate) struct LocalArtifactStack {
     pub manifest_path: PathBuf,
@@ -78,6 +81,17 @@ fn load_local_v2_stack(
             ))
         })
         .collect::<Result<Vec<_>>>()?;
+    assemble_v2_stack(manifest_path, stack_manifest, program_specs, live_specs)
+}
+
+/// Validates that a StackManifest's ProgramSpecs and LiveSpecs compose and
+/// compile, whichever source they were read from.
+fn assemble_v2_stack(
+    manifest_path: &Path,
+    stack_manifest: StackManifestArtifactV2,
+    program_specs: Vec<ProgramSpecArtifact>,
+    live_specs: Vec<(String, LiveSpecArtifactV2)>,
+) -> Result<LocalArtifactStack> {
     resolve_stack_composition_v2(&stack_manifest, &live_specs, &program_specs)?;
     arete_interpreter::public_artifacts::stack_specs_from_artifacts_v2(
         &program_specs,
@@ -92,6 +106,198 @@ fn load_local_v2_stack(
         live_specs,
         stack_manifest,
     })
+}
+
+/// The registry cache files an installed stack deploys from: its
+/// StackManifest, then every LiveSpec and ProgramSpec `arete.lock` pins.
+pub(crate) fn installed_stack_artifact_paths(
+    cache_root: &Path,
+    locked: &LockedDependency,
+) -> Result<Vec<PathBuf>> {
+    let mut paths = vec![registry_cache::file(
+        cache_root,
+        "stack-manifest",
+        installed_stack_manifest_hash(locked)?,
+    )?];
+    for live in &locked.live_specs {
+        paths.push(registry_cache::file(
+            cache_root,
+            "live-spec",
+            &live.artifact_hash,
+        )?);
+    }
+    for program in &locked.programs {
+        paths.push(registry_cache::file(
+            cache_root,
+            "program-spec",
+            &program.program_spec_hash,
+        )?);
+    }
+    Ok(paths)
+}
+
+/// Loads an installed registry stack from the registry cache. Every file must
+/// hold exactly the artifact its name and `arete.lock` pin, and the lock must
+/// name the same LiveSpecs and ProgramSpecs as the StackManifest; the
+/// composition is then validated as a local StackManifest's is.
+pub(crate) fn load_installed_artifact_stack(
+    cache_root: &Path,
+    locked: &LockedDependency,
+) -> Result<LocalArtifactStack> {
+    let manifest_hash = installed_stack_manifest_hash(locked)?;
+    let manifest_path = registry_cache::file(cache_root, "stack-manifest", manifest_hash)?;
+    let stack_manifest = load_stack_manifest_v2(&read_cached(&manifest_path)?)
+        .with_context(|| format!("Invalid cached StackManifest {}", manifest_path.display()))?
+        .artifact;
+    require_cached_identity(
+        &manifest_path,
+        manifest_hash,
+        &stack_manifest.artifact_hash.to_string(),
+    )?;
+
+    let manifest_lives = stack_manifest
+        .payload
+        .live_specs
+        .iter()
+        .map(|reference| (reference.alias.clone(), reference.artifact_hash.to_string()))
+        .collect::<BTreeSet<_>>();
+    let locked_lives = locked
+        .live_specs
+        .iter()
+        .map(|live| (live.alias.clone(), live.artifact_hash.clone()))
+        .collect::<BTreeSet<_>>();
+    let manifest_programs = stack_manifest
+        .payload
+        .programs
+        .iter()
+        .map(|reference| reference.artifact_hash.to_string())
+        .collect::<BTreeSet<_>>();
+    let locked_programs = locked
+        .programs
+        .iter()
+        .map(|program| program.program_spec_hash.clone())
+        .collect::<BTreeSet<_>>();
+    if manifest_lives != locked_lives || manifest_programs != locked_programs {
+        bail!(
+            "arete.lock does not pin the LiveSpecs and ProgramSpecs StackManifest {manifest_hash} composes; run `a4 install` to repair stack '{}'",
+            locked.alias
+        );
+    }
+
+    let program_specs = stack_manifest
+        .payload
+        .programs
+        .iter()
+        .map(|reference| {
+            let hash = reference.artifact_hash.to_string();
+            let path = registry_cache::file(cache_root, "program-spec", &hash)?;
+            let artifact = load_program_spec(&read_cached(&path)?)
+                .with_context(|| format!("Invalid cached ProgramSpec {}", path.display()))?
+                .artifact;
+            require_cached_identity(&path, &hash, &artifact.artifact_hash.to_string())?;
+            Ok(artifact)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let live_specs = stack_manifest
+        .payload
+        .live_specs
+        .iter()
+        .map(|reference| {
+            let hash = reference.artifact_hash.to_string();
+            let path = registry_cache::file(cache_root, "live-spec", &hash)?;
+            let artifact = load_live_spec_v2(&read_cached(&path)?)
+                .with_context(|| format!("Invalid cached LiveSpec {}", path.display()))?
+                .artifact;
+            require_cached_identity(&path, &hash, &artifact.artifact_hash.to_string())?;
+            Ok((reference.alias.clone(), artifact))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    assemble_v2_stack(&manifest_path, stack_manifest, program_specs, live_specs)
+}
+
+/// Stores the repository's ORE stack artifacts in `cache_root` the way
+/// `a4 install` caches a registry stack, and returns the `arete.lock` entry
+/// that pins them as the installed stack `alias`.
+#[cfg(test)]
+pub(crate) fn cache_ore_stack_fixture(cache_root: &Path, alias: &str) -> LockedDependency {
+    use crate::project::lockfile::{LockedLiveSpec, LockedProgram};
+    use crate::project::manifest::{DependencyKind, InstallTarget};
+
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("cli crate lives in the repo root")
+        .join("stacks/ore/.arete");
+    let mut locked = LockedDependency {
+        kind: DependencyKind::Stack,
+        alias: alias.into(),
+        source: format!("registry:{alias}"),
+        requirement: Some("^1.0.0".into()),
+        version: Some("1.0.0".into()),
+        package_release_hash: Some(format!(
+            "arete:registry-package-release:v2:sha256:{}",
+            "a".repeat(64)
+        )),
+        stack_manifest_hash: None,
+        program_id: None,
+        program_spec_hash: None,
+        program_release_hash: None,
+        live_specs: Vec::new(),
+        programs: Vec::new(),
+        sdk_extension_hashes: Vec::new(),
+        targets: vec![InstallTarget::TypeScript],
+        generator_contract: crate::project::GENERATOR_CONTRACT.into(),
+    };
+    for (kind, file) in [
+        ("stack-manifest", "OreStream.stack-manifest.json"),
+        ("live-spec", "OreStream.live-spec.json"),
+        ("program-spec", "ore.program-spec.json"),
+        ("program-spec", "entropy.program-spec.json"),
+    ] {
+        let bytes = fs::read(fixture.join(file)).unwrap();
+        let value = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap();
+        let hash = value["artifactHash"].as_str().unwrap().to_string();
+        let path = registry_cache::file(cache_root, kind, &hash).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        match kind {
+            "stack-manifest" => locked.stack_manifest_hash = Some(hash),
+            "live-spec" => locked.live_specs.push(LockedLiveSpec {
+                alias: "live".into(),
+                artifact_hash: hash,
+            }),
+            _ => locked.programs.push(LockedProgram {
+                program_id: value["payload"]["programId"].as_str().unwrap().into(),
+                program_spec_hash: hash,
+                program_release_hash: None,
+                sdk_extension_hashes: Vec::new(),
+            }),
+        }
+    }
+    locked
+}
+
+fn installed_stack_manifest_hash(locked: &LockedDependency) -> Result<&str> {
+    locked.stack_manifest_hash.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "arete.lock pins no StackManifest for stack '{}'",
+            locked.alias
+        )
+    })
+}
+
+fn read_cached(path: &Path) -> Result<Vec<u8>> {
+    fs::read(path)
+        .with_context(|| format!("Failed to read registry cache entry {}", path.display()))
+}
+
+fn require_cached_identity(path: &Path, expected: &str, actual: &str) -> Result<()> {
+    if actual != expected {
+        bail!(
+            "Registry cache entry {} holds {actual}, not {expected}; delete it and run `a4 install`",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn load_and_normalize_local_v1_stack(
@@ -1011,5 +1217,78 @@ mod tests {
         symlink(&outside, &directory_link).unwrap();
         assert!(ArtifactCatalog::scan(&[root]).is_err());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn an_installed_stack_loads_from_the_registry_cache_by_its_locked_identities() {
+        let cache = test_directory("installed-stack");
+        let locked = cache_ore_stack_fixture(&cache, "ore");
+
+        let paths = installed_stack_artifact_paths(&cache, &locked).unwrap();
+        assert_eq!(paths.len(), 4);
+        assert!(paths.iter().all(|path| path.is_file()));
+
+        let stack = load_installed_artifact_stack(&cache, &locked).unwrap();
+        assert_eq!(
+            Some(stack.manifest_hash.as_str()),
+            locked.stack_manifest_hash.as_deref()
+        );
+        assert_eq!(stack.program_specs.len(), 2);
+        assert_eq!(stack.live_specs.len(), 1);
+        assert_eq!(stack.live_specs[0].0, "live");
+        assert!(stack.manifest_path.starts_with(&cache));
+        fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[test]
+    fn a_cache_entry_must_hold_the_artifact_its_name_pins() {
+        let cache = test_directory("installed-stack-tampered");
+        let locked = cache_ore_stack_fixture(&cache, "ore");
+        let [first, second] = [&locked.programs[0], &locked.programs[1]].map(|program| {
+            registry_cache::file(&cache, "program-spec", &program.program_spec_hash).unwrap()
+        });
+        fs::copy(&first, &second).unwrap();
+
+        let error = load_installed_artifact_stack(&cache, &locked)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("holds"), "{error}");
+        fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[test]
+    fn the_lock_must_pin_exactly_what_the_stack_manifest_composes() {
+        let cache = test_directory("installed-stack-lock");
+        let locked = cache_ore_stack_fixture(&cache, "ore");
+
+        let mut other_live = locked.clone();
+        other_live.live_specs[0].artifact_hash = locked.programs[0].program_spec_hash.clone();
+        let mut missing_program = locked.clone();
+        missing_program.programs.pop();
+        let mut renamed_live = locked.clone();
+        renamed_live.live_specs[0].alias = "other".into();
+        for lock in [other_live, missing_program, renamed_live] {
+            let error = load_installed_artifact_stack(&cache, &lock)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("does not pin"), "{error}");
+        }
+        fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[test]
+    fn a_missing_cache_entry_is_reported_by_path() {
+        let cache = test_directory("installed-stack-missing");
+        let locked = cache_ore_stack_fixture(&cache, "ore");
+        let live =
+            registry_cache::file(&cache, "live-spec", &locked.live_specs[0].artifact_hash).unwrap();
+        fs::remove_file(&live).unwrap();
+
+        let error = format!(
+            "{:#}",
+            load_installed_artifact_stack(&cache, &locked).unwrap_err()
+        );
+        assert!(error.contains(&live.display().to_string()), "{error}");
+        fs::remove_dir_all(cache).unwrap();
     }
 }

@@ -94,6 +94,7 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 sdk create --manifest ... --ts`   | Generate a TypeScript SDK from a StackManifest |
 | `a4 sdk create --manifest ... --rust` | Generate a Rust SDK from a StackManifest       |
 | `a4 up <manifest>`                    | Deploy one exact StackManifest                 |
+| `a4 up <alias>`                       | Deploy an installed stack                      |
 | `a4 status`                           | Show project overview                          |
 | `a4 stack list`                       | List deployed stacks                           |
 | `a4 telemetry status`                 | Show telemetry status                          |
@@ -590,7 +591,9 @@ is not evidence that it is unsupported — fall back to `a4 explore` and
 
 ### a4 up \<manifest\>
 
-Deploy the exact composition described by a local StackManifest. The control
+Deploy the exact composition described by a local StackManifest, an
+`[authoring.stacks]` entry, or an installed stack
+([Deploying an installed stack](#deploying-an-installed-stack)). The control
 plane resolves every ProgramSpec to an immutable hosted Program Release,
 prepares each aliased LiveSpec independently, then returns deployment and
 endpoint bindings. Those operational bindings are not part of the portable
@@ -608,6 +611,9 @@ a4 up .arete/MyStack.stack-manifest.json --preview
 
 # Preview what would be deployed (no actual deployment)
 a4 up .arete/MyStack.stack-manifest.json --dry-run
+
+# Deploy the stack installed as `raydium-amm`
+a4 up raydium-amm
 ```
 
 **Options:**
@@ -811,6 +817,29 @@ keep generating exactly the names they always have. If two names generate the
 same identifier, for example a stack `my-vault` and an entity `MyVaultStack`,
 or programs `token-2022` and `token_2022`, generation fails with an error that
 names both. Rename one of them.
+
+### Deploying an installed stack
+
+A catalog stack without a hosted stream (a definition-only package) installs
+as an SDK whose endpoints are empty. Deploy it to your own account by its
+alias:
+
+```bash
+a4 install stack raydium-amm --ts
+a4 up raydium-amm
+```
+
+`a4 up <alias>` deploys exactly the StackManifest, LiveSpecs, and ProgramSpecs
+`arete.lock` pins for that stack. `a4 install` keeps them in the registry cache
+(`~/.arete/cache/registry/v1`); each cached file must still hash to its locked
+identity, and a missing entry is fetched again at the locked release.
+`--dry-run --local-only` never fetches, so it asks you to run `a4 install`
+instead. The alias names the deployment unless an `[authoring.stacks]` entry
+has the same name, which takes precedence.
+
+The generated SDK does not point at your deployment. Pass the WebSocket
+endpoint `a4 up` prints to the client, for example
+`useArete(stack, { url })` in TypeScript, where `stack` is the generated stack definition.
 
 ### Private programs and stacks
 
