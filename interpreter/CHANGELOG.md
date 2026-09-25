@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.23.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.22.4...arete-interpreter-v0.23.0) (2026-09-25)
+
+
+### Features
+
+* **interpreter:** emit the served stack version in hosted SDKs ([1c8ee5c](https://github.com/AreteA4/arete/commit/1c8ee5cfb759733a37a9340af8d4977ebf29193c))
+* **sdk:** name the served stack version when minting sessions ([aa06836](https://github.com/AreteA4/arete/commit/aa068362d434fb38f2998677fca763f3dba53714))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.22.4 to 0.23.0
+
 ## [0.22.4](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.22.3...arete-interpreter-v0.22.4) (2026-09-24)
 
 

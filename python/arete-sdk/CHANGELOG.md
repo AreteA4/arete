@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.23.0](https://github.com/AreteA4/arete/compare/arete-python-v0.22.4...arete-python-v0.23.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** in the Rust SDK, AuthErrorCode gains the StackVersionRetired and StackVersionUnknown variants, and AreteError::AuthRequestFailed gains a stack_version field. Exhaustive matches on AuthErrorCode, and patterns or constructors of AuthRequestFailed without `..`, need updating.
+
+### Features
+
+* **sdk:** name the served stack version when minting sessions ([aa06836](https://github.com/AreteA4/arete/commit/aa068362d434fb38f2998677fca763f3dba53714))
+* **sdk:** name the served stack version when minting sessions ([b4d3587](https://github.com/AreteA4/arete/commit/b4d3587f6adb1cc1722537c572be6f779822c20a))
+
+
+### Bug Fixes
+
+* **sdk:** keep socket issue guidance, unknown codes and close reasons ([8246496](https://github.com/AreteA4/arete/commit/8246496d7e9d1f7966edac4096a361b296c766ad))
+
 ## [0.22.4](https://github.com/AreteA4/arete/compare/arete-python-v0.22.3...arete-python-v0.22.4) (2026-09-24)
 
 
