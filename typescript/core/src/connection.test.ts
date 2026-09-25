@@ -744,6 +744,147 @@ describe('ConnectionManager auth', () => {
     });
   });
 
+  it('reads the camelCase retry and guidance fields the server sends on socket issues', async () => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://limits.stack.arete.run',
+      auth: { token: makeJwt(nowSeconds + 300) },
+    });
+    const issueHandler = vi.fn();
+    manager.onSocketIssue(issueHandler);
+    await manager.connect();
+
+    await MockWebSocket.instances[0]!.onmessage?.({
+      data: JSON.stringify({
+        type: 'error',
+        protocolVersion: 2,
+        subscriptionId: null,
+        error: 'rate-limit-exceeded',
+        message: 'Too many subscription creates',
+        code: 'rate-limit-exceeded',
+        retryable: true,
+        retryAfter: 30,
+        suggestedAction: 'Slow down subscription churn',
+        docsUrl: 'https://docs.arete.run/limits',
+        fatal: false,
+      }),
+    });
+
+    expect(issueHandler).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'RATE_LIMIT_EXCEEDED',
+      retryAfter: 30,
+      suggestedAction: 'Slow down subscription churn',
+      docsUrl: 'https://docs.arete.run/limits',
+    }));
+    manager.disconnect();
+  });
+
+  it('keeps an unknown socket issue code as sent instead of reporting an internal error', async () => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://limits.stack.arete.run',
+      auth: { token: makeJwt(nowSeconds + 300) },
+    });
+    const issueHandler = vi.fn();
+    manager.onSocketIssue(issueHandler);
+    await manager.connect();
+
+    await MockWebSocket.instances[0]!.onmessage?.({
+      data: JSON.stringify({
+        type: 'error',
+        protocolVersion: 2,
+        subscriptionId: null,
+        error: 'view-retired',
+        message: 'This view is no longer served',
+        code: 'view-retired',
+        retryable: false,
+        fatal: false,
+      }),
+    });
+
+    expect(issueHandler).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'view-retired',
+      message: 'This view is no longer served',
+    }));
+    manager.disconnect();
+  });
+
+  it('reports the server close reason while reconnecting and when attempts run out', async () => {
+    vi.useFakeTimers();
+    const reason = 'node-draining: moving to another node';
+    let sockets = 0;
+    const websocketFactory = (url: string): WebSocket => {
+      sockets++;
+      if (sockets === 1) return new MockWebSocket(url) as unknown as WebSocket;
+      // Every retry is refused by the server before it opens.
+      const refused = {
+        readyState: MockWebSocket.CONNECTING,
+        onopen: null,
+        onmessage: null,
+        onerror: null,
+        onclose: null as ((event: { code: number; reason: string }) => void) | null,
+        send: () => undefined,
+        close: () => undefined,
+      };
+      queueMicrotask(() => refused.onclose?.({ code: 1011, reason }));
+      return refused as unknown as WebSocket;
+    };
+    const manager = new ConnectionManager({
+      websocketUrl: 'ws://localhost:8878',
+      reconnectIntervals: [10],
+      maxReconnectAttempts: 1,
+      auth: { websocketFactory },
+    });
+    const states: Array<[string, string | undefined]> = [];
+    manager.onStateChange((state, error) => { states.push([state, error]); });
+
+    const opened = manager.connect();
+    await vi.runAllTicks();
+    await opened;
+    MockWebSocket.instances[0]!.close(1011, reason);
+
+    expect(states.at(-1)).toEqual(['reconnecting', `WebSocket closed (1011: ${reason})`]);
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.runAllTicks();
+
+    expect(sockets).toBe(2);
+    expect(states.at(-1)).toEqual([
+      'error',
+      `Max reconnection attempts (1) reached; last disconnect: WebSocket closed before open (1011: ${reason})`,
+    ]);
+    manager.disconnect();
+  });
+
+  it('carries the parsed close reason code on a refused connection error', async () => {
+    const websocketFactory = (): WebSocket => {
+      const refused = {
+        readyState: MockWebSocket.CONNECTING,
+        onopen: null,
+        onmessage: null,
+        onerror: null,
+        onclose: null as ((event: { code: number; reason: string }) => void) | null,
+        send: () => undefined,
+        close: () => undefined,
+      };
+      queueMicrotask(() => refused.onclose?.({ code: 1008, reason: 'plan-suspended: Billing is overdue' }));
+      return refused as unknown as WebSocket;
+    };
+    const manager = new ConnectionManager({
+      websocketUrl: 'ws://localhost:8878',
+      auth: { websocketFactory },
+    });
+
+    await expect(manager.connect()).rejects.toMatchObject<Partial<AreteError>>({
+      code: 'CONNECTION_ERROR',
+      details: {
+        closeCode: 1008,
+        closeReason: 'plan-suspended: Billing is overdue',
+        wireErrorCode: 'plan-suspended',
+      },
+    });
+  });
+
   it('supports bearer-token websocket transport via a custom factory', async () => {
     const socketFactory = vi.fn((url: string, init?: { headers?: Record<string, string> }) => {
       return new FactoryWebSocket(url, init) as unknown as WebSocket;

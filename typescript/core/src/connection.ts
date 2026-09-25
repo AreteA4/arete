@@ -14,7 +14,13 @@ import type {
   Subscription,
   WebSocketFactoryInit,
 } from './types';
-import { DEFAULT_CONFIG, AreteError, parseErrorCode, shouldRefreshToken } from './types';
+import {
+  DEFAULT_CONFIG,
+  AreteError,
+  parseErrorCode,
+  parseWireErrorCode,
+  shouldRefreshToken,
+} from './types';
 import {
   normalizeSubscription,
 } from './subscription';
@@ -99,6 +105,10 @@ interface SocketIssueWireMessage {
   message?: string;
   code: string;
   retryable?: boolean;
+  retryAfter?: number;
+  suggestedAction?: string;
+  docsUrl?: string;
+  /** Older servers sent these in snake_case; read only when the camelCase field is absent. */
   retry_after?: number;
   suggested_action?: string;
   docs_url?: string;
@@ -328,6 +338,8 @@ export class ConnectionManager {
   private requestedScopes = new Set<string>();
   private readonly hostedAreteUrl: boolean;
   private reconnectForTokenRefresh = false;
+  /** Most recent reason the socket was lost, reported while reconnecting. */
+  private lastDisconnectReason?: string;
 
   constructor(config: AreteConfig) {
     const websocketUrl =
@@ -1060,11 +1072,11 @@ export class ConnectionManager {
     const issue: SocketIssue = {
       error: message.error ?? message.code,
       message: message.message ?? message.error ?? message.code,
-      code: parseErrorCode(message.code),
+      code: parseWireErrorCode(message.code),
       retryable: message.retryable ?? false,
-      retryAfter: message.retry_after,
-      suggestedAction: message.suggested_action,
-      docsUrl: message.docs_url,
+      retryAfter: message.retryAfter ?? message.retry_after,
+      suggestedAction: message.suggestedAction ?? message.suggested_action,
+      docsUrl: message.docsUrl ?? message.docs_url,
       fatal: message.fatal,
       subscriptionId: message.subscriptionId,
     };
@@ -1141,6 +1153,7 @@ export class ConnectionManager {
         socket.onopen = () => {
           if (!isCurrentSocket()) return;
           this.reconnectAttempts = 0;
+          this.lastDisconnectReason = undefined;
           this.updateState('connected');
           this.startPingInterval();
           this.scheduleTokenRefresh();
@@ -1215,9 +1228,16 @@ export class ConnectionManager {
               ? `${event.code}: ${event.reason}`
               : `code ${event.code}`;
             const errorMessage = `WebSocket closed before open (${detail})`;
+            const reasonCode = event.reason?.match(/^([\w-]+):/)?.[1];
             this.updateState(recovering ? 'reconnecting' : 'error', errorMessage);
             finish(() =>
-              reject(new AreteError(errorMessage, 'CONNECTION_ERROR'))
+              reject(new AreteError(errorMessage, 'CONNECTION_ERROR', {
+                closeCode: event.code,
+                closeReason: event.reason || undefined,
+                wireErrorCode: reasonCode === undefined
+                  ? undefined
+                  : parseWireErrorCode(reasonCode),
+              }))
             );
             return;
           }
@@ -1240,7 +1260,7 @@ export class ConnectionManager {
           // Parse close reason for error codes (e.g., "token-expired: Token has expired")
           const closeReason = event.reason || '';
           const errorCodeMatch = closeReason.match(/^([\w-]+):/);
-          const errorCode = errorCodeMatch ? parseErrorCode(errorCodeMatch[1]!) : null;
+          const errorCode = errorCodeMatch ? parseWireErrorCode(errorCodeMatch[1]!) : null;
 
           // Check for auth errors that require token refresh
           if (event.code === 1008 || errorCode) {
@@ -1277,12 +1297,12 @@ export class ConnectionManager {
           }
 
           if (this.currentState !== 'disconnected') {
+            const detail = event.reason
+              ? `${event.code}: ${event.reason}`
+              : `code ${event.code}`;
             if (this.autoReconnect) {
-              this.handleReconnect();
+              this.handleReconnect(`WebSocket closed (${detail})`);
             } else {
-              const detail = event.reason
-                ? `${event.code}: ${event.reason}`
-                : `code ${event.code}`;
               this.updateState(
                 'error',
                 `WebSocket closed (${detail}) and automatic reconnection is disabled`
@@ -1308,6 +1328,7 @@ export class ConnectionManager {
     this.stopPingInterval();
     this.clearTokenRefreshTimeout();
     this.reconnectForTokenRefresh = false;
+    this.lastDisconnectReason = undefined;
     const pendingConnect = this.pendingConnect;
     this.pendingConnect = null;
     this.tokenRequestInFlight = null;
@@ -1467,20 +1488,30 @@ export class ConnectionManager {
     }
   }
 
-  private handleReconnect(): void {
+  /**
+   * @param reason Why the connection was lost, when known. It is reported
+   * with the `reconnecting` state and kept for the terminal error if the
+   * attempts run out, so a server's close reason is never dropped.
+   */
+  private handleReconnect(reason?: string): void {
+    if (reason !== undefined) {
+      this.lastDisconnectReason = reason;
+    }
     if (!this.autoReconnect) {
       this.updateState('error', 'Automatic reconnection is disabled');
       return;
     }
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      const lastReason = this.lastDisconnectReason;
       this.updateState(
         'error',
         `Max reconnection attempts (${this.reconnectAttempts}) reached`
+          + (lastReason ? `; last disconnect: ${lastReason}` : '')
       );
       return;
     }
 
-    this.updateState('reconnecting');
+    this.updateState('reconnecting', this.lastDisconnectReason);
 
     const attemptIndex = Math.min(
       this.reconnectAttempts,
@@ -1491,11 +1522,11 @@ export class ConnectionManager {
     this.reconnectAttempts++;
 
     this.reconnectTimeout = setTimeout(() => {
-      this.connect(true).catch(() => {
+      this.connect(true).catch((error: unknown) => {
         // Once a socket exists, its close event owns the next retry. Token
         // acquisition and socket construction can fail before that point.
         if (this.ws === null && this.currentState !== 'disconnected') {
-          this.handleReconnect();
+          this.handleReconnect(error instanceof Error ? error.message : undefined);
         }
       });
     }, delay);

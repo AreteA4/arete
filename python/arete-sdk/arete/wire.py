@@ -447,6 +447,12 @@ def is_valid_frame(frame: Any) -> bool:
     )
 
 
+def _camel_or_snake(frame: Mapping[str, Any], camel: str, snake: str) -> Any:
+    """The server sends camelCase; snake_case is an older-server fallback."""
+    value = frame.get(camel)
+    return value if value is not None else frame.get(snake)
+
+
 def _frame_from_dict(frame: Mapping[str, Any]) -> Frame:
     if frame.get("type") == "error":
         return ErrorFrame(
@@ -456,9 +462,9 @@ def _frame_from_dict(frame: Mapping[str, Any]) -> Frame:
             error=frame.get("error"),
             message=frame.get("message"),
             retryable=frame.get("retryable"),
-            retry_after=frame.get("retry_after"),
-            suggested_action=frame.get("suggested_action"),
-            docs_url=frame.get("docs_url"),
+            retry_after=_camel_or_snake(frame, "retryAfter", "retry_after"),
+            suggested_action=_camel_or_snake(frame, "suggestedAction", "suggested_action"),
+            docs_url=_camel_or_snake(frame, "docsUrl", "docs_url"),
             replay_window=_replay_window_from_dict(frame.get("replayWindow")),
             recover_from=frame.get("recoverFrom"),
         )

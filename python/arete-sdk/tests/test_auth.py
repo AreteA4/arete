@@ -19,6 +19,7 @@ from arete.auth import (
     is_hosted_arete_websocket_url,
     is_hosted_websocket_host,
     set_hosted_websocket_suffixes,
+    parse_error_code_from_close_reason,
     parse_jwt_expiry,
     request_token_from_endpoint,
     resolve_token_endpoint,
@@ -42,6 +43,34 @@ def test_auth_token_expiry_check():
     assert not AuthToken(token="t").is_expiring()
     assert AuthToken(token="t", expires_at=int(time.time()) + 30).is_expiring()
     assert not AuthToken(token="t", expires_at=int(time.time()) + 3600).is_expiring()
+
+
+def test_close_reason_codes_come_only_from_the_wire_code_prefix():
+    assert (
+        parse_error_code_from_close_reason("token-expired: Token has expired")
+        is AuthErrorCode.TOKEN_EXPIRED
+    )
+    assert parse_error_code_from_close_reason("token-expired") is AuthErrorCode.TOKEN_EXPIRED
+    assert (
+        parse_error_code_from_close_reason("rate-limit-exceeded")
+        is AuthErrorCode.RATE_LIMIT_EXCEEDED
+    )
+    # Free-form reasons are not guessed at, whatever words they contain.
+    assert parse_error_code_from_close_reason("Invalid view requested") is None
+    assert parse_error_code_from_close_reason("Session token was revoked") is None
+    assert parse_error_code_from_close_reason("Subscription expired") is None
+    assert parse_error_code_from_close_reason("") is None
+    # A coded close keeps its existing meaning when the code is unknown.
+    assert (
+        parse_error_code_from_close_reason("node-draining: moving you")
+        is AuthErrorCode.INTERNAL_ERROR
+    )
+
+
+def test_from_wire_known_distinguishes_unknown_codes():
+    assert AuthErrorCode.from_wire_known("origin-required") is AuthErrorCode.ORIGIN_REQUIRED
+    assert AuthErrorCode.from_wire_known("node-draining") is None
+    assert AuthErrorCode.from_wire("node-draining") is AuthErrorCode.INTERNAL_ERROR
 
 
 def test_build_websocket_url_query_transport():

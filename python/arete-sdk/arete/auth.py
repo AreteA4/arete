@@ -138,7 +138,17 @@ class AuthErrorCode(Enum):
 
     @classmethod
     def from_wire(cls, error_code: str) -> "AuthErrorCode":
-        """Parse a kebab-case or snake_case error code string."""
+        """Parse a kebab-case or snake_case error code string.
+
+        A code this SDK does not know maps to ``INTERNAL_ERROR``; use
+        :meth:`from_wire_known` to tell the two apart.
+        """
+        known = cls.from_wire_known(error_code)
+        return known if known is not None else cls.INTERNAL_ERROR
+
+    @classmethod
+    def from_wire_known(cls, error_code: str) -> Optional["AuthErrorCode"]:
+        """Like :meth:`from_wire`, but ``None`` for a code this SDK does not know."""
         code_map = {
             "token-missing": cls.TOKEN_MISSING,
             "token-expired": cls.TOKEN_EXPIRED,
@@ -174,7 +184,7 @@ class AuthErrorCode(Enum):
             "token_invalid_signature": cls.TOKEN_INVALID_SIGNATURE,
             "token_invalid_format": cls.TOKEN_INVALID_FORMAT,
         }
-        return code_map.get(error_code.lower(), cls.INTERNAL_ERROR)
+        return code_map.get(error_code.strip().lower())
 
 
 def should_refresh_token(error_code: AuthErrorCode) -> bool:
@@ -654,22 +664,22 @@ class AuthState:
 
 
 def parse_error_code_from_close_reason(reason: str) -> Optional[AuthErrorCode]:
-    """Parse error code from WebSocket close reason (e.g., 'token-expired: Token has expired')."""
+    """Parse the error code a WebSocket close reason starts with.
+
+    The server closes with ``"<code>: <message>"`` (for example
+    ``"token-expired: Token has expired"``), or with the bare code. A colon
+    prefix that is not a wire code is kept as ``INTERNAL_ERROR`` so it is
+    still treated as a coded close.
+
+    A free-form reason is never guessed at: one that merely mentions
+    "token", "invalid" or "expired" is not a token expiry, and reading it as
+    one would drop a valid token and reconnect without backing off.
+    """
     if not reason:
         return None
 
-    # Try to extract error code from format "error-code: message"
     if ":" in reason:
         code_part = reason.split(":", 1)[0].strip()
         return AuthErrorCode.from_wire(code_part)
 
-    # Check for common patterns
-    reason_lower = reason.lower()
-    if (
-        "expired" in reason_lower
-        or "invalid" in reason_lower
-        or "token" in reason_lower
-    ):
-        return AuthErrorCode.TOKEN_EXPIRED
-
-    return None
+    return AuthErrorCode.from_wire_known(reason)

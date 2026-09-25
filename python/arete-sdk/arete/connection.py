@@ -94,6 +94,11 @@ def _is_socket_issue_message(value: Any) -> bool:
     )
 
 
+def _camel_or_snake(message: Mapping[str, Any], camel: str, snake: str) -> Any:
+    value = message.get(camel)
+    return value if value is not None else message.get(snake)
+
+
 async def _default_connect(url: str, headers: Optional[Mapping[str, str]]) -> Any:
     from websockets.asyncio.client import connect
 
@@ -588,14 +593,16 @@ class ConnectionManager:
             self._set_state("error", "Failed to parse frame from server")
 
     def _handle_socket_issue(self, message: Mapping[str, Any]) -> None:
+        # The server sends camelCase; snake_case is read only as a fallback
+        # for older servers. The code is kept exactly as sent.
         issue = SocketIssue(
             error=message.get("error") or message["code"],
             message=message.get("message") or message.get("error") or message["code"],
             code=message["code"],
             retryable=bool(message.get("retryable", False)),
-            retry_after=message.get("retry_after"),
-            suggested_action=message.get("suggested_action"),
-            docs_url=message.get("docs_url"),
+            retry_after=_camel_or_snake(message, "retryAfter", "retry_after"),
+            suggested_action=_camel_or_snake(message, "suggestedAction", "suggested_action"),
+            docs_url=_camel_or_snake(message, "docsUrl", "docs_url"),
             fatal=message["fatal"],
             subscription_id=message.get("subscriptionId"),
         )
