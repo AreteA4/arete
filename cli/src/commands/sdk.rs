@@ -32,6 +32,9 @@ struct RemoteStackAst {
     program_specs: Vec<arete_artifacts::ProgramSpecArtifact>,
     live_specs: AliasedLiveSpecs,
     live_bindings: Vec<RegistryLiveSpecInstallDescriptor>,
+    /// The user's own deployment of the stack (arete.toml `endpoints`), which
+    /// the SDK reads instead of the hosted bindings or placeholders.
+    deployment_endpoints: Vec<DeploymentLiveEndpoint>,
     stack_manifest: arete_artifacts::StackManifestArtifactV2,
     chain_binding: Option<RegistryCapabilityInstallBinding>,
     transaction_binding: Option<RegistryCapabilityInstallBinding>,
@@ -40,6 +43,46 @@ struct RemoteStackAst {
     hosted_extensions: Option<ResolvedExtensionsArtifact>,
     programs: Vec<RegistryProgramInstallResponse>,
     require_managed_gateway: bool,
+}
+
+/// One LiveSpec's stream endpoints in the user's own deployment, in
+/// StackManifest order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeploymentLiveEndpoint {
+    alias: String,
+    websocket: String,
+    query: String,
+}
+
+impl RemoteStackAst {
+    /// Where each LiveSpec's stream is read, as (alias, WebSocket, query):
+    /// the user's own deployment when arete.toml records one, otherwise the
+    /// hosted bindings (none for a definition-only stack).
+    fn live_endpoints(&self) -> Vec<(String, String, String)> {
+        if !self.deployment_endpoints.is_empty() {
+            return self
+                .deployment_endpoints
+                .iter()
+                .map(|live| {
+                    (
+                        live.alias.clone(),
+                        live.websocket.clone(),
+                        live.query.clone(),
+                    )
+                })
+                .collect();
+        }
+        self.live_bindings
+            .iter()
+            .map(|live| {
+                (
+                    live.alias.clone(),
+                    live.binding.websocket_endpoint.clone(),
+                    live.binding.query_endpoint.clone(),
+                )
+            })
+            .collect()
+    }
 }
 
 enum ResolvedStackSource {
@@ -353,16 +396,20 @@ impl ResolvedStackSource {
     fn default_websocket_url(&self) -> Option<String> {
         match self {
             Self::LocalArtifacts(_) => None,
-            Self::Remote(stack) => (stack.live_bindings.len() == 1)
-                .then(|| stack.live_bindings[0].binding.websocket_endpoint.clone()),
+            Self::Remote(stack) => match stack.live_endpoints().as_slice() {
+                [(_, websocket, _)] => Some(websocket.clone()),
+                _ => None,
+            },
         }
     }
 
     fn default_http_url(&self) -> Option<String> {
         match self {
             Self::LocalArtifacts(_) => None,
-            Self::Remote(stack) => (stack.live_bindings.len() == 1)
-                .then(|| stack.live_bindings[0].binding.query_endpoint.clone()),
+            Self::Remote(stack) => match stack.live_endpoints().as_slice() {
+                [(_, _, query)] => Some(query.clone()),
+                _ => None,
+            },
         }
     }
 
@@ -539,14 +586,14 @@ impl ResolvedStackSource {
     ) -> BTreeMap<String, arete_interpreter::typescript::TypeScriptLiveEndpoints> {
         match self {
             Self::Remote(stack) => stack
-                .live_bindings
-                .iter()
-                .map(|live| {
+                .live_endpoints()
+                .into_iter()
+                .map(|(alias, websocket, query)| {
                     (
-                        live.alias.clone(),
+                        alias,
                         arete_interpreter::typescript::TypeScriptLiveEndpoints {
-                            websocket_url: Some(live.binding.websocket_endpoint.clone()),
-                            http_url: Some(live.binding.query_endpoint.clone()),
+                            websocket_url: Some(websocket),
+                            http_url: Some(query),
                         },
                     )
                 })
@@ -559,9 +606,9 @@ impl ResolvedStackSource {
     fn composition_live_websocket_urls(&self) -> BTreeMap<String, String> {
         match self {
             Self::Remote(stack) => stack
-                .live_bindings
-                .iter()
-                .map(|live| (live.alias.clone(), live.binding.websocket_endpoint.clone()))
+                .live_endpoints()
+                .into_iter()
+                .map(|(alias, websocket, _)| (alias, websocket))
                 .collect(),
             Self::LocalArtifacts(_) => BTreeMap::new(),
         }
@@ -1004,6 +1051,9 @@ pub(crate) struct ProjectGenerationOptions<'a> {
     pub typescript_package: &'a str,
     pub rust_module: bool,
     pub python_module: bool,
+    /// The dependency's arete.toml `endpoints`: the user's own deployment of a
+    /// registry stack.
+    pub stack_endpoints: Option<&'a BTreeMap<String, crate::project::manifest::StackEndpointsV1>>,
 }
 
 pub(crate) fn generate_project_local_stack(
@@ -1128,8 +1178,13 @@ pub(crate) fn generate_project_registry_dependency(
             .context("Resolved registry stack has an invalid artifact closure")?;
             // Endpoints are transport state, not lock identity: they come from
             // the stack's explicit delivery mode on every install.
-            let transport =
-                project_stack_transport(package, &stack_manifest, live_specs, delivery.as_deref())?;
+            let transport = project_stack_transport(
+                package,
+                &stack_manifest,
+                live_specs,
+                delivery.as_deref(),
+                options.stack_endpoints,
+            )?;
             let hosted_extensions = project_sdk_extension(sdk_extensions, options.target)?
                 .as_ref()
                 .map(resolved_extensions_artifact_from_registry)
@@ -1141,6 +1196,7 @@ pub(crate) fn generate_project_registry_dependency(
                 program_specs,
                 live_specs: verified_live_specs,
                 live_bindings: transport.live_bindings,
+                deployment_endpoints: transport.deployment_endpoints,
                 stack_manifest,
                 chain_binding: transport.chain_binding,
                 transaction_binding: transport.transaction_binding,
@@ -5119,6 +5175,7 @@ fn remote_stack_install(remote: RegistryStackInstallResponse) -> Result<RemoteSt
         program_specs,
         live_specs: composition.live_specs,
         live_bindings: composition.live_bindings,
+        deployment_endpoints: Vec::new(),
         stack_manifest: composition.stack_manifest,
         chain_binding: remote.chain_binding,
         transaction_binding: remote.transaction_binding,
@@ -5248,6 +5305,7 @@ fn check_hosted_live_binding(
 /// delivery state, re-resolved on every install and never locked.
 struct ProjectStackTransport {
     live_bindings: Vec<RegistryLiveSpecInstallDescriptor>,
+    deployment_endpoints: Vec<DeploymentLiveEndpoint>,
     chain_binding: Option<RegistryCapabilityInstallBinding>,
     transaction_binding: Option<RegistryCapabilityInstallBinding>,
     require_managed_gateway: bool,
@@ -5257,14 +5315,18 @@ struct ProjectStackTransport {
 /// with the same rules as a direct install descriptor. Only an explicit
 /// `definition-only` stack generates placeholder endpoints; a hosted stack
 /// must bind every LiveSpec exactly and carry both managed gateway bindings.
+/// arete.toml `endpoints` (the user's own deployment) replace the stream
+/// endpoints of either; a hosted stack keeps its managed gateway.
 fn project_stack_transport(
     package: &str,
     stack_manifest: &arete_artifacts::StackManifestArtifactV2,
     live_specs: &[crate::project::resolver::ResolvedLiveSpec],
     delivery: Option<&crate::project::resolver::ResolvedStackDelivery>,
+    endpoints: Option<&BTreeMap<String, crate::project::manifest::StackEndpointsV1>>,
 ) -> Result<ProjectStackTransport> {
     use crate::project::resolver::ResolvedStackDelivery;
 
+    let deployment_endpoints = project_deployment_endpoints(package, stack_manifest, endpoints)?;
     let Some(delivery) = delivery else {
         anyhow::bail!(
             "Registry did not report how stack '{package}' is delivered; it does not support \
@@ -5275,6 +5337,7 @@ fn project_stack_transport(
         ResolvedStackDelivery::DefinitionOnly {} => {
             return Ok(ProjectStackTransport {
                 live_bindings: Vec::new(),
+                deployment_endpoints,
                 chain_binding: None,
                 transaction_binding: None,
                 require_managed_gateway: false,
@@ -5335,10 +5398,51 @@ fn project_stack_transport(
     )?;
     Ok(ProjectStackTransport {
         live_bindings,
+        deployment_endpoints,
         chain_binding: chain_binding.as_deref().cloned(),
         transaction_binding: transaction_binding.as_deref().cloned(),
         require_managed_gateway: true,
     })
+}
+
+/// The arete.toml `endpoints` of a stack in StackManifest order. They must
+/// name exactly the StackManifest's LiveSpecs: a partial deployment would
+/// leave some LiveSpecs reading nothing.
+fn project_deployment_endpoints(
+    package: &str,
+    stack_manifest: &arete_artifacts::StackManifestArtifactV2,
+    endpoints: Option<&BTreeMap<String, crate::project::manifest::StackEndpointsV1>>,
+) -> Result<Vec<DeploymentLiveEndpoint>> {
+    let Some(endpoints) = endpoints.filter(|endpoints| !endpoints.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let references = &stack_manifest.payload.live_specs;
+    let expected = references
+        .iter()
+        .map(|reference| reference.alias.as_str())
+        .collect::<BTreeSet<_>>();
+    let declared = endpoints
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if expected != declared {
+        anyhow::bail!(
+            "arete.toml endpoints for stack '{package}' name [{}], but its StackManifest has LiveSpecs [{}]. The recorded deployment predates this version: remove `endpoints` from the dependency, run `a4 install`, then redeploy with `a4 up <alias>`",
+            declared.into_iter().collect::<Vec<_>>().join(", "),
+            expected.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    Ok(references
+        .iter()
+        .map(|reference| {
+            let endpoint = &endpoints[&reference.alias];
+            DeploymentLiveEndpoint {
+                alias: reference.alias.clone(),
+                websocket: endpoint.websocket.clone(),
+                query: endpoint.query.clone(),
+            }
+        })
+        .collect())
 }
 
 /// Reject a resolved stack whose delivery cannot generate, before anything
@@ -5361,7 +5465,16 @@ pub(crate) fn verify_resolved_stack_delivery(
     let stack_manifest: arete_artifacts::StackManifestArtifactV2 =
         serde_json::from_value(stack_manifest.clone())
             .context("Registry resolver returned an invalid V2 StackManifest")?;
-    project_stack_transport(package, &stack_manifest, live_specs, delivery.as_deref()).map(|_| ())
+    // arete.toml endpoints are checked at generation, which writes nothing to
+    // the project unless every output succeeds.
+    project_stack_transport(
+        package,
+        &stack_manifest,
+        live_specs,
+        delivery.as_deref(),
+        None,
+    )
+    .map(|_| ())
 }
 
 fn validate_singular_plural_identity(
@@ -8688,6 +8801,7 @@ mod tests {
                 typescript_package: "@usearete/react",
                 rust_module: false,
                 python_module: false,
+                stack_endpoints: None,
             },
         )
         .expect("local program generation should succeed");
@@ -8704,6 +8818,7 @@ mod tests {
                 typescript_package: "@usearete/react",
                 rust_module: false,
                 python_module: false,
+                stack_endpoints: None,
             },
         )
         .expect("local stack generation should succeed");
@@ -8719,6 +8834,7 @@ mod tests {
                 typescript_package: "@usearete/react",
                 rust_module: false,
                 python_module: false,
+                stack_endpoints: None,
             },
         )
         .expect("local python generation should succeed");

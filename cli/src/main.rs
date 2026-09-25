@@ -121,7 +121,8 @@ enum Commands {
 
     /// Deploy a stack: push, build, and watch until completion
     Up {
-        /// Name of specific stack to deploy (deploys all if not specified)
+        /// An [authoring.stacks] name, an installed stack's alias, or a
+        /// .stack-manifest.json path (deploys every authored stack if not specified)
         stack_name: Option<String>,
 
         /// Deploy to a specific branch (creates {stack-name}-{branch}.stack.arete.run)

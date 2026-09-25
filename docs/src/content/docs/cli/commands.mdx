@@ -94,6 +94,7 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 sdk create --manifest ... --ts`   | Generate a TypeScript SDK from a StackManifest |
 | `a4 sdk create --manifest ... --rust` | Generate a Rust SDK from a StackManifest       |
 | `a4 up <manifest>`                    | Deploy one exact StackManifest                 |
+| `a4 up <alias>`                       | Deploy an installed stack                      |
 | `a4 status`                           | Show project overview                          |
 | `a4 stack list`                       | List deployed stacks                           |
 | `a4 telemetry status`                 | Show telemetry status                          |
@@ -590,7 +591,9 @@ is not evidence that it is unsupported — fall back to `a4 explore` and
 
 ### a4 up \<manifest\>
 
-Deploy the exact composition described by a local StackManifest. The control
+Deploy the exact composition described by a local StackManifest, an
+`[authoring.stacks]` entry, or an installed stack
+([Deploying an installed stack](#deploying-an-installed-stack)). The control
 plane resolves every ProgramSpec to an immutable hosted Program Release,
 prepares each aliased LiveSpec independently, then returns deployment and
 endpoint bindings. Those operational bindings are not part of the portable
@@ -608,6 +611,9 @@ a4 up .arete/MyStack.stack-manifest.json --preview
 
 # Preview what would be deployed (no actual deployment)
 a4 up .arete/MyStack.stack-manifest.json --dry-run
+
+# Deploy the stack installed as `raydium-amm`
+a4 up raydium-amm
 ```
 
 **Options:**
@@ -812,6 +818,46 @@ same identifier, for example a stack `my-vault` and an entity `MyVaultStack`,
 or programs `token-2022` and `token_2022`, generation fails with an error that
 names both. Rename one of them.
 
+### Deploying an installed stack
+
+A catalog stack without a hosted stream (a definition-only package) installs
+as an SDK whose endpoints are empty. Deploy it to your own account by its
+alias:
+
+```bash
+a4 install stack raydium-amm --ts
+a4 up raydium-amm
+```
+
+`a4 up <alias>` deploys exactly the StackManifest, LiveSpecs, and ProgramSpecs
+`arete.lock` pins for that stack. `a4 install` keeps them in the registry cache
+(`~/.arete/cache/registry/v1`); each cached file must still hash to its locked
+identity, and a missing entry is fetched again at the locked release.
+`--dry-run --local-only` never fetches, so it asks you to run `a4 install`
+instead. The alias names the deployment unless an `[authoring.stacks]` entry
+has the same name, which takes precedence.
+
+After the deployment is healthy, `a4 up` points the generated SDK at it: it
+records the deployment's endpoints for the stack in `arete.toml` and runs
+`a4 install`, so the SDK connects without a URL:
+
+```toml
+[dependencies.stacks.raydium-amm]
+source = { registry = "raydium-amm" }
+version = "^1.0.0"
+endpoints = { live = { websocket = "wss://raydium-amm.stack.arete.run", query = "https://raydium-amm.stack.arete.run" } }
+```
+
+`endpoints` names every LiveSpec of the StackManifest by alias. For a hosted
+stack they replace the managed stream endpoints (its managed gateway for chain
+reads and transactions stays); remove them to use the stack's own endpoints
+again. When `a4 update` or a new version requirement moves the stack to a
+different StackManifest, `a4 install` notes that the recorded deployment still
+serves the previous one; redeploy it with `a4 up <alias>`. `--branch`,
+`--preview`, and `--json` deployments leave `arete.toml` unchanged; pass their
+endpoints to the client instead, for example `useArete(stack, { url, httpUrl })`
+in TypeScript.
+
 ### Private programs and stacks
 
 Owner-private programs (`a4 program push`) and private production stacks
@@ -867,6 +913,8 @@ package = "@my-org/arete-generated"
 [dependencies.stacks.ore]
 source = { registry = "ore" }
 version = "^1.4.0"
+# Optional: read the stack from your own deployment (`a4 up ore` writes this)
+# endpoints = { live = { websocket = "wss://...", query = "https://..." } }
 
 [authoring.stacks.local]
 manifest = "./.arete/MyStack.stack-manifest.json"

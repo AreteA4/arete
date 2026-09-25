@@ -17,9 +17,10 @@ use crate::commands::sdk::{
 use super::lockfile::{LockedDependency, LockedLiveSpec, LockedProgram};
 use super::manifest::{
     DependencyKind, DependencyOutputsV1, DependencySourceV1, DependencyV1, InstallTarget,
-    ManifestV1, PathSourceV1, RegistrySourceV1, WorkspaceSourceV1,
+    ManifestV1, PathSourceV1, RegistrySourceV1, StackEndpointsV1, WorkspaceSourceV1,
 };
 use super::paths::ProjectPaths;
+use super::registry_cache;
 use super::resolver::{
     RegistryDependencyRequest, RegistryResolveRequest, ResolvedRegistryDependency,
 };
@@ -129,6 +130,7 @@ pub fn install_without_saving(
             version: Some(requirement.unwrap_or_else(|| "*".into())),
             targets: Some(vec![target]),
             outputs,
+            endpoints: BTreeMap::new(),
         };
         match kind {
             DependencyKind::Stack => manifest.dependencies.stacks.insert(alias, dependency),
@@ -247,11 +249,17 @@ pub fn add_and_install(
     } else if options.output.is_some() {
         bail!("--output requires exactly one of --ts, --rust, or --python");
     }
+    // Installing a declared package again keeps the deployment `a4 up`
+    // recorded for it.
+    let endpoints = existing
+        .map(|existing| existing.endpoints.clone())
+        .unwrap_or_default();
     let dependency = DependencyV1 {
         source: DependencySourceV1::Registry(RegistrySourceV1 { registry: package }),
         version: Some(requirement),
         targets,
         outputs,
+        endpoints,
     };
     match kind {
         DependencyKind::Stack => {
@@ -526,7 +534,97 @@ fn dependency_manifest_item(dependency: &DependencyV1) -> Item {
         outputs.fmt();
         table.insert("outputs", value(outputs));
     }
+    if !dependency.endpoints.is_empty() {
+        table.insert("endpoints", endpoints_manifest_item(&dependency.endpoints));
+    }
     Item::Table(table)
+}
+
+/// `endpoints = { <live> = { websocket = "...", query = "..." } }`, inline so
+/// it fits a dependency written as a table or as an inline table.
+fn endpoints_manifest_item(endpoints: &BTreeMap<String, StackEndpointsV1>) -> Item {
+    let mut table = InlineTable::new();
+    for (live, endpoint) in endpoints {
+        let mut entry = InlineTable::new();
+        entry.insert("websocket", endpoint.websocket.clone().into());
+        entry.insert("query", endpoint.query.clone().into());
+        entry.fmt();
+        table.insert(live, entry.into());
+    }
+    table.fmt();
+    value(table)
+}
+
+/// arete.toml with one stack dependency's `endpoints` replaced, leaving every
+/// other byte as written.
+fn render_stack_endpoints(
+    original: &[u8],
+    alias: &str,
+    endpoints: &BTreeMap<String, StackEndpointsV1>,
+) -> Result<String> {
+    let mut document = parse_editable_manifest(original)?;
+    let path = ["dependencies", "stacks", alias, "endpoints"];
+    if endpoints.is_empty() {
+        let dependency = document
+            .as_item_mut()
+            .get_mut("dependencies")
+            .and_then(|item| item.get_mut("stacks"))
+            .and_then(|item| item.get_mut(alias))
+            .and_then(Item::as_table_like_mut);
+        if let Some(dependency) = dependency {
+            dependency.remove("endpoints");
+        }
+    } else {
+        insert_manifest_item(
+            document.as_item_mut(),
+            &path,
+            endpoints_manifest_item(endpoints),
+        )?;
+    }
+    Ok(document.to_string())
+}
+
+/// Points an installed stack's generated SDK at the user's own deployment:
+/// records `endpoints` for it in arete.toml and reinstalls, restoring
+/// arete.toml if the install does not commit. Returns false when arete.toml
+/// already records these endpoints and arete.lock is fresh.
+pub(crate) fn record_stack_endpoints_and_install(
+    manifest_path: impl AsRef<Path>,
+    alias: &str,
+    endpoints: BTreeMap<String, StackEndpointsV1>,
+) -> Result<bool> {
+    let manifest_path = manifest_path.as_ref();
+    let original = fs::read(manifest_path)
+        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
+    let loaded = ProjectManifest::load(manifest_path)?;
+    let mut manifest = loaded.document;
+    let dependency = manifest
+        .dependencies
+        .stacks
+        .get_mut(alias)
+        .ok_or_else(|| anyhow::anyhow!("arete.toml declares no stack '{alias}'"))?;
+    let lock_fresh = ProjectLock::load_optional(loaded.root.join("arete.lock"))?
+        .is_some_and(|lock| lock.is_fresh(&loaded.manifest_hash));
+    if dependency.endpoints == endpoints && lock_fresh {
+        return Ok(false);
+    }
+    dependency.endpoints = endpoints.clone();
+    manifest.validate()?;
+    let replacement_manifest_hash = manifest.resolution_hash()?;
+    let replacement = render_stack_endpoints(&original, alias, &endpoints)?;
+    write_manifest_atomic(manifest_path, replacement.as_bytes())?;
+    let result = install_project(manifest_path, InstallOptions::default());
+    if result.is_err() {
+        let install_committed =
+            ProjectLock::load_optional(manifest_path.with_file_name("arete.lock"))
+                .ok()
+                .flatten()
+                .is_some_and(|lock| lock.is_fresh(&replacement_manifest_hash));
+        if !install_committed {
+            write_manifest_atomic(manifest_path, &original)?;
+        }
+    }
+    result.map(|()| true)
 }
 
 fn split_package_requirement(value: &str) -> Result<(String, Option<String>)> {
@@ -675,7 +773,55 @@ fn install_loaded_project(
         prospective_lock.dependencies.len(),
         lock_path.display()
     );
+    for note in redeploy_notes(&manifest, previous_lock.as_ref(), &prospective_lock) {
+        println!("{note}");
+    }
     Ok(())
+}
+
+/// A stack whose recorded deployment (`endpoints`) now resolves to a
+/// different StackManifest: the deployment still serves the previous one
+/// until `a4 up <alias>` redeploys it. Its endpoints stay valid, since the
+/// deployment keeps its name.
+fn redeploy_notes(
+    manifest: &ProjectManifest,
+    previous: Option<&ProjectLock>,
+    next: &ProjectLock,
+) -> Vec<String> {
+    let Some(previous) = previous else {
+        return Vec::new();
+    };
+    let stack_manifest = |lock: &ProjectLock, alias: &str| {
+        lock.dependencies
+            .iter()
+            .find(|entry| entry.kind == DependencyKind::Stack && entry.alias == alias)
+            .and_then(|entry| entry.stack_manifest_hash.clone())
+    };
+    manifest
+        .document
+        .dependencies
+        .stacks
+        .iter()
+        .filter(|(_, dependency)| !dependency.endpoints.is_empty())
+        .filter_map(|(alias, _)| {
+            let before = stack_manifest(previous, alias)?;
+            let after = stack_manifest(next, alias)?;
+            (before != after).then(|| {
+                // `a4 up <name>` prefers an [authoring.stacks] entry of the
+                // same name, so that command would not redeploy this stack.
+                let redeploy = if manifest.document.authoring.stacks.contains_key(alias) {
+                    format!(
+                        "Rename it or the [authoring.stacks] entry '{alias}' (which `a4 up {alias}` deploys instead), then redeploy it"
+                    )
+                } else {
+                    format!("Run `a4 up {alias}` to redeploy it")
+                };
+                format!(
+                    "note: stack '{alias}' now resolves StackManifest {after}, but the deployment its SDK reads was deployed from {before}. {redeploy}."
+                )
+            })
+        })
+        .collect()
 }
 
 fn validate_update_selection(
@@ -830,88 +976,139 @@ fn resolve_dependencies(
     }
 
     if !registry_requests.is_empty() {
-        let request = RegistryResolveRequest {
-            manifest_version: manifest.document.manifest_version,
-            dependencies: registry_requests.clone(),
-            targets: manifest.document.sdk.targets.clone(),
-            generator_contract: GENERATOR_CONTRACT.into(),
-        };
-        // A batch failure names one package only when the batch *is* one
-        // package. Attributing a multi-dependency failure to the first entry
-        // reported the wrong package and, with a batch-wide `locked` flag,
-        // could tell the user to `a4 update` a dependency that is not locked.
-        let single = match registry_requests.as_slice() {
-            [only] => Some((
-                only.kind,
-                only.package.clone(),
-                only.locked_package_release_hash.is_some(),
-            )),
-            _ => None,
-        };
-        let response = ApiClient::new()?
-            .resolve_registry_dependencies(&request)
-            .map_err(|error| match &single {
-                Some((kind, package, locked)) => {
-                    describe_resolver_error(error, *kind, package, *locked)
-                }
-                None => describe_resolver_batch_error(error, &registry_requests),
-            })?;
-        if response.resolver_contract != RESOLVER_CONTRACT {
-            bail!(
-                "Registry returned resolver contract '{}'; expected '{}'",
-                response.resolver_contract,
-                RESOLVER_CONTRACT
-            );
-        }
-        if response.dependencies.len() != registry_requests.len() {
-            bail!("Registry resolver did not return exactly one dependency per request");
-        }
-        for (request, response) in registry_requests.into_iter().zip(response.dependencies) {
-            if response.alias() != request.alias {
-                bail!(
-                    "Resolver response order mismatch: expected '{}', received '{}'",
-                    request.alias,
-                    response.alias()
-                );
-            }
-            if response.package() != request.package {
-                bail!(
-                    "Resolver response package mismatch for '{}': expected '{}', received '{}'",
-                    request.alias,
-                    request.package,
-                    response.package()
-                );
-            }
-            verify_resolved_kind_and_contract(request.kind, &response)?;
-            verify_resolved_extensions(&response, &manifest.document.sdk.targets)?;
-            verify_resolved_release_identity(&response)?;
-            verify_resolved_stack_delivery(&response)?;
-            if let Some(locked) = &request.locked_package_release_hash {
-                if response.package_release_hash() != locked {
-                    bail!(
-                        "Registry resolved '{}' to release {} but arete.lock pins {}; run `a4 update {} {}` to advance intentionally",
-                        request.alias,
-                        response.package_release_hash(),
-                        locked,
-                        request.kind,
-                        request.alias
-                    );
-                }
-            }
-            let dependency = manifest
-                .dependency(request.kind, &request.alias)
-                .expect("request came from manifest");
-            resolved.push(ResolvedProjectDependency::Registry {
-                kind: request.kind,
-                source: dependency.source.stable_description(),
-                requirement: request.requirement,
-                targets: dependency.selected_targets(&manifest.document.sdk).to_vec(),
-                resolved: Box::new(response),
-            });
-        }
+        resolved.extend(resolve_registry_requests(manifest, registry_requests)?);
     }
     resolved.sort_by(|left, right| (left.kind(), left.alias()).cmp(&(right.kind(), right.alias())));
     Ok(resolved)
+}
+
+/// Resolves registry dependencies in one resolver batch and verifies each
+/// response against its request (and, when locked, the pinned release).
+fn resolve_registry_requests(
+    manifest: &ProjectManifest,
+    registry_requests: Vec<RegistryDependencyRequest>,
+) -> Result<Vec<ResolvedProjectDependency>> {
+    let mut resolved = Vec::with_capacity(registry_requests.len());
+    let request = RegistryResolveRequest {
+        manifest_version: manifest.document.manifest_version,
+        dependencies: registry_requests.clone(),
+        targets: manifest.document.sdk.targets.clone(),
+        generator_contract: GENERATOR_CONTRACT.into(),
+    };
+    // A batch failure names one package only when the batch *is* one
+    // package. Attributing a multi-dependency failure to the first entry
+    // reported the wrong package and, with a batch-wide `locked` flag,
+    // could tell the user to `a4 update` a dependency that is not locked.
+    let single = match registry_requests.as_slice() {
+        [only] => Some((
+            only.kind,
+            only.package.clone(),
+            only.locked_package_release_hash.is_some(),
+        )),
+        _ => None,
+    };
+    let response = ApiClient::new()?
+        .resolve_registry_dependencies(&request)
+        .map_err(|error| match &single {
+            Some((kind, package, locked)) => {
+                describe_resolver_error(error, *kind, package, *locked)
+            }
+            None => describe_resolver_batch_error(error, &registry_requests),
+        })?;
+    if response.resolver_contract != RESOLVER_CONTRACT {
+        bail!(
+            "Registry returned resolver contract '{}'; expected '{}'",
+            response.resolver_contract,
+            RESOLVER_CONTRACT
+        );
+    }
+    if response.dependencies.len() != registry_requests.len() {
+        bail!("Registry resolver did not return exactly one dependency per request");
+    }
+    for (request, response) in registry_requests.into_iter().zip(response.dependencies) {
+        if response.alias() != request.alias {
+            bail!(
+                "Resolver response order mismatch: expected '{}', received '{}'",
+                request.alias,
+                response.alias()
+            );
+        }
+        if response.package() != request.package {
+            bail!(
+                "Resolver response package mismatch for '{}': expected '{}', received '{}'",
+                request.alias,
+                request.package,
+                response.package()
+            );
+        }
+        verify_resolved_kind_and_contract(request.kind, &response)?;
+        verify_resolved_extensions(&response, &manifest.document.sdk.targets)?;
+        verify_resolved_release_identity(&response)?;
+        verify_resolved_stack_delivery(&response)?;
+        if let Some(locked) = &request.locked_package_release_hash {
+            if response.package_release_hash() != locked {
+                bail!(
+                    "Registry resolved '{}' to release {} but arete.lock pins {}; run `a4 update {} {}` to advance intentionally",
+                    request.alias,
+                    response.package_release_hash(),
+                    locked,
+                    request.kind,
+                    request.alias
+                );
+            }
+        }
+        let dependency = manifest
+            .dependency(request.kind, &request.alias)
+            .expect("request came from manifest");
+        resolved.push(ResolvedProjectDependency::Registry {
+            kind: request.kind,
+            source: dependency.source.stable_description(),
+            requirement: request.requirement,
+            targets: dependency.selected_targets(&manifest.document.sdk).to_vec(),
+            resolved: Box::new(response),
+        });
+    }
+    Ok(resolved)
+}
+
+/// Restores the registry cache entries of one installed dependency by
+/// resolving exactly the release `arete.lock` pins. `a4 up <alias>` deploys an
+/// installed stack from the cache, so a cleared cache is refilled here rather
+/// than by a full `a4 install`.
+pub(crate) fn restore_locked_registry_cache(
+    manifest: &ProjectManifest,
+    locked: &LockedDependency,
+) -> Result<()> {
+    let dependency = manifest
+        .dependency(locked.kind, &locked.alias)
+        .ok_or_else(|| anyhow::anyhow!("arete.toml has no {} '{}'", locked.kind, locked.alias))?;
+    let DependencySourceV1::Registry(RegistrySourceV1 { registry }) = &dependency.source else {
+        bail!(
+            "{} '{}' is local and has no registry artifacts to restore",
+            locked.kind,
+            locked.alias
+        );
+    };
+    let package_release_hash = locked.package_release_hash.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "arete.lock pins no release for {} '{}'",
+            locked.kind,
+            locked.alias
+        )
+    })?;
+    let request = RegistryDependencyRequest {
+        kind: locked.kind,
+        alias: locked.alias.clone(),
+        package: registry.clone(),
+        requirement: dependency.version.clone().expect("validated version"),
+        locked_package_release_hash: Some(package_release_hash),
+    };
+    for dependency in resolve_registry_requests(manifest, vec![request])? {
+        if let ResolvedProjectDependency::Registry { resolved, .. } = &dependency {
+            cache_registry_dependency(resolved)?;
+        }
+    }
+    Ok(())
 }
 
 fn resolve_path_dependency(
@@ -1510,6 +1707,9 @@ fn generate_all(
             typescript_package: &manifest.document.sdk.typescript.package,
             rust_module: manifest.document.sdk.rust.module_mode,
             python_module: manifest.document.sdk.python.module_mode,
+            stack_endpoints: manifest
+                .dependency(output.kind, &output.alias)
+                .map(|dependency| &dependency.endpoints),
         };
         match dependency {
             ResolvedProjectDependency::LocalStack {
@@ -1605,22 +1805,9 @@ fn cache_program_install(
 }
 
 fn cache_immutable_json(kind: &str, hash: &str, value: &serde_json::Value) -> Result<()> {
-    if hash.is_empty()
-        || !hash
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'-' | b'_'))
-    {
-        bail!("Cannot cache invalid {kind} identity '{hash}'");
-    }
-    let directory = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine Arete cache directory"))?
-        .join(".arete")
-        .join("cache")
-        .join("registry")
-        .join("v1")
-        .join(kind);
-    fs::create_dir_all(&directory)?;
-    let path = directory.join(format!("{hash}.json"));
+    let path = registry_cache::file(&registry_cache::root()?, kind, hash)?;
+    let directory = path.parent().expect("cache files live in a kind directory");
+    fs::create_dir_all(directory)?;
     if path.exists() {
         let cached = fs::read(&path)
             .ok()
@@ -2139,6 +2326,7 @@ version = "^1.0.0"
             version: Some("^2.0.0".into()),
             targets: Some(vec![InstallTarget::TypeScript]),
             outputs: DependencyOutputsV1::default(),
+            endpoints: BTreeMap::new(),
         };
 
         let rendered = render_manifest_addition(
@@ -3234,6 +3422,230 @@ version = "^1.0.0"
         );
         assert!(generated_text(&manifest, "rust").contains("TODO: Set URL"));
         assert!(generated_text(&manifest, "python").contains("ws=\"\""));
+    }
+
+    const MINE_WS: &str = "wss://mine.example.test";
+    const MINE_HTTP: &str = "https://mine.example.test";
+
+    fn mine_endpoints() -> BTreeMap<String, StackEndpointsV1> {
+        BTreeMap::from([(
+            "live".to_string(),
+            StackEndpointsV1 {
+                websocket: MINE_WS.into(),
+                query: MINE_HTTP.into(),
+            },
+        )])
+    }
+
+    fn endpoints_line(live: &str) -> String {
+        format!(
+            "endpoints = {{ {live} = {{ websocket = \"{MINE_WS}\", query = \"{MINE_HTTP}\" }} }}\n"
+        )
+    }
+
+    fn definition_only_resolution() -> (u16, String) {
+        (
+            200,
+            resolution(vec![ore_stack_dependency(Some(
+                json!({"mode": "definition-only"}),
+            ))]),
+        )
+    }
+
+    #[test]
+    fn a_definition_only_stack_reads_the_deployment_arete_toml_records() {
+        let sandbox = RegistrySandbox::new(vec![definition_only_resolution()], false);
+        let manifest = stack_project(&sandbox, &endpoints_line("live"));
+        install_project(&manifest, InstallOptions::default()).expect("install");
+        for target in ["typescript", "rust", "python"] {
+            let text = generated_text(&manifest, target);
+            assert!(text.contains(MINE_WS), "{target}: websocket endpoint");
+            assert!(!text.contains("TODO: Set"), "{target}: placeholder");
+        }
+        let typescript = generated_text(&manifest, "typescript");
+        assert!(
+            typescript.contains(&format!("ws: '{MINE_WS}'")),
+            "{typescript}"
+        );
+        assert!(
+            typescript.contains(&format!("http: '{MINE_HTTP}'")),
+            "{typescript}"
+        );
+        assert!(
+            !has_stack_gateway(&manifest),
+            "a deployment of a definition-only stack adds no managed gateway"
+        );
+    }
+
+    #[test]
+    fn recorded_endpoints_replace_a_hosted_stream_and_keep_its_gateway() {
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![ore_stack_dependency(Some(hosted_delivery(
+                    HOSTED_WS,
+                    HOSTED_HTTP,
+                    4,
+                )))]),
+            )],
+            false,
+        );
+        let manifest = stack_project(&sandbox, &endpoints_line("live"));
+        install_project(&manifest, InstallOptions::default()).expect("install");
+        let typescript = generated_text(&manifest, "typescript");
+        assert!(
+            typescript.contains(&format!("ws: '{MINE_WS}'")),
+            "{typescript}"
+        );
+        assert!(
+            typescript.contains(&format!("http: '{MINE_HTTP}'")),
+            "{typescript}"
+        );
+        assert!(has_stack_gateway(&manifest), "the managed gateway stays");
+        for target in ["rust", "python"] {
+            assert!(
+                generated_text(&manifest, target).contains(MINE_WS),
+                "{target}: websocket endpoint"
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_endpoints_must_name_every_live_spec() {
+        let sandbox = RegistrySandbox::new(vec![definition_only_resolution()], false);
+        let manifest = stack_project(&sandbox, &endpoints_line("other"));
+        let original = fs::read(&manifest).unwrap();
+        let error = install_project(&manifest, InstallOptions::default())
+            .expect_err("endpoints for an unknown LiveSpec");
+        assert!(
+            format!("{error:#}").contains("its StackManifest has LiveSpecs [live]"),
+            "{error:#}"
+        );
+        assert_project_untouched(&manifest, &original);
+    }
+
+    #[test]
+    fn stack_endpoints_are_recorded_in_place_and_installed() {
+        let sandbox = RegistrySandbox::new(
+            vec![definition_only_resolution(), definition_only_resolution()],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        let written = fs::read_to_string(&manifest).unwrap();
+        fs::write(&manifest, format!("# kept as written\n{written}")).unwrap();
+        install_project(&manifest, InstallOptions::default()).expect("install");
+
+        assert!(record_stack_endpoints_and_install(&manifest, "ore", mine_endpoints()).unwrap());
+        let text = fs::read_to_string(&manifest).unwrap();
+        assert!(text.starts_with("# kept as written\n"), "{text}");
+        let project = ProjectManifest::load(&manifest).unwrap();
+        assert_eq!(
+            project.document.dependencies.stacks["ore"].endpoints,
+            mine_endpoints()
+        );
+        assert!(lock_of(&manifest).is_fresh(&project.manifest_hash));
+        assert!(generated_text(&manifest, "typescript").contains(&format!("ws: '{MINE_WS}'")));
+
+        // Recording the same deployment again needs no install.
+        assert!(!record_stack_endpoints_and_install(&manifest, "ore", mine_endpoints()).unwrap());
+        // Rewriting the dependency entry (as installing it again does) keeps
+        // the recorded deployment.
+        let rendered = render_manifest_addition(
+            text.as_bytes(),
+            DependencyKind::Stack,
+            "ore",
+            &project.document.dependencies.stacks["ore"],
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(rendered.contains(MINE_WS), "{rendered}");
+    }
+
+    #[test]
+    fn a_stack_manifest_change_under_a_recorded_deployment_asks_for_a_redeploy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arete.toml");
+        fs::write(
+            &path,
+            format!(
+                "manifest_version = 1\n[project]\nname = \"notes\"\n\n\
+                 [dependencies.stacks.ore]\nsource = {{ registry = \"ore\" }}\nversion = \"^1.0.0\"\n{}\n\
+                 [dependencies.stacks.plain]\nsource = {{ registry = \"plain\" }}\nversion = \"^1.0.0\"\n",
+                endpoints_line("live")
+            ),
+        )
+        .unwrap();
+        let manifest = ProjectManifest::load(&path).unwrap();
+        let entry = |alias: &str, marker: char| LockedDependency {
+            kind: DependencyKind::Stack,
+            alias: alias.into(),
+            source: format!("registry:{alias}"),
+            requirement: Some("^1.0.0".into()),
+            version: Some("1.0.0".into()),
+            package_release_hash: Some(format!(
+                "arete:registry-package-release:v2:sha256:{}",
+                marker.to_string().repeat(64)
+            )),
+            stack_manifest_hash: Some(format!(
+                "arete:h1:stack-manifest:sha256:{}",
+                marker.to_string().repeat(64)
+            )),
+            program_id: None,
+            program_spec_hash: None,
+            program_release_hash: None,
+            live_specs: Vec::new(),
+            programs: Vec::new(),
+            sdk_extension_hashes: Vec::new(),
+            targets: vec![InstallTarget::TypeScript],
+            generator_contract: GENERATOR_CONTRACT.into(),
+        };
+        let lock = |ore: char, plain: char| {
+            let mut lock = ProjectLock::empty(manifest.manifest_hash.clone());
+            lock.dependencies = vec![entry("ore", ore), entry("plain", plain)];
+            lock
+        };
+
+        assert!(redeploy_notes(&manifest, None, &lock('a', 'a')).is_empty());
+        assert!(
+            redeploy_notes(&manifest, Some(&lock('a', 'a')), &lock('a', 'b')).is_empty(),
+            "a stack without a recorded deployment needs no redeploy"
+        );
+        let notes = redeploy_notes(&manifest, Some(&lock('a', 'a')), &lock('b', 'a'));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("stack 'ore'"), "{}", notes[0]);
+        assert!(notes[0].contains("Run `a4 up ore`"), "{}", notes[0]);
+
+        // An authored stack of the same name is what `a4 up ore` deploys.
+        let mut shadowed = manifest.clone();
+        shadowed.document.authoring.stacks.insert(
+            "ore".into(),
+            toml::from_str("manifest = \"./.arete/Ore.stack-manifest.json\"").unwrap(),
+        );
+        let notes = redeploy_notes(&shadowed, Some(&lock('a', 'a')), &lock('b', 'a'));
+        assert!(!notes[0].contains("Run `a4 up ore`"), "{}", notes[0]);
+        assert!(
+            notes[0].contains("[authoring.stacks] entry 'ore'"),
+            "{}",
+            notes[0]
+        );
+    }
+
+    #[test]
+    fn a_failed_endpoint_install_leaves_arete_toml_as_it_was() {
+        let sandbox = RegistrySandbox::new(
+            vec![
+                definition_only_resolution(),
+                (409, json!({"error": "conflict"}).to_string()),
+            ],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        install_project(&manifest, InstallOptions::default()).expect("install");
+        let original = fs::read(&manifest).unwrap();
+        record_stack_endpoints_and_install(&manifest, "ore", mine_endpoints())
+            .expect_err("the resolver refused");
+        assert_eq!(fs::read(&manifest).unwrap(), original);
     }
 
     #[test]
