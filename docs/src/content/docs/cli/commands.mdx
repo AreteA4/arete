@@ -851,9 +851,12 @@ endpoints = { live = { websocket = "wss://raydium-amm.stack.arete.run", query = 
 `endpoints` names every LiveSpec of the StackManifest by alias. For a hosted
 stack they replace the managed stream endpoints (its managed gateway for chain
 reads and transactions stays); remove them to use the stack's own endpoints
-again. `--branch`, `--preview`, and `--json` deployments leave `arete.toml`
-unchanged; pass their endpoints to the client instead, for example
-`useArete(stack, { url, httpUrl })` in TypeScript.
+again. When `a4 update` or a new version requirement moves the stack to a
+different StackManifest, `a4 install` notes that the recorded deployment still
+serves the previous one; redeploy it with `a4 up <alias>`. `--branch`,
+`--preview`, and `--json` deployments leave `arete.toml` unchanged; pass their
+endpoints to the client instead, for example `useArete(stack, { url, httpUrl })`
+in TypeScript.
 
 ### Private programs and stacks
 

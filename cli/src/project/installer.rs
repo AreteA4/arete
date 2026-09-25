@@ -773,7 +773,46 @@ fn install_loaded_project(
         prospective_lock.dependencies.len(),
         lock_path.display()
     );
+    for note in redeploy_notes(&manifest, previous_lock.as_ref(), &prospective_lock) {
+        println!("{note}");
+    }
     Ok(())
+}
+
+/// A stack whose recorded deployment (`endpoints`) now resolves to a
+/// different StackManifest: the deployment still serves the previous one
+/// until `a4 up <alias>` redeploys it. Its endpoints stay valid, since the
+/// deployment keeps its name.
+fn redeploy_notes(
+    manifest: &ProjectManifest,
+    previous: Option<&ProjectLock>,
+    next: &ProjectLock,
+) -> Vec<String> {
+    let Some(previous) = previous else {
+        return Vec::new();
+    };
+    let stack_manifest = |lock: &ProjectLock, alias: &str| {
+        lock.dependencies
+            .iter()
+            .find(|entry| entry.kind == DependencyKind::Stack && entry.alias == alias)
+            .and_then(|entry| entry.stack_manifest_hash.clone())
+    };
+    manifest
+        .document
+        .dependencies
+        .stacks
+        .iter()
+        .filter(|(_, dependency)| !dependency.endpoints.is_empty())
+        .filter_map(|(alias, _)| {
+            let before = stack_manifest(previous, alias)?;
+            let after = stack_manifest(next, alias)?;
+            (before != after).then(|| {
+                format!(
+                    "note: stack '{alias}' now resolves StackManifest {after}, but the deployment its SDK reads was deployed from {before}. Run `a4 up {alias}` to redeploy it."
+                )
+            })
+        })
+        .collect()
 }
 
 fn validate_update_selection(
@@ -3512,6 +3551,61 @@ version = "^1.0.0"
         )
         .unwrap();
         assert!(rendered.contains(MINE_WS), "{rendered}");
+    }
+
+    #[test]
+    fn a_stack_manifest_change_under_a_recorded_deployment_asks_for_a_redeploy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arete.toml");
+        fs::write(
+            &path,
+            format!(
+                "manifest_version = 1\n[project]\nname = \"notes\"\n\n\
+                 [dependencies.stacks.ore]\nsource = {{ registry = \"ore\" }}\nversion = \"^1.0.0\"\n{}\n\
+                 [dependencies.stacks.plain]\nsource = {{ registry = \"plain\" }}\nversion = \"^1.0.0\"\n",
+                endpoints_line("live")
+            ),
+        )
+        .unwrap();
+        let manifest = ProjectManifest::load(&path).unwrap();
+        let entry = |alias: &str, marker: char| LockedDependency {
+            kind: DependencyKind::Stack,
+            alias: alias.into(),
+            source: format!("registry:{alias}"),
+            requirement: Some("^1.0.0".into()),
+            version: Some("1.0.0".into()),
+            package_release_hash: Some(format!(
+                "arete:registry-package-release:v2:sha256:{}",
+                marker.to_string().repeat(64)
+            )),
+            stack_manifest_hash: Some(format!(
+                "arete:h1:stack-manifest:sha256:{}",
+                marker.to_string().repeat(64)
+            )),
+            program_id: None,
+            program_spec_hash: None,
+            program_release_hash: None,
+            live_specs: Vec::new(),
+            programs: Vec::new(),
+            sdk_extension_hashes: Vec::new(),
+            targets: vec![InstallTarget::TypeScript],
+            generator_contract: GENERATOR_CONTRACT.into(),
+        };
+        let lock = |ore: char, plain: char| {
+            let mut lock = ProjectLock::empty(manifest.manifest_hash.clone());
+            lock.dependencies = vec![entry("ore", ore), entry("plain", plain)];
+            lock
+        };
+
+        assert!(redeploy_notes(&manifest, None, &lock('a', 'a')).is_empty());
+        assert!(
+            redeploy_notes(&manifest, Some(&lock('a', 'a')), &lock('a', 'b')).is_empty(),
+            "a stack without a recorded deployment needs no redeploy"
+        );
+        let notes = redeploy_notes(&manifest, Some(&lock('a', 'a')), &lock('b', 'a'));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("stack 'ore'"), "{}", notes[0]);
+        assert!(notes[0].contains("a4 up ore"), "{}", notes[0]);
     }
 
     #[test]

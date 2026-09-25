@@ -5427,7 +5427,7 @@ fn project_deployment_endpoints(
         .collect::<BTreeSet<_>>();
     if expected != declared {
         anyhow::bail!(
-            "arete.toml endpoints for stack '{package}' name [{}], but its StackManifest has LiveSpecs [{}]",
+            "arete.toml endpoints for stack '{package}' name [{}], but its StackManifest has LiveSpecs [{}]. The recorded deployment predates this version: remove `endpoints` from the dependency, run `a4 install`, then redeploy with `a4 up <alias>`",
             declared.into_iter().collect::<Vec<_>>().join(", "),
             expected.into_iter().collect::<Vec<_>>().join(", ")
         );
