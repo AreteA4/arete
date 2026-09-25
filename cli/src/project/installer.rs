@@ -778,7 +778,7 @@ fn install_loaded_project(
     for note in redeploy_notes(&manifest, previous_lock.as_ref(), &prospective_lock) {
         println!("{note}");
     }
-    for notice in served_version_notices(&resolved) {
+    for notice in served_version_notices(&manifest, &resolved) {
         crate::ui::print_warning(&notice);
     }
     Ok(())
@@ -789,7 +789,12 @@ fn install_loaded_project(
 /// longer served, each with the command that installs the served version.
 /// Neither changes arete.lock: a locked project keeps its version, and its
 /// generated SDK is refused with the same replacement when it connects.
-fn served_version_notices(resolved: &[ResolvedProjectDependency]) -> Vec<String> {
+/// A stack whose arete.toml `endpoints` name its own deployment does not use
+/// the hosted version, so it only gets a note once that is retired.
+fn served_version_notices(
+    manifest: &ProjectManifest,
+    resolved: &[ResolvedProjectDependency],
+) -> Vec<String> {
     resolved
         .iter()
         .filter_map(|dependency| {
@@ -806,7 +811,24 @@ fn served_version_notices(resolved: &[ResolvedProjectDependency]) -> Vec<String>
             else {
                 return None;
             };
+            let own_deployment = manifest
+                .document
+                .dependencies
+                .stacks
+                .get(alias)
+                .is_some_and(|dependency| !dependency.endpoints.is_empty());
             match delivery.as_deref()? {
+                ResolvedStackDelivery::Hosted {
+                    served_until: Some(_),
+                    ..
+                } if own_deployment => None,
+                ResolvedStackDelivery::Retired { retired_at, .. } if own_deployment => {
+                    Some(format!(
+                        "The hosted version of stack '{alias}' ({package}@{version}) was retired \
+                         {retired_at}. Its SDK uses the endpoints in arete.toml, so it is not \
+                         affected."
+                    ))
+                }
                 ResolvedStackDelivery::Hosted {
                     served_until: Some(served_until),
                     replacement,
@@ -4021,13 +4043,19 @@ version = "^1.0.0"
             .as_object_mut()
             .unwrap()
             .remove("upgradeCommand");
-        let notices = served_version_notices(&[
-            resolved_ore(hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4)),
-            resolved_ore(draining),
-            resolved_ore(retired_delivery(HOSTED_WS, HOSTED_HTTP)),
-            resolved_ore(retired_without_command),
-            resolved_ore(json!({"mode": "definition-only"})),
-        ]);
+        // No request is made; the sandbox only provides project files.
+        let sandbox = RegistrySandbox::new(vec![(200, "{}".into())], false);
+        let hosted = ProjectManifest::load(stack_project(&sandbox, "")).unwrap();
+        let notices = served_version_notices(
+            &hosted,
+            &[
+                resolved_ore(hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4)),
+                resolved_ore(draining),
+                resolved_ore(retired_delivery(HOSTED_WS, HOSTED_HTTP)),
+                resolved_ore(retired_without_command),
+                resolved_ore(json!({"mode": "definition-only"})),
+            ],
+        );
         assert_eq!(
             notices,
             vec![
@@ -4042,6 +4070,28 @@ version = "^1.0.0"
                  Its SDK was generated, but it cannot connect. Version 1.1.0 is served."
                     .to_string(),
             ]
+        );
+
+        // A stack on its own deployment does not use the hosted version.
+        let own = ProjectManifest::load(stack_project(
+            &sandbox,
+            r#"endpoints = { live = { websocket = "wss://own.example.test", query = "https://own.example.test" } }"#,
+        ))
+        .unwrap();
+        let mut draining = hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4);
+        draining["servedUntil"] = json!("2026-11-01T00:00:00Z");
+        assert_eq!(
+            served_version_notices(
+                &own,
+                &[
+                    resolved_ore(draining),
+                    resolved_ore(retired_delivery(HOSTED_WS, HOSTED_HTTP)),
+                ]
+            ),
+            vec!["The hosted version of stack 'ore' (ore@1.0.0) was retired \
+                 2026-11-01T00:00:05Z. Its SDK uses the endpoints in arete.toml, so it is not \
+                 affected."
+                .to_string()]
         );
     }
 

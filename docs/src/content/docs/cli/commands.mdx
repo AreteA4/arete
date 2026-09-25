@@ -831,7 +831,14 @@ dependency, and names the command that installs the version served now:
   error that names the served version.
 
 To move to the served version, run the command `a4 install` prints, for
-example `a4 install stack ore@1.1.0`, then rebuild your application.
+example `a4 install stack ore@1.1.0`, then rebuild your application. When the
+warning names only the served version, install that version the same way
+(`a4 install stack <name>@<version>`). When it names neither, run
+`a4 update stack <alias>` to move to the newest version your requirement
+allows.
+
+A stack whose `endpoints` in `arete.toml` point at your own deployment does
+not use the hosted version, so none of this affects its SDK.
 
 ### Deploying an installed stack
 
