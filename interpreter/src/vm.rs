@@ -7634,6 +7634,53 @@ mod tests {
     }
 
     #[test]
+    fn test_numeric_miss_past_2_pow_53_flushes_on_its_decimal_string() {
+        let slot = u64::MAX - 1;
+        let mut vm = VmContext::new();
+
+        let missing = vec![
+            OpCode::LoadConstant {
+                value: json!(slot),
+                dest: 0,
+            },
+            OpCode::LookupIndex {
+                state_id: 0,
+                index_name: "end_at_lookup_index".to_string(),
+                lookup_value: 0,
+                dest: 1,
+            },
+        ];
+        vm.execute_handler(&missing, &json!({}), "test", 0, "TestEntity", None, None)
+            .unwrap();
+        let queued_under = vm.take_last_lookup_index_miss();
+
+        let register = vec![
+            OpCode::LoadConstant {
+                value: json!(slot.to_string()),
+                dest: 0,
+            },
+            OpCode::LoadConstant {
+                value: json!(42),
+                dest: 1,
+            },
+            OpCode::UpdateLookupIndex {
+                state_id: 0,
+                index_name: "end_at_lookup_index".to_string(),
+                lookup_value: 0,
+                primary_key: 1,
+            },
+        ];
+        vm.execute_handler(&register, &json!({}), "test", 0, "TestEntity", None, None)
+            .unwrap();
+
+        assert_eq!(queued_under.as_deref(), Some("18446744073709551614"));
+        assert_eq!(
+            vm.take_last_lookup_index_keys(),
+            vec!["18446744073709551614"]
+        );
+    }
+
+    #[test]
     fn test_lookup_miss_does_not_leak_into_the_next_handler() {
         let mut vm = VmContext::new();
 
