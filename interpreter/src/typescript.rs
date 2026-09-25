@@ -3370,6 +3370,10 @@ pub struct TypeScriptStackConfig {
     pub programs: Option<Vec<TypeScriptProgramConfig>>,
     /// Managed-hosting transports. Local generation leaves this unset.
     pub gateway: Option<serde_json::Value>,
+    /// Served version emitted as the stack definition's `release`. Only
+    /// StackManifest generation for a hosted endpoint sets it; without it the
+    /// generated definition is unchanged.
+    pub release: Option<crate::public_artifacts::StackRelease>,
 }
 
 impl Default for TypeScriptStackConfig {
@@ -3383,6 +3387,7 @@ impl Default for TypeScriptStackConfig {
             extension_import: None,
             programs: None,
             gateway: None,
+            release: None,
         }
     }
 }
@@ -3874,11 +3879,19 @@ pub fn compile_public_artifacts_v2(
 ) -> Result<TypeScriptStackOutput, String> {
     let stack_spec =
         crate::public_artifacts::stack_spec_from_artifacts_v2(programs, live_spec, manifest)?;
-    compile_stack_spec_with_view_selection(stack_spec, config, true)
+    let mut config = config.unwrap_or_default();
+    // The served version belongs to the stack bound to a WebSocket endpoint.
+    if config.release.is_none() && config.websocket_url.is_some() {
+        config.release = crate::public_artifacts::StackRelease::for_single_live(manifest);
+    }
+    compile_stack_spec_with_view_selection(stack_spec, Some(config), true)
 }
 
 /// Compile each aliased LiveSpec into an independent module and generate a
 /// manifest-level `createSession` definition that preserves exact alias keys.
+///
+/// Each alias bound to a WebSocket endpoint in `live_endpoints` is generated
+/// with its served version (`release`); unbound aliases get none.
 pub fn compile_composed_public_artifacts_v2(
     programs: &[arete_artifacts::ProgramSpecArtifact],
     live_specs: &[(String, arete_artifacts::LiveSpecArtifactV2)],
@@ -3953,6 +3966,7 @@ pub fn compile_composed_public_artifacts_v2(
         let mut program_config = config.stack.clone();
         program_config.websocket_url = None;
         program_config.http_url = None;
+        program_config.release = None;
         program_config.programs =
             subset_program_configs(&program_stack, config.stack.programs.as_deref())?;
         let output =
@@ -3984,6 +3998,10 @@ pub fn compile_composed_public_artifacts_v2(
             stack_config.websocket_url = None;
             stack_config.http_url = None;
         }
+        stack_config.release = stack_config
+            .websocket_url
+            .is_some()
+            .then(|| crate::public_artifacts::StackRelease::for_alias(manifest, &live.alias));
         stack_config.programs =
             subset_program_configs(&live.stack_spec, config.stack.programs.as_deref())?;
         for program in &live.stack_spec.program_specs {
@@ -4546,6 +4564,17 @@ fn generate_stack_definition_multi(
         "  endpoints: {{\n{}\n{}\n  }},",
         websocket_endpoint, http_endpoint
     );
+    let release_block = config
+        .release
+        .as_ref()
+        .map(|release| {
+            format!(
+                "\n  release: {{\n    stackManifestHash: {},\n    liveAlias: {},\n  }},",
+                ts_ident::single_quoted(&release.stack_manifest_hash),
+                ts_ident::single_quoted(&release.live_alias),
+            )
+        })
+        .unwrap_or_default();
     let gateway_block = config
         .gateway
         .as_ref()
@@ -4675,7 +4704,7 @@ fn generate_stack_definition_multi(
     let stack_export = format!(
         r#"export const {core_export_name} = {{
   name: {stack_kebab},
-{endpoints_block}{gateway_block}
+{endpoints_block}{release_block}{gateway_block}
   views: {{
 {views_body}
   }},{schemas_section}{patch_schemas_section}{programs_section}{program_reads_section}{addresses_section}
@@ -4683,6 +4712,7 @@ fn generate_stack_definition_multi(
         core_export_name = core_export_name,
         stack_kebab = ts_ident::single_quoted(stack_kebab),
         endpoints_block = endpoints_block,
+        release_block = release_block,
         gateway_block = gateway_block,
         views_body = views_body,
         schemas_section = schemas_block,

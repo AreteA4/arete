@@ -13,6 +13,37 @@ use serde::Serialize;
 
 use crate::ast::{InstructionDef, PdaDefinition, SerializableStackSpec, CURRENT_AST_VERSION};
 
+/// The exact served version a generated stack definition targets: one live
+/// alias of one StackManifest. Generated SDKs name it in their WebSocket
+/// session request so the session endpoint can route each client to the
+/// version it was generated for. Only StackManifest generation knows it;
+/// AST-only generation never emits one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackRelease {
+    /// `arete:h1:stack-manifest:sha256:<64 hex>`.
+    pub stack_manifest_hash: String,
+    /// The StackManifest live alias the stack definition serves.
+    pub live_alias: String,
+}
+
+impl StackRelease {
+    /// The release of `alias` within `manifest`.
+    pub fn for_alias(manifest: &StackManifestArtifactV2, alias: &str) -> Self {
+        Self {
+            stack_manifest_hash: manifest.artifact_hash.to_string(),
+            live_alias: alias.to_string(),
+        }
+    }
+
+    /// The release of a single-live manifest's only alias.
+    pub fn for_single_live(manifest: &StackManifestArtifactV2) -> Option<Self> {
+        match manifest.payload.live_specs.as_slice() {
+            [live] => Some(Self::for_alias(manifest, &live.alias)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AliasedStackSpecV2 {
     pub alias: String,
