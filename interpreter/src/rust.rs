@@ -2315,6 +2315,7 @@ mod tests {
                             }
                         }
                     })),
+                    package_release_hash: None,
                 }],
                 ..Default::default()
             }),
@@ -2580,6 +2581,7 @@ mod tests {
                         }
                     }}
                 })),
+                package_release_hash: None,
             }],
             ..Default::default()
         };
@@ -2943,6 +2945,9 @@ pub struct RustProgramReadConfig {
     /// Exact wire descriptor for a published hosted binding. `None` keeps
     /// the local-HTTP descriptor used by locally generated stack SDKs.
     pub descriptor: Option<serde_json::Value>,
+    /// The program package release the program SDK was generated from,
+    /// emitted as `PACKAGE_RELEASE_HASH`. Local builds leave it unset.
+    pub package_release_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3087,6 +3092,22 @@ pub fn compile_stack_spec_with_exact_views(
 /// Compile only the portable program surface: generated account/model types,
 /// instruction builders, PDA helpers, read descriptors, and a `ProgramSdk`
 /// aggregate. No entity, view, or stack binding is emitted.
+/// The program package release a standalone program SDK was generated from:
+/// set when its one program has a registry release, unset for local builds.
+fn standalone_package_release_hash<'a>(
+    stack_spec: &SerializableStackSpec,
+    config: &'a RustStackConfig,
+) -> Option<&'a str> {
+    let [program_id] = stack_spec.program_ids.as_slice() else {
+        return None;
+    };
+    config
+        .program_reads
+        .iter()
+        .find(|read| &read.program_id == program_id)
+        .and_then(|read| read.package_release_hash.as_deref())
+}
+
 pub fn compile_program_modules(
     stack_spec: SerializableStackSpec,
     config: Option<RustStackConfig>,
@@ -3146,8 +3167,16 @@ pub fn compile_program_modules(
         "self",
     ));
     let gateway_impl = rust_gateway_impl(config.gateway.as_ref(), "    ");
+    let package_release_impl = standalone_package_release_hash(&stack_spec, &config)
+        .map(|hash| {
+            format!(
+                "\n\n    fn package_release_hash() -> Option<&'static str> {{\n        Some({})\n    }}",
+                rust_string_literal(hash)
+            )
+        })
+        .unwrap_or_default();
     programs.code.push_str(&format!(
-        "\n\nimpl arete_sdk::ProgramSdk for {aggregate_name} {{\n    fn name() -> &'static str {{\n        {}\n    }}{gateway_impl}\n}}\n",
+        "\n\nimpl arete_sdk::ProgramSdk for {aggregate_name} {{\n    fn name() -> &'static str {{\n        {}\n    }}{gateway_impl}{package_release_impl}\n}}\n",
         rust_string_literal(&to_kebab_case(&stack_spec.stack_name)),
     ));
 
@@ -5203,6 +5232,16 @@ fn generate_stack_programs_rs(
                 spec = rust_string_literal(spec_hash),
                 release = rust_string_literal(release_hash),
             ));
+            if let Some(package_release_hash) = reads
+                .iter()
+                .find(|r| r.program_id == *program_id)
+                .and_then(|r| r.package_release_hash.as_deref())
+            {
+                sections.push(format!(
+                    "    /// Program package release this program SDK was generated from.\n    pub const PACKAGE_RELEASE_HASH: &str = {};",
+                    rust_string_literal(package_release_hash)
+                ));
+            }
         }
         sections.extend(blocks);
         if let Some(pdas_module) = own_pdas.and_then(generate_rust_pdas_module) {

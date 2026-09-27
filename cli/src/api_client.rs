@@ -892,6 +892,25 @@ pub struct RegistryProgramInstallResponse {
     pub chain_binding: Option<RegistryCapabilityInstallBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction_binding: Option<RegistryCapabilityInstallBinding>,
+    /// The program package release a stack references for this program: its
+    /// program SDK identity. Present only under the `program-sdks` resolver
+    /// opt-in, and only when the stack references a program package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_package: Option<RegistryProgramPackageReference>,
+    /// The referenced program package's SDK extensions for the requested
+    /// targets. `None` when the registry did not send the field, in which
+    /// case the legacy `definition.extensions` applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sdk_extensions: Option<Vec<crate::project::resolver::ResolvedSdkExtension>>,
+}
+
+/// One exact program package release: the identity of a program SDK.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistryProgramPackageReference {
+    pub package: String,
+    pub version: String,
+    pub package_release_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1385,9 +1404,12 @@ impl ApiClient {
 
     /// Resolve a complete project dependency batch against one exact registry snapshot.
     ///
-    /// The batch opts into `include=delivery`, so every resolved stack names
-    /// its delivery mode and a hosted stack carries its live and gateway
-    /// bindings in the same response: one request, however many stacks.
+    /// The batch opts into `include=delivery,program-sdks`, so every resolved
+    /// stack names its delivery mode, a hosted stack carries its live and
+    /// gateway bindings, and each stack program names the program package
+    /// release (and its SDK extensions) the stack references, all in the same
+    /// response: one request, however many stacks. Registries that predate an
+    /// opt-in ignore it, so every field it adds is optional.
     pub fn resolve_registry_dependencies(
         &self,
         request: &crate::project::resolver::RegistryResolveRequest,
@@ -1396,7 +1418,7 @@ impl ApiClient {
             .with_optional_auth(
                 self.client
                     .post(format!(
-                        "{}/api/registry/v1/resolve?include=delivery",
+                        "{}/api/registry/v1/resolve?include=delivery,program-sdks",
                         self.base_url
                     ))
                     .json(request),

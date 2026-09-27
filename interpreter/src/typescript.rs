@@ -3416,6 +3416,30 @@ pub struct TypeScriptCompositionConfig {
     pub live_endpoints: BTreeMap<String, TypeScriptLiveEndpoints>,
     pub live_module_imports: BTreeMap<String, String>,
     pub program_module_imports: BTreeMap<String, String>,
+    /// Program SDK entry modules keyed by ProgramSpec hash (relative import
+    /// paths such as `./programs/ore/__arete-program.js`). A program with an
+    /// entry module is that module in the session's `programs` and in every
+    /// live stack that bundles it, so the session exposes one program SDK
+    /// surface whichever member it is reached through.
+    pub program_entry_imports: BTreeMap<String, String>,
+    /// A stack-level extension applied to the composition.
+    pub extensions: Option<TypeScriptCompositionExtensions>,
+}
+
+/// A stack-level extension for a composition. A composition has no single
+/// stack, so the extension binds what it extends by name: a
+/// `defineStackExtensions<typeof X.stacks.<alias>>()` export extends that
+/// live alias's stack, and a `defineProgramExtensions<typeof
+/// X.programs.<key>>()` export extends that session program.
+#[derive(Debug, Clone, Default)]
+pub struct TypeScriptCompositionExtensions {
+    /// Relative import of the extension entry module (`./stack-extensions.js`).
+    pub import_path: String,
+    /// `(live alias, export name)` pairs, applied with `extendStack`.
+    pub stack_bindings: Vec<(String, String)>,
+    /// `(session program key, export name)` pairs, applied with
+    /// `extendPrograms`.
+    pub program_bindings: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -3989,6 +4013,19 @@ pub fn compile_composed_public_artifacts_v2(
 
     let mut promoted_programs = Vec::new();
     let mut promoted_hashes = BTreeMap::<String, String>::new();
+    // Session program key -> ProgramSpec hash, for program entry imports.
+    let mut session_program_hashes = independent_programs
+        .iter()
+        .map(|program| {
+            let source = to_camel_case(&program.payload.idl_snapshot.snapshot.name);
+            (
+                composition_program_key(program, &source),
+                program.artifact_hash.to_string(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    // Live alias -> the bundled program keys replaced by an entry module.
+    let mut stack_program_overrides = BTreeMap::<String, Vec<(String, String)>>::new();
     for live in composed.live_specs {
         let mut stack_config = config.stack.clone();
         if let Some(endpoints) = config.live_endpoints.get(&live.alias) {
@@ -4010,6 +4047,12 @@ pub fn compile_composed_public_artifacts_v2(
                 .hash()
                 .map_err(|error| error.to_string())?
                 .to_string();
+            if config.program_entry_imports.contains_key(&hash) {
+                stack_program_overrides
+                    .entry(live.alias.clone())
+                    .or_default()
+                    .push((source.clone(), hash.clone()));
+            }
             if let Some(existing_hash) = promoted_hashes.get(&source) {
                 if existing_hash != &hash {
                     return Err(format!(
@@ -4025,6 +4068,7 @@ pub fn compile_composed_public_artifacts_v2(
                     program.idl_snapshot.snapshot.name, program.program_id
                 ),
             )?;
+            session_program_hashes.insert(source.clone(), hash.clone());
             promoted_hashes.insert(source.clone(), hash);
             promoted_programs.push((source.clone(), live.alias.clone(), source));
         }
@@ -4040,15 +4084,33 @@ pub fn compile_composed_public_artifacts_v2(
         });
     }
 
-    let session_definition = generate_session_definition(
-        &composed.name,
-        &outputs,
-        &promoted_programs,
-        program_collection.as_ref(),
-        &config.live_module_imports,
+    let program_entries = resolve_program_entry_imports(
+        &config.program_entry_imports,
+        &session_program_hashes,
         &config.program_module_imports,
-        config.stack.gateway.as_ref(),
-    );
+    )?;
+    if let Some(extensions) = &config.extensions {
+        validate_composition_extensions(
+            extensions,
+            &outputs
+                .iter()
+                .map(|live| live.alias.clone())
+                .collect::<BTreeSet<_>>(),
+            &session_program_hashes,
+        )?;
+    }
+    let session_definition = generate_session_definition(SessionDefinitionInput {
+        manifest_name: &composed.name,
+        live_stacks: &outputs,
+        promoted_programs: &promoted_programs,
+        program_collection: program_collection.as_ref(),
+        live_module_imports: &config.live_module_imports,
+        program_module_imports: &config.program_module_imports,
+        gateway: config.stack.gateway.as_ref(),
+        program_entries: &program_entries,
+        stack_program_overrides: &stack_program_overrides,
+        extensions: config.extensions.as_ref(),
+    });
     ts_ident::check_module_declarations(
         &session_definition,
         &format!("The TypeScript session for stack '{}'", composed.name),
@@ -4061,6 +4123,88 @@ pub fn compile_composed_public_artifacts_v2(
         warnings,
         pda_degradations,
     })
+}
+
+/// Session program key -> program entry import, for every configured entry
+/// module. Every entry module must name a program of the composition, and a
+/// program takes at most one replacement module.
+fn resolve_program_entry_imports(
+    entry_imports: &BTreeMap<String, String>,
+    session_program_hashes: &BTreeMap<String, String>,
+    program_module_imports: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut entries = BTreeMap::new();
+    for (hash, import) in entry_imports {
+        let keys = session_program_hashes
+            .iter()
+            .filter(|(_, program_hash)| *program_hash == hash)
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        if keys.is_empty() {
+            return Err(format!(
+                "composition program entry module '{import}' references unknown ProgramSpec {hash}"
+            ));
+        }
+        for key in keys {
+            if program_module_imports.contains_key(&key) {
+                return Err(format!(
+                    "composition program '{key}' has both a program module import and a program SDK entry module"
+                ));
+            }
+            entries.insert(key, import.clone());
+        }
+    }
+    Ok(entries)
+}
+
+fn validate_composition_extensions(
+    extensions: &TypeScriptCompositionExtensions,
+    live_aliases: &BTreeSet<String>,
+    session_program_hashes: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let mut stacks = BTreeSet::new();
+    for (alias, export) in &extensions.stack_bindings {
+        if !live_aliases.contains(alias) {
+            return Err(format!(
+                "composition stack extension '{export}' extends unknown live alias '{alias}'"
+            ));
+        }
+        if !stacks.insert(alias) {
+            return Err(format!(
+                "composition stack extensions bind live alias '{alias}' more than once"
+            ));
+        }
+    }
+    let mut programs = BTreeSet::new();
+    for (key, export) in &extensions.program_bindings {
+        if !session_program_hashes.contains_key(key) {
+            return Err(format!(
+                "composition program extension '{export}' extends unknown program '{key}'"
+            ));
+        }
+        if !programs.insert(key) {
+            return Err(format!(
+                "composition stack extensions bind program '{key}' more than once"
+            ));
+        }
+    }
+    if stacks.is_empty() && programs.is_empty() {
+        return Err(
+            "composition stack extension declares no per-alias stack or per-program bindings"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// `.key` when `key` is an identifier, otherwise `["key"]`.
+fn typescript_member_access(key: &str) -> String {
+    let property = typescript_property_key(key);
+    if property == key {
+        format!(".{key}")
+    } else {
+        format!("[{property}]")
+    }
 }
 
 fn subset_program_configs(
@@ -4095,19 +4239,50 @@ fn subset_program_configs(
         .map(Some)
 }
 
-fn generate_session_definition(
-    manifest_name: &str,
-    live_stacks: &[TypeScriptAliasedStackOutput],
-    promoted_programs: &[(String, String, String)],
-    program_collection: Option<&TypeScriptProgramCollectionOutput>,
-    live_module_imports: &BTreeMap<String, String>,
-    program_module_imports: &BTreeMap<String, String>,
-    gateway: Option<&serde_json::Value>,
-) -> String {
+struct SessionDefinitionInput<'a> {
+    manifest_name: &'a str,
+    live_stacks: &'a [TypeScriptAliasedStackOutput],
+    promoted_programs: &'a [(String, String, String)],
+    program_collection: Option<&'a TypeScriptProgramCollectionOutput>,
+    live_module_imports: &'a BTreeMap<String, String>,
+    program_module_imports: &'a BTreeMap<String, String>,
+    gateway: Option<&'a serde_json::Value>,
+    /// Session program key -> program SDK entry module import.
+    program_entries: &'a BTreeMap<String, String>,
+    /// Live alias -> `(bundled program key, ProgramSpec hash)` replaced by
+    /// the program's entry module.
+    stack_program_overrides: &'a BTreeMap<String, Vec<(String, String)>>,
+    extensions: Option<&'a TypeScriptCompositionExtensions>,
+}
+
+fn program_entry_binding(key: &str) -> String {
+    format!("{}ProgramSdk", safe_pascal_identifier(key))
+}
+
+fn generate_session_definition(input: SessionDefinitionInput<'_>) -> String {
+    let SessionDefinitionInput {
+        manifest_name,
+        live_stacks,
+        promoted_programs,
+        program_collection,
+        live_module_imports,
+        program_module_imports,
+        gateway,
+        program_entries,
+        stack_program_overrides,
+        extensions,
+    } = input;
     let manifest_pascal = safe_pascal_identifier(manifest_name);
     let manifest_screaming =
         ts_ident::identifier_stem(&manifest_pascal, IdentifierCase::ScreamingSnake);
     let definition_name = format!("{manifest_screaming}_SESSION_DEFINITION");
+    // With a stack-level extension the generated definition is the extension
+    // base, and the exported definition applies the extension to it.
+    let base_name = if extensions.is_some() {
+        format!("{definition_name}_CORE")
+    } else {
+        definition_name.clone()
+    };
     let imports = live_stacks
         .iter()
         .map(|live| {
@@ -4131,17 +4306,33 @@ fn generate_session_definition(
             )
         })
         .unwrap_or_default();
-    let program_module_import_lines = program_module_imports
-        .iter()
-        .map(|(alias, import)| {
-            format!(
-                "import {}Program from '{}';",
-                safe_pascal_identifier(alias),
-                import
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let program_module_import_lines =
+        program_module_imports
+            .iter()
+            .map(|(alias, import)| {
+                format!(
+                    "import {}Program from '{}';",
+                    safe_pascal_identifier(alias),
+                    import
+                )
+            })
+            .chain(program_entries.iter().map(|(key, import)| {
+                format!("import {} from '{import}';", program_entry_binding(key))
+            }))
+            .chain(extensions.map(|extensions| {
+                let names = extensions
+                    .stack_bindings
+                    .iter()
+                    .chain(&extensions.program_bindings)
+                    .map(|(_, export)| export.as_str())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("import {{ {names} }} from '{}';", extensions.import_path)
+            }))
+            .collect::<Vec<_>>()
+            .join("\n");
     let program_members = program_collection
         .map(|programs| {
             let definitions = programs
@@ -4150,6 +4341,8 @@ fn generate_session_definition(
                 .map(|(public, source)| {
                     let value = if program_module_imports.contains_key(public) {
                         format!("{}Program", safe_pascal_identifier(public))
+                    } else if program_entries.contains_key(public) {
+                        program_entry_binding(public)
                     } else {
                         format!(
                             "{manifest_pascal}Programs.programs.{}",
@@ -4178,12 +4371,16 @@ fn generate_session_definition(
     let promoted_definitions = promoted_programs
         .iter()
         .map(|(public, live_alias, source)| {
-            format!(
-                "    {}: {}Stack.programs.{},",
-                typescript_property_key(public),
-                safe_pascal_identifier(live_alias),
-                typescript_property_key(source)
-            )
+            let value = if program_entries.contains_key(public) {
+                program_entry_binding(public)
+            } else {
+                format!(
+                    "{}Stack.programs.{}",
+                    safe_pascal_identifier(live_alias),
+                    typescript_property_key(source)
+                )
+            };
+            format!("    {}: {value},", typescript_property_key(public))
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -4214,24 +4411,79 @@ fn generate_session_definition(
     let members = live_stacks
         .iter()
         .map(|live| {
-            format!(
-                "    {}: {}Stack,",
-                typescript_property_key(&live.alias),
-                safe_pascal_identifier(&live.alias)
-            )
+            let stack = format!("{}Stack", safe_pascal_identifier(&live.alias));
+            let value = match stack_program_overrides.get(&live.alias) {
+                Some(overrides) if !overrides.is_empty() => {
+                    let programs = overrides
+                        .iter()
+                        .map(|(key, _)| {
+                            format!(
+                                "{}: {}",
+                                typescript_property_key(key),
+                                program_entry_binding(key)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{{ ...{stack}, programs: {{ ...{stack}.programs, {programs} }} }}")
+                }
+                _ => stack,
+            };
+            format!("    {}: {value},", typescript_property_key(&live.alias))
         })
         .collect::<Vec<_>>()
         .join("\n");
     let gateway_member = gateway
         .map(|gateway| format!("  gateway: {},", gateway))
         .unwrap_or_default();
+    let mut sdk_imports = vec!["createSession"];
+    let extended_definition = extensions
+        .map(|extensions| {
+            let mut layers = Vec::new();
+            if !extensions.stack_bindings.is_empty() {
+                sdk_imports.push("extendStack");
+                let stacks = extensions
+                    .stack_bindings
+                    .iter()
+                    .map(|(alias, export)| {
+                        format!(
+                            "    {}: extendStack({base_name}.stacks{}, {export}),",
+                            typescript_property_key(alias),
+                            typescript_member_access(alias)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                layers.push(format!(
+                    "  stacks: {{\n    ...{base_name}.stacks,\n{stacks}\n  }},"
+                ));
+            }
+            if !extensions.program_bindings.is_empty() {
+                sdk_imports.push("extendPrograms");
+                let programs = extensions
+                    .program_bindings
+                    .iter()
+                    .map(|(key, export)| format!("    {}: {export},", typescript_property_key(key)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                layers.push(format!(
+                    "  programs: extendPrograms({base_name}.programs, {{\n{programs}\n  }}),"
+                ));
+            }
+            format!(
+                "\nexport const {definition_name} = {{\n  ...{base_name},\n{}\n}} as const;\n",
+                layers.join("\n")
+            )
+        })
+        .unwrap_or_default();
+    sdk_imports.sort_unstable();
     format!(
-        r#"import {{ createSession, type CompositionSessionOptions }} from '@usearete/sdk';
+        r#"import {{ {sdk_imports}, type CompositionSessionOptions }} from '@usearete/sdk';
 {imports}
 {program_import}
 {program_module_import_lines}
 
-export const {definition_name} = {{
+export const {base_name} = {{
   mode: 'composition',
 {gateway_member}
   stacks: {{
@@ -4239,7 +4491,7 @@ export const {definition_name} = {{
   }},
 {program_members}
 }} as const;
-
+{extended_definition}
 export type {manifest_pascal}SessionDefinition = typeof {definition_name};
 export const {manifest_screaming}_SDK = {definition_name};
 export type {manifest_pascal}Sdk = {manifest_pascal}SessionDefinition;
@@ -4250,13 +4502,16 @@ export function create{manifest_pascal}Session(
   return createSession({definition_name}, options);
 }}
 "#,
+        sdk_imports = sdk_imports.join(", "),
         imports = imports,
         program_import = program_import,
         program_module_import_lines = program_module_import_lines,
         definition_name = definition_name,
+        base_name = base_name,
         gateway_member = gateway_member,
         members = members,
         program_members = program_members,
+        extended_definition = extended_definition,
         manifest_pascal = manifest_pascal,
         manifest_screaming = manifest_screaming,
     )

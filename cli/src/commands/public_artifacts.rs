@@ -269,6 +269,7 @@ pub(crate) fn cache_ore_stack_fixture(cache_root: &Path, alias: &str) -> LockedD
                 program_id: value["payload"]["programId"].as_str().unwrap().into(),
                 program_spec_hash: hash,
                 program_release_hash: None,
+                package_release_hash: None,
                 sdk_extension_hashes: Vec::new(),
             }),
         }

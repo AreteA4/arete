@@ -102,6 +102,10 @@ pub struct PythonProgramReadConfig {
     /// Exact wire descriptor for a published hosted binding. `None` keeps
     /// the local-HTTP descriptor used by locally generated stack SDKs.
     pub descriptor: Option<serde_json::Value>,
+    /// The program package release the program SDK was generated from,
+    /// emitted as `<PROGRAM>_PACKAGE_RELEASE_HASH`. Local builds leave it
+    /// unset.
+    pub package_release_hash: Option<String>,
 }
 
 /// The `arete-sdk` (PyPI) minimum version emitted into generated Python
@@ -3017,6 +3021,7 @@ fn generate_stack_programs_py(
         exports.push(format!("{const_prefix}_PROGRAM_ID"));
 
         let mut spec_hash_expr = "None".to_string();
+        let mut package_release_kwarg = String::new();
         if let Ok((spec_hash, release_hash, descriptor)) = &read_layer {
             let descriptor_expr = match descriptor {
                 Some(descriptor) => {
@@ -3042,6 +3047,19 @@ fn generate_stack_programs_py(
                 format!("{const_prefix}_PROGRAM_RELEASE_HASH"),
                 format!("{module_name}_read_descriptor"),
             ]);
+            if let Some(package_release_hash) = reads
+                .iter()
+                .find(|r| r.program_id == *program_id)
+                .and_then(|r| r.package_release_hash.as_deref())
+            {
+                section.push_str(&format!(
+                    "\n#: Program package release this program SDK was generated from.\n{const_prefix}_PACKAGE_RELEASE_HASH = {}\n",
+                    py_string_literal(package_release_hash)
+                ));
+                exports.push(format!("{const_prefix}_PACKAGE_RELEASE_HASH"));
+                package_release_kwarg =
+                    format!("\n    package_release_hash={const_prefix}_PACKAGE_RELEASE_HASH,");
+            }
             spec_hash_expr = format!("{const_prefix}_PROGRAM_SPEC_HASH");
         }
 
@@ -3130,12 +3148,13 @@ fn generate_stack_programs_py(
             })
             .unwrap_or_default();
         section.push_str(&format!(
-            "\n#: Portable program SDK definition consumed by `arete.stack`.\n{program_const} = ProgramDef(\n    name={name},\n    program_id={const_prefix}_PROGRAM_ID,\n    raw_instructions={raw_dict},\n    pdas={pdas_dict},\n    accounts={accounts},\n    errors={errors_const},\n    program_spec_hash={spec_hash},{gateway_kwarg}\n)\n",
+            "\n#: Portable program SDK definition consumed by `arete.stack`.\n{program_const} = ProgramDef(\n    name={name},\n    program_id={const_prefix}_PROGRAM_ID,\n    raw_instructions={raw_dict},\n    pdas={pdas_dict},\n    accounts={accounts},\n    errors={errors_const},\n    program_spec_hash={spec_hash},{package_release_kwarg}{gateway_kwarg}\n)\n",
             name = py_string_literal(&raw_name),
             raw_dict = raw_dict,
             pdas_dict = pdas_dict_expr,
             accounts = accounts_expr,
             spec_hash = spec_hash_expr,
+            package_release_kwarg = package_release_kwarg,
             gateway_kwarg = gateway_kwarg,
         ));
         exports.push(program_const.clone());
@@ -4371,6 +4390,7 @@ mod tests {
                             }
                         }
                     })),
+                    package_release_hash: None,
                 }],
                 ..Default::default()
             }),
@@ -4639,6 +4659,7 @@ mod tests {
                         }
                     }}
                 })),
+                package_release_hash: None,
             }],
             ..Default::default()
         };

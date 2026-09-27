@@ -912,6 +912,38 @@ Low-level `a4 sdk create` accepts explicit `--manifest` or
 compatibility/direct-descriptor tool: it never writes `arete.toml` or
 `arete.lock`, and `a4 install` never falls back to it.
 
+### Program SDKs in stacks
+
+A stack is a group of live views and program SDKs. When a stack references a
+program package release for one of its programs, `a4 install` generates that
+program's SDK, including its SDK extension, under
+`stacks/<alias>/programs/<program>/`, and `arete.lock` records the release as
+the program's `package_release_hash`. The generated Rust and Python program
+definitions carry the same identity: `PACKAGE_RELEASE_HASH` in Rust and
+`<PROGRAM>_PACKAGE_RELEASE_HASH` in Python. Local and path builds carry none.
+
+Installing the same program on its own is fine. When the standalone
+dependency (under its default alias) and the stack reference the same program
+package release, both outputs contain byte-identical program SDK files (in
+the stack, the entry module is named `__arete-program.ts`). When the releases
+differ, both are generated. A stack whose programs have no program package
+release keeps generating their core program SDKs.
+
+`a4 install --locked` fails if a locked stack release would resolve a
+different program package release than `arete.lock` records; nothing is
+changed. Rust and Python stack SDKs cannot include per-program SDK extensions
+yet: installing such a stack for Rust or Python fails with a message rather
+than generating a smaller surface, and `a4 install program <package> --rust`
+(or `--python`) generates the program with its extension.
+
+A stack with several live views applies a stack extension by name, because it
+has no single stack for a default export to extend. Export
+`defineStackExtensions<typeof X.stacks.<alias>>()` bindings for live aliases
+and `defineProgramExtensions<typeof X.programs.<key>>()` bindings for session
+programs, where `X` is the generated `<NAME>_SESSION_DEFINITION_CORE`. A stack
+extension cannot also extend a program whose SDK brings its own extension; the
+install fails rather than applying that extension twice.
+
 A StackManifest `name` may contain any characters, for example
 `token-balances` or `my.stack`. Generated file names keep the name as written
 (`token-balances.ts`, `token-balances-core.ts`), so a name containing `/`,

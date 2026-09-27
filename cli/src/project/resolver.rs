@@ -20,6 +20,10 @@ pub struct RegistryDependencyRequest {
     pub requirement: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locked_package_release_hash: Option<String>,
+    /// The locked stack's program SDK releases, checked against the response
+    /// when the lock is reused. Local state only; never sent.
+    #[serde(skip)]
+    pub locked_programs: Vec<crate::project::lockfile::LockedProgram>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -131,10 +135,77 @@ pub struct ResolvedLiveBinding {
     pub binding: crate::api_client::RegistryLiveSpecInstallBinding,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// One SDK extension the resolver returns, for a stack or program package
+/// (`sdkExtensions`) or for a program a stack references (its program's
+/// `sdkExtensions`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolvedSdkExtension {
     pub target: String,
     pub content_hash: String,
     pub artifact: crate::api_client::RegistrySdkExtensionArtifact,
+}
+
+/// The target a legacy single program extension was authored for: its
+/// manifest `language`, TypeScript when absent.
+fn legacy_extension_target(
+    artifact: &crate::api_client::RegistrySdkExtensionArtifact,
+) -> Option<InstallTarget> {
+    match artifact.manifest.language.as_deref() {
+        None | Some("typescript") => Some(InstallTarget::TypeScript),
+        Some("rust") => Some(InstallTarget::Rust),
+        Some("python") => Some(InstallTarget::Python),
+        Some(_) => None,
+    }
+}
+
+/// The SDK extensions a stack program carries, as locked: the per-target
+/// `sdkExtensions` filtered to `targets` when the registry sent them,
+/// otherwise the legacy single `definition.extensions`.
+pub fn program_extension_artifacts<'a>(
+    program: &'a crate::api_client::RegistryProgramInstallResponse,
+    targets: &[InstallTarget],
+) -> Vec<&'a crate::api_client::RegistrySdkExtensionArtifact> {
+    match &program.sdk_extensions {
+        Some(extensions) => extensions
+            .iter()
+            .filter(|extension| {
+                targets
+                    .iter()
+                    .any(|target| target.as_str() == extension.target)
+            })
+            .map(|extension| &extension.artifact)
+            .collect(),
+        None => program.definition.extensions.iter().collect(),
+    }
+}
+
+/// A stack program's SDK extension for one generation target: the matching
+/// per-target `sdkExtensions` entry when the registry sent them, otherwise
+/// the legacy single extension when it was authored for `target`.
+pub fn program_extension_for_target(
+    program: &crate::api_client::RegistryProgramInstallResponse,
+    target: InstallTarget,
+) -> anyhow::Result<Option<crate::api_client::RegistrySdkExtensionArtifact>> {
+    match &program.sdk_extensions {
+        Some(extensions) => {
+            let mut selected = extensions
+                .iter()
+                .filter(|extension| extension.target == target.as_str());
+            let first = selected.next();
+            if selected.next().is_some() {
+                anyhow::bail!(
+                    "Registry returned more than one {target} SDK extension for program '{}'",
+                    program.install_name
+                );
+            }
+            Ok(first.map(|extension| extension.artifact.clone()))
+        }
+        None => Ok(program
+            .definition
+            .extensions
+            .as_ref()
+            .filter(|artifact| legacy_extension_target(artifact) == Some(target))
+            .cloned()),
+    }
 }

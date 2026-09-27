@@ -211,7 +211,11 @@ struct ProgramExtensionBinding {
 #[derive(Debug, Clone)]
 struct HostedProgramModule {
     program_key: String,
-    program_const_name: String,
+    /// File and export stem of the program SDK module: the default local
+    /// alias of the program package it was generated from, so the module is
+    /// byte-identical to a standalone install of that package release, or
+    /// the program key for a stack that embeds only the core program.
+    base_name: String,
     import_name: String,
     input_pin: ResolvedExtensionsInputPin,
     extension: Option<ResolvedExtensionsArtifact>,
@@ -474,6 +478,7 @@ impl ResolvedStackSource {
                     program_spec_hash: read.program_spec_hash,
                     program_release_hash: read.program_release_hash,
                     descriptor: read.descriptor,
+                    package_release_hash: read.package_release_hash,
                 })
             })
             .collect()
@@ -588,6 +593,23 @@ impl ResolvedStackSource {
         }
     }
 
+    /// Refuse a Rust or Python stack generation that would drop a program
+    /// SDK extension its programs carry for that target.
+    fn reject_program_extensions_for(
+        &self,
+        target: crate::project::manifest::InstallTarget,
+    ) -> Result<()> {
+        let Self::Remote(stack) = self else {
+            return Ok(());
+        };
+        for program in &stack.programs {
+            let extension =
+                crate::project::resolver::program_extension_for_target(program, target)?;
+            reject_stack_program_extension(&stack.stack, program, target, extension.is_some())?;
+        }
+        Ok(())
+    }
+
     fn composition_artifacts(&self) -> Option<CompositionArtifacts<'_>> {
         match self {
             Self::LocalArtifacts(stack) if stack.live_specs.len() > 1 => {
@@ -656,10 +678,29 @@ impl ResolvedStackSource {
                         .map_err(|error| anyhow::anyhow!(error))
                 })
                 .collect::<Result<Vec<_>>>()?,
-            Self::Remote(stack) => stack
-                .programs
+            // Descriptors follow the generated program order, which lists
+            // the programs a live view requires before the stack's
+            // independent programs.
+            Self::Remote(stack) => stack_spec
+                .program_specs
                 .iter()
-                .map(typescript_program_config_from_registry)
+                .map(|program_spec| {
+                    let hash = program_spec
+                        .hash()
+                        .map_err(|error| anyhow::anyhow!(error))?
+                        .to_string();
+                    match stack
+                        .programs
+                        .iter()
+                        .find(|install| install.definition.program_spec_hash == hash)
+                    {
+                        Some(install) => typescript_program_config_from_registry(install),
+                        None => Err(anyhow::anyhow!(
+                            "Hosted stack '{}' has no program descriptor for ProgramSpec {hash}",
+                            stack.stack
+                        )),
+                    }
+                })
                 .collect::<Result<Vec<_>>>()?,
         };
         Ok(Some(programs))
@@ -1056,6 +1097,10 @@ fn program_read_override(
         program_id: install.definition.program_id.clone(),
         program_spec_hash: install.release.program_spec_hash.clone(),
         program_release_hash: install.release.program_release_hash.clone(),
+        package_release_hash: install
+            .program_package
+            .as_ref()
+            .map(|package| package.package_release_hash.clone()),
         descriptor: Some(serde_json::json!({
             "release": {
                 "programReleaseHash": install.release.program_release_hash,
@@ -1114,6 +1159,9 @@ pub(crate) fn generate_project_registry_dependency(
     match dependency {
         ResolvedRegistryDependency::Program {
             alias,
+            package,
+            version,
+            package_release_hash,
             install,
             sdk_extensions,
             ..
@@ -1127,6 +1175,14 @@ pub(crate) fn generate_project_registry_dependency(
             }
             let mut install = install.clone();
             install.definition.extensions = project_sdk_extension(sdk_extensions, options.target)?;
+            install.sdk_extensions = None;
+            // The package being installed is the program SDK's identity, the
+            // same one a stack referencing this release carries.
+            install.program_package = Some(crate::api_client::RegistryProgramPackageReference {
+                package: package.clone(),
+                version: version.clone(),
+                package_release_hash: package_release_hash.clone(),
+            });
             let program_spec = program_spec_artifact_from_registry(&install)?;
             generate_project_program(&program_spec, Some(&install), options)
         }
@@ -1214,6 +1270,10 @@ pub(crate) fn generate_project_registry_dependency(
                 .as_ref()
                 .map(resolved_extensions_artifact_from_registry)
                 .transpose()?;
+            let programs = programs
+                .iter()
+                .map(|program| stack_program_for_target(program, package, options.target))
+                .collect::<Result<Vec<_>>>()?;
             let source = ResolvedStackSource::Remote(Box::new(RemoteStackAst {
                 name: alias.clone(),
                 stack: package.clone(),
@@ -1228,12 +1288,70 @@ pub(crate) fn generate_project_registry_dependency(
                 exact_views: true,
                 sdk_name: alias.clone(),
                 hosted_extensions,
-                programs: programs.clone(),
+                programs,
                 require_managed_gateway: transport.require_managed_gateway,
             }));
             generate_project_stack_source(&source, options)
         }
     }
+}
+
+/// A stack program descriptor with its program SDK extension selected for
+/// one generation target, carried as the descriptor's single extension.
+///
+/// TypeScript stacks generate each program's SDK module with its extension.
+/// The Rust and Python stack generators have no per-program extension slot
+/// yet, so a program SDK extension for those targets is refused rather than
+/// dropped: the stack would otherwise install with a smaller surface than the
+/// same program installed on its own.
+fn stack_program_for_target(
+    program: &RegistryProgramInstallResponse,
+    stack: &str,
+    target: crate::project::manifest::InstallTarget,
+) -> Result<RegistryProgramInstallResponse> {
+    use crate::project::manifest::InstallTarget;
+
+    let extension = crate::project::resolver::program_extension_for_target(program, target)?;
+    let mut program = program.clone();
+    program.sdk_extensions = None;
+    match target {
+        InstallTarget::TypeScript => program.definition.extensions = extension,
+        InstallTarget::Rust | InstallTarget::Python => {
+            reject_stack_program_extension(stack, &program, target, extension.is_some())?;
+            program.definition.extensions = None;
+        }
+    }
+    Ok(program)
+}
+
+fn reject_stack_program_extension(
+    stack: &str,
+    program: &RegistryProgramInstallResponse,
+    target: crate::project::manifest::InstallTarget,
+    has_extension: bool,
+) -> Result<()> {
+    if !has_extension {
+        return Ok(());
+    }
+    let release = program
+        .program_package
+        .as_ref()
+        .map(|package| format!(" ({}@{})", package.package, package.version))
+        .unwrap_or_default();
+    anyhow::bail!(
+        "Stack '{stack}' includes program '{}'{release} with a {target} SDK extension, and {target} stack SDKs cannot include per-program extensions yet. Nothing was generated. Install the program on its own for {target} (`a4 install program {} --{}`), or generate the stack for TypeScript.",
+        program.install_name,
+        program
+            .program_package
+            .as_ref()
+            .map(|package| package.package.as_str())
+            .unwrap_or(program.install_name.as_str()),
+        match target {
+            crate::project::manifest::InstallTarget::TypeScript => "ts",
+            crate::project::manifest::InstallTarget::Rust => "rust",
+            crate::project::manifest::InstallTarget::Python => "python",
+        }
+    )
 }
 
 fn project_sdk_extension(
@@ -1261,6 +1379,26 @@ fn generate_project_stack_source(
 
     match options.target {
         InstallTarget::TypeScript => {
+            if let Some(composition) = source.composition_artifacts() {
+                let staging = generate_typescript_composition_sdk(
+                    source,
+                    composition.program_specs,
+                    composition.live_specs,
+                    composition.stack_manifest,
+                    options.output,
+                    options.typescript_package,
+                    None,
+                    None,
+                    None,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                )?;
+                return write_typescript_composition_provenance(
+                    options.output,
+                    project_stack_manifest_hash(source)?,
+                    &staging,
+                );
+            }
             generate_typescript_sdk_from_source(
                 source,
                 options.output,
@@ -1271,15 +1409,7 @@ fn generate_project_stack_source(
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 false,
-            )?;
-            if source.composition_artifacts().is_some() {
-                write_composition_provenance(
-                    options.output,
-                    project_stack_manifest_hash(source)?,
-                    ExtensionsInputKind::StackManifest,
-                )?;
-            }
-            Ok(())
+            )
         }
         InstallTarget::Rust => {
             if let Some(composition) = source.composition_artifacts() {
@@ -1578,6 +1708,7 @@ fn generate_project_python_program(
             program_spec_hash: read.program_spec_hash,
             program_release_hash: read.program_release_hash,
             descriptor: read.descriptor,
+            package_release_hash: read.package_release_hash,
         })
         .collect();
     let python_config = arete_interpreter::python::PythonStackConfig {
@@ -1654,6 +1785,28 @@ fn write_composition_provenance(
         },
         None,
     )
+}
+
+/// Provenance for a TypeScript composition: every generated file, plus the
+/// stack extension and each program SDK extension it staged.
+fn write_typescript_composition_provenance(
+    output: &Path,
+    stack_manifest_hash: &str,
+    staging: &CompositionStaging,
+) -> Result<()> {
+    let mut generated = BTreeSet::new();
+    collect_relative_files(output, output, &mut generated)?;
+    let mut manifest = build_sdk_provenance_manifest_from_artifacts(
+        generated,
+        "",
+        &ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: stack_manifest_hash.to_string(),
+        },
+        staging.extension.as_ref(),
+    )?;
+    record_program_module_provenance(&mut manifest, &staging.program_modules)?;
+    write_sdk_provenance_manifest_file(output, &manifest)
 }
 
 fn project_stack_manifest_hash(source: &ResolvedStackSource) -> Result<&str> {
@@ -2506,6 +2659,15 @@ fn build_sdk_provenance_manifest_with_program_extensions(
     generated.insert(generated_artifact_name(&layout.entry_path)?);
     let mut manifest =
         build_sdk_provenance_manifest_from_artifacts(generated, "", input_pin, extensions)?;
+    record_program_module_provenance(&mut manifest, program_modules)?;
+    Ok(manifest)
+}
+
+/// Record each program SDK module's files and extension identity.
+fn record_program_module_provenance(
+    manifest: &mut SdkProvenanceManifestV2,
+    program_modules: &[HostedProgramModule],
+) -> Result<()> {
     for program in program_modules {
         let relative_dir = hosted_program_directory(program);
         let prefix = format!("{}/", relative_dir.to_string_lossy());
@@ -2539,7 +2701,7 @@ fn build_sdk_provenance_manifest_with_program_extensions(
     }
     manifest.artifacts.sort();
     manifest.artifacts.dedup();
-    Ok(manifest)
+    Ok(())
 }
 
 /// Shared provenance builder for TypeScript and Rust outputs. `generated`
@@ -3099,23 +3261,30 @@ fn hosted_program_modules(
                 program_key
             );
         }
+        let base_name = install
+            .program_package
+            .as_ref()
+            .map(|package| crate::project::alias::derive_local_alias(&package.package))
+            .unwrap_or_else(|| to_kebab_case(&program_key));
+        ensure_file_stem(&base_name)?;
         hosted.push(HostedProgramModule {
             import_name: format!(
                 "hosted{}Program",
                 ts_ident::identifier_stem(&program_key, IdentifierCase::Pascal)
             ),
-            program_const_name: arete_interpreter::typescript::program_const_name(&idl.name),
             program_key,
+            base_name,
             input_pin: ResolvedExtensionsInputPin {
                 kind: ExtensionsInputKind::ProgramSpec,
                 hash: install.definition.program_spec_hash.clone(),
             },
-            extension: install
-                .definition
-                .extensions
-                .as_ref()
-                .map(resolved_extensions_artifact_from_registry)
-                .transpose()?,
+            extension: crate::project::resolver::program_extension_for_target(
+                install,
+                crate::project::manifest::InstallTarget::TypeScript,
+            )?
+            .as_ref()
+            .map(resolved_extensions_artifact_from_registry)
+            .transpose()?,
             program_spec: program_spec_artifact_from_registry(install)?,
             program_config: typescript_program_config_from_registry(install)?,
         });
@@ -3130,7 +3299,20 @@ fn hosted_program_directory(program: &HostedProgramModule) -> PathBuf {
 }
 
 fn hosted_program_core_name(program: &HostedProgramModule) -> String {
-    format!("{}-core.ts", to_kebab_case(&program.program_key))
+    format!("{}-core.ts", program.base_name)
+}
+
+/// The program SDK module's layout, relative to the stack output: the same
+/// entry and core a standalone install of the program generates, with the
+/// entry under the stack's reserved program entry name.
+fn hosted_program_layout(program: &HostedProgramModule) -> TypeScriptLayout {
+    let output_dir = hosted_program_directory(program);
+    TypeScriptLayout {
+        entry_path: output_dir.join(HOSTED_PROGRAM_ENTRY),
+        core_path: output_dir.join(hosted_program_core_name(program)),
+        output_dir,
+        base_name: program.base_name.clone(),
+    }
 }
 
 fn hosted_program_entry_import(program: &HostedProgramModule) -> String {
@@ -3224,42 +3406,14 @@ fn write_typescript_core_modules(
 }
 
 fn render_hosted_program_entry(program: &HostedProgramModule) -> String {
-    let core_stem = hosted_program_core_name(program)
-        .trim_end_matches(".ts")
-        .to_string();
-    let export_name = format!("{}_PROGRAM", program.program_const_name);
-    let read_const_name = format!("{}_READ", program.program_const_name);
-    if let Some(extension) = &program.extension {
-        let extension_entry = extension.entry.trim_end_matches(".ts").to_string();
-        return finish_typescript_module(format!(
-            r#"import {{ extendProgram, withProgramRead }} from '@usearete/sdk';
-
-import {{ {program_const} as BASE_PROGRAM, {read_const_name} as BASE_PROGRAM_READ }} from './{core_stem}.js';
-import programExtensions from './{extension_entry}.js';
-
-export * from './{core_stem}.js';
-
-export const {export_name} = withProgramRead(
-  extendProgram(BASE_PROGRAM, programExtensions),
-  BASE_PROGRAM_READ,
-);
-
-export default {export_name};"#,
-            program_const = program.program_const_name,
-        ));
-    }
-    finish_typescript_module(format!(
-        r#"import {{ withProgramRead }} from '@usearete/sdk';
-
-import {{ {program_const} as BASE_PROGRAM, {read_const_name} as BASE_PROGRAM_READ }} from './{core_stem}.js';
-
-export * from './{core_stem}.js';
-
-export const {export_name} = withProgramRead(BASE_PROGRAM, BASE_PROGRAM_READ);
-
-export default {export_name};"#,
-        program_const = program.program_const_name,
-    ))
+    render_typescript_program_entry(
+        &hosted_program_layout(program),
+        &program.program_spec.payload.idl_snapshot.snapshot.name,
+        program
+            .extension
+            .as_ref()
+            .map(|extension| extension.entry.as_str()),
+    )
 }
 
 fn stage_hosted_program_modules(
@@ -3305,7 +3459,7 @@ fn stage_hosted_program_modules(
             )?;
         }
         let stack_spec = arete_interpreter::public_artifacts::stack_spec_from_program_artifacts(
-            ts_ident::identifier_stem(&program.program_key, IdentifierCase::Pascal),
+            ts_ident::identifier_stem(&program.base_name, IdentifierCase::Pascal),
             std::slice::from_ref(&program.program_spec),
         )
         .map_err(anyhow::Error::msg)?;
@@ -3325,6 +3479,8 @@ fn stage_hosted_program_modules(
         )
         .map_err(|error| anyhow::anyhow!("Failed to compile hosted program SDK: {error}"))?;
         let core = output.full_file();
+        let entry = render_hosted_program_entry(program);
+        check_typescript_entry(&entry, &core, &hosted_program_layout(program))?;
         for core_relative in core_paths {
             let core_path = output_dir.join(&core_relative);
             if let Some(parent) = core_path.parent() {
@@ -3343,7 +3499,7 @@ fn stage_hosted_program_modules(
             })?;
         }
         let entry_path = output_dir.join(HOSTED_PROGRAM_ENTRY);
-        fs::write(&entry_path, render_hosted_program_entry(program)).with_context(|| {
+        fs::write(&entry_path, entry).with_context(|| {
             format!(
                 "Failed to write hosted program entry {}",
                 entry_path.display()
@@ -4185,7 +4341,8 @@ fn generate_typescript_sdk_from_source(
                 extensions_path,
                 live_module_imports,
                 program_module_imports,
-            );
+            )
+            .map(|_| ());
         }
     }
     if !live_module_imports.is_empty() || !program_module_imports.is_empty() {
@@ -4362,6 +4519,12 @@ fn generate_typescript_sdk_from_source(
             },
             source.output_extensions_fallback(),
         )?;
+        if let Some(artifact) = &artifact {
+            reject_double_program_extensions(
+                &artifact.program_extension_bindings,
+                &hosted_program_modules,
+            )?;
+        }
         let extension_files = artifact
             .as_ref()
             .map(|artifact| {
@@ -4419,6 +4582,13 @@ fn check_typescript_entry(entry: &str, core: &str, layout: &TypeScriptLayout) ->
     ts_ident::check_star_reexport_shadowing(entry, core, &context).map_err(anyhow::Error::msg)
 }
 
+/// What a TypeScript composition staged besides its generated modules, for
+/// provenance.
+struct CompositionStaging {
+    extension: Option<ResolvedExtensionsArtifact>,
+    program_modules: Vec<HostedProgramModule>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn generate_typescript_composition_sdk(
     source: &ResolvedStackSource,
@@ -4432,16 +4602,11 @@ fn generate_typescript_composition_sdk(
     extensions_path: Option<&Path>,
     live_module_imports: &BTreeMap<String, String>,
     program_module_imports: &BTreeMap<String, String>,
-) -> Result<()> {
+) -> Result<CompositionStaging> {
     ensure_file_stem(source.sdk_name())?;
     if websocket_url.is_some() || http_url.is_some() {
         anyhow::bail!(
             "multi-live generation requires per-alias endpoint configuration; a shared --url is not allowed"
-        );
-    }
-    if extensions_path.is_some() || source.hosted_extensions().is_some() {
-        anyhow::bail!(
-            "multi-live extensions require a composition-wrapper extension contract; shared stack extensions are not supported"
         );
     }
     let program_stack = arete_interpreter::public_artifacts::stack_spec_from_program_artifacts(
@@ -4449,6 +4614,24 @@ fn generate_typescript_composition_sdk(
         program_specs,
     )
     .map_err(anyhow::Error::msg)?;
+    let layout = resolve_typescript_layout(output_path, source.sdk_name());
+    let input_pin = ResolvedExtensionsInputPin {
+        kind: ExtensionsInputKind::StackManifest,
+        hash: stack_manifest.artifact_hash.to_string(),
+    };
+    // Every stack program gets its program SDK module, with its program SDK
+    // extension when it has one, exactly as a single-live stack does.
+    let program_modules = hosted_program_modules(source, &program_stack)?;
+    let extension = resolve_extensions_artifact(
+        extensions_path,
+        &layout,
+        source.hosted_extensions(),
+        source.output_extensions_fallback(),
+    )?;
+    let extensions = extension
+        .as_ref()
+        .map(|extension| composition_extensions(extension, &program_modules))
+        .transpose()?;
     let config = arete_interpreter::typescript::TypeScriptCompositionConfig {
         stack: arete_interpreter::typescript::TypeScriptStackConfig {
             package_name: package_name.to_string(),
@@ -4464,6 +4647,16 @@ fn generate_typescript_composition_sdk(
         live_endpoints: source.composition_live_endpoints(),
         live_module_imports: live_module_imports.clone(),
         program_module_imports: program_module_imports.clone(),
+        program_entry_imports: program_modules
+            .iter()
+            .map(|program| {
+                (
+                    program.program_spec.artifact_hash.to_string(),
+                    format!("{}.js", hosted_program_entry_import(program)),
+                )
+            })
+            .collect(),
+        extensions,
     };
     let output = arete_interpreter::typescript::compile_composed_public_artifacts_v2(
         program_specs,
@@ -4472,13 +4665,26 @@ fn generate_typescript_composition_sdk(
         Some(config),
     )
     .map_err(|error| anyhow::anyhow!("Failed to compile TypeScript composition: {error}"))?;
-    let layout = resolve_typescript_layout(output_path, source.sdk_name());
     fs::create_dir_all(&layout.output_dir).with_context(|| {
         format!(
             "Failed to create TypeScript output directory: {}",
             layout.output_dir.display()
         )
     })?;
+    let mut generated = BTreeSet::from([generated_artifact_name(&layout.entry_path)?]);
+    if let Some(programs) = &output.program_collection {
+        generated.insert(format!("{}.ts", programs.module_name));
+    }
+    for live in &output.live_stacks {
+        generated.insert(format!("{}.ts", live.module_name));
+    }
+    if let Some(extension) = &extension {
+        reject_composition_extension_collisions(
+            extension,
+            &generated,
+            !program_modules.is_empty(),
+        )?;
+    }
     if let Some(programs) = &output.program_collection {
         let path = layout
             .output_dir
@@ -4491,6 +4697,10 @@ fn generate_typescript_composition_sdk(
         fs::write(&path, live.output.full_file())
             .with_context(|| format!("Failed to write live module {}", path.display()))?;
     }
+    if let Some(extension) = &extension {
+        stage_extensions_artifact(extension, &layout.output_dir, &input_pin)?;
+    }
+    stage_hosted_program_modules(&program_modules, &layout, package_name)?;
     let mut session_definition = output.session_definition.clone();
     if let Some(bindings) = render_hosted_composition_bindings(source, &output.name)? {
         session_definition.push('\n');
@@ -4512,6 +4722,123 @@ fn generate_typescript_composition_sdk(
         output.live_stacks.len(),
         layout.entry_path.display()
     );
+    Ok(CompositionStaging {
+        extension,
+        program_modules,
+    })
+}
+
+/// The composition wiring of a stack-level extension. A composition has no
+/// single stack for a default export to extend, so it applies the entry's
+/// named per-alias `defineStackExtensions<typeof X.stacks.<alias>>()` and
+/// per-program `defineProgramExtensions<typeof X.programs.<key>>()` exports.
+/// A default export has nothing to attach to and is refused rather than
+/// ignored.
+fn composition_extensions(
+    extension: &ResolvedExtensionsArtifact,
+    program_modules: &[HostedProgramModule],
+) -> Result<arete_interpreter::typescript::TypeScriptCompositionExtensions> {
+    let entry_source = extension
+        .files
+        .iter()
+        .find(|file| file.path == extension.entry)
+        .map(|file| file.contents.as_str())
+        .unwrap_or_default();
+    if Regex::new(r"(?m)^\s*export\s+default\b")
+        .expect("default export regex should compile")
+        .is_match(entry_source)
+    {
+        anyhow::bail!(
+            "Stack extension '{}' has a default export, which a multi-live stack cannot apply: it has no single stack to extend. Export `defineStackExtensions<typeof X.stacks.<alias>>()` per live alias and `defineProgramExtensions<typeof X.programs.<key>>()` per program instead.",
+            extension.entry
+        );
+    }
+    reject_double_program_extensions(&extension.program_extension_bindings, program_modules)?;
+    let stack_bindings = parse_stack_extension_bindings(entry_source);
+    if stack_bindings.is_empty() && extension.program_extension_bindings.is_empty() {
+        anyhow::bail!(
+            "Stack extension '{}' exports no `defineStackExtensions<typeof X.stacks.<alias>>()` or `defineProgramExtensions<typeof X.programs.<key>>()` bindings, so a multi-live stack would apply nothing from it",
+            extension.entry
+        );
+    }
+    let entry = normalize_extension_relative_path(&extension.entry)?;
+    Ok(
+        arete_interpreter::typescript::TypeScriptCompositionExtensions {
+            import_path: format!("./{}.js", entry.strip_suffix(".ts").unwrap_or(&entry)),
+            stack_bindings,
+            program_bindings: extension
+                .program_extension_bindings
+                .iter()
+                .map(|binding| (binding.program_key.clone(), binding.export_name.clone()))
+                .collect(),
+        },
+    )
+}
+
+/// `(live alias, export name)` for each named
+/// `defineStackExtensions<typeof X.stacks.<alias>>()` export.
+fn parse_stack_extension_bindings(source: &str) -> Vec<(String, String)> {
+    let regex = Regex::new(
+        r#"export\s+const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*defineStackExtensions\s*<\s*typeof\s+[A-Za-z_$][A-Za-z0-9_$]*\.stacks(?:\.([A-Za-z_$][A-Za-z0-9_$]*)|\[\s*['"]([^'"]+)['"]\s*\])\s*>\s*\(\s*\)"#,
+    )
+    .expect("stack extension binding regex should compile");
+    let mut bindings = regex
+        .captures_iter(source)
+        .filter_map(|captures| {
+            let alias = captures.get(2).or_else(|| captures.get(3))?;
+            Some((alias.as_str().to_string(), captures[1].to_string()))
+        })
+        .collect::<Vec<_>>();
+    bindings.sort();
+    bindings.dedup();
+    bindings
+}
+
+/// A composition stages its extension files beside the generated modules and
+/// the per-program SDK directories; none may overwrite the other.
+fn reject_composition_extension_collisions(
+    extension: &ResolvedExtensionsArtifact,
+    generated: &BTreeSet<String>,
+    has_program_modules: bool,
+) -> Result<()> {
+    for file in &extension.files {
+        let path = normalize_extension_relative_path(&file.path)?;
+        if generated.contains(&path)
+            || matches!(
+                path.as_str(),
+                "extensions.json" | SDK_PROVENANCE_FILE | SDK_MANIFEST_FILE
+            )
+            || (has_program_modules && path.starts_with("programs/"))
+        {
+            anyhow::bail!(
+                "Stack extension '{}' file '{}' collides with a generated composition artifact",
+                extension.entry,
+                file.path
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A program whose SDK module already applies its own program SDK extension
+/// must not also receive a stack extension's `defineProgramExtensions`
+/// binding: the program would be extended twice.
+fn reject_double_program_extensions(
+    bindings: &[ProgramExtensionBinding],
+    program_modules: &[HostedProgramModule],
+) -> Result<()> {
+    for binding in bindings {
+        if program_modules.iter().any(|program| {
+            program.program_key == binding.program_key && program.extension.is_some()
+        }) {
+            anyhow::bail!(
+                "The stack extension binds `{}` to program '{}' with defineProgramExtensions, but program '{}' already carries its own program SDK extension, so it would be extended twice. Remove that program binding from the stack extension; the program SDK already provides it.",
+                binding.export_name,
+                binding.program_key,
+                binding.program_key
+            );
+        }
+    }
     Ok(())
 }
 
@@ -4628,6 +4955,7 @@ pub fn create_rust(
         (source, output, crate_name)
     };
 
+    source.reject_program_extensions_for(crate::project::manifest::InstallTarget::Rust)?;
     let stack_url = url_override.or_else(|| source.default_websocket_url());
     let output_dir = raw_output_dir;
 
@@ -4917,6 +5245,7 @@ pub fn create_python(
         (source, output, package_name)
     };
 
+    source.reject_program_extensions_for(crate::project::manifest::InstallTarget::Python)?;
     let stack_url = url_override.or_else(|| source.default_websocket_url());
     let output_dir = raw_output_dir;
 
@@ -5765,7 +6094,7 @@ mod tests {
             .unwrap_or_else(|| program_spec.artifact_hash.to_string());
         HostedProgramModule {
             program_key: program_key.to_string(),
-            program_const_name: arete_interpreter::typescript::program_const_name(program_name),
+            base_name: to_kebab_case(program_key),
             import_name: format!(
                 "hosted{}Program",
                 ts_ident::identifier_stem(program_key, IdentifierCase::Pascal)
@@ -6441,10 +6770,11 @@ mod tests {
         let rendered = render_hosted_program_entry(&hosted);
 
         assert!(rendered.contains("import { withProgramRead } from '@usearete/sdk';"));
-        assert!(rendered.contains("ENTROPY_READ as BASE_PROGRAM_READ"));
+        assert!(rendered.contains("ENTROPY_READ as ENTROPY_PROGRAM_READ_CORE"));
         assert!(rendered.contains(
-            "export const ENTROPY_PROGRAM = withProgramRead(BASE_PROGRAM, BASE_PROGRAM_READ);"
+            "export const ENTROPY_PROGRAM = withProgramRead(ENTROPY_PROGRAM_CORE, ENTROPY_PROGRAM_READ_CORE);"
         ));
+        assert!(rendered.contains("export default ENTROPY_PROGRAM;"));
         assert!(!rendered.contains("programExtensions"));
     }
 
@@ -6495,8 +6825,8 @@ mod tests {
         assert!(core.contains("export const TOKEN = {"));
         assert!(!core.contains("ORDERED_STREAM_STACK_CORE"));
         assert!(entry.contains("import { extendProgram, withProgramRead }"));
-        assert!(entry.contains("extendProgram(BASE_PROGRAM, programExtensions)"));
-        assert!(entry.contains("BASE_PROGRAM_READ"));
+        assert!(entry.contains("extendProgram(SPL_TOKEN_PROGRAM_CORE, programExtensions)"));
+        assert!(entry.contains("SPL_TOKEN_PROGRAM_READ_CORE"));
         assert!(!entry.contains("export * from './spl-token-extensions.js';"));
         assert!(extension_exists);
         assert!(provenance.program_extensions.contains_key("splToken"));
@@ -8209,6 +8539,8 @@ mod tests {
             },
             chain_binding: None,
             transaction_binding: None,
+            program_package: None,
+            sdk_extensions: None,
         };
         let stack_spec =
             arete_interpreter::program_sdk::build_program_only_stack_spec_from_identity(
@@ -8285,6 +8617,8 @@ mod tests {
             },
             chain_binding: None,
             transaction_binding: None,
+            program_package: None,
+            sdk_extensions: None,
         };
         assert!(typescript_program_config_from_registry(&install).is_ok());
 
@@ -8398,6 +8732,8 @@ mod tests {
                 },
                 chain_binding: None,
                 transaction_binding: None,
+                program_package: None,
+                sdk_extensions: None,
             });
             live_specs.push(((*alias).to_string(), live));
             program_specs.push(program);

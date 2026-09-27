@@ -657,6 +657,7 @@ fn resolve_saved_requirement(
             package: package.into(),
             requirement: "*".into(),
             locked_package_release_hash: None,
+            locked_programs: Vec::new(),
         }],
         targets: vec![InstallTarget::TypeScript],
         generator_contract: GENERATOR_CONTRACT.into(),
@@ -962,6 +963,9 @@ fn resolve_dependencies(
                     requirement,
                     locked_package_release_hash: reusable
                         .and_then(|entry| entry.package_release_hash.clone()),
+                    locked_programs: reusable
+                        .map(|entry| entry.programs.clone())
+                        .unwrap_or_default(),
                 });
             }
             DependencySourceV1::Path(PathSourceV1 { path }) => resolved.push(
@@ -1056,6 +1060,7 @@ fn resolve_registry_requests(
                     request.alias
                 );
             }
+            verify_locked_program_sdks(&request, &response)?;
         }
         let dependency = manifest
             .dependency(request.kind, &request.alias)
@@ -1069,6 +1074,42 @@ fn resolve_registry_requests(
         });
     }
     Ok(resolved)
+}
+
+/// A locked stack release pins the program SDK release it references for
+/// each program. Resolving the same stack release to a different program
+/// package release would mean the reference moved underneath the lock, so it
+/// is an integrity failure rather than an update.
+fn verify_locked_program_sdks(
+    request: &RegistryDependencyRequest,
+    response: &ResolvedRegistryDependency,
+) -> Result<()> {
+    let ResolvedRegistryDependency::Stack { programs, .. } = response else {
+        return Ok(());
+    };
+    for locked in &request.locked_programs {
+        let Some(pinned) = &locked.package_release_hash else {
+            continue;
+        };
+        let resolved = programs
+            .iter()
+            .find(|program| {
+                program.definition.program_id == locked.program_id
+                    && program.definition.program_spec_hash == locked.program_spec_hash
+            })
+            .and_then(|program| program.program_package.as_ref())
+            .map(|package| package.package_release_hash.as_str());
+        if resolved != Some(pinned.as_str()) {
+            bail!(
+                "arete.lock integrity failure for stack '{}': its locked release pins program {} to program SDK release {pinned}, but the registry now returns {}. Nothing was changed; run `a4 update stack {}` only if you intend to advance",
+                request.alias,
+                locked.program_id,
+                resolved.unwrap_or("no program SDK release"),
+                request.alias
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Restores the registry cache entries of one installed dependency by
@@ -1102,6 +1143,7 @@ pub(crate) fn restore_locked_registry_cache(
         package: registry.clone(),
         requirement: dependency.version.clone().expect("validated version"),
         locked_package_release_hash: Some(package_release_hash),
+        locked_programs: locked.programs.clone(),
     };
     for dependency in resolve_registry_requests(manifest, vec![request])? {
         if let ResolvedProjectDependency::Registry { resolved, .. } = &dependency {
@@ -1239,6 +1281,28 @@ fn verify_resolved_extensions(
         ResolvedRegistryDependency::Stack { sdk_extensions, .. }
         | ResolvedRegistryDependency::Program { sdk_extensions, .. } => sdk_extensions,
     };
+    verify_extension_list(extensions, targets, "")?;
+    // A stack's programs carry their program SDKs' extensions under the same
+    // rules: requested targets only, one per target, exact content identity.
+    if let ResolvedRegistryDependency::Stack { programs, .. } = resolved {
+        for program in programs {
+            if let Some(extensions) = &program.sdk_extensions {
+                verify_extension_list(
+                    extensions,
+                    targets,
+                    &format!(" for program '{}'", program.install_name),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_extension_list(
+    extensions: &[super::resolver::ResolvedSdkExtension],
+    targets: &[InstallTarget],
+    owner: &str,
+) -> Result<()> {
     let requested = targets
         .iter()
         .map(|target| target.as_str())
@@ -1247,13 +1311,13 @@ fn verify_resolved_extensions(
     for extension in extensions {
         if !requested.contains(extension.target.as_str()) {
             bail!(
-                "Registry returned an unrequested '{}' SDK extension",
+                "Registry returned an unrequested '{}' SDK extension{owner}",
                 extension.target
             );
         }
         if !seen.insert(extension.target.as_str()) {
             bail!(
-                "Registry returned more than one '{}' SDK extension",
+                "Registry returned more than one '{}' SDK extension{owner}",
                 extension.target
             );
         }
@@ -1265,7 +1329,7 @@ fn verify_resolved_extensions(
             || extension.artifact.artifact_hash != extension.content_hash
         {
             bail!(
-                "Registry returned an invalid '{}' SDK extension identity",
+                "Registry returned an invalid '{}' SDK extension identity{owner}",
                 extension.target
             );
         }
@@ -1302,7 +1366,10 @@ fn verify_resolved_release_identity(resolved: &ResolvedRegistryDependency) -> Re
         );
     }
     if let ResolvedRegistryDependency::Program {
-        package, install, ..
+        package,
+        package_release_hash,
+        install,
+        ..
     } = resolved
     {
         // A direct program install pins the same hosted program identity a
@@ -1313,6 +1380,16 @@ fn verify_resolved_release_identity(resolved: &ResolvedRegistryDependency) -> Re
             || install.release.program_spec_hash != install.definition.program_spec_hash
         {
             bail!("Registry returned program '{package}' without an exact release identity");
+        }
+        // The package being installed is the program SDK: a descriptor that
+        // names another package release contradicts the resolution.
+        if let Some(reference) = &install.program_package {
+            if &reference.package_release_hash != package_release_hash {
+                bail!(
+                    "Registry returned program '{package}' whose descriptor names program package release {} instead of {package_release_hash}",
+                    reference.package_release_hash
+                );
+            }
         }
     }
     if let ResolvedRegistryDependency::Stack {
@@ -1341,6 +1418,17 @@ fn verify_resolved_release_identity(resolved: &ResolvedRegistryDependency) -> Re
                     "Registry returned program '{}' for stack '{package}' without an exact release identity",
                     program.definition.program_id
                 );
+            }
+            if let Some(reference) = &program.program_package {
+                if reference.package.trim().is_empty()
+                    || reference.version.trim().is_empty()
+                    || !is_package_release_hash(&reference.package_release_hash)
+                {
+                    bail!(
+                        "Registry returned program '{}' for stack '{package}' with an invalid program package release identity",
+                        program.definition.program_id
+                    );
+                }
             }
         }
     }
@@ -1480,6 +1568,7 @@ fn build_lock(
                         program_id: program.payload.program_id.clone(),
                         program_spec_hash: program.artifact_hash.to_string(),
                         program_release_hash: None,
+                        package_release_hash: None,
                         sdk_extension_hashes: Vec::new(),
                     })
                     .collect(),
@@ -1564,12 +1653,16 @@ fn registry_lock(
                     program_id: program.definition.program_id.clone(),
                     program_spec_hash: program.definition.program_spec_hash.clone(),
                     program_release_hash: Some(program.release.program_release_hash.clone()),
-                    sdk_extension_hashes: program
-                        .definition
-                        .extensions
-                        .iter()
-                        .map(extension_lock_hash)
-                        .collect(),
+                    package_release_hash: program
+                        .program_package
+                        .as_ref()
+                        .map(|package| package.package_release_hash.clone()),
+                    sdk_extension_hashes: super::resolver::program_extension_artifacts(
+                        program, targets,
+                    )
+                    .into_iter()
+                    .map(extension_lock_hash)
+                    .collect(),
                 })
                 .collect(),
             sdk_extension_hashes: sdk_extensions
@@ -1799,6 +1892,13 @@ fn cache_program_install(
             "sdk-extension",
             &extension.artifact_hash,
             &serde_json::to_value(extension)?,
+        )?;
+    }
+    for extension in install.sdk_extensions.iter().flatten() {
+        cache_immutable_json(
+            "sdk-extension",
+            &extension.content_hash,
+            &serde_json::to_value(&extension.artifact)?,
         )?;
     }
     Ok(())
@@ -2372,7 +2472,7 @@ mod private_install_tests {
     use crate::api_client::test_support::{MockServer, ENV_LOCK};
 
     /// Every project resolution opts into stack delivery.
-    const RESOLVE_PATH: &str = "/api/registry/v1/resolve?include=delivery";
+    const RESOLVE_PATH: &str = "/api/registry/v1/resolve?include=delivery,program-sdks";
     const OWNER_KEY: &str = "a4_sk_private_install_owner";
 
     /// Serialises the process-global API URL and credentials for one test.
@@ -3904,5 +4004,576 @@ version = "^1.0.0"
             assert!(format!("{error:#}").contains("alias"), "{error:#}");
         }
         assert_eq!(fs::read(&manifest).unwrap(), original);
+    }
+
+    // ---------------------------------------------------------------------
+    // Program SDKs carried by stacks: identity, extensions, and overlap.
+    // ---------------------------------------------------------------------
+
+    const ORE_PROGRAM_ID: &str = "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv";
+    const VOTE_PROGRAM_ID: &str = "Vote111111111111111111111111111111111111111";
+
+    fn ore_program_spec_hash() -> String {
+        ore_fixture("ore.program-spec.json")["artifactHash"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// One SDK extension as the resolver returns it: `{ target, contentHash,
+    /// artifact }` with the artifact's hash equal to the content hash.
+    fn sdk_extension(
+        target: &str,
+        marker: char,
+        input: (&str, &str),
+        entry: &str,
+        contents: &str,
+        language: Option<&str>,
+    ) -> Value {
+        let hash = marker.to_string().repeat(64);
+        let mut manifest = json!({
+            "entry": entry,
+            "files": [entry],
+            "inputKind": input.0,
+            "inputHash": input.1,
+            "sdkRange": null
+        });
+        if let Some(language) = language {
+            manifest["language"] = json!(language);
+        }
+        json!({
+            "target": target,
+            "contentHash": hash,
+            "artifact": {
+                "artifactHash": hash,
+                "manifest": manifest,
+                "files": { entry: contents },
+                "createdAt": "2026-09-25T00:00:00Z"
+            }
+        })
+    }
+
+    const ORE_PROGRAM_EXTENSION: &str = "import { defineProgramExtensions } from '@usearete/sdk';\nimport type { ORE } from './ore-core.js';\n\nexport default defineProgramExtensions<typeof ORE>()({\n  createOperations: () => ({\n    transactions: {\n      mining: {\n        deployWithCheckpoint: {},\n      },\n    },\n  }),\n});\n";
+
+    fn ore_program_extension(target: &str, marker: char) -> Value {
+        let spec = ore_program_spec_hash();
+        let (entry, language) = match target {
+            "rust" => ("extensions.rs", Some("rust")),
+            "python" => ("extensions.py", Some("python")),
+            _ => ("ore-extensions.ts", None),
+        };
+        sdk_extension(
+            target,
+            marker,
+            ("program-spec", &spec),
+            entry,
+            ORE_PROGRAM_EXTENSION,
+            language,
+        )
+    }
+
+    /// The Ore stack whose `ore` program references the `ore` program
+    /// package release `marker`, with that release's extensions.
+    fn ore_stack_with_program_sdk(marker: char, version: &str, extensions: Vec<Value>) -> Value {
+        let mut dependency = ore_stack_dependency(Some(hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4)));
+        let ore = &mut dependency["programs"][0];
+        ore["installName"] = json!("ore");
+        ore["programPackage"] = json!({
+            "package": "ore",
+            "version": version,
+            "packageReleaseHash": release_hash(marker)
+        });
+        ore["sdkExtensions"] = json!(extensions);
+        dependency
+    }
+
+    /// The standalone `ore` program package release `marker`, exactly as the
+    /// stack's reference resolves it.
+    fn ore_program_dependency(marker: char, version: &str, extensions: Vec<Value>) -> Value {
+        json!({
+            "kind": "program",
+            "alias": "ore",
+            "package": "ore",
+            "version": version,
+            "packageReleaseHash": release_hash(marker),
+            "generatorContract": GENERATOR_CONTRACT,
+            "install": fixture_program_install("ore", ore_fixture("ore.program-spec.json"), 'a'),
+            "sdkExtensions": extensions
+        })
+    }
+
+    fn typescript_project(sandbox: &RegistrySandbox, dependencies: &str) -> PathBuf {
+        let root = sandbox.dir.path().join("typescript-project");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = root.join("arete.toml");
+        fs::write(
+            &manifest,
+            format!(
+                "manifest_version = 1\n\n[project]\nname = \"program-sdks\"\n\n[sdk]\ntargets = [\"typescript\"]\n{dependencies}"
+            ),
+        )
+        .unwrap();
+        manifest
+    }
+
+    const ORE_STACK_DEPENDENCY: &str =
+        "\n[dependencies.stacks.ore]\nsource = { registry = \"ore\" }\nversion = \"^1.0.0\"\n";
+    const ORE_PROGRAM_DEPENDENCY: &str =
+        "\n[dependencies.programs.ore]\nsource = { registry = \"ore\" }\nversion = \"^1.0.0\"\n";
+
+    #[test]
+    fn a_referenced_program_sdk_is_generated_with_its_extension_identity_and_lock() {
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![ore_stack_with_program_sdk(
+                    '7',
+                    "1.0.2",
+                    vec![ore_program_extension("typescript", 'e')],
+                )]),
+            )],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        install_project(&manifest, InstallOptions::default()).expect("install");
+        let request = sandbox.request();
+        assert!(
+            request
+                .request_line
+                .starts_with("POST /api/registry/v1/resolve?include=delivery,program-sdks "),
+            "{}",
+            request.request_line
+        );
+
+        let typescript = generated_files(&manifest, "typescript");
+        let entry = &typescript["stacks/ore/programs/ore/__arete-program.ts"];
+        assert!(
+            entry.contains("export const ORE_PROGRAM = withProgramRead(\n  extendProgram(ORE_PROGRAM_CORE, programExtensions),"),
+            "{entry}"
+        );
+        assert!(entry.contains("import programExtensions from './ore-extensions.js';"));
+        // The semantic operation path: the stack's `programs.ore` is the
+        // program SDK module, whose extension defines the operation.
+        let stack_entry = &typescript["stacks/ore/ore.ts"];
+        assert!(
+            stack_entry
+                .contains("import hostedOreProgram from './programs/ore/__arete-program.js';"),
+            "{stack_entry}"
+        );
+        assert!(
+            stack_entry.contains("    ore: hostedOreProgram,"),
+            "{stack_entry}"
+        );
+        assert!(typescript["stacks/ore/programs/ore/ore-extensions.ts"]
+            .contains("transactions: {\n      mining: {\n        deployWithCheckpoint"));
+        // Identity: the program package release, in the Rust and Python SDKs.
+        assert!(generated_text(&manifest, "rust").contains(&format!(
+            "pub const PACKAGE_RELEASE_HASH: &str = \"{}\";",
+            release_hash('7')
+        )));
+        let python = generated_text(&manifest, "python");
+        assert!(python.contains(&format!(
+            "ORE_PACKAGE_RELEASE_HASH = \"{}\"",
+            release_hash('7')
+        )));
+        assert!(python.contains("    package_release_hash=ORE_PACKAGE_RELEASE_HASH,\n"));
+        assert!(!python.contains("ENTROPY_PACKAGE_RELEASE_HASH"));
+        let provenance: Value =
+            serde_json::from_str(&typescript["stacks/ore/sdk-provenance.json"]).unwrap();
+        assert!(
+            provenance["programExtensions"]["ore"].is_object(),
+            "{provenance}"
+        );
+
+        // The lock records the program SDK release and its extension, and
+        // round-trips through its canonical form.
+        let lock = lock_of(&manifest);
+        let programs = &lock.dependencies[0].programs;
+        let ore = programs
+            .iter()
+            .find(|program| program.program_id == ORE_PROGRAM_ID)
+            .unwrap();
+        assert_eq!(
+            ore.package_release_hash.as_deref(),
+            Some(release_hash('7').as_str())
+        );
+        assert_eq!(ore.sdk_extension_hashes, vec!["e".repeat(64)]);
+        let entropy = programs
+            .iter()
+            .find(|program| program.program_id != ORE_PROGRAM_ID)
+            .unwrap();
+        assert_eq!(entropy.package_release_hash, None);
+        let text = fs::read_to_string(manifest.with_file_name("arete.lock")).unwrap();
+        assert!(text.contains(&format!("package_release_hash = \"{}\"", release_hash('7'))));
+        let mut reparsed: ProjectLock = toml::from_str(&text).unwrap();
+        reparsed.normalize_and_validate().unwrap();
+        assert_eq!(reparsed, lock);
+    }
+
+    #[test]
+    fn a_locked_install_refuses_a_moved_program_sdk_release() {
+        let first = resolution(vec![ore_stack_with_program_sdk('7', "1.0.2", vec![])]);
+        let moved = resolution(vec![ore_stack_with_program_sdk('8', "1.0.3", vec![])]);
+        let sandbox = RegistrySandbox::new(
+            vec![(200, first), (200, moved.clone()), (200, moved)],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        install_project(&manifest, InstallOptions::default()).expect("first install");
+        sandbox.request();
+        let lock_path = manifest.with_file_name("arete.lock");
+        let before = fs::read(&lock_path).unwrap();
+
+        for locked in [true, false] {
+            let error = install_project(
+                &manifest,
+                InstallOptions {
+                    locked,
+                    ..InstallOptions::default()
+                },
+            )
+            .expect_err("the stack release's program SDK reference moved");
+            sandbox.request();
+            let text = format!("{error:#}");
+            assert!(text.contains("integrity failure"), "{text}");
+            assert!(text.contains(&release_hash('8')), "{text}");
+            assert_eq!(fs::read(&lock_path).unwrap(), before, "lock unchanged");
+        }
+    }
+
+    #[test]
+    fn a_stack_and_a_standalone_install_of_one_release_generate_identical_program_sdks() {
+        let extension = || vec![ore_program_extension("typescript", 'e')];
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![
+                    ore_stack_with_program_sdk('7', "1.0.2", extension()),
+                    ore_program_dependency('7', "1.0.2", extension()),
+                ]),
+            )],
+            false,
+        );
+        let manifest = typescript_project(
+            &sandbox,
+            &format!("{ORE_STACK_DEPENDENCY}{ORE_PROGRAM_DEPENDENCY}"),
+        );
+        install_project(&manifest, InstallOptions::default()).expect("install both");
+        let files = generated_files(&manifest, "typescript");
+        for (in_stack, standalone) in [
+            (
+                "stacks/ore/programs/ore/__arete-program.ts",
+                "programs/ore/ore.ts",
+            ),
+            (
+                "stacks/ore/programs/ore/ore-core.ts",
+                "programs/ore/ore-core.ts",
+            ),
+            (
+                "stacks/ore/programs/ore/ore-extensions.ts",
+                "programs/ore/ore-extensions.ts",
+            ),
+            (
+                "stacks/ore/programs/ore/extensions.json",
+                "programs/ore/extensions.json",
+            ),
+        ] {
+            assert_eq!(
+                files[in_stack], files[standalone],
+                "{in_stack} and {standalone} must be byte-identical"
+            );
+        }
+        let lock = lock_of(&manifest);
+        assert_eq!(lock.dependencies.len(), 2);
+    }
+
+    #[test]
+    fn a_standalone_program_sdk_carries_its_package_release_in_every_language() {
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![ore_program_dependency('7', "1.0.2", vec![])]),
+            )],
+            false,
+        );
+        let root = sandbox.dir.path().join("program-project");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = root.join("arete.toml");
+        fs::write(
+            &manifest,
+            format!(
+                "manifest_version = 1\n\n[project]\nname = \"program-identity\"\n\n[sdk]\ntargets = [\"typescript\", \"rust\", \"python\"]\n{ORE_PROGRAM_DEPENDENCY}"
+            ),
+        )
+        .unwrap();
+        install_project(&manifest, InstallOptions::default()).expect("program install");
+        let release = release_hash('7');
+        let rust = generated_text(&manifest, "rust");
+        assert!(rust.contains(&format!(
+            "    fn package_release_hash() -> Option<&'static str> {{\n        Some(\"{release}\")\n    }}"
+        )), "{rust}");
+        assert!(rust.contains(&format!(
+            "pub const PACKAGE_RELEASE_HASH: &str = \"{release}\";"
+        )));
+        let python = generated_text(&manifest, "python");
+        assert!(python.contains(&format!("ORE_PACKAGE_RELEASE_HASH = \"{release}\"")));
+        assert!(python.contains("    package_release_hash=ORE_PACKAGE_RELEASE_HASH,\n"));
+    }
+
+    #[test]
+    fn a_program_sdk_extension_rust_stacks_cannot_include_fails_loudly() {
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![ore_stack_with_program_sdk(
+                    '7',
+                    "1.0.2",
+                    vec![
+                        ore_program_extension("typescript", 'e'),
+                        ore_program_extension("rust", 'f'),
+                    ],
+                )]),
+            )],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        let original = fs::read(&manifest).unwrap();
+        let error = install_project(&manifest, InstallOptions::default())
+            .expect_err("a Rust program SDK extension cannot be dropped silently");
+        sandbox.request();
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("cannot include per-program extensions yet"),
+            "{text}"
+        );
+        assert!(text.contains("a4 install program ore --rust"), "{text}");
+        assert_project_untouched(&manifest, &original);
+    }
+
+    #[test]
+    fn a_program_sdk_extension_for_an_unrequested_target_is_refused() {
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![ore_stack_with_program_sdk(
+                    '7',
+                    "1.0.2",
+                    vec![ore_program_extension("rust", 'f')],
+                )]),
+            )],
+            false,
+        );
+        let manifest = typescript_project(&sandbox, ORE_STACK_DEPENDENCY);
+        let original = fs::read(&manifest).unwrap();
+        let error = install_project(&manifest, InstallOptions::default())
+            .expect_err("the registry answered a target nobody asked for");
+        sandbox.request();
+        assert!(
+            format!("{error:#}").contains("unrequested 'rust' SDK extension for program 'ore'"),
+            "{error:#}"
+        );
+        assert_project_untouched(&manifest, &original);
+    }
+
+    /// A StackManifest grouping `live_aliases` (each the Ore LiveSpec) with
+    /// `programs`, as a resolved registry stack with hosted delivery.
+    fn composed_ore_stack(
+        name: &str,
+        live_aliases: &[&str],
+        programs: Vec<(Value, Value)>,
+        sdk_extensions: Vec<Value>,
+    ) -> Value {
+        let live_value = ore_fixture("OreStream.live-spec.json");
+        let live: arete_artifacts::LiveSpecArtifactV2 =
+            serde_json::from_value(live_value.clone()).unwrap();
+        let program_specs = programs
+            .iter()
+            .map(|(spec, _)| serde_json::from_value(spec.clone()).unwrap())
+            .collect::<Vec<arete_artifacts::ProgramSpecArtifact>>();
+        let views = [
+            "OreRound/latest",
+            "OreRound/state",
+            "OreBoard/state",
+            "OreMiner/state",
+        ];
+        let manifest = arete_artifacts::compose_stack_manifest_v2(
+            name,
+            &program_specs,
+            live_aliases
+                .iter()
+                .map(|alias| (alias.to_string(), &live))
+                .collect(),
+            live_aliases
+                .iter()
+                .flat_map(|alias| {
+                    views.iter().map(|view| arete_artifacts::SelectedViewV2 {
+                        live_alias: alias.to_string(),
+                        view_id: view.to_string(),
+                    })
+                })
+                .collect(),
+        )
+        .unwrap();
+        let mut delivery = hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4);
+        let binding = delivery["liveBindings"][0].clone();
+        delivery["liveBindings"] = json!(live_aliases
+            .iter()
+            .enumerate()
+            .map(|(position, alias)| {
+                let mut binding = binding.clone();
+                binding["alias"] = json!(alias);
+                binding["binding"]["deploymentId"] = json!(7 + position);
+                binding["binding"]["websocketEndpoint"] =
+                    json!(format!("wss://{alias}.stack.example.test"));
+                binding
+            })
+            .collect::<Vec<_>>());
+        json!({
+            "kind": "stack",
+            "alias": "ore",
+            "package": "ore",
+            "version": "1.0.0",
+            "packageReleaseHash": release_hash('5'),
+            "generatorContract": GENERATOR_CONTRACT,
+            "stackManifestHash": manifest.artifact_hash.to_string(),
+            "stackManifest": serde_json::to_value(&manifest).unwrap(),
+            "liveSpecs": live_aliases
+                .iter()
+                .map(|alias| json!({"alias": alias, "artifactHash": live_value["artifactHash"], "artifact": live_value}))
+                .collect::<Vec<_>>(),
+            "programs": programs.into_iter().map(|(_, install)| install).collect::<Vec<_>>(),
+            "sdkExtensions": sdk_extensions,
+            "delivery": delivery
+        })
+    }
+
+    fn ore_programs_with_sdk(marker: char) -> Vec<(Value, Value)> {
+        let mut ore = fixture_program_install("ore", ore_fixture("ore.program-spec.json"), 'a');
+        ore["programPackage"] = json!({
+            "package": "ore",
+            "version": "1.0.2",
+            "packageReleaseHash": release_hash(marker)
+        });
+        ore["sdkExtensions"] = json!([ore_program_extension("typescript", 'e')]);
+        vec![
+            (ore_fixture("ore.program-spec.json"), ore),
+            (
+                ore_fixture("entropy.program-spec.json"),
+                fixture_program_install("entropy", ore_fixture("entropy.program-spec.json"), 'b'),
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_single_live_stack_generates_its_independent_programs_for_every_target() {
+        let (vote_spec, _) = program_spec_json(VOTE_PROGRAM_ID, "vote_program");
+        let mut programs = ore_programs_with_sdk('7');
+        programs.push((
+            vote_spec,
+            program_install(
+                VOTE_PROGRAM_ID,
+                "vote_program",
+                &format!("arete:h1:program-release:sha256:{}", "c".repeat(64)),
+            ),
+        ));
+        let stack = composed_ore_stack("OreWithVote", &["live"], programs, vec![]);
+        let sandbox = RegistrySandbox::new(vec![(200, resolution(vec![stack]))], false);
+        let manifest = stack_project(&sandbox, "");
+        install_project(&manifest, InstallOptions::default())
+            .expect("a single-live stack with an independent program installs");
+        let typescript = generated_files(&manifest, "typescript");
+        assert!(typescript.contains_key("stacks/ore/programs/vote-program/__arete-program.ts"));
+        assert!(typescript["stacks/ore/ore.ts"].contains("voteProgram: hostedVoteProgramProgram,"));
+        assert!(typescript["stacks/ore/programs/ore/__arete-program.ts"].contains("extendProgram("));
+        for target in ["rust", "python"] {
+            assert!(
+                generated_text(&manifest, target).contains(VOTE_PROGRAM_ID),
+                "{target}: independent program"
+            );
+        }
+        assert_eq!(lock_of(&manifest).dependencies[0].programs.len(), 3);
+    }
+
+    const COMPOSITION_EXTENSION: &str = "import { defineProgramExtensions, defineStackExtensions } from '@usearete/sdk';\nimport type { ORE_MULTI_SESSION_DEFINITION_CORE } from './ore.js';\n\nexport const alphaStackExtensions = defineStackExtensions<typeof ORE_MULTI_SESSION_DEFINITION_CORE.stacks.alpha>()({\n  constants: { board: 25 },\n});\n\nexport const entropyProgramExtensions = defineProgramExtensions<typeof ORE_MULTI_SESSION_DEFINITION_CORE.programs.entropy>()({\n  constants: { tag: 'entropy' },\n});\n";
+
+    fn composition_extension(manifest_hash: &str, contents: &str) -> Value {
+        sdk_extension(
+            "typescript",
+            'd',
+            ("stack-manifest", manifest_hash),
+            "ore-extensions.ts",
+            contents,
+            None,
+        )
+    }
+
+    #[test]
+    fn a_multi_live_stack_keeps_program_sdk_extensions_and_applies_a_stack_extension() {
+        let mut stack = composed_ore_stack(
+            "OreMulti",
+            &["alpha", "beta"],
+            ore_programs_with_sdk('7'),
+            vec![],
+        );
+        let manifest_hash = stack["stackManifestHash"].as_str().unwrap().to_string();
+        stack["sdkExtensions"] =
+            json!([composition_extension(&manifest_hash, COMPOSITION_EXTENSION)]);
+        let sandbox = RegistrySandbox::new(vec![(200, resolution(vec![stack]))], false);
+        let manifest = typescript_project(&sandbox, ORE_STACK_DEPENDENCY);
+        install_project(&manifest, InstallOptions::default()).expect("multi-live install");
+
+        let files = generated_files(&manifest, "typescript");
+        assert!(files["stacks/ore/programs/ore/__arete-program.ts"]
+            .contains("extendProgram(ORE_PROGRAM_CORE, programExtensions)"));
+        let session = &files["stacks/ore/ore.ts"];
+        for expected in [
+            "import { createSession, extendPrograms, extendStack, type CompositionSessionOptions } from '@usearete/sdk';",
+            "import OreProgramSdk from './programs/ore/__arete-program.js';",
+            "import EntropyProgramSdk from './programs/entropy/__arete-program.js';",
+            "import { alphaStackExtensions, entropyProgramExtensions } from './ore-extensions.js';",
+            "export const ORE_MULTI_SESSION_DEFINITION_CORE = {",
+            "    alpha: { ...AlphaStack, programs: { ...AlphaStack.programs, ore: OreProgramSdk, entropy: EntropyProgramSdk } },",
+            "    ore: OreProgramSdk,",
+            "    alpha: extendStack(ORE_MULTI_SESSION_DEFINITION_CORE.stacks.alpha, alphaStackExtensions),",
+            "  programs: extendPrograms(ORE_MULTI_SESSION_DEFINITION_CORE.programs, {\n    entropy: entropyProgramExtensions,\n  }),",
+            "export type OreMultiSessionDefinition = typeof ORE_MULTI_SESSION_DEFINITION;",
+        ] {
+            assert!(session.contains(expected), "missing {expected}\n{session}");
+        }
+        assert!(files.contains_key("stacks/ore/ore-extensions.ts"));
+        let provenance: Value =
+            serde_json::from_str(&files["stacks/ore/sdk-provenance.json"]).unwrap();
+        assert!(
+            provenance["programExtensions"]["ore"].is_object(),
+            "{provenance}"
+        );
+        assert_eq!(
+            provenance["extensions"]["contentSha256"]
+                .as_str()
+                .map(str::len),
+            Some(64),
+            "{provenance}"
+        );
+    }
+
+    #[test]
+    fn a_stack_extension_cannot_extend_a_program_that_brings_its_own_extension() {
+        let contents = "import { defineProgramExtensions } from '@usearete/sdk';\nimport type { ORE_MULTI_SESSION_DEFINITION_CORE } from './ore.js';\n\nexport const oreProgramExtensions = defineProgramExtensions<typeof ORE_MULTI_SESSION_DEFINITION_CORE.programs.ore>()({});\n";
+        let mut stack = composed_ore_stack(
+            "OreMulti",
+            &["alpha", "beta"],
+            ore_programs_with_sdk('7'),
+            vec![],
+        );
+        let manifest_hash = stack["stackManifestHash"].as_str().unwrap().to_string();
+        stack["sdkExtensions"] = json!([composition_extension(&manifest_hash, contents)]);
+        let sandbox = RegistrySandbox::new(vec![(200, resolution(vec![stack]))], false);
+        let manifest = typescript_project(&sandbox, ORE_STACK_DEPENDENCY);
+        let original = fs::read(&manifest).unwrap();
+        let error = install_project(&manifest, InstallOptions::default())
+            .expect_err("the program would be extended twice");
+        sandbox.request();
+        assert!(format!("{error:#}").contains("extended twice"), "{error:#}");
+        assert_project_untouched(&manifest, &original);
     }
 }

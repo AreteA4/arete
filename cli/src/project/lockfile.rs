@@ -228,6 +228,16 @@ impl LockedDependency {
             (left.program_id.as_str(), left.program_spec_hash.as_str())
                 .cmp(&(right.program_id.as_str(), right.program_spec_hash.as_str()))
         });
+        for program in &mut self.programs {
+            if !registry && program.package_release_hash.is_some() {
+                bail!(
+                    "local dependency '{}' locks a program package release",
+                    self.alias
+                );
+            }
+            program.sdk_extension_hashes.sort();
+            program.sdk_extension_hashes.dedup();
+        }
         self.sdk_extension_hashes.sort();
         self.sdk_extension_hashes.dedup();
         self.targets.sort();
@@ -250,6 +260,11 @@ pub struct LockedProgram {
     pub program_spec_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program_release_hash: Option<String>,
+    /// The program package release (program SDK identity) the stack
+    /// references for this program. Absent when the stack embeds the core
+    /// program only, so locks written before it existed are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_release_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sdk_extension_hashes: Vec<String>,
 }
@@ -299,6 +314,109 @@ mod tests {
             "alpha"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn registry_stack(programs: Vec<LockedProgram>) -> LockedDependency {
+        LockedDependency {
+            kind: DependencyKind::Stack,
+            alias: "ore".into(),
+            source: "registry:ore".into(),
+            requirement: Some("^1.0.0".into()),
+            version: Some("1.0.1".into()),
+            package_release_hash: Some(format!(
+                "arete:registry-package-release:v2:sha256:{}",
+                "5".repeat(64)
+            )),
+            stack_manifest_hash: Some("stack-manifest-hash".into()),
+            program_id: None,
+            program_spec_hash: None,
+            program_release_hash: None,
+            live_specs: Vec::new(),
+            programs,
+            sdk_extension_hashes: Vec::new(),
+            targets: vec![InstallTarget::TypeScript],
+            generator_contract: GENERATOR_CONTRACT.into(),
+        }
+    }
+
+    #[test]
+    fn program_sdk_releases_round_trip_and_older_locks_still_load() {
+        let release = format!(
+            "arete:registry-package-release:v2:sha256:{}",
+            "7".repeat(64)
+        );
+        let mut lock = ProjectLock::empty(format!("arete-manifest-v1:{:064x}", 4));
+        lock.dependencies = vec![registry_stack(vec![
+            LockedProgram {
+                program_id: "ore111".into(),
+                program_spec_hash: "spec-ore".into(),
+                program_release_hash: Some("release-ore".into()),
+                package_release_hash: Some(release.clone()),
+                sdk_extension_hashes: vec!["b".repeat(64), "a".repeat(64)],
+            },
+            LockedProgram {
+                program_id: "entropy111".into(),
+                program_spec_hash: "spec-entropy".into(),
+                program_release_hash: Some("release-entropy".into()),
+                package_release_hash: None,
+                sdk_extension_hashes: Vec::new(),
+            },
+        ])];
+        let text = lock.canonical_toml().unwrap();
+        assert!(text.contains(&format!("package_release_hash = \"{release}\"")));
+        let mut reloaded: ProjectLock = toml::from_str(&text).unwrap();
+        reloaded.normalize_and_validate().unwrap();
+        lock.normalize_and_validate().unwrap();
+        assert_eq!(reloaded, lock);
+        let ore = &reloaded.dependencies[0].programs[1];
+        assert_eq!(ore.program_id, "ore111");
+        assert_eq!(ore.package_release_hash.as_deref(), Some(release.as_str()));
+        assert_eq!(
+            ore.sdk_extension_hashes,
+            vec!["a".repeat(64), "b".repeat(64)]
+        );
+
+        // A lock written before program SDK releases were recorded loads
+        // unchanged and serializes byte-for-byte as before.
+        let older = text
+            .lines()
+            .filter(|line| {
+                !line.starts_with(
+                    "package_release_hash = \"arete:registry-package-release:v2:sha256:7",
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let mut older_lock: ProjectLock = toml::from_str(&older).unwrap();
+        older_lock.normalize_and_validate().unwrap();
+        assert!(older_lock.dependencies[0]
+            .programs
+            .iter()
+            .all(|program| program.package_release_hash.is_none()));
+        assert_eq!(older_lock.canonical_toml().unwrap(), older);
+    }
+
+    #[test]
+    fn a_local_stack_cannot_lock_a_program_sdk_release() {
+        let mut stack = registry_stack(vec![LockedProgram {
+            program_id: "ore111".into(),
+            program_spec_hash: "spec-ore".into(),
+            program_release_hash: None,
+            package_release_hash: Some("release".into()),
+            sdk_extension_hashes: Vec::new(),
+        }]);
+        stack.source = "path:ore.stack-manifest.json".into();
+        stack.requirement = None;
+        stack.version = None;
+        stack.package_release_hash = None;
+        let mut lock = ProjectLock::empty(format!("arete-manifest-v1:{:064x}", 5));
+        lock.dependencies = vec![stack];
+        assert!(lock
+            .normalize_and_validate()
+            .unwrap_err()
+            .to_string()
+            .contains("locks a program package release"));
     }
 
     #[test]
