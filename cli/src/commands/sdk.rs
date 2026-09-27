@@ -2555,39 +2555,126 @@ fn discover_arete_sdk_python_version(start_dir: &Path) -> Option<String> {
     None
 }
 
+/// Print compiler warnings except PDA degradations, which
+/// [`print_pda_degradation_summary`] reports per raw instruction once the
+/// output's extensions are known.
+fn print_typescript_warnings(
+    warnings: &[String],
+    degradations: &[arete_interpreter::typescript_instructions::PdaDegradation],
+) {
+    let degraded = degradations
+        .iter()
+        .map(|degradation| degradation.warning_message())
+        .collect::<BTreeSet<_>>();
+    for warning in warnings
+        .iter()
+        .filter(|warning| !degraded.contains(*warning))
+    {
+        println!("{} {}", "⚠".yellow().bold(), warning);
+    }
+}
+
+/// The programs whose semantic operations (`instructions.*`,
+/// `transactions.*`) an output's extensions provide: the program extensions
+/// a stack extension binds, and each program SDK module's own extension.
+fn semantic_operation_programs(
+    extension: Option<&ResolvedExtensionsArtifact>,
+    program_modules: &[HostedProgramModule],
+) -> BTreeSet<String> {
+    extension
+        .into_iter()
+        .flat_map(|extension| &extension.program_extension_bindings)
+        .map(|binding| binding.program_key.clone())
+        .chain(
+            program_modules
+                .iter()
+                .filter(|program| program.extension.is_some())
+                .map(|program| program.program_key.clone()),
+        )
+        .collect()
+}
+
+/// The impact of PDA degradations on callers: which raw instruction needs
+/// which account passed in, and whether semantic operations may derive
+/// them instead. Which semantic operation derives which account is decided
+/// by extension code the generator cannot read, so it is named as a
+/// possibility rather than per operation.
 fn build_pda_degradation_summary(
     degradations: &[arete_interpreter::typescript_instructions::PdaDegradation],
+    semantic_programs: &BTreeSet<String>,
 ) -> Vec<String> {
     if degradations.is_empty() {
         return Vec::new();
     }
 
-    let instruction_count = degradations
-        .iter()
-        .map(|degradation| degradation.instruction_name.as_str())
-        .collect::<BTreeSet<_>>()
-        .len();
-    let mut reasons: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut by_instruction: BTreeMap<
+        &str,
+        Vec<&arete_interpreter::typescript_instructions::PdaDegradation>,
+    > = BTreeMap::new();
     for degradation in degradations {
-        *reasons.entry(degradation.reason.as_str()).or_insert(0) += 1;
+        by_instruction
+            .entry(degradation.instruction_name.as_str())
+            .or_default()
+            .push(degradation);
     }
 
     let mut lines = vec![format!(
-        "{} {} PDA account(s) degraded to userProvided across {} instruction(s)",
+        "{} {} PDA account(s) in {} raw instruction(s) cannot be derived by the generated code; callers pass them:",
         "⚠".yellow().bold(),
         degradations.len(),
-        instruction_count,
+        by_instruction.len(),
     )];
-    for (reason, count) in reasons {
-        lines.push(format!("   {}x {}", count, reason));
+    for (instruction, accounts) in by_instruction {
+        let reasons = accounts
+            .iter()
+            .map(|degradation| degradation.reason.as_str())
+            .collect::<BTreeSet<_>>();
+        let required = if reasons.len() == 1 {
+            format!(
+                "{} ({})",
+                accounts
+                    .iter()
+                    .map(|degradation| format!("`{}`", degradation.account_name))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                accounts[0].reason
+            )
+        } else {
+            accounts
+                .iter()
+                .map(|degradation| {
+                    format!("`{}` ({})", degradation.account_name, degradation.reason)
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        lines.push(format!("   raw.{instruction} requires {required}"));
+    }
+    if semantic_programs.is_empty() {
+        lines.push(
+            "   The generated instructions.* operations wrap raw.* and need these accounts too."
+                .to_string(),
+        );
+    } else {
+        let namespaces = semantic_programs
+            .iter()
+            .map(|program| {
+                format!("programs.{program}.instructions.*, programs.{program}.transactions.*")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        lines.push(format!(
+            "   Semantic operations from this output's extensions ({namespaces}) may derive these accounts; prefer them where they cover these instructions."
+        ));
     }
     lines
 }
 
 fn print_pda_degradation_summary(
     degradations: &[arete_interpreter::typescript_instructions::PdaDegradation],
+    semantic_programs: &BTreeSet<String>,
 ) {
-    for line in build_pda_degradation_summary(degradations) {
+    for line in build_pda_degradation_summary(degradations, semantic_programs) {
         println!("{}", line);
     }
 }
@@ -3403,6 +3490,7 @@ fn write_typescript_core_modules(
         }
     }
 
+    let core_name = generated_artifact_name(&layout.core_path)?;
     for core_relative in core_paths {
         let core_path = layout.output_dir.join(&core_relative);
         if let Some(parent) = core_path.parent() {
@@ -3413,7 +3501,12 @@ fn write_typescript_core_modules(
                 )
             })?;
         }
-        fs::write(&core_path, contents).with_context(|| {
+        let module = if core_relative == core_name {
+            contents.to_string()
+        } else {
+            typescript_core_alias_module(&core_relative, &core_name, contents)
+        };
+        fs::write(&core_path, module).with_context(|| {
             format!(
                 "Failed to write TypeScript core module to {}",
                 core_path.display()
@@ -3421,6 +3514,29 @@ fn write_typescript_core_modules(
         })?;
     }
     Ok(())
+}
+
+/// The module written at an extension's core import path when it differs
+/// from the generated core (an extension written for another output name,
+/// such as `./ore-stack-core.js` in an output named `ore`): a re-export of
+/// the generated core, so both paths are one module rather than two copies.
+/// `export *` carries every named value and type export; the default export
+/// is re-exported explicitly when the core has one.
+fn typescript_core_alias_module(alias: &str, core: &str, core_contents: &str) -> String {
+    let depth = Path::new(alias).components().count().saturating_sub(1);
+    let prefix = if depth == 0 {
+        "./".to_string()
+    } else {
+        "../".repeat(depth)
+    };
+    let target = format!("{prefix}{}.js", core.trim_end_matches(".ts"));
+    let mut module = format!("export * from '{target}';\n");
+    let default_export =
+        Regex::new(r"(?m)^export default ").expect("default export regex should compile");
+    if default_export.is_match(core_contents) {
+        module.push_str(&format!("export {{ default }} from '{target}';\n"));
+    }
+    module
 }
 
 fn render_hosted_program_entry(program: &HostedProgramModule) -> String {
@@ -3499,6 +3615,7 @@ fn stage_hosted_program_modules(
         let core = output.full_file();
         let entry = render_hosted_program_entry(program);
         check_typescript_entry(&entry, &core, &hosted_program_layout(program))?;
+        let core_name = hosted_program_core_name(program);
         for core_relative in core_paths {
             let core_path = output_dir.join(&core_relative);
             if let Some(parent) = core_path.parent() {
@@ -3509,7 +3626,12 @@ fn stage_hosted_program_modules(
                     )
                 })?;
             }
-            fs::write(&core_path, &core).with_context(|| {
+            let module = if core_relative == core_name {
+                core.clone()
+            } else {
+                typescript_core_alias_module(&core_relative, &core_name, &core)
+            };
+            fs::write(&core_path, module).with_context(|| {
                 format!(
                     "Failed to write hosted program core {}",
                     core_path.display()
@@ -4341,10 +4463,7 @@ fn write_typescript_program_sdk(
     )
     .map_err(|e| anyhow::anyhow!("Failed to compile TypeScript: {}", e))?;
 
-    for warning in &output.warnings {
-        println!("{} {}", "⚠".yellow().bold(), warning);
-    }
-    print_pda_degradation_summary(&output.pda_degradations);
+    print_typescript_warnings(&output.warnings, &output.pda_degradations);
 
     let layout = resolve_typescript_layout(output_path, sdk_name);
     fs::create_dir_all(&layout.output_dir).with_context(|| {
@@ -4360,6 +4479,12 @@ fn write_typescript_program_sdk(
         extensions.hosted_artifact,
         OutputExtensionsFallback::Ignore,
     )?;
+    // A program SDK's extension adds that program's semantic operations.
+    let semantic_programs = artifact
+        .iter()
+        .map(|_| arete_interpreter::typescript::program_key(program_name))
+        .collect();
+    print_pda_degradation_summary(&output.pda_degradations, &semantic_programs);
     let core_contents = output.full_file();
     let entry_contents = render_typescript_program_entry(
         &layout,
@@ -4497,10 +4622,7 @@ fn generate_typescript_sdk_from_source(
         )
         .map_err(|e| anyhow::anyhow!("Failed to compile TypeScript: {}", e))?;
 
-        for warning in &output.warnings {
-            println!("{} {}", "⚠".yellow().bold(), warning);
-        }
-        print_pda_degradation_summary(&output.pda_degradations);
+        print_typescript_warnings(&output.warnings, &output.pda_degradations);
 
         let layout =
             resolve_typescript_layout(output_path, &format!("{}-programs", source.sdk_name()));
@@ -4517,6 +4639,10 @@ fn generate_typescript_sdk_from_source(
             None,
             source.output_extensions_fallback(),
         )?;
+        print_pda_degradation_summary(
+            &output.pda_degradations,
+            &semantic_operation_programs(artifact.as_ref(), &hosted_program_modules),
+        );
         let core_contents = output.full_file();
         let entry_contents = render_typescript_program_collection_entry(
             &layout,
@@ -4606,10 +4732,7 @@ fn generate_typescript_sdk_from_source(
         }
         .map_err(|e| anyhow::anyhow!("Failed to compile TypeScript: {}", e))?;
 
-        for warning in &output.warnings {
-            println!("{} {}", "⚠".yellow().bold(), warning);
-        }
-        print_pda_degradation_summary(&output.pda_degradations);
+        print_typescript_warnings(&output.warnings, &output.pda_degradations);
 
         let layout = resolve_typescript_layout(output_path, source.sdk_name());
         fs::create_dir_all(&layout.output_dir).with_context(|| {
@@ -4635,6 +4758,10 @@ fn generate_typescript_sdk_from_source(
                 &hosted_program_modules,
             )?;
         }
+        print_pda_degradation_summary(
+            &output.pda_degradations,
+            &semantic_operation_programs(artifact.as_ref(), &hosted_program_modules),
+        );
         let extension_files = artifact
             .as_ref()
             .map(|artifact| {
@@ -4822,10 +4949,11 @@ fn generate_typescript_composition_sdk(
             layout.entry_path.display()
         )
     })?;
-    for warning in &output.warnings {
-        println!("{} {}", "⚠".yellow().bold(), warning);
-    }
-    print_pda_degradation_summary(&output.pda_degradations);
+    print_typescript_warnings(&output.warnings, &output.pda_degradations);
+    print_pda_degradation_summary(
+        &output.pda_degradations,
+        &semantic_operation_programs(extension.as_ref(), &program_modules),
+    );
     println!(
         "{} Generated {} aliased stack modules and session {}",
         "✓".green().bold(),
@@ -6329,10 +6457,11 @@ mod tests {
             fs::read_to_string(output_dir.join("jurassic-launchpad-core.ts")).expect("layout core"),
             "export const CORE = {};\n"
         );
+        // The alias re-exports the generated core instead of copying it.
         assert_eq!(
             fs::read_to_string(output_dir.join("jurassic-fi-token-sale-core.ts"))
                 .expect("extension core alias"),
-            "export const CORE = {};\n"
+            "export * from './jurassic-launchpad-core.js';\n"
         );
         assert_eq!(
             fs::read_to_string(output_dir.join("index.ts")).expect("staged extension"),
@@ -6345,6 +6474,55 @@ mod tests {
             .artifacts
             .contains(&"jurassic-fi-token-sale-core.ts".to_string()));
         let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    #[test]
+    fn typescript_core_alias_modules_keep_every_export_reachable() {
+        let core = "export interface OreMiner2 { id: bigint }\nexport const ORE_CORE = {};\nexport default ORE_CORE;\n";
+        assert_eq!(
+            typescript_core_alias_module("ore-stack-core.ts", "ore-core.ts", core),
+            "export * from './ore-core.js';\nexport { default } from './ore-core.js';\n"
+        );
+        assert_eq!(
+            typescript_core_alias_module(
+                "helpers/ore-stack-core.ts",
+                "ore-core.ts",
+                "export const ORE_CORE = {};\n"
+            ),
+            "export * from '../ore-core.js';\n"
+        );
+
+        // Staged through the writer: the layout core keeps the content, the
+        // extension's import path re-exports it, and provenance lists both.
+        let temp = tempfile::tempdir().unwrap();
+        let output_dir = temp.path();
+        let layout = layout_in(output_dir, "ore");
+        let mut artifact = test_artifact(
+            ExtensionsInputKind::StackManifest,
+            &format!("arete:h1:stack-manifest:sha256:{}", "11".repeat(32)),
+        );
+        artifact.files[0].contents = "import type { OreMiner2 } from './ore-stack-core.js';\nimport CORE, * as low from './helpers/ore-stack-core';\nexport default CORE;".to_string();
+        write_typescript_core_modules(&layout, core, Some(&artifact)).unwrap();
+        assert_eq!(
+            fs::read_to_string(output_dir.join("ore-core.ts")).unwrap(),
+            core
+        );
+        assert_eq!(
+            fs::read_to_string(output_dir.join("ore-stack-core.ts")).unwrap(),
+            "export * from './ore-core.js';\nexport { default } from './ore-core.js';\n"
+        );
+        assert_eq!(
+            fs::read_to_string(output_dir.join("helpers/ore-stack-core.ts")).unwrap(),
+            "export * from '../ore-core.js';\nexport { default } from '../ore-core.js';\n"
+        );
+        assert_eq!(
+            typescript_core_paths(&layout, Some(&artifact)).unwrap(),
+            BTreeSet::from([
+                "helpers/ore-stack-core.ts".to_string(),
+                "ore-core.ts".to_string(),
+                "ore-stack-core.ts".to_string(),
+            ])
+        );
     }
 
     #[test]
@@ -7090,35 +7268,66 @@ mod tests {
         assert!(rendered.contains("export const ORE_STREAM_PROGRAMS = extendPrograms(ORE_STREAM_PROGRAMS_CORE, programExtensions);"));
     }
 
-    #[test]
-    fn build_pda_degradation_summary_groups_by_reason() {
-        let lines = build_pda_degradation_summary(&[
-            arete_interpreter::typescript_instructions::PdaDegradation {
-                instruction_name: "deposit".to_string(),
-                account_name: "vault".to_string(),
-                pda_name: Some("vault".to_string()),
-                source: arete_interpreter::typescript_instructions::PdaDegradationSource::Registry,
-                reason: "seed references account 'authority' not present in this instruction"
-                    .to_string(),
-            },
-            arete_interpreter::typescript_instructions::PdaDegradation {
-                instruction_name: "withdraw".to_string(),
-                account_name: "vault".to_string(),
-                pda_name: Some("vault".to_string()),
-                source: arete_interpreter::typescript_instructions::PdaDegradationSource::Registry,
-                reason: "seed references account 'authority' not present in this instruction"
-                    .to_string(),
-            },
-        ]);
+    fn degradation(
+        instruction: &str,
+        account: &str,
+        reason: &str,
+    ) -> arete_interpreter::typescript_instructions::PdaDegradation {
+        arete_interpreter::typescript_instructions::PdaDegradation {
+            instruction_name: instruction.to_string(),
+            account_name: account.to_string(),
+            pda_name: Some(account.to_string()),
+            source: arete_interpreter::typescript_instructions::PdaDegradationSource::Registry,
+            reason: reason.to_string(),
+        }
+    }
 
-        assert_eq!(lines.len(), 2);
-        assert!(
-            lines[0].contains("2 PDA account(s) degraded to userProvided across 2 instruction(s)")
-        );
+    #[test]
+    fn pda_degradation_summary_names_each_raw_instruction_and_its_accounts() {
+        let missing = "seed references account 'authority' not present in this instruction";
+        let degradations = [
+            degradation("claimOre", "miner", missing),
+            degradation("automate", "automation", missing),
+            degradation("automate", "miner", missing),
+            degradation("deposit", "vault", "unsupported seed"),
+            degradation("deposit", "position", missing),
+        ];
+
+        let lines = build_pda_degradation_summary(&degradations, &BTreeSet::new());
+        assert!(lines[0].ends_with(
+            " 5 PDA account(s) in 3 raw instruction(s) cannot be derived by the generated code; callers pass them:"
+        ));
         assert_eq!(
-            lines[1],
-            "   2x seed references account 'authority' not present in this instruction"
+            lines[1..],
+            vec![
+                format!("   raw.automate requires `automation`, `miner` ({missing})"),
+                format!("   raw.claimOre requires `miner` ({missing})"),
+                format!("   raw.deposit requires `vault` (unsupported seed), `position` ({missing})"),
+                "   The generated instructions.* operations wrap raw.* and need these accounts too.".to_string(),
+            ]
         );
+
+        let lines =
+            build_pda_degradation_summary(&degradations[..1], &BTreeSet::from(["ore".to_string()]));
+        assert_eq!(
+            lines.last().unwrap(),
+            "   Semantic operations from this output's extensions (programs.ore.instructions.*, programs.ore.transactions.*) may derive these accounts; prefer them where they cover these instructions."
+        );
+        assert!(build_pda_degradation_summary(&[], &BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn semantic_operation_programs_come_from_extension_bindings_and_program_modules() {
+        let mut artifact = test_artifact(ExtensionsInputKind::StackManifest, "hash");
+        artifact.program_extension_bindings = vec![ProgramExtensionBinding {
+            export_name: "oreProgramExtensions".to_string(),
+            program_key: "ore".to_string(),
+        }];
+        assert_eq!(
+            semantic_operation_programs(Some(&artifact), &[]),
+            BTreeSet::from(["ore".to_string()])
+        );
+        assert!(semantic_operation_programs(None, &[]).is_empty());
     }
 
     #[test]
