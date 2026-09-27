@@ -510,25 +510,70 @@ a4 explore programs --json
 a4 explore stack <stack-ref> --json
 a4 explore program spl-token --json
 a4 explore <stack-ref> <Entity> --json
+
+# Just what you need
+a4 explore stack ore --summary --json
+a4 explore stack ore --views OreRound/latest,OreMiner/state --json
+a4 explore program ore --operation transactions.mining.deployWithCheckpoint --json
+a4 explore program ore --operation deploy --json
+a4 explore program ore --section accounts,types --json
+a4 explore stack ore --operation transactions.mining.deployWithCheckpoint --json
 ```
 
 **Arguments:**
 
-| Argument        | Description                                                                   |
-| --------------- | ----------------------------------------------------------------------------- |
-| `<stack-ref>`   | Hosted stack deployment/install reference                                     |
-| `<program-ref>` | Program install name or program ID                                            |
-| `[entity]`      | Optional exact-LiveSpec entity drill-down (`alias:entity` resolves ambiguity) |
+| Argument        | Description                                                                              |
+| --------------- | ---------------------------------------------------------------------------------------- |
+| `<stack-ref>`   | Hosted stack deployment/install reference, or a stack dependency alias from `arete.toml` |
+| `<program-ref>` | Program install name or program ID                                                       |
+| `[entity]`      | Optional exact-LiveSpec entity drill-down (`alias:entity` resolves ambiguity)            |
+
+**Options:**
+
+| Flag               | Applies to         | Description                                                                                                                                            |
+| ------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--summary`        | `stack`            | Entities with their view ids, program SDKs, endpoints, and auth requirements; no artifact bodies                                                       |
+| `--views <ids>`    | `stack`            | Only these selected views, each with its entity's field schema. Comma-separated; prefix `alias:` when several LiveSpecs select the same id             |
+| `--operation <id>` | `program`, `stack` | One operation, by semantic path (`transactions.mining.deployWithCheckpoint`), full operation id, generated binding, or raw instruction name (`deploy`) |
+| `--section <name>` | `program`          | Only `accounts`, `events`, `instructions` (with error codes), `operations`, or `types`. Repeat the flag or comma-separate                              |
 
 **Output varies by specificity:**
 
-| Command                       | Shows                                                                                       |
-| ----------------------------- | ------------------------------------------------------------------------------------------- |
-| `a4 explore`                  | Available stacks                                                                            |
-| `a4 explore programs`         | Complete promoted Program Release + Program Read installations                              |
-| `a4 explore stack <ref>`      | Exact identities, aliases, selected views, programs, auth, SDK targets, and install command |
-| `a4 explore program <ref>`    | Program identity, accounts, instructions, events, types, Program Read, and install command  |
-| `a4 explore <stack> [entity]` | Legacy syntax routed through descriptor-backed stack exploration                            |
+| Command                                | Shows                                                                                                                                     |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `a4 explore`                           | Available stacks                                                                                                                          |
+| `a4 explore programs`                  | Complete promoted Program Release + Program Read installations                                                                            |
+| `a4 explore stack <ref>`               | Exact identities, aliases, selected views, programs, auth and auth requirements, SDK targets, the endpoints the SDK uses, install command |
+| `a4 explore stack <ref> --summary`     | A compact stack summary                                                                                                                   |
+| `a4 explore stack <ref> --views …`     | The named views' schemas and endpoints                                                                                                    |
+| `a4 explore program <ref>`             | Program identity, accounts, instructions, events, types, Program Read, and install command                                                |
+| `a4 explore program <ref> --operation` | One operation: generated paths, input type, required and derived accounts, signers, transaction count, errors, transport, usage           |
+| `a4 explore program <ref> --section`   | The named sections in detail                                                                                                              |
+| `a4 explore <stack> [entity]`          | Legacy syntax routed through descriptor-backed stack exploration                                                                          |
+
+Everything is cut from the same pinned install descriptor on the client, so
+the compact forms agree with the full one. One operation or a stack summary is
+a few KB.
+
+**Operations.** Semantic operations (`transactions.*`, `instructions.*`,
+`read.*`) and their generated paths come from the knowledge layer's SDK
+surface, so they need an API key (`a4 auth login` or `a4 auth signup`).
+Without one, `--operation` still resolves raw IDL instruction names. An
+operation reports only what the descriptor and surface carry. Anything else,
+such as reads made while preparing, is listed under `notReported` rather than
+guessed. `--operation` on a stack searches the stack's program SDKs.
+
+**Auth requirements.** Stack output includes `authRequirements` (in
+`--summary`, `auth`). For each surface (stream, query, chain, transaction and
+Program Read) it lists the accepted key classes and scopes, and whether a
+transaction entitlement is required. `browser` appears when publishable keys
+are accepted; each one is bound to exactly one origin.
+
+**Endpoints inside a project.** When `arete.toml` declares the stack as a
+dependency, `sdkEndpoints` shows which stream endpoints the generated SDK
+reads. Endpoints that `a4 up` recorded in `arete.toml` take precedence over the
+registry's hosted endpoints. The set in use is `used`, and the other is
+labelled "not used". You can pass the dependency alias as `<stack-ref>`.
 
 Every JSON response includes `schemaVersion`. Exploration never selects a
 latest AST independently and never falls back when an install descriptor is

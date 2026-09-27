@@ -195,6 +195,35 @@ enum Commands {
         /// Print the catalog concept and category vocabularies
         #[arg(long)]
         vocabulary: bool,
+
+        /// Program or stack: one operation, by semantic path
+        /// (`transactions.mining.deployWithCheckpoint`), operation id, or raw instruction name
+        #[arg(long, value_name = "ID")]
+        operation: Option<String>,
+
+        /// Program: only these sections (`accounts`, `events`, `instructions`, `operations`,
+        /// `types`); repeat the flag or separate with commas
+        #[arg(
+            long = "section",
+            value_name = "NAME",
+            value_delimiter = ',',
+            conflicts_with = "operation"
+        )]
+        sections: Vec<String>,
+
+        /// Stack: compact summary of entities, views, program SDKs, endpoints and auth
+        #[arg(long, conflicts_with_all = ["operation", "views"])]
+        summary: bool,
+
+        /// Stack: only these views with their entity schemas (`OreRound/latest,OreMiner/list`;
+        /// prefix `alias:` when several LiveSpecs select the same id)
+        #[arg(
+            long,
+            value_name = "VIEWS",
+            value_delimiter = ',',
+            conflicts_with = "operation"
+        )]
+        views: Vec<String>,
     },
 
     /// Query the curated knowledge layer: protocols, programs, recipes, concepts
@@ -906,7 +935,52 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             limit,
             cursor,
             vocabulary,
+            operation,
+            sections,
+            summary,
+            views,
         } => {
+            // `a4 explore stack <ref> [entity]`, or legacy `a4 explore <stack> [entity]`.
+            let stack_form = match target.as_deref() {
+                Some("stack") => reference.is_some(),
+                Some("catalog" | "programs" | "program") | None => false,
+                Some(_) => true,
+            };
+            let program_form =
+                target.as_deref() == Some("program") && reference.is_some();
+            if !sections.is_empty() && !program_form {
+                return Err(anyhow::anyhow!(
+                    "--section applies only to `a4 explore program <ref>`"
+                ));
+            }
+            if (summary || !views.is_empty()) && !stack_form {
+                return Err(anyhow::anyhow!(
+                    "--summary and --views apply only to `a4 explore stack <ref>`"
+                ));
+            }
+            if operation.is_some() && !(program_form || stack_form) {
+                return Err(anyhow::anyhow!(
+                    "--operation applies only to `a4 explore program <ref>` or `a4 explore stack <ref>`"
+                ));
+            }
+            let stack_detail = summary || !views.is_empty() || operation.is_some();
+            let entity_form = match target.as_deref() {
+                Some("stack") => entity.is_some(),
+                Some("catalog" | "programs" | "program") | None => false,
+                Some(_) => reference.is_some(),
+            };
+            if stack_detail && entity_form {
+                return Err(anyhow::anyhow!(
+                    "--summary, --views and --operation cannot be combined with an entity drill-down"
+                ));
+            }
+            let stack_options = commands::explore::StackOptions {
+                entity: None,
+                summary,
+                views,
+                operation: operation.as_deref(),
+                config_path: &cli.config,
+            };
             let search_options = query.is_some()
                 || concept.is_some()
                 || category.is_some()
@@ -951,21 +1025,36 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             )),
             (None, None, None) => commands::explore::list(cli.json),
             (Some("programs"), None, None) => commands::explore::list_programs(cli.json),
-            (Some("program"), Some(reference), None) => {
-                commands::explore::show_program(reference, cli.json)
-            }
-            (Some("stack"), Some(reference), entity) => {
-                commands::explore::show_stack(reference, entity, cli.json)
-            }
+            (Some("program"), Some(reference), None) => commands::explore::show_program(
+                reference,
+                commands::explore::ProgramOptions {
+                    operation: operation.as_deref(),
+                    sections,
+                },
+                cli.json,
+            ),
+            (Some("stack"), Some(reference), entity) => commands::explore::show_stack(
+                reference,
+                commands::explore::StackOptions {
+                    entity,
+                    ..stack_options
+                },
+                cli.json,
+            ),
             (Some("program"), None, None) => Err(anyhow::anyhow!(
                 "Program reference required. Usage: a4 explore program <ref>"
             )),
             (Some("stack"), None, None) => Err(anyhow::anyhow!(
                 "Stack reference required. Usage: a4 explore stack <ref>"
             )),
-            (Some(stack), entity, None) => {
-                commands::explore::show_stack(stack, entity, cli.json)
-            }
+            (Some(stack), entity, None) => commands::explore::show_stack(
+                stack,
+                commands::explore::StackOptions {
+                    entity,
+                    ..stack_options
+                },
+                cli.json,
+            ),
             _ => Err(anyhow::anyhow!(
                 "Invalid explore arguments. Use `a4 explore`, `a4 explore catalog --query <intent>`, `a4 explore catalog <kind> <slug>`, `a4 explore programs`, `a4 explore stack <ref>`, or `a4 explore program <ref>`."
             )),
@@ -1615,6 +1704,124 @@ mod tests {
                 assert!(entity.is_none());
             }
             _ => panic!("expected explore command"),
+        }
+    }
+
+    #[test]
+    fn parse_selective_explore_flags() {
+        let cli = Cli::try_parse_from([
+            "a4",
+            "explore",
+            "program",
+            "ore",
+            "--section",
+            "accounts,types",
+            "--section",
+            "operations",
+        ])
+        .expect("sections parse");
+        match cli.command {
+            Some(Commands::Explore { sections, .. }) => {
+                assert_eq!(sections, vec!["accounts", "types", "operations"]);
+            }
+            _ => panic!("expected explore command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "a4",
+            "explore",
+            "stack",
+            "ore",
+            "--views",
+            "OreRound/latest,OreMiner/state",
+            "--json",
+        ])
+        .expect("views parse");
+        match cli.command {
+            Some(Commands::Explore { views, summary, .. }) => {
+                assert_eq!(views, vec!["OreRound/latest", "OreMiner/state"]);
+                assert!(!summary);
+            }
+            _ => panic!("expected explore command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "a4",
+            "explore",
+            "program",
+            "ore",
+            "--operation",
+            "transactions.mining.deployWithCheckpoint",
+        ])
+        .expect("operation parses");
+        match cli.command {
+            Some(Commands::Explore { operation, .. }) => assert_eq!(
+                operation.as_deref(),
+                Some("transactions.mining.deployWithCheckpoint")
+            ),
+            _ => panic!("expected explore command"),
+        }
+
+        for conflicting in [
+            &[
+                "a4",
+                "explore",
+                "stack",
+                "ore",
+                "--summary",
+                "--views",
+                "A/b",
+            ][..],
+            &[
+                "a4",
+                "explore",
+                "stack",
+                "ore",
+                "--summary",
+                "--operation",
+                "x",
+            ][..],
+            &[
+                "a4",
+                "explore",
+                "program",
+                "ore",
+                "--section",
+                "types",
+                "--operation",
+                "x",
+            ][..],
+        ] {
+            assert!(
+                Cli::try_parse_from(conflicting).is_err(),
+                "{conflicting:?} should conflict"
+            );
+        }
+    }
+
+    #[test]
+    fn selective_explore_flags_are_refused_on_other_targets() {
+        for (args, expected) in [
+            (
+                &["a4", "explore", "stack", "ore", "--section", "types"][..],
+                "--section applies only",
+            ),
+            (
+                &["a4", "explore", "program", "ore", "--summary"][..],
+                "--summary and --views apply only",
+            ),
+            (
+                &["a4", "explore", "catalog", "--operation", "x"][..],
+                "--operation applies only",
+            ),
+            (
+                &["a4", "explore", "stack", "ore", "Position", "--summary"][..],
+                "entity drill-down",
+            ),
+        ] {
+            let cli = Cli::try_parse_from(args).expect("parses");
+            let error = run(cli).expect_err("refused").to_string();
+            assert!(error.contains(expected), "{args:?}: {error}");
         }
     }
 }
