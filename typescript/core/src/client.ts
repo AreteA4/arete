@@ -83,13 +83,27 @@ type ProgramMap = Record<string, ProgramSdkDefinition>;
 type NormalizeProgramMap<TPrograms> = TPrograms extends ProgramMap ? TPrograms : Record<string, never>;
 
 /**
+ * The keys a program map names, leaving out an index signature. `keyof` of
+ * `Record<string, never>` (nothing attached) or of a wide
+ * `Record<string, ProgramSdkDefinition>` is `string`, which would omit every
+ * program a stack provides.
+ */
+type NamedProgramKeys<TPrograms> = keyof {
+  [K in keyof TPrograms as string extends K ? never : number extends K ? never : K]: unknown;
+};
+
+/**
  * A stack's programs with attached programs added. An attached program under a
  * key the stack provides takes that key: it is either the same program SDK
  * (identical at runtime) or one with the same program spec that could not be
- * proven identical, which the runtime uses in place of the stack's.
+ * proven identical, which the runtime uses in place of the stack's. Keys the
+ * attached map does not name keep the stack's program types.
  */
 export type MergeProgramMaps<TStackPrograms, TAttachedPrograms> =
-  Omit<NormalizeProgramMap<TStackPrograms>, keyof NormalizeProgramMap<TAttachedPrograms>>
+  Omit<
+    NormalizeProgramMap<TStackPrograms>,
+    NamedProgramKeys<NormalizeProgramMap<TAttachedPrograms>>
+  >
   & NormalizeProgramMap<TAttachedPrograms>;
 
 export type StackWithAttachedPrograms<
