@@ -23,6 +23,19 @@ use crate::config::to_kebab_case;
 use crate::telemetry;
 use arete_interpreter::identifiers::{typescript as ts_ident, IdentifierCase};
 
+/// Generation progress lines. A project install that reports its result as
+/// JSON owns stdout for that document, so progress moves to stderr there;
+/// every other invocation prints to stdout as before.
+macro_rules! println {
+    ($($arg:tt)*) => {
+        if crate::project::installer::json_output() {
+            ::std::eprintln!($($arg)*)
+        } else {
+            ::std::println!($($arg)*)
+        }
+    };
+}
+
 type AliasedLiveSpecs = Vec<(String, arete_artifacts::LiveSpecArtifactV2)>;
 
 struct RemoteStackAst {

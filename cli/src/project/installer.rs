@@ -27,6 +27,30 @@ use super::resolver::{
 use super::{InstallPlan, ProjectLock, ProjectManifest, GENERATOR_CONTRACT, RESOLVER_CONTRACT};
 
 const INSTALL_JOURNAL: &str = ".arete/install-journal.json";
+
+static JSON_OUTPUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Records the parsed global `--json` flag once, before any command runs.
+/// Project installs are reached from several commands, so they read it here
+/// rather than through every call chain.
+pub(crate) fn set_json_output(json: bool) {
+    let _ = JSON_OUTPUT.set(json);
+}
+
+/// Whether this invocation reports its result as JSON. When it does, stdout
+/// carries only the JSON result and progress moves to stderr.
+pub(crate) fn json_output() -> bool {
+    JSON_OUTPUT.get().copied().unwrap_or(false)
+}
+
+/// One human progress or summary line: stdout, or stderr under `--json`.
+fn status_line(line: impl std::fmt::Display) {
+    if json_output() {
+        eprintln!("{line}");
+    } else {
+        println!("{line}");
+    }
+}
 /// A hosted stack's exact delivery is transiently unavailable. It is not a
 /// lock integrity failure: the locked release still resolves.
 const DELIVERY_NOT_READY: &str = "delivery-not-ready";
@@ -132,6 +156,7 @@ pub fn install_without_saving(
             outputs,
             endpoints: BTreeMap::new(),
         };
+        let requested_alias = alias.clone();
         match kind {
             DependencyKind::Stack => manifest.dependencies.stacks.insert(alias, dependency),
             DependencyKind::Program => manifest.dependencies.programs.insert(alias, dependency),
@@ -139,12 +164,13 @@ pub fn install_without_saving(
         manifest.validate()?;
         let manifest_path = temporary_root.join("arete.toml");
         fs::write(&manifest_path, manifest.to_toml_pretty()?)?;
-        install_project(
+        install_project_requesting(
             &manifest_path,
             InstallOptions {
                 allow_outside_project: true,
                 ..InstallOptions::default()
             },
+            &[(kind, requested_alias)],
         )
     })();
     let _ = fs::remove_dir_all(&temporary_root);
@@ -296,12 +322,13 @@ pub fn add_and_install(
         options.module.then_some(options.target).flatten(),
     )?;
     write_manifest_atomic(manifest_path, replacement.as_bytes())?;
-    let result = install_project(
+    let result = install_project_requesting(
         manifest_path,
         InstallOptions {
             allow_outside_project: options.allow_outside_project,
             ..InstallOptions::default()
         },
+        &[(kind, alias.clone())],
     );
     if result.is_err() {
         let install_committed =
@@ -374,6 +401,7 @@ pub fn remove_and_install(
                 ..InstallOptions::default()
             },
             removals,
+            &[],
         )
     });
     if result.is_err() {
@@ -387,7 +415,7 @@ pub fn remove_and_install(
         }
     }
     result?;
-    println!("Removed {kind} dependency '{alias}'");
+    status_line(format!("Removed {kind} dependency '{alias}'"));
     Ok(())
 }
 
@@ -707,14 +735,25 @@ pub fn validate_project(
 }
 
 pub fn install_project(manifest_path: impl AsRef<Path>, options: InstallOptions<'_>) -> Result<()> {
+    install_project_requesting(manifest_path, options, &[])
+}
+
+/// Install the project, reporting `requested` as what this invocation asked
+/// for; every other dependency is reported as regenerated.
+fn install_project_requesting(
+    manifest_path: impl AsRef<Path>,
+    options: InstallOptions<'_>,
+    requested: &[(DependencyKind, String)],
+) -> Result<()> {
     let manifest = ProjectManifest::load(manifest_path)?;
-    install_loaded_project(manifest, options, Vec::new())
+    install_loaded_project(manifest, options, Vec::new(), requested)
 }
 
 fn install_loaded_project(
     manifest: ProjectManifest,
     options: InstallOptions<'_>,
     removals: Vec<RemovalOutput>,
+    requested: &[(DependencyKind, String)],
 ) -> Result<()> {
     recover_interrupted_install(&manifest.root)?;
     let plan = InstallPlan::build(&manifest, options.allow_outside_project)?;
@@ -769,15 +808,449 @@ fn install_loaded_project(
         removals,
         &staging_root,
     )?;
-    println!(
-        "Installed {} dependencies and wrote {}",
-        prospective_lock.dependencies.len(),
-        lock_path.display()
-    );
-    for note in redeploy_notes(&manifest, previous_lock.as_ref(), &prospective_lock) {
-        println!("{note}");
+    let mut requested = requested.to_vec();
+    if let Some(selection) = options.update {
+        requested.extend(updated_dependencies(&manifest, selection));
     }
-    Ok(())
+    let report = InstallReport {
+        lockfile: lock_path.display().to_string(),
+        installed: prospective_lock.dependencies.len(),
+        requested: Vec::new(),
+        regenerated: Vec::new(),
+        shared: shared_program_sdks(&resolved),
+        auth: Vec::new(),
+        notes: redeploy_notes(&manifest, previous_lock.as_ref(), &prospective_lock),
+    }
+    .with_dependencies(&requested, previous_lock.as_ref(), &prospective_lock)
+    .with_auth(&requested, &resolved);
+    report.emit()
+}
+
+/// The registry dependencies an `a4 update` selection advanced.
+fn updated_dependencies(
+    manifest: &ProjectManifest,
+    selection: UpdateSelection<'_>,
+) -> Vec<(DependencyKind, String)> {
+    manifest
+        .dependencies()
+        .filter(|(kind, alias, dependency)| {
+            matches!(&dependency.source, DependencySourceV1::Registry(_))
+                && selection.kind.is_none_or(|selected| selected == *kind)
+                && selection
+                    .alias
+                    .is_none_or(|selected| selected == alias.as_str())
+        })
+        .map(|(kind, alias, _)| (kind, alias.clone()))
+        .collect()
+}
+
+/// What one install did: the human summary and the `--json` result.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallReport {
+    lockfile: String,
+    installed: usize,
+    /// The dependencies this invocation asked for.
+    requested: Vec<ReportedDependency>,
+    /// Every other dependency: installs regenerate the whole project.
+    regenerated: Vec<RegeneratedDependency>,
+    /// Standalone program dependencies a stack dependency also provides.
+    shared: Vec<SharedProgramSdk>,
+    /// Account requirements of the hosted stacks this install reports on.
+    auth: Vec<StackAuthRequirements>,
+    notes: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportedDependency {
+    kind: DependencyKind,
+    alias: String,
+    source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_release_hash: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegeneratedDependency {
+    kind: DependencyKind,
+    alias: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    reason: String,
+}
+
+/// A program installed on its own that a stack dependency also provides.
+/// The same program package release generates the same program SDK in both
+/// outputs; a different release (or a stack that embeds only the core
+/// program) generates a different one, and both stay installed.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SharedProgramSdk {
+    program: String,
+    program_id: String,
+    version: String,
+    package_release_hash: String,
+    stack: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stack_program_package: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stack_program_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stack_package_release_hash: Option<String>,
+    same_release: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StackAuthRequirements {
+    stack: String,
+    live_views: Vec<LiveViewAuth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chain: Option<CapabilityAuth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transactions: Option<CapabilityAuth>,
+    browser: &'static str,
+    readiness: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveViewAuth {
+    alias: String,
+    websocket_auth_policy: String,
+    query_auth_policy: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CapabilityAuth {
+    required: bool,
+    mode: String,
+    scopes: Vec<String>,
+    accepted_key_classes: Vec<String>,
+    transaction_entitlement_required: bool,
+}
+
+const BROWSER_KEY_REQUIREMENT: &str =
+    "Browser apps need a publishable key bound to the app's origin.";
+const READINESS_CHECK: &str = "Run `a4 doctor` to check this account's readiness.";
+
+impl InstallReport {
+    fn with_dependencies(
+        mut self,
+        requested: &[(DependencyKind, String)],
+        previous: Option<&ProjectLock>,
+        next: &ProjectLock,
+    ) -> Self {
+        let is_requested = |entry: &LockedDependency| {
+            requested
+                .iter()
+                .any(|(kind, alias)| *kind == entry.kind && *alias == entry.alias)
+        };
+        for entry in &next.dependencies {
+            if is_requested(entry) {
+                self.requested.push(ReportedDependency {
+                    kind: entry.kind,
+                    alias: entry.alias.clone(),
+                    source: entry.source.clone(),
+                    version: entry.version.clone(),
+                    package_release_hash: entry.package_release_hash.clone(),
+                });
+                continue;
+            }
+            let before = previous.and_then(|lock| {
+                lock.dependencies.iter().find(|candidate| {
+                    candidate.kind == entry.kind && candidate.alias == entry.alias
+                })
+            });
+            self.regenerated.push(RegeneratedDependency {
+                kind: entry.kind,
+                alias: entry.alias.clone(),
+                version: entry.version.clone(),
+                reason: regeneration_reason(before, entry),
+            });
+        }
+        self
+    }
+
+    /// Auth requirements of the requested hosted stacks, or of every hosted
+    /// stack when nothing in particular was requested.
+    fn with_auth(
+        mut self,
+        requested: &[(DependencyKind, String)],
+        resolved: &[ResolvedProjectDependency],
+    ) -> Self {
+        let reported = |alias: &str| {
+            requested.is_empty()
+                || requested
+                    .iter()
+                    .any(|(kind, requested)| *kind == DependencyKind::Stack && requested == alias)
+        };
+        for dependency in resolved {
+            let ResolvedProjectDependency::Registry { resolved, .. } = dependency else {
+                continue;
+            };
+            let ResolvedRegistryDependency::Stack {
+                alias,
+                delivery: Some(delivery),
+                ..
+            } = resolved.as_ref()
+            else {
+                continue;
+            };
+            if !reported(alias) {
+                continue;
+            }
+            if let Some(requirements) = stack_auth_requirements(alias, delivery) {
+                self.auth.push(requirements);
+            }
+        }
+        self
+    }
+
+    fn emit(&self) -> Result<()> {
+        if json_output() {
+            println!("{}", serde_json::to_string_pretty(self)?);
+            return Ok(());
+        }
+        println!(
+            "Installed {} dependencies and wrote {}",
+            self.installed, self.lockfile
+        );
+        for dependency in &self.requested {
+            println!(
+                "Requested:   {}",
+                describe_dependency(
+                    dependency.kind,
+                    &dependency.alias,
+                    dependency.version.as_deref(),
+                    &dependency.source
+                )
+            );
+        }
+        for dependency in &self.regenerated {
+            let version = dependency
+                .version
+                .as_deref()
+                .map(|version| format!("@{version}"))
+                .unwrap_or_default();
+            println!(
+                "Regenerated: {} {}{version} ({})",
+                dependency.kind, dependency.alias, dependency.reason
+            );
+        }
+        for shared in &self.shared {
+            println!("{}", describe_shared(shared));
+        }
+        for note in &self.notes {
+            println!("{note}");
+        }
+        for auth in &self.auth {
+            print_auth_requirements(auth);
+        }
+        Ok(())
+    }
+}
+
+fn describe_dependency(
+    kind: DependencyKind,
+    alias: &str,
+    version: Option<&str>,
+    source: &str,
+) -> String {
+    match version {
+        Some(version) => format!("{kind} {alias}@{version}"),
+        None => format!("{kind} {alias} ({source})"),
+    }
+}
+
+fn regeneration_reason(previous: Option<&LockedDependency>, next: &LockedDependency) -> String {
+    let Some(previous) = previous else {
+        return "newly locked".into();
+    };
+    if previous == next {
+        return "inputs unchanged".into();
+    }
+    if previous.package_release_hash != next.package_release_hash {
+        return match (&previous.version, &next.version) {
+            (Some(before), Some(after)) if before != after => {
+                format!("resolved {after}, was {before}")
+            }
+            _ => "resolved a different release".into(),
+        };
+    }
+    if previous.source != next.source {
+        return "source changed".into();
+    }
+    if previous.targets != next.targets {
+        return "targets changed".into();
+    }
+    if previous.programs != next.programs {
+        return "program SDK releases changed".into();
+    }
+    "resolved inputs changed".into()
+}
+
+fn describe_shared(shared: &SharedProgramSdk) -> String {
+    let program = format!("program {}@{}", shared.program, shared.version);
+    if shared.same_release {
+        return format!(
+            "Shared:      {program} is also provided by stack {} (the same program SDK release, generated identically in both)",
+            shared.stack
+        );
+    }
+    match (&shared.stack_program_package, &shared.stack_program_version) {
+        (Some(package), Some(version)) => format!(
+            "Note:        stack {} provides program {package}@{version}, a different release than {program}; both are generated and stay separate",
+            shared.stack
+        ),
+        _ => format!(
+            "Note:        stack {} embeds its own core SDK for program {}, not a program SDK release; {program} is generated separately",
+            shared.stack, shared.program_id
+        ),
+    }
+}
+
+/// Every standalone registry program that a registry stack in the same
+/// install also provides, matched by on-chain program.
+fn shared_program_sdks(resolved: &[ResolvedProjectDependency]) -> Vec<SharedProgramSdk> {
+    let registry = resolved
+        .iter()
+        .filter_map(|dependency| match dependency {
+            ResolvedProjectDependency::Registry { resolved, .. } => Some(resolved.as_ref()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut shared = Vec::new();
+    for dependency in &registry {
+        let ResolvedRegistryDependency::Program {
+            alias,
+            version,
+            package_release_hash,
+            install,
+            ..
+        } = dependency
+        else {
+            continue;
+        };
+        for stack in &registry {
+            let ResolvedRegistryDependency::Stack {
+                alias: stack_alias,
+                programs,
+                ..
+            } = stack
+            else {
+                continue;
+            };
+            for embedded in programs
+                .iter()
+                .filter(|embedded| embedded.definition.program_id == install.definition.program_id)
+            {
+                let reference = embedded.program_package.as_ref();
+                shared.push(SharedProgramSdk {
+                    program: alias.clone(),
+                    program_id: install.definition.program_id.clone(),
+                    version: version.clone(),
+                    package_release_hash: package_release_hash.clone(),
+                    stack: stack_alias.clone(),
+                    stack_program_package: reference.map(|reference| reference.package.clone()),
+                    stack_program_version: reference.map(|reference| reference.version.clone()),
+                    stack_package_release_hash: reference
+                        .map(|reference| reference.package_release_hash.clone()),
+                    same_release: reference.is_some_and(|reference| {
+                        &reference.package_release_hash == package_release_hash
+                    }),
+                });
+            }
+        }
+    }
+    shared
+}
+
+fn capability_auth(
+    binding: &crate::api_client::RegistryCapabilityInstallBinding,
+) -> CapabilityAuth {
+    CapabilityAuth {
+        required: binding.auth.required,
+        mode: binding.auth.mode.clone(),
+        scopes: binding.auth.scopes.clone(),
+        accepted_key_classes: binding.auth.accepted_key_classes.clone(),
+        transaction_entitlement_required: binding.auth.transaction_entitlement_required,
+    }
+}
+
+/// A hosted stack's account requirements, from its install descriptor. A
+/// definition-only stack is served by whoever deploys it, so it has none.
+fn stack_auth_requirements(
+    alias: &str,
+    delivery: &super::resolver::ResolvedStackDelivery,
+) -> Option<StackAuthRequirements> {
+    let super::resolver::ResolvedStackDelivery::Hosted {
+        live_bindings,
+        chain_binding,
+        transaction_binding,
+        ..
+    } = delivery
+    else {
+        return None;
+    };
+    Some(StackAuthRequirements {
+        stack: alias.to_string(),
+        live_views: live_bindings
+            .iter()
+            .map(|live| LiveViewAuth {
+                alias: live.alias.clone(),
+                websocket_auth_policy: live.binding.websocket_auth_policy.clone(),
+                query_auth_policy: live.binding.query_auth_policy.clone(),
+            })
+            .collect(),
+        chain: chain_binding.as_deref().map(capability_auth),
+        transactions: transaction_binding.as_deref().map(capability_auth),
+        browser: BROWSER_KEY_REQUIREMENT,
+        readiness: READINESS_CHECK,
+    })
+}
+
+fn print_auth_requirements(auth: &StackAuthRequirements) {
+    println!("Auth for stack {}:", auth.stack);
+    let policies = auth
+        .live_views
+        .iter()
+        .flat_map(|live| [&live.websocket_auth_policy, &live.query_auth_policy])
+        .collect::<BTreeSet<_>>();
+    if !policies.is_empty() {
+        println!(
+            "  Live views: {}",
+            policies
+                .into_iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    for (label, capability) in [
+        ("Chain reads", &auth.chain),
+        ("Transactions", &auth.transactions),
+    ] {
+        let Some(capability) = capability else {
+            continue;
+        };
+        let mut line = format!(
+            "  {label}: {} keys; scopes {}",
+            capability.accepted_key_classes.join(", "),
+            capability.scopes.join(", ")
+        );
+        if capability.transaction_entitlement_required {
+            line.push_str("; the account needs the transaction entitlement");
+        }
+        println!("{line}");
+    }
+    println!("  {}", auth.browser);
+    println!("  {}", auth.readiness);
 }
 
 /// A stack whose recorded deployment (`endpoints`) now resolves to a
@@ -1789,6 +2262,10 @@ fn generate_all(
                 output.alias
             );
         }
+        status_line(format!(
+            "Generating {} {} ({})",
+            output.kind, output.alias, output.target
+        ));
         let staged_path = staging_root
             .join("outputs")
             .join(format!("{position:04}"))
@@ -2232,7 +2709,7 @@ fn recover_interrupted_install(project_root: &Path) -> Result<()> {
     if journal.staging_root.exists() {
         fs::remove_dir_all(&journal.staging_root)?;
     }
-    println!("Recovered an interrupted Arete install");
+    status_line("Recovered an interrupted Arete install");
     Ok(())
 }
 
@@ -4318,6 +4795,201 @@ version = "^1.0.0"
         let python = generated_text(&manifest, "python");
         assert!(python.contains(&format!("ORE_PACKAGE_RELEASE_HASH = \"{release}\"")));
         assert!(python.contains("    package_release_hash=ORE_PACKAGE_RELEASE_HASH,\n"));
+    }
+
+    fn resolved_registry(dependency: Value, kind: DependencyKind) -> ResolvedProjectDependency {
+        ResolvedProjectDependency::Registry {
+            kind,
+            source: "registry:ore".into(),
+            requirement: "^1.0.0".into(),
+            targets: vec![InstallTarget::TypeScript],
+            resolved: Box::new(serde_json::from_value(dependency).unwrap()),
+        }
+    }
+
+    #[test]
+    fn the_install_report_names_shared_program_sdks_and_different_releases() {
+        let same = vec![
+            resolved_registry(
+                ore_stack_with_program_sdk('7', "1.0.2", vec![]),
+                DependencyKind::Stack,
+            ),
+            resolved_registry(
+                ore_program_dependency('7', "1.0.2", vec![]),
+                DependencyKind::Program,
+            ),
+        ];
+        let shared = shared_program_sdks(&same);
+        assert_eq!(shared.len(), 1);
+        assert!(shared[0].same_release);
+        assert_eq!(
+            describe_shared(&shared[0]),
+            "Shared:      program ore@1.0.2 is also provided by stack ore (the same program SDK release, generated identically in both)"
+        );
+
+        let different = vec![
+            resolved_registry(
+                ore_stack_with_program_sdk('6', "1.0.1", vec![]),
+                DependencyKind::Stack,
+            ),
+            resolved_registry(
+                ore_program_dependency('7', "1.0.2", vec![]),
+                DependencyKind::Program,
+            ),
+        ];
+        let shared = shared_program_sdks(&different);
+        assert_eq!(shared.len(), 1);
+        assert!(!shared[0].same_release);
+        assert_eq!(
+            describe_shared(&shared[0]),
+            "Note:        stack ore provides program ore@1.0.1, a different release than program ore@1.0.2; both are generated and stay separate"
+        );
+
+        // A legacy stack embeds the core program, with no program SDK release.
+        let legacy = vec![
+            resolved_registry(
+                ore_stack_dependency(Some(hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4))),
+                DependencyKind::Stack,
+            ),
+            resolved_registry(
+                ore_program_dependency('7', "1.0.2", vec![]),
+                DependencyKind::Program,
+            ),
+        ];
+        let shared = shared_program_sdks(&legacy);
+        assert!(!shared[0].same_release);
+        assert!(describe_shared(&shared[0]).contains("its own core SDK"));
+    }
+
+    #[test]
+    fn the_install_report_json_separates_requested_regenerated_shared_and_auth() {
+        let stack = resolved_registry(
+            ore_stack_with_program_sdk('7', "1.0.2", vec![]),
+            DependencyKind::Stack,
+        );
+        let program = resolved_registry(
+            ore_program_dependency('7', "1.0.2", vec![]),
+            DependencyKind::Program,
+        );
+        let resolved = vec![stack, program];
+        let locked =
+            |alias: &str, kind: DependencyKind, version: &str, marker: char| LockedDependency {
+                kind,
+                alias: alias.into(),
+                source: format!("registry:{alias}"),
+                requirement: Some("^1.0.0".into()),
+                version: Some(version.into()),
+                package_release_hash: Some(release_hash(marker)),
+                stack_manifest_hash: (kind == DependencyKind::Stack)
+                    .then(|| format!("arete:h1:stack-manifest:sha256:{}", "1".repeat(64))),
+                program_id: (kind == DependencyKind::Program).then(|| ORE_PROGRAM_ID.into()),
+                program_spec_hash: (kind == DependencyKind::Program).then(ore_program_spec_hash),
+                program_release_hash: None,
+                live_specs: Vec::new(),
+                programs: Vec::new(),
+                sdk_extension_hashes: Vec::new(),
+                targets: vec![InstallTarget::TypeScript],
+                generator_contract: GENERATOR_CONTRACT.into(),
+            };
+        let manifest_hash = format!("arete-manifest-v1:{:064x}", 3);
+        let mut previous = ProjectLock::empty(manifest_hash.clone());
+        previous.dependencies = vec![locked("ore", DependencyKind::Stack, "1.0.1", '5')];
+        let mut next = ProjectLock::empty(manifest_hash);
+        next.dependencies = vec![
+            locked("ore", DependencyKind::Stack, "1.0.1", '5'),
+            locked("ore", DependencyKind::Program, "1.0.2", '7'),
+        ];
+        let requested = [(DependencyKind::Program, "ore".to_string())];
+        let report = InstallReport {
+            lockfile: "arete.lock".into(),
+            installed: 2,
+            requested: Vec::new(),
+            regenerated: Vec::new(),
+            shared: shared_program_sdks(&resolved),
+            auth: Vec::new(),
+            notes: Vec::new(),
+        }
+        .with_dependencies(&requested, Some(&previous), &next)
+        .with_auth(&requested, &resolved);
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["requested"][0]["kind"], "program");
+        assert_eq!(value["requested"][0]["alias"], "ore");
+        assert_eq!(value["requested"][0]["version"], "1.0.2");
+        assert_eq!(value["regenerated"][0]["kind"], "stack");
+        assert_eq!(value["regenerated"][0]["reason"], "inputs unchanged");
+        assert_eq!(value["shared"][0]["sameRelease"], true);
+        assert_eq!(value["shared"][0]["stack"], "ore");
+        // A program request reports no stack's auth; a stack request does.
+        assert_eq!(value["auth"], json!([]));
+
+        let stack_request = [(DependencyKind::Stack, "ore".to_string())];
+        let report = InstallReport {
+            lockfile: "arete.lock".into(),
+            installed: 2,
+            requested: Vec::new(),
+            regenerated: Vec::new(),
+            shared: Vec::new(),
+            auth: Vec::new(),
+            notes: Vec::new(),
+        }
+        .with_auth(&stack_request, &resolved);
+        let auth = serde_json::to_value(&report).unwrap()["auth"][0].clone();
+        assert_eq!(auth["stack"], "ore");
+        assert_eq!(
+            auth["liveViews"][0]["websocketAuthPolicy"],
+            "signed_session"
+        );
+        assert_eq!(
+            auth["transactions"]["acceptedKeyClasses"],
+            json!(["publishable", "secret"])
+        );
+        assert_eq!(
+            auth["transactions"]["scopes"],
+            json!(["transaction:inspect", "transaction:send"])
+        );
+        assert_eq!(auth["transactions"]["transactionEntitlementRequired"], true);
+        assert_eq!(auth["chain"]["transactionEntitlementRequired"], false);
+        assert!(auth["browser"]
+            .as_str()
+            .unwrap()
+            .contains("publishable key"));
+        assert!(auth["readiness"].as_str().unwrap().contains("a4 doctor"));
+    }
+
+    #[test]
+    fn regeneration_reasons_name_what_changed() {
+        let base = LockedDependency {
+            kind: DependencyKind::Stack,
+            alias: "ore".into(),
+            source: "registry:ore".into(),
+            requirement: Some("^1.0.0".into()),
+            version: Some("1.0.1".into()),
+            package_release_hash: Some(release_hash('1')),
+            stack_manifest_hash: Some(format!("arete:h1:stack-manifest:sha256:{}", "1".repeat(64))),
+            program_id: None,
+            program_spec_hash: None,
+            program_release_hash: None,
+            live_specs: Vec::new(),
+            programs: Vec::new(),
+            sdk_extension_hashes: Vec::new(),
+            targets: vec![InstallTarget::TypeScript],
+            generator_contract: GENERATOR_CONTRACT.into(),
+        };
+        assert_eq!(regeneration_reason(None, &base), "newly locked");
+        assert_eq!(regeneration_reason(Some(&base), &base), "inputs unchanged");
+        let mut advanced = base.clone();
+        advanced.version = Some("1.0.2".into());
+        advanced.package_release_hash = Some(release_hash('2'));
+        assert_eq!(
+            regeneration_reason(Some(&base), &advanced),
+            "resolved 1.0.2, was 1.0.1"
+        );
+        let mut retargeted = base.clone();
+        retargeted.targets = vec![InstallTarget::TypeScript, InstallTarget::Rust];
+        assert_eq!(
+            regeneration_reason(Some(&base), &retargeted),
+            "targets changed"
+        );
     }
 
     #[test]

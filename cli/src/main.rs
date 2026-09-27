@@ -814,6 +814,7 @@ fn main() {
 
     let cmd_name = cli.command.as_ref().map(command_name).unwrap_or("help");
     let json = cli.json;
+    project::installer::set_json_output(json);
 
     // `a4 mcp` owns stdout for MCP frames and must stay silent otherwise.
     if cmd_name != "mcp" {

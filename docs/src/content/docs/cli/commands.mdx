@@ -912,6 +912,32 @@ Low-level `a4 sdk create` accepts explicit `--manifest` or
 compatibility/direct-descriptor tool: it never writes `arete.toml` or
 `arete.lock`, and `a4 install` never falls back to it.
 
+Every install regenerates the whole project, and its summary says why each
+dependency was generated:
+
+```text
+Installed 2 dependencies and wrote /app/arete.lock
+Requested:   program ore@1.0.2
+Regenerated: stack ore@1.0.1 (inputs unchanged)
+Shared:      program ore@1.0.2 is also provided by stack ore (the same program SDK release, generated identically in both)
+Auth for stack ore:
+  Live views: signed_session
+  Chain reads: anonymous, publishable, secret keys; scopes read
+  Transactions: publishable, secret keys; scopes transaction:inspect, transaction:send; the account needs the transaction entitlement
+  Browser apps need a publishable key bound to the app's origin.
+  Run `a4 doctor` to check this account's readiness.
+```
+
+`Requested` lists what the command asked for (a package add, `--no-save`, or
+the dependencies `a4 update` advanced). `Regenerated` lists every other
+dependency with a reason such as `inputs unchanged`, `newly locked`, or
+`resolved 1.0.2, was 1.0.1`. The auth block summarizes the requirements in a
+hosted stack's install descriptor: after a stack add it covers that stack, and
+after a plain `a4 install` every hosted stack. With the global `--json` flag,
+stdout carries one JSON document with `requested`, `regenerated[]` (`kind`,
+`alias`, `version`, `reason`), `shared[]`, `auth[]`, and `notes[]`, and
+progress moves to stderr.
+
 ### Program SDKs in stacks
 
 A stack is a group of live views and program SDKs. When a stack references a
@@ -925,8 +951,9 @@ definitions carry the same identity: `PACKAGE_RELEASE_HASH` in Rust and
 Installing the same program on its own is fine. When the standalone
 dependency (under its default alias) and the stack reference the same program
 package release, both outputs contain byte-identical program SDK files (in
-the stack, the entry module is named `__arete-program.ts`). When the releases
-differ, both are generated. A stack whose programs have no program package
+the stack, the entry module is named `__arete-program.ts`), and the summary
+reports the program as `Shared`. When the releases differ, both are generated and the
+summary notes the difference. A stack whose programs have no program package
 release keeps generating their core program SDKs.
 
 `a4 install --locked` fails if a locked stack release would resolve a
