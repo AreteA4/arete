@@ -1022,19 +1022,48 @@ pub(crate) fn write_composition_artifacts(
                 program,
             )?;
         }
-        let target = composition_dir(project_root, &composed.name);
-        if target.exists() {
-            fs::remove_dir_all(&target)
-                .with_context(|| format!("Failed to replace {}", target.display()))?;
-        }
-        fs::rename(&staging, &target)
-            .with_context(|| format!("Failed to write {}", target.display()))?;
-        Ok(())
+        let backup = root.join(format!(".{}.{}.old", composed.name, uuid::Uuid::new_v4()));
+        replace_dir(
+            &staging,
+            &composition_dir(project_root, &composed.name),
+            &backup,
+        )
     })();
     if result.is_err() {
         let _ = fs::remove_dir_all(&staging);
     }
     result
+}
+
+/// Replaces directory `target` with `staged`, never leaving it missing: the
+/// current directory is moved aside to `backup`, the staged one renamed into
+/// place, and only then is the backup removed. If the staged directory
+/// cannot be moved into place, the backup is restored.
+fn replace_dir(staged: &Path, target: &Path, backup: &Path) -> Result<()> {
+    let replacing = fs::symlink_metadata(target).is_ok();
+    if replacing {
+        fs::rename(target, backup)
+            .with_context(|| format!("Failed to replace {}", target.display()))?;
+    }
+    if let Err(error) = fs::rename(staged, target) {
+        if replacing {
+            if let Err(restore) = fs::rename(backup, target) {
+                return Err(anyhow::Error::from(error).context(format!(
+                    "Failed to write {}, and restoring the previous one failed ({restore}); it is kept at {}",
+                    target.display(),
+                    backup.display()
+                )));
+            }
+        }
+        return Err(
+            anyhow::Error::from(error).context(format!("Failed to write {}", target.display()))
+        );
+    }
+    if replacing {
+        // The replacement is in place; a leftover backup is only clutter.
+        let _ = fs::remove_dir_all(backup);
+    }
+    Ok(())
 }
 
 /// `.arete/compositions/<name>`.
@@ -1046,4 +1075,56 @@ fn write_artifact(path: &Path, value: &impl serde::Serialize) -> Result<()> {
     let bytes = arete_hash::canonicalize_jcs(value)?;
     arete_artifacts::atomic_write(path, &bytes)
         .with_context(|| format!("Failed to write {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn directory_with(path: &Path, contents: &str) {
+        fs::create_dir_all(path).unwrap();
+        fs::write(path.join("artifact.json"), contents).unwrap();
+    }
+
+    fn contents(path: &Path) -> String {
+        fs::read_to_string(path.join("artifact.json")).unwrap()
+    }
+
+    #[test]
+    fn replacing_a_directory_swaps_it_and_removes_the_backup() {
+        let root = tempfile::tempdir().unwrap();
+        let (staged, target, backup) = (
+            root.path().join(".next.tmp"),
+            root.path().join("current"),
+            root.path().join(".current.old"),
+        );
+        directory_with(&staged, "first");
+        replace_dir(&staged, &target, &backup).unwrap();
+        assert_eq!(contents(&target), "first");
+
+        directory_with(&staged, "second");
+        replace_dir(&staged, &target, &backup).unwrap();
+        assert_eq!(contents(&target), "second");
+        assert!(!staged.exists() && !backup.exists());
+    }
+
+    #[test]
+    fn a_failed_replacement_restores_the_previous_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let (staged, target, backup) = (
+            root.path().join(".next.tmp"),
+            root.path().join("current"),
+            root.path().join(".current.old"),
+        );
+        directory_with(&target, "deployable");
+        // The staged directory is missing, so moving it into place fails
+        // after the previous directory was moved aside.
+        let error = replace_dir(&staged, &target, &backup).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("Failed to write"),
+            "{error:#}"
+        );
+        assert_eq!(contents(&target), "deployable");
+        assert!(!backup.exists());
+    }
 }
