@@ -126,23 +126,32 @@ export function sessionProgramKeyConflict(
 
 /**
  * A standalone session program takes the top-level key from stacks whose
- * program it could not be proven identical to.
+ * program it could not be proven identical to: a different identity
+ * (`'identity'`), or the same program SDK read through a different program
+ * read configuration than the stack's (`'program-read'`).
  */
 export function warnUnprovenSessionProgram(
   key: string,
   standalone: ProgramSdkDefinition,
   providers: readonly { readonly stackKey: string; readonly program: ProgramSdkDefinition }[],
+  cause: 'identity' | 'program-read' = 'identity',
 ): void {
   const stacks = providers.map(({ stackKey }) => `'${stackKey}'`).join(' and ');
   const paths = providers
     .map(({ stackKey }) => `session.stacks.${stackKey}.programs.${key}`)
     .join(' and ');
+  const identities = `standalone: ${identityOf(standalone)}; ${providers
+    .map(({ stackKey, program }) => `${stackKey}: ${identityOf(program)}`)
+    .join('; ')}`;
+  const reason = cause === 'program-read'
+    ? `it is the same program SDK as the '${key}' program of stack ${stacks} (${identities}) `
+      + `but its programReads.${key} descriptor differs from the one the stack reads through, `
+      + `so it keeps its own program read configuration`
+    : `it has the same program spec as the '${key}' program of stack ${stacks} but could not `
+      + `be proven identical (${identities})`;
   warnOnce(
-    `session.programs.${key} uses the standalone program: it has the same program spec as `
-      + `the '${key}' program of stack ${stacks} but could not be proven identical `
-      + `(standalone: ${identityOf(standalone)}; ${providers
-        .map(({ stackKey, program }) => `${stackKey}: ${identityOf(program)}`)
-        .join('; ')}). ${paths} keep${providers.length === 1 ? 's' : ''} the stack's program.`,
+    `session.programs.${key} uses the standalone program: ${reason}. `
+      + `${paths} keep${providers.length === 1 ? 's' : ''} the stack's program.`,
   );
 }
 

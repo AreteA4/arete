@@ -19,11 +19,13 @@ Semantics:
 - Programs bundled by stack members are promoted onto ``session.programs``
   by reference, matched by program identity (canonical §9,
   :func:`arete.stack.compare_program_identity`), never by name. The same
-  program under one key is one program. An explicit standalone program under
-  a key a stack provides with the same program spec, but without a provable
-  identity match, takes ``session.programs.<key>`` (one logged warning) while
-  ``session.stacks.<stack>.programs.<key>`` keeps the stack's; any other
-  program there makes ``create_session`` raise
+  program under one key is one program, unless the standalone program's
+  ``program_reads`` descriptor differs from the one the stack reads through.
+  That program, or an explicit standalone program under a key a stack
+  provides with the same program spec but without a provable identity match,
+  takes ``session.programs.<key>`` with its own read configuration (one logged
+  warning) while ``session.stacks.<stack>.programs.<key>`` keeps the stack's;
+  any other program there makes ``create_session`` raise
   :class:`arete.errors.ProgramKeyConflictError` before connecting anything.
   Two stacks providing one program spec promote the first stack's program
   (warning when not provably the same SDK); different programs both stay
@@ -136,6 +138,61 @@ def _resolve_member_program_reads(
         if override is not None:
             resolved[name] = override
     return resolved or None
+
+
+def _member_program_read(
+    stack: StackDef,
+    program_key: str,
+    member: Mapping[str, Any],
+    session_program_read: Optional[ProgramReadDescriptor],
+    session_program_reads: Mapping[str, ProgramReadDescriptor],
+) -> Optional[ProgramReadDescriptor]:
+    """The program read descriptor a session member connected for ``stack``
+    reads ``program_key`` through, resolved the way :meth:`Arete.connect`
+    resolves it: session and member overrides, then the stack's
+    ``program_reads``."""
+    overrides = _resolve_member_program_reads(
+        stack, member, session_program_read, session_program_reads
+    ) or {}
+    override = overrides.get(program_key)
+    return override if override is not None else stack.program_reads.get(program_key)
+
+
+def _warn_standalone_program_takes_key(
+    program_key: str,
+    program: ProgramDef,
+    provided: Sequence[Tuple[str, ProgramDef]],
+    cause: str = "identity",
+) -> None:
+    """A standalone program takes ``session.programs.<key>`` from the stacks
+    that provide the key: its identity could not be proven the same
+    (``"identity"``), or it is the same program SDK with a ``program_reads``
+    descriptor other than the one the stack reads through
+    (``"program-read"``)."""
+    stacks = " and ".join(f"'{stack}'" for stack, _ in provided)
+    paths = " and ".join(
+        f"session.stacks.{stack}.programs.{program_key}" for stack, _ in provided
+    )
+    identities = f"standalone: {program_identity_label(program)}; " + "; ".join(
+        f"{stack}: {program_identity_label(definition)}"
+        for stack, definition in provided
+    )
+    if cause == "program-read":
+        reason = (
+            f"it is the same program SDK as the '{program_key}' program of stack "
+            f"{stacks} ({identities}) but its program_reads['{program_key}'] "
+            "descriptor differs from the one the stack reads through, so it keeps "
+            "its own program read configuration"
+        )
+    else:
+        reason = (
+            f"it has the same program spec as the '{program_key}' program of stack "
+            f"{stacks} but could not be proven identical ({identities})"
+        )
+    warn_program_identity_once(
+        f"session.programs.{program_key} uses the standalone program: {reason}. "
+        f"{paths} keep{'s' if len(provided) == 1 else ''} the stack's program."
+    )
 
 
 def _program_as_stack(
@@ -498,15 +555,19 @@ async def create_session(
     # stack's effective programs (its own plus member-attached ones;
     # ``with_programs`` rejects a conflicting attachment) provide their keys.
     providers: Dict[str, List[Tuple[str, ProgramDef]]] = {}
+    effective_stacks: Dict[str, StackDef] = {}
     for stack_key, stack in stack_entries:
         effective = with_programs(
             stack, stack_options.get(stack_key, {}).get("programs")
         )
+        effective_stacks[stack_key] = effective
         for program_key, definition in effective.programs.items():
             providers.setdefault(program_key, []).append((stack_key, definition))
-    # Standalone programs a stack already provides as the same program are
-    # served by that stack's connected instance, not by a second member. One
-    # with the same program spec but no provable identity match gets its own
+    # Standalone programs a stack already provides as the same program, read
+    # through the same program read configuration, are served by that stack's
+    # connected instance, not by a second member. One with the same program
+    # spec but no provable identity match, or the same program with its own
+    # ``program_reads`` descriptor that differs from the stack's, gets its own
     # member and takes session.programs.<key>; the stacks keep theirs.
     shared_programs: set = set()
     if not composition:
@@ -533,22 +594,32 @@ async def create_session(
             if not provided:
                 continue
             if "unproven" in matches:
-                stacks = " and ".join(f"'{stack}'" for stack, _ in provided)
-                paths = " and ".join(
-                    f"session.stacks.{stack}.programs.{program_key}" for stack, _ in provided
-                )
-                identities = "; ".join(
-                    f"{stack}: {program_identity_label(definition)}"
-                    for stack, definition in provided
-                )
-                warn_program_identity_once(
-                    f"session.programs.{program_key} uses the standalone program: it "
-                    f"has the same program spec as the '{program_key}' program of stack "
-                    f"{stacks} but could not be proven identical (standalone: "
-                    f"{program_identity_label(program)}; {identities}). {paths} "
-                    f"keep{'s' if len(provided) == 1 else ''} the stack's program."
-                )
+                _warn_standalone_program_takes_key(program_key, program, provided)
                 continue
+            explicit_read = (program_reads or {}).get(program_key)
+            if explicit_read is not None:
+                # Sharing would read through the serving stack's configuration,
+                # so an explicit descriptor must resolve to the same one.
+                serving_stack = provided[0][0]
+                standalone_read = _member_program_read(
+                    _program_as_stack(program_key, program, explicit_read),
+                    program_key,
+                    program_options.get(program_key, {}),
+                    program_read,
+                    session_program_reads,
+                )
+                stack_read = _member_program_read(
+                    effective_stacks[serving_stack],
+                    program_key,
+                    stack_options.get(serving_stack, {}),
+                    program_read,
+                    session_program_reads,
+                )
+                if standalone_read != stack_read:
+                    _warn_standalone_program_takes_key(
+                        program_key, program, provided, cause="program-read"
+                    )
+                    continue
             if program_key in program_options:
                 raise SessionError(
                     f"Standalone program '{program_key}' is the program stack "

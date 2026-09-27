@@ -810,6 +810,59 @@ describe('createSession', () => {
     )).rejects.toMatchObject({ code: 'INVALID_CONFIG' });
   });
 
+  it('keeps a same-release standalone program on its own programReads descriptor', async () => {
+    const standalone = { ...SQUADS_STACK.programs.squads, packageReleaseHash: 'release-squads-reads' };
+    const stack = { ...SQUADS_STACK, programs: { squads: { ...standalone } } };
+    const fetchMock = makeFetch();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const session = await createSession(
+        {
+          stacks: { squads: stack },
+          programs: { squads: standalone },
+          programReads: { squads: squadsRead('https://standalone-reads.invalid') },
+        },
+        { transport: 'http', fetch: fetchMock as typeof fetch }
+      );
+
+      expect(session.programs.squads).not.toBe(session.stacks.squads.programs.squads);
+      await session.programs.squads.accounts.Multisig.fetch('address');
+      expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain('https://standalone-reads.invalid');
+      await session.stacks.squads.programs.squads.accounts.Multisig.fetch('address');
+      expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain('https://squads.invalid');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(
+        /session\.programs\.squads uses the standalone program: it is the same program SDK .*programReads\.squads descriptor differs.*session\.stacks\.squads\.programs\.squads keeps the stack's program/
+      );
+      session.close();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('shares a same-release standalone program whose programReads descriptor matches the stack', async () => {
+    const standalone = { ...SQUADS_STACK.programs.squads, packageReleaseHash: 'release-squads-1' };
+    const stack = { ...SQUADS_STACK, programs: { squads: { ...standalone } } };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const session = await createSession(
+        {
+          stacks: { squads: stack },
+          programs: { squads: standalone },
+          // Equal to the stack's descriptor, as a separate object.
+          programReads: { squads: squadsRead('https://squads.invalid') },
+        },
+        { transport: 'http', fetch: makeFetch() as typeof fetch }
+      );
+
+      expect(session.programs.squads).toBe(session.stacks.squads.programs.squads);
+      expect(warn).not.toHaveBeenCalled();
+      session.close();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('gives session.programs to a standalone program that cannot be proven identical', async () => {
     // A local stack and a local standalone copy of its program: the same
     // program spec, neither with a package release identity.

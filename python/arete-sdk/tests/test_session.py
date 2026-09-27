@@ -92,14 +92,14 @@ def local_descriptor():
     )
 
 
-def hosted_descriptor():
+def hosted_descriptor(endpoint="https://reads.example.test"):
     return ProgramReadDescriptor(
         release=ProgramReleaseReference(
             program_release_hash="release:hash", program_spec_hash="spec:hash"
         ),
         transport=HostedBindingTransportDef(
             binding=ProgramReadBinding(
-                endpoint="https://reads.example.test",
+                endpoint=endpoint,
                 program_read_binding_id=BINDING_ID,
                 auth=HttpAuthMetadata(
                     session_endpoint="https://api.example.test/sessions",
@@ -422,6 +422,69 @@ class TestMembers:
             # no second member was connected for the standalone copy.
             assert session.programs.ore is session.stacks.stack.programs.ore
             assert len(session._members) == 1
+        finally:
+            await session.close()
+
+    async def test_same_release_with_its_own_program_reads_keeps_them(self, caplog):
+        accounts = {"miner": ProgramAccountReadDef(account="Miner")}
+        stack = make_stack(
+            programs={
+                "ore": make_program(
+                    package_release_hash="pkg:ore@reads", accounts=accounts
+                )
+            },
+            program_reads={"ore": hosted_descriptor()},
+        )
+        standalone = make_program(package_release_hash="pkg:ore@reads", accounts=accounts)
+        with caplog.at_level(logging.WARNING, logger="arete.stack"):
+            session = await create_session(
+                stacks={"stack": stack},
+                programs={"ore": standalone},
+                program_reads={
+                    "ore": hosted_descriptor("https://standalone-reads.example.test")
+                },
+                transport="http",
+            )
+        try:
+            # Sharing would read through the stack's descriptor, so the
+            # standalone program keeps its own member and read configuration.
+            assert session.programs.ore is not session.stacks.stack.programs.ore
+            assert len(session._members) == 2
+            assert (
+                session.programs.ore.accounts.miner._transport._endpoint
+                == "https://standalone-reads.example.test"
+            )
+            assert (
+                session.stacks.stack.programs.ore.accounts.miner._transport._endpoint
+                == "https://reads.example.test"
+            )
+            logged = [r.getMessage() for r in caplog.records if r.name == "arete.stack"]
+            assert len(logged) == 1
+            assert "session.programs.ore uses the standalone program" in logged[0]
+            assert "program_reads['ore'] descriptor differs" in logged[0]
+            assert "session.stacks.stack.programs.ore keeps the stack's program" in logged[0]
+        finally:
+            await session.close()
+
+    async def test_same_release_with_the_stacks_program_reads_is_one_program(
+        self, caplog
+    ):
+        stack = make_stack(
+            programs={"ore": make_program(package_release_hash="pkg:ore@1")},
+            program_reads={"ore": hosted_descriptor()},
+        )
+        with caplog.at_level(logging.WARNING, logger="arete.stack"):
+            session = await create_session(
+                stacks={"stack": stack},
+                programs={"ore": make_program(package_release_hash="pkg:ore@1")},
+                # Equal to the stack's descriptor, as a separate object.
+                program_reads={"ore": hosted_descriptor()},
+                transport="http",
+            )
+        try:
+            assert session.programs.ore is session.stacks.stack.programs.ore
+            assert len(session._members) == 1
+            assert not [r for r in caplog.records if r.name == "arete.stack"]
         finally:
             await session.close()
 

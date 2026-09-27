@@ -253,8 +253,12 @@ auth tokens per binding.
   `programs`, `useArete(…, {programs})`):
   - **Both identities known** → equal (or the same object) is **the same program**: one
     program, no warning; a standalone session program that a stack already provides is
-    served by that stack's connected instance (no second member). Different →
-    `PROGRAM_KEY_CONFLICT`.
+    served by that stack's connected instance (no second member), provided it reads the
+    same way: it has no explicit session `programReads.<key>` / `program_reads[<key>]`
+    descriptor, or that descriptor resolves to the one the stack reads through. A
+    differing descriptor would be silently replaced by the stack's, so that pair is
+    handled as **unproven** below: the standalone program takes the key with its own
+    read configuration, with one warning. Different → `PROGRAM_KEY_CONFLICT`.
   - **At least one unknown, same `programSpecHash`** → **unproven**: the explicitly
     attached program wins for the key it is attached under, with one warning (TS
     `console.warn`, Python `logging`, once per distinct message) saying the programs

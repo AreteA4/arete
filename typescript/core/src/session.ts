@@ -56,11 +56,13 @@ export interface SessionDefinition<
   /**
    * Standalone program SDKs, available at `session.programs.<key>`. Under a key
    * a stack also provides, the same program SDK (the same object or the same
-   * `packageReleaseHash`) is served from the stack's connected instance; a
-   * program with the same `programSpecHash` that cannot be proven identical
-   * takes `session.programs.<key>`, with a warning, while
-   * `session.stacks.<stack>.programs.<key>` keeps the stack's; anything else
-   * throws `PROGRAM_KEY_CONFLICT`.
+   * `packageReleaseHash`) is served from the stack's connected instance, unless
+   * this definition's `programReads.<key>` resolves to a descriptor other than
+   * the one the stack reads through. That program, or one with the same
+   * `programSpecHash` that cannot be proven identical, takes
+   * `session.programs.<key>` with its own read configuration, with a warning,
+   * while `session.stacks.<stack>.programs.<key>` keeps the stack's; anything
+   * else throws `PROGRAM_KEY_CONFLICT`.
    */
   readonly programs?: TPrograms;
   /** Hosted chain and transaction capabilities shared by a generated composition. */
@@ -298,6 +300,44 @@ function resolveSessionProgramReads(
   return Object.keys(reads).length > 0 ? reads : undefined;
 }
 
+/**
+ * The program read descriptor a session member connected for `stack` reads
+ * `programKey` through, resolved the way `Arete.connect` resolves it: session
+ * and member overrides, then the stack's `programReads`, then the descriptor
+ * the program carries.
+ */
+function memberProgramRead(
+  stack: StackDefinition,
+  programKey: string,
+  member: SessionConnectionMemberOptions | undefined,
+  options: SessionConnectionOptions | undefined
+): ProgramReadDescriptor | undefined {
+  return resolveSessionProgramReads(stack, member, options)?.[programKey]
+    ?? stack.programReads?.[programKey]
+    ?? getProgramReadDescriptor(stack.programs?.[programKey]);
+}
+
+/** Structural equality of two program read descriptors (plain JSON data). */
+function sameProgramRead(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (
+    left === null || right === null
+    || typeof left !== 'object' || typeof right !== 'object'
+    || Array.isArray(left) !== Array.isArray(right)
+  ) {
+    return false;
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).filter((key) => leftRecord[key] !== undefined);
+  const rightKeys = Object.keys(rightRecord).filter((key) => rightRecord[key] !== undefined);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) =>
+      Object.prototype.hasOwnProperty.call(rightRecord, key)
+      && sameProgramRead(leftRecord[key], rightRecord[key])
+    );
+}
+
 function resolveMemberConnectOptions(
   stack: StackDefinition,
   member: SessionConnectionMemberOptions | undefined,
@@ -456,9 +496,11 @@ export async function createSession<
       stackProviders.set(programKey, providers);
     }
   }
-  // Standalone programs a stack already provides as the same program SDK are
-  // served by that stack's connected instance instead of a second member. One
-  // with the same program spec but no provable identity match gets its own
+  // Standalone programs a stack already provides as the same program SDK, read
+  // through the same program read configuration, are served by that stack's
+  // connected instance instead of a second member. One with the same program
+  // spec but no provable identity match, or the same program SDK with its own
+  // `programReads` descriptor that differs from the stack's, gets its own
   // member and takes session.programs.<key>; the stacks keep theirs.
   const sharedStandalonePrograms = new Set<string>();
   if (definition.mode !== 'composition') {
@@ -476,6 +518,28 @@ export async function createSession<
       if (matches.some(({ match }) => match === 'unproven')) {
         warnUnprovenSessionProgram(programKey, program, providers);
         continue;
+      }
+      const explicitRead = definition.programReads?.[programKey];
+      if (explicitRead !== undefined) {
+        // Sharing would read through the serving stack's configuration, so an
+        // explicit descriptor must resolve to the same one.
+        const servingStack = providers[0]!.stackKey;
+        const standaloneRead = memberProgramRead(
+          programAsStack(programKey, program, explicitRead),
+          programKey,
+          options?.programs?.[programKey],
+          options
+        );
+        const stackRead = memberProgramRead(
+          effectiveStacks.get(servingStack)!,
+          programKey,
+          options?.stacks?.[servingStack as keyof NonNullable<TDef['stacks']>],
+          options
+        );
+        if (!sameProgramRead(standaloneRead, stackRead)) {
+          warnUnprovenSessionProgram(programKey, program, providers, 'program-read');
+          continue;
+        }
       }
       if (options?.programs?.[programKey] !== undefined) {
         throw new AreteError(
