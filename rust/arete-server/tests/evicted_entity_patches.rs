@@ -6,6 +6,10 @@
 //! derived views — as though it were the whole entity. The cache refuses it,
 //! and the projector asks the VM for the whole entity, which comes back with
 //! the key's next mutation.
+//!
+//! A linked VM marks each entity's creation, so the cache needs no memory of
+//! what it evicted to tell the two apart: a key it lacks is stored only from
+//! its creation, however many entities the VM keeps.
 
 use arete_interpreter::ast::{
     FieldPath, IdentitySpec, KeyResolutionStrategy, MappingSource, PopulationStrategy,
@@ -260,6 +264,14 @@ fn whole_round(key: u64, round: Value) -> Mutation {
     mutation
 }
 
+/// A round's first mutation, marked as its creation the way a linked VM
+/// marks it.
+fn created_round(key: u64, round: Value) -> Mutation {
+    let mut mutation = round_mutation(key, round);
+    mutation.mark_created();
+    mutation
+}
+
 /// A refused patch asks the VM for the whole entity, and the whole entity it
 /// sends back makes the key a cached, ranked entity again.
 #[tokio::test]
@@ -267,7 +279,9 @@ async fn an_evicted_key_is_requested_whole_and_comes_back() {
     let resync = linked_resync();
     let mut harness = Harness::start_with(view_index(), resync.clone());
     for round in 1..=5 {
-        harness.send(round, full_round(round, 0)).await;
+        harness
+            .send_batch(vec![created_round(round, full_round(round, 0))])
+            .await;
     }
     harness
         .send(1, json!({"metrics": {"checkpoint_count": 7}}))
@@ -393,6 +407,57 @@ fn pool_bytecode() -> MultiEntityBytecode {
     MultiEntityBytecode::from_single("Pool".to_string(), spec, 0)
 }
 
+/// A VM running `pool_bytecode`, linked to a projector's resync.
+struct PoolVm {
+    vm: Arc<StdMutex<VmContext>>,
+    bytecode: MultiEntityBytecode,
+}
+
+impl PoolVm {
+    fn linked_to(resync: &EntityResync) -> Self {
+        Self::link(VmContext::new(), resync)
+    }
+
+    /// A VM restored from `other`'s state, as the generated runtime restores
+    /// one from a snapshot.
+    fn restored_from(other: &PoolVm, resync: &EntityResync) -> Self {
+        let mut vm = VmContext::new();
+        vm.hydrate(other.vm.lock().unwrap().dump());
+        Self::link(vm, resync)
+    }
+
+    fn link(vm: VmContext, resync: &EntityResync) -> Self {
+        let vm = Arc::new(StdMutex::new(vm));
+        resync.link(&vm);
+        Self {
+            vm,
+            bytecode: pool_bytecode(),
+        }
+    }
+
+    fn update(&self, address: &str, price: u64) -> Vec<Mutation> {
+        let event = json!({
+            "__account_address": address,
+            "name": format!("pool {address}"),
+            "price": price,
+            "fill": price,
+        });
+        self.vm
+            .lock()
+            .unwrap()
+            .process_event(&self.bytecode, event, "amm::PoolState", None, None)
+            .unwrap()
+    }
+
+    fn holds(&self, address: &str) -> bool {
+        self.vm
+            .lock()
+            .unwrap()
+            .get_entity_state(0, &json!(address))
+            .is_some()
+    }
+}
+
 /// The whole loop with a real VM: the cache evicts a pool, refuses its next
 /// change, and the VM's next mutations for it bring the entity back whole —
 /// including the name set once at creation, which no later patch carries.
@@ -400,34 +465,18 @@ fn pool_bytecode() -> MultiEntityBytecode {
 async fn the_vm_sends_back_an_entity_the_cache_evicted() {
     let mut index = ViewIndex::new();
     index.add_spec(view("Pool/list", None, None));
-    let vm = Arc::new(StdMutex::new(VmContext::new()));
     let resync = EntityResync::new();
-    resync.link(&vm);
-    let bytecode = pool_bytecode();
+    let pools = PoolVm::linked_to(&resync);
     let mut harness = Harness::start_with(index, resync.clone());
 
-    let update = |address: &str, price: u64| {
-        let event = json!({
-            "__account_address": address,
-            "name": format!("pool {address}"),
-            "price": price,
-            "fill": price,
-        });
-        vm.lock()
-            .unwrap()
-            .process_event(&bytecode, event, "amm::PoolState", None, None)
-            .unwrap()
-    };
-
     for pool in ["a", "b", "c", "d", "e"] {
-        let mutations = update(pool, 1);
-        harness.send_batch(mutations).await;
+        harness.send_batch(pools.update(pool, 1)).await;
     }
     harness.flush().await;
     assert_eq!(harness.cached_in("Pool/list", "a").await, None, "evicted");
 
     // Its next change is only the change: refused, and requested whole.
-    let mutations = update("a", 2);
+    let mutations = pools.update("a", 2);
     assert_eq!(mutations.len(), 1);
     harness.send_batch(mutations).await;
     harness.flush().await;
@@ -436,7 +485,7 @@ async fn the_vm_sends_back_an_entity_the_cache_evicted() {
 
     // The one after carries the whole entity as well. Its own change, ahead
     // of the whole entity in the same batch, is refused without asking again.
-    let mutations = update("a", 3);
+    let mutations = pools.update("a", 3);
     assert_eq!(mutations.len(), 2);
     harness.send_batch(mutations).await;
     harness.flush().await;
@@ -448,4 +497,106 @@ async fn the_vm_sends_back_an_entity_the_cache_evicted() {
         }))
     );
     assert!(resync.requests().is_empty());
+}
+
+/// The cache's memory of evicted keys is bounded — eight times its own bound —
+/// and the VM's table is not tied to it: here the VM keeps every pool while
+/// the cache holds three. A pool evicted so long ago that such a memory would
+/// have forgotten it still never becomes the fragment its next change
+/// carries, in the cache or in a derived view: the VM marks creations, so any
+/// other patch for a key the cache lacks is refused, and the whole entity
+/// follows with the next change.
+#[tokio::test]
+async fn a_key_evicted_past_any_eviction_memory_is_never_stored_partial() {
+    let mut index = ViewIndex::new();
+    index.add_spec(view("Pool/list", None, None));
+    index.add_spec(view(
+        "Pool/priciest",
+        sorted_by(&["state", "price"], SortOrder::Desc),
+        Some("Pool/list"),
+    ));
+    let resync = EntityResync::new();
+    let pools = PoolVm::linked_to(&resync);
+    let mut harness = Harness::start_with(index, resync.clone());
+
+    let count = CAP * 8 * 2;
+    for n in 0..count {
+        let address = format!("p{n}");
+        harness.send_batch(pools.update(&address, n as u64)).await;
+        harness.flush().await;
+        assert!(
+            harness.cached_in("Pool/list", &address).await.is_some(),
+            "a pool is cached the moment it is created"
+        );
+    }
+    assert!(pools.holds("p0"), "the VM still holds the first pool");
+    assert_eq!(harness.cached_in("Pool/list", "p0").await, None);
+
+    // Its next change carries only what changed; it is not the entity.
+    let change = pools.update("p0", 1_000);
+    assert_eq!(change.len(), 1);
+    assert!(!change[0].is_whole_entity());
+    harness.send_batch(change).await;
+    harness.flush().await;
+    assert_eq!(harness.cached_in("Pool/list", "p0").await, None);
+    let priciest = harness.window("Pool/priciest").await;
+    assert!(
+        priciest.iter().all(|(key, _)| key != "p0"),
+        "the fragment ranks nowhere"
+    );
+    assert!(resync.requests().is_requested("Pool", &json!("p0")));
+
+    // The next brings the whole entity, with the name only its creation set.
+    harness.send_batch(pools.update("p0", 1_001)).await;
+    harness.flush().await;
+    assert_eq!(
+        harness.cached_in("Pool/list", "p0").await,
+        Some(json!({
+            "id": {"address": "p0", "name": "pool p0"},
+            "state": {"price": 1_001, "fills": [0, 1_000, 1_001]},
+        }))
+    );
+    let priciest = harness.window("Pool/priciest").await;
+    assert_eq!(priciest[0].0, "p0");
+    assert_eq!(priciest[0].1["id"]["name"], "pool p0");
+}
+
+/// After a restore the VM holds entities the cache lacks — after a legacy
+/// migration, every one of them. Their next mutations are changes, not
+/// creations, so they are refused and the entities follow whole, however
+/// many there are; an entity created after the restore is stored at once.
+#[tokio::test]
+async fn an_entity_restored_into_the_vm_alone_comes_back_whole() {
+    let mut index = ViewIndex::new();
+    index.add_spec(view("Pool/list", None, None));
+    let before = PoolVm::linked_to(&EntityResync::new());
+    for pool in ["a", "b"] {
+        before.update(pool, 1);
+    }
+    let resync = EntityResync::new();
+    let pools = PoolVm::restored_from(&before, &resync);
+    let mut harness = Harness::start_with(index, resync.clone());
+
+    harness.send_batch(pools.update("a", 2)).await;
+    harness.flush().await;
+    assert_eq!(harness.cached_in("Pool/list", "a").await, None);
+    assert!(resync.requests().is_requested("Pool", &json!("a")));
+
+    harness.send_batch(pools.update("a", 3)).await;
+    harness.send_batch(pools.update("c", 1)).await;
+    harness.flush().await;
+    assert_eq!(
+        harness.cached_in("Pool/list", "a").await,
+        Some(json!({
+            "id": {"address": "a", "name": "pool a"},
+            "state": {"price": 3, "fills": [1, 2, 3]},
+        }))
+    );
+    assert_eq!(
+        harness.cached_in("Pool/list", "c").await,
+        Some(json!({
+            "id": {"address": "c", "name": "pool c"},
+            "state": {"price": 1, "fills": [1]},
+        }))
+    );
 }

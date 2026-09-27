@@ -2236,6 +2236,7 @@ mod tests {
         SerializableHandlerSpec, SerializableStreamSpec, SourceSpec, TypedStreamSpec,
     };
     use crate::vm::VmContext;
+    use crate::{Mutation, WholeEntity};
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
 
@@ -2413,10 +2414,26 @@ mod tests {
     }
 
     /// A pool whose account carries a price (replaced), a fill (appended) and
-    /// a secret that is mapped but never emitted.
+    /// a secret that is mapped but never emitted, plus a config account whose
+    /// handler emits nothing and sets a fee.
     fn whole_entity_pool_spec() -> TypedStreamSpec<Value> {
         let mut hidden = mapping("state.secret", &["secret"], PopulationStrategy::LastWrite);
         hidden.emit = false;
+        let handler = |type_name: &str, mappings, emit| SerializableHandlerSpec {
+            source: SourceSpec::Source {
+                program_id: None,
+                discriminator: None,
+                type_name: type_name.to_string(),
+                serialization: None,
+                is_account: true,
+            },
+            key_resolution: KeyResolutionStrategy::Embedded {
+                primary_field: FieldPath::new(&["__account_address"]),
+            },
+            mappings,
+            conditions: vec![],
+            emit,
+        };
         TypedStreamSpec::from_serializable(SerializableStreamSpec {
             ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
             state_name: "Pool".to_string(),
@@ -2426,30 +2443,31 @@ mod tests {
                 primary_keys: vec!["id.address".to_string()],
                 lookup_indexes: vec![],
             },
-            handlers: vec![SerializableHandlerSpec {
-                source: SourceSpec::Source {
-                    program_id: None,
-                    discriminator: None,
-                    type_name: "amm::PoolState".to_string(),
-                    serialization: None,
-                    is_account: true,
-                },
-                key_resolution: KeyResolutionStrategy::Embedded {
-                    primary_field: FieldPath::new(&["__account_address"]),
-                },
-                mappings: vec![
-                    mapping(
-                        "id.address",
-                        &["__account_address"],
-                        PopulationStrategy::SetOnce,
-                    ),
-                    mapping("state.price", &["price"], PopulationStrategy::LastWrite),
-                    mapping("state.fills", &["fill"], PopulationStrategy::Append),
-                    hidden,
-                ],
-                conditions: vec![],
-                emit: true,
-            }],
+            handlers: vec![
+                handler(
+                    "amm::PoolState",
+                    vec![
+                        mapping(
+                            "id.address",
+                            &["__account_address"],
+                            PopulationStrategy::SetOnce,
+                        ),
+                        mapping("state.price", &["price"], PopulationStrategy::LastWrite),
+                        mapping("state.fills", &["fill"], PopulationStrategy::Append),
+                        hidden,
+                    ],
+                    true,
+                ),
+                handler(
+                    "amm::PoolConfigState",
+                    vec![mapping(
+                        "config.fee",
+                        &["fee"],
+                        PopulationStrategy::LastWrite,
+                    )],
+                    false,
+                ),
+            ],
             sections: vec![],
             field_mappings: BTreeMap::new(),
             resolver_hooks: vec![],
@@ -2462,31 +2480,43 @@ mod tests {
         })
     }
 
+    fn pool_bytecode() -> MultiEntityBytecode {
+        MultiEntityBytecode::from_single("Pool".to_string(), whole_entity_pool_spec(), 0)
+    }
+
     fn pool_event(price: u64, fill: u64) -> Value {
-        json!({"__account_address": "pool_1", "price": price, "fill": fill, "secret": "s"})
+        pool_event_for("pool_1", price, fill)
+    }
+
+    fn pool_event_for(address: &str, price: u64, fill: u64) -> Value {
+        json!({"__account_address": address, "price": price, "fill": fill, "secret": "s"})
+    }
+
+    /// A VM that answers whole-entity requests, and so marks creations.
+    fn linked_vm(
+        state_config: crate::vm::StateTableConfig,
+    ) -> (VmContext, crate::vm::WholeEntityRequests) {
+        let requests = crate::vm::WholeEntityRequests::new(16);
+        let mut vm = VmContext::new_with_config(state_config);
+        vm.set_whole_entity_requests(requests.clone());
+        (vm, requests)
+    }
+
+    fn process(vm: &mut VmContext, bytecode: &MultiEntityBytecode, event: Value) -> Vec<Mutation> {
+        vm.process_event(bytecode, event, "amm::PoolState", None, None)
+            .unwrap()
     }
 
     #[test]
     fn a_requested_entity_is_emitted_whole_once() {
-        let bytecode =
-            MultiEntityBytecode::from_single("Pool".to_string(), whole_entity_pool_spec(), 0);
-        let requests = crate::vm::WholeEntityRequests::new(16);
-        let mut vm = VmContext::new();
-        vm.set_whole_entity_requests(requests.clone());
-        let mut process = |price, fill| {
-            vm.process_event(
-                &bytecode,
-                pool_event(price, fill),
-                "amm::PoolState",
-                None,
-                None,
-            )
-            .unwrap()
-        };
+        let bytecode = pool_bytecode();
+        let (mut vm, requests) = linked_vm(Default::default());
+        let mut update = |price, fill| process(&mut vm, &bytecode, pool_event(price, fill));
 
-        let first = process(1, 10);
+        let first = update(1, 10);
+        assert_eq!(first[0].whole_entity_mark(), Some(WholeEntity::Created));
         let key = first[0].key.clone();
-        let second = process(2, 20);
+        let second = update(2, 20);
         assert_eq!(second.len(), 1);
         assert!(!second[0].is_whole_entity());
         assert_eq!(
@@ -2498,7 +2528,7 @@ mod tests {
         // A consumer that dropped the entity asks for all of it.
         requests.request("Pool", &key);
         assert!(requests.is_requested("Pool", &key));
-        let mut third = process(3, 30);
+        let mut third = update(3, 30);
         assert_eq!(third.len(), 2);
         assert!(
             !third[0].is_whole_entity(),
@@ -2509,7 +2539,7 @@ mod tests {
             json!({"state": {"price": 3, "fills": [30]}})
         );
         assert_eq!(third[1].key, key);
-        assert!(third[1].take_whole_entity_mark());
+        assert_eq!(third[1].take_whole_entity_mark(), Some(WholeEntity::Resent));
         assert_eq!(
             third[1].patch,
             json!({
@@ -2524,7 +2554,7 @@ mod tests {
         );
         assert!(requests.is_empty(), "a request is answered once");
 
-        let fourth = process(4, 40);
+        let fourth = update(4, 40);
         assert_eq!(fourth.len(), 1);
         assert!(!fourth[0].is_whole_entity());
         assert_eq!(
@@ -2535,17 +2565,12 @@ mod tests {
 
     #[test]
     fn a_request_waits_for_its_own_entity() {
-        let bytecode =
-            MultiEntityBytecode::from_single("Pool".to_string(), whole_entity_pool_spec(), 0);
-        let requests = crate::vm::WholeEntityRequests::new(16);
-        let mut vm = VmContext::new();
-        vm.set_whole_entity_requests(requests.clone());
+        let bytecode = pool_bytecode();
+        let (mut vm, requests) = linked_vm(Default::default());
         requests.request("Pool", &json!("other_pool"));
-        let mutations = vm
-            .process_event(&bytecode, pool_event(1, 10), "amm::PoolState", None, None)
-            .unwrap();
+        let mutations = process(&mut vm, &bytecode, pool_event(1, 10));
         assert_eq!(mutations.len(), 1);
-        assert!(!mutations[0].is_whole_entity());
+        assert_ne!(mutations[0].whole_entity_mark(), Some(WholeEntity::Resent));
         assert!(requests.is_requested("Pool", &json!("other_pool")));
     }
 
@@ -2561,6 +2586,169 @@ mod tests {
             "the oldest is forgotten"
         );
         assert!(requests.is_requested("Pool", &json!("c")));
+    }
+
+    /// A consumer that does not hold a key can tell a new entity from a later
+    /// patch for one it dropped: only the first is marked created.
+    #[test]
+    fn an_entitys_first_mutation_is_marked_as_its_creation() {
+        let bytecode = pool_bytecode();
+        let (mut vm, _requests) = linked_vm(Default::default());
+
+        let mut first = process(&mut vm, &bytecode, pool_event(1, 10));
+        assert_eq!(first.len(), 1, "the creation needs no second mutation");
+        assert_eq!(
+            first[0].take_whole_entity_mark(),
+            Some(WholeEntity::Created)
+        );
+        assert_eq!(
+            first[0].patch,
+            json!({"id": {"address": "pool_1"}, "state": {"price": 1, "fills": [10]}}),
+            "the whole row, without its non-emitted field"
+        );
+        assert_eq!(first[0].append, vec!["state.fills".to_string()]);
+
+        let second = process(&mut vm, &bytecode, pool_event(2, 20));
+        assert_eq!(second[0].whole_entity_mark(), None);
+        assert_eq!(
+            second[0].patch,
+            json!({"state": {"price": 2, "fills": [20]}})
+        );
+    }
+
+    /// Without a consumer asking for whole entities the VM's output is
+    /// unchanged: nothing is marked, and a creation is its changed fields.
+    #[test]
+    fn a_vm_without_whole_entity_requests_marks_no_creation() {
+        let bytecode = pool_bytecode();
+        let mut vm = VmContext::new();
+        let first = process(&mut vm, &bytecode, pool_event(1, 10));
+        assert!(!first[0].is_whole_entity());
+        assert!(first[0].patch.get(crate::WHOLE_ENTITY_MARKER).is_none());
+    }
+
+    /// A handler that emits nothing can start the row. The first mutation
+    /// after it is still the creation, and carries what that handler set,
+    /// which its own change does not.
+    #[test]
+    fn a_row_started_without_a_mutation_is_created_by_its_first_one() {
+        let bytecode = pool_bytecode();
+        let (mut vm, _requests) = linked_vm(Default::default());
+        let config = vm
+            .process_event(
+                &bytecode,
+                json!({"__account_address": "pool_1", "fee": 30}),
+                "amm::PoolConfigState",
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(config.is_empty(), "the config handler emits nothing");
+
+        let mut first = process(&mut vm, &bytecode, pool_event(1, 10));
+        assert_eq!(
+            first[0].take_whole_entity_mark(),
+            Some(WholeEntity::Created)
+        );
+        assert_eq!(
+            first[0].patch,
+            json!({
+                "id": {"address": "pool_1"},
+                "config": {"fee": 30},
+                "state": {"price": 1, "fills": [10]},
+            })
+        );
+        let second = process(&mut vm, &bytecode, pool_event(2, 20));
+        assert!(!second[0].is_whole_entity());
+    }
+
+    /// An entity the VM's bounded table dropped starts again from its next
+    /// event, and that event's mutation creates it again.
+    #[test]
+    fn an_entity_the_vm_dropped_is_created_again() {
+        let bytecode = pool_bytecode();
+        let (mut vm, _requests) = linked_vm(crate::vm::StateTableConfig {
+            max_entries: 2,
+            ..Default::default()
+        });
+        for pool in ["a", "b", "c"] {
+            let created = process(&mut vm, &bytecode, pool_event_for(pool, 1, 1));
+            assert_eq!(created[0].whole_entity_mark(), Some(WholeEntity::Created));
+        }
+        assert!(vm.get_entity_state(0, &json!("a")).is_none(), "dropped");
+
+        let mut again = process(&mut vm, &bytecode, pool_event_for("a", 2, 2));
+        assert_eq!(
+            again[0].take_whole_entity_mark(),
+            Some(WholeEntity::Created)
+        );
+        assert_eq!(
+            again[0].patch,
+            json!({"id": {"address": "a"}, "state": {"price": 2, "fills": [2]}})
+        );
+        let changed = process(&mut vm, &bytecode, pool_event_for("c", 2, 2));
+        assert!(!changed[0].is_whole_entity(), "c was never dropped");
+    }
+
+    /// A resolver result for an entity the table does not hold starts the
+    /// entity, so its mutation is the creation; one for an entity the table
+    /// holds is a patch.
+    #[test]
+    fn a_resolver_result_for_an_entity_not_held_creates_it() {
+        let bytecode = pool_bytecode();
+        let (mut vm, _requests) = linked_vm(Default::default());
+        process(&mut vm, &bytecode, pool_event(1, 10));
+        for key in ["pool_1", "pool_2"] {
+            vm.enqueue_resolver_request(
+                String::new(),
+                crate::ast::ResolverType::Token,
+                json!(key),
+                crate::vm::ResolverTarget {
+                    state_id: 0,
+                    entity_name: "Pool".to_string(),
+                    primary_key: json!(key),
+                    extracts: vec![crate::ast::ResolverExtractSpec {
+                        target_path: "meta.name".to_string(),
+                        source_path: Some("name".to_string()),
+                        transform: None,
+                    }],
+                },
+            );
+        }
+        let mut applied = Vec::new();
+        for request in vm.take_resolver_requests() {
+            applied.extend(
+                vm.apply_resolver_result(&bytecode, &request.cache_key, json!({"name": "n"}))
+                    .unwrap(),
+            );
+        }
+        applied.sort_by_key(|mutation| mutation.key.to_string());
+
+        assert_eq!(applied[0].key, json!("pool_1"));
+        assert!(!applied[0].is_whole_entity());
+        assert_eq!(applied[0].patch, json!({"meta": {"name": "n"}}));
+        assert_eq!(applied[1].key, json!("pool_2"));
+        assert_eq!(
+            applied[1].take_whole_entity_mark(),
+            Some(WholeEntity::Created)
+        );
+        assert_eq!(applied[1].patch, json!({"meta": {"name": "n"}}));
+    }
+
+    /// Entities restored from a snapshot may be held by the consumer already,
+    /// so their next mutation is a patch like any other.
+    #[test]
+    fn a_restored_entity_is_not_created_again() {
+        let bytecode = pool_bytecode();
+        let (mut vm, _requests) = linked_vm(Default::default());
+        process(&mut vm, &bytecode, pool_event(1, 10));
+        let snapshot = vm.dump();
+
+        let (mut restored, _requests) = linked_vm(Default::default());
+        restored.hydrate(snapshot);
+        let next = process(&mut restored, &bytecode, pool_event(2, 20));
+        assert!(!next[0].is_whole_entity());
+        assert_eq!(next[0].patch, json!({"state": {"price": 2, "fills": [20]}}));
     }
 
     #[test]

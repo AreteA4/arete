@@ -59,7 +59,7 @@ pub use arete_auth::{
     SCOPE_TRANSACTION_INSPECT, SCOPE_TRANSACTION_SEND, SOLANA_GATEWAY_AUDIENCE,
 };
 pub use bus::{BusManager, BusMessage};
-pub use cache::{CacheWrite, EntityCache, EntityCacheConfig};
+pub use cache::{CacheWrite, EntityCache, EntityCacheConfig, PatchOrigin};
 pub use config::{
     HealthConfig, HttpHealthConfig, HttpServerConfig, ReconnectionConfig, RuntimePlan,
     ServerConfig, TransactionConfig, WebSocketConfig, WebSocketDeliveryConfig, YellowstoneConfig,

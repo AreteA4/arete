@@ -538,6 +538,12 @@ impl DirtyTracker {
 /// once. Requests are bounded: past `capacity` the least recently requested
 /// is forgotten, and asking again is always safe.
 ///
+/// A VM given requests also marks each entity's first mutation with
+/// [`Mutation::mark_created`], its patch then being the whole new entity. So
+/// the consumer never has to guess: a key it does not hold is new exactly when
+/// the mutation is marked created, and any other patch for it is part of an
+/// entity to request.
+///
 /// Handles are cheap to clone and share one set: the consumer keeps one and
 /// hands another to [`VmContext::set_whole_entity_requests`].
 #[derive(Clone, Debug)]
@@ -1214,8 +1220,13 @@ pub struct StateTable {
     /// touching are O(1). Only keys written through [`insert_with_eviction`]
     /// are tracked; eviction skips any that were removed some other way.
     ///
+    /// Each key carries whether its entity has not been in a mutation since
+    /// [`insert_with_eviction`] created its row (see
+    /// [`StateTable::record_emission`]). Tracking a key's recency is what
+    /// tells a new row from one already here, so the flag lives with it.
+    ///
     /// [`insert_with_eviction`]: StateTable::insert_with_eviction
-    recency: std::sync::Mutex<lru::LruCache<Value, ()>>,
+    recency: std::sync::Mutex<lru::LruCache<Value, bool>>,
     pub lookup_indexes: HashMap<String, LookupIndex>,
     pub temporal_indexes: HashMap<String, TemporalIndex>,
     pub pda_reverse_lookups: HashMap<String, PdaReverseLookup>,
@@ -1251,16 +1262,32 @@ impl StateTable {
         self.config.max_array_length
     }
 
-    fn recency(&self) -> std::sync::MutexGuard<'_, lru::LruCache<Value, ()>> {
+    fn recency(&self) -> std::sync::MutexGuard<'_, lru::LruCache<Value, bool>> {
         self.recency.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn touch(&self, key: &Value) {
+    /// Mark `key` used. A key not tracked yet starts out unemitted if
+    /// `created`: its row is new.
+    fn touch(&self, key: &Value, created: bool) {
         let mut recency = self.recency();
         // `get` promotes an existing key; only a new key needs its own copy.
         if recency.get(key).is_none() {
-            recency.put(key.clone(), ());
+            recency.put(key.clone(), created);
         }
+    }
+
+    /// Record that `key`'s entity is going out in a mutation, returning
+    /// whether it is the first since its row was created.
+    ///
+    /// Every creation counts, however the row came about: a handler that
+    /// emits, one that does not (an instruction hook, a handler with emit
+    /// off), a resolver result or a deferred `when` write. A row loaded from a
+    /// snapshot counts as emitted already.
+    pub fn record_emission(&self, key: &Value) -> bool {
+        self.recency()
+            .peek_mut(key)
+            .map(std::mem::take)
+            .unwrap_or(false)
     }
 
     fn evict_lru(&self, count: usize) -> usize {
@@ -1271,7 +1298,7 @@ impl StateTable {
         let mut recency = self.recency();
         let mut evicted = 0;
         while evicted < count {
-            let Some((key, ())) = recency.pop_lru() else {
+            let Some((key, _)) = recency.pop_lru() else {
                 break;
             };
             if self.data.remove(&key).is_some() {
@@ -1289,20 +1316,23 @@ impl StateTable {
     }
 
     pub fn insert_with_eviction(&self, key: Value, value: Value) {
-        if self.data.len() >= self.config.max_entries && !self.data.contains_key(&key) {
+        let resident = self.data.contains_key(&key);
+        if self.data.len() >= self.config.max_entries && !resident {
             #[cfg(feature = "otel")]
             crate::vm_metrics::record_state_table_at_capacity(&self.entity_name);
             let to_evict = (self.data.len() + 1).saturating_sub(self.config.max_entries);
             self.evict_lru(to_evict.max(1));
         }
         self.data.insert(key.clone(), value);
-        self.touch(&key);
+        // A key neither here nor tracked is a new row. One a handler took out
+        // with `take_and_touch` is still tracked, so writing it back is not.
+        self.touch(&key, !resident);
     }
 
     pub fn get_and_touch(&self, key: &Value) -> Option<Value> {
         let result = self.data.get(key).map(|v| v.clone());
         if result.is_some() {
-            self.touch(key);
+            self.touch(key, false);
         }
         result
     }
@@ -1316,7 +1346,7 @@ impl StateTable {
     pub fn take_and_touch(&self, key: &Value) -> Option<Value> {
         let result = self.data.remove(key).map(|(_, value)| value);
         if result.is_some() {
-            self.touch(key);
+            self.touch(key, false);
         }
         result
     }
@@ -1448,7 +1478,7 @@ impl StateTable {
     fn dump_entities_most_recent_first(&self) -> Vec<(Value, Value)> {
         let recency = self.recency();
         let mut dumped = Vec::with_capacity(self.data.len());
-        for (key, ()) in recency.iter() {
+        for (key, _) in recency.iter() {
             if let Some(value) = self.data.get(key) {
                 dumped.push((key.clone(), value.clone()));
             }
@@ -1467,6 +1497,9 @@ impl StateTable {
 
     /// Rebuild a table from a snapshot. Entities are dumped most recently
     /// used first, so inserting them in reverse restores the access order.
+    ///
+    /// Every restored entity counts as emitted: whoever consumed this table's
+    /// mutations may hold it, so its next mutation is not a creation.
     pub fn from_snapshot(
         snapshot: &crate::snapshot::StateTableSnapshot,
         config: StateTableConfig,
@@ -1475,7 +1508,7 @@ impl StateTable {
         let mut recency = lru::LruCache::unbounded();
         for (key, value) in snapshot.data.iter().rev() {
             data.insert(key.clone(), value.clone());
-            recency.put(key.clone(), ());
+            recency.put(key.clone(), false);
         }
 
         let mut lookup_indexes = HashMap::new();
@@ -1612,8 +1645,54 @@ impl VmContext {
     /// returns from [`Self::process_event`] and [`Self::apply_resolver_result`]:
     /// after a requested entity's last mutation comes one more, carrying the
     /// whole entity.
+    ///
+    /// From then on the VM also marks each entity's first mutation since its
+    /// row was created as its creation, carrying the whole row (see
+    /// [`WholeEntityRequests`]). Set this before the VM emits anything: a
+    /// consumer relying on the marks takes an unmarked patch for a key it does
+    /// not hold as part of an entity.
     pub fn set_whole_entity_requests(&mut self, requests: WholeEntityRequests) {
         self.whole_entity_requests = Some(requests);
+    }
+
+    /// Whether this VM marks each entity's creation; see
+    /// [`Self::set_whole_entity_requests`].
+    fn marks_creations(&self) -> bool {
+        self.whole_entity_requests.is_some()
+    }
+
+    /// `entity` as its mutations carry it: without the fields its spec does
+    /// not emit.
+    fn emitted_entity<'a>(
+        mut entity: Value,
+        non_emitted_fields: impl IntoIterator<Item = &'a String>,
+    ) -> Value {
+        for path in non_emitted_fields {
+            Self::remove_path(&mut entity, path);
+        }
+        entity
+    }
+
+    /// A mutation creating entity `key` of `export` from its whole new row,
+    /// marked created. `append` still names the arrays the change appended
+    /// to. Every item in the new row's arrays is new, so a consumer holding an
+    /// earlier entity under the key (one the VM dropped and has now started
+    /// again) appends them as it would the change's.
+    fn creation<'a>(
+        export: &str,
+        key: Value,
+        row: Value,
+        non_emitted_fields: impl IntoIterator<Item = &'a String>,
+        append: Vec<String>,
+    ) -> Mutation {
+        let mut mutation = Mutation {
+            export: export.to_string(),
+            key,
+            patch: Self::emitted_entity(row, non_emitted_fields),
+            append,
+        };
+        mutation.mark_created();
+        mutation
     }
 
     /// Follow the last mutation of each requested entity with one carrying
@@ -1641,10 +1720,8 @@ impl VmContext {
             }
             let whole = bytecode.entities.get(&mutation.export).and_then(|entity| {
                 let table = self.states.get(&entity.state_id)?;
-                let mut whole = table.data.get(&mutation.key)?.value().clone();
-                for path in &entity.non_emitted_fields {
-                    Self::remove_path(&mut whole, path);
-                }
+                let row = table.data.get(&mutation.key)?.value().clone();
+                let whole = Self::emitted_entity(row, &entity.non_emitted_fields);
                 whole.is_object().then_some(whole)
             });
             match whole {
@@ -2131,6 +2208,18 @@ impl VmContext {
                 continue;
             }
 
+            // A result for an entity the table had dropped starts it again.
+            if state.record_emission(&target.primary_key) && self.marks_creations() {
+                mutations.push(Self::creation(
+                    &target.entity_name,
+                    target.primary_key.clone(),
+                    entity_state,
+                    &entity_bytecode.non_emitted_fields,
+                    vec![],
+                ));
+                continue;
+            }
+
             let patch = Self::build_partial_state_from_value(&entity_state, &dirty_tracker)?;
 
             mutations.push(Mutation {
@@ -2535,9 +2624,8 @@ impl VmContext {
                                 );
                                 for op in deferred_ops {
                                     // Look up the entity bytecode to get the computed fields evaluator
-                                    let (evaluator, computed_paths) = bytecode
-                                        .entities
-                                        .get(&op.entity_name)
+                                    let entity = bytecode.entities.get(&op.entity_name);
+                                    let (evaluator, computed_paths) = entity
                                         .map(|eb| {
                                             (
                                                 eb.computed_fields_evaluator.as_ref(),
@@ -2551,6 +2639,7 @@ impl VmContext {
                                         &op,
                                         evaluator,
                                         Some(computed_paths),
+                                        entity.map(|eb| &eb.non_emitted_fields),
                                     ) {
                                         Ok(mutations) => all_mutations.extend(mutations),
                                         Err(e) => tracing::warn!(
@@ -2677,6 +2766,7 @@ impl VmContext {
                                                         .computed_fields_evaluator
                                                         .as_ref(),
                                                     Some(&entity_bytecode.computed_paths),
+                                                    Some(&entity_bytecode.non_emitted_fields),
                                                 ) {
                                                     Ok(mutations) => {
                                                         all_mutations.extend(mutations)
@@ -3687,26 +3777,55 @@ impl VmContext {
                             ));
                         }
                     } else {
-                        let patch = match &self.moved_state {
-                            Some((register, state_id, key)) if register == state => {
-                                let table =
-                                    self.states.get(state_id).ok_or("State table not found")?;
-                                match table.data.get(key) {
-                                    Some(entity) => {
-                                        Self::partial_state_with_tracker(&entity, &dirty_tracker)?
-                                    }
-                                    None => json!({}),
-                                }
-                            }
-                            _ => self.extract_partial_state_with_tracker(*state, &dirty_tracker)?,
-                        };
-
+                        let first = self
+                            .states
+                            .get(&override_state_id)
+                            .is_some_and(|table| table.record_emission(&primary_key));
                         let append = dirty_tracker.appended_paths();
-                        let mutation = Mutation {
-                            export: entity_name.clone(),
-                            key: primary_key,
-                            patch,
-                            append,
+                        let mutation = if first && self.marks_creations() {
+                            // The row, not this segment's changes: a row
+                            // started by a segment that emitted nothing (an
+                            // instruction hook) holds more than they do.
+                            let row = match &self.moved_state {
+                                Some((register, state_id, key)) if register == state => self
+                                    .states
+                                    .get(state_id)
+                                    .and_then(|table| {
+                                        table.data.get(key).map(|entity| entity.value().clone())
+                                    })
+                                    .unwrap_or_else(|| json!({})),
+                                _ => self.registers[*state].clone(),
+                            };
+                            Self::creation(
+                                entity_name,
+                                primary_key,
+                                row,
+                                non_emitted_fields.into_iter().flatten(),
+                                append,
+                            )
+                        } else {
+                            let patch = match &self.moved_state {
+                                Some((register, state_id, key)) if register == state => {
+                                    let table =
+                                        self.states.get(state_id).ok_or("State table not found")?;
+                                    match table.data.get(key) {
+                                        Some(entity) => Self::partial_state_with_tracker(
+                                            &entity,
+                                            &dirty_tracker,
+                                        )?,
+                                        None => json!({}),
+                                    }
+                                }
+                                _ => {
+                                    self.extract_partial_state_with_tracker(*state, &dirty_tracker)?
+                                }
+                            };
+                            Mutation {
+                                export: entity_name.clone(),
+                                key: primary_key,
+                                patch,
+                                append,
+                            }
                         };
                         self.emit_debug(|| VmDebugEvent::EmitMutation {
                             entity_name: entity_name.clone(),
@@ -5158,6 +5277,7 @@ impl VmContext {
             &Box<dyn Fn(&mut Value, Option<u64>, i64) -> ComputedEvaluatorResult + Send + Sync>,
         >,
         computed_paths: Option<&[String]>,
+        non_emitted_fields: Option<&HashSet<String>>,
     ) -> Result<Vec<Mutation>> {
         let state = self.states.get(&state_id).ok_or("State not found")?;
 
@@ -5216,6 +5336,17 @@ impl VmContext {
 
         if !op.emit {
             return Ok(vec![]);
+        }
+
+        // A write to an entity the table had dropped starts it again.
+        if state.record_emission(&op.primary_key) && self.marks_creations() {
+            return Ok(vec![Self::creation(
+                &op.entity_name,
+                op.primary_key.clone(),
+                entity_state,
+                non_emitted_fields.into_iter().flatten(),
+                vec![],
+            )]);
         }
 
         let mut patch = json!({});
@@ -8077,7 +8208,7 @@ mod tests {
 
         let deferred = state.deferred_when_ops.remove(&key).unwrap().1;
         for op in deferred {
-            vm.apply_deferred_when_op(0, &op, None, None).unwrap();
+            vm.apply_deferred_when_op(0, &op, None, None, None).unwrap();
         }
 
         let state = vm.states.get(&0).unwrap();
@@ -8087,6 +8218,46 @@ mod tests {
             "deferred_value",
             "Field should be set after instruction arrives"
         );
+    }
+
+    /// A deferred `when` write to an entity the table does not hold starts it:
+    /// for a VM that marks creations, its first mutation is the whole entity.
+    #[test]
+    fn a_deferred_write_can_create_an_entity() {
+        let mut vm = VmContext::new();
+        vm.set_whole_entity_requests(WholeEntityRequests::new(4));
+        let op = |field_path: &str, field_value: Value, emit| DeferredWhenOperation {
+            entity_name: "Test".to_string(),
+            primary_key: json!("pk"),
+            field_path: field_path.to_string(),
+            field_value,
+            when_instruction: "RevealIxState".to_string(),
+            signature: "sig".to_string(),
+            slot: 0,
+            deferred_at: 0,
+            emit,
+        };
+        let hidden = HashSet::from(["secret".to_string()]);
+        let mut apply = |op| {
+            vm.apply_deferred_when_op(0, &op, None, None, Some(&hidden))
+                .unwrap()
+        };
+
+        assert!(apply(op("secret", json!("s"), false)).is_empty());
+        let mut created = apply(op("entropy", json!(7), true));
+        assert_eq!(
+            created[0].take_whole_entity_mark(),
+            Some(crate::WholeEntity::Created),
+            "the first write emitted nothing, so this is the first mutation"
+        );
+        assert_eq!(
+            created[0].patch,
+            json!({"entropy": 7}),
+            "the whole entity, without its non-emitted field"
+        );
+
+        let changed = apply(op("entropy", json!(8), true));
+        assert!(!changed[0].is_whole_entity());
     }
 
     #[test]
@@ -8198,6 +8369,7 @@ mod tests {
                     "results.pre_reveal_rng".to_string(),
                     "results.pre_reveal_winning_square".to_string(),
                 ]),
+                None,
             )
             .unwrap();
 

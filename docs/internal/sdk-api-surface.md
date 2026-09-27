@@ -489,17 +489,32 @@ its state table holds it, marked with `Mutation::mark_whole_entity`; the project
 stores it in every view of the export and publishes it to list and state views as an
 `upsert` (append views and the journal never see it). A state subscriber that holds an
 evicted key keeps receiving its patches and is never sent `remove` for an eviction.
-Restores, including legacy migrations, mark every VM key the cache lacks as evicted. A
-mutation source without a VM can mark whole entities itself; otherwise its evicted keys
-stay out until a source delete (one warning per projector).
 
-Bounds: requests are capped at 4,096 (asking again is safe); each view remembers 8×
-its cache bound of evicted keys (4,000 by default), allocated on first eviction. A key
-is forgotten only after that many *distinct* later evictions, each a key the VM emitted
-since, so while the memory is at least the VM's state-table bound (2,500 by default) a
-forgotten key has left the VM too and returns as a fresh VM row. A VM configured with a
-larger table than the memory weakens that guarantee. Entities are whole as far as the
-VM holds them: a key the VM itself dropped restarts from what its next update sets.
+Telling an evicted key from a new one does not depend on remembering evictions
+(2026-09-27): the linked VM also marks each entity's first mutation since its
+state-table row was created (`Mutation::mark_created`, `WholeEntity::Created`), and
+that patch is the whole row — more than the change when a handler that emits nothing
+(an instruction hook, `emit: false`) started the row. The flag rides on the table's
+recency entry, so it is dropped with the row; rows restored from a snapshot count as
+emitted. With a VM linked the cache stores a key it lacks only from a creation, merges a
+creation into a key it holds (as clients do), and refuses any other patch for a key it
+lacks — evicted however long ago, or never held, as after a restore or legacy migration
+— and requests the whole entity. So the guarantee holds whatever
+`max_entities_per_view` is against the VM's table bound. A creation is still an
+ordinary `patch` frame and journal record; only a resend is a state-only `upsert`. A VM
+without requests marks nothing, so its output is unchanged for other consumers.
+
+Without a linked VM the cache falls back to remembering evictions: each view remembers
+8× its cache bound of evicted keys (4,000 by default), allocated on first eviction, and
+refuses patches for them (one warning per projector); restores mark every VM key the
+cache lacks as evicted; a key forgotten after that many *distinct* later evictions is
+taken for new. A view fed by a linked VM drops that memory with its first patch and
+keeps none. A mutation source without a VM can mark whole entities itself; otherwise
+its evicted keys stay out until a source delete.
+
+Bounds: requests are capped at 4,096 (asking again is safe). Entities are whole as far
+as the VM holds them: a key the VM itself dropped restarts from what its next update
+sets, and that update's mutation is a creation again.
 
 SDKs discard a patch for an unheld key only under `wholeEntities`, so they keep working
 against older servers. TypeScript (`frame-processor.ts`, the latest ack per

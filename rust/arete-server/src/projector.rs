@@ -1,10 +1,10 @@
 use crate::bus::{BusManager, BusMessage};
-use crate::cache::{CacheWrite, EntityCache};
+use crate::cache::{CacheWrite, EntityCache, PatchOrigin};
 use crate::mutation_batch::{MutationBatch, SlotContext};
 use crate::view::{ViewIndex, ViewSpec};
 use crate::websocket::frame::{apply_wire_format, Mode, SourceFrame};
 use arete_interpreter::vm::{VmContext, WholeEntityRequests};
-use arete_interpreter::CanonicalLog;
+use arete_interpreter::{CanonicalLog, WholeEntity};
 use bytes::Bytes;
 use serde_json::Value;
 use smallvec::SmallVec;
@@ -24,16 +24,20 @@ const WHOLE_ENTITY_REQUEST_CAPACITY: usize = 4_096;
 
 /// The projector's way back to the VM its mutations come from.
 ///
-/// The entity cache is bounded. Once it evicts a key, later patches for that
-/// key carry only the fields that changed and cannot rebuild the entity, so
-/// the cache refuses them. The projector then asks the VM, which holds the
-/// whole entity, to send all of it with the key's next mutation (see
-/// [`WholeEntityRequests`]).
+/// The entity cache is bounded. A patch for a key it does not hold carries
+/// only the fields that changed and cannot rebuild the entity, unless it is
+/// the mutation that created the entity. A linked VM marks those
+/// ([`WholeEntity::Created`]), so the cache stores a creation and refuses any
+/// other patch for a key it lacks, whether it evicted the key or never held
+/// it. The projector then asks the VM, which holds the whole entity, to send
+/// all of it with the key's next mutation (see [`WholeEntityRequests`]).
 ///
 /// The generated runtime hands its VM over through
-/// [`crate::snapshot::register_runtime`], inside [`Self::scope`]. A mutation
-/// source that registers no VM cannot be asked; its evicted keys stay out of
-/// the cache until it sends a mutation marked whole
+/// [`crate::snapshot::register_runtime`], inside [`Self::scope`], before it
+/// emits anything. A mutation source that registers no VM marks nothing and
+/// cannot be asked: the cache takes a patch for a key it lacks for a new
+/// entity unless it remembers evicting the key, and a remembered key stays
+/// out until the source sends a mutation marked whole
 /// ([`arete_interpreter::Mutation::mark_whole_entity`]) or a source delete.
 #[derive(Clone)]
 pub struct EntityResync {
@@ -77,6 +81,16 @@ impl EntityResync {
 
     pub fn is_linked(&self) -> bool {
         self.linked.load(Ordering::Acquire)
+    }
+
+    /// What an unmarked patch from the source is: with a VM linked, which
+    /// marks every creation, a change to an entity created earlier.
+    fn unmarked_origin(&self) -> PatchOrigin {
+        if self.is_linked() {
+            PatchOrigin::Change
+        } else {
+            PatchOrigin::Unknown
+        }
     }
 
     /// The request set, for inspection.
@@ -210,8 +224,8 @@ impl Projector {
                     .set("accounts_count", ctx.accounts_count);
             }
 
-            // Keys this batch carries whole: a refused patch ahead of one
-            // needs no request of its own.
+            // Keys this batch carries whole, resent or created: a refused
+            // patch ahead of one needs no request of its own.
             let arriving_whole: HashSet<(String, String)> = batch
                 .mutations
                 .iter()
@@ -292,7 +306,12 @@ impl Projector {
             return Ok(0);
         }
 
-        let whole = mutation.take_whole_entity_mark();
+        let mark = mutation.take_whole_entity_mark();
+        let whole = mark == Some(WholeEntity::Resent);
+        let origin = match mark {
+            Some(WholeEntity::Created) => PatchOrigin::Creation,
+            _ => self.resync.unmarked_origin(),
+        };
         let key = Self::extract_key(&mutation.key);
         let arete_interpreter::Mutation {
             export,
@@ -390,7 +409,7 @@ impl Projector {
 
             let write = self
                 .entity_cache
-                .upsert_with_append(&spec.id, &key, projected, &frame.append)
+                .upsert_with_append(&spec.id, &key, projected, &frame.append, origin)
                 .await;
 
             match write {
@@ -435,8 +454,8 @@ impl Projector {
         Ok(frames_published)
     }
 
-    /// Store a whole entity the VM sent for a key the cache had to refuse, and
-    /// tell list and state subscribers.
+    /// Store a whole entity the VM resent for a key the cache had to refuse,
+    /// and tell list and state subscribers.
     ///
     /// It is state, not an event: append views get only their cache entry, and
     /// neither the journal nor their tape subscribers see it. List and state

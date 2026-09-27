@@ -1439,10 +1439,10 @@ async fn attach_state_subscription(
                             continue;
                         }
 
-                        // A key missing from the cache was evicted there, not
-                        // deleted (deletes arrive above): the cache refused
-                        // this patch and the whole entity is on its way (see
-                        // `EntityResync`). The client's copy is still good, so
+                        // A key missing from the cache was evicted there or
+                        // never held whole, not deleted (deletes arrive
+                        // above): the cache refused this patch and the whole
+                        // entity is on its way (see `EntityResync`). The client's copy is still good, so
                         // a holder gets the patch and stays a holder; `remove`
                         // is only for an entity that stopped matching.
                         let Some(cached) = task_context

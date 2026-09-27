@@ -14,28 +14,50 @@ const DEFAULT_MAX_ENTITIES_PER_VIEW: usize = 500;
 const DEFAULT_MAX_ARRAY_LENGTH: usize = 100;
 const DEFAULT_INITIAL_SNAPSHOT_BATCH_SIZE: usize = 50;
 const DEFAULT_SUBSEQUENT_SNAPSHOT_BATCH_SIZE: usize = 100;
-/// Evicted keys remembered per cached entity. The VM keeps far more entities
-/// than a view caches (2,500 per state table by default against 500 here), so
-/// a key the cache evicted can keep receiving patches long afterwards; eight
-/// times the cache bound covers the VM's default table with room to spare.
+/// Evicted keys remembered per cached entity, for a source that does not mark
+/// creations (see [`PatchOrigin::Unknown`]). Such a source can keep far more
+/// entities than a view caches (a VM keeps 2,500 per state table by default
+/// against 500 here), so a key the cache evicted can keep receiving patches
+/// long afterwards; eight times the cache bound covers the VM's default table
+/// with room to spare. A key evicted longer ago than that is taken for new.
 ///
-/// The memory holds distinct keys, so forgetting one takes that many other
-/// keys evicted after it, each emitted by the VM since. While the memory is
-/// at least the VM's table bound, the VM has then dropped the forgotten key as
-/// well, and its next mutation for it starts a fresh row: whole, as far as
-/// the VM knows. A VM configured with a larger table than this weakens that.
+/// A source that marks creations needs no memory: an unmarked patch for a key
+/// a view does not hold is refused however long ago the key left, or whether
+/// it was ever there.
 const EVICTED_KEYS_PER_CACHED_ENTITY: usize = 8;
+
+/// Whether a patch creates its entity, as far as its source says.
+///
+/// Every patch carries only the fields that changed. For a key a view holds
+/// that is all it needs; for one it does not hold, the patch is the entity
+/// only if it created it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchOrigin {
+    /// The source marked the patch as its entity's creation
+    /// ([`arete_interpreter::WholeEntity::Created`]), so it is all of the
+    /// entity.
+    Creation,
+    /// The source marks every creation and did not mark this patch, so it
+    /// changes an entity created earlier and is only part of it. A VM linked
+    /// through [`crate::EntityResync`] is such a source.
+    Change,
+    /// The source does not mark creations. A patch for a key the view does not
+    /// hold is taken for a new entity unless the view remembers evicting it.
+    Unknown,
+}
 
 /// What [`EntityCache::upsert_with_append`] did with a patch.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CacheWrite {
     /// Merged into the entity the cache already held.
     Merged,
-    /// Stored as a new entity: the cache has no record of the key.
+    /// Stored as a new entity: the patch created it, or its source does not
+    /// say and the cache has no record of the key.
     Created,
-    /// Not stored. The cache evicted this key earlier, so the patch carries
-    /// only the fields that changed — part of an entity, not one. The patch is
-    /// handed back for callers that hold a full copy elsewhere.
+    /// Not stored. The cache does not hold the key and the patch carries only
+    /// the fields that changed — part of an entity, not one: its source marks
+    /// creations and did not mark this one, or the cache evicted the key. The
+    /// patch is handed back for callers that hold a full copy elsewhere.
     Refused { patch: Value },
 }
 
@@ -49,8 +71,12 @@ struct ViewEntries {
     max_entities: usize,
     entities: LruCache<String, Value>,
     /// Keys evicted for space, most recently evicted or refused first.
-    /// Allocated on the first eviction.
+    /// Allocated on the first eviction, and never for a view fed by a source
+    /// that marks creations.
     evicted: Option<LruCache<String, ()>>,
+    /// Whether a source that marks creations writes to this view. Such a
+    /// source never consults `evicted`.
+    creations_marked: bool,
 }
 
 impl ViewEntries {
@@ -60,7 +86,15 @@ impl ViewEntries {
             max_entities,
             entities: LruCache::unbounded(),
             evicted: None,
+            creations_marked: false,
         }
+    }
+
+    /// Note a patch from a source that marks creations: this view no longer
+    /// needs to remember its evictions.
+    fn mark_creations(&mut self) {
+        self.creations_marked = true;
+        self.evicted = None;
     }
 
     /// Store `entity` under `key`, remembering whatever it pushes out.
@@ -76,6 +110,9 @@ impl ViewEntries {
     }
 
     fn remember_evicted(&mut self, key: String) {
+        if self.creations_marked {
+            return;
+        }
         let capacity = self
             .max_entities
             .saturating_mul(EVICTED_KEYS_PER_CACHED_ENTITY);
@@ -146,17 +183,26 @@ impl Default for EntityCacheConfig {
 ///
 /// # Only whole entities
 ///
-/// Source mutations carry only the fields that changed. A patch for a key the
-/// cache holds merges into the whole entity; a patch for a key it has never
-/// seen is a new entity and is stored as-is. A patch for a key the cache
-/// *evicted* is neither: storing it would serve a few changed fields as
-/// though they were the entity, in snapshots and in every derived view. Each
-/// view therefore remembers the keys it evicted (bounded, most recent first)
-/// and refuses patches for them with [`CacheWrite::Refused`]. The projector
-/// then asks the VM for the whole entity, which arrives with the key's next
-/// mutation and is stored with [`EntityCache::store_whole`]; a source delete
-/// also ends the eviction. A key evicted so long ago that it has been
-/// forgotten is indistinguishable from a new one.
+/// Source mutations carry only the fields that changed. A patch for a key a
+/// view holds merges into the whole entity. A patch for a key it does not
+/// hold is stored only if it is the whole entity: storing a few changed
+/// fields would serve them as though they were the entity, in snapshots and
+/// in every derived view.
+///
+/// A VM linked through [`crate::EntityResync`] marks the mutation that creates
+/// each entity ([`PatchOrigin::Creation`]), which is stored as-is. Any other
+/// patch from it for a key a view does not hold ([`PatchOrigin::Change`]) is
+/// refused with [`CacheWrite::Refused`] — whether the view evicted the key or
+/// never held it, as after a restore. The projector then asks the VM for the
+/// whole entity, which arrives with the key's next mutation and is stored
+/// with [`EntityCache::store_whole`]. That holds however many entities the VM
+/// keeps and however long ago the view evicted the key.
+///
+/// A source that marks nothing ([`PatchOrigin::Unknown`]) leaves a new key and
+/// an evicted one looking alike. Each view therefore remembers the keys it
+/// evicted (bounded, most recent first) and refuses patches for them; a key
+/// evicted so long ago that it has been forgotten is taken for new. A source
+/// delete also ends an eviction.
 #[derive(Clone)]
 pub struct EntityCache {
     /// view_id -> LRU<entity_key, full_projected_entity>, plus evicted keys
@@ -186,24 +232,32 @@ impl EntityCache {
         self.config.max_entities_per_view
     }
 
+    /// Write a patch from a source that does not mark creations
+    /// ([`PatchOrigin::Unknown`]).
     pub async fn upsert(&self, view_id: &str, key: &str, patch: Value) -> CacheWrite {
-        self.upsert_with_append(view_id, key, patch, &[]).await
+        self.upsert_with_append(view_id, key, patch, &[], PatchOrigin::Unknown)
+            .await
     }
 
     /// Merge `patch` into the cached entity, store it as a new entity, or
-    /// refuse it for an evicted key (see the type docs).
+    /// refuse it as part of an entity the cache does not hold (see the type
+    /// docs).
     pub async fn upsert_with_append(
         &self,
         view_id: &str,
         key: &str,
         patch: Value,
         append_paths: &[String],
+        origin: PatchOrigin,
     ) -> CacheWrite {
         let mut caches = self.caches.write().await;
 
         let view = caches
             .entry(view_id.to_string())
             .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
+        if origin != PatchOrigin::Unknown && !view.creations_marked {
+            view.mark_creations();
+        }
 
         let max_array_length = self.config.max_array_length;
 
@@ -211,7 +265,12 @@ impl EntityCache {
             deep_merge_with_append(entity, patch, append_paths, max_array_length);
             return CacheWrite::Merged;
         }
-        if view.was_evicted(key) {
+        let whole = match origin {
+            PatchOrigin::Creation => true,
+            PatchOrigin::Change => false,
+            PatchOrigin::Unknown => !view.was_evicted(key),
+        };
+        if !whole {
             return CacheWrite::Refused { patch };
         }
         let new_entity = truncate_arrays_if_needed(patch, max_array_length);
@@ -238,8 +297,10 @@ impl EntityCache {
     }
 
     /// Treat `keys` as evicted from `view_id` unless the view holds them, so
-    /// patches for them are refused. Used after a restore, when the VM holds
-    /// entities the restored cache does not.
+    /// patches for them from a source that does not mark creations are
+    /// refused. Used after a restore, when the VM holds entities the restored
+    /// cache does not; a VM that marks creations makes this moot, and the
+    /// view drops the memory with its first patch.
     pub async fn remember_evicted(&self, view_id: &str, keys: impl IntoIterator<Item = String>) {
         let mut caches = self.caches.write().await;
         let view = caches
@@ -609,6 +670,7 @@ mod tests {
                     "events": [{"type": "sell", "amount": 50}]
                 }),
                 &["events".to_string()],
+                PatchOrigin::Unknown,
             )
             .await;
 
@@ -676,6 +738,7 @@ mod tests {
                     "events": [{"id": 3}, {"id": 4}]
                 }),
                 &["events".to_string()],
+                PatchOrigin::Unknown,
             )
             .await;
 
@@ -793,6 +856,134 @@ mod tests {
             cache
                 .upsert("v", &remembered.to_string(), json!({"n": 1}))
                 .await,
+            CacheWrite::Refused { .. }
+        ));
+    }
+
+    async fn write(
+        cache: &EntityCache,
+        key: &str,
+        patch: Value,
+        origin: PatchOrigin,
+    ) -> CacheWrite {
+        cache.upsert_with_append("v", key, patch, &[], origin).await
+    }
+
+    /// A source that marks creations says outright which patches are whole:
+    /// no memory of evictions is needed, and none can run out.
+    #[tokio::test]
+    async fn an_unmarked_patch_for_a_key_not_held_is_refused_however_old() {
+        let cache = EntityCache::with_config(EntityCacheConfig {
+            max_entities_per_view: 1,
+            ..Default::default()
+        });
+        let evictions = EVICTED_KEYS_PER_CACHED_ENTITY * 4;
+        for key in 0..=evictions {
+            assert_eq!(
+                write(
+                    &cache,
+                    &key.to_string(),
+                    json!({"id": key}),
+                    PatchOrigin::Creation
+                )
+                .await,
+                CacheWrite::Created,
+                "a creation is stored as soon as it arrives"
+            );
+        }
+        // Key 0 was evicted far longer ago than any memory would reach.
+        assert_eq!(
+            write(&cache, "0", json!({"n": 1}), PatchOrigin::Change).await,
+            CacheWrite::Refused {
+                patch: json!({"n": 1})
+            }
+        );
+        assert!(
+            matches!(
+                write(&cache, "never", json!({"n": 1}), PatchOrigin::Change).await,
+                CacheWrite::Refused { .. }
+            ),
+            "nor does it matter whether the view ever held the key"
+        );
+        assert_eq!(cache.get("v", "0").await, None);
+        assert_eq!(
+            write(
+                &cache,
+                &evictions.to_string(),
+                json!({"n": 1}),
+                PatchOrigin::Change
+            )
+            .await,
+            CacheWrite::Merged
+        );
+        // The source started key 0 again.
+        assert_eq!(
+            write(&cache, "0", json!({"id": 0, "n": 2}), PatchOrigin::Creation).await,
+            CacheWrite::Created
+        );
+        assert_eq!(cache.get("v", "0").await, Some(json!({"id": 0, "n": 2})));
+    }
+
+    /// A creation for a key the view still holds (the source dropped the
+    /// entity and started it again) merges like any patch, as it does for the
+    /// clients holding the key.
+    #[tokio::test]
+    async fn a_creation_for_a_key_held_merges() {
+        let cache = EntityCache::new();
+        write(
+            &cache,
+            "a",
+            json!({"id": "a", "old": 1}),
+            PatchOrigin::Creation,
+        )
+        .await;
+        assert_eq!(
+            write(
+                &cache,
+                "a",
+                json!({"id": "a", "n": 1}),
+                PatchOrigin::Creation
+            )
+            .await,
+            CacheWrite::Merged
+        );
+        assert_eq!(
+            cache.get("v", "a").await,
+            Some(json!({"id": "a", "old": 1, "n": 1}))
+        );
+    }
+
+    async fn remembers_evictions(cache: &EntityCache, view_id: &str) -> bool {
+        cache
+            .caches
+            .read()
+            .await
+            .get(view_id)
+            .is_some_and(|view| view.evicted.is_some())
+    }
+
+    /// A view fed by a source that marks creations never consults the
+    /// evicted-key memory, so it drops what a restore put there and keeps no
+    /// more.
+    #[tokio::test]
+    async fn a_view_fed_marked_creations_keeps_no_eviction_memory() {
+        let cache = EntityCache::with_config(EntityCacheConfig {
+            max_entities_per_view: 1,
+            ..Default::default()
+        });
+        cache.remember_evicted("v", ["restored".to_string()]).await;
+        assert!(remembers_evictions(&cache, "v").await);
+
+        write(&cache, "a", json!({"id": "a"}), PatchOrigin::Creation).await;
+        assert!(!remembers_evictions(&cache, "v").await);
+        write(&cache, "b", json!({"id": "b"}), PatchOrigin::Creation).await;
+        assert!(!remembers_evictions(&cache, "v").await, "a was evicted");
+        assert!(matches!(
+            write(&cache, "restored", json!({"n": 1}), PatchOrigin::Change).await,
+            CacheWrite::Refused { .. }
+        ));
+        assert!(matches!(
+            write(&cache, "a", json!({"n": 1}), PatchOrigin::Change).await,
             CacheWrite::Refused { .. }
         ));
     }

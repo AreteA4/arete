@@ -92,14 +92,32 @@ pub struct Mutation {
     pub append: Vec<String>,
 }
 
-/// Field that marks a mutation's `patch` as the whole entity rather than the
-/// fields that changed. Set with [`Mutation::mark_whole_entity`] and removed
-/// with [`Mutation::take_whole_entity_mark`] before the patch goes anywhere
-/// else; it is never part of an entity.
+/// Field that marks a mutation's `patch` as the whole entity rather than only
+/// the fields that changed; its value says which kind ([`WholeEntity`]). Set
+/// with [`Mutation::mark_whole_entity`] or [`Mutation::mark_created`] and
+/// removed with [`Mutation::take_whole_entity_mark`] before the patch goes
+/// anywhere else; it is never part of an entity.
 pub const WHOLE_ENTITY_MARKER: &str = "__arete_whole_entity";
 
+/// [`WHOLE_ENTITY_MARKER`]'s value for [`WholeEntity::Created`]. The value for
+/// [`WholeEntity::Resent`] is `true`.
+const CREATED_MARK: &str = "created";
+
+/// Why a marked mutation's patch is the whole entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WholeEntity {
+    /// The entity's first mutation since its source created it: everything it
+    /// has is new, so the patch is a change like any other and all of the
+    /// entity at once.
+    Created,
+    /// The entity again, right after a mutation that carried the change: state
+    /// to restore, not a change of its own.
+    Resent,
+}
+
 impl Mutation {
-    /// Declare that `patch` holds the whole entity, not only what changed.
+    /// Declare that `patch` holds the whole entity again, after a mutation
+    /// that carried the change ([`WholeEntity::Resent`]).
     ///
     /// A consumer that bounds how many entities it keeps (arete-server's
     /// entity cache) cannot rebuild an entity it dropped from later patches,
@@ -109,21 +127,51 @@ impl Mutation {
     /// entities can mark them itself. Only an object patch can carry the mark;
     /// on anything else this does nothing.
     pub fn mark_whole_entity(&mut self) {
+        self.set_whole_entity_mark(Value::Bool(true));
+    }
+
+    /// Declare that this mutation creates its entity, so `patch` is all of it
+    /// ([`WholeEntity::Created`]).
+    ///
+    /// A VM given a [`vm::WholeEntityRequests`] marks every entity's first
+    /// mutation this way, which lets a consumer tell a new entity from a later
+    /// patch for one it does not hold. Only an object patch can carry the mark;
+    /// on anything else this does nothing.
+    pub fn mark_created(&mut self) {
+        self.set_whole_entity_mark(Value::String(CREATED_MARK.to_string()));
+    }
+
+    fn set_whole_entity_mark(&mut self, mark: Value) {
         if let Value::Object(fields) = &mut self.patch {
-            fields.insert(WHOLE_ENTITY_MARKER.to_string(), Value::Bool(true));
+            fields.insert(WHOLE_ENTITY_MARKER.to_string(), mark);
         }
     }
 
-    /// Whether `patch` is marked as the whole entity.
-    pub fn is_whole_entity(&self) -> bool {
-        self.patch.get(WHOLE_ENTITY_MARKER) == Some(&Value::Bool(true))
+    /// Which whole-entity mark `patch` carries, if any.
+    pub fn whole_entity_mark(&self) -> Option<WholeEntity> {
+        Self::read_whole_entity_mark(self.patch.get(WHOLE_ENTITY_MARKER)?)
     }
 
-    /// Remove the whole-entity mark, returning whether it was set.
-    pub fn take_whole_entity_mark(&mut self) -> bool {
+    /// Whether `patch` is marked as the whole entity, of either kind.
+    pub fn is_whole_entity(&self) -> bool {
+        self.whole_entity_mark().is_some()
+    }
+
+    /// Remove the whole-entity mark, returning which one was set.
+    pub fn take_whole_entity_mark(&mut self) -> Option<WholeEntity> {
         match &mut self.patch {
-            Value::Object(fields) => fields.remove(WHOLE_ENTITY_MARKER) == Some(Value::Bool(true)),
-            _ => false,
+            Value::Object(fields) => {
+                Self::read_whole_entity_mark(&fields.remove(WHOLE_ENTITY_MARKER)?)
+            }
+            _ => None,
+        }
+    }
+
+    fn read_whole_entity_mark(mark: &Value) -> Option<WholeEntity> {
+        match mark {
+            Value::Bool(true) => Some(WholeEntity::Resent),
+            Value::String(kind) if kind == CREATED_MARK => Some(WholeEntity::Created),
+            _ => None,
         }
     }
 }

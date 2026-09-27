@@ -663,9 +663,12 @@ impl SnapshotService {
         self.entity_cache.hydrate(payload.entity_cache).await;
         // The VM keeps more entities than the cache does (and after a legacy
         // migration the cache keeps none), so its next patch for one the
-        // cache lacks is only the fields that changed. Treat them all as
-        // evicted: that patch is refused and the projector asks the VM for
-        // the whole entity instead.
+        // cache lacks is only the fields that changed. A VM linked to the
+        // projector has that patch refused anyway: a restored entity's next
+        // mutation is not its creation, and only a creation is stored for a
+        // key the cache lacks. Treat them all as evicted as well, for a VM
+        // registered without that link; the memory is bounded (see
+        // `EntityCache`), and a view fed by a linked VM drops it.
         remember_uncached_vm_keys(view_index, &payload.vm, &self.entity_cache).await;
         // Only a shutdown snapshot is exact; see `EventJournal::hydrate`.
         let exact_offsets = header.trigger == Some(SnapshotTrigger::Shutdown);
@@ -897,8 +900,9 @@ impl SnapshotService {
 
 /// Mark every entity the restored VM holds but a restored view does not as
 /// evicted from that view, so the VM's next patch for it — only the fields
-/// that changed — is refused rather than stored as the whole entity (see
-/// [`EntityCache`]'s "Only whole entities").
+/// that changed — is refused rather than stored as the whole entity even if
+/// the VM does not mark creations (see [`EntityCache`]'s "Only whole
+/// entities").
 async fn remember_uncached_vm_keys(
     view_index: &ViewIndex,
     vm: &VmSnapshot,
