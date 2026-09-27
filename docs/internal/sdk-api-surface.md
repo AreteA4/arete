@@ -493,6 +493,13 @@ output, so it follows every patch emitted before it. A request for an entity the
 longer holds is dropped: the VM's next mutation for the key starts a new row, marked
 created. The projector stores a resend in every view of the export and publishes it to
 list and state views as an `upsert` (append views and the journal never see it). A
+resend is not a change, so it keeps the `_seq` of the key's latest change rather than
+its batch's (2026-09-28): `EntityResync` remembers, per requested key, the position of
+the refused patch and of any later change it sees for the key, bounded at 4,096 like
+the requests, and stamps the resend's cache entry, derived views and `upsert` with it.
+The projector owns this because positions are assigned per batch, after the VM emits;
+it sees each key's changes in stream order. A resend without a remembered position (past
+the bound, or a whole entity from a source without a VM) takes its batch's. A
 state subscriber that holds an evicted key keeps receiving its patches and is never
 sent `remove` for an eviction.
 

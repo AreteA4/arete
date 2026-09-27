@@ -6,6 +6,7 @@ use crate::websocket::frame::{apply_wire_format, Mode, SourceFrame};
 use arete_interpreter::vm::{VmContext, WholeEntityRequests};
 use arete_interpreter::{CanonicalLog, WholeEntity};
 use bytes::Bytes;
+use lru::LruCache;
 use serde_json::Value;
 use smallvec::SmallVec;
 use std::collections::HashSet;
@@ -19,8 +20,12 @@ use tracing::{debug, debug_span, error, instrument, warn};
 use crate::metrics::Metrics;
 
 /// Whole-entity requests the projector keeps outstanding at once. One per
-/// refused key; asking again after one is forgotten is always safe.
+/// refused key; asking again after one is forgotten is always safe. The same
+/// bound holds for the positions their resends keep.
 const WHOLE_ENTITY_REQUEST_CAPACITY: usize = 4_096;
+
+/// `(export, key)` to the `_seq` of the key's latest change.
+type LastChanges = LruCache<(String, String), Option<String>>;
 
 /// The projector's way back to the VM its mutations come from.
 ///
@@ -33,6 +38,17 @@ const WHOLE_ENTITY_REQUEST_CAPACITY: usize = 4_096;
 /// all of it at the end of its next batch of mutations, whether or not the
 /// key changes in it (see [`WholeEntityRequests`]).
 ///
+/// A resend is the entity again, not a change, so it must not take the
+/// position (`_seq`) of the batch it arrives in: in a view ordered by recency
+/// it would rank ahead of entities that really changed there. The projector
+/// remembers the position of each requested key's latest change — the refused
+/// patch, or any change it sees for the key after it — and stamps the resend
+/// with that, in the cache, in derived views and on the `upsert` it
+/// publishes. It learns a key's changes in stream order, which the VM cannot:
+/// positions are assigned per batch, after the VM has emitted it. A resend
+/// with no remembered position (one past the bound, or from a source without
+/// a VM, which sends whole entities as changes) takes its batch's.
+///
 /// The generated runtime hands its VM over through
 /// [`crate::snapshot::register_runtime`], inside [`Self::scope`], before it
 /// emits anything. A mutation source that registers no VM marks nothing and
@@ -43,6 +59,10 @@ const WHOLE_ENTITY_REQUEST_CAPACITY: usize = 4_096;
 #[derive(Clone)]
 pub struct EntityResync {
     requests: WholeEntityRequests,
+    /// For each key with a resend on its way: the `_seq` of its latest change,
+    /// which the resend keeps. Capped by hand at
+    /// [`WHOLE_ENTITY_REQUEST_CAPACITY`], least recently changed out first.
+    last_changes: Arc<StdMutex<LastChanges>>,
     linked: Arc<AtomicBool>,
     warned_unlinked: Arc<AtomicBool>,
 }
@@ -61,6 +81,7 @@ impl EntityResync {
     pub fn new() -> Self {
         Self {
             requests: WholeEntityRequests::new(WHOLE_ENTITY_REQUEST_CAPACITY),
+            last_changes: Arc::new(StdMutex::new(LruCache::unbounded())),
             linked: Arc::new(AtomicBool::new(false)),
             warned_unlinked: Arc::new(AtomicBool::new(false)),
         }
@@ -97,6 +118,43 @@ impl EntityResync {
     /// The request set, for inspection.
     pub fn requests(&self) -> &WholeEntityRequests {
         &self.requests
+    }
+
+    fn last_changes(&self) -> std::sync::MutexGuard<'_, LastChanges> {
+        self.last_changes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Note a change to `export` `key` at `seq`. A refused change is about to
+    /// be requested whole, so its position is remembered for the resend; any
+    /// other change moves a remembered position forward. Only a linked VM
+    /// resends.
+    fn note_change(&self, export: &str, key: &str, seq: &Option<String>, refused: bool) {
+        if !self.is_linked() {
+            return;
+        }
+        let mut last_changes = self.last_changes();
+        if refused {
+            last_changes.put((export.to_string(), key.to_string()), seq.clone());
+            while last_changes.len() > WHOLE_ENTITY_REQUEST_CAPACITY {
+                last_changes.pop_lru();
+            }
+        } else if !last_changes.is_empty() {
+            if let Some(last) = last_changes.get_mut(&(export.to_string(), key.to_string())) {
+                *last = seq.clone();
+            }
+        }
+    }
+
+    /// The position a resend of `export` `key` keeps, if one is remembered:
+    /// the `_seq` of the key's latest change. Forgets it.
+    fn take_last_change(&self, export: &str, key: &str) -> Option<Option<String>> {
+        let mut last_changes = self.last_changes();
+        if last_changes.is_empty() {
+            return None;
+        }
+        last_changes.pop(&(export.to_string(), key.to_string()))
     }
 
     fn request(&self, export: &str, key: &Value) {
@@ -321,11 +379,18 @@ impl Projector {
             append,
         } = mutation;
 
-        // Inject _seq for recency sorting if slot context is available
-        if let Some(ctx) = slot_context {
-            if let Value::Object(ref mut map) = patch {
-                map.insert("_seq".to_string(), Value::String(ctx.to_seq_string()));
-            }
+        // The position (`_seq`) recency order sorts by: the batch's for a
+        // change, the latest change's for a resend (see `EntityResync`).
+        let batch_seq = slot_context.map(|ctx| ctx.to_seq_string());
+        let seq = if whole {
+            self.resync
+                .take_last_change(&export, &key)
+                .unwrap_or(batch_seq)
+        } else {
+            batch_seq
+        };
+        if let (Some(seq), Value::Object(map)) = (&seq, &mut patch) {
+            map.insert("_seq".to_string(), Value::String(seq.clone()));
         }
 
         let matching_specs: SmallVec<[&ViewSpec; 4]> = specs
@@ -353,8 +418,7 @@ impl Projector {
             let mut wire_data = projected.clone();
             apply_wire_format(&mut wire_data, &spec.wire_format);
 
-            // Extract _seq from the patch data to include in the frame
-            let seq = slot_context.map(|ctx| ctx.to_seq_string());
+            let seq = seq.clone();
 
             if whole {
                 frames_published += self
@@ -448,6 +512,9 @@ impl Projector {
             }
         }
 
+        if !whole {
+            self.resync.note_change(&export, &key, &seq, refused);
+        }
         if refused && !arriving_whole.contains(&(export.clone(), key.clone())) {
             self.resync.request(&export, &source_key);
         }
@@ -456,7 +523,8 @@ impl Projector {
     }
 
     /// Store a whole entity the VM resent for a key the cache had to refuse,
-    /// and tell list and state subscribers.
+    /// and tell list and state subscribers. `projected` and `seq` carry the
+    /// position of the entity's latest change, not the resend's batch.
     ///
     /// It is state, not an event: append views get only their cache entry, and
     /// neither the journal nor their tape subscribers see it. List and state
@@ -647,5 +715,61 @@ impl Projector {
                 self.bus_manager.publish_list(&spec.id, message).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn linked() -> EntityResync {
+        let resync = EntityResync::new();
+        resync.link(&Arc::new(StdMutex::new(VmContext::new())));
+        resync
+    }
+
+    fn seq(slot: u64) -> Option<String> {
+        Some(SlotContext::new(slot, 0).to_seq_string())
+    }
+
+    /// Each refusal moves the position forward, and so does any change seen
+    /// before the resend; the resend takes the position once.
+    #[test]
+    fn a_resend_keeps_the_latest_change_seen_before_it() {
+        let resync = linked();
+        resync.note_change("Round", "1", &seq(5), true);
+        resync.note_change("Round", "1", &seq(6), true);
+        resync.note_change("Round", "2", &seq(7), false);
+        assert_eq!(resync.take_last_change("Round", "2"), None, "never refused");
+        resync.note_change("Round", "1", &seq(8), false);
+        assert_eq!(resync.take_last_change("Round", "1"), Some(seq(8)));
+        assert_eq!(resync.take_last_change("Round", "1"), None);
+    }
+
+    #[test]
+    fn remembered_positions_are_bounded_like_requests() {
+        let resync = linked();
+        for key in 0..=WHOLE_ENTITY_REQUEST_CAPACITY {
+            resync.note_change("Round", &key.to_string(), &seq(key as u64), true);
+        }
+        assert_eq!(
+            resync.take_last_change("Round", "0"),
+            None,
+            "the oldest goes"
+        );
+        let newest = WHOLE_ENTITY_REQUEST_CAPACITY;
+        assert_eq!(
+            resync.take_last_change("Round", &newest.to_string()),
+            Some(seq(newest as u64))
+        );
+    }
+
+    /// A source without a VM gets no resends, so nothing is remembered: a
+    /// whole entity it sends is a change and takes its batch's position.
+    #[test]
+    fn nothing_is_remembered_without_a_vm() {
+        let resync = EntityResync::new();
+        resync.note_change("Round", "1", &seq(5), true);
+        assert_eq!(resync.take_last_change("Round", "1"), None);
     }
 }

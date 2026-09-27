@@ -19,7 +19,8 @@ use arete_interpreter::ast::{
 use arete_interpreter::compiler::MultiEntityBytecode;
 use arete_interpreter::snapshot::VmSnapshot;
 use arete_interpreter::vm::VmContext;
-use arete_interpreter::Mutation;
+use arete_interpreter::{Mutation, WholeEntity};
+use arete_server::cache::cmp_seq;
 use arete_server::journal::{EventJournal, JournalConfig};
 use arete_server::materialized_view::{SortConfig, SortOrder, ViewPipeline};
 use arete_server::snapshot::{SnapshotConfig, SnapshotService, SnapshotTrigger};
@@ -102,6 +103,7 @@ fn full_round(round_id: u64, checkpoints: u64) -> Value {
 struct Harness {
     index: ViewIndex,
     cache: EntityCache,
+    bus: BusManager,
     tx: mpsc::Sender<MutationBatch>,
     slot: u64,
 }
@@ -117,10 +119,11 @@ impl Harness {
             ..EntityCacheConfig::default()
         });
         let (tx, rx) = mpsc::channel::<MutationBatch>(64);
+        let bus = BusManager::new();
         tokio::spawn(
             Projector::new(
                 Arc::new(index.clone()),
-                BusManager::new(),
+                bus.clone(),
                 cache.clone(),
                 rx,
                 #[cfg(feature = "otel")]
@@ -132,9 +135,31 @@ impl Harness {
         Self {
             index,
             cache,
+            bus,
             tx,
             slot: 1,
         }
+    }
+
+    /// The `_seq` the projector stamps on the batch sent at `slot`.
+    fn seq_at(slot: u64) -> String {
+        SlotContext::new(slot, 0).to_seq_string()
+    }
+
+    /// The slot of the batch sent last.
+    fn last_slot(&self) -> u64 {
+        self.slot
+    }
+
+    /// `view`'s keys newest first, as a list subscription without a sort of
+    /// its own orders them.
+    async fn by_recency(&self, view: &str) -> Vec<String> {
+        let mut entities = self.cache.get_all(view).await;
+        entities.sort_by(|left, right| {
+            let seq = |entity: &Value| entity["_seq"].as_str().unwrap_or("").to_string();
+            cmp_seq(&seq(&right.1), &seq(&left.1)).then_with(|| left.0.cmp(&right.0))
+        });
+        entities.into_iter().map(|(key, _)| key).collect()
     }
 
     async fn send(&mut self, key: u64, patch: Value) {
@@ -738,4 +763,108 @@ async fn a_row_started_silently_before_a_snapshot_appears_promptly_after_restore
     );
     assert!(resync.requests().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The frames published on `view`'s list bus since `frames` subscribed, as
+/// JSON.
+fn published(
+    frames: &mut tokio::sync::broadcast::Receiver<Arc<arete_server::BusMessage>>,
+) -> Vec<Value> {
+    let mut published = Vec::new();
+    while let Ok(message) = frames.try_recv() {
+        published.push(serde_json::from_slice(&message.payload).unwrap());
+    }
+    published
+}
+
+/// A resend is not a change. Delivered with a batch that changes other
+/// pools — one of them created there — it keeps the position of the pool's
+/// last real change, the refused patch, and ranks behind them in recency
+/// order: in the cache, and on the `upsert` subscribers receive.
+#[tokio::test]
+async fn a_resend_keeps_the_position_of_the_last_change() {
+    let mut index = ViewIndex::new();
+    index.add_spec(view("Pool/list", None, None));
+    let resync = EntityResync::new();
+    let pools = PoolVm::linked_to(&resync);
+    let mut harness = Harness::start_with(index, resync.clone());
+    for pool in ["a", "b", "c", "d"] {
+        harness.send_batch(pools.update(pool, 1)).await;
+    }
+    let mut frames = harness.bus.get_or_create_list_bus("Pool/list").await;
+
+    harness.send_batch(pools.update("a", 2)).await;
+    let refused_at = harness.last_slot();
+    harness.flush().await;
+    assert_eq!(harness.cached_in("Pool/list", "a").await, None);
+
+    // The VM's next batch changes "d" and resends "a" after it; the runtime
+    // adds the creation of "e" to the same batch.
+    let mut next = pools.update("d", 2);
+    next.extend(pools.update("e", 1));
+    let keys: Vec<_> = next
+        .iter()
+        .map(|mutation| (mutation.key.clone(), mutation.whole_entity_mark()))
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            (json!("d"), None),
+            (json!("a"), Some(WholeEntity::Resent)),
+            (json!("e"), Some(WholeEntity::Created)),
+        ]
+    );
+    harness.send_batch(next).await;
+    let resent_at = harness.last_slot();
+    harness.flush().await;
+
+    let a = harness.cache.get("Pool/list", "a").await.unwrap();
+    assert_eq!(a["_seq"], Harness::seq_at(refused_at));
+    assert_eq!(a["state"]["price"], 2, "whole, as the VM holds it");
+    let e = harness.cache.get("Pool/list", "e").await.unwrap();
+    assert_eq!(
+        e["_seq"],
+        Harness::seq_at(resent_at),
+        "a creation is a change"
+    );
+    let recency = harness.by_recency("Pool/list").await;
+    assert_eq!(recency, ["d", "e", "a"]);
+
+    let upsert = published(&mut frames)
+        .into_iter()
+        .find(|frame| frame["op"] == "upsert" && frame["key"] == "a")
+        .expect("the resend is published");
+    assert_eq!(upsert["seq"], Harness::seq_at(refused_at));
+    assert_eq!(upsert["data"]["_seq"], Harness::seq_at(refused_at));
+}
+
+/// Changes refused before the resend arrives each move its position forward:
+/// it takes the latest.
+#[tokio::test]
+async fn a_resend_keeps_the_latest_of_several_refused_changes() {
+    let mut index = ViewIndex::new();
+    index.add_spec(view("Pool/list", None, None));
+    let resync = EntityResync::new();
+    let pools = PoolVm::linked_to(&resync);
+    let mut harness = Harness::start_with(index, resync.clone());
+    for pool in ["a", "b", "c", "d"] {
+        harness.send_batch(pools.update(pool, 1)).await;
+    }
+
+    // The VM runs ahead of the projector: both changes are emitted before
+    // the first is refused and requested.
+    let first = pools.update("a", 2);
+    let second = pools.update("a", 3);
+    harness.send_batch(first).await;
+    harness.send_batch(second).await;
+    let last_refused_at = harness.last_slot();
+    harness.flush().await;
+    assert_eq!(harness.cached_in("Pool/list", "a").await, None);
+
+    harness.send_batch(pools.update("b", 2)).await;
+    harness.flush().await;
+    let a = harness.cache.get("Pool/list", "a").await.unwrap();
+    assert_eq!(a["_seq"], Harness::seq_at(last_refused_at));
+    assert_eq!(a["state"]["fills"], json!([1, 2, 3]));
+    assert_eq!(harness.by_recency("Pool/list").await[0], "b");
 }
