@@ -1,18 +1,109 @@
 use crate::bus::{BusManager, BusMessage};
-use crate::cache::EntityCache;
+use crate::cache::{CacheWrite, EntityCache};
 use crate::mutation_batch::{MutationBatch, SlotContext};
 use crate::view::{ViewIndex, ViewSpec};
 use crate::websocket::frame::{apply_wire_format, Mode, SourceFrame};
+use arete_interpreter::vm::{VmContext, WholeEntityRequests};
 use arete_interpreter::CanonicalLog;
 use bytes::Bytes;
 use serde_json::Value;
 use smallvec::SmallVec;
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::mpsc;
-use tracing::{debug, debug_span, error, instrument};
+use tracing::{debug, debug_span, error, instrument, warn};
 
 #[cfg(feature = "otel")]
 use crate::metrics::Metrics;
+
+/// Whole-entity requests the projector keeps outstanding at once. One per
+/// refused key; asking again after one is forgotten is always safe.
+const WHOLE_ENTITY_REQUEST_CAPACITY: usize = 4_096;
+
+/// The projector's way back to the VM its mutations come from.
+///
+/// The entity cache is bounded. Once it evicts a key, later patches for that
+/// key carry only the fields that changed and cannot rebuild the entity, so
+/// the cache refuses them. The projector then asks the VM, which holds the
+/// whole entity, to send all of it with the key's next mutation (see
+/// [`WholeEntityRequests`]).
+///
+/// The generated runtime hands its VM over through
+/// [`crate::snapshot::register_runtime`], inside [`Self::scope`]. A mutation
+/// source that registers no VM cannot be asked; its evicted keys stay out of
+/// the cache until it sends a mutation marked whole
+/// ([`arete_interpreter::Mutation::mark_whole_entity`]) or a source delete.
+#[derive(Clone)]
+pub struct EntityResync {
+    requests: WholeEntityRequests,
+    linked: Arc<AtomicBool>,
+    warned_unlinked: Arc<AtomicBool>,
+}
+
+tokio::task_local! {
+    static ACTIVE_ENTITY_RESYNC: EntityResync;
+}
+
+impl Default for EntityResync {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EntityResync {
+    pub fn new() -> Self {
+        Self {
+            requests: WholeEntityRequests::new(WHOLE_ENTITY_REQUEST_CAPACITY),
+            linked: Arc::new(AtomicBool::new(false)),
+            warned_unlinked: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Run a mutation source (the generated parser) so that the VM it
+    /// registers answers this projector's requests.
+    pub async fn scope<F: Future>(&self, future: F) -> F::Output {
+        ACTIVE_ENTITY_RESYNC.scope(self.clone(), future).await
+    }
+
+    /// Answer requests from `vm`.
+    pub fn link(&self, vm: &Arc<StdMutex<VmContext>>) {
+        vm.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_whole_entity_requests(self.requests.clone());
+        self.linked.store(true, Ordering::Release);
+    }
+
+    pub fn is_linked(&self) -> bool {
+        self.linked.load(Ordering::Acquire)
+    }
+
+    /// The request set, for inspection.
+    pub fn requests(&self) -> &WholeEntityRequests {
+        &self.requests
+    }
+
+    fn request(&self, export: &str, key: &Value) {
+        if self.is_linked() {
+            self.requests.request(export, key);
+        } else if !self.warned_unlinked.swap(true, Ordering::Relaxed) {
+            warn!(
+                export,
+                "Entity cache refused a patch for an evicted key and no VM is registered to \
+                 send the whole entity; the key stays out of snapshots until its source sends \
+                 a mutation marked whole or deletes it. Raise max_entities_per_view if the \
+                 working set exceeds it."
+            );
+        }
+    }
+}
+
+/// Link `vm` to the projector of the server whose parser is running, if any.
+/// Called by [`crate::snapshot::register_runtime`].
+pub(crate) fn link_active_resync(vm: &Arc<StdMutex<VmContext>>) {
+    let _ = ACTIVE_ENTITY_RESYNC.try_with(|resync| resync.link(vm));
+}
 
 pub struct Projector {
     view_index: Arc<ViewIndex>,
@@ -21,6 +112,7 @@ pub struct Projector {
     mutations_rx: mpsc::Receiver<MutationBatch>,
     snapshot_runtime: Option<crate::snapshot::SnapshotRuntime>,
     journal: Option<Arc<crate::journal::EventJournal>>,
+    resync: EntityResync,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -41,6 +133,7 @@ impl Projector {
             mutations_rx,
             snapshot_runtime: None,
             journal: None,
+            resync: EntityResync::new(),
             metrics,
         }
     }
@@ -59,6 +152,7 @@ impl Projector {
             mutations_rx,
             snapshot_runtime: None,
             journal: None,
+            resync: EntityResync::new(),
         }
     }
 
@@ -74,6 +168,12 @@ impl Projector {
     /// Retain published events for replayable append subscriptions.
     pub fn with_journal(mut self, journal: Arc<crate::journal::EventJournal>) -> Self {
         self.journal = Some(journal);
+        self
+    }
+
+    /// Ask the VM linked to `resync` for whole entities the cache refused.
+    pub fn with_entity_resync(mut self, resync: EntityResync) -> Self {
+        self.resync = resync;
         self
     }
 
@@ -110,12 +210,21 @@ impl Projector {
                     .set("accounts_count", ctx.accounts_count);
             }
 
+            // Keys this batch carries whole: a refused patch ahead of one
+            // needs no request of its own.
+            let arriving_whole: HashSet<(String, String)> = batch
+                .mutations
+                .iter()
+                .filter(|mutation| mutation.is_whole_entity())
+                .map(|mutation| (mutation.export.clone(), Self::extract_key(&mutation.key)))
+                .collect();
+
             for mutation in std::mem::take(&mut batch.mutations).into_iter() {
                 #[cfg(feature = "otel")]
                 let export = mutation.export.clone();
 
                 match self
-                    .process_mutation(mutation, slot_context, &mut json_buffer)
+                    .process_mutation(mutation, slot_context, &arriving_whole, &mut json_buffer)
                     .await
                 {
                     Ok(count) => frames_published += count,
@@ -167,13 +276,14 @@ impl Projector {
     #[instrument(
         name = "projector.mutation",
         level = "debug",
-        skip(self, mutation, slot_context, json_buffer),
+        skip(self, mutation, slot_context, arriving_whole, json_buffer),
         fields(export = %mutation.export)
     )]
     async fn process_mutation(
         &self,
-        mutation: arete_interpreter::Mutation,
+        mut mutation: arete_interpreter::Mutation,
         slot_context: Option<SlotContext>,
+        arriving_whole: &HashSet<(String, String)>,
         json_buffer: &mut Vec<u8>,
     ) -> anyhow::Result<u32> {
         let specs = self.view_index.by_export(&mutation.export);
@@ -182,9 +292,13 @@ impl Projector {
             return Ok(0);
         }
 
+        let whole = mutation.take_whole_entity_mark();
         let key = Self::extract_key(&mutation.key);
         let arete_interpreter::Mutation {
-            mut patch, append, ..
+            export,
+            key: source_key,
+            mut patch,
+            append,
         } = mutation;
 
         // Inject _seq for recency sorting if slot context is available
@@ -205,6 +319,7 @@ impl Projector {
         }
 
         let mut frames_published = 0u32;
+        let mut refused = false;
 
         for (i, spec) in matching_specs.into_iter().enumerate() {
             let is_last = i == match_count - 1;
@@ -220,6 +335,13 @@ impl Projector {
 
             // Extract _seq from the patch data to include in the frame
             let seq = slot_context.map(|ctx| ctx.to_seq_string());
+
+            if whole {
+                frames_published += self
+                    .apply_whole_entity(spec, &key, projected, wire_data, seq, json_buffer)
+                    .await?;
+                continue;
+            }
 
             // Replayable append views carry the offset the record is about to
             // take, so a live subscriber can checkpoint the same cursor a
@@ -266,12 +388,24 @@ impl Projector {
                 }
             };
 
-            self.entity_cache
+            let write = self
+                .entity_cache
                 .upsert_with_append(&spec.id, &key, projected, &frame.append)
                 .await;
 
-            if spec.mode == Mode::List {
-                self.update_derived_view_caches(&spec.id, &key).await;
+            match write {
+                CacheWrite::Refused { patch } => {
+                    refused = true;
+                    if spec.mode == Mode::List {
+                        self.merge_into_held_derived_entities(&spec.id, &key, patch, &frame.append)
+                            .await;
+                    }
+                }
+                CacheWrite::Merged | CacheWrite::Created => {
+                    if spec.mode == Mode::List {
+                        self.update_derived_view_caches(&spec.id, &key).await;
+                    }
+                }
             }
 
             let message = Arc::new(BusMessage {
@@ -294,10 +428,59 @@ impl Projector {
             }
         }
 
+        if refused && !arriving_whole.contains(&(export.clone(), key.clone())) {
+            self.resync.request(&export, &source_key);
+        }
+
         Ok(frames_published)
     }
 
-    fn extract_key(key: &serde_json::Value) -> String {
+    /// Store a whole entity the VM sent for a key the cache had to refuse, and
+    /// tell list and state subscribers.
+    ///
+    /// It is state, not an event: append views get only their cache entry, and
+    /// neither the journal nor their tape subscribers see it. List and state
+    /// views publish it as an `upsert`, which the WebSocket layer hands to a
+    /// client that holds the key and uses to (re)admit it to windows.
+    async fn apply_whole_entity(
+        &self,
+        spec: &ViewSpec,
+        key: &str,
+        projected: Value,
+        wire_data: Value,
+        seq: Option<String>,
+        json_buffer: &mut Vec<u8>,
+    ) -> anyhow::Result<u32> {
+        self.entity_cache
+            .store_whole(&spec.id, key, projected)
+            .await;
+        match spec.mode {
+            Mode::Append => return Ok(0),
+            Mode::List => self.update_derived_view_caches(&spec.id, key).await,
+            Mode::State => {}
+        }
+        let frame = SourceFrame {
+            mode: spec.mode,
+            export: spec.id.clone(),
+            op: "upsert",
+            key: key.to_string(),
+            data: wire_data,
+            append: Vec::new(),
+            seq,
+            offset: None,
+        };
+        json_buffer.clear();
+        serde_json::to_writer(&mut *json_buffer, &frame)?;
+        let message = Arc::new(BusMessage {
+            key: key.to_string(),
+            entity: spec.id.clone(),
+            payload: Arc::new(Bytes::copy_from_slice(json_buffer)),
+        });
+        self.publish_frame(spec, message).await;
+        Ok(1)
+    }
+
+    pub(crate) fn extract_key(key: &serde_json::Value) -> String {
         key.as_str()
             .map(|s| s.to_string())
             .or_else(|| key.as_u64().map(|n| n.to_string()))
@@ -375,6 +558,55 @@ impl Projector {
                 "Updated sorted cache for derived view {} with key {}",
                 view_id, entity_key
             );
+        }
+    }
+
+    /// Apply a patch the entity cache refused (its key was evicted there) to
+    /// the derived views that still hold the whole entity.
+    ///
+    /// A derived view is bounded by sort position, not recency, so it can keep
+    /// a top-ranked entity the entity cache has evicted; that copy is whole,
+    /// so the patch merges into it exactly as it would have in the entity
+    /// cache. A view that does not hold the key gets nothing: the patch alone
+    /// is not an entity, and inserting it would rank a handful of changed
+    /// fields as though they were the whole entity.
+    async fn merge_into_held_derived_entities(
+        &self,
+        source_view_id: &str,
+        entity_key: &str,
+        patch: Value,
+        append_paths: &[String],
+    ) {
+        let derived_views = self.view_index.get_derived_views_for_source(source_view_id);
+        if derived_views.is_empty() {
+            return;
+        }
+        let max_entries = self.entity_cache.max_entities_per_view();
+        let sorted_caches = self.view_index.sorted_caches();
+        let mut caches = sorted_caches.write().await;
+        for spec in &derived_views {
+            let Some(cache) = caches.get_mut(&spec.id) else {
+                continue;
+            };
+            let Some(mut entity) = cache.get(entity_key).cloned() else {
+                continue;
+            };
+            self.entity_cache
+                .merge_patch(&mut entity, patch.clone(), append_paths);
+            let passes = spec
+                .pipeline
+                .as_ref()
+                .and_then(|pipeline| pipeline.filter.as_ref())
+                .is_none_or(|filter| filter.matches(&entity));
+            if passes {
+                // Replace rather than merge: `entity` is already the whole
+                // merged value, and the cache's own merge knows nothing of
+                // append paths.
+                cache.remove(entity_key);
+                cache.upsert_bounded(entity_key.to_string(), entity, max_entries);
+            } else {
+                cache.remove(entity_key);
+            }
         }
     }
 

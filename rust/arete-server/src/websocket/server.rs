@@ -1380,12 +1380,17 @@ async fn attach_state_subscription(
         })
         .await;
 
-    let mut snapshot_entities = initial.clone();
+    let mut snapshot_entities = initial;
     if let Some(limit) = subscription.query.snapshot_limit {
         snapshot_entities.truncate(limit);
     }
     enforce_snapshot_limit(context, snapshot_entities.len())?;
     send_subscribed_frame(context, &subscription, &view_spec)?;
+    // The client holds the entity only if the snapshot actually carried it.
+    // A disabled snapshot, or one `snapshotLimit` cut to nothing, leaves it
+    // without a copy, so its first change must be a full `upsert`: a patch
+    // would have nothing to merge into.
+    let delivered = subscription.snapshot.enabled && !snapshot_entities.is_empty();
     if subscription.snapshot.enabled {
         send_snapshot_batches(
             context,
@@ -1406,7 +1411,8 @@ async fn attach_state_subscription(
     let span_key = key.clone();
     tokio::spawn(
         async move {
-            let mut member = !initial.is_empty();
+            // Whether the client holds this key, not whether it exists.
+            let mut member = delivered;
             loop {
                 tokio::select! {
                     _ = cancel_token.cancelled() => break,
@@ -1433,13 +1439,29 @@ async fn attach_state_subscription(
                             continue;
                         }
 
-                        let selected = load_query_entities(
-                            &task_context.entity_cache,
-                            None,
-                            &view_spec_task,
-                            &query,
-                            false,
-                        ).await;
+                        // A key missing from the cache was evicted there, not
+                        // deleted (deletes arrive above): the cache refused
+                        // this patch and the whole entity is on its way (see
+                        // `EntityResync`). The client's copy is still good, so
+                        // a holder gets the patch and stays a holder; `remove`
+                        // is only for an entity that stopped matching.
+                        let Some(cached) = task_context
+                            .entity_cache
+                            .get(&view_spec_task.id, &key)
+                            .await
+                        else {
+                            if member && send_scoped_source_payload(
+                                &task_context,
+                                &subscription_id,
+                                &query.view,
+                                payload,
+                            ).is_err() {
+                                break;
+                            }
+                            continue;
+                        };
+                        let selected =
+                            select_query_entities(vec![(key.clone(), cached)], &query, true, false);
                         let is_member = !selected.is_empty();
                         let result = match (member, is_member) {
                             (true, true) => send_scoped_source_payload(
@@ -1509,6 +1531,20 @@ async fn attach_collection_subscription(
     }
     enforce_snapshot_limit(context, snapshot_entities.len())?;
     send_subscribed_frame(context, &subscription, &view_spec)?;
+    // Window members the client was never sent: everything past a
+    // `snapshotLimit` cut, or the whole window when the snapshot is disabled.
+    // They stay in the window (take/skip positions still count them) but the
+    // client holds no copy, so none of them may ever be sent a patch.
+    let delivered_rows = if subscription.snapshot.enabled {
+        snapshot_entities.len()
+    } else {
+        0
+    };
+    let mut undelivered: HashSet<String> = initial_membership
+        .iter()
+        .skip(delivered_rows)
+        .map(|(key, _)| key.clone())
+        .collect();
     if subscription.snapshot.enabled {
         send_snapshot_batches(
             context,
@@ -1584,6 +1620,7 @@ async fn attach_collection_subscription(
                             &current,
                             &next,
                             &pending,
+                            &mut undelivered,
                         ).is_err() {
                             task_context.metrics.delivery_stopped(&view_id, "send-failed");
                             break;
@@ -1641,6 +1678,9 @@ async fn attach_collection_subscription(
                                     Ok((next_receiver, recovered)) => {
                                         receiver = next_receiver;
                                         current = recovered;
+                                        // Recovery replaces the whole live
+                                        // membership, untruncated.
+                                        undelivered.clear();
                                         pending.clear();
                                         pending_updates = 0;
                                         task_context.metrics.subscription_resnapshot(&view_id);
@@ -1692,6 +1732,7 @@ async fn attach_collection_subscription(
                             &next,
                             &envelope,
                             &metadata,
+                            &mut undelivered,
                         ).is_err() {
                             task_context.metrics.delivery_stopped(&view_id, "send-failed");
                             break;
@@ -1829,6 +1870,16 @@ impl std::error::Error for RejectedSubscription {}
 /// way [`attach_collection_subscription`] does. The cache folds each patch
 /// into the resident entity, so a membership diff cannot express "these three
 /// events happened"; the retained records can.
+///
+/// For the same reason records are never promoted to a full `upsert` the
+/// first time this subscription sees their key, the way a window entry is.
+/// The cache only holds the latest state, not the state as of a record's
+/// offset, so substituting it would hand a consumer state from after its
+/// cursor. Records go out exactly as retained, `patch` included: a tape is
+/// events, and the consumer that resumes from a cursor holds whatever came
+/// before it. Clients therefore apply frames that carry an `offset` as events
+/// and do not discard them as partial entities (see "Partial entities" in
+/// `docs/websocket-v2-protocol.md`).
 async fn attach_journal_subscription(
     context: &SubscriptionContext,
     subscription: Subscription,
@@ -2287,6 +2338,9 @@ fn send_membership_frame(
     Ok(())
 }
 
+/// Send what one source mutation owes a subscriber, and keep `undelivered`
+/// (window members the client holds no copy of) in step with what was sent.
+#[allow(clippy::too_many_arguments)]
 fn emit_collection_delta(
     context: &SubscriptionContext,
     subscription_id: &str,
@@ -2295,6 +2349,7 @@ fn emit_collection_delta(
     next: &[(String, Value)],
     envelope: &BusMessage,
     metadata: &SourceFrameMetadata,
+    undelivered: &mut HashSet<String>,
 ) -> Result<()> {
     let current_keys: Vec<&str> = current.iter().map(|(key, _)| key.as_str()).collect();
     let next_keys: Vec<&str> = next.iter().map(|(key, _)| key.as_str()).collect();
@@ -2305,6 +2360,10 @@ fn emit_collection_delta(
         .copied()
         .filter(|key| !next_set.contains(key))
     {
+        // A key the client was never sent has nothing to remove.
+        if undelivered.remove(key) {
+            continue;
+        }
         let op = if metadata.op == "delete" && key == envelope.key {
             "delete"
         } else {
@@ -2322,9 +2381,10 @@ fn emit_collection_delta(
     }
 
     for (key, data) in next.iter() {
-        let was_member = current_keys.iter().any(|candidate| *candidate == key);
+        let in_window = current_keys.iter().any(|candidate| *candidate == key);
         match member_action(
-            was_member,
+            in_window,
+            in_window && !undelivered.contains(key),
             key == &envelope.key,
             view_spec.is_derived(),
             &metadata.op,
@@ -2350,6 +2410,7 @@ fn emit_collection_delta(
                     data.clone(),
                     seq,
                 )?;
+                undelivered.remove(key);
             }
         }
     }
@@ -2367,8 +2428,17 @@ fn emit_coalesced_collection_delta(
     current: &[(String, Value)],
     next: &[(String, Value)],
     pending: &HashMap<String, Arc<BusMessage>>,
+    undelivered: &mut HashSet<String>,
 ) -> Result<()> {
-    for change in plan_coalesced_collection_delta(current, next, pending) {
+    let changes = plan_coalesced_collection_delta(current, next, pending, undelivered);
+    // Every key that left the window or was just upserted is settled: the
+    // client either never needs it or now holds all of it.
+    let next_keys: HashSet<&str> = next.iter().map(|(key, _)| key.as_str()).collect();
+    undelivered.retain(|key| next_keys.contains(key.as_str()));
+    for change in changes {
+        if change.op == "upsert" {
+            undelivered.remove(&change.key);
+        }
         send_membership_frame(
             context,
             subscription_id,
@@ -2390,10 +2460,14 @@ struct CollectionChange {
     seq: Option<String>,
 }
 
+/// Plan one coalescing interval. `undelivered` holds window members the
+/// client was never sent; they get no `remove`/`delete` when they leave, and
+/// like every changed key they are sent whole when they change.
 fn plan_coalesced_collection_delta(
     current: &[(String, Value)],
     next: &[(String, Value)],
     pending: &HashMap<String, Arc<BusMessage>>,
+    undelivered: &HashSet<String>,
 ) -> Vec<CollectionChange> {
     let current_by_key: HashMap<&str, &Value> = current
         .iter()
@@ -2408,7 +2482,7 @@ fn plan_coalesced_collection_delta(
 
     for (key, _) in current
         .iter()
-        .filter(|(key, _)| !next_keys.contains(key.as_str()))
+        .filter(|(key, _)| !next_keys.contains(key.as_str()) && !undelivered.contains(key.as_str()))
     {
         let metadata = pending
             .get(key)
@@ -2473,36 +2547,46 @@ enum MemberAction {
 
 /// Decide what to send for one key in the query window.
 ///
-/// Only the mutated key's data changed, so a key that was already a member has
-/// at most moved index — and index is not the server's to communicate.
-/// `subscribed` announces the window's sort (see [`extract_sort_config`], which
-/// is `_seq` descending for a plain list) and every SDK re-sorts locally from
-/// it, so resending an unchanged entity to convey its new position is pure
-/// waste. This matters because on a `_seq`-ordered list the mutated entity
-/// jumps to the front on *every* mutation: keying the decision on position
-/// change meant rebroadcasting the whole window each time, and the mutated
-/// entity itself never kept its position long enough to have its patch
-/// forwarded.
+/// `in_window` says the key was in the window before this mutation; `held`
+/// says the client also has a copy of it. The two differ after a snapshot
+/// that `snapshotLimit` truncated or that was disabled: those keys count for
+/// the window's positions, but the client was never sent them.
+///
+/// Only the mutated key's data changed, so a key that was already in the
+/// window has at most moved index — and index is not the server's to
+/// communicate. `subscribed` announces the window's sort (see
+/// [`extract_sort_config`], which is `_seq` descending for a plain list) and
+/// every SDK re-sorts locally from it, so resending an unchanged entity to
+/// convey its new position is pure waste. This matters because on a
+/// `_seq`-ordered list the mutated entity jumps to the front on *every*
+/// mutation: keying the decision on position change meant rebroadcasting the
+/// whole window each time, and the mutated entity itself never kept its
+/// position long enough to have its patch forwarded.
 fn member_action(
-    was_member: bool,
+    in_window: bool,
+    held: bool,
     is_mutated_key: bool,
     is_derived: bool,
     op: &str,
 ) -> MemberAction {
     if !is_mutated_key {
         // A key entering the window has no local state to merge into, so it
-        // needs the whole entity; one already held is unchanged.
-        return if was_member {
+        // needs the whole entity. One already in the window is unchanged:
+        // if the client holds it there is nothing new, and if it doesn't the
+        // snapshot limit deliberately left it out, so it waits for its own
+        // next change.
+        return if in_window {
             MemberAction::Skip
         } else {
             MemberAction::Upsert
         };
     }
     // The mutated entity rides its own patch through untouched, but only when
-    // the subscriber already holds a copy. Derived views still send whole
-    // entities: the patch on the bus is scoped to the source view, not this
-    // one (see A4-150).
-    if was_member && !is_derived && op != "delete" {
+    // the subscriber already holds a copy; a patch for a key the client never
+    // received is not an entity. Derived views still send whole entities: the
+    // patch on the bus is scoped to the source view, not this one (see
+    // A4-150).
+    if held && !is_derived && op != "delete" {
         MemberAction::ForwardPatch
     } else {
         MemberAction::Upsert
@@ -2644,16 +2728,108 @@ mod tests {
         is_derived: bool,
         op: &str,
     ) -> Vec<(String, MemberAction)> {
+        plan_window_with_undelivered(current_keys, &[], next_keys, envelope_key, is_derived, op)
+    }
+
+    /// [`plan_window`] for a subscriber that was never sent `undelivered`.
+    fn plan_window_with_undelivered(
+        current_keys: &[&str],
+        undelivered: &[&str],
+        next_keys: &[&str],
+        envelope_key: &str,
+        is_derived: bool,
+        op: &str,
+    ) -> Vec<(String, MemberAction)> {
         next_keys
             .iter()
             .map(|key| {
-                let was_member = current_keys.contains(key);
+                let in_window = current_keys.contains(key);
+                let held = in_window && !undelivered.contains(key);
                 (
                     (*key).to_string(),
-                    member_action(was_member, *key == envelope_key, is_derived, op),
+                    member_action(in_window, held, *key == envelope_key, is_derived, op),
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn a_window_member_the_client_never_received_is_sent_whole() {
+        // snapshotLimit cut the window [4, 3, 2, 1] to [4, 3]. "1" still
+        // counts for positions, but a patch for it would reach a client with
+        // nothing to merge into.
+        let plan = plan_window_with_undelivered(
+            &["4", "3", "2", "1"],
+            &["2", "1"],
+            &["1", "4", "3", "2"],
+            "1",
+            false,
+            "patch",
+        );
+        assert_eq!(
+            plan,
+            vec![
+                ("1".to_string(), MemberAction::Upsert),
+                ("4".to_string(), MemberAction::Skip),
+                ("3".to_string(), MemberAction::Skip),
+                // Unchanged and never sent: it waits for its own change
+                // rather than undoing the snapshot limit.
+                ("2".to_string(), MemberAction::Skip),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_held_member_still_rides_its_patch_after_a_truncated_snapshot() {
+        let plan = plan_window_with_undelivered(
+            &["4", "3", "2", "1"],
+            &["2", "1"],
+            &["4", "3", "2", "1"],
+            "4",
+            false,
+            "patch",
+        );
+        assert_eq!(plan[0], ("4".to_string(), MemberAction::ForwardPatch));
+    }
+
+    #[test]
+    fn coalescing_sends_no_remove_for_a_key_the_client_never_received() {
+        let current = vec![
+            ("held".to_string(), json!({"count": 1, "_seq": "10:000001"})),
+            (
+                "unsent".to_string(),
+                json!({"count": 1, "_seq": "10:000001"}),
+            ),
+            ("gone".to_string(), json!({"count": 1, "_seq": "10:000001"})),
+        ];
+        let next = vec![
+            ("held".to_string(), json!({"count": 1, "_seq": "10:000001"})),
+            (
+                "unsent".to_string(),
+                json!({"count": 2, "_seq": "10:000003"}),
+            ),
+        ];
+        let pending = HashMap::from([
+            (
+                "unsent".to_string(),
+                list_message("unsent", "patch", "10:000003"),
+            ),
+            (
+                "gone".to_string(),
+                list_message("gone", "delete", "10:000002"),
+            ),
+        ]);
+        let undelivered = HashSet::from(["unsent".to_string(), "gone".to_string()]);
+
+        assert_eq!(
+            plan_coalesced_collection_delta(&current, &next, &pending, &undelivered),
+            vec![CollectionChange {
+                op: "upsert",
+                key: "unsent".to_string(),
+                data: json!({"count": 2, "_seq": "10:000003"}),
+                seq: Some("10:000003".to_string()),
+            }]
+        );
     }
 
     #[test]
@@ -2775,7 +2951,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            plan_coalesced_collection_delta(&current, &next, &pending),
+            plan_coalesced_collection_delta(&current, &next, &pending, &HashSet::new()),
             vec![
                 CollectionChange {
                     op: "delete",
@@ -3070,6 +3246,7 @@ mod tests {
             "incremental-snapshot.json",
             "reconnect-replacement.json",
             "errors.json",
+            "whole-entities.json",
         ] {
             assert!(names.contains(required), "missing fixture {required}");
         }
@@ -3085,6 +3262,7 @@ mod tests {
             include_str!("../../../../tests/fixtures/websocket-v2/incremental-snapshot.json"),
             include_str!("../../../../tests/fixtures/websocket-v2/reconnect-replacement.json"),
             include_str!("../../../../tests/fixtures/websocket-v2/errors.json"),
+            include_str!("../../../../tests/fixtures/websocket-v2/whole-entities.json"),
         ] {
             let fixture: Value = serde_json::from_str(document).unwrap();
             assert!(fixture["name"].is_string());
@@ -3592,6 +3770,350 @@ mod tests {
             );
 
             assert_eq!(collect_trades(&mut socket, 50).await.len(), 50);
+            socket.close(None).await.ok();
+        }
+    }
+
+    /// A key only counts as held by the client once a frame actually carried
+    /// it. A truncated or disabled snapshot leaves keys the client never saw,
+    /// and their first change must arrive whole.
+    mod partial_entities_over_a_socket {
+        use super::*;
+        use crate::projector::Projector;
+        use crate::{MutationBatch, SlotContext};
+        use arete_interpreter::Mutation;
+        use futures_util::{SinkExt, StreamExt};
+        use std::time::Duration;
+        use tokio::net::{TcpListener, TcpStream};
+        use tokio::sync::mpsc;
+        use tokio_tungstenite::tungstenite::Message;
+        use tokio_tungstenite::{client_async, WebSocketStream};
+
+        fn thing_index() -> ViewIndex {
+            let mut index = ViewIndex::new();
+            index.add_spec(list_spec());
+            index.add_spec(ViewSpec {
+                id: "Thing/state".to_string(),
+                mode: Mode::State,
+                ..list_spec()
+            });
+            index
+        }
+
+        struct Harness {
+            addr: SocketAddr,
+            tx: mpsc::Sender<MutationBatch>,
+            slot: std::sync::atomic::AtomicU64,
+        }
+
+        impl Harness {
+            async fn start(delivery: WebSocketDeliveryConfig) -> Self {
+                Self::start_with_cache(delivery, EntityCache::new()).await
+            }
+
+            async fn start_with_cache(
+                delivery: WebSocketDeliveryConfig,
+                entity_cache: EntityCache,
+            ) -> Self {
+                let view_index = Arc::new(thing_index());
+                let bus_manager = BusManager::new();
+                let (tx, rx) = mpsc::channel::<MutationBatch>(64);
+                tokio::spawn(
+                    Projector::new(
+                        view_index.clone(),
+                        bus_manager.clone(),
+                        entity_cache.clone(),
+                        rx,
+                        #[cfg(feature = "otel")]
+                        None,
+                    )
+                    .run(),
+                );
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let server = WebSocketServer::new(
+                    addr,
+                    bus_manager,
+                    entity_cache,
+                    view_index,
+                    #[cfg(feature = "otel")]
+                    None,
+                )
+                .with_delivery_config(delivery);
+                let (acceptor, _cleanup) = server.into_acceptor();
+                tokio::spawn(async move { acceptor.serve_listener(listener).await });
+                Self {
+                    addr,
+                    tx,
+                    slot: std::sync::atomic::AtomicU64::new(100),
+                }
+            }
+
+            /// Apply one source patch and wait until the projector published it.
+            async fn patch(&self, key: &str, patch: Value) {
+                self.mutate(Mutation {
+                    export: "Thing".to_string(),
+                    key: json!(key),
+                    patch,
+                    append: vec![],
+                })
+                .await;
+            }
+
+            async fn mutate(&self, mutation: Mutation) {
+                let slot = self.slot.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.tx
+                    .send(MutationBatch::with_slot_context(
+                        vec![mutation].into_iter().collect(),
+                        SlotContext::new(slot, 0),
+                    ))
+                    .await
+                    .unwrap();
+                let (ack, wait) = oneshot::channel();
+                self.tx
+                    .send(MutationBatch::flush_marker(ack))
+                    .await
+                    .unwrap();
+                wait.await.unwrap();
+            }
+
+            async fn subscribe(&self, query: Value, snapshot: bool) -> WebSocketStream<TcpStream> {
+                let stream = TcpStream::connect(self.addr).await.unwrap();
+                let mut socket = client_async(format!("ws://{}/", self.addr), stream)
+                    .await
+                    .unwrap()
+                    .0;
+                socket
+                    .send(Message::Text(
+                        json!({
+                            "type": "subscribe",
+                            "protocolVersion": 2,
+                            "subscriptionId": "things",
+                            "query": query,
+                            "snapshot": {"enabled": snapshot},
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+                let ack = next_frame(&mut socket).await;
+                assert_eq!(ack["op"], "subscribed", "unexpected ack: {ack}");
+                assert_eq!(
+                    ack["wholeEntities"],
+                    json!(true),
+                    "the ack advertises the whole-entity guarantee: {ack}"
+                );
+                socket
+            }
+        }
+
+        async fn next_frame(socket: &mut WebSocketStream<TcpStream>) -> Value {
+            loop {
+                let message = tokio::time::timeout(Duration::from_secs(10), socket.next())
+                    .await
+                    .expect("the server answers within the timeout")
+                    .expect("the stream stays open")
+                    .expect("a readable frame");
+                // Every frame here is far below the compression threshold.
+                let bytes = match &message {
+                    Message::Text(text) => text.as_bytes(),
+                    Message::Binary(bytes) => bytes.as_ref(),
+                    _ => continue,
+                };
+                return serde_json::from_slice(bytes).expect("frames are JSON");
+            }
+        }
+
+        /// The snapshot rows, in order, once the snapshot completes.
+        async fn snapshot_keys(socket: &mut WebSocketStream<TcpStream>) -> Vec<String> {
+            let mut keys = Vec::new();
+            loop {
+                let frame = next_frame(socket).await;
+                assert_eq!(frame["op"], "snapshot", "expected a snapshot: {frame}");
+                keys.extend(
+                    frame["data"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|row| row["key"].as_str().unwrap().to_string()),
+                );
+                if frame["complete"] == json!(true) {
+                    return keys;
+                }
+            }
+        }
+
+        async fn seed(harness: &Harness) {
+            for key in ["a", "b", "c"] {
+                harness
+                    .patch(key, json!({"name": format!("thing-{key}"), "count": 1}))
+                    .await;
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_change_to_a_key_cut_by_snapshot_limit_is_an_upsert() {
+            let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
+            seed(&harness).await;
+
+            let mut socket = harness
+                .subscribe(json!({"view": "Thing/list", "snapshotLimit": 1}), true)
+                .await;
+            // Newest first: only "c" was sent.
+            assert_eq!(snapshot_keys(&mut socket).await, ["c"]);
+
+            harness.patch("a", json!({"count": 2})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "a", "unexpected frame: {frame}");
+            assert_eq!(frame["op"], "upsert", "a key never sent arrives whole");
+            assert_eq!(frame["data"]["name"], "thing-a");
+            assert_eq!(frame["data"]["count"], 2);
+
+            // Now the client holds "a", so its next change is a patch again.
+            harness.patch("a", json!({"count": 3})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "a");
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert!(frame["data"].get("name").is_none());
+
+            // A key the snapshot did carry still rides its patch.
+            harness.patch("c", json!({"count": 2})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "c");
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            socket.close(None).await.ok();
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_list_without_a_snapshot_upserts_each_key_on_its_first_change() {
+            let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
+            seed(&harness).await;
+
+            let mut socket = harness
+                .subscribe(json!({"view": "Thing/list"}), false)
+                .await;
+            harness.patch("b", json!({"count": 2})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "b");
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["data"]["name"], "thing-b");
+
+            harness.patch("b", json!({"count": 3})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "b");
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            socket.close(None).await.ok();
+        }
+
+        /// Eviction from the server's bounded cache is not a change to the
+        /// entity: a client holding it keeps getting its patches, never a
+        /// `remove`, and the whole entity replaces its copy when it returns.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_state_holder_keeps_its_patches_when_the_cache_evicts_the_key() {
+            let harness = Harness::start_with_cache(
+                WebSocketDeliveryConfig::default(),
+                EntityCache::with_config(crate::cache::EntityCacheConfig {
+                    max_entities_per_view: 2,
+                    ..Default::default()
+                }),
+            )
+            .await;
+            harness
+                .patch("a", json!({"name": "thing-a", "count": 1}))
+                .await;
+            let mut socket = harness
+                .subscribe(json!({"view": "Thing/state", "key": "a"}), true)
+                .await;
+            assert_eq!(snapshot_keys(&mut socket).await, ["a"]);
+
+            // "b" and "c" push "a" out of the cache.
+            for key in ["b", "c"] {
+                harness
+                    .patch(key, json!({"name": format!("thing-{key}"), "count": 1}))
+                    .await;
+            }
+            harness.patch("a", json!({"count": 2})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "a", "unexpected frame: {frame}");
+            assert_eq!(frame["op"], "patch", "the holder merges it: {frame}");
+            assert_eq!(frame["data"]["count"], 2);
+
+            // The whole entity comes back from the VM.
+            let mut whole = Mutation {
+                export: "Thing".to_string(),
+                key: json!("a"),
+                patch: json!({"name": "thing-a", "count": 2}),
+                append: vec![],
+            };
+            whole.mark_whole_entity();
+            harness.mutate(whole).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["data"]["name"], "thing-a");
+            assert_eq!(frame["data"]["count"], 2);
+            assert!(frame["data"]
+                .get(arete_interpreter::WHOLE_ENTITY_MARKER)
+                .is_none());
+
+            harness.patch("a", json!({"count": 3})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            socket.close(None).await.ok();
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_state_view_without_a_snapshot_upserts_on_the_first_change() {
+            let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
+            seed(&harness).await;
+
+            let mut socket = harness
+                .subscribe(json!({"view": "Thing/state", "key": "a"}), false)
+                .await;
+            harness.patch("a", json!({"count": 2})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "a");
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["data"]["name"], "thing-a");
+            assert_eq!(frame["data"]["count"], 2);
+
+            harness.patch("a", json!({"count": 3})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            socket.close(None).await.ok();
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_coalesced_list_sends_no_remove_for_a_key_it_never_sent() {
+            let harness = Harness::start(WebSocketDeliveryConfig {
+                collection_coalesce_ms: Some(10),
+                ..Default::default()
+            })
+            .await;
+            seed(&harness).await;
+
+            // A one-row window holding "c", which the disabled snapshot never
+            // sent.
+            let mut socket = harness
+                .subscribe(json!({"view": "Thing/list", "take": 1}), false)
+                .await;
+            // "a" jumps to the front: it enters the window whole and "c",
+            // never sent, leaves it without a `remove`.
+            harness.patch("a", json!({"count": 2})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "a", "unexpected frame: {frame}");
+            assert_eq!(frame["op"], "upsert");
+            assert_eq!(frame["data"]["name"], "thing-a");
+
+            // "c" re-enters whole; "a", held, leaves with a `remove`.
+            harness.patch("c", json!({"count": 2})).await;
+            let mut frames = [next_frame(&mut socket).await, next_frame(&mut socket).await];
+            frames.sort_by_key(|frame| frame["key"].as_str().unwrap().to_string());
+            assert_eq!(frames[0]["key"], "a");
+            assert_eq!(frames[0]["op"], "remove");
+            assert_eq!(frames[1]["key"], "c");
+            assert_eq!(frames[1]["op"], "upsert");
+            assert_eq!(frames[1]["data"]["name"], "thing-c");
             socket.close(None).await.ok();
         }
     }

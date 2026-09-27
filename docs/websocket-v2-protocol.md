@@ -44,7 +44,7 @@ Unknown fields are rejected. The canonical query fields are exactly:
 - `after`: resume cursor. On an append view backed by the event journal this is a replay offset (see [Replayable append views](#replayable-append-views)); on every other view it is an exclusive `_seq` cursor whose initial snapshot is incremental.
 - `snapshotLimit`: positive cap applied only to initial snapshot rows. It does not alter live `take`/`skip` membership.
 
-For ordinary list and append views, full snapshots are ordered by `_seq` descending and incremental snapshots by `_seq` ascending. Entity key is the deterministic tie breaker. Derived views retain their declared sort order. Filters run before `skip` and `take`; the same filtered window determines both snapshot rows and live membership.
+For ordinary list and append views, full snapshots are ordered by `_seq` descending and incremental snapshots by `_seq` ascending. Entity key is the deterministic tie breaker. Derived views retain their declared sort order. An entity whose sort field is missing or `null` cannot be ranked, so it sorts after every entity that has one in both directions — `desc` reverses only the comparison between two present values — and it never displaces a ranked entity from a `take` window. Filters run before `skip` and `take`; the same filtered window determines both snapshot rows and live membership.
 
 ## Acknowledgements
 
@@ -64,11 +64,14 @@ The server acknowledges a valid subscription before sending its snapshot:
   "sort": {
     "field": ["id", "roundId"],
     "order": "desc"
-  }
+  },
+  "wholeEntities": true
 }
 ```
 
 The echoed query is the effective query. For example, a derived view can fill in its declared limit as `take` when the request omitted one.
+
+`wholeEntities: true` states that this subscription follows the whole-entity rules under [Live Frames](#live-frames): the server sends every key whole, as a snapshot row or `upsert`, before any `patch` for it. Servers that predate the rules omit the field. A client drops a patch for a key it does not hold only when the acknowledgement carries it (see [Partial entities](#partial-entities)). Clients ignore acknowledgement fields they do not recognise, so the field is safe to send to older clients.
 
 ## Snapshots
 
@@ -280,7 +283,23 @@ All live frames include `protocolVersion` and `subscriptionId`:
 }
 ```
 
-Source patches remain `patch`. A full entity entering or moving inside a query window is `upsert`.
+A source change to a key the client already holds is forwarded as `patch`. The server sends the whole entity as `upsert` whenever a key becomes a member of the subscription as far as the server knows:
+
+- when it enters the query window — it starts passing the filters, or a change to it or to another entity moves it into the `take`/`skip` range;
+- on its first change after a snapshot that `snapshotLimit` truncated before it, or after a subscription with the snapshot disabled — those keys are in the window but the client was never sent them;
+- on every change to a derived view, whose source patches do not apply to it.
+
+A key that only moves position inside the window is not resent: the client orders members from the `sort` in `subscribed`. A key the client was never sent gets no `remove` or `delete` when it leaves the window.
+
+### Partial entities
+
+A `patch` for a key the client does not hold is not an entity. When the subscription's acknowledgement carries `wholeEntities: true`, clients discard such a patch without storing it, tracking its `seq`, or granting it membership; the entity appears with the next full `upsert`, which the rules above guarantee for every key the server has not sent. Without the field the server may send a key's first change as a `patch` (after a truncated or disabled snapshot), so clients store that patch as the entity, as they always have. A `remove` or `delete` for a key the client does not hold has nothing to act on.
+
+The guarantee covers keys the server has not sent. A client that drops an entity it was sent, for example to stay within a local entry limit, still counts as holding it for the server, which keeps sending patches and sends no `upsert` until the key leaves and re-enters the window or the subscription is re-established. The client discards those patches, so the entity stays missing locally until then. Keeping such limits above the subscription's size is the client's responsibility, and the SDKs report each patch they drop for a key they evicted.
+
+Frames that carry an `offset` are exempt. They are records from a [replayable append view](#replayable-append-views): events delivered verbatim in offset order, never promoted to `upsert`. The server keeps only each entity's latest state, not its state as of a given offset, so it has nothing faithful to substitute, and a consumer resuming from a cursor already holds whatever came before it. Clients apply them as received.
+
+The server holds itself to the same rule. Its entity cache is bounded; once it has evicted a key, a later source patch for that key carries only the fields that changed, so it is not stored. The server then asks the state machine that produced the patch for the whole entity, which comes back after the key's next change: the key returns to snapshots and windows, and clients receive it as an `upsert`. Until then the key is out of the view's snapshots. A state subscription that holds it keeps receiving its patches and is never sent `remove` for an eviction. A list view's cache bound is also the extent of its windows, so an evicted key leaves list windows the way a key past `take` does, with a `remove`, and re-enters as an `upsert`. Such a patch never adds the key to a derived view either; a derived view that still holds the whole entity (derived views are bounded by sort position, not recency) merges the change into its copy. Snapshot rows and `upsert` data are always whole entities, as far as the server's state machine holds them: it keeps a bounded number of entities too (2,500 per entity type by default), and an entity it has dropped restarts from the fields its next update sets.
 
 `remove` and `delete` are deliberately different:
 
@@ -404,4 +423,4 @@ Stable protocol codes include `malformed-message`, `invalid-subscription`, `inva
 
 ## Conformance Fixtures
 
-Deterministic shared examples live in `tests/fixtures/websocket-v2`. The manifest covers keyed state, independent list windows, exact filters, authoritative multi-batch and empty snapshots, query-scoped remove, global delete, incremental snapshots, reconnect replacement, and error envelopes.
+Deterministic shared examples live in `tests/fixtures/websocket-v2`. The manifest covers keyed state, independent list windows, exact filters, authoritative multi-batch and empty snapshots, query-scoped remove, global delete, incremental snapshots, reconnect replacement, error envelopes, replay cursors and gaps, and patches for keys the client does not hold with and without `wholeEntities`.

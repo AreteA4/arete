@@ -333,7 +333,12 @@ impl Runtime {
                 Some(runtime) => projector.with_snapshot_runtime(runtime),
                 None => projector,
             };
-            let projector = projector.with_journal(journal.clone());
+            // The parser's VM links itself to this when it registers, so the
+            // projector can ask it for entities the bounded cache dropped.
+            let entity_resync = crate::projector::EntityResync::new();
+            let projector = projector
+                .with_journal(journal.clone())
+                .with_entity_resync(entity_resync.clone());
 
             // The projector runs for the lifetime of the server. Giving the
             // task a span would make that span the parent of every batch
@@ -420,6 +425,7 @@ impl Runtime {
                     let reconnection_config = self.config.reconnection.clone().unwrap_or_default();
                     let parser_snapshot_runtime = snapshot_runtime.clone();
                     let parser_journal = journal.clone();
+                    let parser_entity_resync = entity_resync.clone();
                     // The parser runs for the lifetime of the server, like
                     // the projector. A span on the task would be the current
                     // span of every update it processes, and OpenTelemetry
@@ -438,7 +444,9 @@ impl Runtime {
                         // The tape is in scope even with snapshots off, so
                         // a runtime that abandons its checkpoint can still
                         // mark the hole it just created.
-                        let result = parser_journal.scope(scoped).await;
+                        let result = parser_entity_resync
+                            .scope(parser_journal.scope(scoped))
+                            .await;
                         if let Err(e) = result {
                             error!(%program_id, "Vixen parser runtime error: {}", e);
                         }

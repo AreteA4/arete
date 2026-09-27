@@ -7,7 +7,6 @@
 use lru::LruCache;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -15,6 +14,92 @@ const DEFAULT_MAX_ENTITIES_PER_VIEW: usize = 500;
 const DEFAULT_MAX_ARRAY_LENGTH: usize = 100;
 const DEFAULT_INITIAL_SNAPSHOT_BATCH_SIZE: usize = 50;
 const DEFAULT_SUBSEQUENT_SNAPSHOT_BATCH_SIZE: usize = 100;
+/// Evicted keys remembered per cached entity. The VM keeps far more entities
+/// than a view caches (2,500 per state table by default against 500 here), so
+/// a key the cache evicted can keep receiving patches long afterwards; eight
+/// times the cache bound covers the VM's default table with room to spare.
+///
+/// The memory holds distinct keys, so forgetting one takes that many other
+/// keys evicted after it, each emitted by the VM since. While the memory is
+/// at least the VM's table bound, the VM has then dropped the forgotten key as
+/// well, and its next mutation for it starts a fresh row: whole, as far as
+/// the VM knows. A VM configured with a larger table than this weakens that.
+const EVICTED_KEYS_PER_CACHED_ENTITY: usize = 8;
+
+/// What [`EntityCache::upsert_with_append`] did with a patch.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CacheWrite {
+    /// Merged into the entity the cache already held.
+    Merged,
+    /// Stored as a new entity: the cache has no record of the key.
+    Created,
+    /// Not stored. The cache evicted this key earlier, so the patch carries
+    /// only the fields that changed — part of an entity, not one. The patch is
+    /// handed back for callers that hold a full copy elsewhere.
+    Refused { patch: Value },
+}
+
+/// One view's cached entities and the keys it evicted to stay bounded.
+///
+/// Both maps are unbounded `LruCache`s capped by hand: a bounded one
+/// allocates its full capacity up front, which for the evicted-key memory is
+/// several times the entity bound, per view, whether or not anything is ever
+/// evicted from it.
+struct ViewEntries {
+    max_entities: usize,
+    entities: LruCache<String, Value>,
+    /// Keys evicted for space, most recently evicted or refused first.
+    /// Allocated on the first eviction.
+    evicted: Option<LruCache<String, ()>>,
+}
+
+impl ViewEntries {
+    fn new(max_entities: usize) -> Self {
+        assert!(max_entities > 0, "max_entities_per_view must be > 0");
+        Self {
+            max_entities,
+            entities: LruCache::unbounded(),
+            evicted: None,
+        }
+    }
+
+    /// Store `entity` under `key`, remembering whatever it pushes out.
+    fn store(&mut self, key: String, entity: Value) {
+        self.forget_evicted(&key);
+        self.entities.put(key, entity);
+        while self.entities.len() > self.max_entities {
+            match self.entities.pop_lru() {
+                Some((evicted, _)) => self.remember_evicted(evicted),
+                None => break,
+            }
+        }
+    }
+
+    fn remember_evicted(&mut self, key: String) {
+        let capacity = self
+            .max_entities
+            .saturating_mul(EVICTED_KEYS_PER_CACHED_ENTITY);
+        let evicted = self.evicted.get_or_insert_with(LruCache::unbounded);
+        evicted.put(key, ());
+        while evicted.len() > capacity {
+            evicted.pop_lru();
+        }
+    }
+
+    fn forget_evicted(&mut self, key: &str) {
+        if let Some(evicted) = self.evicted.as_mut() {
+            evicted.pop(key);
+        }
+    }
+
+    /// Whether `key` was evicted and is still remembered. Asking refreshes
+    /// it, so an evicted key that keeps changing is not forgotten.
+    fn was_evicted(&mut self, key: &str) -> bool {
+        self.evicted
+            .as_mut()
+            .is_some_and(|evicted| evicted.get(key).is_some())
+    }
+}
 
 /// Compare two `_seq` values numerically.
 /// `_seq` format is "{slot}:{offset}" where slot is not zero-padded.
@@ -58,10 +143,24 @@ impl Default for EntityCacheConfig {
 /// The cache is populated as mutations flow through the projector, regardless
 /// of subscriber state. When a new subscriber connects, they receive snapshots
 /// of all cached entities for their requested view.
+///
+/// # Only whole entities
+///
+/// Source mutations carry only the fields that changed. A patch for a key the
+/// cache holds merges into the whole entity; a patch for a key it has never
+/// seen is a new entity and is stored as-is. A patch for a key the cache
+/// *evicted* is neither: storing it would serve a few changed fields as
+/// though they were the entity, in snapshots and in every derived view. Each
+/// view therefore remembers the keys it evicted (bounded, most recent first)
+/// and refuses patches for them with [`CacheWrite::Refused`]. The projector
+/// then asks the VM for the whole entity, which arrives with the key's next
+/// mutation and is stored with [`EntityCache::store_whole`]; a source delete
+/// also ends the eviction. A key evicted so long ago that it has been
+/// forgotten is indistinguishable from a new one.
 #[derive(Clone)]
 pub struct EntityCache {
-    /// view_id -> LRU<entity_key, full_projected_entity>
-    caches: Arc<RwLock<HashMap<String, LruCache<String, Value>>>>,
+    /// view_id -> LRU<entity_key, full_projected_entity>, plus evicted keys
+    caches: Arc<RwLock<HashMap<String, ViewEntries>>>,
     config: EntityCacheConfig,
 }
 
@@ -87,33 +186,69 @@ impl EntityCache {
         self.config.max_entities_per_view
     }
 
-    pub async fn upsert(&self, view_id: &str, key: &str, patch: Value) {
-        self.upsert_with_append(view_id, key, patch, &[]).await;
+    pub async fn upsert(&self, view_id: &str, key: &str, patch: Value) -> CacheWrite {
+        self.upsert_with_append(view_id, key, patch, &[]).await
     }
 
+    /// Merge `patch` into the cached entity, store it as a new entity, or
+    /// refuse it for an evicted key (see the type docs).
     pub async fn upsert_with_append(
         &self,
         view_id: &str,
         key: &str,
         patch: Value,
         append_paths: &[String],
-    ) {
+    ) -> CacheWrite {
         let mut caches = self.caches.write().await;
 
-        let cache = caches.entry(view_id.to_string()).or_insert_with(|| {
-            LruCache::new(
-                NonZeroUsize::new(self.config.max_entities_per_view)
-                    .expect("max_entities_per_view must be > 0"),
-            )
-        });
+        let view = caches
+            .entry(view_id.to_string())
+            .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
 
         let max_array_length = self.config.max_array_length;
 
-        if let Some(entity) = cache.get_mut(key) {
+        if let Some(entity) = view.entities.get_mut(key) {
             deep_merge_with_append(entity, patch, append_paths, max_array_length);
-        } else {
-            let new_entity = truncate_arrays_if_needed(patch, max_array_length);
-            cache.put(key.to_string(), new_entity);
+            return CacheWrite::Merged;
+        }
+        if view.was_evicted(key) {
+            return CacheWrite::Refused { patch };
+        }
+        let new_entity = truncate_arrays_if_needed(patch, max_array_length);
+        view.store(key.to_string(), new_entity);
+        CacheWrite::Created
+    }
+
+    /// Store `entity` as the whole entity for `key`, replacing anything held
+    /// and clearing an eviction: the source vouched for it being complete
+    /// (see [`arete_interpreter::Mutation::mark_whole_entity`]).
+    pub async fn store_whole(&self, view_id: &str, key: &str, entity: Value) {
+        let mut caches = self.caches.write().await;
+        let view = caches
+            .entry(view_id.to_string())
+            .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
+        let entity = truncate_arrays_if_needed(entity, self.config.max_array_length);
+        view.store(key.to_string(), entity);
+    }
+
+    /// Merge a source patch into `base` with this cache's append and array
+    /// rules, for callers that keep their own full copy of an entity.
+    pub fn merge_patch(&self, base: &mut Value, patch: Value, append_paths: &[String]) {
+        deep_merge_with_append(base, patch, append_paths, self.config.max_array_length);
+    }
+
+    /// Treat `keys` as evicted from `view_id` unless the view holds them, so
+    /// patches for them are refused. Used after a restore, when the VM holds
+    /// entities the restored cache does not.
+    pub async fn remember_evicted(&self, view_id: &str, keys: impl IntoIterator<Item = String>) {
+        let mut caches = self.caches.write().await;
+        let view = caches
+            .entry(view_id.to_string())
+            .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
+        for key in keys {
+            if !view.entities.contains(&key) {
+                view.remember_evicted(key);
+            }
         }
     }
 
@@ -126,7 +261,12 @@ impl EntityCache {
 
         caches
             .get(view_id)
-            .map(|cache| cache.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .map(|view| {
+                view.entities
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -143,8 +283,9 @@ impl EntityCache {
     ) -> Vec<(String, Value)> {
         let caches = self.caches.read().await;
 
-        if let Some(cache) = caches.get(view_id) {
-            let mut results: Vec<(String, Value)> = cache
+        if let Some(view) = caches.get(view_id) {
+            let mut results: Vec<(String, Value)> = view
+                .entities
                 .iter()
                 .filter(|(_, entity)| {
                     entity
@@ -179,19 +320,28 @@ impl EntityCache {
         let caches = self.caches.read().await;
         caches
             .get(view_id)
-            .and_then(|cache| cache.peek(key).cloned())
+            .and_then(|view| view.entities.peek(key).cloned())
     }
 
     /// Remove one entity after a source-wide delete.
+    ///
+    /// The delete ends the entity, so the key is also forgotten as evicted: a
+    /// later patch for it creates a new entity.
     pub async fn remove(&self, view_id: &str, key: &str) -> Option<Value> {
         let mut caches = self.caches.write().await;
-        caches.get_mut(view_id).and_then(|cache| cache.pop(key))
+        caches.get_mut(view_id).and_then(|view| {
+            view.forget_evicted(key);
+            view.entities.pop(key)
+        })
     }
 
     /// Get the number of cached entities for a view
     pub async fn len(&self, view_id: &str) -> usize {
         let caches = self.caches.read().await;
-        caches.get(view_id).map(|c| c.len()).unwrap_or(0)
+        caches
+            .get(view_id)
+            .map(|view| view.entities.len())
+            .unwrap_or(0)
     }
 
     /// Check if the cache for a view is empty
@@ -210,8 +360,9 @@ impl EntityCache {
     /// Clear all cached entities for a view
     pub async fn clear(&self, view_id: &str) {
         let mut caches = self.caches.write().await;
-        if let Some(cache) = caches.get_mut(view_id) {
-            cache.clear();
+        if let Some(view) = caches.get_mut(view_id) {
+            view.entities.clear();
+            view.evicted = None;
         }
     }
 
@@ -228,10 +379,10 @@ impl EntityCache {
         let caches = self.caches.read().await;
         caches
             .iter()
-            .map(|(view_id, cache)| {
+            .map(|(view_id, view)| {
                 (
                     view_id.clone(),
-                    cache
+                    view.entities
                         .iter()
                         .map(|(key, entity)| (key.clone(), entity.clone()))
                         .collect(),
@@ -247,14 +398,11 @@ impl EntityCache {
     pub async fn hydrate(&self, views: Vec<(String, Vec<(String, Value)>)>) {
         let mut caches = self.caches.write().await;
         for (view_id, entries) in views {
-            let cache = caches.entry(view_id).or_insert_with(|| {
-                LruCache::new(
-                    NonZeroUsize::new(self.config.max_entities_per_view)
-                        .expect("max_entities_per_view must be > 0"),
-                )
-            });
+            let view = caches
+                .entry(view_id)
+                .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
             for (key, entity) in entries.into_iter().rev() {
-                cache.put(key, entity);
+                view.store(key, entity);
             }
         }
     }
@@ -264,8 +412,8 @@ impl EntityCache {
         let mut total_entities = 0;
         let mut views = Vec::new();
 
-        for (view_id, cache) in caches.iter() {
-            let count = cache.len();
+        for (view_id, view) in caches.iter() {
+            let count = view.entities.len();
             total_entities += count;
             views.push((view_id.clone(), count));
         }
@@ -557,6 +705,118 @@ mod tests {
         assert!(cache.get("tokens/list", "key1").await.is_none());
         assert!(cache.get("tokens/list", "key2").await.is_some());
         assert!(cache.get("tokens/list", "key3").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_patch_for_an_evicted_key_is_refused_not_stored() {
+        let cache = EntityCache::with_config(EntityCacheConfig {
+            max_entities_per_view: 2,
+            ..Default::default()
+        });
+        for id in 1..=3 {
+            assert_eq!(
+                cache
+                    .upsert(
+                        "tokens/list",
+                        &format!("key{id}"),
+                        json!({"id": id, "n": 0})
+                    )
+                    .await,
+                CacheWrite::Created
+            );
+        }
+        // key1 was evicted; this carries only what changed.
+        assert_eq!(
+            cache.upsert("tokens/list", "key1", json!({"n": 5})).await,
+            CacheWrite::Refused {
+                patch: json!({"n": 5})
+            }
+        );
+        assert!(cache.get("tokens/list", "key1").await.is_none());
+        assert_eq!(
+            cache.upsert("tokens/list", "key3", json!({"n": 1})).await,
+            CacheWrite::Merged
+        );
+
+        // A source delete ends the entity: it may then be created again.
+        cache.remove("tokens/list", "key1").await;
+        assert_eq!(
+            cache
+                .upsert("tokens/list", "key1", json!({"id": 1, "n": 6}))
+                .await,
+            CacheWrite::Created
+        );
+    }
+
+    #[tokio::test]
+    async fn a_whole_entity_ends_an_eviction() {
+        let cache = EntityCache::with_config(EntityCacheConfig {
+            max_entities_per_view: 1,
+            ..Default::default()
+        });
+        cache.upsert("v", "a", json!({"id": "a", "n": 0})).await;
+        cache.upsert("v", "b", json!({"id": "b", "n": 0})).await;
+        assert!(matches!(
+            cache.upsert("v", "a", json!({"n": 1})).await,
+            CacheWrite::Refused { .. }
+        ));
+        cache
+            .store_whole("v", "a", json!({"id": "a", "n": 1}))
+            .await;
+        assert_eq!(cache.get("v", "a").await, Some(json!({"id": "a", "n": 1})));
+        assert_eq!(cache.len("v").await, 1, "still bounded: b made room");
+        assert_eq!(
+            cache.upsert("v", "a", json!({"n": 2})).await,
+            CacheWrite::Merged
+        );
+    }
+
+    #[tokio::test]
+    async fn the_evicted_key_memory_is_bounded() {
+        let cache = EntityCache::with_config(EntityCacheConfig {
+            max_entities_per_view: 1,
+            ..Default::default()
+        });
+        let remembered = EVICTED_KEYS_PER_CACHED_ENTITY;
+        for key in 0..=remembered + 1 {
+            cache
+                .upsert("v", &key.to_string(), json!({"id": key}))
+                .await;
+        }
+        // Key 0 was pushed out of the memory by the evictions after it; the
+        // most recent evictions are still remembered.
+        assert_eq!(
+            cache.upsert("v", "0", json!({"id": 0})).await,
+            CacheWrite::Created
+        );
+        assert!(matches!(
+            cache
+                .upsert("v", &remembered.to_string(), json!({"n": 1}))
+                .await,
+            CacheWrite::Refused { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn remembered_keys_are_refused_unless_held() {
+        let cache = EntityCache::new();
+        cache.upsert("tokens/list", "held", json!({"id": 1})).await;
+        cache
+            .remember_evicted("tokens/list", ["held".to_string(), "gone".to_string()])
+            .await;
+        assert_eq!(
+            cache.upsert("tokens/list", "held", json!({"n": 1})).await,
+            CacheWrite::Merged
+        );
+        assert!(matches!(
+            cache.upsert("tokens/list", "gone", json!({"n": 1})).await,
+            CacheWrite::Refused { .. }
+        ));
+        // Other views are unaffected.
+        assert_eq!(
+            cache.upsert("tokens/state", "gone", json!({"id": 2})).await,
+            CacheWrite::Created
+        );
     }
 
     #[tokio::test]
