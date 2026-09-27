@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## [0.24.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.23.1...a4-cli-v0.24.0) (2026-09-27)
+
+
+### Features
+
+* **cli:** warn about retired hosted stack versions and keep installing them ([5f4b69a](https://github.com/AreteA4/arete/commit/5f4b69ae45762f2eaf0dedf572ae3229428ed7fe))
+* **cli:** warn about retired hosted stack versions and keep installing them ([1c16ee7](https://github.com/AreteA4/arete/commit/1c16ee71bcb8d10cd880edd98baf48ef9eefc2a1))
+
+
+### Bug Fixes
+
+* **cli:** leave stacks on their own deployment out of retirement warnings ([ff3b02e](https://github.com/AreteA4/arete/commit/ff3b02e31baf9fbd3bd77c28079d42e6643448f8))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.23.1 to 0.24.0
+    * arete-mcp bumped from 0.23.1 to 0.24.0
+
 ## [0.23.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.23.0...a4-cli-v0.23.1) (2026-09-25)
 
 
