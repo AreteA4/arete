@@ -436,9 +436,11 @@ fn validate_origins(origins: &[String]) -> Result<String> {
     Ok(normalized)
 }
 
-/// Resolve `--env-file`. Relative paths are taken from the project directory
-/// and must stay inside it; an absolute path is an explicit choice and is
-/// used as given.
+/// Resolve `--env-file`. A relative path is taken from the project directory
+/// and must stay inside it, including through symlinked directories, and must
+/// not name a symlink; it resolves to its real location. An absolute path is
+/// an explicit choice and is used as given, following a symlink to the file
+/// it points to.
 fn resolve_env_file(root: &Path, raw: &str) -> Result<PathBuf> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -446,26 +448,63 @@ fn resolve_env_file(root: &Path, raw: &str) -> Result<PathBuf> {
     }
     let path = Path::new(raw);
     if path.is_absolute() {
+        if is_symlink(path) {
+            return std::fs::canonicalize(path).map_err(|error| {
+                anyhow::anyhow!("--env-file {raw} is a symlink that cannot be followed: {error}")
+            });
+        }
         return Ok(path.to_path_buf());
     }
-    if path
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
-    {
-        anyhow::bail!(
+    let project = std::fs::canonicalize(root).map_err(|error| {
+        anyhow::anyhow!(
+            "Failed to resolve the project directory {}: {error}",
+            root.display()
+        )
+    })?;
+    let outside = || {
+        anyhow::anyhow!(
             "--env-file {raw} points outside the project directory ({}). Pass an absolute path to write there explicitly.",
-            std::fs::canonicalize(root)
-                .unwrap_or_else(|_| root.to_path_buf())
-                .display()
-        );
+            project.display()
+        )
+    };
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => parts.push(part),
+            Component::CurDir => {}
+            _ => return Err(outside()),
+        }
     }
-    let resolved = root.join(path);
-    if std::fs::symlink_metadata(&resolved).is_ok_and(|meta| meta.file_type().is_symlink()) {
+    let Some(file_name) = parts.pop() else {
+        anyhow::bail!("--env-file {raw} must name a file");
+    };
+    // The lexical check alone would follow a symlinked directory out of the
+    // project: resolve the directory and check where it really is.
+    let parent = parts
+        .iter()
+        .fold(root.to_path_buf(), |directory, part| directory.join(part));
+    let directory = match std::fs::canonicalize(&parent) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => anyhow::bail!(
+            "--env-file {raw}: directory {} does not exist",
+            parent.display()
+        ),
+        Err(error) => anyhow::bail!("Failed to resolve --env-file {raw}: {error}"),
+    };
+    if !directory.starts_with(&project) {
+        return Err(outside());
+    }
+    let resolved = directory.join(file_name);
+    if is_symlink(&resolved) {
         anyhow::bail!(
             "--env-file {raw} is a symlink; pass the absolute path of the file it points to"
         );
     }
     Ok(resolved)
+}
+
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
 }
 
 /// Read the current env file (if any) before the key is created, so a path
@@ -493,6 +532,47 @@ fn read_env_file(path: &Path) -> Result<Option<String>> {
             path.display()
         )),
     }
+}
+
+/// Replace the env file with `content` atomically: write a temporary file
+/// beside it and rename it over the original, so a failed write leaves every
+/// other variable in place. An existing file keeps its permissions (env files
+/// are often private); a new one gets the default mode.
+fn write_env_file(path: &Path, content: &str) -> io::Result<()> {
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary_name = std::ffi::OsString::from(".");
+    temporary_name.push(path.file_name().unwrap_or_default());
+    temporary_name.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let temporary = directory.join(temporary_name);
+    let permissions = match std::fs::metadata(path) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // Private until the original's permissions are applied.
+        #[cfg(unix)]
+        if permissions.is_some() {
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(content.as_bytes())?;
+        if let Some(permissions) = permissions {
+            file.set_permissions(permissions)?;
+        }
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 /// How an env file changed.
@@ -618,7 +698,7 @@ pub fn create_publishable_key(
         let result = if change == EnvChange::Unchanged {
             Ok(())
         } else {
-            std::fs::write(&path, content)
+            write_env_file(&path, &content)
         };
         (path, change, result)
     });
@@ -850,18 +930,79 @@ mod publishable_tests {
     #[test]
     fn env_file_paths_stay_in_the_project_unless_absolute() {
         let dir = tempfile::tempdir().unwrap();
+        let project = std::fs::canonicalize(dir.path()).unwrap();
         assert_eq!(
             resolve_env_file(dir.path(), ".env.local").unwrap(),
-            dir.path().join(".env.local")
+            project.join(".env.local")
+        );
+        std::fs::create_dir_all(dir.path().join("apps/web")).unwrap();
+        assert_eq!(
+            resolve_env_file(dir.path(), "./apps/web/.env").unwrap(),
+            project.join("apps/web/.env")
         );
         assert!(resolve_env_file(dir.path(), "../.env").is_err());
         assert!(resolve_env_file(dir.path(), "web/../../.env").is_err());
         assert!(resolve_env_file(dir.path(), " ").is_err());
+        assert!(resolve_env_file(dir.path(), ".").is_err());
         let absolute = dir.path().join("elsewhere.env");
         assert_eq!(
             resolve_env_file(Path::new("/unrelated"), absolute.to_str().unwrap()).unwrap(),
             absolute
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn env_file_paths_cannot_leave_the_project_through_a_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let project = std::fs::canonicalize(dir.path()).unwrap();
+        symlink(outside.path(), dir.path().join("web")).unwrap();
+        for raw in ["web/.env", "./web/.env"] {
+            let error = resolve_env_file(dir.path(), raw).unwrap_err().to_string();
+            assert!(error.contains("outside the project directory"), "{error}");
+        }
+        std::fs::create_dir_all(dir.path().join("apps/site")).unwrap();
+        symlink(dir.path().join("apps"), dir.path().join("linked")).unwrap();
+        assert_eq!(
+            resolve_env_file(dir.path(), "linked/site/.env").unwrap(),
+            project.join("apps/site/.env"),
+            "a symlinked directory that stays inside the project is fine"
+        );
+        symlink(outside.path().join(".env"), dir.path().join(".env.local")).unwrap();
+        let error = resolve_env_file(dir.path(), ".env.local")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("is a symlink"), "{error}");
+        // An absolute path is explicit: it follows the link.
+        std::fs::write(outside.path().join(".env"), "A=1\n").unwrap();
+        let linked = dir.path().join(".env.local");
+        assert_eq!(
+            resolve_env_file(dir.path(), linked.to_str().unwrap()).unwrap(),
+            std::fs::canonicalize(outside.path().join(".env")).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rewriting_an_env_file_keeps_its_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env.local");
+        for mode in [0o600, 0o640, 0o604] {
+            std::fs::write(&path, "SECRET=keep\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            write_env_file(&path, "SECRET=keep\nA=1\n").unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "SECRET=keep\nA=1\n"
+            );
+            let actual = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(actual, mode, "{actual:o} != {mode:o}");
+        }
+        let entries = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(entries, 1, "no temporary file is left behind");
     }
 
     #[test]
@@ -965,11 +1106,22 @@ mod publishable_tests {
         let sandbox = Sandbox::new(&server);
         let env = sandbox.dir.path().join(".env.local");
         std::fs::write(&env, "OTHER=1\nVITE_ARETE_PUBLISHABLE_KEY=hspk_old\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&env, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         create_publishable_key(args(Some(".env.local")), &sandbox.config(), true).unwrap();
         assert_eq!(
             std::fs::read_to_string(&env).unwrap(),
             "OTHER=1\nVITE_ARETE_PUBLISHABLE_KEY=hspk_fresh\n"
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&env).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "a private env file stays private");
+        }
         let body: serde_json::Value = serde_json::from_str(&server.request().body).unwrap();
         assert_eq!(
             body["origin_allowlist"],
@@ -989,6 +1141,16 @@ mod publishable_tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("outside the project"), "{error}");
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(outside.path(), sandbox.dir.path().join("web")).unwrap();
+            let error = create_publishable_key(args(Some("web/.env")), &sandbox.config(), true)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("outside the project"), "{error}");
+            assert!(!outside.path().join(".env").exists());
+        }
     }
 }
 

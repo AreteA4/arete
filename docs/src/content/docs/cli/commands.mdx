@@ -489,6 +489,8 @@ detects in the project directory (the directory holding `arete.toml`):
 | Anything else                                          | `ARETE_PUBLISHABLE_KEY`             |
 
 `--env-file` changes no other line in the file and never prints its contents.
+It replaces the file atomically and keeps its permissions. A relative path may
+not leave the project through a symlinked directory or name a symlink.
 The path is checked before the key is created. The command never prompts, so
 it is safe to script, and exits non-zero when the API call fails (as does
 `list`).
