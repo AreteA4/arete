@@ -6082,6 +6082,8 @@ targets = ["typescript"]
                 (200, composed_resolution('7', '8')),
                 // spl-token moved to another release.
                 (200, composed_resolution('7', '9')),
+                // Same ore stack release, but its program SDK moved.
+                (200, composed_resolution('6', '8')),
                 (200, composed_resolution('7', '9')),
             ],
             false,
@@ -6109,15 +6111,17 @@ targets = ["typescript"]
         );
         assert_eq!(fs::read(&lock_path).unwrap(), before);
 
-        let error = install_project(&manifest, locked).expect_err("a part moved");
-        sandbox.request();
-        let text = format!("{error:#}");
-        assert!(
-            text.contains("program 'spl-token' of composed stack 'ore-plus-token'"),
-            "{text}"
-        );
-        assert!(text.contains("a4 update stack ore-plus-token"), "{text}");
-        assert_eq!(fs::read(&lock_path).unwrap(), before, "lock unchanged");
+        for expected in [
+            "program 'spl-token' of composed stack 'ore-plus-token'",
+            "integrity failure for composed stack 'ore-plus-token'",
+        ] {
+            let error = install_project(&manifest, locked).expect_err("a part moved");
+            sandbox.request();
+            let text = format!("{error:#}");
+            assert!(text.contains(expected), "{text}");
+            assert!(text.contains("a4 update stack ore-plus-token"), "{text}");
+            assert_eq!(fs::read(&lock_path).unwrap(), before, "lock unchanged");
+        }
 
         install_project(
             &manifest,
@@ -6370,6 +6374,125 @@ targets = ["typescript"]
     // ---------------------------------------------------------------------
     // Review fixes: composition edits, older locks, registry extensionApi.
     // ---------------------------------------------------------------------
+
+    const ORE_WITH_OVERRIDE: &str = r#"
+[authoring.stacks.ore-sdk]
+live.ore = { stack = "ore", version = "^1" }
+programs = [{ package = "ore", version = "^1" }]
+
+[dependencies.stacks.ore-sdk]
+source = { workspace = "ore-sdk" }
+"#;
+
+    #[test]
+    fn removing_an_explicit_program_re_resolves_it_from_the_stack() {
+        // The stack references ore program SDK release '7' (or, second, only
+        // embeds the core program); the explicit entry pins release '8'.
+        for stack in [
+            ore_stack_with_program_sdk('7', "1.0.2", vec![]),
+            ore_stack_dependency(Some(hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4))),
+        ] {
+            let sandbox = RegistrySandbox::new(
+                vec![
+                    (
+                        200,
+                        resolution(vec![
+                            stack.clone(),
+                            ore_program_dependency('8', "1.0.3", vec![]),
+                        ]),
+                    ),
+                    (200, resolution(vec![stack.clone()])),
+                    (200, resolution(vec![stack.clone()])),
+                ],
+                false,
+            );
+            let manifest = typescript_project(&sandbox, ORE_WITH_OVERRIDE);
+            install_project(&manifest, InstallOptions::default()).expect("with the override");
+            sandbox.request();
+            let ore = |lock: &ProjectLock| {
+                lock.dependencies[0]
+                    .programs
+                    .iter()
+                    .find(|program| program.program_id == ORE_PROGRAM_ID)
+                    .unwrap()
+                    .package_release_hash
+                    .clone()
+            };
+            assert_eq!(ore(&lock_of(&manifest)), Some(release_hash('8')));
+
+            let text = fs::read_to_string(&manifest)
+                .unwrap()
+                .replace("programs = [{ package = \"ore\", version = \"^1\" }]\n", "");
+            fs::write(&manifest, text).unwrap();
+            install_project(&manifest, InstallOptions::default())
+                .expect("removing the override is an edit, not drift");
+            let request = request_body(&sandbox.request());
+            assert_eq!(
+                request["dependencies"][0]["lockedPackageReleaseHash"],
+                json!(release_hash('5')),
+                "the unchanged stack part stays locked"
+            );
+            let expected = stack["programs"][0]["programPackage"]["packageReleaseHash"]
+                .as_str()
+                .map(str::to_string);
+            let lock = lock_of(&manifest);
+            assert_eq!(ore(&lock), expected);
+            assert!(lock.dependencies[0]
+                .parts
+                .iter()
+                .all(|part| part.kind == DependencyKind::Stack));
+            install_project(
+                &manifest,
+                InstallOptions {
+                    locked: true,
+                    ..InstallOptions::default()
+                },
+            )
+            .expect("and the new lock is exact");
+            sandbox.request();
+        }
+    }
+
+    #[test]
+    fn a_moved_program_sdk_under_an_unchanged_locked_part_fails_even_when_parts_are_added() {
+        let memo = || program_package("memo", VOTE_PROGRAM_ID, "vote_program", 'c', "1.0.0");
+        let sandbox = RegistrySandbox::new(
+            vec![
+                (200, composed_resolution('7', '8')),
+                (
+                    200,
+                    resolution(vec![
+                        ore_stack_with_program_sdk('6', "1.0.2", vec![]),
+                        token_program('8'),
+                        memo(),
+                    ]),
+                ),
+            ],
+            false,
+        );
+        let manifest = typescript_project(&sandbox, COMPOSED_STACK);
+        install_project(&manifest, InstallOptions::default()).expect("install");
+        sandbox.request();
+        let before = fs::read(manifest.with_file_name("arete.lock")).unwrap();
+        let text = fs::read_to_string(&manifest).unwrap().replace(
+            "programs = [{ package = \"spl-token\", version = \"^4\" }]",
+            "programs = [{ package = \"spl-token\", version = \"^4\" }, { package = \"memo\" }]",
+        );
+        fs::write(&manifest, text).unwrap();
+        let error = install_project(&manifest, InstallOptions::default())
+            .expect_err("the locked ore stack release now references another program SDK");
+        sandbox.request();
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("integrity failure for composed stack 'ore-plus-token'"),
+            "{text}"
+        );
+        assert!(text.contains(&release_hash('6')), "{text}");
+        assert_eq!(
+            fs::read(manifest.with_file_name("arete.lock")).unwrap(),
+            before
+        );
+    }
 
     /// arete.lock as a CLI that did not resolve program SDK identities wrote
     /// it: no program package releases, and only legacy extension hashes.

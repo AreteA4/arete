@@ -734,7 +734,9 @@ fn request_alias(value: &str) -> String {
 
 /// Resolves and composes `[authoring.stacks.<name>]` for the dependency
 /// `dependency`. `previous` is the dependency's reusable lock entry: its
-/// registry parts are requested at exactly their locked releases.
+/// registry parts are requested at exactly their locked releases, and a
+/// program SDK that moved under a locked source stack is an integrity
+/// failure rather than an update.
 pub(crate) fn resolve_composition(
     manifest: &ProjectManifest,
     name: &str,
@@ -881,6 +883,19 @@ pub(crate) fn resolve_composition(
             PendingProgram::File { source, artifact } => ProgramPart::File { source, artifact },
         })
         .collect();
+    if let Some(previous) = previous {
+        for live in &lives {
+            if let LivePartSource::Registry { resolved, .. } = &live.source {
+                verify_locked_stack_program_sdks(
+                    dependency,
+                    &live.alias,
+                    resolved,
+                    &requests,
+                    previous,
+                )?;
+            }
+        }
+    }
     compose_parts(name, lives, programs)
 }
 
@@ -914,6 +929,68 @@ fn normalized(path: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// A stack part requested at its locked release must bring the program SDK
+/// releases arete.lock pins for the programs it provided: one that moved
+/// underneath the locked stack release is an integrity failure, as it is for
+/// an installed stack. A program the lock pinned from an explicit `programs`
+/// part was not this stack's, so editing that part away re-resolves it
+/// instead, and a program the lock pins no program SDK release for pins
+/// nothing to compare.
+fn verify_locked_stack_program_sdks(
+    dependency: &str,
+    alias: &str,
+    resolved: &ResolvedRegistryDependency,
+    requests: &[RegistryDependencyRequest],
+    previous: &LockedDependency,
+) -> Result<()> {
+    let ResolvedRegistryDependency::Stack {
+        package, programs, ..
+    } = resolved
+    else {
+        return Ok(());
+    };
+    let locked = requests.iter().any(|request| {
+        request.kind == DependencyKind::Stack
+            && request.alias == request_alias(alias)
+            && request.locked_package_release_hash.is_some()
+    });
+    if !locked {
+        return Ok(());
+    }
+    let explicit = previous
+        .parts
+        .iter()
+        .filter(|part| part.kind == DependencyKind::Program)
+        .map(|part| part.artifact_hash.as_str())
+        .collect::<BTreeSet<_>>();
+    for program in programs {
+        let hash = program.definition.program_spec_hash.as_str();
+        if explicit.contains(hash) {
+            continue;
+        }
+        let Some(pinned) = previous
+            .programs
+            .iter()
+            .find(|locked| locked.program_spec_hash == hash)
+            .and_then(|locked| locked.package_release_hash.as_deref())
+        else {
+            continue;
+        };
+        let resolved = program
+            .program_package
+            .as_ref()
+            .map(|package| package.package_release_hash.as_str());
+        if resolved != Some(pinned) {
+            bail!(
+                "arete.lock integrity failure for composed stack '{dependency}': the locked release of stack '{package}' (live '{alias}') pins program {} to program SDK release {pinned}, but the registry now returns {}. Nothing was changed; run `a4 update stack {dependency}` only if you intend to advance",
+                program.definition.program_id,
+                resolved.unwrap_or("no program SDK release"),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Writes a composed stack's StackManifest, LiveSpecs and ProgramSpecs to
