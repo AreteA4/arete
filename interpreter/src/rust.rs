@@ -2954,6 +2954,11 @@ pub struct RustProgramReadConfig {
 pub struct RustCompositionConfig {
     pub stack: RustStackConfig,
     pub live_urls: BTreeMap<String, String>,
+    /// The served version of an alias whose URL is a deployment of another
+    /// StackManifest, such as a composed stack's alias reading its source
+    /// stack's deployment. Other bound aliases serve their own alias of this
+    /// manifest.
+    pub live_releases: BTreeMap<String, crate::public_artifacts::StackRelease>,
 }
 
 #[derive(Debug, Clone)]
@@ -3230,7 +3235,7 @@ pub fn compile_public_artifacts_v2(
 /// module that preserves alias boundaries instead of flattening views/adapters.
 ///
 /// Each alias bound to a URL in `live_urls` is generated with its served
-/// version; unbound aliases get none.
+/// version (overridden by `live_releases`); unbound aliases get none.
 pub fn compile_composed_public_artifacts_v2(
     programs: &[arete_artifacts::ProgramSpecArtifact],
     live_specs: &[(String, arete_artifacts::LiveSpecArtifactV2)],
@@ -3256,10 +3261,15 @@ pub fn compile_composed_public_artifacts_v2(
         let mut live_config = config.stack.clone();
         live_config.module_mode = true;
         live_config.url = config.live_urls.get(&live.alias).cloned();
-        live_config.release = live_config
-            .url
-            .is_some()
-            .then(|| crate::public_artifacts::StackRelease::for_alias(manifest, &live.alias));
+        live_config.release = live_config.url.is_some().then(|| {
+            config
+                .live_releases
+                .get(&live.alias)
+                .cloned()
+                .unwrap_or_else(|| {
+                    crate::public_artifacts::StackRelease::for_alias(manifest, &live.alias)
+                })
+        });
         let output =
             compile_stack_spec_with_view_selection(live.stack_spec, Some(live_config), true)?;
         live_stacks.push(RustAliasedStackOutput {

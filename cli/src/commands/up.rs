@@ -51,6 +51,16 @@ enum DeploymentArtifacts {
         cache_root: PathBuf,
         locked: Box<LockedDependency>,
     },
+    /// A composed `[authoring.stacks]` entry, deployed from the artifacts
+    /// `a4 install` wrote under `.arete/compositions/<name>/`, which match the
+    /// StackManifest `locked` pins. `dependents` are the stack dependencies
+    /// whose SDK reads it.
+    Composed {
+        path: PathBuf,
+        artifact_roots: Vec<PathBuf>,
+        locked: Box<LockedDependency>,
+        dependents: Vec<String>,
+    },
 }
 
 impl LocalDeploymentSource {
@@ -63,21 +73,43 @@ impl LocalDeploymentSource {
             DeploymentArtifacts::Installed { cache_root, locked } => {
                 load_installed_artifact_stack(cache_root, locked)
             }
+            DeploymentArtifacts::Composed {
+                path,
+                artifact_roots,
+                locked,
+                ..
+            } => {
+                let stack = load_local_artifact_stack_with_roots(path, artifact_roots)?;
+                if locked.stack_manifest_hash.as_deref() != Some(stack.manifest_hash.as_str()) {
+                    anyhow::bail!(
+                        "{} is not the composed StackManifest arete.lock pins; run `a4 install` to rewrite it",
+                        path.display()
+                    );
+                }
+                Ok(stack)
+            }
         }
     }
 
-    fn installed_alias(&self) -> Option<&str> {
+    /// The stack dependencies whose generated SDK reads this deployment.
+    fn sdk_aliases(&self) -> Vec<&str> {
         match &self.artifacts {
-            DeploymentArtifacts::Installed { locked, .. } => Some(&locked.alias),
-            DeploymentArtifacts::Files { .. } => None,
+            DeploymentArtifacts::Installed { locked, .. } => vec![locked.alias.as_str()],
+            DeploymentArtifacts::Composed { dependents, .. } => {
+                dependents.iter().map(String::as_str).collect()
+            }
+            DeploymentArtifacts::Files { .. } => Vec::new(),
         }
     }
 
-    /// The Program Releases an installed stack's arete.lock pins. A
-    /// StackManifest file pins none: the platform selects its releases.
+    /// The Program Releases an installed or composed stack's arete.lock
+    /// pins. A StackManifest file pins none: the platform selects its
+    /// releases.
     fn release_pins(&self) -> Option<ReleasePins<'_>> {
-        let DeploymentArtifacts::Installed { locked, .. } = &self.artifacts else {
-            return None;
+        let locked = match &self.artifacts {
+            DeploymentArtifacts::Installed { locked, .. }
+            | DeploymentArtifacts::Composed { locked, .. } => locked,
+            DeploymentArtifacts::Files { .. } => return None,
         };
         Some(ReleasePins {
             alias: &locked.alias,
@@ -1054,8 +1086,15 @@ pub fn up(
                 println!("{}", serde_json::to_string(&result)?);
             }
         } else {
-            if let (Some(alias), Some(result)) = (source.installed_alias(), result.as_ref()) {
-                point_installed_sdk_at_deployment(config_path, alias, branch.as_deref(), result);
+            if let Some(result) = result.as_ref() {
+                for alias in source.sdk_aliases() {
+                    point_installed_sdk_at_deployment(
+                        config_path,
+                        alias,
+                        branch.as_deref(),
+                        result,
+                    );
+                }
             }
             println!();
         }
@@ -1101,8 +1140,11 @@ fn resolve_local_deployment_sources(
         .iter()
         .filter(|(name, _)| stack_name.is_none_or(|target| target == name.as_str()))
         .map(|(name, authored)| {
-            let path =
-                std::fs::canonicalize(manifest.root.join(&authored.manifest)).map_err(|error| {
+            if authored.is_composed() {
+                return composed_deployment_source(&manifest, name, authored);
+            }
+            let path = std::fs::canonicalize(manifest.root.join(authored.manifest_path(name)?))
+                .map_err(|error| {
                     anyhow::anyhow!("Failed to resolve authored StackManifest '{name}': {error}")
                 })?;
             let artifact_roots = if authored.artifact_roots.is_empty() {
@@ -1194,6 +1236,50 @@ fn point_installed_sdk_at_deployment(
             ui::symbols::WARNING.yellow()
         ),
     }
+}
+
+/// A composed `[authoring.stacks]` entry deploys the StackManifest a fresh
+/// arete.lock pins for a dependency on it, from the artifacts `a4 install`
+/// wrote for it.
+fn composed_deployment_source(
+    manifest: &ProjectManifest,
+    name: &str,
+    authored: &crate::project::manifest::AuthoringStackV1,
+) -> Result<LocalDeploymentSource> {
+    let source = format!("workspace:{name}");
+    let lock_path = manifest.root.join("arete.lock");
+    let lock = ProjectLock::load_optional(&lock_path)?
+        .filter(|lock| lock.is_fresh(&manifest.manifest_hash));
+    let dependents = lock
+        .iter()
+        .flat_map(|lock| &lock.dependencies)
+        .filter(|entry| entry.kind == DependencyKind::Stack && entry.source == source)
+        .collect::<Vec<_>>();
+    let Some(locked) = dependents.first() else {
+        anyhow::bail!(
+            "Composed stack '{name}' is not installed: `a4 up` deploys what arete.lock pins. Declare it under [dependencies.stacks] with `source = {{ workspace = \"{name}\" }}` (or run `a4 stack compose --name {name} ... --install`), run `a4 install`, then deploy it"
+        );
+    };
+    let directory = crate::project::composition::composition_dir(&manifest.root, name);
+    let path = directory.join(format!("{name}.stack-manifest.json"));
+    if !path.is_file() {
+        anyhow::bail!(
+            "Composed stack '{name}' has no artifacts at {}; run `a4 install` to write them",
+            path.display()
+        );
+    }
+    Ok(LocalDeploymentSource {
+        artifacts: DeploymentArtifacts::Composed {
+            path,
+            artifact_roots: vec![directory],
+            locked: Box::new((*locked).clone()),
+            dependents: dependents.iter().map(|entry| entry.alias.clone()).collect(),
+        },
+        deployment_name: authored
+            .deployment_name
+            .clone()
+            .or_else(|| Some(name.to_string())),
+    })
 }
 
 fn installed_deployment_source(
@@ -2740,7 +2826,7 @@ mod tests {
         let sources = project.resolve(Some("ore"), false).unwrap();
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].deployment_name.as_deref(), Some("ore"));
-        assert_eq!(sources[0].installed_alias(), Some("ore"));
+        assert_eq!(sources[0].sdk_aliases(), vec!["ore"]);
 
         let stack = sources[0].load().unwrap();
         let lock = ProjectLock::load(project.root.join("arete.lock")).unwrap();
@@ -2813,6 +2899,87 @@ mod tests {
         assert!(error.contains("a4 update stack ore"), "{error}");
         // A StackManifest file pins nothing; the platform's selection stands.
         require_pinned_releases(None, &selection(&other)).unwrap();
+    }
+
+    #[test]
+    fn a_composed_stack_deploys_the_artifacts_its_install_pinned() {
+        let root = std::env::temp_dir().join(format!("arete-up-composed-{}", uuid::Uuid::new_v4()));
+        let artifacts = root.join("artifacts");
+        std::fs::create_dir_all(&artifacts).unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("stacks/ore/.arete");
+        for file in [
+            "OreStream.live-spec.json",
+            "ore.program-spec.json",
+            "entropy.program-spec.json",
+        ] {
+            std::fs::copy(fixture.join(file), artifacts.join(file)).unwrap();
+        }
+        let config = root.join("arete.toml");
+        std::fs::write(
+            &config,
+            r#"manifest_version = 1
+
+[project]
+name = "up-composed"
+
+[sdk]
+targets = ["typescript"]
+
+[authoring.stacks.ore-local]
+live.ore = { path = "./artifacts/OreStream.live-spec.json", views = ["OreRound/latest"] }
+programs = [{ path = "./artifacts/ore.program-spec.json" }, { path = "./artifacts/entropy.program-spec.json" }]
+deployment_name = "ore-local-prod"
+
+[dependencies.stacks.mine]
+source = { workspace = "ore-local" }
+"#,
+        )
+        .unwrap();
+        let config = config.display().to_string();
+        let resolve = || resolve_local_deployment_sources(&config, Some("ore-local"), None, false);
+        let error = resolve().unwrap_err().to_string();
+        assert!(error.contains("is not installed"), "{error}");
+
+        crate::project::installer::install_project(
+            &config,
+            crate::project::installer::InstallOptions::default(),
+        )
+        .expect("a composition of local files installs offline");
+        let sources = resolve().unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].sdk_aliases(), vec!["mine"]);
+        assert_eq!(
+            sources[0].deployment_name.as_deref(),
+            Some("ore-local-prod")
+        );
+        assert!(sources[0].release_pins().is_some());
+        let stack = sources[0].load().unwrap();
+        let lock = ProjectLock::load(root.join("arete.lock")).unwrap();
+        assert_eq!(
+            Some(stack.manifest_hash.as_str()),
+            lock.dependencies[0].stack_manifest_hash.as_deref()
+        );
+        assert_eq!(stack.stack_manifest.payload.name, "ore-local");
+        assert_eq!(stack.program_specs.len(), 2);
+
+        // Artifacts that no longer match the lock are not deployed.
+        let DeploymentArtifacts::Composed { path, .. } = &sources[0].artifacts else {
+            panic!("composed source");
+        };
+        let mut other: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        other["payload"]["name"] = serde_json::json!("changed");
+        let changed = arete_artifacts::StackManifestArtifactV2::new(
+            serde_json::from_value(other["payload"].clone()).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(path, serde_json::to_vec(&changed).unwrap()).unwrap();
+        let error = sources[0].load().unwrap_err().to_string();
+        assert!(error.contains("a4 install"), "{error}");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

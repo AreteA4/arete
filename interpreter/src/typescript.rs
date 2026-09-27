@@ -3509,6 +3509,11 @@ pub struct TypeScriptLiveEndpoints {
 pub struct TypeScriptCompositionConfig {
     pub stack: TypeScriptStackConfig,
     pub live_endpoints: BTreeMap<String, TypeScriptLiveEndpoints>,
+    /// The served version of an alias whose endpoint is a deployment of
+    /// another StackManifest, such as a composed stack's alias reading its
+    /// source stack's deployment. Other bound aliases serve their own alias
+    /// of this manifest.
+    pub live_releases: BTreeMap<String, crate::public_artifacts::StackRelease>,
     pub live_module_imports: BTreeMap<String, String>,
     pub program_module_imports: BTreeMap<String, String>,
     /// Program SDK entry modules keyed by ProgramSpec hash (relative import
@@ -4010,7 +4015,8 @@ pub fn compile_public_artifacts_v2(
 /// manifest-level `createSession` definition that preserves exact alias keys.
 ///
 /// Each alias bound to a WebSocket endpoint in `live_endpoints` is generated
-/// with its served version (`release`); unbound aliases get none.
+/// with its served version (`release`, overridden by `live_releases`);
+/// unbound aliases get none.
 pub fn compile_composed_public_artifacts_v2(
     programs: &[arete_artifacts::ProgramSpecArtifact],
     live_specs: &[(String, arete_artifacts::LiveSpecArtifactV2)],
@@ -4130,10 +4136,15 @@ pub fn compile_composed_public_artifacts_v2(
             stack_config.websocket_url = None;
             stack_config.http_url = None;
         }
-        stack_config.release = stack_config
-            .websocket_url
-            .is_some()
-            .then(|| crate::public_artifacts::StackRelease::for_alias(manifest, &live.alias));
+        stack_config.release = stack_config.websocket_url.is_some().then(|| {
+            config
+                .live_releases
+                .get(&live.alias)
+                .cloned()
+                .unwrap_or_else(|| {
+                    crate::public_artifacts::StackRelease::for_alias(manifest, &live.alias)
+                })
+        });
         stack_config.programs =
             subset_program_configs(&live.stack_spec, config.stack.programs.as_deref())?;
         for program in &live.stack_spec.program_specs {

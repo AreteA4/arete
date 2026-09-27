@@ -57,6 +57,13 @@ struct RemoteStackAst {
     hosted_extensions: Option<ResolvedExtensionsArtifact>,
     programs: Vec<RegistryProgramInstallResponse>,
     require_managed_gateway: bool,
+    /// The served version each hosted alias's deployment names, when it is
+    /// not this stack's own: a composed alias reads its source stack's
+    /// deployment, which serves the source StackManifest.
+    live_releases: BTreeMap<String, arete_interpreter::public_artifacts::StackRelease>,
+    /// A composed stack: programs from local ProgramSpec files have no
+    /// program SDK descriptor, and generate from their ProgramSpec.
+    composed: bool,
 }
 
 /// One LiveSpec's stream endpoints in the user's own deployment, in
@@ -447,12 +454,18 @@ impl ResolvedStackSource {
         let Self::Remote(stack) = self else {
             return None;
         };
-        match stack.live_bindings.as_slice() {
-            [live] if websocket_url == Some(live.binding.websocket_endpoint.as_str()) => {
-                Some(arete_interpreter::public_artifacts::StackRelease {
-                    stack_manifest_hash: stack.manifest_hash.clone(),
-                    live_alias: live.alias.clone(),
-                })
+        match (stack.live_bindings.as_slice(), stack.live_specs.as_slice()) {
+            ([live], [_]) if websocket_url == Some(live.binding.websocket_endpoint.as_str()) => {
+                Some(
+                    stack
+                        .live_releases
+                        .get(&live.alias)
+                        .cloned()
+                        .unwrap_or_else(|| arete_interpreter::public_artifacts::StackRelease {
+                            stack_manifest_hash: stack.manifest_hash.clone(),
+                            live_alias: live.alias.clone(),
+                        }),
+                )
             }
             _ => None,
         }
@@ -677,6 +690,21 @@ impl ResolvedStackSource {
         }
     }
 
+    /// The served version of each alias bound to a deployment of another
+    /// StackManifest (a composed alias reading its source stack). A
+    /// deployment of this stack itself (arete.toml `endpoints`) serves this
+    /// StackManifest, so then there are none.
+    fn composition_live_releases(
+        &self,
+    ) -> BTreeMap<String, arete_interpreter::public_artifacts::StackRelease> {
+        match self {
+            Self::Remote(stack) if stack.deployment_endpoints.is_empty() => {
+                stack.live_releases.clone()
+            }
+            _ => BTreeMap::new(),
+        }
+    }
+
     fn typescript_programs(
         &self,
         stack_spec: &arete_interpreter::ast::SerializableStackSpec,
@@ -711,6 +739,17 @@ impl ResolvedStackSource {
                         .find(|install| install.definition.program_spec_hash == hash)
                     {
                         Some(install) => typescript_program_config_from_registry(install),
+                        // A composed stack's program from a local ProgramSpec
+                        // file generates as a local stack's program does.
+                        None if stack.composed => {
+                            arete_hash::OssProgramIdentityV1::new(program_spec.clone())
+                                .map(|identity| {
+                                    arete_interpreter::typescript::TypeScriptProgramConfig::from(
+                                        &identity,
+                                    )
+                                })
+                                .map_err(|error| anyhow::anyhow!(error))
+                        }
                         None => Err(anyhow::anyhow!(
                             "Hosted stack '{}' has no program descriptor for ProgramSpec {hash}",
                             stack.stack
@@ -1220,59 +1259,16 @@ pub(crate) fn generate_project_registry_dependency(
                     options.alias
                 );
             }
-            let stack_manifest: arete_artifacts::StackManifestArtifactV2 =
-                serde_json::from_value(stack_manifest.clone())
-                    .context("Registry resolver returned an invalid V2 StackManifest")?;
-            stack_manifest
-                .validate()
-                .context("Registry resolver returned an invalid V2 StackManifest")?;
-            if stack_manifest.artifact_hash.to_string() != *stack_manifest_hash {
-                anyhow::bail!("Resolved StackManifest hash does not match its artifact");
-            }
-            if stack_manifest.payload.live_specs.len() != live_specs.len() {
-                anyhow::bail!("Resolved LiveSpec vector does not cover the StackManifest");
-            }
-            let mut verified_live_specs = Vec::with_capacity(live_specs.len());
-            for (position, (reference, resolved)) in stack_manifest
-                .payload
-                .live_specs
-                .iter()
-                .zip(live_specs)
-                .enumerate()
-            {
-                if reference.alias != resolved.alias
-                    || reference.artifact_hash.to_string() != resolved.artifact_hash
-                {
-                    anyhow::bail!(
-                        "Resolved LiveSpec alias/hash mismatch at position {}",
-                        position
-                    );
-                }
-                let artifact: arete_artifacts::LiveSpecArtifactV2 =
-                    serde_json::from_value(resolved.artifact.clone()).with_context(|| {
-                        format!("Resolved LiveSpec '{}' is invalid", resolved.alias)
-                    })?;
-                artifact.validate().with_context(|| {
-                    format!("Resolved LiveSpec '{}' is invalid", resolved.alias)
-                })?;
-                if artifact.artifact_hash.to_string() != resolved.artifact_hash {
-                    anyhow::bail!(
-                        "Resolved LiveSpec '{}' artifact hash is incorrect",
-                        resolved.alias
-                    );
-                }
-                verified_live_specs.push((resolved.alias.clone(), artifact));
-            }
-            let program_specs = programs
-                .iter()
-                .map(program_spec_artifact_from_registry)
-                .collect::<Result<Vec<_>>>()?;
-            arete_artifacts::resolve_stack_composition_v2(
-                &stack_manifest,
-                &verified_live_specs,
-                &program_specs,
-            )
-            .context("Resolved registry stack has an invalid artifact closure")?;
+            let VerifiedRegistryStack {
+                stack_manifest,
+                live_specs: verified_live_specs,
+                program_specs,
+            } = verify_registry_stack_artifacts(
+                stack_manifest_hash,
+                stack_manifest,
+                live_specs,
+                programs,
+            )?;
             // Endpoints are transport state, not lock identity: they come from
             // the stack's explicit delivery mode on every install.
             let transport = project_stack_transport(
@@ -1306,10 +1302,138 @@ pub(crate) fn generate_project_registry_dependency(
                 hosted_extensions,
                 programs,
                 require_managed_gateway: transport.require_managed_gateway,
+                live_releases: BTreeMap::new(),
+                composed: false,
             }));
             generate_project_stack_source(&source, options)
         }
     }
+}
+
+/// A resolved registry stack's artifacts, each checked against the identity
+/// the resolver pinned, forming a valid closure.
+pub(crate) struct VerifiedRegistryStack {
+    pub stack_manifest: arete_artifacts::StackManifestArtifactV2,
+    pub live_specs: AliasedLiveSpecs,
+    pub program_specs: Vec<arete_artifacts::ProgramSpecArtifact>,
+}
+
+/// Verifies a resolved registry stack: the StackManifest hashes to its pinned
+/// identity, each LiveSpec is the one the StackManifest names at its
+/// position, each program descriptor matches its ProgramSpec, and the whole
+/// composes.
+pub(crate) fn verify_registry_stack_artifacts(
+    stack_manifest_hash: &str,
+    stack_manifest: &serde_json::Value,
+    live_specs: &[crate::project::resolver::ResolvedLiveSpec],
+    programs: &[RegistryProgramInstallResponse],
+) -> Result<VerifiedRegistryStack> {
+    let stack_manifest: arete_artifacts::StackManifestArtifactV2 =
+        serde_json::from_value(stack_manifest.clone())
+            .context("Registry resolver returned an invalid V2 StackManifest")?;
+    stack_manifest
+        .validate()
+        .context("Registry resolver returned an invalid V2 StackManifest")?;
+    if stack_manifest.artifact_hash.to_string() != stack_manifest_hash {
+        anyhow::bail!("Resolved StackManifest hash does not match its artifact");
+    }
+    if stack_manifest.payload.live_specs.len() != live_specs.len() {
+        anyhow::bail!("Resolved LiveSpec vector does not cover the StackManifest");
+    }
+    let mut verified_live_specs = Vec::with_capacity(live_specs.len());
+    for (position, (reference, resolved)) in stack_manifest
+        .payload
+        .live_specs
+        .iter()
+        .zip(live_specs)
+        .enumerate()
+    {
+        if reference.alias != resolved.alias
+            || reference.artifact_hash.to_string() != resolved.artifact_hash
+        {
+            anyhow::bail!(
+                "Resolved LiveSpec alias/hash mismatch at position {}",
+                position
+            );
+        }
+        let artifact: arete_artifacts::LiveSpecArtifactV2 =
+            serde_json::from_value(resolved.artifact.clone())
+                .with_context(|| format!("Resolved LiveSpec '{}' is invalid", resolved.alias))?;
+        artifact
+            .validate()
+            .with_context(|| format!("Resolved LiveSpec '{}' is invalid", resolved.alias))?;
+        if artifact.artifact_hash.to_string() != resolved.artifact_hash {
+            anyhow::bail!(
+                "Resolved LiveSpec '{}' artifact hash is incorrect",
+                resolved.alias
+            );
+        }
+        verified_live_specs.push((resolved.alias.clone(), artifact));
+    }
+    let program_specs = programs
+        .iter()
+        .map(program_spec_artifact_from_registry)
+        .collect::<Result<Vec<_>>>()?;
+    arete_artifacts::resolve_stack_composition_v2(
+        &stack_manifest,
+        &verified_live_specs,
+        &program_specs,
+    )
+    .context("Resolved registry stack has an invalid artifact closure")?;
+    Ok(VerifiedRegistryStack {
+        stack_manifest,
+        live_specs: verified_live_specs,
+        program_specs,
+    })
+}
+
+/// Generates a composed stack like a workspace stack, except that every
+/// program uses its program SDK and each live alias whose source stack is
+/// hosted reads that stack's delivery, naming the source's served version
+/// in its sessions. arete.toml `endpoints` (a deployment `a4 up` made of the
+/// composed stack itself) replace every alias's stream endpoints.
+pub(crate) fn generate_project_composed_stack(
+    composed: &crate::project::composition::ComposedStack,
+    options: ProjectGenerationOptions<'_>,
+) -> Result<()> {
+    let deployment_endpoints = project_deployment_endpoints(
+        &composed.name,
+        &composed.stack_manifest,
+        options.stack_endpoints,
+    )?;
+    let programs = composed
+        .programs
+        .iter()
+        .map(|program| stack_program_for_target(program, &composed.name, options.target))
+        .collect::<Result<Vec<_>>>()?;
+    let source = ResolvedStackSource::Remote(Box::new(RemoteStackAst {
+        name: options.alias.to_string(),
+        stack: composed.name.clone(),
+        manifest_hash: composed.manifest_hash(),
+        program_specs: composed.program_specs.clone(),
+        live_specs: composed.live_specs.clone(),
+        live_bindings: composed
+            .hosted
+            .iter()
+            .map(|live| live.descriptor.clone())
+            .collect(),
+        live_releases: composed
+            .hosted
+            .iter()
+            .map(|live| (live.descriptor.alias.clone(), live.release.clone()))
+            .collect(),
+        deployment_endpoints,
+        stack_manifest: composed.stack_manifest.clone(),
+        chain_binding: composed.chain_binding.clone(),
+        transaction_binding: composed.transaction_binding.clone(),
+        exact_views: true,
+        sdk_name: options.alias.to_string(),
+        hosted_extensions: None,
+        programs,
+        require_managed_gateway: false,
+        composed: true,
+    }));
+    generate_project_stack_source(&source, options)
 }
 
 /// A stack program descriptor with its program SDK extension selected for
@@ -1453,6 +1577,7 @@ fn generate_project_stack_source(
                             release: None,
                         },
                         live_urls: source.composition_live_websocket_urls(),
+                        live_releases: source.composition_live_releases(),
                     }),
                 )
                 .map_err(|error| anyhow::anyhow!("Failed to compile Rust composition: {error}"))?;
@@ -1508,6 +1633,7 @@ fn generate_project_stack_source(
                             release: None,
                         },
                         live_urls: source.composition_live_websocket_urls(),
+                        live_releases: source.composition_live_releases(),
                     }),
                 )
                 .map_err(|error| {
@@ -3289,7 +3415,7 @@ fn check_gateway_binding(
     Ok(())
 }
 
-fn program_spec_artifact_from_registry(
+pub(crate) fn program_spec_artifact_from_registry(
     install: &RegistryProgramInstallResponse,
 ) -> Result<arete_artifacts::ProgramSpecArtifact> {
     let artifact: arete_artifacts::ProgramSpecArtifact =
@@ -3327,7 +3453,9 @@ fn hosted_program_modules(
     let ResolvedStackSource::Remote(remote) = source else {
         return Ok(Vec::new());
     };
-    if remote.programs.len() != stack_spec.idls.len() {
+    // Every hosted stack program has a descriptor; a composed stack's
+    // programs from local ProgramSpec files have none.
+    if !remote.composed && remote.programs.len() != stack_spec.idls.len() {
         return Err(anyhow::anyhow!(
             "Hosted program descriptor count mismatch: expected {}, received {}",
             stack_spec.idls.len(),
@@ -4882,6 +5010,7 @@ fn generate_typescript_composition_sdk(
             release: None,
         },
         live_endpoints: source.composition_live_endpoints(),
+        live_releases: source.composition_live_releases(),
         live_module_imports: live_module_imports.clone(),
         program_module_imports: program_module_imports.clone(),
         program_entry_imports: program_modules
@@ -5087,11 +5216,12 @@ fn render_hosted_composition_bindings(
     let ResolvedStackSource::Remote(stack) = source else {
         return Ok(None);
     };
+    let releases = source.composition_live_releases();
     let live_specs = stack
         .live_bindings
         .iter()
         .map(|live| {
-            serde_json::json!({
+            let mut binding = serde_json::json!({
                 "alias": live.alias,
                 "liveSpecHash": live.live_spec_hash,
                 "deploymentId": live.binding.deployment_id,
@@ -5100,7 +5230,15 @@ fn render_hosted_composition_bindings(
                 "websocketAuthPolicy": live.binding.websocket_auth_policy,
                 "queryAuthPolicy": live.binding.query_auth_policy,
                 "observedGeneration": live.binding.observed_generation,
-            })
+            });
+            // A composed alias reads another stack's deployment.
+            if let Some(release) = releases.get(&live.alias) {
+                binding["release"] = serde_json::json!({
+                    "stackManifestHash": release.stack_manifest_hash,
+                    "liveAlias": release.live_alias,
+                });
+            }
+            binding
         })
         .collect::<Vec<_>>();
     let value = serde_json::json!({
@@ -5248,6 +5386,7 @@ pub fn create_rust(
                     release: None,
                 },
                 live_urls,
+                live_releases: source.composition_live_releases(),
             }),
         )
         .map_err(|error| anyhow::anyhow!("Failed to compile Rust composition: {error}"))?;
@@ -5539,6 +5678,7 @@ pub fn create_python(
                     release: None,
                 },
                 live_urls,
+                live_releases: source.composition_live_releases(),
             }),
         )
         .map_err(|error| anyhow::anyhow!("Failed to compile Python composition: {error}"))?;
@@ -5795,6 +5935,8 @@ fn remote_stack_install(remote: RegistryStackInstallResponse) -> Result<RemoteSt
             .transpose()?,
         programs: remote.programs,
         require_managed_gateway: true,
+        live_releases: BTreeMap::new(),
+        composed: false,
     })
 }
 
@@ -9694,6 +9836,7 @@ mod tests {
                     ..Default::default()
                 },
                 live_urls: BTreeMap::new(),
+                live_releases: BTreeMap::new(),
             }),
         )
         .unwrap();
@@ -9716,6 +9859,7 @@ mod tests {
                     ..Default::default()
                 },
                 live_urls: BTreeMap::new(),
+                live_releases: BTreeMap::new(),
             }),
         )
         .unwrap();

@@ -145,8 +145,7 @@ impl ManifestV1 {
 
         for (name, stack) in &self.authoring.stacks {
             validate_alias(name, "authoring stack name")?;
-            validate_relative_artifact_path(&stack.manifest, ArtifactPathKind::StackManifest)?;
-            validate_artifact_roots(&stack.artifact_roots, name)?;
+            stack.validate(name)?;
             if stack
                 .deployment_name
                 .as_deref()
@@ -491,10 +490,19 @@ impl DependencyV1 {
         }
 
         if !self.endpoints.is_empty() {
+            // A registry stack, or a composed stack of this project: both
+            // generate from exact LiveSpecs a deployment of them serves.
+            let composed_workspace = matches!(
+                &self.source,
+                DependencySourceV1::Workspace(WorkspaceSourceV1 { workspace })
+                    if authoring.stacks.get(workspace).is_some_and(AuthoringStackV1::is_composed)
+            );
             if kind != DependencyKind::Stack
-                || !matches!(self.source, DependencySourceV1::Registry(_))
+                || !(matches!(self.source, DependencySourceV1::Registry(_)) || composed_workspace)
             {
-                bail!("dependency '{alias}' declares endpoints; only a registry stack can");
+                bail!(
+                    "dependency '{alias}' declares endpoints; only a registry stack or a composed [authoring.stacks] entry can"
+                );
             }
             for (live, endpoints) in &self.endpoints {
                 validate_live_alias(live, alias)?;
@@ -597,14 +605,294 @@ pub struct AuthoringV1 {
     pub programs: BTreeMap<String, AuthoringProgramV1>,
 }
 
+/// One `[authoring.stacks.<name>]` entry: either a prebuilt StackManifest
+/// (`manifest`, with `artifact_roots`) or a composition of parts (`live` and
+/// `programs`), never both.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthoringStackV1 {
-    pub manifest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<String>,
     #[serde(default)]
     pub artifact_roots: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment_name: Option<String>,
+    /// Composed live views, by the live alias they take in the composed
+    /// stack. Empty (and not serialized) for a prebuilt StackManifest, so its
+    /// resolution hash is unchanged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub live: BTreeMap<String, ComposedLiveV1>,
+    /// Composed program SDKs, in declaration order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub programs: Vec<ComposedProgramV1>,
+}
+
+impl AuthoringStackV1 {
+    /// A prebuilt StackManifest file.
+    pub fn prebuilt(manifest: String, artifact_roots: Vec<String>) -> Self {
+        Self {
+            manifest: Some(manifest),
+            artifact_roots,
+            deployment_name: None,
+            live: BTreeMap::new(),
+            programs: Vec::new(),
+        }
+    }
+
+    /// Whether this entry composes parts instead of naming a StackManifest.
+    pub fn is_composed(&self) -> bool {
+        self.manifest.is_none()
+    }
+
+    /// The StackManifest path of a prebuilt entry.
+    pub fn manifest_path(&self, name: &str) -> Result<&str> {
+        self.manifest.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "authoring stack '{name}' composes parts and has no StackManifest file; `a4 install` composes it"
+            )
+        })
+    }
+
+    fn validate(&self, name: &str) -> Result<()> {
+        if let Some(manifest) = &self.manifest {
+            if !self.live.is_empty() || !self.programs.is_empty() {
+                bail!(
+                    "authoring stack '{name}' sets both `manifest` and composed parts (`live`, `programs`); use one or the other"
+                );
+            }
+            validate_relative_artifact_path(manifest, ArtifactPathKind::StackManifest)?;
+            validate_artifact_roots(&self.artifact_roots, name)?;
+            return Ok(());
+        }
+        if !self.artifact_roots.is_empty() {
+            bail!(
+                "authoring stack '{name}' sets artifact_roots without a `manifest`; a composed stack names its parts' files directly"
+            );
+        }
+        if self.live.is_empty() {
+            bail!(
+                "authoring stack '{name}' needs a `manifest`, or composed `live` views (with optional `programs`)"
+            );
+        }
+        let mut sources = BTreeSet::new();
+        for (alias, live) in &self.live {
+            validate_composed_live_alias(alias, name)?;
+            live.validate(name, alias)?;
+            if let Some(path) = &live.path {
+                if !sources.insert(format!("path:{}", normalize_relative(path))) {
+                    bail!(
+                        "authoring stack '{name}' composes LiveSpec file '{path}' more than once"
+                    );
+                }
+            }
+        }
+        let mut packages = BTreeSet::new();
+        let mut program_paths = BTreeSet::new();
+        for program in &self.programs {
+            program.validate(name)?;
+            if let Some(package) = &program.package {
+                if !packages.insert(package.to_ascii_lowercase()) {
+                    bail!(
+                        "authoring stack '{name}' lists program package '{package}' more than once"
+                    );
+                }
+            }
+            if let Some(path) = &program.path {
+                if !program_paths.insert(normalize_relative(path)) {
+                    bail!(
+                        "authoring stack '{name}' lists ProgramSpec file '{path}' more than once"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One composed live alias: views from a published stack (`stack`, with an
+/// optional `version`, `live_alias` and `views`), or from a local LiveSpec
+/// file (`path`, with optional `views`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComposedLiveV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The source stack's live alias, required when it has more than one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The selected views, in order. Absent selects every view the source
+    /// stack selects (or, for a LiveSpec file, every view it defines).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub views: Option<Vec<String>>,
+}
+
+/// Where a composed live alias comes from.
+pub enum ComposedLiveSource<'a> {
+    Registry {
+        stack: &'a str,
+        requirement: &'a str,
+        live_alias: Option<&'a str>,
+    },
+    Path(&'a str),
+}
+
+impl ComposedLiveV1 {
+    pub fn source(&self) -> ComposedLiveSource<'_> {
+        match (&self.stack, &self.path) {
+            (Some(stack), _) => ComposedLiveSource::Registry {
+                stack,
+                requirement: self.version.as_deref().unwrap_or("*"),
+                live_alias: self.live_alias.as_deref(),
+            },
+            (None, Some(path)) => ComposedLiveSource::Path(path),
+            (None, None) => unreachable!("validated composed live source"),
+        }
+    }
+
+    fn validate(&self, name: &str, alias: &str) -> Result<()> {
+        let field = format!("authoring stack '{name}' live.{alias}");
+        match (&self.stack, &self.path) {
+            (Some(stack), None) => {
+                validate_registry_package(stack)?;
+                if let Some(version) = &self.version {
+                    validate_part_requirement(version, &field)?;
+                }
+                if let Some(live_alias) = &self.live_alias {
+                    if !is_live_alias(live_alias) {
+                        bail!("{field} live_alias '{live_alias}' is not a LiveSpec alias (1-64 ASCII letters, digits, '-' or '_')");
+                    }
+                }
+            }
+            (None, Some(path)) => {
+                if self.version.is_some() || self.live_alias.is_some() {
+                    bail!("{field} reads a LiveSpec file, so it cannot set `version` or `live_alias`");
+                }
+                validate_relative_artifact_path(path, ArtifactPathKind::LiveSpec)?;
+            }
+            (Some(_), Some(_)) => bail!("{field} sets both `stack` and `path`; use one"),
+            (None, None) => bail!(
+                "{field} needs a source: `stack = \"<package>\"` or `path = \"<file>.live-spec.json\"`"
+            ),
+        }
+        if let Some(views) = &self.views {
+            if views.is_empty() {
+                bail!("{field} views cannot be empty; omit `views` to select every view");
+            }
+            let mut unique = BTreeSet::new();
+            for view in views {
+                if !is_view_id(view) {
+                    bail!("{field} view '{view}' is not a view ID ('<Entity>/<view>')");
+                }
+                if !unique.insert(view.as_str()) {
+                    bail!("{field} selects view '{view}' more than once");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One composed program SDK: a program package (`package`, with an optional
+/// `version`) or a local ProgramSpec file (`path`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComposedProgramV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// Where a composed program comes from.
+pub enum ComposedProgramSource<'a> {
+    Registry {
+        package: &'a str,
+        requirement: &'a str,
+    },
+    Path(&'a str),
+}
+
+impl ComposedProgramV1 {
+    pub fn source(&self) -> ComposedProgramSource<'_> {
+        match (&self.package, &self.path) {
+            (Some(package), _) => ComposedProgramSource::Registry {
+                package,
+                requirement: self.version.as_deref().unwrap_or("*"),
+            },
+            (None, Some(path)) => ComposedProgramSource::Path(path),
+            (None, None) => unreachable!("validated composed program source"),
+        }
+    }
+
+    fn validate(&self, name: &str) -> Result<()> {
+        let field = format!("authoring stack '{name}' programs");
+        match (&self.package, &self.path) {
+            (Some(package), None) => {
+                validate_registry_package(package)?;
+                if let Some(version) = &self.version {
+                    validate_part_requirement(version, &format!("{field} entry '{package}'"))?;
+                }
+            }
+            (None, Some(path)) => {
+                if self.version.is_some() {
+                    bail!("{field} entry '{path}' reads a ProgramSpec file, so it cannot set `version`");
+                }
+                validate_relative_artifact_path(path, ArtifactPathKind::ProgramSpec)?;
+            }
+            (Some(_), Some(_)) => bail!("{field} entry sets both `package` and `path`; use one"),
+            (None, None) => bail!(
+                "{field} entry needs a source: `package = \"<package>\"` or `path = \"<file>.program-spec.json\"`"
+            ),
+        }
+        Ok(())
+    }
+}
+
+/// A composed part's version requirement: a semantic version range, never a
+/// mutable tag.
+fn validate_part_requirement(requirement: &str, field: &str) -> Result<()> {
+    if matches!(requirement, "latest" | "stable" | "next") {
+        bail!("{field} cannot use mutable tag '{requirement}'");
+    }
+    VersionReq::parse(requirement)
+        .with_context(|| format!("{field} has invalid version requirement '{requirement}'"))?;
+    Ok(())
+}
+
+/// A view ID's shape: `<Entity>/<view>`, both parts non-empty, no whitespace.
+/// Whether the view exists is checked against its LiveSpec on install.
+fn is_view_id(view: &str) -> bool {
+    view.split_once('/')
+        .is_some_and(|(entity, name)| !entity.is_empty() && !name.is_empty())
+        && !view
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+}
+
+/// A LiveSpec alias as a StackManifest spells it.
+fn is_live_alias(live: &str) -> bool {
+    !live.is_empty()
+        && live.len() <= 64
+        && live.bytes().any(|byte| byte.is_ascii_alphanumeric())
+        && live
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+/// A composed stack's live alias: a StackManifest LiveSpec alias.
+fn validate_composed_live_alias(alias: &str, name: &str) -> Result<()> {
+    if !is_live_alias(alias) {
+        bail!(
+            "authoring stack '{name}' live alias '{alias}' is not a LiveSpec alias (1-64 ASCII letters, digits, '-' or '_')"
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -670,6 +958,7 @@ impl std::fmt::Display for DependencyKind {
 enum ArtifactPathKind {
     StackManifest,
     ProgramSpec,
+    LiveSpec,
 }
 
 fn validate_relative_artifact_path(path: &str, kind: ArtifactPathKind) -> Result<()> {
@@ -691,6 +980,7 @@ fn validate_relative_artifact_path(path: &str, kind: ArtifactPathKind) -> Result
     let expected = match kind {
         ArtifactPathKind::StackManifest => ".stack-manifest.json",
         ArtifactPathKind::ProgramSpec => ".program-spec.json",
+        ArtifactPathKind::LiveSpec => ".live-spec.json",
     };
     if !path.ends_with(expected) {
         bail!("artifact path '{path}' must end with '{expected}'");
@@ -735,13 +1025,7 @@ fn validate_targets(targets: &[InstallTarget], field: &str, require_non_empty: b
 /// A LiveSpec alias as a StackManifest spells it (artifact rules, which allow
 /// upper case), used as an `endpoints` key.
 fn validate_live_alias(live: &str, dependency: &str) -> Result<()> {
-    let valid = !live.is_empty()
-        && live.len() <= 64
-        && live.bytes().any(|byte| byte.is_ascii_alphanumeric())
-        && live
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
-    if !valid {
+    if !is_live_alias(live) {
         bail!(
             "dependency '{dependency}' endpoints key '{live}' is not a LiveSpec alias (1-64 ASCII letters, digits, '-' or '_')"
         );
@@ -908,6 +1192,192 @@ endpoints = {endpoints}
         assert!(
             format!("{unknown:#}").contains("unknown field"),
             "{unknown:#}"
+        );
+    }
+
+    fn composed(entry: &str) -> Result<ManifestV1> {
+        parse(&format!(
+            "manifest_version = 1\n[project]\nname = \"example\"\n\n[authoring.stacks.ore-plus-token]\n{entry}\n"
+        ))
+    }
+
+    #[test]
+    fn a_composed_stack_names_registry_parts_and_local_files() {
+        let manifest = composed(
+            r#"live.ore = { stack = "ore", version = "^1", views = ["OreRound/latest", "OreMiner/state"] }
+live.multi = { stack = "multi", live_alias = "beta" }
+live.local = { path = "./artifacts/local.live-spec.json" }
+programs = [{ package = "spl-token", version = "^4" }, { package = "memo" }, { path = "./artifacts/vote.program-spec.json" }]
+deployment_name = "ore-plus-token-prod"
+
+[dependencies.stacks.ore-plus-token]
+source = { workspace = "ore-plus-token" }
+targets = ["typescript"]
+endpoints = { ore = { websocket = "wss://mine.example", query = "https://mine.example" }, multi = { websocket = "wss://mine.example", query = "https://mine.example" }, local = { websocket = "wss://mine.example", query = "https://mine.example" } }"#,
+        )
+        .expect("a composed stack validates");
+        let entry = &manifest.authoring.stacks["ore-plus-token"];
+        assert!(entry.is_composed());
+        assert_eq!(entry.live.len(), 3);
+        assert!(matches!(
+            entry.live["ore"].source(),
+            ComposedLiveSource::Registry {
+                stack: "ore",
+                requirement: "^1",
+                live_alias: None
+            }
+        ));
+        assert!(matches!(
+            entry.live["multi"].source(),
+            ComposedLiveSource::Registry {
+                requirement: "*",
+                live_alias: Some("beta"),
+                ..
+            }
+        ));
+        assert!(matches!(
+            entry.programs[1].source(),
+            ComposedProgramSource::Registry {
+                package: "memo",
+                requirement: "*"
+            }
+        ));
+        assert!(matches!(
+            entry.programs[2].source(),
+            ComposedProgramSource::Path("./artifacts/vote.program-spec.json")
+        ));
+        assert_eq!(
+            entry.manifest_path("ore-plus-token").unwrap_err().to_string(),
+            "authoring stack 'ore-plus-token' composes parts and has no StackManifest file; `a4 install` composes it"
+        );
+        // The composed parts round-trip through arete.toml.
+        let reparsed = parse(&manifest.to_toml_pretty().unwrap()).unwrap();
+        assert_eq!(
+            reparsed.resolution_hash().unwrap(),
+            manifest.resolution_hash().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_prebuilt_stack_manifest_entry_keeps_its_resolution_hash_shape() {
+        let manifest = parse(
+            "manifest_version = 1\n[project]\nname = \"example\"\n\
+             [authoring.stacks.local]\nmanifest = \"./.arete/Local.stack-manifest.json\"\nartifact_roots = [\"./.arete\"]\n",
+        )
+        .unwrap();
+        let entry = &manifest.authoring.stacks["local"];
+        assert!(!entry.is_composed());
+        assert_eq!(
+            serde_json::to_value(entry).unwrap(),
+            serde_json::json!({
+                "manifest": "./.arete/Local.stack-manifest.json",
+                "artifact_roots": ["./.arete"],
+            })
+        );
+    }
+
+    #[test]
+    fn composed_parts_are_validated() {
+        let cases = [
+            (
+                "manifest = \"./Mine.stack-manifest.json\"\nlive.ore = { stack = \"ore\" }",
+                "sets both `manifest` and composed parts",
+            ),
+            (
+                "programs = [{ package = \"spl-token\" }]",
+                "composed `live` views",
+            ),
+            (
+                "artifact_roots = [\"./.arete\"]\nlive.ore = { stack = \"ore\" }",
+                "artifact_roots without a `manifest`",
+            ),
+            (
+                "live.ore = { stack = \"ore\", path = \"./ore.live-spec.json\" }",
+                "sets both `stack` and `path`",
+            ),
+            ("live.ore = { views = [\"OreRound/latest\"] }", "needs a source"),
+            (
+                "live.ore = { path = \"./ore.live-spec.json\", version = \"^1\" }",
+                "cannot set `version` or `live_alias`",
+            ),
+            (
+                "live.ore = { path = \"./ore.program-spec.json\" }",
+                "must end with '.live-spec.json'",
+            ),
+            (
+                "live.ore = { path = \"../ore.live-spec.json\" }",
+                "parent traversal",
+            ),
+            (
+                "live.\"bad alias\" = { stack = \"ore\" }",
+                "is not a LiveSpec alias",
+            ),
+            (
+                "live.ore = { stack = \"ore\", live_alias = \"not an alias\" }",
+                "live_alias 'not an alias' is not a LiveSpec alias",
+            ),
+            ("live.ore = { stack = \"ore\", views = [] }", "views cannot be empty"),
+            (
+                "live.ore = { stack = \"ore\", views = [\"OreRound/latest\", \"OreRound/latest\"] }",
+                "selects view 'OreRound/latest' more than once",
+            ),
+            (
+                "live.ore = { stack = \"ore\", views = [\"OreRound\"] }",
+                "is not a view ID",
+            ),
+            (
+                "live.ore = { stack = \"ore\", version = \"latest\" }",
+                "mutable tag 'latest'",
+            ),
+            (
+                "live.ore = { stack = \"ore\", version = \"not-a-range\" }",
+                "invalid version requirement",
+            ),
+            (
+                "live.ore = { stack = \"ore\" }\nprograms = [{ package = \"spl-token\" }, { package = \"SPL-token\" }]",
+                "lists program package 'SPL-token' more than once",
+            ),
+            (
+                "live.ore = { stack = \"ore\" }\nprograms = [{ package = \"spl-token\", path = \"./t.program-spec.json\" }]",
+                "sets both `package` and `path`",
+            ),
+            (
+                "live.ore = { stack = \"ore\" }\nprograms = [{ path = \"./t.program-spec.json\", version = \"^1\" }]",
+                "cannot set `version`",
+            ),
+            (
+                "live.a = { path = \"./x.live-spec.json\" }\nlive.b = { path = \"x.live-spec.json\" }",
+                "composes LiveSpec file 'x.live-spec.json' more than once",
+            ),
+            (
+                "live.ore = { stack = \"ore\", unknown = true }",
+                "unknown field",
+            ),
+        ];
+        for (entry, expected) in cases {
+            let error = format!("{:#}", composed(entry).unwrap_err());
+            assert!(error.contains(expected), "{entry}\n{expected}\n{error}");
+        }
+    }
+
+    #[test]
+    fn endpoints_belong_to_composed_but_not_prebuilt_workspace_stacks() {
+        let endpoints = r#"endpoints = { ore = { websocket = "wss://mine.example", query = "https://mine.example" } }"#;
+        let composed_endpoints = parse(&format!(
+            "manifest_version = 1\n[project]\nname = \"example\"\n\
+             [authoring.stacks.mix]\nlive.ore = {{ stack = \"ore\" }}\n\
+             [dependencies.stacks.mix]\nsource = {{ workspace = \"mix\" }}\n{endpoints}\n"
+        ));
+        assert!(composed_endpoints.is_ok(), "{composed_endpoints:?}");
+        let prebuilt = parse(&format!(
+            "manifest_version = 1\n[project]\nname = \"example\"\n\
+             [authoring.stacks.mine]\nmanifest = \"./Mine.stack-manifest.json\"\n\
+             [dependencies.stacks.mine]\nsource = {{ workspace = \"mine\" }}\n{endpoints}\n"
+        ))
+        .unwrap_err();
+        assert!(
+            format!("{prebuilt:#}").contains("only a registry stack or a composed"),
+            "{prebuilt:#}"
         );
     }
 

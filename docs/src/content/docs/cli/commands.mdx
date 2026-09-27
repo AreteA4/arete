@@ -90,7 +90,7 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 mcp`                              | Run the stream MCP server (stdio)              |
 | `a4 auth signup`                      | Register an agent account                      |
 | `a4 program build <idl>`              | Build a portable ProgramSpec                   |
-| `a4 stack compose`                    | Compose ProgramSpecs and aliased LiveSpecs     |
+| `a4 stack compose`                    | Compose live views and program SDKs            |
 | `a4 sdk create --manifest ... --ts`   | Generate a TypeScript SDK from a StackManifest |
 | `a4 sdk create --manifest ... --rust` | Generate a Rust SDK from a StackManifest       |
 | `a4 up <manifest>`                    | Deploy one exact StackManifest                 |
@@ -708,7 +708,9 @@ is not evidence that it is unsupported — fall back to `a4 explore` and
 
 Deploy the exact composition described by a local StackManifest, an
 `[authoring.stacks]` entry, or an installed stack
-([Deploying an installed stack](#deploying-an-installed-stack)). The control
+([Deploying an installed stack](#deploying-an-installed-stack)). A composed
+`[authoring.stacks]` entry deploys exactly what `arete.lock` pins for it
+([Composed stacks](#composed-stacks)). The control
 plane resolves every ProgramSpec to an immutable hosted Program Release,
 prepares each aliased LiveSpec independently, then returns deployment and
 endpoint bindings. Those operational bindings are not part of the portable
@@ -771,7 +773,47 @@ decoder release or Program Read endpoint.
 
 ### a4 stack compose
 
-Compose portable ProgramSpec and aliased LiveSpec artifacts into a StackManifest.
+Compose a stack from live views and program SDKs. Parts come from published
+stacks and program packages, or from local LiveSpec and ProgramSpec files.
+
+Without `--output`, the command writes or updates `[authoring.stacks.<name>]`
+in `arete.toml` ([Composed stacks](#composed-stacks)). It first resolves the
+registry parts and checks that they compose. A part without a version is saved
+at `^<resolved version>`, the way `a4 install` saves a package. Other keys of
+an existing entry, such as `deployment_name`, are kept.
+
+```bash
+# ORE's round and miner views, plus the spl-token program SDK
+a4 stack compose --name ore-plus-token \
+  --live ore \
+  --program spl-token@^4 \
+  --selected-view ore=OreRound/latest \
+  --selected-view ore=OreMiner/state
+
+# Also declare it under [dependencies.stacks] and install it
+a4 stack compose --name ore-plus-token --live ore --program spl-token@^4 --install
+```
+
+| Value                                      | Part                                                                 |
+| ------------------------------------------ | -------------------------------------------------------------------- |
+| `--live <stack>[@<version>]`               | A published stack's live views, under an alias derived from its name |
+| `--live <alias>=stack:<stack>[@<version>]` | The same, under an explicit alias                                    |
+| `--live [<alias>=]stack:<stack>#<live>`    | One live alias of a stack that has several                           |
+| `--live <alias>=<path>`                    | A LiveSpec file                                                      |
+| `--program <package>[@<version>]`          | A program package's program SDK (`program:<package>` forces this)    |
+| `--program <path>.json`                    | A ProgramSpec file                                                   |
+
+The programs a stack's views index come with them, as that stack's program
+SDKs. A `--program` for the same program replaces the one the stack brings;
+any other `--program` is an independent program. A LiveSpec file's programs
+come from `--program`, from a composed stack, or from a ProgramSpec found under
+`--artifact-dir`. `--artifact-dir` also searches the registry cache layout
+(`program-spec/<hash>.json`, `live-spec/<hash>.json`). Without
+`--selected-view`, each alias selects every view its stack serves, or every
+view of its LiveSpec file. With it, the `alias=view_id` values are the exact
+allowlist, in command-line order.
+
+With `--output`, the command writes a StackManifest instead, as it always has:
 
 ```bash
 a4 stack compose --name jurassic \
@@ -785,14 +827,16 @@ a4 stack compose --name jurassic \
 ```
 
 Repeat `--program`, `--live`, and `--artifact-dir` as needed. Each `--live`
-requires a stable `alias=path` pair, so multiple LiveSpecs can expose the same
-entity or program names without losing ownership. When `--selected-view` is
-omitted, all views from every supplied LiveSpec are selected. When present, its
-`alias=view_id` values form the exact allowlist in command-line order.
+file requires a stable `alias=path` pair, so multiple LiveSpecs can expose the
+same entity or program names without losing ownership.
 
 A StackManifest composes portable identities only. It contains no WebSocket,
 Program Read, chain, or transaction endpoint and does not require those
-transports to be co-located.
+transports to be co-located. It lists ProgramSpecs, not program SDKs, so
+compose into `arete.toml` when you want each program's SDK generated.
+
+Publishing a composed stack to the registry, so that other projects can
+install it by name, is not available yet.
 
 ### a4 stack list
 
@@ -1064,6 +1108,56 @@ serves the previous one; redeploy it with `a4 up <alias>`. `--branch`,
 endpoints to the client instead, for example `useArete(stack, { url, httpUrl })`
 in TypeScript.
 
+### Composed stacks
+
+A composed `[authoring.stacks]` entry groups live views and program SDKs from
+published stacks, program packages, and local files. `a4 stack compose` writes
+it, or you can write it yourself:
+
+```toml
+[authoring.stacks.ore-plus-token]
+live.ore = { stack = "ore", version = "^1", views = ["OreRound/latest", "OreMiner/state"] }
+programs = [{ package = "spl-token", version = "^4" }]
+
+[dependencies.stacks.ore-plus-token]
+source = { workspace = "ore-plus-token" }
+targets = ["typescript"]
+```
+
+`a4 install` resolves the parts and generates the composed stack like any
+other stack dependency:
+
+```tsx
+const arete = useArete(ORE_PLUS_TOKEN_STACK);
+arete.views.OreRound.latest.use();
+arete.programs.ore;       // the program SDK the ore stack references
+arete.programs.splToken;  // the spl-token program SDK
+```
+
+- **Program SDKs.** Every program uses its program SDK. For programs the views
+  index, that is the program SDK their stack references, so `programs.ore`
+  has the same operations as `a4 install program ore`. A `programs` entry for
+  the same program replaces it, and the install output says so; the entry must
+  have the ProgramSpec the views index.
+- **Delivery.** A live alias from a stack with hosted delivery reads that
+  stack's deployment. The generated SDK uses its endpoints, and its sessions
+  name the version that deployment serves, exactly as the stack's own SDK
+  does. The install output lists the account requirements. An alias from a
+  definition-only stack or a LiveSpec file has no endpoints. `a4 up <name>`
+  deploys the composed stack to your account and points the dependency's SDK
+  at it by recording `endpoints`, as it does for an installed stack.
+- **Lock.** `arete.lock` pins every part: stack and program package releases,
+  LiveSpecs, each program's program SDK release and extensions, and the
+  composed StackManifest. `a4 install --locked` fails if any of them would
+  change, and `a4 update stack <alias>` advances them.
+- **Stack extensions.** A composed stack does not include a source stack's
+  stack extension (for example its extra reads). The install output notes
+  each one it leaves out.
+
+`a4 install` also writes the composed StackManifest and its artifacts to
+`.arete/compositions/<name>/`. `a4 up <name>` deploys them only while they
+match `arete.lock`.
+
 ### Private programs and stacks
 
 Owner-private programs (`a4 program push`) and private production stacks
@@ -1125,6 +1219,11 @@ version = "^1.4.0"
 [authoring.stacks.local]
 manifest = "./.arete/MyStack.stack-manifest.json"
 artifact_roots = ["./.arete"]
+
+# A composed stack (`a4 stack compose` writes this; see Composed stacks)
+[authoring.stacks.ore-plus-token]
+live.ore = { stack = "ore", version = "^1.0.0", views = ["OreRound/latest"] }
+programs = [{ package = "spl-token", version = "^4.0.0" }]
 ```
 
 Default output paths are kind-scoped. TypeScript uses

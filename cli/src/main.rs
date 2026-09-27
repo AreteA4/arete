@@ -602,17 +602,20 @@ enum KeysCommands {
 
 #[derive(Subcommand)]
 enum StackCommands {
-    /// Compose ProgramSpecs and LiveSpecs into a portable StackManifest
+    /// Compose live views and program SDKs into a stack: an
+    /// [authoring.stacks] entry in arete.toml, or with -o a StackManifest
     Compose {
-        /// Client-facing stack name
+        /// Stack name: the [authoring.stacks] entry, or with -o the StackManifest name
         #[arg(long)]
         name: String,
 
-        /// ProgramSpec artifact path; repeat for each program
+        /// Program SDK: a program package (`spl-token`, `spl-token@^4`,
+        /// `program:<package>[@<version>]`) or a ProgramSpec file (`*.json`); repeat
         #[arg(long = "program")]
         programs: Vec<String>,
 
-        /// Aliased LiveSpec artifact (`alias=path`); repeat to compose live packages
+        /// Live views: a published stack (`ore`, `ore@^1`, `alias=stack:ore@^1`,
+        /// `stack:multi#<live alias>`) or a LiveSpec file (`alias=path`); repeat
         #[arg(long = "live")]
         live_specs: Vec<String>,
 
@@ -624,9 +627,13 @@ enum StackCommands {
         #[arg(long = "selected-view")]
         selected_views: Vec<String>,
 
-        /// StackManifest output path
+        /// Write a StackManifest here instead of the [authoring.stacks] entry
         #[arg(short, long)]
-        output: String,
+        output: Option<String>,
+
+        /// Also declare the composed stack under [dependencies.stacks] and install it
+        #[arg(long, conflicts_with = "output")]
+        install: bool,
     },
 
     /// List all stacks with their deployment status
@@ -1326,14 +1333,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 artifact_dirs,
                 selected_views,
                 output,
-            } => commands::public_artifacts::compose_stack(
-                &name,
-                &programs,
-                &live_specs,
-                &artifact_dirs,
-                &selected_views,
-                &output,
-            ),
+                install,
+            } => commands::public_artifacts::compose(commands::public_artifacts::ComposeArgs {
+                config_path: &cli.config,
+                name: &name,
+                programs: &programs,
+                lives: &live_specs,
+                artifact_dirs: &artifact_dirs,
+                selected_views: &selected_views,
+                output: output.as_deref(),
+                install,
+            }),
             StackCommands::List => commands::stack::list(cli.json),
             StackCommands::Show {
                 stack_name,

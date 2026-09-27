@@ -1,4 +1,5 @@
 pub mod alias;
+pub mod composition;
 pub mod graph;
 pub mod installer;
 pub mod lockfile;
