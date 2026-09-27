@@ -1023,9 +1023,10 @@ A stack is a group of live views and program SDKs. When a stack references a
 program package release for one of its programs, `a4 install` generates that
 program's SDK, including its SDK extension, under
 `stacks/<alias>/programs/<program>/`, and `arete.lock` records the release as
-the program's `package_release_hash`. The generated Rust and Python program
-definitions carry the same identity: `PACKAGE_RELEASE_HASH` in Rust and
-`<PROGRAM>_PACKAGE_RELEASE_HASH` in Python. Local and path builds carry none.
+the program's `package_release_hash`. Every generated program definition
+carries the same identity: `packageReleaseHash` in TypeScript,
+`PACKAGE_RELEASE_HASH` in Rust, and `<PROGRAM>_PACKAGE_RELEASE_HASH` in
+Python. Local and path builds carry none.
 
 Installing the same program on its own is fine. When the standalone
 dependency (under its default alias) and the stack reference the same program

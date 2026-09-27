@@ -3309,6 +3309,10 @@ fn typescript_program_config_from_registry(
             program_spec_hash: install.definition.program_spec_hash.clone(),
             idl_content_hash: install.definition.idl_content_hash.clone(),
             normalized_idl_hash: install.definition.normalized_idl_hash.clone(),
+            package_release_hash: install
+                .program_package
+                .as_ref()
+                .map(|package| package.package_release_hash.clone()),
         },
         release: arete_interpreter::typescript::TypeScriptProgramReleaseReference {
             program_release_hash: install.release.program_release_hash.clone(),
@@ -3675,6 +3679,11 @@ fn render_hosted_program_entry(program: &HostedProgramModule) -> String {
             .extension
             .as_ref()
             .map(|extension| extension.entry.as_str()),
+        program
+            .program_config
+            .definition
+            .package_release_hash
+            .as_deref(),
     )
 }
 
@@ -4288,6 +4297,7 @@ fn render_typescript_program_entry(
     layout: &TypeScriptLayout,
     program_name: &str,
     extension_entry: Option<&str>,
+    package_release_hash: Option<&str>,
 ) -> String {
     let core_const_name = arete_interpreter::typescript::program_const_name(program_name);
     let export_name = public_program_export_name(&layout.base_name);
@@ -4301,64 +4311,57 @@ fn render_typescript_program_entry(
     );
     let core_import = format!("./{}-core.js", layout.base_name);
 
-    if let Some(extension_entry) = extension_entry {
+    let mut sdk_imports = Vec::new();
+    let extension_import = extension_entry.map(|extension_entry| {
         let extension_import = extension_entry
             .strip_suffix(".ts")
             .unwrap_or(extension_entry);
-        let extension_runtime_import = format!("{}.js", extension_import);
-        finish_typescript_module(format!(
-            r#"import {{ extendProgram, withProgramRead }} from '@usearete/sdk';
-
-import {{ {core_const_name} as {core_import_name}, {core_read_const_name} as {core_read_import_name} }} from '{core_import}';
-import programExtensions from './{extension_runtime_import}';
-
-export * from '{core_import}';
-export {{ {core_const_name} as {core_import_name} }} from '{core_import}';
-
-export const {export_name} = withProgramRead(
-  extendProgram({core_import_name}, programExtensions),
-  {core_read_import_name},
-);
-export const {read_export_name} = {core_read_import_name};
-
-export type {type_name} = typeof {export_name};
-
-export default {export_name};"#,
-            core_const_name = core_const_name,
-            core_import_name = core_import_name,
-            core_read_const_name = core_read_const_name,
-            core_read_import_name = core_read_import_name,
-            read_export_name = read_export_name,
-            core_import = core_import,
-            extension_runtime_import = extension_runtime_import,
-            export_name = export_name,
-            type_name = type_name,
-        ))
-    } else {
-        finish_typescript_module(format!(
-            r#"import {{ withProgramRead }} from '@usearete/sdk';
-
-import {{ {core_const_name} as {core_import_name}, {core_read_const_name} as {core_read_import_name} }} from '{core_import}';
-
-export * from '{core_import}';
-export {{ {core_const_name} as {core_import_name} }} from '{core_import}';
-
-export const {export_name} = withProgramRead({core_import_name}, {core_read_import_name});
-export const {read_export_name} = {core_read_import_name};
-
-export type {type_name} = typeof {export_name};
-
-export default {export_name};"#,
-            core_const_name = core_const_name,
-            core_import_name = core_import_name,
-            core_read_const_name = core_read_const_name,
-            core_read_import_name = core_read_import_name,
-            read_export_name = read_export_name,
-            core_import = core_import,
-            export_name = export_name,
-            type_name = type_name,
-        ))
+        format!("\nimport programExtensions from './{extension_import}.js';")
+    });
+    if extension_import.is_some() {
+        sdk_imports.push("extendProgram");
     }
+    if package_release_hash.is_some() {
+        sdk_imports.push("withProgramIdentity");
+    }
+    sdk_imports.push("withProgramRead");
+
+    // The program SDK in order: the generated core, the package's own
+    // extension, the default read descriptor, and last the package release
+    // identity, which describes exactly that finished SDK. The extension
+    // helpers drop identity, so nothing applied after this entry keeps it.
+    let program_value = match (extension_import.is_some(), package_release_hash) {
+        (false, None) => format!("withProgramRead({core_import_name}, {core_read_import_name})"),
+        (true, None) => format!(
+            "withProgramRead(\n  extendProgram({core_import_name}, programExtensions),\n  {core_read_import_name},\n)"
+        ),
+        (false, Some(hash)) => format!(
+            "withProgramIdentity(\n  withProgramRead({core_import_name}, {core_read_import_name}),\n  {{ packageReleaseHash: {} }},\n)",
+            ts_ident::single_quoted(hash)
+        ),
+        (true, Some(hash)) => format!(
+            "withProgramIdentity(\n  withProgramRead(\n    extendProgram({core_import_name}, programExtensions),\n    {core_read_import_name},\n  ),\n  {{ packageReleaseHash: {} }},\n)",
+            ts_ident::single_quoted(hash)
+        ),
+    };
+
+    finish_typescript_module(format!(
+        r#"import {{ {sdk_imports} }} from '@usearete/sdk';
+
+import {{ {core_const_name} as {core_import_name}, {core_read_const_name} as {core_read_import_name} }} from '{core_import}';{extension_import}
+
+export * from '{core_import}';
+export {{ {core_const_name} as {core_import_name} }} from '{core_import}';
+
+export const {export_name} = {program_value};
+export const {read_export_name} = {core_read_import_name};
+
+export type {type_name} = typeof {export_name};
+
+export default {export_name};"#,
+        sdk_imports = sdk_imports.join(", "),
+        extension_import = extension_import.unwrap_or_default(),
+    ))
 }
 
 fn render_typescript_program_collection_entry(
@@ -4575,6 +4578,11 @@ fn write_typescript_program_sdk(
     extensions: TypeScriptProgramSdkExtensions<'_>,
 ) -> Result<()> {
     ensure_file_stem(sdk_name)?;
+    let package_release_hash = extensions
+        .programs
+        .as_ref()
+        .and_then(|programs| programs.first())
+        .and_then(|program| program.definition.package_release_hash.clone());
     let output = arete_interpreter::typescript::compile_program_modules(
         stack_spec,
         Some(arete_interpreter::typescript::TypeScriptStackConfig {
@@ -4618,6 +4626,7 @@ fn write_typescript_program_sdk(
         &layout,
         program_name,
         artifact.as_ref().map(|artifact| artifact.entry.as_str()),
+        package_release_hash.as_deref(),
     );
     check_typescript_entry(&entry_contents, &core_contents, &layout)?;
     write_typescript_core_modules(&layout, &core_contents, artifact.as_ref())?;
@@ -7341,7 +7350,7 @@ mod tests {
 
     #[test]
     fn render_typescript_program_entry_without_extensions_aliases_core() {
-        let rendered = render_typescript_program_entry(&layout("spl-token"), "token", None);
+        let rendered = render_typescript_program_entry(&layout("spl-token"), "token", None, None);
 
         assert!(rendered.contains("import { TOKEN as SPL_TOKEN_PROGRAM_CORE, TOKEN_READ as SPL_TOKEN_PROGRAM_READ_CORE } from './spl-token-core.js';"));
         assert!(rendered
@@ -7362,6 +7371,7 @@ mod tests {
             &layout("system-program"),
             "system_program",
             Some("system-program-extensions.ts"),
+            None,
         );
 
         assert!(
@@ -7379,6 +7389,31 @@ mod tests {
         assert!(rendered.contains("extendProgram(SYSTEM_PROGRAM_CORE, programExtensions),"));
         assert!(rendered.contains("SYSTEM_PROGRAM_READ_CORE,"));
         assert!(rendered.contains("export default SYSTEM_PROGRAM;"));
+    }
+
+    #[test]
+    fn render_typescript_program_entry_stamps_package_release_identity_last() {
+        let release = "arete:registry-package-release:v2:sha256:7";
+        let extended = render_typescript_program_entry(
+            &layout("ore"),
+            "ore",
+            Some("ore-extensions.ts"),
+            Some(release),
+        );
+        assert!(extended.contains(
+            "import { extendProgram, withProgramIdentity, withProgramRead } from '@usearete/sdk';"
+        ));
+        assert!(extended.contains(&format!(
+            "export const ORE_PROGRAM = withProgramIdentity(\n  withProgramRead(\n    extendProgram(ORE_PROGRAM_CORE, programExtensions),\n    ORE_PROGRAM_READ_CORE,\n  ),\n  {{ packageReleaseHash: '{release}' }},\n);"
+        )), "{extended}");
+
+        let plain = render_typescript_program_entry(&layout("ore"), "ore", None, Some(release));
+        assert!(
+            plain.contains("import { withProgramIdentity, withProgramRead } from '@usearete/sdk';")
+        );
+        assert!(plain.contains(&format!(
+            "export const ORE_PROGRAM = withProgramIdentity(\n  withProgramRead(ORE_PROGRAM_CORE, ORE_PROGRAM_READ_CORE),\n  {{ packageReleaseHash: '{release}' }},\n);"
+        )), "{plain}");
     }
 
     #[test]

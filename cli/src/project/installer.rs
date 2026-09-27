@@ -5027,7 +5027,7 @@ version = "^1.0.0"
         let typescript = generated_files(&manifest, "typescript");
         let entry = &typescript["stacks/ore/programs/ore/__arete-program.ts"];
         assert!(
-            entry.contains("export const ORE_PROGRAM = withProgramRead(\n  extendProgram(ORE_PROGRAM_CORE, programExtensions),"),
+            entry.contains("export const ORE_PROGRAM = withProgramIdentity(\n  withProgramRead(\n    extendProgram(ORE_PROGRAM_CORE, programExtensions),"),
             "{entry}"
         );
         assert!(entry.contains("import programExtensions from './ore-extensions.js';"));
@@ -5045,7 +5045,23 @@ version = "^1.0.0"
         );
         assert!(typescript["stacks/ore/programs/ore/ore-extensions.ts"]
             .contains("transactions: {\n      mining: {\n        deployWithCheckpoint"));
-        // Identity: the program package release, in the Rust and Python SDKs.
+        // Identity: the program package release, in every generated language.
+        // TypeScript stamps it on the finished program SDK in its entry,
+        // after the package's own extension; core definitions carry none.
+        let identity = format!("{{ packageReleaseHash: '{}' }}", release_hash('7'));
+        assert!(entry.contains(&identity), "{entry}");
+        for core in [
+            "stacks/ore/programs/ore/ore-core.ts",
+            "stacks/ore/ore-core.ts",
+            "stacks/ore/programs/entropy/entropy-core.ts",
+        ] {
+            assert!(!typescript[core].contains("packageReleaseHash"), "{core}");
+        }
+        // A program without a package release has no identity to stamp.
+        assert!(
+            !typescript["stacks/ore/programs/entropy/__arete-program.ts"]
+                .contains("packageReleaseHash")
+        );
         assert!(generated_text(&manifest, "rust").contains(&format!(
             "pub const PACKAGE_RELEASE_HASH: &str = \"{}\";",
             release_hash('7')
@@ -5162,6 +5178,10 @@ version = "^1.0.0"
                 "{in_stack} and {standalone} must be byte-identical"
             );
         }
+        assert!(files["programs/ore/ore.ts"].contains(&format!(
+            "{{ packageReleaseHash: '{}' }}",
+            release_hash('7')
+        )));
         let lock = lock_of(&manifest);
         assert_eq!(lock.dependencies.len(), 2);
     }
@@ -5187,6 +5207,8 @@ version = "^1.0.0"
         .unwrap();
         install_project(&manifest, InstallOptions::default()).expect("program install");
         let release = release_hash('7');
+        assert!(generated_text(&manifest, "typescript")
+            .contains(&format!("{{ packageReleaseHash: '{release}' }}")));
         let rust = generated_text(&manifest, "rust");
         assert!(rust.contains(&format!(
             "    fn package_release_hash() -> Option<&'static str> {{\n        Some(\"{release}\")\n    }}"
@@ -5792,6 +5814,19 @@ targets = ["typescript"]
             .contains("extendProgram(ORE_PROGRAM_CORE, programExtensions)"));
         assert!(files[&format!("{root}/programs/ore/ore-extensions.ts")]
             .contains("deployWithCheckpoint"));
+        assert!(
+            files[&format!("{root}/programs/ore/__arete-program.ts")].contains(&format!(
+                "{{ packageReleaseHash: '{}' }}",
+                release_hash('7')
+            ))
+        );
+        // `programs.splToken` is the spl-token program package release.
+        assert!(
+            files[&format!("{root}/programs/spl-token/__arete-program.ts")].contains(&format!(
+                "{{ packageReleaseHash: '{}' }}",
+                release_hash('8')
+            ))
+        );
         // The live views read the ore stack's hosted deployment, and each
         // session names the version that deployment serves.
         let core = &files[&format!("{root}/ore-plus-token-core.ts")];

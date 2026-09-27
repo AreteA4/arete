@@ -3402,6 +3402,14 @@ pub struct TypeScriptProgramDefinitionMetadata {
     pub program_spec_hash: String,
     pub idl_content_hash: String,
     pub normalized_idl_hash: String,
+    /// The program package release this program SDK was generated from.
+    /// Registry installs set it; local and path builds leave it unset. It is
+    /// never emitted into the core module: identity describes the finished
+    /// program SDK, so the SDK's entry module stamps it with
+    /// `withProgramIdentity` after applying the package's own extension and
+    /// read descriptor. The core definition, which lacks those, carries no
+    /// identity, and `sdkDefinitionHash` is independent of it.
+    pub package_release_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3441,6 +3449,7 @@ impl From<&arete_hash::OssProgramIdentityV1> for TypeScriptProgramConfig {
                 program_spec_hash: identity.program_spec_hash.to_string(),
                 idl_content_hash: identity.program_spec.idl_content_hash.to_string(),
                 normalized_idl_hash: identity.program_spec.normalized_idl_hash.to_string(),
+                package_release_hash: None,
             },
             release: TypeScriptProgramReleaseReference {
                 program_release_hash: identity.release_hash.to_string(),
@@ -3681,6 +3690,7 @@ fn resolve_program_configs(
                 .to_string(),
             idl_content_hash: program_spec.idl_content_hash.to_string(),
             normalized_idl_hash: program_spec.normalized_idl_hash.to_string(),
+            package_release_hash: None,
         });
     }
 
@@ -5163,7 +5173,7 @@ fn program_content_identities(
         programs: &unhashed,
         ..*context
     };
-    let mut identified = unhashed.clone();
+    let mut identified = context.programs.to_vec();
     for (index, program) in identified.iter_mut().enumerate() {
         let (_, sections) =
             generate_single_program_sections(&idls[index], index, &unhashed_context);
@@ -5291,7 +5301,6 @@ fn generate_single_program_sections(
             metadata.definition.normalized_idl_hash
         ),
     ]);
-
     if let Some(gateway) = &metadata.gateway {
         sections.push(format!(
             "      gateway: {},",
@@ -6312,6 +6321,46 @@ mod tests {
         assert!(compile_program_modules(stack_spec, None)
             .unwrap_err()
             .contains("Rebuild the ProgramSpec and StackManifest artifact closure"));
+    }
+
+    #[test]
+    fn program_package_release_stays_out_of_the_core_definition() {
+        let stack_spec = program_only_test_spec(BTreeMap::new(), vec![]);
+        let mut program = TypeScriptProgramConfig::from(
+            &arete_hash::OssProgramIdentityV1::new(stack_spec.program_specs[0].clone()).unwrap(),
+        );
+        let local = compile_program_modules(
+            stack_spec.clone(),
+            Some(TypeScriptStackConfig {
+                programs: Some(vec![program.clone()]),
+                ..TypeScriptStackConfig::default()
+            }),
+        )
+        .unwrap();
+        let release = format!(
+            "arete:registry-package-release:v2:sha256:{}",
+            "7".repeat(64)
+        );
+        program.definition.package_release_hash = Some(release.clone());
+        let registry = compile_program_modules(
+            stack_spec,
+            Some(TypeScriptStackConfig {
+                programs: Some(vec![program]),
+                ..TypeScriptStackConfig::default()
+            }),
+        )
+        .unwrap();
+
+        // The entry module stamps identity after the package's own extension;
+        // the core definition lacks that extension, so it carries none.
+        assert!(!local.stack_definition.contains("packageReleaseHash"));
+        assert!(!registry.stack_definition.contains("packageReleaseHash"));
+        assert_eq!(local.stack_definition, registry.stack_definition);
+        assert_eq!(
+            emitted_definition_hash(&local),
+            emitted_definition_hash(&registry),
+            "the same generated content keeps one definition hash"
+        );
     }
 
     /// Address Lookup Table: `lookup_table` is derived on create only; every

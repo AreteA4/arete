@@ -218,6 +218,7 @@ pub fn compile_program_modules(
         &config.program_reads,
         config.gateway.as_ref(),
         true,
+        config.extension_entry.is_some(),
     )
     .ok_or_else(|| {
         format!(
@@ -230,7 +231,11 @@ pub fn compile_program_modules(
     Ok(PythonProgramOutput {
         module_name: python_module_name(&config.package_name),
         pyproject_toml: generate_stack_pyproject(&config),
-        init_py: generate_program_init_py(&stack_spec.stack_name, &config),
+        init_py: generate_program_init_py(
+            &stack_spec.stack_name,
+            &config,
+            &programs.identity_stamps,
+        ),
         models_py,
         programs_py: programs.code,
     })
@@ -440,6 +445,10 @@ fn compile_stack_spec_with_view_selection(
         &account_structs,
         &config.program_reads,
         config.gateway.as_ref(),
+        false,
+        // A stack never carries a program package's own extension (stack
+        // generation refuses one), so its programs are exactly the generated
+        // program SDKs and their definitions carry identity.
         false,
     );
 
@@ -664,7 +673,11 @@ __all__ = [
     output
 }
 
-fn generate_program_init_py(stack_name: &str, config: &PythonStackConfig) -> String {
+fn generate_program_init_py(
+    stack_name: &str,
+    config: &PythonStackConfig,
+    identity_stamps: &[(String, String)],
+) -> String {
     let stack_name = python_ident::docstring_text(stack_name);
     let mut output = format!(
         r#""""Generated standalone program SDK for `{stack_name}`.
@@ -685,6 +698,17 @@ __all__ = [
         sdk = config.sdk_version,
     );
     append_python_extension_imports(&mut output, config);
+    if !identity_stamps.is_empty() {
+        output.push_str(
+            "\n# Program SDK identity: the package release each program SDK was generated\n# from, stamped after the package's own extensions (extending a program drops\n# it: the result is no longer provably the generated SDK).\nfrom arete import with_program_identity as _with_program_identity  # noqa: E402\n\n",
+        );
+        for (key, const_prefix) in identity_stamps {
+            output.push_str(&format!(
+                "{const_prefix}_PROGRAM = _with_program_identity(\n    {const_prefix}_PROGRAM, package_release_hash={const_prefix}_PACKAGE_RELEASE_HASH\n)\nPROGRAMS = {{**PROGRAMS, {}: {const_prefix}_PROGRAM}}\n",
+                py_string_literal(key)
+            ));
+        }
+    }
     output
 }
 
@@ -1878,6 +1902,10 @@ __all__ = [
 #[derive(Debug, Clone)]
 pub(crate) struct PythonProgramsCodegen {
     code: String,
+    /// `(PROGRAMS key, constant prefix)` for each program whose identity the
+    /// package `__init__.py` stamps after the package's own extensions,
+    /// instead of its `ProgramDef` carrying it.
+    identity_stamps: Vec<(String, String)>,
 }
 
 /// Which runtime names a generated `programs.py` references.
@@ -2847,6 +2875,10 @@ fn generate_stack_programs_py(
     reads: &[PythonProgramReadConfig],
     gateway: Option<&serde_json::Value>,
     include_idl_only_programs: bool,
+    // Identity describes the finished program SDK. A package with its own
+    // extension stamps it in `__init__.py` after that extension, so the
+    // `ProgramDef` here, which lacks the extension, carries none.
+    identity_after_extensions: bool,
 ) -> Option<PythonProgramsCodegen> {
     if instructions.is_empty() && !include_idl_only_programs {
         return None;
@@ -2885,6 +2917,7 @@ fn generate_stack_programs_py(
     let mut sections: Vec<String> = Vec::new();
     let mut exports: Vec<String> = Vec::new();
     let mut program_entries: Vec<String> = Vec::new();
+    let mut identity_stamps: Vec<(String, String)> = Vec::new();
     let mut read_entries: Vec<(String, String)> = Vec::new(); // (key, descriptor fn)
     let mut omitted_reads: Vec<(String, String)> = Vec::new(); // (key, reason)
 
@@ -3067,8 +3100,12 @@ fn generate_stack_programs_py(
                     py_string_literal(package_release_hash)
                 ));
                 exports.push(format!("{const_prefix}_PACKAGE_RELEASE_HASH"));
-                package_release_kwarg =
-                    format!("\n    package_release_hash={const_prefix}_PACKAGE_RELEASE_HASH,");
+                if identity_after_extensions {
+                    identity_stamps.push((module_name.clone(), const_prefix.clone()));
+                } else {
+                    package_release_kwarg =
+                        format!("\n    package_release_hash={const_prefix}_PACKAGE_RELEASE_HASH,");
+                }
             }
             spec_hash_expr = format!("{const_prefix}_PROGRAM_SPEC_HASH");
         }
@@ -3342,7 +3379,10 @@ __all__ = [
         reads_map = reads_map,
     );
 
-    Some(PythonProgramsCodegen { code })
+    Some(PythonProgramsCodegen {
+        code,
+        identity_stamps,
+    })
 }
 
 // ============================================================================
@@ -4822,6 +4862,56 @@ mod tests {
         assert!(stack_def < devex);
         assert!(devex < entry);
         assert!(!init.contains("from .devex import *"));
+    }
+
+    #[test]
+    fn python_program_identity_is_stamped_after_the_package_extension() {
+        let release = "arete:registry-package-release:v2:sha256:7";
+        let config = |extension: bool| PythonStackConfig {
+            package_name: "demo-program".to_string(),
+            extension_modules: if extension {
+                vec!["extensions".to_string()]
+            } else {
+                Vec::new()
+            },
+            extension_entry: extension.then(|| "extensions".to_string()),
+            program_reads: vec![PythonProgramReadConfig {
+                program_id: TEST_PROGRAM_ID.to_string(),
+                program_spec_hash: "arete:h1:program-spec:sha256:test".to_string(),
+                program_release_hash: "arete:h1:program-release:sha256:test".to_string(),
+                descriptor: None,
+                package_release_hash: Some(release.to_string()),
+            }],
+            ..Default::default()
+        };
+
+        // Without an extension the generated definition is the program SDK.
+        let plain = compile_program_modules(programs_stack_spec(), Some(config(false)))
+            .expect("standalone program generation should succeed");
+        assert!(plain
+            .programs_py
+            .contains("    package_release_hash=DEMO_PACKAGE_RELEASE_HASH,"));
+        assert!(!plain.init_py.contains("_with_program_identity"));
+
+        // With one, the definition lacks the extension, so it carries no
+        // identity; `__init__.py` stamps it after the extension import.
+        let extended = compile_program_modules(programs_stack_spec(), Some(config(true)))
+            .expect("standalone program generation should succeed");
+        assert!(extended
+            .programs_py
+            .contains(&format!("DEMO_PACKAGE_RELEASE_HASH = \"{release}\"")));
+        assert!(!extended.programs_py.contains("package_release_hash="));
+        let init = &extended.init_py;
+        let extension = init
+            .find("from .extensions import *  # noqa: F401,F403")
+            .expect("extension import");
+        let stamp = init
+            .find("DEMO_PROGRAM = _with_program_identity(\n    DEMO_PROGRAM, package_release_hash=DEMO_PACKAGE_RELEASE_HASH\n)\nPROGRAMS = {**PROGRAMS, \"demo\": DEMO_PROGRAM}\n")
+            .expect("identity stamp");
+        assert!(extension < stamp, "{init}");
+        assert!(init.contains(
+            "from arete import with_program_identity as _with_program_identity  # noqa: E402"
+        ));
     }
 
     #[test]
