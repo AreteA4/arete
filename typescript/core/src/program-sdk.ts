@@ -15,8 +15,11 @@ interface ProgramReadDescriptorCarrier {
 /**
  * Bundle a generated program definition with its default read descriptor.
  *
- * Generated SDK entries call this automatically. The descriptor is deliberately
- * non-enumerable so it remains an implementation detail of the program cartridge.
+ * Generated SDK entries call this automatically. The descriptor lives under a
+ * registry symbol, so `Object.keys` and `JSON.stringify` never see it, while
+ * `{ ...program }` keeps it: a spread program still reads through its release.
+ * Every other own property (including the runtime extension carrier) is copied
+ * unchanged.
  */
 export function withProgramRead<
   TProgram extends ProgramSdkDefinition,
@@ -32,7 +35,7 @@ export function withProgramRead<
   ) as TProgram;
   Object.defineProperty(bundled, PROGRAM_READ_DESCRIPTOR, {
     value: descriptor,
-    enumerable: false,
+    enumerable: true,
     configurable: false,
     writable: false,
   });

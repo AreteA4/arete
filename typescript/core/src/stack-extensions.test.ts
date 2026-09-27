@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  PROGRAM_OPERATION_EXTENSIONS,
+  STACK_RUNTIME_EXTENSIONS,
   applyConnectedStackExtensions,
   createPreparedFlow,
   createPreparedInstruction,
@@ -348,6 +350,85 @@ describe('extendPrograms', () => {
     expect(extended.ore.addresses).toEqual({ vault: 'vault' });
     expect(extended.ore.math.double(3)).toBe(6);
     expect(extended.entropy.name).toBe('entropy');
+  });
+});
+
+describe('spread-safe runtime extensions', () => {
+  const descriptor = {
+    release: { programReleaseHash: 'release-ore', programSpecHash: 'spec-ore' },
+    transport: { kind: 'local-http', endpointSource: 'connect-http-url' },
+  } as const;
+
+  it('keeps read, flows and readArgCounts when a stack is spread', () => {
+    const extended = extendStack(BASE_STACK, {
+      readArgCounts: { ping: 0 },
+      createRead: () => ({ ping: () => 'pong' }),
+      createFlows: () => ({
+        close: flowOperation(async () => createPreparedFlow({
+          name: 'close',
+          transactions: [{
+            name: 'close',
+            instructions: [{ programId: 'x', keys: [], data: new Uint8Array([]) }],
+          }],
+          artifacts: {},
+        })),
+      }),
+    });
+    const spread = { ...extended, name: 'renamed' };
+
+    expect(getStackRuntimeExtensions(spread)).toBe(getStackRuntimeExtensions(extended));
+    expect(getStackRuntimeExtensions(spread)?.readArgCounts).toEqual({ ping: 0 });
+    const client = applyConnectedStackExtensions({}, spread) as {
+      read?: { ping(): string };
+      flows?: { close?: unknown };
+    };
+    expect(client.read?.ping()).toBe('pong');
+    expect(client.flows?.close).toBeDefined();
+
+    // Invisible to key enumeration and serialization.
+    expect(Object.keys(extended)).toEqual(Object.keys(BASE_STACK));
+    expect(JSON.parse(JSON.stringify(extended))).toEqual(JSON.parse(JSON.stringify(BASE_STACK)));
+  });
+
+  it('keeps operations and the read descriptor when a program is spread', () => {
+    const program = withProgramRead(
+      extendProgram(BASE_PROGRAM, {
+        createOperations: () => ({ instructions: { ping: 'op' as never } }),
+      }),
+      descriptor,
+    );
+    const spread = { ...program };
+
+    expect(getProgramReadDescriptor(spread)).toBe(descriptor);
+    expect(getProgramRuntimeExtensions(spread)).toBe(getProgramRuntimeExtensions(program));
+    expect(getProgramRuntimeExtensions(spread)?.createOperations?.({
+      chain: null as never,
+      wallet: undefined,
+      program: {} as never,
+    })?.instructions).toEqual({ ping: 'op' });
+    expect(Object.getOwnPropertySymbols(spread)).toContain(PROGRAM_OPERATION_EXTENSIONS);
+    expect(Object.keys(spread)).not.toContain('__areteProgramOperationExtensions');
+    expect(JSON.stringify(spread)).not.toContain('areteProgram');
+  });
+
+  it('keeps operations written by a generated object literal when spread', () => {
+    const generated = {
+      ...BASE_PROGRAM,
+      [PROGRAM_OPERATION_EXTENSIONS]: {
+        createOperations: () => ({ instructions: { ping: 'op' as never } }),
+      },
+    };
+    const spread = { ...generated };
+
+    expect(getProgramRuntimeExtensions(spread)?.createOperations).toBe(
+      generated[PROGRAM_OPERATION_EXTENSIONS].createOperations
+    );
+    expect(Object.keys(generated)).toEqual(Object.keys(BASE_PROGRAM));
+  });
+
+  it('uses registry symbols so separate module copies interoperate', () => {
+    expect(STACK_RUNTIME_EXTENSIONS).toBe(Symbol.for('@usearete/sdk/stack-runtime-extensions'));
+    expect(PROGRAM_OPERATION_EXTENSIONS).toBe(Symbol.for('@usearete/sdk/program-runtime-extensions'));
   });
 });
 

@@ -9,8 +9,27 @@ import type { ProgramSdkDefinition, StackDefinition } from './types';
 import { PROGRAM_READ_DESCRIPTOR } from './program-sdk';
 import type { WalletAdapter } from './wallet/types';
 
-export const STACK_RUNTIME_EXTENSIONS = '__areteStackRuntimeExtensions' as const;
-export const PROGRAM_OPERATION_EXTENSIONS = '__areteProgramOperationExtensions' as const;
+/**
+ * Runtime extension carriers live under registry symbols (`Symbol.for`), so
+ * two copies of this module still read each other's definitions. The
+ * properties are enumerable: `{ ...stack }` and `{ ...program }` keep them,
+ * while `Object.keys`, `for…in` and `JSON.stringify` never see a symbol key.
+ *
+ * The constants are typed as their historical property names rather than as
+ * `unique symbol`. Generated program SDKs use them as computed keys inside
+ * object literals, and TypeScript can only name a `unique symbol` key in
+ * emitted declarations from a file that imports it; a string-literal key type
+ * keeps every generated `.d.ts` nameable and identical across module copies.
+ * Always read and write these properties through the constants (or
+ * `getStackRuntimeExtensions` / `getProgramRuntimeExtensions`), never by the
+ * literal name.
+ */
+export const STACK_RUNTIME_EXTENSIONS = Symbol.for(
+  '@usearete/sdk/stack-runtime-extensions',
+) as unknown as '__areteStackRuntimeExtensions';
+export const PROGRAM_OPERATION_EXTENSIONS = Symbol.for(
+  '@usearete/sdk/program-runtime-extensions',
+) as unknown as '__areteProgramOperationExtensions';
 
 type EmptyRecord = Record<string, never>;
 
@@ -403,7 +422,8 @@ export function extendProgram<
           );
         },
       },
-      enumerable: false,
+      // Enumerable so spreading the extended program keeps its operations.
+      enumerable: true,
       configurable: false,
       writable: false,
     });
@@ -619,7 +639,8 @@ export function extendStack<
             )
           : extensions.createFlows ?? baseRuntime?.createFlows,
       },
-      enumerable: false,
+      // Enumerable so `{ ...stack }` keeps `read`, `flows` and `readArgCounts`.
+      enumerable: true,
       configurable: false,
       writable: false,
     });
