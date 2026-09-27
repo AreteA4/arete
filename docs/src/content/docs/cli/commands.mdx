@@ -447,6 +447,66 @@ a4 auth whoami
 
 **Credentials location:** `~/.arete/credentials.toml`
 
+### a4 auth keys
+
+List your API keys, or create a publishable key for browser code.
+
+```bash
+a4 auth keys list [--json]
+
+a4 auth keys create-publishable --origin http://localhost:5173
+a4 auth keys create-publishable --origin https://app.example.com --name web --env-file .env.local
+a4 auth keys create-publishable --origin http://localhost:5173 --json
+```
+
+A publishable key is safe in browser code, but **each key allows exactly one
+origin** (`scheme://host[:port]`, no path or trailing slash). Create one key per
+origin, for example one for `http://localhost:5173` and one for production.
+
+**`create-publishable` options:**
+
+| Flag                    | Description                                                                                                                                                            |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--origin, -o <origin>` | The one origin the key allows (required)                                                                                                                               |
+| `--name, -n <name>`     | Key name (optional)                                                                                                                                                    |
+| `--expiry-days, -e <n>` | Days until the key expires (default 365)                                                                                                                               |
+| `--env-file <path>`     | Write or update only the key's environment variable in this file, creating it if needed. Relative paths must stay inside the project; absolute paths are used as given |
+
+The command prints the environment variable to set for the framework it
+detects in the project directory (the directory holding `arete.toml`):
+
+| Detected                                               | Variable                            |
+| ------------------------------------------------------ | ----------------------------------- |
+| Next.js (`next.config.*`, or `next` in `package.json`) | `NEXT_PUBLIC_ARETE_PUBLISHABLE_KEY` |
+| Vite (`vite.config.*`, or `vite` in `package.json`)    | `VITE_ARETE_PUBLISHABLE_KEY`        |
+| Anything else                                          | `ARETE_PUBLISHABLE_KEY`             |
+
+`--env-file` changes no other line in the file and never prints its contents.
+The path is checked before the key is created. The command never prompts, so
+it is safe to script, and exits non-zero when the API call fails (as does
+`list`).
+
+**`--json` output:**
+
+```json
+{
+  "schemaVersion": 1,
+  "id": 42,
+  "name": "web",
+  "keyClass": "publishable",
+  "origins": ["http://localhost:5173"],
+  "expiresAt": "2027-09-25T00:00:00Z",
+  "key": "hspk_…",
+  "framework": "vite",
+  "envVar": "VITE_ARETE_PUBLISHABLE_KEY",
+  "envFile": "/home/x/app/.env.local",
+  "envFileChange": "replaced"
+}
+```
+
+`envFile` and `envFileChange` (`created`, `appended`, `replaced` or
+`unchanged`) are `null` without `--env-file`. The key is shown only once.
+
 ---
 
 ## Schema Discovery

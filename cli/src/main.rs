@@ -582,14 +582,21 @@ enum KeysCommands {
         #[arg(short, long)]
         name: Option<String>,
 
-        /// Allowed origins (e.g., https://example.com or http://localhost:5173)
-        /// Can specify multiple: --origin https://app.com --origin https://www.app.com
-        #[arg(short, long, required = true, num_args = 1..)]
+        /// The one origin the key allows, as scheme://host[:port]
+        /// (e.g. https://example.com or http://localhost:5173). Each key
+        /// allows exactly one origin; create one key per origin.
+        #[arg(short, long, required = true)]
         origin: Vec<String>,
 
         /// Number of days until the key expires (default: 365)
         #[arg(short, long)]
         expiry_days: Option<i64>,
+
+        /// Write (or update) only the key's environment variable in this file,
+        /// e.g. .env.local. Relative paths must stay inside the project; pass
+        /// an absolute path to write elsewhere
+        #[arg(long, value_name = "PATH")]
+        env_file: Option<String>,
     },
 }
 
@@ -1292,12 +1299,22 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             AuthCommands::Status => commands::auth::status(),
             AuthCommands::Whoami => commands::auth::whoami(),
             AuthCommands::Keys(keys_cmd) => match keys_cmd {
-                KeysCommands::List => commands::auth::list_keys(),
+                KeysCommands::List => commands::auth::list_keys(cli.json),
                 KeysCommands::CreatePublishable {
                     name,
                     origin,
                     expiry_days,
-                } => commands::auth::create_publishable_key(name, origin, expiry_days),
+                    env_file,
+                } => commands::auth::create_publishable_key(
+                    commands::auth::CreatePublishableArgs {
+                        name,
+                        origins: origin,
+                        expiry_days,
+                        env_file,
+                    },
+                    &cli.config,
+                    cli.json,
+                ),
             },
         },
         Commands::Stack(stack_cmd) => match stack_cmd {
@@ -1822,6 +1839,34 @@ mod tests {
             let cli = Cli::try_parse_from(args).expect("parses");
             let error = run(cli).expect_err("refused").to_string();
             assert!(error.contains(expected), "{args:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn create_publishable_accepts_an_env_file() {
+        let cli = Cli::try_parse_from([
+            "a4",
+            "auth",
+            "keys",
+            "create-publishable",
+            "--origin",
+            "http://localhost:5173",
+            "--env-file",
+            ".env.local",
+            "--json",
+        ])
+        .expect("create-publishable parses");
+        assert!(cli.json);
+        match cli.command {
+            Some(Commands::Auth(AuthCommands::Keys(KeysCommands::CreatePublishable {
+                origin,
+                env_file,
+                ..
+            }))) => {
+                assert_eq!(origin, vec!["http://localhost:5173"]);
+                assert_eq!(env_file.as_deref(), Some(".env.local"));
+            }
+            _ => panic!("expected create-publishable"),
         }
     }
 }
