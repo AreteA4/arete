@@ -34,8 +34,24 @@ impl ProjectLock {
         let path = path.as_ref();
         let source = fs::read_to_string(path)
             .with_context(|| format!("Failed to read lockfile {}", path.display()))?;
-        let mut lock: Self = toml::from_str(&source)
-            .with_context(|| format!("Failed to decode strict lockfile {}", path.display()))?;
+        // The version is read before the strict decode, so a lock a newer a4
+        // wrote in a newer format says so instead of naming a field.
+        if let Some(version) = toml::from_str::<toml::Value>(&source)
+            .ok()
+            .and_then(|value| value.get("lock_version")?.as_integer())
+            .filter(|version| *version > i64::from(LOCK_VERSION))
+        {
+            bail!(
+                "{} has lock_version {version}, written by a newer a4; this a4 reads lock_version {LOCK_VERSION}. Upgrade a4 (`a4 self update`)",
+                path.display()
+            );
+        }
+        let mut lock: Self = toml::from_str(&source).with_context(|| {
+            format!(
+                "Failed to decode strict lockfile {} (if a newer a4 wrote it, upgrade a4 with `a4 self update`)",
+                path.display()
+            )
+        })?;
         lock.normalize_and_validate()?;
         Ok(lock)
     }
@@ -636,6 +652,40 @@ mod tests {
             },
             "only a composed stack has",
         );
+    }
+
+    #[test]
+    fn a_lock_from_a_newer_format_says_to_upgrade() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("arete.lock");
+        std::fs::write(
+            &path,
+            format!(
+                "lock_version = 2\nmanifest_hash = \"arete-manifest-v1:{:064x}\"\nresolver_contract = \"{RESOLVER_CONTRACT}\"\nfuture_field = true\n",
+                8
+            ),
+        )
+        .unwrap();
+        let error = format!("{:#}", ProjectLock::load(&path).unwrap_err());
+        assert!(
+            error.contains("lock_version 2, written by a newer a4"),
+            "{error}"
+        );
+        assert!(error.contains("a4 self update"), "{error}");
+
+        // A current-version lock with a field this a4 does not know points at
+        // the same fix.
+        std::fs::write(
+            &path,
+            format!(
+                "lock_version = 1\nmanifest_hash = \"arete-manifest-v1:{:064x}\"\nresolver_contract = \"{RESOLVER_CONTRACT}\"\nfuture_field = true\n",
+                8
+            ),
+        )
+        .unwrap();
+        let error = format!("{:#}", ProjectLock::load(&path).unwrap_err());
+        assert!(error.contains("unknown field `future_field`"), "{error}");
+        assert!(error.contains("a4 self update"), "{error}");
     }
 
     #[test]
