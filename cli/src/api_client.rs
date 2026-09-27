@@ -786,6 +786,11 @@ pub struct RegistrySdkExtensionManifest {
     /// language dimension on sdk_extension_contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Extension API contract the bundle was written against: a positive
+    /// integer the installed SDK runtime must report as its own
+    /// `extensionApi`. `sdkRange` stays as the floor for older CLIs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension_api: Option<std::num::NonZeroU32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2741,6 +2746,34 @@ mod tests {
             artifact.sdk_output_tree_hash.as_deref(),
             Some("arete:h1:sdk-output-tree:sha256:typed-tree")
         );
+        assert_eq!(artifact.manifest.extension_api, None);
+        // An absent extensionApi is not written back, so cached manifests
+        // round-trip unchanged.
+        assert!(!serde_json::to_string(&artifact.manifest)
+            .unwrap()
+            .contains("extensionApi"));
+    }
+
+    #[test]
+    fn sdk_extension_manifest_accepts_only_a_positive_extension_api() {
+        let manifest = |extension_api: serde_json::Value| {
+            serde_json::from_value::<RegistrySdkExtensionManifest>(json!({
+                "entry": "index.ts",
+                "files": ["index.ts"],
+                "inputKind": null,
+                "inputHash": null,
+                "sdkRange": "^0.23.0",
+                "extensionApi": extension_api
+            }))
+        };
+        assert_eq!(
+            manifest(json!(1)).unwrap().extension_api.map(|v| v.get()),
+            Some(1)
+        );
+        assert_eq!(manifest(json!(null)).unwrap().extension_api, None);
+        for invalid in [json!(0), json!(-1), json!(1.5), json!("1")] {
+            assert!(manifest(invalid.clone()).is_err(), "{invalid}");
+        }
     }
 
     #[test]

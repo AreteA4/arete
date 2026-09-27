@@ -287,8 +287,15 @@ auth tokens per binding.
   `extensionApi` it targets; `sdkRange` stays as a floor for older CLIs.
 - **Extensions pipeline**: one `extensions.json` manifest
   (`entry`, `files`, `inputKind`, `inputHash`, `sdkRange`, optional `language` —
-  absent = TypeScript, `"rust"`, `"python"`). CLI (`a4 sdk create/install/sync`)
-  resolves → pin-validates against stack-manifest / program-spec hashes (hard errors on
+  absent = TypeScript, `"rust"`, `"python"` — and optional `extensionApi`, a positive
+  integer). A declared `extensionApi` must equal the installed runtime's (TS
+  `node_modules/@usearete/sdk/package.json`; Rust the path/`[patch]` crate or the
+  `Cargo.lock` release in Cargo's source cache; Python the project virtualenv's
+  `arete/extensions.py`): a mismatch is a hard error, a runtime without the value warns,
+  and nothing is checked when the runtime is not installed. Without `extensionApi` the
+  `sdkRange` comparison stays warning-only. `extensionApi` is hashed into the bundle's
+  `contentSha256` only when declared, so existing bundle identities are unchanged.
+  CLI (`a4 sdk create/install/sync`) resolves → pin-validates against stack-manifest / program-spec hashes (hard errors on
   mismatch) → stages files verbatim → wires them into the generated module using the
   language's explicit wiring convention → records `sdk-provenance.json`.
 

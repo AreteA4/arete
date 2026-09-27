@@ -253,6 +253,7 @@ a4 doctor --fix      # re-run the init writers for every agents.* warning, then 
 | `cli.path`              | Install directory is on PATH                                                          | `warn`: prints the `export PATH=…` line                                                       |
 | `project.manifest`      | `arete.toml` parses                                                                   | `fail`: `a4 init` / `a4 config validate`                                                      |
 | `project.lock`          | `arete.lock` is fresh                                                                 | `warn`: `a4 install`                                                                          |
+| `sdk.runtime`           | Installed TypeScript runtime matches the generated SDKs (see below)                   | `warn` with an `npm install` line; `fail` only for an `extensionApi` mismatch                 |
 | `auth.credentials`      | Key present for the active API URL                                                    | `info`: `a4 auth signup` (not needed to explore)                                              |
 | `auth.whoami`           | Credentials are accepted by the server                                                | `fail`: `a4 auth login --key …`                                                               |
 | `account.transactions`  | Account can inspect and send transactions (`transaction_inspect`, `transaction_send`) | `info`, naming the missing capabilities; `unknown` when the server cannot say                 |
@@ -282,6 +283,8 @@ a4 doctor --fix      # re-run the init writers for every agents.* warning, then 
 `status` is `ok`, `warn`, or `fail`; each check is `ok | warn | fail | info | unknown`. `unknown` means the check could not be decided (for example, the API does not report account capabilities) and, like `info`, never changes the overall status. Exit 0 for `ok` and `warn`, 1 for `fail`. `--fix` never touches auth, account, network, or tool checks. Human output is one line per check followed by the list of fixes.
 
 The `account.*` checks read your account's capabilities from `GET /api/auth/me` with the stored key, and are skipped when no key is configured. A missing capability is reported, not failed: reads and subscriptions work without transaction access.
+
+`sdk.runtime` reads the `@usearete/*` packages that each TypeScript output of `arete.toml` resolves from `node_modules`. It warns when `@usearete/sdk`, `@usearete/react`, and the adapters are not all one version, when more than one copy of `@usearete/sdk` is installed (for example `node_modules/@usearete/react/node_modules/@usearete/sdk`), when `@usearete/sdk` is missing, and when the installed runtime differs from the `a4` version that generated the code. It fails only when a generated extension declares an `extensionApi` that differs from the installed `@usearete/sdk`'s, because that code cannot run. It is `info` (not applicable) when the project has no TypeScript outputs or no `node_modules`.
 
 ### a4 config validate
 
@@ -920,6 +923,8 @@ Installed 2 dependencies and wrote /app/arete.lock
 Requested:   program ore@1.0.2
 Regenerated: stack ore@1.0.1 (inputs unchanged)
 Shared:      program ore@1.0.2 is also provided by stack ore (the same program SDK release, generated identically in both)
+Runtime:     the generated TypeScript needs these packages (a4 does not change package.json):
+             npm install @usearete/sdk@0.23.0 @usearete/react@0.23.0 "zod@^3.24.1"
 Auth for stack ore:
   Live views: signed_session
   Chain reads: anonymous, publishable, secret keys; scopes read
@@ -935,8 +940,38 @@ dependency with a reason such as `inputs unchanged`, `newly locked`, or
 hosted stack's install descriptor: after a stack add it covers that stack, and
 after a plain `a4 install` every hosted stack. With the global `--json` flag,
 stdout carries one JSON document with `requested`, `regenerated[]` (`kind`,
-`alias`, `version`, `reason`), `shared[]`, `auth[]`, and `notes[]`, and
-progress moves to stderr.
+`alias`, `version`, `reason`), `shared[]`, `auth[]`, `runtime[]`, and
+`notes[]`, and progress moves to stderr.
+
+When the project generates TypeScript, `Runtime` lists the packages the
+generated code imports, as one `npm install` line. `@usearete/*` packages are
+released together with `a4`, so they are pinned to the CLI's own version:
+`@usearete/sdk` always, `@usearete/react` when the nearest `package.json`
+depends on `react`, `@usearete/adapter-web3js` when it depends on
+`@solana/web3.js` or a `@solana/wallet-adapter-*` package, and
+`@usearete/adapter-kit` when it depends on `@solana/kit`. `zod` uses the range
+`@usearete/sdk` declares. `a4` never edits `package.json` or runs a package
+manager; run the line with the package manager you use. In `--json` output the
+same set is `runtime[]`, each entry a `{ "package", "version" }` pair.
+
+### SDK extension compatibility
+
+An SDK extension's `extensions.json` can declare `extensionApi`, a positive
+integer naming the extension contract it was written against. Each SDK
+records its own value: `arete.extensionApi` in the `@usearete/sdk`
+`package.json`, `[package.metadata.arete] extension-api` in the
+`arete-a4-sdk` crate, and `EXTENSION_API_VERSION` in the `arete-sdk` Python
+package. When an extension declares `extensionApi` and the SDK is already
+installed where the output is generated, the two must match: `a4` stops with
+an error that names both values and a fix. An installed SDK that does not
+record the value yet produces a warning. The Rust SDK is read from a path
+dependency or `[patch]` entry, or from Cargo's source cache for the release
+`Cargo.lock` pins; the Python SDK is read from the active virtual environment
+or a `.venv` / `venv` directory above the output.
+
+Without `extensionApi`, the older `sdkRange` field is compared with the
+installed SDK version and a mismatch is only a warning, since published
+ranges are often older than the SDK releases they work with.
 
 ### Program SDKs in stacks
 

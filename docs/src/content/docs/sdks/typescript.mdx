@@ -755,6 +755,8 @@ On runtimes without a global `WebSocket` (Node.js 20), the harness installs a st
 
 The version of the extension contract: `defineStackExtensions`, `defineProgramExtensions`, `extendProgram`, `extendPrograms`, `extendStack`, `withProgramRead`, and the instruction helpers generated code imports. It changes only on a breaking change to that contract, so generated SDKs and extensions keep working across SDK releases that export the same value. Tools can read it without loading the package from `package.json` as `arete.extensionApi`.
 
+An SDK extension's `extensions.json` can declare the value it was written against as `extensionApi`. `a4` refuses to generate an SDK with an extension whose `extensionApi` differs from the installed `@usearete/sdk`'s, and `a4 doctor` reports the same mismatch for generated code (see [SDK extension compatibility](/cli/commands/#sdk-extension-compatibility)).
+
 Generated stack and program objects keep their runtime extensions (`read`, `flows`, program operations, and the program read descriptor) under symbol keys. Spreading them (`{ ...MY_STACK }`) keeps those extensions, while `Object.keys` and `JSON.stringify` do not list them.
 
 ### `createSession(definition, options?)`

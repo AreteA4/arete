@@ -95,6 +95,8 @@ struct ExtensionSummary {
     input_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sdk_range: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extension_api: Option<std::num::NonZeroU32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1071,6 +1073,7 @@ fn extension_summary(extension: &RegistrySdkExtensionArtifact) -> Result<Extensi
         input_kind,
         input_hash: extension.manifest.input_hash.clone(),
         sdk_range: extension.manifest.sdk_range.clone(),
+        extension_api: extension.manifest.extension_api,
     })
 }
 

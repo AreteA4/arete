@@ -24,6 +24,7 @@ use super::registry_cache;
 use super::resolver::{
     RegistryDependencyRequest, RegistryResolveRequest, ResolvedRegistryDependency,
 };
+use super::runtime;
 use super::{InstallPlan, ProjectLock, ProjectManifest, GENERATOR_CONTRACT, RESOLVER_CONTRACT};
 
 const INSTALL_JOURNAL: &str = ".arete/install-journal.json";
@@ -819,6 +820,12 @@ fn install_loaded_project(
         regenerated: Vec::new(),
         shared: shared_program_sdks(&resolved),
         auth: Vec::new(),
+        runtime: runtime::typescript_runtime_for_outputs(
+            plan.outputs
+                .iter()
+                .filter(|output| output.target == InstallTarget::TypeScript)
+                .map(|output| output.path.as_path()),
+        ),
         notes: redeploy_notes(&manifest, previous_lock.as_ref(), &prospective_lock),
     }
     .with_dependencies(&requested, previous_lock.as_ref(), &prospective_lock)
@@ -858,6 +865,9 @@ struct InstallReport {
     shared: Vec<SharedProgramSdk>,
     /// Account requirements of the hosted stacks this install reports on.
     auth: Vec<StackAuthRequirements>,
+    /// The packages the generated TypeScript needs at run time, at the CLI's
+    /// lockstep version. Printed, never written to package.json.
+    runtime: Vec<runtime::RuntimePackage>,
     notes: Vec<String>,
 }
 
@@ -1045,6 +1055,15 @@ impl InstallReport {
         }
         for shared in &self.shared {
             println!("{}", describe_shared(shared));
+        }
+        if !self.runtime.is_empty() {
+            println!(
+                "Runtime:     the generated TypeScript needs these packages (a4 does not change package.json):"
+            );
+            println!(
+                "             {}",
+                runtime::npm_install_command(&self.runtime)
+            );
         }
         for note in &self.notes {
             println!("{note}");
@@ -4907,6 +4926,7 @@ version = "^1.0.0"
             regenerated: Vec::new(),
             shared: shared_program_sdks(&resolved),
             auth: Vec::new(),
+            runtime: runtime::typescript_runtime_set(&BTreeSet::from(["react".to_string()])),
             notes: Vec::new(),
         }
         .with_dependencies(&requested, Some(&previous), &next)
@@ -4921,6 +4941,15 @@ version = "^1.0.0"
         assert_eq!(value["shared"][0]["stack"], "ore");
         // A program request reports no stack's auth; a stack request does.
         assert_eq!(value["auth"], json!([]));
+        let version = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            value["runtime"],
+            json!([
+                {"package": "@usearete/sdk", "version": version},
+                {"package": "@usearete/react", "version": version},
+                {"package": "zod", "version": runtime::ZOD_RANGE},
+            ])
+        );
 
         let stack_request = [(DependencyKind::Stack, "ore".to_string())];
         let report = InstallReport {
@@ -4930,6 +4959,7 @@ version = "^1.0.0"
             regenerated: Vec::new(),
             shared: Vec::new(),
             auth: Vec::new(),
+            runtime: Vec::new(),
             notes: Vec::new(),
         }
         .with_auth(&stack_request, &resolved);

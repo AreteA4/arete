@@ -3,7 +3,8 @@
 //!
 //! Spec: `docs/internal/agent-first-onboarding.md` (WP8).
 
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -20,6 +21,8 @@ use crate::api_client::{
     AccountCapabilities, ApiClient, ApiHttpError, CAPABILITY_CREATE_DEPLOYMENT,
     CAPABILITY_TRANSACTION_INSPECT, CAPABILITY_TRANSACTION_SEND,
 };
+use crate::project::manifest::InstallTarget;
+use crate::project::runtime;
 use crate::selfhost::{latest, platform, receipt::Receipt};
 use crate::ui;
 
@@ -219,9 +222,12 @@ fn render(checks: &[Check], status: Status) -> String {
 /// Loaded manifest facts the checks need.
 struct ProjectFacts {
     name: String,
+    root: PathBuf,
     dependencies: usize,
     authoring_stacks: usize,
     lock_fresh: Option<bool>,
+    /// Where the project's TypeScript SDKs are generated.
+    typescript_outputs: Vec<PathBuf>,
 }
 
 /// Run every check from the WP8 table, in order.
@@ -278,6 +284,12 @@ pub fn run_checks(env: &Env, config_path: &Path) -> Vec<Check> {
             "arete.lock missing",
             Some("a4 install".to_string()),
         ),
+    });
+
+    // sdk.runtime
+    checks.push(match &facts {
+        None => Check::info("sdk.runtime", "not checked (no valid manifest)", None),
+        Some(facts) => sdk_runtime(&facts.root, &facts.typescript_outputs, current),
     });
 
     // auth.credentials / auth.whoami
@@ -488,11 +500,18 @@ fn project_manifest(config_path: &Path) -> std::result::Result<ProjectFacts, Che
         ));
     }
     match crate::project::installer::validate_project(config_path, true) {
-        Ok((manifest, _plan, lock)) => Ok(ProjectFacts {
+        Ok((manifest, plan, lock)) => Ok(ProjectFacts {
             name: manifest.document.project.name.clone(),
+            root: manifest.root.clone(),
             dependencies: manifest.dependencies().count(),
             authoring_stacks: manifest.document.authoring.stacks.len(),
             lock_fresh: lock.map(|lock| lock.is_fresh(&manifest.manifest_hash)),
+            typescript_outputs: plan
+                .outputs
+                .into_iter()
+                .filter(|output| output.target == InstallTarget::TypeScript)
+                .map(|output| output.path)
+                .collect(),
         }),
         Err(error) => Err(Check::fail(
             id,
@@ -617,6 +636,269 @@ fn account_checks(
         }
     };
     vec![transactions, deploy]
+}
+
+/// `sdk.runtime`: the TypeScript runtime installed for the project's
+/// TypeScript outputs. Every problem is a warning except an extension whose
+/// `extensionApi` differs from the installed `@usearete/sdk`'s, which fails:
+/// that code cannot run. Not applicable without TypeScript outputs or
+/// `node_modules`.
+fn sdk_runtime(root: &Path, typescript_outputs: &[PathBuf], cli_version: &str) -> Check {
+    let id = "sdk.runtime";
+    if typescript_outputs.is_empty() {
+        return Check::info(id, "not applicable (no TypeScript outputs)", None);
+    }
+    let shown = |path: &Path| {
+        path.strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    };
+    let has_node_modules = |output: &PathBuf| {
+        output
+            .ancestors()
+            .any(|ancestor| ancestor.join("node_modules").is_dir())
+    };
+    let outputs: Vec<&PathBuf> = typescript_outputs
+        .iter()
+        .filter(|output| has_node_modules(output))
+        .collect();
+    if outputs.is_empty() {
+        return Check::info(id, "not applicable (no node_modules)", None);
+    }
+
+    // The code was generated for the runtime release of the CLI that
+    // generated it; fixes target that release.
+    let generators: BTreeSet<String> = outputs
+        .iter()
+        .filter_map(|output| generator_version(output))
+        .collect();
+    let expected = match generators.iter().collect::<Vec<_>>().as_slice() {
+        [only] => only.as_str(),
+        _ => cli_version,
+    };
+
+    let mut problems = Vec::new();
+    let mut failed = false;
+    let mut installed_summary = BTreeSet::new();
+    let mut fix_packages = BTreeSet::new();
+    for output in &outputs {
+        fix_packages.extend(runtime::app_dependencies(output));
+        let Some(sdk_dir) = runtime::resolve_npm_package(output, runtime::TYPESCRIPT_SDK) else {
+            problems.push(format!(
+                "{} is not installed for {}",
+                runtime::TYPESCRIPT_SDK,
+                shown(output)
+            ));
+            continue;
+        };
+        let installed: Vec<(&str, runtime::InstalledRuntime)> = runtime::TYPESCRIPT_LOCKSTEP
+            .iter()
+            .filter_map(|package| {
+                let dir = runtime::resolve_npm_package(output, package)?;
+                Some((*package, runtime::read_installed_npm_package(&dir)?))
+            })
+            .collect();
+        for (package, _) in &installed {
+            if *package == runtime::TYPESCRIPT_REACT {
+                fix_packages.insert("react".to_string());
+            } else if *package == runtime::TYPESCRIPT_ADAPTER_WEB3JS {
+                fix_packages.insert("@solana/web3.js".to_string());
+            } else if *package == runtime::TYPESCRIPT_ADAPTER_KIT {
+                fix_packages.insert("@solana/kit".to_string());
+            }
+        }
+        let Some(sdk) = installed
+            .iter()
+            .find(|(package, _)| *package == runtime::TYPESCRIPT_SDK)
+            .map(|(_, sdk)| sdk.clone())
+        else {
+            problems.push(format!(
+                "{} at {} has no readable package.json",
+                runtime::TYPESCRIPT_SDK,
+                shown(&sdk_dir)
+            ));
+            continue;
+        };
+        for (package, found) in &installed {
+            let api = match (package, found.extension_api) {
+                (&runtime::TYPESCRIPT_SDK, Some(api)) => format!(" (extension API {api})"),
+                _ => String::new(),
+            };
+            installed_summary.insert(format!("{package} {}{api}", found.version));
+        }
+
+        // One version across the lockstep packages.
+        let versions: BTreeSet<&str> = installed
+            .iter()
+            .map(|(_, found)| found.version.as_str())
+            .collect();
+        if versions.len() > 1 {
+            problems.push(format!(
+                "runtime packages differ in version ({})",
+                installed
+                    .iter()
+                    .map(|(package, found)| format!("{package} {}", found.version))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+
+        // One copy of @usearete/sdk.
+        let copies = sdk_copies(&sdk_dir, &installed);
+        if copies.len() > 1 {
+            problems.push(format!(
+                "{} copies of {} ({})",
+                copies.len(),
+                runtime::TYPESCRIPT_SDK,
+                copies
+                    .iter()
+                    .map(|(path, version)| format!("{} {version}", shown(path)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+
+        // Generated extensions run on this SDK's extension API.
+        for (manifest, declared) in declared_extension_apis(output) {
+            match sdk.extension_api {
+                Some(provided) if provided == declared => {}
+                Some(provided) => {
+                    failed = true;
+                    problems.push(format!(
+                        "{} requires extension API {declared}, but {} {} provides {provided}",
+                        shown(&manifest),
+                        runtime::TYPESCRIPT_SDK,
+                        sdk.version
+                    ));
+                }
+                None => problems.push(format!(
+                    "{} requires extension API {declared}, but {} {} predates extension API versioning",
+                    shown(&manifest),
+                    runtime::TYPESCRIPT_SDK,
+                    sdk.version
+                )),
+            }
+        }
+
+        // The runtime release the code was generated for.
+        if let Some(generator) = generator_version(output) {
+            if generator != sdk.version {
+                problems.push(format!(
+                    "{} was generated by a4 {generator}; the installed runtime is {}",
+                    shown(output),
+                    sdk.version
+                ));
+            }
+        }
+    }
+
+    if problems.is_empty() {
+        return Check::ok(
+            id,
+            installed_summary.into_iter().collect::<Vec<_>>().join(", "),
+        );
+    }
+    // Outputs sharing one node_modules report its problems once.
+    let mut seen = BTreeSet::new();
+    problems.retain(|problem| seen.insert(problem.clone()));
+    let fix =
+        runtime::npm_install_command(&runtime::typescript_runtime_set_at(&fix_packages, expected));
+    let fix = if expected == cli_version {
+        fix
+    } else {
+        format!(
+            "{fix} (the release the SDKs were generated for), or run `a4 install` to regenerate them for {cli_version}"
+        )
+    };
+    let detail = problems.join("; ");
+    if failed {
+        Check::fail(id, detail, Some(fix))
+    } else {
+        Check::warn(id, detail, Some(fix))
+    }
+}
+
+/// The version of the a4 CLI that generated a TypeScript output.
+fn generator_version(output: &Path) -> Option<String> {
+    let provenance: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(output.join("sdk-provenance.json")).ok()?).ok()?;
+    (provenance.pointer("/generator/name")?.as_str()? == env!("CARGO_PKG_NAME"))
+        .then(|| {
+            provenance
+                .pointer("/generator/version")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .flatten()
+}
+
+/// Every copy of `@usearete/sdk` installed under the node_modules that holds
+/// `sdk_dir`: the resolved one, copies nested under the other runtime
+/// packages, and pnpm's per-version store entries.
+fn sdk_copies(
+    sdk_dir: &Path,
+    installed: &[(&str, runtime::InstalledRuntime)],
+) -> Vec<(PathBuf, String)> {
+    let mut copies = BTreeMap::new();
+    let mut record = |dir: PathBuf| {
+        if let Some(found) = runtime::read_installed_npm_package(&dir) {
+            let canonical = std::fs::canonicalize(&dir).unwrap_or(dir.clone());
+            copies.entry(canonical).or_insert((dir, found.version));
+        }
+    };
+    record(sdk_dir.to_path_buf());
+    for (package, found) in installed {
+        if let Some(package_dir) = found.location.parent() {
+            if *package != runtime::TYPESCRIPT_SDK {
+                record(
+                    package_dir
+                        .join("node_modules")
+                        .join(runtime::TYPESCRIPT_SDK),
+                );
+            }
+        }
+    }
+    // node_modules/@usearete/sdk -> node_modules
+    if let Some(node_modules) = sdk_dir.parent().and_then(Path::parent) {
+        if let Ok(entries) = std::fs::read_dir(node_modules.join(".pnpm")) {
+            for entry in entries.filter_map(|entry| entry.ok()) {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with("@usearete+sdk@") {
+                    record(
+                        entry
+                            .path()
+                            .join("node_modules")
+                            .join(runtime::TYPESCRIPT_SDK),
+                    );
+                }
+            }
+        }
+    }
+    copies.into_values().collect()
+}
+
+/// The `extensionApi` each generated extension manifest in a TypeScript
+/// output declares (the stack's own and each program SDK module's).
+fn declared_extension_apis(output: &Path) -> Vec<(PathBuf, u32)> {
+    let mut manifests = vec![output.join("extensions.json")];
+    if let Ok(programs) = std::fs::read_dir(output.join("programs")) {
+        let mut nested = programs
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path().join("extensions.json"))
+            .collect::<Vec<_>>();
+        nested.sort();
+        manifests.extend(nested);
+    }
+    manifests
+        .into_iter()
+        .filter_map(|manifest| {
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&manifest).ok()?).ok()?;
+            let declared = u32::try_from(value.get("extensionApi")?.as_u64()?).ok()?;
+            Some((manifest, declared))
+        })
+        .collect()
 }
 
 fn http_client() -> Result<reqwest::blocking::Client> {
@@ -935,6 +1217,175 @@ mod tests {
             account_unavailable_reason(&anyhow::anyhow!("connection refused"))
                 .contains("connection refused")
         );
+    }
+
+    fn write(path: &Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    fn npm_package(root: &Path, dir: &str, name: &str, version: &str, api: Option<u32>) {
+        let arete = api
+            .map(|api| format!(r#","arete":{{"extensionApi":{api}}}"#))
+            .unwrap_or_default();
+        write(
+            &root.join(dir).join("package.json"),
+            &format!(r#"{{"name":"{name}","version":"{version}"{arete}}}"#),
+        );
+    }
+
+    /// A project with one TypeScript output generated by a4 `generator`.
+    fn runtime_project(generator: &str) -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        write(
+            &temp.path().join("package.json"),
+            r#"{"dependencies":{"react":"^19"}}"#,
+        );
+        let output = temp.path().join("src/arete/ore");
+        write(
+            &output.join("sdk-provenance.json"),
+            &format!(r#"{{"generator":{{"name":"a4-cli","version":"{generator}"}}}}"#),
+        );
+        (temp, output)
+    }
+
+    #[test]
+    fn sdk_runtime_is_not_applicable_without_outputs_or_node_modules() {
+        let (temp, output) = runtime_project("0.23.0");
+        let check = sdk_runtime(temp.path(), &[], "0.23.0");
+        assert_eq!(check.status, Status::Info);
+        assert_eq!(check.detail, "not applicable (no TypeScript outputs)");
+        let check = sdk_runtime(temp.path(), &[output], "0.23.0");
+        assert_eq!(check.status, Status::Info);
+        assert_eq!(check.detail, "not applicable (no node_modules)");
+    }
+
+    #[test]
+    fn sdk_runtime_accepts_one_matching_set() {
+        let (temp, output) = runtime_project("0.23.0");
+        let root = temp.path();
+        npm_package(
+            root,
+            "node_modules/@usearete/sdk",
+            "@usearete/sdk",
+            "0.23.0",
+            Some(1),
+        );
+        npm_package(
+            root,
+            "node_modules/@usearete/react",
+            "@usearete/react",
+            "0.23.0",
+            None,
+        );
+        write(&output.join("extensions.json"), r#"{"extensionApi":1}"#);
+        let check = sdk_runtime(root, &[output], "0.23.0");
+        assert_eq!(check.status, Status::Ok, "{}", check.detail);
+        assert_eq!(
+            check.detail,
+            "@usearete/react 0.23.0, @usearete/sdk 0.23.0 (extension API 1)"
+        );
+    }
+
+    #[test]
+    fn sdk_runtime_warns_about_mixed_versions_duplicates_and_generator_drift() {
+        let (temp, output) = runtime_project("0.23.0");
+        let root = temp.path();
+        npm_package(
+            root,
+            "node_modules/@usearete/sdk",
+            "@usearete/sdk",
+            "0.22.1",
+            Some(1),
+        );
+        npm_package(
+            root,
+            "node_modules/@usearete/react",
+            "@usearete/react",
+            "0.23.0",
+            None,
+        );
+        npm_package(
+            root,
+            "node_modules/@usearete/react/node_modules/@usearete/sdk",
+            "@usearete/sdk",
+            "0.23.0",
+            Some(1),
+        );
+        let check = sdk_runtime(root, &[output], "0.23.0");
+        assert_eq!(check.status, Status::Warn, "{}", check.detail);
+        assert!(
+            check.detail.contains(
+                "runtime packages differ in version (@usearete/sdk 0.22.1, @usearete/react 0.23.0)"
+            ),
+            "{}",
+            check.detail
+        );
+        assert!(
+            check.detail.contains("2 copies of @usearete/sdk (node_modules/@usearete/react/node_modules/@usearete/sdk 0.23.0, node_modules/@usearete/sdk 0.22.1)")
+                || check.detail.contains("2 copies of @usearete/sdk (node_modules/@usearete/sdk 0.22.1, node_modules/@usearete/react/node_modules/@usearete/sdk 0.23.0)"),
+            "{}",
+            check.detail
+        );
+        assert!(
+            check.detail.contains(
+                "src/arete/ore was generated by a4 0.23.0; the installed runtime is 0.22.1"
+            ),
+            "{}",
+            check.detail
+        );
+        assert_eq!(
+            check.fix.as_deref(),
+            Some(r#"npm install @usearete/sdk@0.23.0 @usearete/react@0.23.0 "zod@^3.24.1""#)
+        );
+        assert_ne!(aggregate(&[check]), Status::Fail);
+    }
+
+    #[test]
+    fn sdk_runtime_fails_only_for_an_extension_api_mismatch() {
+        let (temp, output) = runtime_project("0.24.0");
+        let root = temp.path();
+        npm_package(
+            root,
+            "node_modules/@usearete/sdk",
+            "@usearete/sdk",
+            "0.24.0",
+            Some(2),
+        );
+        write(
+            &output.join("programs/ore/extensions.json"),
+            r#"{"entry":"index.ts","extensionApi":1}"#,
+        );
+        let check = sdk_runtime(root, std::slice::from_ref(&output), "0.25.0");
+        assert_eq!(check.status, Status::Fail);
+        assert!(
+            check.detail.contains(
+                "src/arete/ore/programs/ore/extensions.json requires extension API 1, but @usearete/sdk 0.24.0 provides 2"
+            ),
+            "{}",
+            check.detail
+        );
+        assert!(
+            check
+                .fix
+                .as_deref()
+                .unwrap()
+                .contains("or run `a4 install` to regenerate them for 0.25.0"),
+            "{:?}",
+            check.fix
+        );
+
+        // An SDK that predates the contract only warns.
+        npm_package(
+            root,
+            "node_modules/@usearete/sdk",
+            "@usearete/sdk",
+            "0.24.0",
+            None,
+        );
+        let check = sdk_runtime(root, &[output], "0.24.0");
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("predates extension API versioning"));
     }
 
     #[test]

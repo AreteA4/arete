@@ -20,6 +20,7 @@ use crate::commands::public_artifacts::{
     load_local_artifact_stack, load_local_artifact_stack_with_roots, LocalArtifactStack,
 };
 use crate::config::to_kebab_case;
+use crate::project::runtime;
 use crate::telemetry;
 use arete_interpreter::identifiers::{typescript as ts_ident, IdentifierCase};
 
@@ -143,6 +144,11 @@ struct ExtensionsManifest {
     /// manifests round-trip byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     language: Option<String>,
+    /// Extension API contract the bundle was written against. The installed
+    /// SDK runtime must report the same `extensionApi`. Skipped when absent
+    /// so manifests without it round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    extension_api: Option<std::num::NonZeroU32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,6 +194,7 @@ struct ResolvedExtensionsArtifact {
     input_hash: Option<String>,
     sdk_range: Option<String>,
     language: Option<String>,
+    extension_api: Option<std::num::NonZeroU32>,
     sdk_extension_hash: Option<String>,
     sdk_output_tree_hash: Option<String>,
     program_extension_bindings: Vec<ProgramExtensionBinding>,
@@ -206,6 +213,7 @@ impl ResolvedExtensionsArtifact {
             input_hash: self.input_hash.clone(),
             sdk_range: self.sdk_range.clone(),
             language: self.language.clone(),
+            extension_api: self.extension_api,
         }
     }
 }
@@ -375,11 +383,6 @@ impl<'de> Deserialize<'de> for SdkProvenanceManifest {
             )),
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct PackageVersionManifest {
-    version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2072,6 +2075,7 @@ fn build_extensions_artifact(
         input_hash,
         sdk_range,
         language,
+        extension_api: None,
         sdk_extension_hash: None,
         sdk_output_tree_hash: None,
         program_extension_bindings,
@@ -2129,14 +2133,16 @@ fn build_extensions_artifact_from_manifest(
     manifest: ExtensionsManifest,
     source_dir: &Path,
 ) -> Result<ResolvedExtensionsArtifact> {
-    build_extensions_artifact(
+    let mut artifact = build_extensions_artifact(
         manifest.entry,
         read_extensions_files(source_dir, &manifest.files)?,
         manifest.input_kind,
         manifest.input_hash,
         manifest.sdk_range,
         manifest.language,
-    )
+    )?;
+    artifact.extension_api = manifest.extension_api;
+    Ok(artifact)
 }
 
 /// Reject bundles authored for the other SDK language. Bundles without a
@@ -2489,18 +2495,7 @@ fn version_satisfies_range(current: &str, range: &str) -> bool {
 }
 
 fn discover_usearete_sdk_version(start_dir: &Path) -> Option<String> {
-    for ancestor in start_dir.ancestors() {
-        let manifest_path = ancestor.join("node_modules/@usearete/sdk/package.json");
-        if !manifest_path.exists() {
-            continue;
-        }
-
-        let manifest_json = fs::read_to_string(&manifest_path).ok()?;
-        let manifest: PackageVersionManifest = serde_json::from_str(&manifest_json).ok()?;
-        return Some(manifest.version);
-    }
-
-    None
+    runtime::installed_typescript_sdk(start_dir).map(|installed| installed.version)
 }
 
 /// Best-effort discovery of the `arete-a4-sdk` dependency version declared by
@@ -2632,6 +2627,15 @@ fn extensions_artifact_hash(artifact: &ResolvedExtensionsArtifact) -> String {
         "sdk-range",
         artifact.sdk_range.as_deref().unwrap_or("").as_bytes(),
     );
+    // Only a declared contract is hashed, so the identity of every bundle
+    // without one is unchanged.
+    if let Some(extension_api) = artifact.extension_api {
+        update_hash_part(
+            &mut hasher,
+            "extension-api",
+            extension_api.to_string().as_bytes(),
+        );
+    }
 
     let mut files = artifact.files.iter().collect::<Vec<_>>();
     files.sort_by(|left, right| left.path.cmp(&right.path));
@@ -3036,6 +3040,7 @@ fn resolved_extensions_artifact_from_registry(
         artifact.manifest.sdk_range.clone(),
         artifact.manifest.language.clone(),
     )?;
+    resolved.extension_api = artifact.manifest.extension_api;
     resolved.sdk_extension_hash = artifact.sdk_extension_hash.clone();
     resolved.sdk_output_tree_hash = artifact.sdk_output_tree_hash.clone();
     Ok(resolved)
@@ -3544,18 +3549,12 @@ fn stage_extensions_artifact_with_manifest(
         ));
     }
 
-    if let Some(range) = artifact.sdk_range.as_deref() {
-        if let Some(current) = discover_usearete_sdk_version(output_dir) {
-            if !version_satisfies_range(&current, range) {
-                println!(
-                    "{} extensions sdkRange mismatch: manifest={}, current={}",
-                    "⚠".yellow().bold(),
-                    range,
-                    current
-                );
-            }
-        }
-    }
+    check_extension_runtime(
+        artifact,
+        ExtensionRuntime::TypeScript,
+        || runtime::installed_typescript_sdk(output_dir),
+        || discover_usearete_sdk_version(output_dir),
+    )?;
 
     write_extensions_artifact_files(artifact, output_dir, manifest_name)
 }
@@ -3564,7 +3563,9 @@ fn stage_extensions_artifact_with_manifest(
 ///
 /// Runs the same input-pin validation as the TypeScript pipeline, then
 /// requires a flat all-`.rs` file layout (module wiring emits one
-/// `pub mod <stem>;` per file, so nested paths cannot be wired). The
+/// `pub mod <stem>;` per file, so nested paths cannot be wired). A declared
+/// `extensionApi` is checked against the `arete-a4-sdk` crate the package
+/// builds against (see [`check_extension_runtime`]). Without one, the
 /// `sdkRange` check is warning-only best-effort: it compares against the
 /// `arete-a4-sdk` dependency version when one is trivially discoverable from
 /// a `Cargo.toml` at or above the output directory, and skips silently
@@ -3592,18 +3593,12 @@ fn stage_rust_extensions_artifact(
         }
     }
 
-    if let Some(range) = artifact.sdk_range.as_deref() {
-        if let Some(current) = discover_arete_sdk_crate_version(output_dir) {
-            if !version_satisfies_range(&current, range) {
-                println!(
-                    "{} extensions sdkRange mismatch: manifest={}, current={}",
-                    "⚠".yellow().bold(),
-                    range,
-                    current
-                );
-            }
-        }
-    }
+    check_extension_runtime(
+        artifact,
+        ExtensionRuntime::Rust,
+        || runtime::installed_rust_sdk(output_dir),
+        || discover_arete_sdk_crate_version(output_dir),
+    )?;
 
     write_extensions_artifact_files(artifact, output_dir, "extensions.json")
 }
@@ -3613,9 +3608,11 @@ fn stage_rust_extensions_artifact(
 ///
 /// Mirror of [`stage_rust_extensions_artifact`]: same input-pin validation,
 /// then a flat all-`.py` file layout requirement (module wiring emits one
-/// `from . import <stem>` per file, so nested paths cannot be wired). The
-/// `sdkRange` check is warning-only best-effort against an exact `arete-sdk`
-/// pin in a `pyproject.toml` at or above the output directory.
+/// `from . import <stem>` per file, so nested paths cannot be wired). A
+/// declared `extensionApi` is checked against the `arete-sdk` installed in the
+/// project's virtual environment; without one, the `sdkRange` check is
+/// warning-only best-effort against an exact `arete-sdk` pin in a
+/// `pyproject.toml` at or above the output directory.
 fn stage_python_extensions_artifact(
     artifact: &ResolvedExtensionsArtifact,
     output_dir: &Path,
@@ -3639,20 +3636,120 @@ fn stage_python_extensions_artifact(
         }
     }
 
-    if let Some(range) = artifact.sdk_range.as_deref() {
-        if let Some(current) = discover_arete_sdk_python_version(output_dir) {
-            if !version_satisfies_range(&current, range) {
-                println!(
-                    "{} extensions sdkRange mismatch: manifest={}, current={}",
-                    "⚠".yellow().bold(),
-                    range,
-                    current
-                );
-            }
+    check_extension_runtime(
+        artifact,
+        ExtensionRuntime::Python,
+        || runtime::installed_python_sdk(output_dir),
+        || discover_arete_sdk_python_version(output_dir),
+    )?;
+
+    write_extensions_artifact_files(artifact, output_dir, "extensions.json")
+}
+
+/// The SDK runtime an extensions bundle runs on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExtensionRuntime {
+    TypeScript,
+    Rust,
+    Python,
+}
+
+impl ExtensionRuntime {
+    fn package(self) -> &'static str {
+        match self {
+            Self::TypeScript => runtime::TYPESCRIPT_SDK,
+            Self::Rust => runtime::RUST_SDK_CRATE,
+            Self::Python => runtime::PYTHON_SDK_DISTRIBUTION,
         }
     }
 
-    write_extensions_artifact_files(artifact, output_dir, "extensions.json")
+    /// How to install the CLI's lockstep runtime release.
+    fn install_lockstep(self) -> String {
+        let version = runtime::lockstep_version();
+        match self {
+            Self::TypeScript => format!("npm install {}@{version}", runtime::TYPESCRIPT_SDK),
+            Self::Rust => format!(
+                "set {} to version \"{version}\" in Cargo.toml, then cargo update -p {}",
+                runtime::RUST_SDK_CRATE,
+                runtime::RUST_SDK_CRATE
+            ),
+            Self::Python => format!(
+                "pip install {}=={version}",
+                runtime::PYTHON_SDK_DISTRIBUTION
+            ),
+        }
+    }
+}
+
+/// Check an extensions bundle against the SDK runtime it will run on.
+///
+/// A declared `extensionApi` must equal the installed runtime's: a mismatch
+/// is an error with a fix, and a runtime that predates the contract (no
+/// `extensionApi` of its own) only warns. Nothing is checked when the
+/// runtime is not installed yet. Without `extensionApi`, the `sdkRange`
+/// floor is compared with the discovered SDK version and only warns, since
+/// published bundles declare ranges older than the runtime they work with.
+fn check_extension_runtime(
+    artifact: &ResolvedExtensionsArtifact,
+    target: ExtensionRuntime,
+    installed: impl FnOnce() -> Option<runtime::InstalledRuntime>,
+    current_version: impl FnOnce() -> Option<String>,
+) -> Result<()> {
+    let Some(declared) = artifact.extension_api.map(std::num::NonZeroU32::get) else {
+        if let Some(range) = artifact.sdk_range.as_deref() {
+            if let Some(current) = current_version() {
+                if !version_satisfies_range(&current, range) {
+                    println!(
+                        "{} extensions sdkRange mismatch: manifest={}, current={}",
+                        "⚠".yellow().bold(),
+                        range,
+                        current
+                    );
+                }
+            }
+        }
+        return Ok(());
+    };
+    let Some(installed) = installed() else {
+        return Ok(());
+    };
+    let package = target.package();
+    let install_declared = || {
+        if declared == runtime::lockstep_extension_api() {
+            target.install_lockstep()
+        } else {
+            format!("install a {package} release that provides extension API {declared}")
+        }
+    };
+    match installed.extension_api {
+        Some(provided) if provided == declared => Ok(()),
+        Some(provided) => {
+            let fix = if declared == runtime::lockstep_extension_api() || declared > provided {
+                install_declared()
+            } else {
+                format!(
+                    "install extensions built for extension API {provided}, or a {package} release that provides extension API {declared}"
+                )
+            };
+            anyhow::bail!(
+                "Extensions '{}' require extension API {declared}, but the installed {package} {} provides extension API {provided} ({}).\nFix: {fix}",
+                artifact.entry,
+                installed.version,
+                installed.location.display(),
+            )
+        }
+        None => {
+            println!(
+                "{} extensions '{}' require extension API {declared}, but the installed {package} {} predates extension API versioning ({}). Fix: {}",
+                "⚠".yellow().bold(),
+                artifact.entry,
+                installed.version,
+                installed.location.display(),
+                install_declared(),
+            );
+            Ok(())
+        }
+    }
 }
 
 fn write_extensions_artifact_files(
@@ -6074,6 +6171,7 @@ mod tests {
             input_hash: Some(hash.to_string()),
             sdk_range: None,
             language: None,
+            extension_api: None,
             sdk_extension_hash: None,
             sdk_output_tree_hash: None,
             program_extension_bindings: vec![],
@@ -6635,6 +6733,7 @@ mod tests {
                 input_hash: Some(install.stack_manifest_hash.clone()),
                 sdk_range: None,
                 language: Some(EXTENSIONS_LANGUAGE_RUST.to_string()),
+                extension_api: None,
             },
             files: BTreeMap::from([(
                 "extensions.rs".to_string(),
@@ -6887,6 +6986,7 @@ mod tests {
                 input_hash: Some(hash.to_string()),
                 sdk_range: None,
                 language: None,
+                extension_api: None,
                 sdk_extension_hash: None,
                 sdk_output_tree_hash: None,
                 program_extension_bindings: vec![],
@@ -7081,6 +7181,129 @@ mod tests {
     }
 
     #[test]
+    fn extension_api_must_match_the_installed_typescript_sdk() {
+        let temp = tempfile::tempdir().unwrap();
+        let output_dir = temp.path().join("src/generated");
+        let hash = format!("arete:h1:stack-manifest:sha256:{}", "11".repeat(32));
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: hash.clone(),
+        };
+        let install_sdk = |manifest: &str| {
+            let dir = temp.path().join("node_modules/@usearete/sdk");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("package.json"), manifest).unwrap();
+        };
+        let mut artifact = ts_bundle_artifact(&hash);
+        artifact.extension_api = std::num::NonZeroU32::new(2);
+
+        // Nothing installed yet: nothing to compare.
+        stage_extensions_artifact(&artifact, &output_dir, &input_pin)
+            .expect("an uninstalled runtime is not checked");
+
+        install_sdk(r#"{"name":"@usearete/sdk","version":"0.23.0","arete":{"extensionApi":1}}"#);
+        let error = stage_extensions_artifact(&artifact, &output_dir, &input_pin)
+            .expect_err("a different extension API is incompatible");
+        let message = error.to_string();
+        assert!(
+            message.contains(
+                "Extensions 'ore-extensions.ts' require extension API 2, but the installed @usearete/sdk 0.23.0 provides extension API 1"
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains("Fix: install a @usearete/sdk release that provides extension API 2"),
+            "{message}"
+        );
+
+        // A bundle older than the runtime points at the lockstep release.
+        artifact.extension_api = std::num::NonZeroU32::new(1);
+        install_sdk(r#"{"name":"@usearete/sdk","version":"0.30.0","arete":{"extensionApi":3}}"#);
+        let message = stage_extensions_artifact(&artifact, &output_dir, &input_pin)
+            .expect_err("an older bundle is incompatible")
+            .to_string();
+        assert!(
+            message.contains(&format!(
+                "Fix: npm install @usearete/sdk@{}",
+                env!("CARGO_PKG_VERSION")
+            )),
+            "{message}"
+        );
+
+        // Matching contracts pass even though the published sdkRange is stale.
+        install_sdk(r#"{"name":"@usearete/sdk","version":"0.23.0","arete":{"extensionApi":1}}"#);
+        stage_extensions_artifact(&artifact, &output_dir, &input_pin)
+            .expect("a matching extension API is compatible");
+        let staged: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(output_dir.join("extensions.json")).unwrap())
+                .unwrap();
+        assert_eq!(staged["extensionApi"], 1);
+
+        // An SDK that predates the contract warns but stages.
+        install_sdk(r#"{"name":"@usearete/sdk","version":"0.22.0"}"#);
+        stage_extensions_artifact(&artifact, &output_dir, &input_pin)
+            .expect("an SDK without extensionApi only warns");
+
+        // Without extensionApi the sdkRange floor stays warning-only.
+        artifact.extension_api = None;
+        install_sdk(r#"{"name":"@usearete/sdk","version":"0.23.0","arete":{"extensionApi":1}}"#);
+        stage_extensions_artifact(&artifact, &output_dir, &input_pin)
+            .expect("an sdkRange mismatch only warns");
+    }
+
+    #[test]
+    fn extension_api_is_checked_against_a_path_rust_sdk() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("sdk")).unwrap();
+        fs::write(
+            temp.path().join("sdk/Cargo.toml"),
+            "[package]\nname = \"arete-a4-sdk\"\nversion = \"0.23.0\"\n\n[package.metadata.arete]\nextension-api = 1\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\narete-sdk = { package = \"arete-a4-sdk\", path = \"sdk\" }\n",
+        )
+        .unwrap();
+        let output_dir = temp.path().join("src/generated/ore");
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: "hash-1".to_string(),
+        };
+        let mut artifact = rust_test_artifact("hash-1");
+        artifact.extension_api = std::num::NonZeroU32::new(1);
+        stage_rust_extensions_artifact(&artifact, &output_dir, &input_pin)
+            .expect("matching Rust extension API");
+        artifact.extension_api = std::num::NonZeroU32::new(2);
+        let message = stage_rust_extensions_artifact(&artifact, &output_dir, &input_pin)
+            .expect_err("mismatched Rust extension API")
+            .to_string();
+        assert!(
+            message.contains("the installed arete-a4-sdk 0.23.0 provides extension API 1"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn extensions_hash_covers_a_declared_extension_api_only() {
+        let hash = format!("arete:h1:stack-manifest:sha256:{}", "11".repeat(32));
+        let artifact = ts_bundle_artifact(&hash);
+        let unchanged = extensions_artifact_hash(&artifact);
+        let mut declared = artifact.clone();
+        declared.extension_api = std::num::NonZeroU32::new(1);
+        assert_ne!(extensions_artifact_hash(&declared), unchanged);
+        let manifest = serde_json::to_string_pretty(&artifact.manifest()).unwrap();
+        assert!(!manifest.contains("extensionApi"));
+        let parsed: ExtensionsManifest =
+            serde_json::from_str(&serde_json::to_string(&declared.manifest()).unwrap()).unwrap();
+        assert_eq!(parsed.extension_api, std::num::NonZeroU32::new(1));
+        assert!(serde_json::from_str::<ExtensionsManifest>(
+            r#"{"entry":"a.ts","files":["a.ts"],"inputKind":null,"inputHash":null,"sdkRange":null,"extensionApi":0}"#
+        )
+        .is_err());
+    }
+
+    #[test]
     fn version_satisfies_range_supports_standard_semver_requirements() {
         assert!(version_satisfies_range("0.1.5", "^0.1.5"));
         assert!(version_satisfies_range("0.1.8", ">=0.1.5, <0.2.0"));
@@ -7158,6 +7381,7 @@ mod tests {
             input_hash: Some(hash.to_string()),
             sdk_range: None,
             language: Some(EXTENSIONS_LANGUAGE_RUST.to_string()),
+            extension_api: None,
             sdk_extension_hash: None,
             sdk_output_tree_hash: None,
             program_extension_bindings: vec![],
@@ -7193,6 +7417,7 @@ mod tests {
             input_hash: Some(hash.to_string()),
             sdk_range: Some("^0.2.0 || ^0.3.0".to_string()),
             language: Some(EXTENSIONS_LANGUAGE_TYPESCRIPT.to_string()),
+            extension_api: None,
             sdk_extension_hash: None,
             sdk_output_tree_hash: None,
             program_extension_bindings: vec![],
@@ -7776,6 +8001,7 @@ mod tests {
             input_hash: Some(hash.to_string()),
             sdk_range: None,
             language: Some(EXTENSIONS_LANGUAGE_PYTHON.to_string()),
+            extension_api: None,
             sdk_extension_hash: None,
             sdk_output_tree_hash: None,
             program_extension_bindings: vec![],
@@ -7824,6 +8050,7 @@ mod tests {
                 input_hash: Some(install.stack_manifest_hash.clone()),
                 sdk_range: None,
                 language: Some(EXTENSIONS_LANGUAGE_PYTHON.to_string()),
+                extension_api: None,
             },
             files: BTreeMap::from([(
                 "extensions.py".to_string(),
@@ -8435,6 +8662,7 @@ mod tests {
                 input_hash: Some("idl-hash".to_string()),
                 sdk_range: Some("^0.1.5".to_string()),
                 language: None,
+                extension_api: None,
             },
             files: BTreeMap::from([(
                 "index.ts".to_string(),
