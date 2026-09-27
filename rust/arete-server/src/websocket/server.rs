@@ -1457,17 +1457,19 @@ async fn attach_state_subscription(
                                 &query.view,
                                 payload,
                             ),
-                            // The cached entity is newer than anything this
-                            // subscriber was sent, so it goes without a seq that
-                            // a client could discard it by. Seqs are not ordered
-                            // within a slot: account updates and instructions
-                            // number themselves differently, so the latest
-                            // patch's seq can sort below one sent before it.
+                            // The whole cached entity, as a patch: it merges into
+                            // what the client holds, so a field the cache lost
+                            // to eviction is kept, not replaced. It carries no
+                            // seq, because it is newer than anything this
+                            // subscriber was sent and seqs are not ordered within
+                            // a slot: account updates and instructions number
+                            // themselves differently, so the latest patch's seq
+                            // can sort below one already delivered.
                             (true, Some((entity_key, data))) => send_membership_frame(
                                 &task_context,
                                 &subscription_id,
                                 &view_spec_task,
-                                "upsert",
+                                "patch",
                                 &entity_key,
                                 data,
                                 None,
@@ -3727,49 +3729,48 @@ mod tests {
                 .await;
             let mut socket = server.subscribe("7").await;
 
-            // A lone patch is forwarded as it was published.
+            // A lone patch is forwarded as it was published. This one is an
+            // account update, numbered by its write version.
             server
-                .publish("7", json!({"total": 1}), "101:000000000004")
+                .publish(
+                    "7",
+                    json!({"results": {"slot_hash": "abc"}}),
+                    "140:003836292257",
+                )
                 .await;
             let frame = next_frame(&mut socket).await;
             assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
-            assert_eq!(
-                frame["data"],
-                json!({"total": 1, "_seq": "101:000000000004"})
-            );
+            assert_eq!(frame["seq"], "140:003836292257");
 
-            // Both writes happen in one task that never yields to the
-            // subscriber, so the second replaces the first on the bus before
-            // the subscriber wakes.
+            // Two instruction patches from later in the same slot, numbered by
+            // transaction index. Both writes happen in one task that never
+            // yields to the subscriber, so the second replaces the first on
+            // the bus before the subscriber wakes.
             let writer = server.clone();
             tokio::spawn(async move {
                 writer
-                    .publish(
-                        "7",
-                        json!({"results": {"slot_hash": "abc"}}),
-                        "140:003836292257",
-                    )
+                    .publish("7", json!({"entropy": {"seed": "def"}}), "140:000000001200")
                     .await;
                 writer
-                    .publish("7", json!({"entropy": {"seed": "def"}}), "140:000000001200")
+                    .publish("7", json!({"total": 1}), "140:000000001200")
                     .await;
             })
             .await
             .unwrap();
             let frame = next_frame(&mut socket).await;
-            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
             assert_eq!(
                 frame["data"],
                 json!({
                     "id": 7,
-                    "total": 1,
                     "results": {"slot_hash": "abc"},
                     "entropy": {"seed": "def"},
+                    "total": 1,
                     "_seq": "140:000000001200",
                 })
             );
-            // The latest seq sorts below the one it replaced, which a client
-            // would take for a stale frame and drop.
+            // The latest seq sorts below the one already delivered, and a
+            // client would drop the frame as stale.
             assert!(frame.get("seq").is_none(), "unexpected seq: {frame}");
 
             // Having caught up, the subscriber forwards patches again.
