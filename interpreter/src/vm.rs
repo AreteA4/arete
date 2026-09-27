@@ -526,6 +526,94 @@ impl DirtyTracker {
     }
 }
 
+/// Entities whose next mutation must carry the whole entity, not only the
+/// fields that changed.
+///
+/// A consumer that bounds how many entities it keeps cannot rebuild one it
+/// dropped from later mutations: they carry only changed fields. It requests
+/// the key here instead. The next time the VM emits mutations for that
+/// entity, it follows them with one more carrying the entity as the VM holds
+/// it, minus non-emitted fields, marked with [`Mutation::mark_whole_entity`]
+/// and without append paths (its arrays are whole too). A request is answered
+/// once. Requests are bounded: past `capacity` the least recently requested
+/// is forgotten, and asking again is always safe.
+///
+/// Handles are cheap to clone and share one set: the consumer keeps one and
+/// hands another to [`VmContext::set_whole_entity_requests`].
+#[derive(Clone, Debug)]
+pub struct WholeEntityRequests {
+    inner: Arc<WholeEntityRequestsInner>,
+}
+
+#[derive(Debug)]
+struct WholeEntityRequestsInner {
+    capacity: usize,
+    /// Mirrors the set's length, so the VM can skip the lock when nothing is
+    /// pending (every emission checks).
+    pending: std::sync::atomic::AtomicUsize,
+    /// Unbounded so nothing is allocated up front; `capacity` is enforced by
+    /// hand.
+    keys: std::sync::Mutex<LruCache<(String, Value), ()>>,
+}
+
+impl WholeEntityRequests {
+    /// A request set holding at most `capacity` keys (at least one).
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            inner: Arc::new(WholeEntityRequestsInner {
+                capacity: capacity.max(1),
+                pending: std::sync::atomic::AtomicUsize::new(0),
+                keys: std::sync::Mutex::new(LruCache::unbounded()),
+            }),
+        }
+    }
+
+    /// Ask for the whole of `entity` `key` with its next mutation.
+    pub fn request(&self, entity: &str, key: &Value) {
+        let mut keys = self.inner.keys.lock().unwrap_or_else(|e| e.into_inner());
+        keys.put((entity.to_string(), key.clone()), ());
+        while keys.len() > self.inner.capacity {
+            keys.pop_lru();
+        }
+        self.inner
+            .pending
+            .store(keys.len(), std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether `entity` `key` is waiting for its whole entity.
+    pub fn is_requested(&self, entity: &str, key: &Value) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+        let keys = self.inner.keys.lock().unwrap_or_else(|e| e.into_inner());
+        keys.contains(&(entity.to_string(), key.clone()))
+    }
+
+    /// Number of keys waiting.
+    pub fn len(&self) -> usize {
+        self.inner
+            .pending
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Answer the request for `entity` `key`, if there is one.
+    fn take(&self, entity: &str, key: &Value) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+        let mut keys = self.inner.keys.lock().unwrap_or_else(|e| e.into_inner());
+        let found = keys.pop(&(entity.to_string(), key.clone())).is_some();
+        self.inner
+            .pending
+            .store(keys.len(), std::sync::atomic::Ordering::Release);
+        found
+    }
+}
+
 pub struct VmContext {
     registers: Vec<RegisterValue>,
     states: HashMap<u32, StateTable>,
@@ -562,6 +650,9 @@ pub struct VmContext {
     /// The register `UpdateState` moved into its table in this segment, with
     /// the table and key, for `EmitMutation` to read the entity from there.
     moved_state: Option<(Register, u32, Value)>,
+    /// Keys whose next mutation carries the whole entity; see
+    /// [`WholeEntityRequests`].
+    whole_entity_requests: Option<WholeEntityRequests>,
 }
 
 /// Event field that restricts a replayed event to one handler segment.
@@ -1483,6 +1574,7 @@ impl VmContext {
             taken_entity: None,
             retain_state_register: true,
             moved_state: None,
+            whole_entity_requests: None,
         };
         vm.states.insert(
             0,
@@ -1514,6 +1606,86 @@ impl VmContext {
 
     pub fn set_debugger(&mut self, debugger: Arc<dyn VmDebugger>) {
         self.debugger = Some(debugger);
+    }
+
+    /// Answer whole-entity requests from `requests` in the mutations this VM
+    /// returns from [`Self::process_event`] and [`Self::apply_resolver_result`]:
+    /// after a requested entity's last mutation comes one more, carrying the
+    /// whole entity.
+    pub fn set_whole_entity_requests(&mut self, requests: WholeEntityRequests) {
+        self.whole_entity_requests = Some(requests);
+    }
+
+    /// Follow the last mutation of each requested entity with one carrying
+    /// the whole entity (see [`WholeEntityRequests`]).
+    ///
+    /// The patches themselves are left alone: consumers that record each
+    /// mutation as an event (append views) still see what changed. The whole
+    /// entity goes right after the entity's last mutation, because the table
+    /// holds the entity as the whole event left it.
+    fn fulfill_whole_entity_requests(
+        &self,
+        bytecode: &MultiEntityBytecode,
+        mutations: &mut Vec<Mutation>,
+    ) {
+        let Some(requests) = &self.whole_entity_requests else {
+            return;
+        };
+        if requests.is_empty() || mutations.is_empty() {
+            return;
+        }
+        let mut wholes = Vec::new();
+        for (index, mutation) in mutations.iter().enumerate().rev() {
+            if !requests.take(&mutation.export, &mutation.key) {
+                continue;
+            }
+            let whole = bytecode.entities.get(&mutation.export).and_then(|entity| {
+                let table = self.states.get(&entity.state_id)?;
+                let mut whole = table.data.get(&mutation.key)?.value().clone();
+                for path in &entity.non_emitted_fields {
+                    Self::remove_path(&mut whole, path);
+                }
+                whole.is_object().then_some(whole)
+            });
+            match whole {
+                Some(whole) => {
+                    let mut whole = Mutation {
+                        export: mutation.export.clone(),
+                        key: mutation.key.clone(),
+                        patch: whole,
+                        append: Vec::new(),
+                    };
+                    whole.mark_whole_entity();
+                    wholes.push((index + 1, whole));
+                }
+                // Nothing to send; ask again for the next one.
+                None => requests.request(&mutation.export, &mutation.key),
+            }
+        }
+        // Collected back to front, so each insert leaves earlier positions
+        // where they were.
+        for (position, whole) in wholes {
+            mutations.insert(position, whole);
+        }
+    }
+
+    /// Remove the field at dotted `path`, if present.
+    fn remove_path(value: &mut Value, path: &str) {
+        let mut segments = path.split('.').peekable();
+        let mut current = value;
+        while let Some(segment) = segments.next() {
+            let Some(object) = current.as_object_mut() else {
+                return;
+            };
+            if segments.peek().is_none() {
+                object.remove(segment);
+                return;
+            }
+            match object.get_mut(segment) {
+                Some(next) => current = next,
+                None => return,
+            }
+        }
     }
 
     /// Whether the entity a handler writes back stays in its state register
@@ -1579,6 +1751,7 @@ impl VmContext {
             taken_entity: None,
             retain_state_register: true,
             moved_state: None,
+            whole_entity_requests: None,
         }
     }
 
@@ -1610,6 +1783,7 @@ impl VmContext {
             taken_entity: None,
             retain_state_register: true,
             moved_state: None,
+            whole_entity_requests: None,
         };
         vm.states.insert(
             0,
@@ -1858,6 +2032,18 @@ impl VmContext {
     }
 
     pub fn apply_resolver_result(
+        &mut self,
+        bytecode: &MultiEntityBytecode,
+        cache_key: &str,
+        resolved_value: Value,
+    ) -> Result<Vec<Mutation>> {
+        let mut mutations =
+            self.apply_resolver_result_mutations(bytecode, cache_key, resolved_value)?;
+        self.fulfill_whole_entity_requests(bytecode, &mut mutations);
+        Ok(mutations)
+    }
+
+    fn apply_resolver_result_mutations(
         &mut self,
         bytecode: &MultiEntityBytecode,
         cache_key: &str,
@@ -2290,6 +2476,20 @@ impl VmContext {
         )
     ))]
     pub fn process_event(
+        &mut self,
+        bytecode: &MultiEntityBytecode,
+        event_value: Value,
+        event_type: &str,
+        context: Option<&UpdateContext>,
+        log: Option<&mut crate::canonical_log::CanonicalLog>,
+    ) -> Result<Vec<Mutation>> {
+        let mut mutations =
+            self.process_event_mutations(bytecode, event_value, event_type, context, log)?;
+        self.fulfill_whole_entity_requests(bytecode, &mut mutations);
+        Ok(mutations)
+    }
+
+    fn process_event_mutations(
         &mut self,
         bytecode: &MultiEntityBytecode,
         event_value: Value,

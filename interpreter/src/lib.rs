@@ -92,6 +92,42 @@ pub struct Mutation {
     pub append: Vec<String>,
 }
 
+/// Field that marks a mutation's `patch` as the whole entity rather than the
+/// fields that changed. Set with [`Mutation::mark_whole_entity`] and removed
+/// with [`Mutation::take_whole_entity_mark`] before the patch goes anywhere
+/// else; it is never part of an entity.
+pub const WHOLE_ENTITY_MARKER: &str = "__arete_whole_entity";
+
+impl Mutation {
+    /// Declare that `patch` holds the whole entity, not only what changed.
+    ///
+    /// A consumer that bounds how many entities it keeps (arete-server's
+    /// entity cache) cannot rebuild an entity it dropped from later patches,
+    /// which carry only changed fields; a mutation marked whole restores it.
+    /// The VM marks the mutations it emits for keys requested through
+    /// [`vm::WholeEntityRequests`]. A custom mutation source that emits whole
+    /// entities can mark them itself. Only an object patch can carry the mark;
+    /// on anything else this does nothing.
+    pub fn mark_whole_entity(&mut self) {
+        if let Value::Object(fields) = &mut self.patch {
+            fields.insert(WHOLE_ENTITY_MARKER.to_string(), Value::Bool(true));
+        }
+    }
+
+    /// Whether `patch` is marked as the whole entity.
+    pub fn is_whole_entity(&self) -> bool {
+        self.patch.get(WHOLE_ENTITY_MARKER) == Some(&Value::Bool(true))
+    }
+
+    /// Remove the whole-entity mark, returning whether it was set.
+    pub fn take_whole_entity_mark(&mut self) -> bool {
+        match &mut self.patch {
+            Value::Object(fields) => fields.remove(WHOLE_ENTITY_MARKER) == Some(Value::Bool(true)),
+            _ => false,
+        }
+    }
+}
+
 /// Generic wrapper for event data that includes context metadata
 /// This ensures type safety for events captured in entity specs
 ///

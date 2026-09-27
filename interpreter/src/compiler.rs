@@ -2412,6 +2412,157 @@ mod tests {
         })
     }
 
+    /// A pool whose account carries a price (replaced), a fill (appended) and
+    /// a secret that is mapped but never emitted.
+    fn whole_entity_pool_spec() -> TypedStreamSpec<Value> {
+        let mut hidden = mapping("state.secret", &["secret"], PopulationStrategy::LastWrite);
+        hidden.emit = false;
+        TypedStreamSpec::from_serializable(SerializableStreamSpec {
+            ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
+            state_name: "Pool".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.address".to_string()],
+                lookup_indexes: vec![],
+            },
+            handlers: vec![SerializableHandlerSpec {
+                source: SourceSpec::Source {
+                    program_id: None,
+                    discriminator: None,
+                    type_name: "amm::PoolState".to_string(),
+                    serialization: None,
+                    is_account: true,
+                },
+                key_resolution: KeyResolutionStrategy::Embedded {
+                    primary_field: FieldPath::new(&["__account_address"]),
+                },
+                mappings: vec![
+                    mapping(
+                        "id.address",
+                        &["__account_address"],
+                        PopulationStrategy::SetOnce,
+                    ),
+                    mapping("state.price", &["price"], PopulationStrategy::LastWrite),
+                    mapping("state.fills", &["fill"], PopulationStrategy::Append),
+                    hidden,
+                ],
+                conditions: vec![],
+                emit: true,
+            }],
+            sections: vec![],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            instruction_hooks: vec![],
+            resolver_specs: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        })
+    }
+
+    fn pool_event(price: u64, fill: u64) -> Value {
+        json!({"__account_address": "pool_1", "price": price, "fill": fill, "secret": "s"})
+    }
+
+    #[test]
+    fn a_requested_entity_is_emitted_whole_once() {
+        let bytecode =
+            MultiEntityBytecode::from_single("Pool".to_string(), whole_entity_pool_spec(), 0);
+        let requests = crate::vm::WholeEntityRequests::new(16);
+        let mut vm = VmContext::new();
+        vm.set_whole_entity_requests(requests.clone());
+        let mut process = |price, fill| {
+            vm.process_event(
+                &bytecode,
+                pool_event(price, fill),
+                "amm::PoolState",
+                None,
+                None,
+            )
+            .unwrap()
+        };
+
+        let first = process(1, 10);
+        let key = first[0].key.clone();
+        let second = process(2, 20);
+        assert_eq!(second.len(), 1);
+        assert!(!second[0].is_whole_entity());
+        assert_eq!(
+            second[0].patch,
+            json!({"state": {"price": 2, "fills": [20]}})
+        );
+        assert_eq!(second[0].append, vec!["state.fills".to_string()]);
+
+        // A consumer that dropped the entity asks for all of it.
+        requests.request("Pool", &key);
+        assert!(requests.is_requested("Pool", &key));
+        let mut third = process(3, 30);
+        assert_eq!(third.len(), 2);
+        assert!(
+            !third[0].is_whole_entity(),
+            "the change itself is untouched"
+        );
+        assert_eq!(
+            third[0].patch,
+            json!({"state": {"price": 3, "fills": [30]}})
+        );
+        assert_eq!(third[1].key, key);
+        assert!(third[1].take_whole_entity_mark());
+        assert_eq!(
+            third[1].patch,
+            json!({
+                "id": {"address": "pool_1"},
+                "state": {"price": 3, "fills": [10, 20, 30]},
+            }),
+            "the whole entity, without its non-emitted field"
+        );
+        assert!(
+            third[1].append.is_empty(),
+            "its arrays are whole, not appended to"
+        );
+        assert!(requests.is_empty(), "a request is answered once");
+
+        let fourth = process(4, 40);
+        assert_eq!(fourth.len(), 1);
+        assert!(!fourth[0].is_whole_entity());
+        assert_eq!(
+            fourth[0].patch,
+            json!({"state": {"price": 4, "fills": [40]}})
+        );
+    }
+
+    #[test]
+    fn a_request_waits_for_its_own_entity() {
+        let bytecode =
+            MultiEntityBytecode::from_single("Pool".to_string(), whole_entity_pool_spec(), 0);
+        let requests = crate::vm::WholeEntityRequests::new(16);
+        let mut vm = VmContext::new();
+        vm.set_whole_entity_requests(requests.clone());
+        requests.request("Pool", &json!("other_pool"));
+        let mutations = vm
+            .process_event(&bytecode, pool_event(1, 10), "amm::PoolState", None, None)
+            .unwrap();
+        assert_eq!(mutations.len(), 1);
+        assert!(!mutations[0].is_whole_entity());
+        assert!(requests.is_requested("Pool", &json!("other_pool")));
+    }
+
+    #[test]
+    fn whole_entity_requests_are_bounded() {
+        let requests = crate::vm::WholeEntityRequests::new(2);
+        for key in ["a", "b", "c"] {
+            requests.request("Pool", &json!(key));
+        }
+        assert_eq!(requests.len(), 2);
+        assert!(
+            !requests.is_requested("Pool", &json!("a")),
+            "the oldest is forgotten"
+        );
+        assert!(requests.is_requested("Pool", &json!("c")));
+    }
+
     #[test]
     fn lookup_account_handler_uses_resolved_primary_key_when_hook_seeds_primary_key() {
         let bytecode = MultiEntityBytecode::from_single(
