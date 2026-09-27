@@ -741,6 +741,28 @@ a4 up raydium-amm
 | `--preview`           | Create preview deployment                     |
 | `--dry-run`           | Show what would be deployed without deploying |
 
+**Program SDKs.** When `arete.lock` pins a program SDK release for a program
+of the deployed stack (an installed or composed stack), `a4 up` asks for that
+program to carry it. A production deployment then lists the program SDK each
+program carries:
+
+```text
+Program SDKs:
+  ore → ore@1.0.2 (from arete.lock)
+  entropy: core SDK only — <reason>
+```
+
+`(catalog)` marks the program's published program SDK, and
+`(your program package)` one of your own program packages. `core SDK only`
+means the program carries no program SDK, and says why. `--json` output
+includes the same report as `programSdks`. Branch and preview deployments are
+not published, so they have no report.
+
+If a program SDK that `arete.lock` pins no longer fits its program, `a4 up`
+stops before anything is built. Run `a4 update stack <alias>`, then deploy
+again. When the registry doesn't report program SDKs, `a4 up` notes that and
+deploys without the report.
+
 ### a4 status
 
 Show overview of all stacks, builds, and deployments.

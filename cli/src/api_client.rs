@@ -528,6 +528,36 @@ pub struct StackDeploymentPlanRequest {
     pub branch: Option<String>,
     pub allow_unverified_programs: bool,
     pub idempotency_key: String,
+    /// The program SDK each listed ProgramSpec should carry. Present, even
+    /// empty, to ask for the response's `programSdks` report; absent only
+    /// for a registry that does not know the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_sdks: Option<Vec<ProgramSdkReference>>,
+}
+
+/// The program SDK one ProgramSpec of a deployed StackManifest should carry:
+/// an exact program package release.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProgramSdkReference {
+    pub program_spec_hash: String,
+    pub program_package_release: String,
+}
+
+/// The program SDK one program of a deployment plan carries. No `source`
+/// means the core program SDK only, and `reason` says why.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProgramSdkAssignment {
+    pub program_id: String,
+    pub program_spec_hash: String,
+    pub program_release_hash: String,
+    pub program_package_release: Option<String>,
+    pub package: Option<String>,
+    pub version: Option<String>,
+    /// `requested`, `catalog` or `owner`.
+    pub source: Option<String>,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -584,6 +614,9 @@ pub struct StackDeploymentPlanResponse {
     pub created_at: String,
     pub expires_at: String,
     pub idempotent: bool,
+    /// Present only when the request carried `programSdks`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_sdks: Option<Vec<ProgramSdkAssignment>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3033,10 +3066,62 @@ mod tests {
             branch: preflight.branch,
             allow_unverified_programs: preflight.allow_unverified_programs,
             idempotency_key: "8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a".into(),
+            program_sdks: None,
         };
         let mut expected = preflight_value;
         expected["idempotencyKey"] = json!("8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a");
-        assert_eq!(serde_json::to_value(plan).unwrap(), expected);
+        assert_eq!(serde_json::to_value(&plan).unwrap(), expected);
+
+        // Asking for the program SDK report sends the key, even empty.
+        let mut empty = plan.clone();
+        empty.program_sdks = Some(Vec::new());
+        expected["programSdks"] = json!([]);
+        assert_eq!(serde_json::to_value(&empty).unwrap(), expected);
+        let mut requested = plan;
+        requested.program_sdks = Some(vec![ProgramSdkReference {
+            program_spec_hash: "arete:h1:program-spec:sha256:1".into(),
+            program_package_release: "arete:registry-package-release:v2:sha256:2".into(),
+        }]);
+        expected["programSdks"] = json!([{
+            "programSpecHash": "arete:h1:program-spec:sha256:1",
+            "programPackageRelease": "arete:registry-package-release:v2:sha256:2",
+        }]);
+        assert_eq!(serde_json::to_value(&requested).unwrap(), expected);
+    }
+
+    #[test]
+    fn deployment_plan_responses_carry_the_program_sdk_report_when_asked() {
+        let mut plan_value = plan_response_snapshot();
+        plan_value["programSdks"] = json!([
+            {
+                "programId": "ore111",
+                "programSpecHash": "arete:h1:program-spec:sha256:1",
+                "programReleaseHash": "arete:h1:program-release:sha256:1",
+                "programPackageRelease": "arete:registry-package-release:v2:sha256:2",
+                "package": "ore",
+                "version": "1.0.2",
+                "source": "requested",
+                "reason": null,
+            },
+            {
+                "programId": "entropy111",
+                "programSpecHash": "arete:h1:program-spec:sha256:3",
+                "programReleaseHash": "arete:h1:program-release:sha256:3",
+                "programPackageRelease": null,
+                "package": null,
+                "version": null,
+                "source": null,
+                "reason": "no program package is published for this program",
+            },
+        ]);
+        let plan: StackDeploymentPlanResponse = serde_json::from_value(plan_value.clone()).unwrap();
+        let report = plan.program_sdks.as_ref().unwrap();
+        assert_eq!(report[0].source.as_deref(), Some("requested"));
+        assert_eq!(report[1].source, None);
+        assert_eq!(serde_json::to_value(plan).unwrap(), plan_value);
+
+        plan_value["programSdks"][0]["private"] = json!(true);
+        assert!(serde_json::from_value::<StackDeploymentPlanResponse>(plan_value).is_err());
     }
 
     #[test]

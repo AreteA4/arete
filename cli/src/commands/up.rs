@@ -7,13 +7,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::api_client::{
-    ApiClient, BindStackCompositionRequest, BindStackCompositionResponse, BuildStatus,
-    BuildStatusResponse, CreateAliasedLiveSpecArtifact, CreateArtifactBuildRequest,
+    ApiClient, ApiHttpError, BindStackCompositionRequest, BindStackCompositionResponse,
+    BuildStatus, BuildStatusResponse, CreateAliasedLiveSpecArtifact, CreateArtifactBuildRequest,
     CreateBuildResponse, CreateSpecRequest, DeploymentPhase, DeploymentResponse, DeploymentStatus,
-    SelectedProgramRelease, Spec, StackDeploymentPlanRequest, StackDeploymentPlanResponse,
-    StackDeploymentPreflightRequest, StackDeploymentPreflightResponse, StackDeploymentTarget,
-    STACK_DEPLOYMENT_PLAN_REQUEST_SCHEMA, STACK_DEPLOYMENT_PLAN_SCHEMA,
-    STACK_DEPLOYMENT_PREFLIGHT_SCHEMA,
+    ProgramSdkAssignment, ProgramSdkReference, SelectedProgramRelease, Spec,
+    StackDeploymentPlanRequest, StackDeploymentPlanResponse, StackDeploymentPreflightRequest,
+    StackDeploymentPreflightResponse, StackDeploymentTarget, STACK_DEPLOYMENT_PLAN_REQUEST_SCHEMA,
+    STACK_DEPLOYMENT_PLAN_SCHEMA, STACK_DEPLOYMENT_PREFLIGHT_SCHEMA,
 };
 use crate::commands::public_artifacts::{
     installed_stack_artifact_paths, load_installed_artifact_stack,
@@ -113,6 +113,19 @@ impl LocalDeploymentSource {
         };
         Some(ReleasePins {
             alias: &locked.alias,
+            program_sdks: locked
+                .programs
+                .iter()
+                .filter_map(|program| {
+                    program
+                        .package_release_hash
+                        .clone()
+                        .map(|release| ProgramSdkReference {
+                            program_spec_hash: program.program_spec_hash.clone(),
+                            program_package_release: release,
+                        })
+                })
+                .collect(),
             releases: locked
                 .programs
                 .iter()
@@ -127,11 +140,181 @@ impl LocalDeploymentSource {
     }
 }
 
-/// Program Releases by ProgramSpec hash that a deployment must use exactly.
+/// What arete.lock pins for a deployed stack: the Program Release, by
+/// ProgramSpec hash, a deployment must use exactly, and the program SDK
+/// (program package release) each program should carry.
 #[derive(Debug)]
 struct ReleasePins<'a> {
     alias: &'a str,
     releases: BTreeMap<String, String>,
+    program_sdks: Vec<ProgramSdkReference>,
+}
+
+/// The error code of a requested program SDK that does not fit its program.
+const PROGRAM_SDK_REFERENCE_INVALID: &str = "program-sdk-reference-invalid";
+
+/// The program SDKs to request for `stack`: those arete.lock pins for a
+/// ProgramSpec of its StackManifest. A stack arete.lock does not pin
+/// requests none, but still asks for the report.
+fn program_sdk_references(
+    stack: &LocalArtifactStack,
+    pins: Option<&ReleasePins<'_>>,
+) -> Vec<ProgramSdkReference> {
+    let manifest_programs = stack
+        .stack_manifest
+        .payload
+        .programs
+        .iter()
+        .map(|program| program.artifact_hash.to_string())
+        .collect::<BTreeSet<_>>();
+    let mut references = pins
+        .into_iter()
+        .flat_map(|pins| &pins.program_sdks)
+        .filter(|reference| manifest_programs.contains(&reference.program_spec_hash))
+        .cloned()
+        .collect::<Vec<_>>();
+    references.sort_by(|left, right| left.program_spec_hash.cmp(&right.program_spec_hash));
+    references
+}
+
+/// Creates the deployment plan, asking for the program SDK report. A
+/// registry that does not know `programSdks` rejects the request; it is
+/// retried once without them, and deploys without the report.
+fn create_deployment_plan<A: HostedDeploymentApi + ?Sized>(
+    client: &A,
+    request: StackDeploymentPlanRequest,
+    quiet: bool,
+) -> Result<StackDeploymentPlanResponse> {
+    match client.create_stack_deployment_plan(request.clone()) {
+        Err(error) if rejects_program_sdks(&error) => {
+            let note = "note: this registry does not report which program SDK each program carries; deploying without the report";
+            if quiet {
+                eprintln!("{note}");
+            } else {
+                println!("  {note}");
+            }
+            client.create_stack_deployment_plan(StackDeploymentPlanRequest {
+                program_sdks: None,
+                ..request
+            })
+        }
+        result => result,
+    }
+}
+
+/// A registry that does not know `programSdks` rejects it as an unknown
+/// request field.
+fn rejects_program_sdks(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ApiHttpError>().is_some_and(|http| {
+        (400..500).contains(&http.status)
+            && http.code.as_deref() != Some(PROGRAM_SDK_REFERENCE_INVALID)
+            && http.message.contains("programSdks")
+    })
+}
+
+/// A requested program SDK the registry refused, with the fix.
+fn program_sdk_guidance(error: anyhow::Error, pins: Option<&ReleasePins<'_>>) -> anyhow::Error {
+    let invalid = error.downcast_ref::<ApiHttpError>().is_some_and(|http| {
+        http.status == 409 && http.code.as_deref() == Some(PROGRAM_SDK_REFERENCE_INVALID)
+    });
+    if !invalid {
+        return error;
+    }
+    let fix = match pins {
+        Some(pins) => format!(
+            "Fix: run `a4 update stack {}` to resolve its current program SDK releases, then deploy again",
+            pins.alias
+        ),
+        None => "Fix: run `a4 install`, then deploy again".to_string(),
+    };
+    anyhow::anyhow!(
+        "{error:#}\nA program SDK arete.lock pins does not fit this deployment's program.\n{fix}"
+    )
+}
+
+/// The plan's program SDK report, checked against the StackManifest and the
+/// request: every entry names one of its programs once, and each requested
+/// program carries exactly the requested release. `None` when the registry
+/// sent no report.
+fn validate_program_sdk_report(
+    stack: &LocalArtifactStack,
+    requested: &[ProgramSdkReference],
+    report: Option<&[ProgramSdkAssignment]>,
+) -> Result<Option<Vec<ProgramSdkAssignment>>> {
+    let Some(report) = report else {
+        return Ok(None);
+    };
+    let order = stack
+        .stack_manifest
+        .payload
+        .programs
+        .iter()
+        .enumerate()
+        .map(|(position, program)| (program.artifact_hash.to_string(), position))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    for entry in report {
+        if !order.contains_key(&entry.program_spec_hash)
+            || !seen.insert(entry.program_spec_hash.as_str())
+        {
+            anyhow::bail!(
+                "Deployment plan program SDK report does not match the StackManifest's programs (ProgramSpec {})",
+                entry.program_spec_hash
+            );
+        }
+    }
+    for reference in requested {
+        let carried = report
+            .iter()
+            .find(|entry| entry.program_spec_hash == reference.program_spec_hash)
+            .and_then(|entry| entry.program_package_release.as_deref());
+        if carried != Some(reference.program_package_release.as_str()) {
+            anyhow::bail!(
+                "The deployment plan gives ProgramSpec {} program SDK {}, not {}, which arete.lock pins",
+                reference.program_spec_hash,
+                carried.unwrap_or("none (core SDK only)"),
+                reference.program_package_release
+            );
+        }
+    }
+    let mut report = report.to_vec();
+    report.sort_by_key(|entry| order[&entry.program_spec_hash]);
+    Ok(Some(report))
+}
+
+/// One line per program: the program SDK it carries and where it came from.
+fn program_sdk_lines(stack: &LocalArtifactStack, report: &[ProgramSdkAssignment]) -> Vec<String> {
+    report
+        .iter()
+        .map(|entry| {
+            let name = stack
+                .program_specs
+                .iter()
+                .find(|program| program.artifact_hash.to_string() == entry.program_spec_hash)
+                .map(|program| program.payload.idl_snapshot.snapshot.name.clone())
+                .unwrap_or_else(|| entry.program_id.clone());
+            let Some(source) = entry.source.as_deref() else {
+                return match entry.reason.as_deref() {
+                    Some(reason) => format!("{name}: core SDK only — {reason}"),
+                    None => format!("{name}: core SDK only"),
+                };
+            };
+            let sdk = match (&entry.package, &entry.version) {
+                (Some(package), Some(version)) => format!("{package}@{version}"),
+                _ => entry
+                    .program_package_release
+                    .clone()
+                    .unwrap_or_else(|| "an unnamed program package".to_string()),
+            };
+            let origin = match source {
+                "requested" => "from arete.lock",
+                "catalog" => "catalog",
+                "owner" => "your program package",
+                other => other,
+            };
+            format!("{name} → {sdk} ({origin})")
+        })
+        .collect()
 }
 
 /// Refuses a platform release selection that differs from what arete.lock
@@ -237,6 +420,10 @@ struct StackDeploymentResult {
     composition_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     deployments: Option<Vec<DeployedTargetResult>>,
+    /// The program SDK each program carries, for a production deployment
+    /// whose registry reports it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    program_sdks: Option<Vec<ProgramSdkAssignment>>,
     /// Each LiveSpec's stream endpoints in the bound composition. Not part of
     /// the result contract; `a4 up <alias>` records them for the installed SDK.
     #[serde(skip)]
@@ -355,6 +542,7 @@ impl StackDeploymentResult {
             deployment_plan_id: selection.deployment_plan_id.clone(),
             composition_id,
             deployments,
+            program_sdks: None,
             live_endpoints: BTreeMap::new(),
         }
     }
@@ -686,6 +874,7 @@ fn deployment_plan_request(
     branch: Option<&str>,
     idempotency_key: String,
     allow_unverified_programs: bool,
+    program_sdks: Vec<ProgramSdkReference>,
 ) -> StackDeploymentPlanRequest {
     StackDeploymentPlanRequest {
         schema: STACK_DEPLOYMENT_PLAN_REQUEST_SCHEMA.to_string(),
@@ -695,6 +884,7 @@ fn deployment_plan_request(
         branch: branch.map(str::to_string),
         allow_unverified_programs,
         idempotency_key,
+        program_sdks: Some(program_sdks),
     }
 }
 
@@ -1473,16 +1663,24 @@ fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
     let plan =
         HostedDeploymentPlan::from_stack_with_deployment_name(&stack, branch, deployment_name)?;
     let idempotency_key = uuid::Uuid::new_v4().to_string();
-    let response = client
-        .create_stack_deployment_plan(deployment_plan_request(
+    let requested = program_sdk_references(&stack, release_pins);
+    let response = create_deployment_plan(
+        client,
+        deployment_plan_request(
             &stack,
             branch,
             idempotency_key,
             allow_unverified_programs,
-        ))
-        .map_err(|error| program_registration_guidance(&stack, error))?;
+            requested.clone(),
+        ),
+        quiet,
+    )
+    .map_err(|error| program_sdk_guidance(error, release_pins))
+    .map_err(|error| program_registration_guidance(&stack, error))?;
     let selection = validate_plan_response(&plan, &stack, &response)?;
     require_pinned_releases(release_pins, &selection)?;
+    let program_sdks =
+        validate_program_sdk_report(&stack, &requested, response.program_sdks.as_deref())?;
     let deployment_plan_id = selection
         .deployment_plan_id
         .clone()
@@ -1626,7 +1824,11 @@ fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
         anyhow::anyhow!("Not every hosted target completed; composition not bound")
     })?;
     let response = client.bind_stack_composition(request)?;
-    let result = StackDeploymentResult::healthy(&orchestration, &selection, &response)?;
+    let mut result = StackDeploymentResult::healthy(&orchestration, &selection, &response)?;
+    // Only a production deployment is published with its program SDKs.
+    if branch.is_none() {
+        result.program_sdks = program_sdks;
+    }
     if !quiet {
         ui::print_success("Stack composition bound successfully!");
         println!("  Composition ID: {}", response.composition_id);
@@ -1639,6 +1841,19 @@ fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
             );
             println!("    WebSocket: {}", binding.websocket_endpoint.cyan());
             println!("    Query: {}", binding.query_endpoint.cyan());
+        }
+        match (&result.program_sdks, branch) {
+            (_, Some(_)) => {
+                println!("  Program SDKs: not published for branch and preview deployments")
+            }
+            (Some(report), None) if report.is_empty() => println!("  Program SDKs: none"),
+            (Some(report), None) => {
+                println!("  Program SDKs:");
+                for line in program_sdk_lines(&stack, report) {
+                    println!("    {line}");
+                }
+            }
+            (None, None) => {}
         }
     }
     Ok(result)
@@ -1847,6 +2062,13 @@ mod tests {
         malformed_plan: bool,
         fail_first_build: bool,
         mismatch_build_echo: bool,
+        /// Errors the next plan requests fail with, in order.
+        plan_failures: RefCell<Vec<ApiHttpError>>,
+        /// The program SDK report; derived from the request when unset.
+        program_sdk_report: Option<Vec<ProgramSdkAssignment>>,
+        /// The branch the last plan was created for, which its deployments
+        /// run on.
+        branch: RefCell<Option<String>>,
     }
 
     impl FakeHostedApi {
@@ -1870,7 +2092,37 @@ mod tests {
                 malformed_plan: false,
                 fail_first_build: false,
                 mismatch_build_echo: false,
+                plan_failures: RefCell::new(Vec::new()),
+                program_sdk_report: None,
+                branch: RefCell::new(None),
             }
+        }
+
+        /// A registry that honors every requested program SDK and gives
+        /// the other programs their core SDK only.
+        fn report_for(req: &StackDeploymentPlanRequest) -> Vec<ProgramSdkAssignment> {
+            let requested = req.program_sdks.as_deref().unwrap_or_default();
+            Self::releases(&req.program_specs)
+                .into_iter()
+                .map(|release| {
+                    let reference = requested
+                        .iter()
+                        .find(|reference| reference.program_spec_hash == release.program_spec_hash);
+                    ProgramSdkAssignment {
+                        program_id: release.program_id,
+                        program_spec_hash: release.program_spec_hash,
+                        program_release_hash: release.program_release_hash,
+                        program_package_release: reference
+                            .map(|reference| reference.program_package_release.clone()),
+                        package: reference.map(|_| "ore".to_string()),
+                        version: reference.map(|_| "1.0.2".to_string()),
+                        source: reference.map(|_| "requested".to_string()),
+                        reason: reference
+                            .is_none()
+                            .then(|| "no program package is published for it".to_string()),
+                    }
+                })
+                .collect()
         }
 
         fn releases(
@@ -2008,6 +2260,15 @@ mod tests {
         ) -> Result<StackDeploymentPlanResponse> {
             self.calls.borrow_mut().push(ApiCall::Plan);
             self.plan_requests.borrow_mut().push(req.clone());
+            self.branch.replace(req.branch.clone());
+            if !self.plan_failures.borrow().is_empty() {
+                return Err(self.plan_failures.borrow_mut().remove(0).into());
+            }
+            let program_sdks = req.program_sdks.as_ref().map(|_| {
+                self.program_sdk_report
+                    .clone()
+                    .unwrap_or_else(|| Self::report_for(&req))
+            });
             Ok(StackDeploymentPlanResponse {
                 schema: STACK_DEPLOYMENT_PLAN_SCHEMA.into(),
                 persisted: true,
@@ -2024,6 +2285,7 @@ mod tests {
                 created_at: "2026-08-10T12:00:00Z".into(),
                 expires_at: "2026-08-10T12:30:00Z".into(),
                 idempotent: false,
+                program_sdks,
             })
         }
 
@@ -2073,7 +2335,9 @@ mod tests {
 
         fn get_deployment(&self, deployment_id: i32) -> Result<DeploymentResponse> {
             self.calls.borrow_mut().push(ApiCall::GetDeployment);
-            Ok(Self::deployment(deployment_id))
+            let mut deployment = Self::deployment(deployment_id);
+            deployment.branch = self.branch.borrow().clone();
+            Ok(deployment)
         }
 
         fn list_deployments_page(
@@ -2980,6 +3244,323 @@ source = { workspace = "ore-local" }
         let error = sources[0].load().unwrap_err().to_string();
         assert!(error.contains("a4 install"), "{error}");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn ore_release(marker: char) -> String {
+        format!(
+            "arete:registry-package-release:v2:sha256:{}",
+            marker.to_string().repeat(64)
+        )
+    }
+
+    /// The installed ORE fixture whose `ore` program arete.lock pins at
+    /// program package release '7'.
+    fn installed_with_program_sdk(project: &InstalledProject) -> LocalDeploymentSource {
+        let mut sources = project.resolve(Some("ore"), false).unwrap();
+        let mut source = sources.remove(0);
+        let DeploymentArtifacts::Installed { locked, .. } = &mut source.artifacts else {
+            panic!("installed source");
+        };
+        locked.programs[0].package_release_hash = Some(ore_release('7'));
+        source
+    }
+
+    #[test]
+    fn an_installed_stack_requests_the_program_sdks_its_lock_pins() {
+        let project = InstalledProject::new("program-sdks", false, true);
+        let source = installed_with_program_sdk(&project);
+        let DeploymentArtifacts::Installed { locked, .. } = &source.artifacts else {
+            unreachable!()
+        };
+        let spec = locked.programs[0].program_spec_hash.clone();
+        let stack = source.load().unwrap();
+        let api = FakeHostedApi::new(&stack);
+        let result = deploy_artifact_stack_with_deployment_name(
+            &api,
+            stack,
+            None,
+            Some("ore"),
+            source.release_pins().as_ref(),
+            false,
+            true,
+        )
+        .unwrap();
+        // Only programs with a program package release are requested.
+        assert_eq!(
+            api.plan_requests.borrow()[0].program_sdks,
+            Some(vec![ProgramSdkReference {
+                program_spec_hash: spec.clone(),
+                program_package_release: ore_release('7'),
+            }])
+        );
+        let report = result.program_sdks.clone().unwrap();
+        assert_eq!(report.len(), 2);
+        let value = serde_json::to_value(&result).unwrap();
+        let ore = value["programSdks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["programSpecHash"] == spec.as_str())
+            .unwrap();
+        assert_eq!(ore["programPackageRelease"], ore_release('7'));
+        assert_eq!(ore["source"], "requested");
+    }
+
+    #[test]
+    fn a_composed_stack_requests_its_program_sdks_and_an_authored_one_none() {
+        let project = InstalledProject::new("composed-sdks", false, true);
+        let installed = installed_with_program_sdk(&project);
+        let DeploymentArtifacts::Installed { locked, cache_root } = installed.artifacts else {
+            unreachable!()
+        };
+        let mut locked = *locked;
+        locked.alias = "mine".into();
+        locked.source = "workspace:ore-mix".into();
+        let spec = locked.programs[0].program_spec_hash.clone();
+        let manifest = registry_cache::file(
+            &cache_root,
+            "stack-manifest",
+            locked.stack_manifest_hash.as_deref().unwrap(),
+        )
+        .unwrap();
+        let composed = LocalDeploymentSource {
+            artifacts: DeploymentArtifacts::Composed {
+                path: manifest.clone(),
+                artifact_roots: vec![cache_root.clone()],
+                locked: Box::new(locked),
+                dependents: vec!["mine".into()],
+            },
+            deployment_name: Some("ore-mix".into()),
+        };
+        let stack = composed.load().unwrap();
+        let api = FakeHostedApi::new(&stack);
+        deploy_artifact_stack_with_deployment_name(
+            &api,
+            stack.clone(),
+            None,
+            Some("ore-mix"),
+            composed.release_pins().as_ref(),
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            api.plan_requests.borrow()[0].program_sdks,
+            Some(vec![ProgramSdkReference {
+                program_spec_hash: spec,
+                program_package_release: ore_release('7'),
+            }])
+        );
+
+        // A StackManifest file arete.lock does not pin asks for the report
+        // with no references.
+        let authored = LocalDeploymentSource {
+            artifacts: DeploymentArtifacts::Files {
+                path: manifest,
+                artifact_roots: vec![cache_root],
+            },
+            deployment_name: None,
+        };
+        let api = FakeHostedApi::new(&stack);
+        let result = deploy_artifact_stack_with_deployment_name(
+            &api,
+            authored.load().unwrap(),
+            None,
+            None,
+            authored.release_pins().as_ref(),
+            false,
+            true,
+        )
+        .unwrap();
+        let request = serde_json::to_value(&api.plan_requests.borrow()[0]).unwrap();
+        assert_eq!(request["programSdks"], serde_json::json!([]));
+        assert!(result
+            .program_sdks
+            .unwrap()
+            .iter()
+            .all(|entry| entry.source.is_none()));
+    }
+
+    #[test]
+    fn the_program_sdk_report_renders_one_line_per_program() {
+        let project = InstalledProject::new("report-lines", false, true);
+        let stack = project.resolve(Some("ore"), false).unwrap()[0]
+            .load()
+            .unwrap();
+        let entry = |position: usize, source: Option<&str>, reason: Option<&str>| {
+            let program = &stack.program_specs[position];
+            ProgramSdkAssignment {
+                program_id: program.payload.program_id.clone(),
+                program_spec_hash: program.artifact_hash.to_string(),
+                program_release_hash: "arete:h1:program-release:sha256:1".into(),
+                program_package_release: source.map(|_| ore_release('7')),
+                package: source.map(|_| "ore".into()),
+                version: source.map(|_| "1.0.2".into()),
+                source: source.map(str::to_string),
+                reason: reason.map(str::to_string),
+            }
+        };
+        let name = |position: usize| {
+            stack.program_specs[position]
+                .payload
+                .idl_snapshot
+                .snapshot
+                .name
+                .clone()
+        };
+        for (source, label) in [
+            ("requested", "from arete.lock"),
+            ("catalog", "catalog"),
+            ("owner", "your program package"),
+        ] {
+            assert_eq!(
+                program_sdk_lines(&stack, &[entry(0, Some(source), None)]),
+                vec![format!("{} → ore@1.0.2 ({label})", name(0))]
+            );
+        }
+        assert_eq!(
+            program_sdk_lines(
+                &stack,
+                &[entry(
+                    1,
+                    None,
+                    Some("no program package is published for it")
+                )]
+            ),
+            vec![format!(
+                "{}: core SDK only — no program package is published for it",
+                name(1)
+            )]
+        );
+
+        // The report must name the StackManifest's programs, and give each
+        // requested one exactly its release.
+        let requested = [ProgramSdkReference {
+            program_spec_hash: stack.program_specs[0].artifact_hash.to_string(),
+            program_package_release: ore_release('7'),
+        }];
+        let report = [entry(1, None, None), entry(0, Some("requested"), None)];
+        let ordered = validate_program_sdk_report(&stack, &requested, Some(&report))
+            .unwrap()
+            .unwrap();
+        assert_eq!(ordered[0].program_spec_hash, report[1].program_spec_hash);
+        assert_eq!(
+            validate_program_sdk_report(&stack, &requested, None).unwrap(),
+            None
+        );
+        let mut other = entry(0, Some("catalog"), None);
+        other.program_package_release = Some(ore_release('8'));
+        let error = validate_program_sdk_report(&stack, &requested, Some(&[other]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("which arete.lock pins"), "{error}");
+        let mut unknown = entry(0, None, None);
+        unknown.program_spec_hash = "arete:h1:program-spec:sha256:other".into();
+        assert!(validate_program_sdk_report(&stack, &[], Some(&[unknown])).is_err());
+    }
+
+    #[test]
+    fn a_program_sdk_the_registry_refuses_points_at_update() {
+        let project = InstalledProject::new("invalid-sdk", false, true);
+        let source = installed_with_program_sdk(&project);
+        let stack = source.load().unwrap();
+        let api = FakeHostedApi::new(&stack);
+        api.plan_failures.borrow_mut().push(ApiHttpError {
+            status: 409,
+            status_text: "409 Conflict".into(),
+            message: "programSdks names a program SDK that does not fit ProgramSpec arete:h1:program-spec:sha256:1".into(),
+            code: Some(PROGRAM_SDK_REFERENCE_INVALID.into()),
+        });
+        let error = deploy_artifact_stack_with_deployment_name(
+            &api,
+            stack,
+            None,
+            Some("ore"),
+            source.release_pins().as_ref(),
+            false,
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("does not fit ProgramSpec"), "{error}");
+        assert!(error.contains("Fix: run `a4 update stack ore`"), "{error}");
+        assert_eq!(api.plan_requests.borrow().len(), 1, "no retry");
+        assert!(api.build_requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_registry_without_program_sdks_deploys_without_the_report() {
+        let project = InstalledProject::new("old-registry", false, true);
+        let source = installed_with_program_sdk(&project);
+        let stack = source.load().unwrap();
+        let api = FakeHostedApi::new(&stack);
+        api.plan_failures.borrow_mut().push(ApiHttpError {
+            status: 400,
+            status_text: "400 Bad Request".into(),
+            message: "Failed to deserialize the JSON body: unknown field `programSdks`".into(),
+            code: None,
+        });
+        let result = deploy_artifact_stack_with_deployment_name(
+            &api,
+            stack,
+            None,
+            Some("ore"),
+            source.release_pins().as_ref(),
+            false,
+            true,
+        )
+        .unwrap();
+        let requests = api.plan_requests.borrow();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].program_sdks.is_some());
+        assert_eq!(requests[1].program_sdks, None);
+        assert_eq!(requests[0].idempotency_key, requests[1].idempotency_key);
+        assert_eq!(result.program_sdks, None);
+        assert!(serde_json::to_value(&result)
+            .unwrap()
+            .get("programSdks")
+            .is_none());
+
+        // Any other rejection is not retried.
+        let stack = source.load().unwrap();
+        let api = FakeHostedApi::new(&stack);
+        api.plan_failures.borrow_mut().push(ApiHttpError {
+            status: 400,
+            status_text: "400 Bad Request".into(),
+            message: "unknown field `somethingElse`".into(),
+            code: None,
+        });
+        assert!(deploy_artifact_stack_with_deployment_name(
+            &api,
+            stack,
+            None,
+            Some("ore"),
+            source.release_pins().as_ref(),
+            false,
+            true,
+        )
+        .is_err());
+        assert_eq!(api.plan_requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_branch_deployment_reports_no_program_sdks() {
+        let project = InstalledProject::new("branch-sdks", false, true);
+        let source = installed_with_program_sdk(&project);
+        let stack = source.load().unwrap();
+        let api = FakeHostedApi::new(&stack);
+        let result = deploy_artifact_stack_with_deployment_name(
+            &api,
+            stack,
+            Some("staging"),
+            Some("ore"),
+            source.release_pins().as_ref(),
+            false,
+            true,
+        )
+        .unwrap();
+        assert!(api.plan_requests.borrow()[0].program_sdks.is_some());
+        assert_eq!(result.program_sdks, None);
     }
 
     #[test]
