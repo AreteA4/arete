@@ -1,4 +1,4 @@
-use crate::bus::{BusManager, BusMessage};
+use crate::bus::{BusManager, BusMessage, StateUpdate};
 use crate::cache::{cmp_seq, EntityCache, SnapshotBatchConfig};
 use crate::compression::maybe_compress;
 use crate::view::{ViewIndex, ViewSpec};
@@ -1291,15 +1291,15 @@ async fn subscribe_state_then_snapshot<F, Fut, T>(
     view_id: &str,
     key: &str,
     snapshot: F,
-) -> (watch::Receiver<Arc<Bytes>>, T)
+) -> (watch::Receiver<StateUpdate>, u64, T)
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = T>,
 {
     let mut receiver = bus_manager.get_or_create_state_bus(view_id, key).await;
-    receiver.borrow_and_update();
+    let published = receiver.borrow_and_update().published;
     let snapshot = snapshot().await;
-    (receiver, snapshot)
+    (receiver, published, snapshot)
 }
 
 async fn subscribe_list_then_snapshot<F, Fut, T>(
@@ -1374,7 +1374,7 @@ async fn attach_state_subscription(
     let query = subscription.query.clone();
     let cache = context.entity_cache.clone();
     let view_spec_for_snapshot = view_spec.clone();
-    let (mut receiver, initial) =
+    let (mut receiver, mut seen, initial) =
         subscribe_state_then_snapshot(&context.bus_manager, &view_id, &key, move || async move {
             load_query_entities(&cache, None, &view_spec_for_snapshot, &query, false).await
         })
@@ -1414,7 +1414,16 @@ async fn attach_state_subscription(
                         if changed.is_err() {
                             break;
                         }
-                        let payload = receiver.borrow().clone();
+                        let (payload, published) = {
+                            let update = receiver.borrow_and_update();
+                            (update.payload.clone(), update.published)
+                        };
+                        // The bus keeps only the latest frame. If more than one
+                        // was published since the last read, the earlier ones
+                        // were overwritten and the latest patch alone would
+                        // drop their fields, so send the cached entity instead.
+                        let missed = published > seen + 1;
+                        seen = published;
                         let metadata = source_frame_metadata(&payload);
                         if metadata.op == "delete" {
                             task_context.entity_cache.remove(&query.view, &key).await;
@@ -1441,26 +1450,38 @@ async fn attach_state_subscription(
                             false,
                         ).await;
                         let is_member = !selected.is_empty();
-                        let result = match (member, is_member) {
-                            (true, true) => send_scoped_source_payload(
+                        let result = match (member, selected.into_iter().next()) {
+                            (true, Some(_)) if !missed => send_scoped_source_payload(
                                 &task_context,
                                 &subscription_id,
                                 &query.view,
                                 payload,
                             ),
-                            (false, true) => {
-                                let (entity_key, data) = selected.into_iter().next().unwrap();
-                                send_membership_frame(
-                                    &task_context,
-                                    &subscription_id,
-                                    &view_spec_task,
-                                    "upsert",
-                                    &entity_key,
-                                    data,
-                                    metadata.seq,
-                                )
-                            }
-                            (true, false) => send_membership_frame(
+                            // The cached entity is newer than anything this
+                            // subscriber was sent, so it goes without a seq that
+                            // a client could discard it by. Seqs are not ordered
+                            // within a slot: account updates and instructions
+                            // number themselves differently, so the latest
+                            // patch's seq can sort below one sent before it.
+                            (true, Some((entity_key, data))) => send_membership_frame(
+                                &task_context,
+                                &subscription_id,
+                                &view_spec_task,
+                                "upsert",
+                                &entity_key,
+                                data,
+                                None,
+                            ),
+                            (false, Some((entity_key, data))) => send_membership_frame(
+                                &task_context,
+                                &subscription_id,
+                                &view_spec_task,
+                                "upsert",
+                                &entity_key,
+                                data,
+                                metadata.seq,
+                            ),
+                            (true, None) => send_membership_frame(
                                 &task_context,
                                 &subscription_id,
                                 &view_spec_task,
@@ -1469,7 +1490,7 @@ async fn attach_state_subscription(
                                 Value::Null,
                                 metadata.seq,
                             ),
-                            (false, false) => Ok(()),
+                            (false, None) => Ok(()),
                         };
                         if result.is_err() {
                             break;
@@ -2973,7 +2994,7 @@ mod tests {
         release_snapshot_tx.send(()).unwrap();
         let mut receiver = task.await.unwrap();
         receiver.changed().await.unwrap();
-        assert!(!receiver.borrow().is_empty());
+        assert!(!receiver.borrow().payload.is_empty());
     }
 
     async fn assert_list_receiver_precedes_snapshot(view: &'static str) {
@@ -3592,6 +3613,176 @@ mod tests {
             );
 
             assert_eq!(collect_trades(&mut socket, 50).await.len(), 50);
+            socket.close(None).await.ok();
+        }
+
+        const ROUND: &str = "Round/state";
+
+        /// A state view with no projector: the test writes the cache and the
+        /// bus itself, so it controls exactly when the subscriber can run.
+        #[derive(Clone)]
+        struct StateServer {
+            addr: SocketAddr,
+            bus_manager: BusManager,
+            entity_cache: EntityCache,
+        }
+
+        impl StateServer {
+            async fn start() -> Self {
+                let mut index = ViewIndex::new();
+                index.add_spec(ViewSpec {
+                    id: ROUND.to_string(),
+                    export: "Round".to_string(),
+                    mode: Mode::State,
+                    wire_format: Default::default(),
+                    projection: Projection::all(),
+                    filters: Filters::all(),
+                    delivery: Delivery::default(),
+                    pipeline: None,
+                    source_view: None,
+                });
+                let bus_manager = BusManager::new();
+                let entity_cache = EntityCache::new();
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let server = WebSocketServer::new(
+                    addr,
+                    bus_manager.clone(),
+                    entity_cache.clone(),
+                    Arc::new(index),
+                    #[cfg(feature = "otel")]
+                    None,
+                );
+                let (acceptor, _cleanup) = server.into_acceptor();
+                tokio::spawn(async move { acceptor.serve_listener(listener).await });
+                Self {
+                    addr,
+                    bus_manager,
+                    entity_cache,
+                }
+            }
+
+            /// Publish a patch the way the projector does: stamp its `_seq`,
+            /// write the cache, then the key's bus.
+            async fn publish(&self, key: &str, mut patch: Value, seq: &str) {
+                patch["_seq"] = Value::String(seq.to_string());
+                self.entity_cache
+                    .upsert_with_append(ROUND, key, patch.clone(), &[])
+                    .await;
+                let frame = json!({
+                    "mode": "state",
+                    "entity": ROUND,
+                    "op": "patch",
+                    "key": key,
+                    "data": patch,
+                    "seq": seq,
+                });
+                self.bus_manager
+                    .publish_state(ROUND, key, Arc::new(Bytes::from(frame.to_string())))
+                    .await;
+            }
+
+            /// Subscribe to one key and read through its snapshot.
+            async fn subscribe(&self, key: &str) -> WebSocketStream<TcpStream> {
+                let stream = TcpStream::connect(self.addr).await.unwrap();
+                let mut socket = client_async(format!("ws://{}/", self.addr), stream)
+                    .await
+                    .unwrap()
+                    .0;
+                socket
+                    .send(Message::Text(
+                        json!({
+                            "type": "subscribe",
+                            "protocolVersion": 2,
+                            "subscriptionId": "round",
+                            "query": {"view": ROUND, "key": key},
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+                let ack = next_frame(&mut socket).await;
+                assert_eq!(ack["op"], "subscribed", "unexpected ack: {ack}");
+                loop {
+                    let frame = next_frame(&mut socket).await;
+                    assert_eq!(frame["op"], "snapshot", "unexpected frame: {frame}");
+                    if frame["complete"] == true {
+                        return socket;
+                    }
+                }
+            }
+        }
+
+        /// Two patches to one key, published before the subscriber reads the
+        /// first, must both reach it. The bus holds only the latest frame, so
+        /// forwarding it alone drops the fields of the one it replaced.
+        // One worker, so tasks run one at a time. The handshake needs the
+        // multi-threaded runtime.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_state_subscriber_keeps_the_fields_of_an_overwritten_patch() {
+            let server = StateServer::start().await;
+            server
+                .publish("7", json!({"id": 7}), "100:000000000001")
+                .await;
+            let mut socket = server.subscribe("7").await;
+
+            // A lone patch is forwarded as it was published.
+            server
+                .publish("7", json!({"total": 1}), "101:000000000004")
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({"total": 1, "_seq": "101:000000000004"})
+            );
+
+            // Both writes happen in one task that never yields to the
+            // subscriber, so the second replaces the first on the bus before
+            // the subscriber wakes.
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer
+                    .publish(
+                        "7",
+                        json!({"results": {"slot_hash": "abc"}}),
+                        "140:003836292257",
+                    )
+                    .await;
+                writer
+                    .publish("7", json!({"entropy": {"seed": "def"}}), "140:000000001200")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({
+                    "id": 7,
+                    "total": 1,
+                    "results": {"slot_hash": "abc"},
+                    "entropy": {"seed": "def"},
+                    "_seq": "140:000000001200",
+                })
+            );
+            // The latest seq sorts below the one it replaced, which a client
+            // would take for a stale frame and drop.
+            assert!(frame.get("seq").is_none(), "unexpected seq: {frame}");
+
+            // Having caught up, the subscriber forwards patches again.
+            server
+                .publish("7", json!({"total": 2}), "141:000000000002")
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({"total": 2, "_seq": "141:000000000002"})
+            );
+
             socket.close(None).await.ok();
         }
     }
