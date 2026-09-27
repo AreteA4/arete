@@ -6591,5 +6591,107 @@ source = { workspace = "ore-sdk" }
         assert!(!locked_program_matches(&moved, &now, None));
     }
 
+    /// A project whose `@usearete/sdk` provides extension API `api`.
+    fn install_typescript_sdk(manifest: &Path, api: u32) {
+        let package = manifest.with_file_name("node_modules/@usearete/sdk");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("package.json"),
+            format!(
+                r#"{{"name":"@usearete/sdk","version":"0.23.0","arete":{{"extensionApi":{api}}}}}"#
+            ),
+        )
+        .unwrap();
+    }
 
+    fn with_extension_api(mut extension: Value, api: u32) -> Value {
+        extension["extensionApi"] = json!(api);
+        extension
+    }
+
+    #[test]
+    fn a_registry_extension_api_is_checked_against_the_installed_sdk() {
+        let program = |api: u32| {
+            resolution(vec![ore_program_dependency(
+                '7',
+                "1.0.2",
+                vec![with_extension_api(
+                    ore_program_extension("typescript", 'e'),
+                    api,
+                )],
+            )])
+        };
+        let sandbox = RegistrySandbox::new(vec![(200, program(2)), (200, program(1))], false);
+        let manifest = typescript_project(&sandbox, ORE_PROGRAM_DEPENDENCY);
+        install_typescript_sdk(&manifest, 1);
+        let original = fs::read(&manifest).unwrap();
+        let error = install_project(&manifest, InstallOptions::default())
+            .expect_err("the extension needs another extension API");
+        sandbox.request();
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("require extension API 2, but the installed @usearete/sdk 0.23.0 provides extension API 1"),
+            "{text}"
+        );
+        assert_eq!(fs::read(&manifest).unwrap(), original);
+        assert!(!manifest.with_file_name("arete.lock").exists());
+
+        install_project(&manifest, InstallOptions::default()).expect("a matching extension API");
+        sandbox.request();
+        // The staged manifest carries it, where `a4 doctor` reads it.
+        let staged: Value = serde_json::from_str(
+            &generated_files(&manifest, "typescript")["programs/ore/extensions.json"],
+        )
+        .unwrap();
+        assert_eq!(staged["extensionApi"], 1);
+    }
+
+    #[test]
+    fn a_stack_program_extension_api_is_checked_too() {
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![ore_stack_with_program_sdk(
+                    '7',
+                    "1.0.2",
+                    vec![with_extension_api(
+                        ore_program_extension("typescript", 'e'),
+                        3,
+                    )],
+                )]),
+            )],
+            false,
+        );
+        let manifest = typescript_project(&sandbox, ORE_STACK_DEPENDENCY);
+        install_typescript_sdk(&manifest, 1);
+        let error = install_project(&manifest, InstallOptions::default())
+            .expect_err("the stack's program SDK extension needs another extension API");
+        sandbox.request();
+        assert!(
+            format!("{error:#}").contains("require extension API 3"),
+            "{error:#}"
+        );
+
+        // An entry that contradicts its own manifest is refused.
+        let mut extension = with_extension_api(ore_program_extension("typescript", 'e'), 2);
+        extension["artifact"]["manifest"]["extensionApi"] = json!(1);
+        let resolved: crate::project::resolver::ResolvedSdkExtension =
+            serde_json::from_value(extension).unwrap();
+        let error = resolved.artifact_with_contract().unwrap_err().to_string();
+        assert!(error.contains("its manifest declares 1"), "{error}");
+        let resolved: crate::project::resolver::ResolvedSdkExtension = serde_json::from_value(
+            with_extension_api(ore_program_extension("typescript", 'e'), 2),
+        )
+        .unwrap();
+        assert_eq!(
+            resolved
+                .artifact_with_contract()
+                .unwrap()
+                .manifest
+                .extension_api
+                .map(std::num::NonZeroU32::get),
+            Some(2)
+        );
+        assert_eq!(resolved.artifact.manifest.extension_api, None);
+    }
 }

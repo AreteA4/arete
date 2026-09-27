@@ -144,6 +144,31 @@ pub struct ResolvedSdkExtension {
     pub target: String,
     pub content_hash: String,
     pub artifact: crate::api_client::RegistrySdkExtensionArtifact,
+    /// The extension API contract the extension declared when it was
+    /// published. The registry reports it here, beside the served artifact,
+    /// whose manifest never carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension_api: Option<std::num::NonZeroU32>,
+}
+
+impl ResolvedSdkExtension {
+    /// The artifact to generate from, with the declared extension API in
+    /// its manifest, where the SDK runtime compatibility check reads it.
+    pub fn artifact_with_contract(
+        &self,
+    ) -> anyhow::Result<crate::api_client::RegistrySdkExtensionArtifact> {
+        let mut artifact = self.artifact.clone();
+        match (artifact.manifest.extension_api, self.extension_api) {
+            (Some(manifest), Some(declared)) if manifest != declared => anyhow::bail!(
+                "Registry returned {} SDK extension {} with extension API {declared}, but its manifest declares {manifest}",
+                self.target,
+                self.content_hash
+            ),
+            (None, declared) => artifact.manifest.extension_api = declared,
+            _ => {}
+        }
+        Ok(artifact)
+    }
 }
 
 /// The target a legacy single program extension was authored for: its
@@ -199,7 +224,9 @@ pub fn program_extension_for_target(
                     program.install_name
                 );
             }
-            Ok(first.map(|extension| extension.artifact.clone()))
+            first
+                .map(ResolvedSdkExtension::artifact_with_contract)
+                .transpose()
         }
         None => Ok(program
             .definition

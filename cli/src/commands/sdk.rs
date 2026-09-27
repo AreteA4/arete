@@ -1508,7 +1508,10 @@ fn project_sdk_extension(
             target
         );
     }
-    Ok(selected.first().map(|extension| extension.artifact.clone()))
+    selected
+        .first()
+        .map(|extension| extension.artifact_with_contract())
+        .transpose()
 }
 
 fn generate_project_stack_source(
