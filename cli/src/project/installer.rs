@@ -23,6 +23,7 @@ use super::paths::ProjectPaths;
 use super::registry_cache;
 use super::resolver::{
     RegistryDependencyRequest, RegistryResolveRequest, ResolvedRegistryDependency,
+    ResolvedStackDelivery, ServedVersionReplacement,
 };
 use super::{InstallPlan, ProjectLock, ProjectManifest, GENERATOR_CONTRACT, RESOLVER_CONTRACT};
 
@@ -30,6 +31,7 @@ const INSTALL_JOURNAL: &str = ".arete/install-journal.json";
 /// A hosted stack's exact delivery is transiently unavailable. It is not a
 /// lock integrity failure: the locked release still resolves.
 const DELIVERY_NOT_READY: &str = "delivery-not-ready";
+const STACK_VERSION_RETIRED: &str = "stack-version-retired";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InstallOptions<'a> {
@@ -776,7 +778,92 @@ fn install_loaded_project(
     for note in redeploy_notes(&manifest, previous_lock.as_ref(), &prospective_lock) {
         println!("{note}");
     }
+    for notice in served_version_notices(&manifest, &resolved) {
+        crate::ui::print_warning(&notice);
+    }
     Ok(())
+}
+
+/// What each hosted stack's delivery says about the version installed: a
+/// notice while the version is being retired, and a warning once it is no
+/// longer served, each with the command that installs the served version.
+/// Neither changes arete.lock: a locked project keeps its version, and its
+/// generated SDK is refused with the same replacement when it connects.
+/// A stack whose arete.toml `endpoints` name its own deployment does not use
+/// the hosted version, so it only gets a note once that is retired.
+fn served_version_notices(
+    manifest: &ProjectManifest,
+    resolved: &[ResolvedProjectDependency],
+) -> Vec<String> {
+    resolved
+        .iter()
+        .filter_map(|dependency| {
+            let ResolvedProjectDependency::Registry { resolved, .. } = dependency else {
+                return None;
+            };
+            let ResolvedRegistryDependency::Stack {
+                alias,
+                package,
+                version,
+                delivery,
+                ..
+            } = resolved.as_ref()
+            else {
+                return None;
+            };
+            let own_deployment = manifest
+                .document
+                .dependencies
+                .stacks
+                .get(alias)
+                .is_some_and(|dependency| !dependency.endpoints.is_empty());
+            match delivery.as_deref()? {
+                ResolvedStackDelivery::Hosted {
+                    served_until: Some(_),
+                    ..
+                } if own_deployment => None,
+                ResolvedStackDelivery::Retired { retired_at, .. } if own_deployment => {
+                    Some(format!(
+                        "The hosted version of stack '{alias}' ({package}@{version}) was retired \
+                         {retired_at}. Its SDK uses the endpoints in arete.toml, so it is not \
+                         affected."
+                    ))
+                }
+                ResolvedStackDelivery::Hosted {
+                    served_until: Some(served_until),
+                    replacement,
+                    upgrade_command,
+                    ..
+                } => Some(format!(
+                    "Stack '{alias}' ({package}@{version}) is being retired: it is served until \
+                     at least {served_until}.{}",
+                    upgrade_hint(replacement.as_ref(), upgrade_command.as_deref())
+                )),
+                ResolvedStackDelivery::Retired {
+                    retired_at,
+                    replacement,
+                    upgrade_command,
+                    ..
+                } => Some(format!(
+                    "Stack '{alias}' ({package}@{version}) is no longer served (retired \
+                     {retired_at}). Its SDK was generated, but it cannot connect.{}",
+                    upgrade_hint(replacement.as_ref(), upgrade_command.as_deref())
+                )),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn upgrade_hint(replacement: Option<&ServedVersionReplacement>, command: Option<&str>) -> String {
+    match (
+        command,
+        replacement.and_then(|replacement| replacement.version.as_deref()),
+    ) {
+        (Some(command), _) => format!(" To upgrade, run `{command}`."),
+        (None, Some(version)) => format!(" Version {version} is served."),
+        (None, None) => String::new(),
+    }
 }
 
 /// A stack whose recorded deployment (`endpoints`) now resolves to a
@@ -1393,6 +1480,11 @@ fn describe_resolver_batch_error(
             "A hosted stack among {names} is published but its live delivery is not currently \
              ready; nothing was installed and arete.lock is unchanged. Retry shortly ({http})"
         ),
+        409 if http.code.as_deref() == Some(STACK_VERSION_RETIRED) => anyhow::anyhow!(
+            "A stack version among {names} is no longer served; nothing was installed and \
+             arete.lock is unchanged.{} ({http})",
+            upgrade_hint(None, http.upgrade_command.as_deref())
+        ),
         409 if !locked.is_empty() => anyhow::anyhow!(
             "The registry could not honor the exact lock for one or more of {}; this is an \
              integrity failure, so nothing was installed. Run `a4 update` for the affected \
@@ -1430,6 +1522,10 @@ fn describe_resolver_error(
         ),
         409 if http.code.as_deref() == Some(DELIVERY_NOT_READY) => anyhow::anyhow!(
             "{kind} '{package}' is published but its live delivery is not currently ready; nothing was installed and arete.lock is unchanged. Retry shortly ({http})"
+        ),
+        409 if http.code.as_deref() == Some(STACK_VERSION_RETIRED) => anyhow::anyhow!(
+            "{kind} '{package}': this version is no longer served; nothing was installed and arete.lock is unchanged.{} ({http})",
+            upgrade_hint(None, http.upgrade_command.as_deref())
         ),
         409 if locked => anyhow::anyhow!(
             "arete.lock integrity failure for {kind} '{package}': the locked release is no longer resolvable. Nothing was changed; run `a4 update {kind} <alias>` only if you intend to advance ({http})"
@@ -2371,8 +2467,9 @@ mod private_install_tests {
     use super::*;
     use crate::api_client::test_support::{MockServer, ENV_LOCK};
 
-    /// Every project resolution opts into stack delivery.
-    const RESOLVE_PATH: &str = "/api/registry/v1/resolve?include=delivery";
+    /// Every project resolution opts into stack delivery and its served
+    /// version lifecycle.
+    const RESOLVE_PATH: &str = "/api/registry/v1/resolve?include=delivery,delivery-lifecycle";
     const OWNER_KEY: &str = "a4_sk_private_install_owner";
 
     /// Serialises the process-global API URL and credentials for one test.
@@ -3817,6 +3914,232 @@ version = "^1.0.0"
         }
     }
 
+    const SERVED_MANIFEST: &str = "arete:h1:stack-manifest:sha256:served";
+
+    /// A version no longer served, delivered on the stack's own endpoints.
+    fn retired_delivery(websocket: &str, query: &str) -> Value {
+        let mut delivery = hosted_delivery(websocket, query, 4);
+        let object = delivery.as_object_mut().unwrap();
+        object.remove("deploymentReleaseHash");
+        object.insert("mode".into(), json!("retired"));
+        object.insert("retiredAt".into(), json!("2026-11-01T00:00:05Z"));
+        object.insert(
+            "replacement".into(),
+            json!({"stackManifestHash": SERVED_MANIFEST, "version": "1.1.0"}),
+        );
+        object.insert("upgradeCommand".into(), json!("a4 install stack ore@1.1.0"));
+        delivery
+    }
+
+    fn resolved_ore(delivery: Value) -> ResolvedProjectDependency {
+        ResolvedProjectDependency::Registry {
+            kind: DependencyKind::Stack,
+            source: "ore".into(),
+            requirement: "^1.0.0".into(),
+            targets: vec![InstallTarget::TypeScript],
+            resolved: Box::new(
+                serde_json::from_value(ore_stack_dependency(Some(delivery))).unwrap(),
+            ),
+        }
+    }
+
+    #[test]
+    fn a_retired_locked_version_reinstalls_with_its_selector_and_an_unchanged_lock() {
+        let sandbox = RegistrySandbox::new(
+            vec![
+                (
+                    200,
+                    resolution(vec![ore_stack_dependency(Some(hosted_delivery(
+                        HOSTED_WS,
+                        HOSTED_HTTP,
+                        4,
+                    )))]),
+                ),
+                (
+                    200,
+                    resolution(vec![ore_stack_dependency(Some(retired_delivery(
+                        HOSTED_WS,
+                        HOSTED_HTTP,
+                    )))]),
+                ),
+            ],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        install_project(&manifest, InstallOptions::default()).expect("first install");
+        sandbox.request();
+        let lock_path = manifest.with_file_name("arete.lock");
+        let lock_before = fs::read(&lock_path).unwrap();
+        let generated_before = generated_files(&manifest, "typescript");
+
+        // The version is retired: the locked project still reinstalls, its
+        // lock is byte-identical, and the SDK keeps the stack's endpoint and
+        // this version's selector, so its session is refused with the
+        // replacement rather than reaching another version.
+        install_project(
+            &manifest,
+            InstallOptions {
+                locked: true,
+                ..InstallOptions::default()
+            },
+        )
+        .expect("a retired locked version reinstalls");
+        let second = sandbox.request();
+        assert!(
+            second
+                .request_line
+                .starts_with(&format!("POST {RESOLVE_PATH} ")),
+            "{}",
+            second.request_line
+        );
+        assert_eq!(fs::read(&lock_path).unwrap(), lock_before, "lock unchanged");
+        assert_eq!(
+            generated_files(&manifest, "typescript"),
+            generated_before,
+            "the same SDK is generated"
+        );
+        let stack_manifest = ore_fixture("OreStream.stack-manifest.json");
+        let core = &generated_before["stacks/ore/ore-core.ts"];
+        assert!(core.contains(HOSTED_WS), "{core}");
+        assert!(
+            core.contains(&format!(
+                "stackManifestHash: '{}'",
+                stack_manifest["artifactHash"].as_str().unwrap()
+            )),
+            "{core}"
+        );
+        for target in ["rust", "python"] {
+            assert!(
+                generated_text(&manifest, target).contains(HOSTED_WS),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_retired_stack_that_is_no_longer_hosted_generates_placeholders() {
+        let mut delivery = retired_delivery(HOSTED_WS, HOSTED_HTTP);
+        delivery["liveBindings"] = json!([]);
+        let sandbox = RegistrySandbox::new(
+            vec![(200, resolution(vec![ore_stack_dependency(Some(delivery))]))],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        install_project(&manifest, InstallOptions::default()).expect("retired install");
+        let text = generated_text(&manifest, "typescript");
+        assert!(!text.contains(HOSTED_WS), "no endpoint is invented");
+        assert!(!has_stack_gateway(&manifest));
+        assert!(manifest.with_file_name("arete.lock").exists());
+    }
+
+    #[test]
+    fn served_version_notices_name_the_date_and_the_upgrade() {
+        let mut draining = hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4);
+        draining["servedUntil"] = json!("2026-11-01T00:00:00Z");
+        draining["replacement"] = json!({"stackManifestHash": SERVED_MANIFEST, "version": "1.1.0"});
+        draining["upgradeCommand"] = json!("a4 install stack ore@1.1.0");
+        let mut retired_without_command = retired_delivery(HOSTED_WS, HOSTED_HTTP);
+        retired_without_command
+            .as_object_mut()
+            .unwrap()
+            .remove("upgradeCommand");
+        // No request is made; the sandbox only provides project files.
+        let sandbox = RegistrySandbox::new(vec![(200, "{}".into())], false);
+        let hosted = ProjectManifest::load(stack_project(&sandbox, "")).unwrap();
+        let notices = served_version_notices(
+            &hosted,
+            &[
+                resolved_ore(hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4)),
+                resolved_ore(draining),
+                resolved_ore(retired_delivery(HOSTED_WS, HOSTED_HTTP)),
+                resolved_ore(retired_without_command),
+                resolved_ore(json!({"mode": "definition-only"})),
+            ],
+        );
+        assert_eq!(
+            notices,
+            vec![
+                "Stack 'ore' (ore@1.0.0) is being retired: it is served until at least \
+                 2026-11-01T00:00:00Z. To upgrade, run `a4 install stack ore@1.1.0`."
+                    .to_string(),
+                "Stack 'ore' (ore@1.0.0) is no longer served (retired 2026-11-01T00:00:05Z). \
+                 Its SDK was generated, but it cannot connect. To upgrade, run \
+                 `a4 install stack ore@1.1.0`."
+                    .to_string(),
+                "Stack 'ore' (ore@1.0.0) is no longer served (retired 2026-11-01T00:00:05Z). \
+                 Its SDK was generated, but it cannot connect. Version 1.1.0 is served."
+                    .to_string(),
+            ]
+        );
+
+        // A stack on its own deployment does not use the hosted version.
+        let own = ProjectManifest::load(stack_project(
+            &sandbox,
+            r#"endpoints = { live = { websocket = "wss://own.example.test", query = "https://own.example.test" } }"#,
+        ))
+        .unwrap();
+        let mut draining = hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4);
+        draining["servedUntil"] = json!("2026-11-01T00:00:00Z");
+        assert_eq!(
+            served_version_notices(
+                &own,
+                &[
+                    resolved_ore(draining),
+                    resolved_ore(retired_delivery(HOSTED_WS, HOSTED_HTTP)),
+                ]
+            ),
+            vec!["The hosted version of stack 'ore' (ore@1.0.0) was retired \
+                 2026-11-01T00:00:05Z. Its SDK uses the endpoints in arete.toml, so it is not \
+                 affected."
+                .to_string()]
+        );
+    }
+
+    #[test]
+    fn delivery_modes_decode_strictly_with_the_lifecycle_fields() {
+        use crate::project::resolver::ResolvedStackDelivery;
+
+        let decode = |delivery: Value| serde_json::from_value::<ResolvedStackDelivery>(delivery);
+        let mut draining = hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4);
+        draining["servedUntil"] = json!("2026-11-01T00:00:00Z");
+        assert!(matches!(
+            decode(draining).unwrap(),
+            ResolvedStackDelivery::Hosted {
+                served_until: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            decode(retired_delivery(HOSTED_WS, HOSTED_HTTP)).unwrap(),
+            ResolvedStackDelivery::Retired { .. }
+        ));
+        let mut unknown_field = hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4);
+        unknown_field["servedFrom"] = json!("2026-01-01T00:00:00Z");
+        assert!(decode(unknown_field).is_err());
+        assert!(decode(json!({"mode": "paused"})).is_err());
+    }
+
+    #[test]
+    fn a_retired_version_refusal_names_the_upgrade_not_a_lock_failure() {
+        let error = describe_resolver_error(
+            crate::api_client::ApiHttpError {
+                status: 409,
+                status_text: "409 Conflict".into(),
+                message: "Dependency 'ore': version 1.0.0 of stack 'ore' is retired".into(),
+                code: Some(STACK_VERSION_RETIRED.into()),
+                upgrade_command: Some("a4 install stack ore@1.1.0".into()),
+            }
+            .into(),
+            DependencyKind::Stack,
+            "ore",
+            true,
+        );
+        let text = format!("{error:#}");
+        assert!(text.contains("no longer served"), "{text}");
+        assert!(text.contains("`a4 install stack ore@1.1.0`"), "{text}");
+        assert!(!text.contains("integrity"), "{text}");
+    }
+
     #[test]
     fn stacks_and_programs_resolve_with_delivery_in_one_batch_request() {
         let program =
@@ -3870,6 +4193,7 @@ version = "^1.0.0"
                 status_text: "409 Conflict".into(),
                 message: "Stack 'ore' is not currently ready".into(),
                 code: Some(DELIVERY_NOT_READY.into()),
+                upgrade_command: None,
             }
             .into(),
             DependencyKind::Stack,

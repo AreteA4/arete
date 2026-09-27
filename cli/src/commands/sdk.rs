@@ -5356,6 +5356,10 @@ struct ProjectStackTransport {
 /// with the same rules as a direct install descriptor. Only an explicit
 /// `definition-only` stack generates placeholder endpoints; a hosted stack
 /// must bind every LiveSpec exactly and carry both managed gateway bindings.
+/// A retired version is generated like a hosted one on the stack's own
+/// endpoints, so the SDK keeps naming its version (its connection is then
+/// refused with the replacement), or with placeholders once the stack is no
+/// longer hosted at all.
 /// arete.toml `endpoints` (the user's own deployment) replace the stream
 /// endpoints of either; a hosted stack keeps its managed gateway.
 fn project_stack_transport(
@@ -5374,32 +5378,67 @@ fn project_stack_transport(
              stack delivery resolution. Upgrade the backend, or use a CLI compatible with it."
         );
     };
-    let (deployment_release_hash, bindings, chain_binding, transaction_binding) = match delivery {
-        ResolvedStackDelivery::DefinitionOnly {} => {
-            return Ok(ProjectStackTransport {
-                live_bindings: Vec::new(),
-                deployment_endpoints,
-                chain_binding: None,
-                transaction_binding: None,
-                require_managed_gateway: false,
-            })
-        }
+    let placeholders = |deployment_endpoints| ProjectStackTransport {
+        live_bindings: Vec::new(),
+        deployment_endpoints,
+        chain_binding: None,
+        transaction_binding: None,
+        require_managed_gateway: false,
+    };
+    match delivery {
+        ResolvedStackDelivery::DefinitionOnly {} => Ok(placeholders(deployment_endpoints)),
         ResolvedStackDelivery::Hosted {
             deployment_release_hash,
             live_bindings,
             chain_binding,
             transaction_binding,
-        } => (
-            deployment_release_hash,
+            ..
+        } => {
+            let source = format!("hosted stack '{package}'");
+            if deployment_release_hash.trim().is_empty() {
+                anyhow::bail!("{source} has no exact deployment release");
+            }
+            hosted_stack_transport(
+                &source,
+                stack_manifest,
+                live_specs,
+                live_bindings,
+                chain_binding.as_deref(),
+                transaction_binding.as_deref(),
+                deployment_endpoints,
+            )
+        }
+        ResolvedStackDelivery::Retired { live_bindings, .. } if live_bindings.is_empty() => {
+            Ok(placeholders(deployment_endpoints))
+        }
+        ResolvedStackDelivery::Retired {
             live_bindings,
             chain_binding,
             transaction_binding,
+            ..
+        } => hosted_stack_transport(
+            &format!("retired stack '{package}'"),
+            stack_manifest,
+            live_specs,
+            live_bindings,
+            chain_binding.as_deref(),
+            transaction_binding.as_deref(),
+            deployment_endpoints,
         ),
-    };
-    let source = format!("hosted stack '{package}'");
-    if deployment_release_hash.trim().is_empty() {
-        anyhow::bail!("{source} has no exact deployment release");
     }
+}
+
+/// A hosted binding vector: every LiveSpec bound exactly, in order, and both
+/// managed gateway bindings present.
+fn hosted_stack_transport(
+    source: &str,
+    stack_manifest: &arete_artifacts::StackManifestArtifactV2,
+    live_specs: &[crate::project::resolver::ResolvedLiveSpec],
+    bindings: &[crate::project::resolver::ResolvedLiveBinding],
+    chain_binding: Option<&RegistryCapabilityInstallBinding>,
+    transaction_binding: Option<&RegistryCapabilityInstallBinding>,
+    deployment_endpoints: Vec<DeploymentLiveEndpoint>,
+) -> Result<ProjectStackTransport> {
     let references = &stack_manifest.payload.live_specs;
     if bindings.is_empty()
         || bindings.len() != references.len()
@@ -5432,16 +5471,12 @@ fn project_stack_transport(
             binding: resolved.binding.clone(),
         });
     }
-    managed_gateway_descriptor(
-        chain_binding.as_deref(),
-        transaction_binding.as_deref(),
-        &source,
-    )?;
+    managed_gateway_descriptor(chain_binding, transaction_binding, source)?;
     Ok(ProjectStackTransport {
         live_bindings,
         deployment_endpoints,
-        chain_binding: chain_binding.as_deref().cloned(),
-        transaction_binding: transaction_binding.as_deref().cloned(),
+        chain_binding: chain_binding.cloned(),
+        transaction_binding: transaction_binding.cloned(),
         require_managed_gateway: true,
     })
 }

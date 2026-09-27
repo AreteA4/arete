@@ -117,9 +117,45 @@ pub enum ResolvedStackDelivery {
         live_bindings: Vec<ResolvedLiveBinding>,
         chain_binding: Option<Box<crate::api_client::RegistryCapabilityInstallBinding>>,
         transaction_binding: Option<Box<crate::api_client::RegistryCapabilityInstallBinding>>,
+        /// Set while this version is being retired: it is served until at
+        /// least this time (RFC 3339).
+        #[serde(default)]
+        served_until: Option<String>,
+        /// The version served by default, when this one is being retired.
+        #[serde(default)]
+        replacement: Option<ServedVersionReplacement>,
+        /// The command that installs the replacement.
+        #[serde(default)]
+        upgrade_command: Option<String>,
     },
     /// The user deploys it; nothing is hosted, so endpoints stay placeholders.
     DefinitionOnly {},
+    /// This version is no longer served. The definition still installs, and
+    /// its bindings are the stack's own endpoints, so a generated SDK keeps
+    /// naming this version and its connection is refused with the
+    /// replacement.
+    Retired {
+        retired_at: String,
+        #[serde(default)]
+        replacement: Option<ServedVersionReplacement>,
+        #[serde(default)]
+        upgrade_command: Option<String>,
+        /// One binding per resolved LiveSpec, in the same order; empty when
+        /// the stack is no longer hosted at all.
+        live_bindings: Vec<ResolvedLiveBinding>,
+        chain_binding: Option<Box<crate::api_client::RegistryCapabilityInstallBinding>>,
+        transaction_binding: Option<Box<crate::api_client::RegistryCapabilityInstallBinding>>,
+    },
+}
+
+/// The served version that replaces one being retired.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ServedVersionReplacement {
+    pub stack_manifest_hash: String,
+    /// The package version that installs it, when the registry publishes one.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 /// The binding for one resolved LiveSpec, joined to it by alias and hash.
