@@ -25,7 +25,15 @@ from arete.stack import (
     normalize_program_operations,
 )
 
+#: Version of the extension-authoring surface (canonical §9 "Extension API
+#: contract"): the extension helpers in this module, program read attachment,
+#: and the instruction helpers generated code imports. Bumped only on a
+#: breaking change; recorded as ``[tool.arete] extension-api`` in
+#: ``pyproject.toml``. The TypeScript and Rust SDKs export the same value.
+EXTENSION_API_VERSION = 1
+
 __all__ = [
+    "EXTENSION_API_VERSION",
     "merge_namespace",
     "merge_program_operations",
     "extend_program",

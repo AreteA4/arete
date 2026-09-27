@@ -258,3 +258,19 @@ class TestConnectedProgramWithExtensions:
         connected = ConnectedProgram("ore", program_def, FakeClient(), NullTransport())
         assert connected.instructions.base_op.kind == "instruction"
         assert connected.flows.ext_flow.kind == "flow"
+
+
+def test_extension_api_version_is_exported_and_recorded_in_pyproject():
+    # Canonical §9 "Extension API contract": the package exports the version
+    # and records the same value as `[tool.arete] extension-api`.
+    import re
+    from pathlib import Path
+
+    import arete
+
+    assert arete.EXTENSION_API_VERSION == 1
+    pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    section = pyproject.split("[tool.arete]", 1)[1]
+    match = re.search(r"^extension-api\s*=\s*(\d+)\s*$", section, re.MULTILINE)
+    assert match is not None
+    assert int(match.group(1)) == arete.EXTENSION_API_VERSION

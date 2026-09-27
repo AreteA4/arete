@@ -32,6 +32,7 @@ export { PROGRAM_KEY_CONFLICT, compareProgramIdentity, isSameProgramSdk } from '
 export type { ProgramIdentityMatch } from './program-identity';
 
 export {
+  EXTENSION_API_VERSION,
   PROGRAM_OPERATION_EXTENSIONS,
   STACK_RUNTIME_EXTENSIONS,
   extendStack,

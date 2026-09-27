@@ -190,6 +190,7 @@ from arete.stack import (  # noqa: E402
     with_programs,
 )
 from arete.extensions import (  # noqa: E402
+    EXTENSION_API_VERSION,
     apply_connected_stack_extensions,
     extend_program,
     extend_programs,
@@ -249,6 +250,7 @@ __all__ = [
     "same_program",
     "with_programs",
     # extensions
+    "EXTENSION_API_VERSION",
     "extend_stack",
     "extend_program",
     "extend_programs",

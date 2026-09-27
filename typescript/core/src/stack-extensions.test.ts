@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import packageJson from '../package.json';
 import {
+  EXTENSION_API_VERSION,
   PROGRAM_OPERATION_EXTENSIONS,
   STACK_RUNTIME_EXTENSIONS,
   applyConnectedStackExtensions,
@@ -521,6 +523,13 @@ describe('program identity', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('extension contract version', () => {
+  it('is exported and matches the package manifest', () => {
+    expect(EXTENSION_API_VERSION).toBe(1);
+    expect(packageJson.arete.extensionApi).toBe(EXTENSION_API_VERSION);
   });
 });
 

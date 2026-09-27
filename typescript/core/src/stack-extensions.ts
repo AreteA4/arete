@@ -10,6 +10,20 @@ import { PROGRAM_READ_DESCRIPTOR } from './program-sdk';
 import type { WalletAdapter } from './wallet/types';
 
 /**
+ * Version of the extension contract: `defineStackExtensions`,
+ * `defineProgramExtensions`, `extendProgram`, `extendPrograms`, `extendStack`,
+ * `withProgramRead`, and the instruction helpers generated code imports
+ * (`createInstructionHandler`, `buildInstruction`, `instructionOperation`,
+ * `createPreparedInstruction`, the PDA and read helpers, …).
+ *
+ * It only changes on a breaking change to that contract, so generated SDKs and
+ * extensions built for one value keep working with every SDK release that
+ * exports the same value. The same number is published in this package's
+ * `package.json` as `arete.extensionApi` for tools that read `node_modules`.
+ */
+export const EXTENSION_API_VERSION = 1 as const;
+
+/**
  * Runtime extension carriers live under registry symbols (`Symbol.for`), so
  * two copies of this module still read each other's definitions. The
  * properties are enumerable: `{ ...stack }` and `{ ...program }` keep them,
