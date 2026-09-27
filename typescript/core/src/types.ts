@@ -407,6 +407,13 @@ export interface AreteConfig {
   reconnectIntervals?: number[];
   maxReconnectAttempts?: number;
   initialSubscriptions?: Subscription[];
+  /**
+   * Entities kept per view; the oldest are dropped past it. `null` keeps all.
+   * Keep it above the size of every subscription on a view: the server still
+   * counts a dropped entity as held and sends only patches for it, which are
+   * discarded (reported as `'evicted-key'` diagnostics), so it stays missing
+   * until it re-enters the query or the subscription is re-established.
+   */
   maxEntriesPerView?: number | null;
   /** Authentication configuration */
   auth?: AuthConfig;

@@ -9,6 +9,7 @@ import type {
 import { AreteError } from './types';
 import type { ErrorFrame, FrameMode, SortConfig, SnapshotFrame } from './frame';
 import type { StorageAdapter } from './storage/adapter';
+import { compareSortOrder, compareSortValues } from './sort-order';
 
 interface StagedSnapshot {
   snapshotId: string;
@@ -53,20 +54,8 @@ function getNestedValue(value: unknown, path: readonly string[]): unknown {
   return current;
 }
 
-function compareValues(left: unknown, right: unknown): number {
-  if (left === right) return 0;
-  if (left === undefined || left === null) return -1;
-  if (right === undefined || right === null) return 1;
-  if (typeof left === 'number' && typeof right === 'number') return left - right;
-  if (typeof left === 'bigint' && typeof right === 'bigint') return left < right ? -1 : 1;
-  if (typeof left === 'boolean' && typeof right === 'boolean') {
-    return Number(left) - Number(right);
-  }
-  return String(left).localeCompare(String(right));
-}
-
 function compareSequences(left: unknown, right: unknown): number {
-  if (typeof left !== 'string' || typeof right !== 'string') return compareValues(left, right);
+  if (typeof left !== 'string' || typeof right !== 'string') return compareSortValues(left, right);
   const [leftSlot, leftIndex = ''] = left.split(':', 2);
   const [rightSlot, rightIndex = ''] = right.split(':', 2);
   if (/^\d+$/.test(leftSlot ?? '') && /^\d+$/.test(rightSlot ?? '')) {
@@ -405,8 +394,14 @@ export class QueryStore {
       const right = field
         ? getNestedValue(this.storage.get(view, rightKey), field)
         : record.sequences.get(rightKey);
-      let compared = field ? compareValues(left, right) : compareSequences(left, right);
-      if (order === 'desc') compared = -compared;
+      // A missing or null sort value (or sequence) sorts after every ranked
+      // one in both directions; ties break on the key, always ascending.
+      const compared = compareSortOrder(
+        left,
+        right,
+        order,
+        field ? compareSortValues : compareSequences
+      );
       return compared === 0 ? leftKey.localeCompare(rightKey) : compared;
     });
   }

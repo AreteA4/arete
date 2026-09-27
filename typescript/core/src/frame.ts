@@ -43,6 +43,12 @@ export interface SubscribedFrame extends IdentifiedFrame {
   sort?: SortConfig;
   /** Present on append views backed by the journal. */
   replayWindow?: ReplayWindow;
+  /**
+   * The server sends a key whole (`upsert` or a snapshot row) before any
+   * `patch` for it, so a patch for a key the client does not hold can be
+   * dropped. Older servers omit it; their patches for unknown keys are kept.
+   */
+  wholeEntities?: boolean;
 }
 
 export interface UnsubscribedFrame extends IdentifiedFrame {

@@ -2,6 +2,7 @@ import type { EntityFrame, SnapshotFrame, Frame, SortConfig, SubscribedFrame } f
 import { isSnapshotFrame, isSubscribedFrame } from './frame';
 import type { Update, RichUpdate, SubscribeCallback, UnsubscribeFn } from './types';
 import { DEFAULT_MAX_ENTRIES_PER_VIEW } from './types';
+import { compareSortOrder } from './sort-order';
 
 export interface EntityStoreConfig {
   maxEntriesPerView?: number | null;
@@ -19,24 +20,6 @@ function getNestedValue(obj: unknown, path: string[]): unknown {
     current = (current as Record<string, unknown>)[segment];
   }
   return current;
-}
-
-function compareSortValues(a: unknown, b: unknown): number {
-  if (a === b) return 0;
-  if (a === undefined || a === null) return -1;
-  if (b === undefined || b === null) return 1;
-
-  if (typeof a === 'number' && typeof b === 'number') {
-    return a - b;
-  }
-  if (typeof a === 'string' && typeof b === 'string') {
-    return a.localeCompare(b);
-  }
-  if (typeof a === 'boolean' && typeof b === 'boolean') {
-    return (a ? 1 : 0) - (b ? 1 : 0);
-  }
-
-  return String(a).localeCompare(String(b));
 }
 
 class ViewData<T = unknown> {
@@ -77,13 +60,12 @@ class ViewData<T = unknown> {
     }
 
     const sortValue = getNestedValue(value, this.sortConfig!.field);
-    const isDesc = this.sortConfig!.order === 'desc';
 
-    let insertIdx = this.binarySearchInsertPosition(sortValue, key, isDesc);
+    const insertIdx = this.binarySearchInsertPosition(sortValue, key);
     this.sortedKeys.splice(insertIdx, 0, key);
   }
 
-  private binarySearchInsertPosition(sortValue: unknown, key: string, isDesc: boolean): number {
+  private binarySearchInsertPosition(sortValue: unknown, key: string): number {
     let low = 0;
     let high = this.sortedKeys.length;
 
@@ -94,8 +76,8 @@ class ViewData<T = unknown> {
       const midEntity = this.entities.get(midKey);
       const midValue = getNestedValue(midEntity, this.sortConfig!.field);
 
-      let cmp = compareSortValues(sortValue, midValue);
-      if (isDesc) cmp = -cmp;
+      // Unranked (missing or null) values sort last in both directions.
+      let cmp = compareSortOrder(sortValue, midValue, this.sortConfig!.order);
 
       if (cmp === 0) {
         cmp = key.localeCompare(midKey);
@@ -182,13 +164,12 @@ class ViewData<T = unknown> {
     if (!this.sortConfig) return;
 
     const entries = Array.from(this.entities.entries());
-    const isDesc = this.sortConfig.order === 'desc';
+    const order = this.sortConfig.order;
 
     entries.sort((a, b) => {
       const aValue = getNestedValue(a[1], this.sortConfig!.field);
       const bValue = getNestedValue(b[1], this.sortConfig!.field);
-      let cmp = compareSortValues(aValue, bValue);
-      if (isDesc) cmp = -cmp;
+      let cmp = compareSortOrder(aValue, bValue, order);
       if (cmp === 0) {
         cmp = a[0].localeCompare(b[0]);
       }
@@ -255,6 +236,8 @@ export class EntityStore {
   private updateCallbacks: Set<EntityUpdateCallback> = new Set();
   private richUpdateCallbacks: Set<RichUpdateCallback> = new Set();
   private maxEntriesPerView: number | null;
+  /** Whether the latest `subscribed` ack carried `wholeEntities: true`. */
+  private serverSendsWholeEntities = false;
 
   constructor(config: EntityStoreConfig = {}) {
     this.maxEntriesPerView = config.maxEntriesPerView === undefined
@@ -282,6 +265,7 @@ export class EntityStore {
   }
 
   private handleSubscribedFrame(frame: SubscribedFrame): void {
+    this.serverSendsWholeEntities = frame.wholeEntities === true;
     const viewPath = frame.query.view;
     const config: ViewConfig = {};
 
@@ -348,12 +332,22 @@ export class EntityStore {
       case 'patch': {
         if (frame.data === null) break;
         const existing = viewData.get(frame.key);
+        // A patch for a key this store does not hold is a partial entity:
+        // under the server's `wholeEntities` guarantee, discard it and wait
+        // for the full upsert. An older server may send a key's first change
+        // as a patch, so without the guarantee it is kept. Tape records
+        // (`offset`) are events and are always applied.
+        if (
+          existing === undefined
+          && frame.offset === undefined
+          && this.serverSendsWholeEntities
+        ) break;
         const appendPaths = frame.append ?? [];
-        
-        const merged = existing
+
+        const merged = existing !== undefined
           ? deepMergeWithAppend(existing, frame.data as Partial<unknown>, appendPaths)
           : frame.data;
-        
+
         viewData.set(frame.key, merged);
         this.enforceMaxEntries(viewData);
         this.notifyUpdate(viewPath, frame.key, {
