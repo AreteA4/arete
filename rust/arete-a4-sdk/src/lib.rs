@@ -112,7 +112,8 @@ pub use operations::{
     TransactionFailureOutcome, TransactionOutcome,
 };
 pub use program::{
-    AttachedPrograms, ProgramBuilder, ProgramSdk, ProgramStack, Programs, StackWithPrograms,
+    same_program, AttachedPrograms, ProgramBuilder, ProgramSdk, ProgramStack, Programs,
+    StackWithPrograms,
 };
 pub use program_read_transport::{
     BearerTokenSource, ProgramReadRequest, ProgramReadTransport, ReadAuthTarget,

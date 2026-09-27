@@ -193,6 +193,34 @@ pub trait ProgramSdk: Programs {
     fn gateway() -> Option<crate::HostedSolanaGatewayBindings> {
         None
     }
+
+    /// The package release this SDK was generated from, when the generator
+    /// knew it. Local builds leave it unset. Two SDKs carrying the same one
+    /// are the same program; see [`same_program`].
+    fn package_release_hash() -> Option<&'static str> {
+        None
+    }
+}
+
+/// Canonical program identity (`docs/internal/sdk-core-api.md` §9): the same
+/// generated type, or two SDKs that both carry a
+/// [`package_release_hash`](ProgramSdk::package_release_hash) and agree on
+/// it. Names never decide it.
+///
+/// Rust reaches every program through a typed path — a stack's `programs`
+/// fields, [`AttachedPrograms::stack`] / [`AttachedPrograms::attached`], or
+/// [`Session::program`](crate::Session::program) under its own member key —
+/// so no runtime key can name two programs and the `PROGRAM_KEY_CONFLICT`
+/// case of the other SDKs cannot arise. Use this to decide whether two
+/// generated SDKs are one release, e.g. before holding both.
+pub fn same_program<A: ProgramSdk, B: ProgramSdk>() -> bool {
+    if std::any::TypeId::of::<A>() == std::any::TypeId::of::<B>() {
+        return true;
+    }
+    matches!(
+        (A::package_release_hash(), B::package_release_hash()),
+        (Some(left), Some(right)) if !left.is_empty() && left == right
+    )
 }
 
 /// HTTP-only stack adapter used internally to connect a standalone program
@@ -336,6 +364,45 @@ mod tests {
         };
         let error = builder.account_transport("ore", &descriptor).err().unwrap();
         assert!(matches!(error, AreteError::InvalidConfig(_)));
+    }
+
+    struct Released<const N: u8>;
+
+    impl<const N: u8> Programs for Released<N> {
+        fn from_builder(_builder: ProgramBuilder) -> Self {
+            Self
+        }
+    }
+
+    impl<const N: u8> ProgramSdk for Released<N> {
+        fn name() -> &'static str {
+            "ore"
+        }
+
+        fn package_release_hash() -> Option<&'static str> {
+            match N {
+                1 | 2 => Some("pkg:ore@1"),
+                3 => Some("pkg:ore@2"),
+                5 | 6 => Some(""),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn programs_are_matched_by_package_release_not_name() {
+        // The same type is the same program, released or not.
+        assert!(same_program::<Released<0>, Released<0>>());
+        assert!(same_program::<Released<1>, Released<1>>());
+        // Separately generated copies of one release are one program.
+        assert!(same_program::<Released<1>, Released<2>>());
+        // Same name, different releases.
+        assert!(!same_program::<Released<1>, Released<3>>());
+        // A local build is only ever itself.
+        assert!(!same_program::<Released<0>, Released<1>>());
+        assert!(!same_program::<Released<0>, Released<4>>());
+        // An empty hash names no release.
+        assert!(!same_program::<Released<5>, Released<6>>());
     }
 
     #[test]
