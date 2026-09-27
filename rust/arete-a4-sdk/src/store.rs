@@ -16,6 +16,8 @@ pub const DEFAULT_MAX_ENTRIES_PER_VIEW: usize = 10_000;
 
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
+    /// Entities kept per view; past it, the least recently written that no
+    /// subscription's membership references are dropped. `None` keeps all.
     pub max_entries_per_view: Option<usize>,
 }
 
@@ -44,14 +46,38 @@ struct ViewData {
     /// every eviction through [`ViewData::remove`].
     seqs: HashMap<String, String>,
     access_order: VecDeque<String>,
+    /// Keys `max_entries_per_view` dropped, so a later patch for one can be
+    /// reported as such. Bounded by the same limit; `evicted_order` may hold
+    /// keys already forgotten, and is compacted when it grows past twice it.
+    evicted: HashSet<String>,
+    evicted_order: VecDeque<String>,
+    warned_evicted: bool,
 }
 
 impl ViewData {
     fn insert(&mut self, key: String, value: Value, seq: Option<String>) {
         self.access_order.retain(|existing| existing != &key);
         self.access_order.push_back(key.clone());
+        self.evicted.remove(&key);
         self.set_seq(key.clone(), seq);
         self.entities.insert(key, value);
+    }
+
+    fn remember_evicted(&mut self, key: String, limit: usize) {
+        let limit = limit.max(1);
+        if self.evicted.insert(key.clone()) {
+            self.evicted_order.push_back(key);
+        }
+        while self.evicted.len() > limit {
+            let Some(oldest) = self.evicted_order.pop_front() else {
+                break;
+            };
+            self.evicted.remove(&oldest);
+        }
+        if self.evicted_order.len() > limit.saturating_mul(2) {
+            let evicted = &self.evicted;
+            self.evicted_order.retain(|key| evicted.contains(key));
+        }
     }
 
     /// Replace the tracked sequence for `key`, clearing it when `seq` is `None`.
@@ -76,6 +102,7 @@ impl ViewData {
     fn remove(&mut self, key: &str) -> Option<Value> {
         self.access_order.retain(|existing| existing != key);
         self.seqs.remove(key);
+        self.evicted.remove(key);
         self.entities.remove(key)
     }
 }
@@ -107,6 +134,10 @@ struct QueryData {
     /// Last cursor this store published for the subscription. Read on
     /// reconnect to resume where delivery stopped.
     last_cursor: Option<String>,
+    /// Whether the acknowledgement promised whole entities, so a patch for a
+    /// key the store does not hold can be dropped. Older servers leave it
+    /// off, and such a patch is then stored as the entity.
+    whole_entities: bool,
 }
 
 #[derive(Debug)]
@@ -293,6 +324,7 @@ impl SharedStore {
                 sort: None,
                 epoch: None,
                 last_cursor: None,
+                whole_entities: false,
             },
         );
         Ok(())
@@ -340,10 +372,18 @@ impl SharedStore {
                 mode,
                 sort,
                 replay_window,
+                whole_entities,
                 ..
             } => {
-                self.apply_subscribed(subscription_id, query, mode, sort, replay_window)
-                    .await
+                self.apply_subscribed(
+                    subscription_id,
+                    query,
+                    mode,
+                    sort,
+                    replay_window,
+                    whole_entities,
+                )
+                .await
             }
             ServerFrame::Unsubscribed {
                 subscription_id, ..
@@ -470,6 +510,7 @@ impl SharedStore {
         mode: Mode,
         sort: Option<SortConfig>,
         replay_window: Option<ReplayWindow>,
+        whole_entities: bool,
     ) -> Result<(), AreteError> {
         let mark_ready = {
             let mut state = self.state.write().await;
@@ -488,6 +529,7 @@ impl SharedStore {
             active.effective_query = query;
             active.mode = Some(mode);
             active.sort = sort;
+            active.whole_entities = whole_entities;
             let epoch = replay_window.map(|window| window.epoch);
             if active.epoch != epoch {
                 // Offsets restart whenever a tape is built without restoring
@@ -697,6 +739,7 @@ impl SharedStore {
                     "live frame entity does not match the acknowledged query.view",
                 ));
             }
+            let whole_entities = query.whole_entities;
             // The cursor a consumer stores and replays from. Needs both halves:
             // an offset without an acknowledged epoch names nothing.
             let cursor = offset.and_then(|offset| {
@@ -780,6 +823,53 @@ impl SharedStore {
                     updates.push(update);
                 }
                 Operation::Patch => {
+                    // A patch for a key this store holds no copy of — never
+                    // received, or evicted since — is not an entity: merging
+                    // it into an empty object would hand consumers a partial
+                    // value typed as complete. Drop it without touching
+                    // storage, sequence or membership; a server that
+                    // acknowledged `wholeEntities` sends a full `upsert`
+                    // whenever a key becomes a member, and that is where the
+                    // entity appears. An older server may send a key's first
+                    // change as a patch, which is then all there is, so it is
+                    // kept. Tape records (`offset`) are events, not entity
+                    // state, and are always applied: a consumer resuming from
+                    // a cursor holds what came before it.
+                    let view = state.views.get_mut(&entity);
+                    let held = view
+                        .as_ref()
+                        .is_some_and(|view| view.entities.contains_key(&key));
+                    if !held && offset.is_none() && whole_entities {
+                        match view {
+                            Some(view) if view.evicted.contains(&key) => {
+                                if !std::mem::replace(&mut view.warned_evicted, true) {
+                                    tracing::warn!(
+                                        subscription_id = %subscription_id,
+                                        view = %entity,
+                                        key = %key,
+                                        "discarding a patch for a key this store evicted to stay \
+                                         within max_entries_per_view; the server still counts it \
+                                         as held and sends no upsert until it re-enters the query \
+                                         or the subscription is re-established"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        subscription_id = %subscription_id,
+                                        view = %entity,
+                                        key = %key,
+                                        "discarding a patch for a key this store evicted"
+                                    );
+                                }
+                            }
+                            _ => tracing::debug!(
+                                subscription_id = %subscription_id,
+                                view = %entity,
+                                key = %key,
+                                "discarding a patch for a key the store does not hold"
+                            ),
+                        }
+                        return Ok(());
+                    }
                     let view = state.views.entry(entity.clone()).or_default();
                     let previous = view.entities.get(&key).cloned();
                     let stale_existing = if duplicate_or_stale_sequence {
@@ -1136,10 +1226,21 @@ fn list_query_raw(state: &StoreState, subscription_id: &str) -> Vec<Value> {
         .collect();
     if let Some(sort) = &query.sort {
         rows.sort_by(|(left_key, left), (right_key, right)| {
-            let order = compare_at_path(left, right, &sort.field);
-            let order = match sort.order {
-                SortOrder::Asc => order,
-                SortOrder::Desc => order.reverse(),
+            let left_value = ranked_value(left, &sort.field);
+            let right_value = ranked_value(right, &sort.field);
+            let order = match (left_value, right_value) {
+                // No sort value: after every ranked entity in both
+                // directions (canonical §5); `desc` does not flip it.
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                (Some(_), Some(_)) => {
+                    let order = compare_at_path(left, right, &sort.field);
+                    match sort.order {
+                        SortOrder::Asc => order,
+                        SortOrder::Desc => order.reverse(),
+                    }
+                }
             };
             // query-store.ts:387 breaks ties on the entity key with
             // `localeCompare`, ascending, *after* the desc negation.
@@ -1171,6 +1272,11 @@ fn compare_at_path(left: &Value, right: &Value, path: &[String]) -> Ordering {
 fn value_at_path<'a>(value: &'a Value, path: &[String]) -> Option<&'a Value> {
     path.iter()
         .try_fold(value, |current, segment| current.get(segment))
+}
+
+/// The sort value at `path`, or `None` when it is missing or `null`.
+fn ranked_value<'a>(value: &'a Value, path: &[String]) -> Option<&'a Value> {
+    value_at_path(value, path).filter(|value| !value.is_null())
 }
 
 fn prune_unreferenced(state: &mut StoreState, view: &str, candidates: &[String]) {
@@ -1216,6 +1322,7 @@ fn enforce_max_entries(state: &mut StoreState, view: &str, max: Option<usize>) {
             .expect("access order index exists");
         view_data.entities.remove(&key);
         view_data.seqs.remove(&key);
+        view_data.remember_evicted(key, max);
     }
 }
 
@@ -1270,6 +1377,7 @@ mod tests {
                 mode: Mode::List,
                 sort: Some(sort),
                 replay_window: None,
+                whole_entities: true,
             })
             .await
             .unwrap();
@@ -1354,6 +1462,23 @@ mod tests {
     async fn register(store: &SharedStore, subscription_id: &str, query: SubscriptionQuery) {
         store
             .register_subscription(subscription_id, query, true)
+            .await
+            .unwrap();
+    }
+
+    /// Acknowledge a `Thing/state` subscription, as a server that does or
+    /// does not promise whole entities.
+    async fn acknowledge(store: &SharedStore, subscription_id: &str, whole_entities: bool) {
+        store
+            .apply_frame(ServerFrame::Subscribed {
+                protocol_version: PROTOCOL_VERSION,
+                subscription_id: subscription_id.to_string(),
+                query: SubscriptionQuery::new("Thing/state"),
+                mode: Mode::State,
+                sort: None,
+                replay_window: None,
+                whole_entities,
+            })
             .await
             .unwrap();
     }
@@ -1634,6 +1759,246 @@ mod tests {
             entity(&store, "k").await,
             Some(json!({"v": "snapshot", "_seq": "50:0001"})),
         );
+    }
+
+    /// A patch for a key the store never received is not an entity: nothing
+    /// is stored, no sequence is tracked, no membership or update appears,
+    /// and the next full `upsert` is accepted as the entity.
+    #[tokio::test]
+    async fn a_patch_for_an_unknown_key_is_discarded() {
+        let store = SharedStore::new();
+        register(&store, "s", SubscriptionQuery::new("Thing/state")).await;
+        acknowledge(&store, "s", true).await;
+        let mut updates = store.subscribe();
+
+        store
+            .apply_frame(patch(
+                "s",
+                "k",
+                json!({"count": 2}),
+                vec![],
+                Some("50:0009"),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(entity(&store, "k").await, None);
+        assert!(store.keys_for_subscription("s").await.is_empty());
+        assert!(updates.try_recv().is_err(), "no update for a fragment");
+
+        // The discarded patch left no sequence behind to reject this with.
+        store
+            .apply_frame(upsert(
+                "s",
+                "k",
+                json!({"name": "k", "count": 1}),
+                Some("50:0001"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            entity(&store, "k").await,
+            Some(json!({"name": "k", "count": 1}))
+        );
+        assert_eq!(store.keys_for_subscription("s").await, ["k"]);
+
+        // Once held, patches merge again.
+        store
+            .apply_frame(patch(
+                "s",
+                "k",
+                json!({"count": 2}),
+                vec![],
+                Some("50:0002"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            entity(&store, "k").await,
+            Some(json!({"name": "k", "count": 2}))
+        );
+    }
+
+    /// A key evicted to stay under `max_entries_per_view` is no longer held,
+    /// so a patch for it is discarded rather than rebuilding a fragment.
+    #[tokio::test]
+    async fn a_patch_for_an_evicted_key_is_discarded() {
+        let store = SharedStore::with_config(StoreConfig {
+            max_entries_per_view: Some(1),
+        });
+        register(&store, "s", SubscriptionQuery::new("Thing/state")).await;
+        acknowledge(&store, "s", true).await;
+        store
+            .apply_frame(upsert("s", "a", json!({"name": "a"}), Some("50:0001")))
+            .await
+            .unwrap();
+        store
+            .apply_frame(ServerFrame::Remove {
+                protocol_version: PROTOCOL_VERSION,
+                subscription_id: "s".to_string(),
+                mode: Mode::State,
+                entity: "Thing/state".to_string(),
+                key: "a".to_string(),
+                data: Value::Null,
+                seq: None,
+                offset: None,
+            })
+            .await
+            .unwrap();
+        // "b" pushes the unreferenced "a" out.
+        store
+            .apply_frame(upsert("s", "b", json!({"name": "b"}), Some("50:0002")))
+            .await
+            .unwrap();
+        assert_eq!(entity(&store, "a").await, None);
+
+        store
+            .apply_frame(patch(
+                "s",
+                "a",
+                json!({"count": 9}),
+                vec![],
+                Some("50:0003"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(entity(&store, "a").await, None);
+        assert_eq!(store.keys_for_subscription("s").await, ["b"]);
+        assert!(
+            store.state.read().await.views["Thing/state"]
+                .evicted
+                .contains("a"),
+            "remembered as evicted, so the drop is reported as such"
+        );
+    }
+
+    /// An older server may send a key's first change as a patch (after a
+    /// truncated or disabled snapshot); without the whole-entity promise that
+    /// patch is all there is, so it is stored.
+    #[tokio::test]
+    async fn a_server_without_the_guarantee_keeps_the_patch() {
+        let store = SharedStore::new();
+        register(&store, "s", SubscriptionQuery::new("Thing/state")).await;
+        acknowledge(&store, "s", false).await;
+        store
+            .apply_frame(patch(
+                "s",
+                "k",
+                json!({"count": 2}),
+                vec![],
+                Some("50:0009"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(entity(&store, "k").await, Some(json!({"count": 2})));
+        assert_eq!(store.keys_for_subscription("s").await, ["k"]);
+    }
+
+    #[test]
+    fn the_evicted_key_memory_is_bounded() {
+        let mut view = ViewData::default();
+        for key in ["a", "b", "c"] {
+            view.remember_evicted(key.to_string(), 2);
+        }
+        assert!(!view.evicted.contains("a"));
+        assert!(view.evicted.contains("b") && view.evicted.contains("c"));
+        view.insert("b".to_string(), json!({}), None);
+        assert!(!view.evicted.contains("b"), "held again");
+    }
+
+    /// Tape records are events, not entity state: a consumer resuming from a
+    /// cursor holds what came before it, so they are applied even for a key
+    /// this store has not seen.
+    #[tokio::test]
+    async fn a_tape_record_for_an_unknown_key_is_still_delivered() {
+        let store = SharedStore::new();
+        register(&store, "s", SubscriptionQuery::new("Thing/state")).await;
+        let mut updates = store.subscribe();
+        store
+            .apply_frame(ServerFrame::Patch {
+                protocol_version: PROTOCOL_VERSION,
+                subscription_id: "s".to_string(),
+                mode: Mode::Append,
+                entity: "Thing/state".to_string(),
+                key: "pool1".to_string(),
+                data: json!({"amount": 100}),
+                append: vec![],
+                seq: Some("381471241:000000000007".to_string()),
+                offset: Some(4209),
+            })
+            .await
+            .unwrap();
+
+        let StoreEvent::Update(update) = updates.try_recv().unwrap() else {
+            panic!("expected an update")
+        };
+        assert_eq!(update.key, "pool1");
+        assert_eq!(update.patch, Some(json!({"amount": 100})));
+    }
+
+    /// An entity without a sort value never outranks one that has it, in
+    /// either direction (canonical §5).
+    #[tokio::test]
+    async fn entities_without_a_sort_value_sort_last_in_both_directions() {
+        for (order, ranked) in [(SortOrder::Desc, ["b", "a"]), (SortOrder::Asc, ["a", "b"])] {
+            let store = SharedStore::new();
+            let subscription_id = "sub-1";
+            store
+                .register_subscription(
+                    subscription_id,
+                    SubscriptionQuery::new("Account/list"),
+                    true,
+                )
+                .await
+                .unwrap();
+            store
+                .apply_frame(ServerFrame::Subscribed {
+                    protocol_version: PROTOCOL_VERSION,
+                    subscription_id: subscription_id.to_string(),
+                    query: SubscriptionQuery::new("Account/list"),
+                    mode: Mode::List,
+                    sort: Some(SortConfig {
+                        field: vec!["rank".to_string()],
+                        order,
+                    }),
+                    replay_window: None,
+                    whole_entities: true,
+                })
+                .await
+                .unwrap();
+            let rows = [
+                ("nil", json!({"owner": "nil", "rank": null})),
+                ("a", json!({"owner": "a", "rank": 1})),
+                ("none", json!({"owner": "none"})),
+                ("b", json!({"owner": "b", "rank": 2})),
+            ];
+            store
+                .apply_frame(ServerFrame::Snapshot {
+                    protocol_version: PROTOCOL_VERSION,
+                    subscription_id: subscription_id.to_string(),
+                    snapshot_id: "snap-1".to_string(),
+                    authoritative: true,
+                    mode: Mode::List,
+                    entity: "Account/list".to_string(),
+                    key: None,
+                    data: rows
+                        .iter()
+                        .map(|(key, data)| SnapshotEntity {
+                            key: (*key).to_string(),
+                            data: data.clone(),
+                        })
+                        .collect(),
+                    complete: true,
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(
+                owners(&store, subscription_id).await,
+                [ranked[0], ranked[1], "nil", "none"],
+                "{order:?}"
+            );
+        }
     }
 
     /// Regression: string sort-field values collate too (`query-store.ts:64`).
