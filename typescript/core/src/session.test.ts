@@ -706,7 +706,7 @@ describe('createSession', () => {
     session.close();
   });
 
-  it('keeps the first stack program on bundled-key collisions and warns', async () => {
+  it('keeps both stacks reachable when they bundle different programs under one key', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const secondStack = {
       ...SQUADS_STACK,
@@ -725,16 +725,44 @@ describe('createSession', () => {
       { transport: 'http', fetch: makeFetch() as typeof fetch }
     );
 
-    expect(session.programs.squads).toBe(session.stacks.first.programs.squads);
-    expect(session.programs.squads).not.toBe(session.stacks.second.programs.squads);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("uses 'first' because it was connected first"));
+    expect(session.stacks.first.programs.squads.programId).toBe(SQUADS_PROGRAM);
+    expect(session.stacks.second.programs.squads.programId).toBe(ORE_PROGRAM);
+    expect(() => session.programs.squads).toThrow(
+      expect.objectContaining({ code: 'PROGRAM_KEY_CONFLICT' })
+    );
+    expect(() => session.programs.squads).toThrow(
+      /session\.stacks\.first\.programs\.squads or session\.stacks\.second\.programs\.squads/
+    );
+    // The ambiguous key never leaks into enumeration or spreads.
+    expect(Object.keys(session.programs)).not.toContain('squads');
+    expect({ ...session.programs }).not.toHaveProperty('squads');
+    expect(warn).not.toHaveBeenCalled();
 
     session.close();
     warn.mockRestore();
   });
 
-  it('gives explicit standalone programs precedence over promoted keys', async () => {
+  it('promotes one instance when stacks bundle the same package release', async () => {
+    const release = { ...SQUADS_STACK.programs.squads, packageReleaseHash: 'release-squads-1' };
+    const first = { ...SQUADS_STACK, programs: { squads: release } };
+    const second = {
+      ...SQUADS_STACK,
+      name: 'second-squads',
+      programs: { squads: { ...release } },
+    };
     const session = await createSession(
+      { stacks: { first, second } },
+      { transport: 'http', fetch: makeFetch() as typeof fetch }
+    );
+
+    expect(session.programs.squads).toBe(session.stacks.first.programs.squads);
+
+    session.close();
+  });
+
+  it('rejects a standalone program under a key a stack provides with a different program', async () => {
+    const fetchMock = makeFetch();
+    await expect(createSession(
       {
         stacks: { squads: SQUADS_STACK },
         programs: { squads: ORE_PROGRAM_SDK },
@@ -742,15 +770,115 @@ describe('createSession', () => {
       {
         transport: 'http',
         endpoints: { http: 'https://session.invalid' },
-        fetch: makeFetch() as typeof fetch,
+        fetch: fetchMock as typeof fetch,
       }
-    );
+    )).rejects.toMatchObject({
+      code: 'PROGRAM_KEY_CONFLICT',
+      message: expect.stringMatching(
+        /stack 'squads'.*session\.stacks\.squads\.programs\.squads.*different key/
+      ),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
-    expect(session.programs.squads.programId).toBe(ORE_PROGRAM);
-    expect(session.stacks.squads.programs.squads.programId).toBe(SQUADS_PROGRAM);
-    expect(session.programs.squads).not.toBe(session.stacks.squads.programs.squads);
+  it('serves a standalone program from the stack that provides the same program SDK', async () => {
+    const standalone = { ...SQUADS_STACK.programs.squads, packageReleaseHash: 'release-squads-1' };
+    const stack = {
+      ...SQUADS_STACK,
+      programs: { squads: { ...standalone } },
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    session.close();
+    for (const program of [stack.programs.squads, standalone]) {
+      const session = await createSession(
+        { stacks: { squads: stack }, programs: { squads: program } },
+        { transport: 'http', fetch: makeFetch() as typeof fetch }
+      );
+      expect(session.programs.squads).toBe(session.stacks.squads.programs.squads);
+      session.close();
+    }
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+
+    await expect(createSession(
+      { stacks: { squads: stack }, programs: { squads: standalone } },
+      {
+        transport: 'http',
+        fetch: makeFetch() as typeof fetch,
+        programs: { squads: { httpUrl: 'http://localhost:9999' } },
+      }
+    )).rejects.toMatchObject({ code: 'INVALID_CONFIG' });
+  });
+
+  it('gives session.programs to a standalone program that cannot be proven identical', async () => {
+    // A local stack and a local standalone copy of its program: the same
+    // program spec, neither with a package release identity.
+    const standalone = { ...SQUADS_STACK.programs.squads, name: 'squads-standalone' };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const session = await createSession(
+        { stacks: { squads: SQUADS_STACK }, programs: { squads: standalone } },
+        {
+          transport: 'http',
+          fetch: makeFetch() as typeof fetch,
+          programs: { squads: { httpUrl: 'https://standalone.invalid' } },
+        }
+      );
+
+      expect(session.programs.squads).not.toBe(session.stacks.squads.programs.squads);
+      expect(session.programs.squads.programId).toBe(SQUADS_PROGRAM);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(
+        /session\.programs\.squads uses the standalone program.*could not be proven identical.*session\.stacks\.squads\.programs\.squads keeps the stack's program/
+      );
+      session.close();
+    } finally {
+      warn.mockRestore();
+    }
+
+    // A different program spec is a different program.
+    await expect(createSession(
+      {
+        stacks: { squads: SQUADS_STACK },
+        programs: { squads: { ...standalone, programSpecHash: 'spec-squads-2' } },
+      },
+      { transport: 'http', fetch: makeFetch() as typeof fetch }
+    )).rejects.toMatchObject({ code: 'PROGRAM_KEY_CONFLICT' });
+  });
+
+  it('promotes the first of two stacks bundling one program spec, warning once', async () => {
+    const second = {
+      ...SQUADS_STACK,
+      name: 'second-squads',
+      programs: { squads: { ...SQUADS_STACK.programs.squads } },
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const session = await createSession(
+        { stacks: { first: SQUADS_STACK, second } },
+        { transport: 'http', fetch: makeFetch() as typeof fetch }
+      );
+
+      expect(session.programs.squads).toBe(session.stacks.first.programs.squads);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(
+        /session\.programs\.squads uses stack 'first''s program.*could not be proven identical/
+      );
+      session.close();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('applies the identity rule to programs attached to a stack member', async () => {
+    await expect(createSession(
+      { stacks: { squads: SQUADS_STACK } },
+      {
+        transport: 'http',
+        fetch: makeFetch() as typeof fetch,
+        stacks: { squads: { programs: { squads: ORE_PROGRAM_SDK } } },
+      }
+    )).rejects.toMatchObject({ code: 'PROGRAM_KEY_CONFLICT' });
   });
 
   it('promotes different aliases for the same program ID', async () => {

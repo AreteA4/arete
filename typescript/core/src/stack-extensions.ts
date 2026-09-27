@@ -344,7 +344,12 @@ export function extendProgram<
   if (readDescriptor) {
     Object.defineProperty(extended, PROGRAM_READ_DESCRIPTOR, readDescriptor);
   }
+  // The extended program is no longer byte-for-byte the generated one, nor
+  // provably the program SDK its package release describes: extensions
+  // applied outside generated code must not borrow that identity. Generated
+  // entries stamp it back with `withProgramIdentity` after their own.
   delete extended.sdkDefinitionHash;
+  delete extended.packageReleaseHash;
 
   for (const key of ['pdas', 'accounts', 'queries', 'addresses', 'constants', 'defaults', 'math'] as const) {
     const extensionValue = extensions[key];

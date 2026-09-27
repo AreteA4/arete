@@ -8,7 +8,8 @@ import { createSession } from './session';
 const Arete = Object.assign(BaseArete, { session: createSession });
 
 export { Arete, withPrograms, createSession, validateProgramReadDescriptor };
-export { withProgramRead } from './program-sdk';
+export { withProgramIdentity, withProgramRead } from './program-sdk';
+export type { ProgramSdkIdentity } from './program-sdk';
 export type {
   ConnectOptions,
   AreteOptionsWithStorage,
@@ -26,6 +27,9 @@ export type {
   RawProgramsInterface,
   StackWithAttachedPrograms,
 } from './client';
+
+export { PROGRAM_KEY_CONFLICT, compareProgramIdentity, isSameProgramSdk } from './program-identity';
+export type { ProgramIdentityMatch } from './program-identity';
 
 export {
   PROGRAM_OPERATION_EXTENSIONS,

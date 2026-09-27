@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   PROGRAM_OPERATION_EXTENSIONS,
@@ -16,8 +16,12 @@ import {
   getProgramRuntimeExtensions,
   getStackRuntimeExtensions,
   instructionOperation,
+  compareProgramIdentity,
+  isSameProgramSdk,
   transactionOperation,
+  withProgramIdentity,
   withProgramRead,
+  withPrograms,
 } from './index';
 import { getProgramReadDescriptor } from './program-sdk';
 import type { ProgramSdkDefinition, StackDefinition } from './types';
@@ -429,6 +433,94 @@ describe('spread-safe runtime extensions', () => {
   it('uses registry symbols so separate module copies interoperate', () => {
     expect(STACK_RUNTIME_EXTENSIONS).toBe(Symbol.for('@usearete/sdk/stack-runtime-extensions'));
     expect(PROGRAM_OPERATION_EXTENSIONS).toBe(Symbol.for('@usearete/sdk/program-runtime-extensions'));
+  });
+});
+
+describe('program identity', () => {
+  const descriptor = {
+    release: { programReleaseHash: 'release-ore', programSpecHash: 'spec-ore' },
+    transport: { kind: 'local-http', endpointSource: 'connect-http-url' },
+  } as const;
+  const RELEASE = 'arete:registry-package-release:v2:ore';
+  const SPEC = { ...BASE_PROGRAM, programSpecHash: 'spec-ore' };
+  const RELEASED = { ...SPEC, packageReleaseHash: RELEASE };
+
+  it('drops packageReleaseHash when a program is changed outside its generated SDK', () => {
+    const extended = extendProgram(RELEASED, { constants: { unit: 1 } });
+    const bundled = withProgramRead(RELEASED, descriptor);
+    const programs = extendPrograms({ ore: RELEASED, other: RELEASED }, { ore: { math: { one: () => 1 } } });
+
+    for (const program of [extended, bundled, programs.ore]) {
+      expect('packageReleaseHash' in program).toBe(false);
+      expect(program.programSpecHash).toBe('spec-ore');
+    }
+    // An entry the extension does not target is untouched.
+    expect(programs.other).toBe(RELEASED);
+    // sdkDefinitionHash describes generated content only, so extension drops it.
+    expect('sdkDefinitionHash' in extended).toBe(false);
+  });
+
+  it('keeps packageReleaseHash where programs are only carried, not changed', () => {
+    const stack = extendStack({ ...BASE_STACK, programs: { ore: RELEASED } }, { addresses: { vault: 'V' } });
+    const attached = withPrograms(BASE_STACK, { ore: RELEASED });
+
+    expect(stack.programs.ore).toBe(RELEASED);
+    expect(attached.programs.ore).toBe(RELEASED);
+  });
+
+  it('stamps identity last, keeping extensions and the read descriptor', () => {
+    const generated = withProgramIdentity(
+      withProgramRead(
+        extendProgram(SPEC, {
+          constants: { unit: 1 },
+          createOperations: () => ({ instructions: { ping: 'op' as never } }),
+        }),
+        descriptor,
+      ),
+      { packageReleaseHash: RELEASE },
+    );
+
+    expect(generated.packageReleaseHash).toBe(RELEASE);
+    expect(generated.constants).toEqual({ unit: 1 });
+    expect(getProgramRuntimeExtensions(generated)?.createOperations).toBeTypeOf('function');
+    expect(getProgramReadDescriptor(generated)).toBe(descriptor);
+    expect(isSameProgramSdk(generated, RELEASED)).toBe(true);
+    // A spread keeps every part of the identity-stamped program.
+    expect(isSameProgramSdk({ ...generated }, RELEASED)).toBe(true);
+    expect(getProgramReadDescriptor({ ...generated })).toBe(descriptor);
+    // An absent identity removes it.
+    expect('packageReleaseHash' in withProgramIdentity(generated, {})).toBe(false);
+  });
+
+  it('compares by package release, then by program spec, never by name', () => {
+    expect(compareProgramIdentity(BASE_PROGRAM, BASE_PROGRAM)).toBe('same');
+    expect(compareProgramIdentity(RELEASED, { ...RELEASED, name: 'renamed' })).toBe('same');
+    expect(compareProgramIdentity(RELEASED, { ...RELEASED, packageReleaseHash: 'other' })).toBe('different');
+    // At least one side unknown: the program spec decides between a match that
+    // cannot be proven and a conflict.
+    expect(compareProgramIdentity(RELEASED, SPEC)).toBe('unproven');
+    expect(compareProgramIdentity(SPEC, { ...SPEC })).toBe('unproven');
+    expect(compareProgramIdentity(SPEC, { ...SPEC, programSpecHash: 'spec-other' })).toBe('different');
+    expect(compareProgramIdentity(BASE_PROGRAM, { ...BASE_PROGRAM })).toBe('different');
+
+    expect(isSameProgramSdk(RELEASED, { ...RELEASED })).toBe(true);
+    expect(isSameProgramSdk(SPEC, { ...SPEC })).toBe(false);
+  });
+
+  it('lets a user-extended copy of a stack program replace it, with one warning', () => {
+    const stack = { ...BASE_STACK, programs: { ore: RELEASED } };
+    const userOre = extendProgram(RELEASED, {
+      createOperations: () => ({ instructions: { mine: 'op' as never } }),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(withPrograms(stack, { ore: userOre }).programs.ore).toBe(userOre);
+      expect(withPrograms(stack, { ore: userOre }).programs.ore).toBe(userOre);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/could not be proven identical/);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

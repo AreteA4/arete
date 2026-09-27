@@ -335,67 +335,139 @@ describe('Arete instructions (namespaced stacks)', () => {
     expect(client.programs.attached.constants.AuthorityType.MintTokens).toBe('AuthorityMintTokens');
   });
 
-  it('prefers stack-defined programs over attached programs with the same key', async () => {
-    const { Arete, createInstructionHandler } = await import('./index');
-    const stackHandler = createInstructionHandler({
-      programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-      discriminator: [9],
-      args: [],
-      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' }],
-      errors: [],
-    });
-    const attachedHandler = createInstructionHandler({
-      programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
-      discriminator: [7],
-      args: [],
-      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' }],
-      errors: [],
-    });
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  describe('program identity for attached programs', () => {
+    const ORE_ID = 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv';
+    const TOKEN_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 
-    try {
-      const client = await Arete.connect(
-        {
-          name: 'collision-demo',
-          endpoints: {
-            ws: 'wss://example.invalid',
-            http: 'https://example.invalid',
-          },
-          views: {},
-          programs: {
-            ore: {
-              name: 'ore',
-              programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-              rawInstructions: { close: stackHandler },
-            },
-          },
-        } as const,
-        {
+    async function fixtures() {
+      const { createInstructionHandler } = await import('./index');
+      const handler = (programId: string, discriminator: number) => createInstructionHandler({
+        programId,
+        discriminator: [discriminator],
+        args: [],
+        accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' }],
+        errors: [],
+      });
+      const stackOre = {
+        name: 'ore',
+        programId: ORE_ID,
+        packageReleaseHash: 'release-ore-1',
+        rawInstructions: { close: handler(ORE_ID, 9) },
+      };
+      const stack = {
+        name: 'collision-demo',
+        endpoints: { ws: 'wss://example.invalid', http: 'https://example.invalid' },
+        views: {},
+        programs: { ore: stackOre },
+      } as const;
+      return { handler, stackOre, stack };
+    }
+
+    it('rejects a different program attached under a key the stack provides', async () => {
+      const { Arete, AreteError } = await import('./index');
+      const { handler, stack } = await fixtures();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const attempt = Arete.connect(stack, {
           autoConnect: false,
           programs: {
             ore: {
               name: 'ore-attached',
-              programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
-              rawInstructions: { close: attachedHandler },
+              programId: TOKEN_ID,
+              packageReleaseHash: 'release-ore-2',
+              rawInstructions: { close: handler(TOKEN_ID, 7) },
             },
           },
-        }
-      );
-      const wallet = {
-        publicKey: SIGNER,
-        async signAndSend() {
-          throw new Error('not used');
-        },
-      };
+        });
+        await expect(attempt).rejects.toBeInstanceOf(AreteError);
+        await expect(attempt).rejects.toMatchObject({ code: 'PROGRAM_KEY_CONFLICT' });
+        await expect(attempt).rejects.toThrow(/stack 'collision-demo'.*programs\.ore/);
+        await expect(attempt).rejects.toThrow(/different key/);
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
 
-      const ix = client.programs.ore.raw.close.build({}, { wallet });
-      expect(ix.programId).toBe('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv');
-      expect(warn).toHaveBeenCalledWith(
-        "Ignoring attached program 'ore' for stack 'collision-demo' because the stack already defines that key"
-      );
-    } finally {
-      warn.mockRestore();
-    }
+    it('treats a program without any matching identity as different from the stack program', async () => {
+      const { withPrograms } = await import('./index');
+      const { handler, stack } = await fixtures();
+
+      expect(() => withPrograms(stack, {
+        ore: { name: 'ore', programId: ORE_ID, rawInstructions: { close: handler(ORE_ID, 9) } },
+      })).toThrow(expect.objectContaining({ code: 'PROGRAM_KEY_CONFLICT' }));
+      // Without a package release on one side, a different program spec is a
+      // different program.
+      expect(() => withPrograms(
+        { ...stack, programs: { ore: { ...stack.programs.ore, programSpecHash: 'spec-ore-1' } } },
+        { ore: { name: 'ore', programId: ORE_ID, programSpecHash: 'spec-ore-2' } },
+      )).toThrow(expect.objectContaining({ code: 'PROGRAM_KEY_CONFLICT' }));
+    });
+
+    it('uses an attached program with the same program spec, warning once', async () => {
+      const { Arete, extendProgram } = await import('./index');
+      const { handler } = await fixtures();
+      // A local stack and a local standalone copy of its program: same spec,
+      // no package release on either side.
+      const localOre = {
+        name: 'ore',
+        programId: ORE_ID,
+        programSpecHash: 'spec-ore-local',
+        rawInstructions: { close: handler(ORE_ID, 9) },
+      };
+      const stack = {
+        name: 'local-ore',
+        endpoints: { ws: 'wss://example.invalid', http: 'https://example.invalid' },
+        views: {},
+        programs: { ore: localOre },
+      } as const;
+      const attached = extendProgram({ ...localOre }, {
+        createOperations: () => ({ instructions: { ping: 'user-op' as never } }),
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const first = await Arete.connect(stack, { autoConnect: false, programs: { ore: attached } });
+        await Arete.connect(stack, { autoConnect: false, programs: { ore: attached } });
+        expect((first.programs.ore.instructions as Record<string, unknown>).ping).toBe('user-op');
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0]?.[0])).toMatch(
+          /programs\.ore uses the program attached to stack 'local-ore'.*could not be proven identical/
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('reuses the stack program for the same object or the same package release', async () => {
+      const { Arete, withPrograms } = await import('./index');
+      const { handler, stackOre, stack } = await fixtures();
+      const sameRelease = {
+        name: 'ore',
+        programId: ORE_ID,
+        packageReleaseHash: 'release-ore-1',
+        rawInstructions: { close: handler(ORE_ID, 9) },
+      };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        expect(withPrograms(stack, { ore: stackOre }).programs.ore).toBe(stackOre);
+        expect(withPrograms(stack, { ore: sameRelease }).programs.ore).toBe(stackOre);
+
+        const client = await Arete.connect(stack, {
+          autoConnect: false,
+          programs: { ore: sameRelease },
+        });
+        const ix = client.programs.ore.raw.close.build({}, {
+          wallet: { publicKey: SIGNER, async signAndSend() { throw new Error('not used'); } },
+        });
+        expect(ix.programId).toBe(ORE_ID);
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 
   it('parses attached-program errors in transaction() from aggregated handler metadata', async () => {
