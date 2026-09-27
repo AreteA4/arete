@@ -31,6 +31,7 @@ __all__ = [
     "extend_program",
     "extend_programs",
     "extend_stack",
+    "with_program_identity",
     "apply_connected_stack_extensions",
 ]
 
@@ -88,9 +89,12 @@ def extend_program(
     factories composed (base first, extension merged over it).
 
     The extended definition drops ``sdk_definition_hash`` — it no longer
-    byte-matches the generated artifact.
+    byte-matches the generated artifact — and ``package_release_hash``: a
+    program extended outside its generated SDK is no longer provably that SDK
+    (canonical §9). A generated package stamps identity back with
+    :func:`with_program_identity` after applying its own extension.
     """
-    updates: Dict[str, Any] = {"sdk_definition_hash": None}
+    updates: Dict[str, Any] = {"sdk_definition_hash": None, "package_release_hash": None}
     provided = {
         "pdas": pdas,
         "accounts": accounts,
@@ -127,6 +131,21 @@ def extend_program(
         updates["create_operations"] = composed
 
     return dataclasses.replace(program, **updates)
+
+
+def with_program_identity(
+    program: ProgramDef, *, package_release_hash: Optional[str]
+) -> ProgramDef:
+    """A copy of ``program`` carrying the identity of the program SDK it is
+    (TS ``withProgramIdentity``).
+
+    Generated program packages call this last, after their own extension, so
+    the identity describes exactly the generated SDK; :func:`extend_program`
+    drops it again. An empty or ``None`` release removes the identity.
+    """
+    return dataclasses.replace(
+        program, package_release_hash=package_release_hash or None
+    )
 
 
 def extend_programs(

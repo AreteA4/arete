@@ -117,3 +117,24 @@ class HttpRequestError(AreteError):
         self.docs_url = docs_url
         self.fatal = fatal
         self.body = body
+
+
+class ProgramKeyConflictError(AreteError, AttributeError):
+    """One program key names two different programs (``PROGRAM_KEY_CONFLICT``).
+
+    Raised when a program is attached under a key a stack already provides
+    and the two are not the same program (canonical §9 program identity), and
+    when ``session.programs.<key>`` is read after two stacks provided
+    different programs under ``key``. It is also an :class:`AttributeError`
+    because the second case surfaces through attribute access, where
+    ``hasattr`` and ``getattr`` defaults expect one.
+
+    ``details`` carries ``{"key": ..., "stacks": [...]}``.
+    """
+
+    def __init__(self, message: str, *, key: str, stacks: Any) -> None:
+        super().__init__(
+            message, "PROGRAM_KEY_CONFLICT", {"key": key, "stacks": list(stacks)}
+        )
+        self.key = key
+        self.stacks = tuple(stacks)

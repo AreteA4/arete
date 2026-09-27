@@ -4,12 +4,13 @@ execution host."""
 
 from __future__ import annotations
 
+import logging
 import warnings
 
 import pytest
 
 from arete.client import Arete
-from arete.errors import AreteError
+from arete.errors import AreteError, ProgramKeyConflictError
 from arete.gateway import (
     HostedSolanaGatewayBindings,
     HostedSolanaGatewayCapabilityBinding,
@@ -291,10 +292,16 @@ class TestMembers:
         finally:
             await session.close()
 
-    async def test_first_stack_wins_on_bundled_key_collisions_and_warns(self):
-        first = make_stack(name="first-stack")
-        second = make_stack(name="second-stack")
-        with pytest.warns(UserWarning, match="uses 'one' because it was connected first"):
+    async def test_two_stacks_bundling_the_same_program_share_one_key(self):
+        shared = make_program(package_release_hash="pkg:ore@1")
+        first = make_stack(name="first-stack", programs={"ore": shared})
+        # A separately generated copy of the same package release.
+        second = make_stack(
+            name="second-stack",
+            programs={"ore": make_program(package_release_hash="pkg:ore@1")},
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             session = await create_session(
                 stacks={"one": first, "two": second}, transport="http"
             )
@@ -303,20 +310,170 @@ class TestMembers:
         finally:
             await session.close()
 
-    async def test_explicit_standalone_programs_win_over_promoted_keys(self):
-        stack = make_stack()
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")  # no collision warning expected
+    async def test_two_stacks_bundling_different_programs_leave_the_key_unpromoted(self):
+        first = make_stack(
+            name="first-stack",
+            programs={"ore": make_program(package_release_hash="pkg:ore@1")},
+        )
+        second = make_stack(
+            name="second-stack",
+            programs={"ore": make_program(package_release_hash="pkg:ore@2")},
+        )
+        session = await create_session(
+            stacks={"one": first, "two": second}, transport="http"
+        )
+        try:
+            # Both stay reachable through their stacks.
+            assert session.stacks.one.programs.ore.definition.package_release_hash == "pkg:ore@1"
+            assert session.stacks.two.programs.ore.definition.package_release_hash == "pkg:ore@2"
+            assert "ore" not in session.programs
+            assert not hasattr(session.programs, "ore")
+            with pytest.raises(ProgramKeyConflictError) as excinfo:
+                session.programs.ore
+            error = excinfo.value
+            assert error.code == "PROGRAM_KEY_CONFLICT"
+            assert error.key == "ore" and error.stacks == ("one", "two")
+            assert "session.stacks.one.programs.ore" in error.message
+            assert "session.stacks.two.programs.ore" in error.message
+            assert "package release pkg:ore@2" in error.message
+        finally:
+            await session.close()
+
+    async def test_unhashed_programs_are_the_same_only_when_identical(self):
+        # Local builds carry no package release: two separately built
+        # definitions are different programs even with equal names.
+        session = await create_session(
+            stacks={"one": make_stack(), "two": make_stack()}, transport="http"
+        )
+        try:
+            with pytest.raises(ProgramKeyConflictError):
+                session.programs.ore
+        finally:
+            await session.close()
+
+    async def test_two_stacks_with_one_unproven_program_spec_promote_the_first(
+        self, caplog
+    ):
+        # Two local stacks embedding local builds of one program: the same
+        # program spec, no package release on either.
+        first = make_stack(
+            name="first-local", programs={"ore": make_program(program_spec_hash="spec:ore")}
+        )
+        second = make_stack(
+            name="second-local", programs={"ore": make_program(program_spec_hash="spec:ore")}
+        )
+        with caplog.at_level(logging.WARNING, logger="arete.stack"):
             session = await create_session(
-                stacks={"stack": stack},
-                programs={"ore": make_program(program_id=OTHER_PROGRAM_ID)},
+                stacks={"first_local": first, "second_local": second}, transport="http"
+            )
+        try:
+            assert session.programs.ore is session.stacks.first_local.programs.ore
+            logged = [r.getMessage() for r in caplog.records if r.name == "arete.stack"]
+            assert len(logged) == 1
+            assert "uses stack 'first_local''s program" in logged[0]
+            assert "could not be proven identical" in logged[0]
+        finally:
+            await session.close()
+
+    async def test_unproven_standalone_program_takes_the_top_level_key(self, caplog):
+        # A local stack and a local standalone copy of its program.
+        stack = make_stack(
+            name="local-stack", programs={"ore": make_program(program_spec_hash="spec:ore")}
+        )
+        standalone = make_program(name="ore-local", program_spec_hash="spec:ore")
+        with caplog.at_level(logging.WARNING, logger="arete.stack"):
+            session = await create_session(
+                stacks={"local_stack": stack},
+                programs={"ore": standalone},
                 transport="http",
             )
         try:
-            assert session.programs.ore.program_id == OTHER_PROGRAM_ID
-            assert session.stacks.stack.programs.ore.program_id == PROGRAM_ID
+            assert session.programs.ore is not session.stacks.local_stack.programs.ore
+            assert session.programs.ore.definition is standalone
+            assert session.stacks.local_stack.programs.ore.definition is stack.programs["ore"]
+            logged = [r.getMessage() for r in caplog.records if r.name == "arete.stack"]
+            assert len(logged) == 1
+            assert "session.programs.ore uses the standalone program" in logged[0]
+            assert "session.stacks.local_stack.programs.ore keeps the stack's program" in logged[0]
         finally:
             await session.close()
+
+        with pytest.raises(ProgramKeyConflictError):
+            await create_session(
+                stacks={"local_stack": stack},
+                programs={"ore": make_program(program_spec_hash="spec:other")},
+                transport="http",
+            )
+
+    async def test_explicit_program_of_the_same_release_is_one_program(self):
+        stack = make_stack(
+            programs={"ore": make_program(package_release_hash="pkg:ore@1")}
+        )
+        standalone = make_program(package_release_hash="pkg:ore@1")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            session = await create_session(
+                stacks={"stack": stack},
+                programs={"ore": standalone},
+                transport="http",
+            )
+        try:
+            # One instance: the stack's connected program serves the key, and
+            # no second member was connected for the standalone copy.
+            assert session.programs.ore is session.stacks.stack.programs.ore
+            assert len(session._members) == 1
+        finally:
+            await session.close()
+
+    async def test_options_for_a_program_a_stack_serves_are_rejected(self):
+        shared = make_program(package_release_hash="pkg:ore@1")
+        with pytest.raises(SessionError, match="stack_options"):
+            await create_session(
+                stacks={"stack": make_stack(programs={"ore": shared})},
+                programs={"ore": shared},
+                program_options={"ore": {"transport": "http"}},
+                transport="http",
+            )
+
+    async def test_explicit_different_program_under_a_stack_key_is_rejected(self):
+        stack = make_stack(
+            programs={"ore": make_program(package_release_hash="pkg:ore@1")}
+        )
+        with pytest.raises(ProgramKeyConflictError) as excinfo:
+            await create_session(
+                stacks={"stack": stack},
+                programs={
+                    "ore": make_program(
+                        program_id=OTHER_PROGRAM_ID, package_release_hash="pkg:ore@2"
+                    )
+                },
+                transport="http",
+            )
+        error = excinfo.value
+        assert error.key == "ore" and error.stacks == ("stack",)
+        assert "session.stacks.stack.programs.ore" in error.message
+        assert "different key" in error.message
+
+    async def test_a_different_program_under_its_own_key_is_fine(self):
+        stack = make_stack()
+        session = await create_session(
+            stacks={"stack": stack},
+            programs={"ore_v2": make_program(program_id=OTHER_PROGRAM_ID)},
+            transport="http",
+        )
+        try:
+            assert session.programs.ore_v2.program_id == OTHER_PROGRAM_ID
+            assert session.programs.ore.program_id == PROGRAM_ID
+        finally:
+            await session.close()
+
+    async def test_attached_member_program_conflict_is_rejected(self):
+        with pytest.raises(ProgramKeyConflictError):
+            await create_session(
+                stacks={"stack": make_stack()},
+                stack_options={"stack": {"programs": {"ore": make_program()}}},
+                transport="http",
+            )
 
     async def test_wallet_fans_out_to_every_member(self):
         session = await create_session(

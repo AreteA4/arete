@@ -17,8 +17,18 @@ Semantics:
   store); standalone programs become synthetic HTTP-only stacks reusing the
   exact same machinery.
 - Programs bundled by stack members are promoted onto ``session.programs``
-  by reference; on key collisions the first-connected stack wins (with a
-  warning). Explicit standalone programs always win over promoted keys.
+  by reference, matched by program identity (canonical §9,
+  :func:`arete.stack.compare_program_identity`), never by name. The same
+  program under one key is one program. An explicit standalone program under
+  a key a stack provides with the same program spec, but without a provable
+  identity match, takes ``session.programs.<key>`` (one logged warning) while
+  ``session.stacks.<stack>.programs.<key>`` keeps the stack's; any other
+  program there makes ``create_session`` raise
+  :class:`arete.errors.ProgramKeyConflictError` before connecting anything.
+  Two stacks providing one program spec promote the first stack's program
+  (warning when not provably the same SDK); different programs both stay
+  reachable through ``session.stacks.<stack>.programs.<key>``, the top-level
+  key is not promoted, and reading it raises the same error.
 - ``mode="composition"`` requires generated or explicit ``chain`` +
   ``transactions`` transports and forbids shared fallback endpoints — chain
   reads and program reads never inherit a live member's HTTP endpoint.
@@ -28,7 +38,6 @@ Semantics:
 
 from __future__ import annotations
 
-import warnings
 from typing import (
     Any,
     Callable,
@@ -43,7 +52,7 @@ from typing import (
 from arete.auth import AuthConfig
 from arete.chain import ChainClient, HttpChainClient
 from arete.client import Arete
-from arete.errors import AreteError
+from arete.errors import AreteError, ProgramKeyConflictError
 from arete.gateway import create_hosted_solana_gateway_transports
 from arete.http import HttpAuthClient
 from arete.instructions import BuiltInstruction, ErrorMetadata
@@ -63,6 +72,9 @@ from arete.stack import (
     ProgramDef,
     StackDef,
     StackEndpoints,
+    compare_program_identity,
+    program_identity_label,
+    warn_program_identity_once,
     with_programs,
 )
 from arete.transactions import TransactionTransport
@@ -173,6 +185,42 @@ def _validate_composition_program_reads(
             )
 
 
+class _SessionPrograms(AttrNamespace):
+    """``session.programs``: promoted and explicit programs, plus the keys
+    left unpromoted because stacks provide different programs under them —
+    reading one of those raises :class:`ProgramKeyConflictError`."""
+
+    def __init__(
+        self,
+        entries: Mapping[str, Any],
+        conflicts: Mapping[str, Tuple[Tuple[str, ...], str]],
+    ) -> None:
+        super().__init__("session.programs", entries)
+        self._conflicts = dict(conflicts)
+
+    def __getattr__(self, name: str) -> Any:
+        conflict = self.__dict__.get("_conflicts", {}).get(name)
+        if conflict is not None:
+            stacks, message = conflict
+            raise ProgramKeyConflictError(message, key=name, stacks=stacks)
+        return super().__getattr__(name)
+
+
+def _ambiguous_program_message(
+    key: str, entries: Sequence[Tuple[str, ProgramDef]]
+) -> str:
+    stacks = " and ".join(f"'{stack}'" for stack, _ in entries)
+    paths = " or ".join(f"session.stacks.{stack}.programs.{key}" for stack, _ in entries)
+    identities = "; ".join(
+        f"{stack}: {program_identity_label(program)}" for stack, program in entries
+    )
+    return (
+        f"session.programs.{key} is ambiguous: stacks {stacks} provide different "
+        f"'{key}' program SDKs ({identities}). Use {paths}, or attach the one you "
+        "want under a different key in create_session(programs=...)."
+    )
+
+
 class Session:
     """A connected multi-member session. Use :func:`create_session`."""
 
@@ -187,6 +235,7 @@ class Session:
         chain: Optional[ChainClient],
         transactions: Optional[TransactionTransport],
         execution: Mapping[str, Any],
+        program_conflicts: Optional[Mapping[str, Tuple[Tuple[str, ...], str]]] = None,
     ) -> None:
         self._stack_clients = dict(stacks)
         self._program_map = dict(programs)
@@ -197,7 +246,7 @@ class Session:
         self._transactions = transactions
         self._execution = dict(execution)
         self.stacks = AttrNamespace("session.stacks", self._stack_clients)
-        self.programs = AttrNamespace("session.programs", self._program_map)
+        self.programs = _SessionPrograms(self._program_map, program_conflicts or {})
 
     @property
     def wallet(self) -> Optional[WalletAdapter]:
@@ -444,6 +493,72 @@ async def create_session(
                 session_program_reads,
             )
 
+    explicit_programs = dict(program_entries)
+    # Program identity (canonical §9), resolved before anything connects. Each
+    # stack's effective programs (its own plus member-attached ones;
+    # ``with_programs`` rejects a conflicting attachment) provide their keys.
+    providers: Dict[str, List[Tuple[str, ProgramDef]]] = {}
+    for stack_key, stack in stack_entries:
+        effective = with_programs(
+            stack, stack_options.get(stack_key, {}).get("programs")
+        )
+        for program_key, definition in effective.programs.items():
+            providers.setdefault(program_key, []).append((stack_key, definition))
+    # Standalone programs a stack already provides as the same program are
+    # served by that stack's connected instance, not by a second member. One
+    # with the same program spec but no provable identity match gets its own
+    # member and takes session.programs.<key>; the stacks keep theirs.
+    shared_programs: set = set()
+    if not composition:
+        for program_key, program in program_entries:
+            provided = providers.get(program_key, [])
+            matches = [
+                compare_program_identity(definition, program)
+                for _, definition in provided
+            ]
+            for (stack_key, definition), match in zip(provided, matches):
+                if match == "different":
+                    raise ProgramKeyConflictError(
+                        f"Program key '{program_key}' conflicts with stack "
+                        f"'{stack_key}' in this session: the stack already provides "
+                        f"a different '{program_key}' program SDK (stack: "
+                        f"{program_identity_label(definition)}; standalone: "
+                        f"{program_identity_label(program)}). Use "
+                        f"session.stacks.{stack_key}.programs.{program_key}, or "
+                        "attach the standalone program under a different key in "
+                        "create_session(programs=...).",
+                        key=program_key,
+                        stacks=[stack_key],
+                    )
+            if not provided:
+                continue
+            if "unproven" in matches:
+                stacks = " and ".join(f"'{stack}'" for stack, _ in provided)
+                paths = " and ".join(
+                    f"session.stacks.{stack}.programs.{program_key}" for stack, _ in provided
+                )
+                identities = "; ".join(
+                    f"{stack}: {program_identity_label(definition)}"
+                    for stack, definition in provided
+                )
+                warn_program_identity_once(
+                    f"session.programs.{program_key} uses the standalone program: it "
+                    f"has the same program spec as the '{program_key}' program of stack "
+                    f"{stacks} but could not be proven identical (standalone: "
+                    f"{program_identity_label(program)}; {identities}). {paths} "
+                    f"keep{'s' if len(provided) == 1 else ''} the stack's program."
+                )
+                continue
+            if program_key in program_options:
+                raise SessionError(
+                    f"Standalone program '{program_key}' is the program stack "
+                    f"'{provided[0][0]}' already provides, so the session uses the "
+                    "stack's connected instance; configure it through "
+                    f"stack_options['{provided[0][0]}'] instead of "
+                    f"program_options['{program_key}']"
+                )
+            shared_programs.add(program_key)
+
     registry = signer_registry if signer_registry is not None else SignerRegistry()
     endpoints = endpoints or {}
     fallback_ws = endpoints.get("ws")
@@ -502,6 +617,8 @@ async def create_session(
 
     connected_programs: List[Tuple[str, Arete]] = []
     for key, program in program_entries:
+        if key in shared_programs:
+            continue
         synthetic = _program_as_stack(key, program, (program_reads or {}).get(key))
         client = await connect_member(
             synthetic,
@@ -514,29 +631,48 @@ async def create_session(
         client for _, client in connected_programs
     ]
 
-    explicit_keys = {key for key, _ in connected_programs}
     promoted: Dict[str, ConnectedProgram] = {
         key: getattr(client.programs, key) for key, client in connected_programs
     }
-    owners: Dict[str, Tuple[str, Optional[str]]] = {}
+    program_conflicts: Dict[str, Tuple[Tuple[str, ...], str]] = {}
     if not composition:
-        for stack_key, client in connected_stacks:
-            for program_key, program in client.programs.items():
-                if program_key in explicit_keys:
-                    continue
-                existing = owners.get(program_key)
-                if existing is not None:
-                    warnings.warn(
-                        f"Program '{program_key}' is bundled by stacks "
-                        f"'{existing[0]}' ({existing[1] or 'unknown program ID'}) "
-                        f"and '{stack_key}' ({program.program_id or 'unknown program ID'}); "
-                        f"session.programs.{program_key} uses '{existing[0]}' "
-                        "because it was connected first",
-                        stacklevel=2,
+        stack_clients = dict(connected_stacks)
+        for program_key, entries in providers.items():
+            if program_key in promoted:
+                continue
+            first_stack, first = entries[0]
+            matches = [
+                compare_program_identity(left, right)
+                for index, (_, left) in enumerate(entries)
+                for _, right in entries[index + 1 :]
+            ]
+            if "different" not in matches:
+                # One program, however many stacks bundle it: the first stack's
+                # connected instance serves the top-level key. Copies with the
+                # same program spec that cannot be proven identical say so once.
+                if "unproven" in matches:
+                    warn_program_identity_once(
+                        f"session.programs.{program_key} uses stack '{first_stack}''s "
+                        "program: stacks "
+                        + " and ".join(f"'{stack}'" for stack, _ in entries)
+                        + f" bundle '{program_key}' programs with the same program spec "
+                        "that could not be proven identical ("
+                        + "; ".join(
+                            f"{stack}: {program_identity_label(definition)}"
+                            for stack, definition in entries
+                        )
+                        + f"). Each stays at session.stacks.<stack>.programs.{program_key}."
                     )
-                    continue
-                promoted[program_key] = program
-                owners[program_key] = (stack_key, program.program_id)
+                promoted[program_key] = getattr(
+                    stack_clients[first_stack].programs, program_key
+                )
+            else:
+                # Every copy stays reachable through its stack; the top-level
+                # key would have to pick one silently, so it picks none.
+                program_conflicts[program_key] = (
+                    tuple(stack for stack, _ in entries),
+                    _ambiguous_program_message(program_key, entries),
+                )
 
     session_chain = chain
     if session_chain is None and fallback_http:
@@ -560,4 +696,5 @@ async def create_session(
         chain=session_chain,
         transactions=session_transactions,
         execution=execution or {},
+        program_conflicts=program_conflicts,
     )

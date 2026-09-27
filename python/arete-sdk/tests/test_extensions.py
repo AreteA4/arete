@@ -11,6 +11,7 @@ from arete.extensions import (
     extend_programs,
     extend_stack,
     merge_namespace,
+    with_program_identity,
 )
 from arete.stack import (
     ConnectedProgram,
@@ -20,6 +21,7 @@ from arete.stack import (
     flow_operation,
     instruction_operation,
     normalize_program_operations,
+    same_program,
 )
 
 
@@ -60,6 +62,26 @@ class TestExtendProgram:
         # base is untouched
         assert program.addresses == {"treasury": "t1"}
         assert program.sdk_definition_hash == "sdk:hash"
+
+    def test_drops_package_release_identity_until_stamped_back(self):
+        program = make_program(package_release_hash="pkg:ore@1", program_spec_hash="spec")
+        extended = extend_program(program, constants={"fee": 2})
+        # A program extended outside its generated SDK is no longer provably it.
+        assert extended.package_release_hash is None
+        assert extended.program_spec_hash == "spec"
+        assert not same_program(extended, program)
+        assert program.package_release_hash == "pkg:ore@1"
+        # Untargeted programs keep theirs.
+        programs = extend_programs(
+            {"ore": program, "spl": program}, {"ore": {"constants": {"fee": 3}}}
+        )
+        assert programs["ore"].package_release_hash is None
+        assert programs["spl"] is program
+        # Generated packages stamp identity back after their own extension.
+        stamped = with_program_identity(extended, package_release_hash="pkg:ore@1")
+        assert same_program(stamped, program)
+        assert stamped.constants == {"fee": 2}
+        assert with_program_identity(stamped, package_release_hash=None).package_release_hash is None
 
     def test_composes_operation_factories_base_first(self):
         def base_factory(context):
