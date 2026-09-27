@@ -13,7 +13,7 @@ sidebar:
 npm install @usearete/react @usearete/sdk zod
 ```
 
-React remains an application peer dependency. `@usearete/react` carries `zustand` as a normal dependency, so do not install `zustand` separately. Generated stack files import core SDK types and Zod schemas directly, which is why generated React consumers install all three packages above.
+React and `@usearete/sdk` are peer dependencies, so the application owns exactly one copy of the core SDK and `@usearete/react` shares it (a second copy would break the error and outcome checks mutation hooks rely on). Keep both packages on the same release. `@usearete/react` carries `zustand` as a normal dependency, so do not install `zustand` separately. Generated stack files import core SDK types and Zod schemas directly, which is why generated React consumers install all three packages above.
 
 Arete's fluent `.use()`, `.useOne()`, and `.useMutation()` methods are React
 hooks. Standard Hooks linting cannot identify deeply nested member calls, so
@@ -97,21 +97,21 @@ require a publishable key as shown above.
 
 `AreteProvider` owns connected clients and their stores. Supported provider props are:
 
-| Prop                     | Purpose                                                          |
-| ------------------------ | ---------------------------------------------------------------- |
-| `stack`                  | Default stack for argument-less `useArete()` calls               |
-| `stackOptions`           | Default lookup options for the provider stack                    |
-| `autoConnect`            | Start the initial connection; defaults to `true`                 |
-| `autoReconnect`          | Recover an established connection after loss; defaults to `true` |
-| `wallet`                 | Wallet adapter used by generated program operations              |
-| `auth`                   | Authentication options such as `publishableKey`                  |
-| `fetch`                  | Custom fetch implementation                                      |
-| `validateFrames`         | Set false to silence rejected-frame warnings                     |
-| `onFrameValidationError` | Observe structured generated-schema rejections                   |
-| `reconnectIntervals`     | Reconnect delays in milliseconds                                 |
-| `maxReconnectAttempts`   | Reconnect attempt limit                                          |
-| `maxEntriesPerView`      | Per-view store limit, or `null` for unlimited                    |
-| `flushIntervalMs`        | Store update batching interval                                   |
+| Prop                     | Purpose                                                                                                     |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `stack`                  | Default stack for argument-less `useArete()` calls                                                          |
+| `stackOptions`           | Default lookup options for the provider stack                                                               |
+| `autoConnect`            | Start the initial connection; defaults to `true`                                                            |
+| `autoReconnect`          | Recover an established connection after loss; defaults to `true`                                            |
+| `wallet`                 | Wallet adapter used by generated program operations                                                         |
+| `auth`                   | Authentication options such as `publishableKey`                                                             |
+| `fetch`                  | Custom fetch implementation                                                                                 |
+| `validateFrames`         | Set false to silence rejected-frame warnings                                                                |
+| `onFrameValidationError` | Observe frames that were not stored: schema rejections, and patches for keys the client holds no entity for |
+| `reconnectIntervals`     | Reconnect delays in milliseconds                                                                            |
+| `maxReconnectAttempts`   | Reconnect attempt limit                                                                                     |
+| `maxEntriesPerView`      | Per-view store limit, or `null` for unlimited                                                               |
+| `flushIntervalMs`        | Store update batching interval                                                                              |
 
 `autoConnect` and `autoReconnect` control separate lifecycle phases. Setting `autoConnect={false}` does not disable automatic recovery for a connection the app later establishes, but `canRetry` remains false because provider-owned replacement attempts would also stay disconnected; use the client lifecycle directly. Setting `autoReconnect={false}` does not prevent the provider's initial connection.
 
@@ -159,6 +159,8 @@ const arete = useArete(MY_STACK, {
 
 `useArete` options are `url`, `httpUrl`, `transport`, and `programs`. Keep a supplied `programs` object stable with a module constant or `useMemo`.
 
+Attached `programs` follow the core [identity rule](/sdks/typescript/#multiple-stacks-and-programs). A program the stack already provides (the same object, or the same `packageReleaseHash`) resolves to the stack's own program. A program with the same `programSpecHash` that cannot be proven identical, such as one you extended with `extendProgram`, replaces the stack's under that key, and the SDK logs one warning. Any other program under one of the stack's keys fails the connection with `PROGRAM_KEY_CONFLICT`, reported through `arete.error`; attach it under a key the stack does not use.
+
 ### Shared calls
 
 Sibling components may each call `useArete(MY_STACK)` instead of threading one large result object through props. Calls with the same stack object and connection options share one provider-managed client and store. Concurrent initial calls also share the same connection attempt.
@@ -180,6 +182,61 @@ export const {
 ```
 
 `useOre()` carries the generated stack type directly and remains explicit at each consumer. Keep the generic `AreteProvider` and `useArete(stack)` API for multi-stack applications.
+
+## Wallets
+
+Arete targets [Wallet Standard](https://github.com/wallet-standard/wallet-standard) wallets. Browser wallets that implement it register themselves, so the app does not list or import wallet-specific adapters. The recommended wiring, used by the React ORE template, is `WalletProvider` with an empty `wallets` list plus `useSolanaWalletAdapter` from `@usearete/adapter-web3js/react`:
+
+```bash
+npm install @usearete/adapter-web3js @solana/web3.js \
+  @solana/wallet-adapter-react @solana/wallet-adapter-react-ui
+```
+
+```tsx
+import type { ReactNode } from 'react';
+import { WalletProvider } from '@solana/wallet-adapter-react';
+import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
+import { useSolanaWalletAdapter } from '@usearete/adapter-web3js/react';
+import { AreteProvider } from '@usearete/react';
+import { MY_STACK } from './generated/my-stack';
+
+import '@solana/wallet-adapter-react-ui/styles.css';
+
+// useSolanaWalletAdapter reads the wallet context, so AreteProvider sits
+// one level below WalletProvider.
+function AreteShell({ children }: { children: ReactNode }) {
+  const wallet = useSolanaWalletAdapter(); // undefined until a wallet connects
+  return (
+    <AreteProvider stack={MY_STACK} auth={{ publishableKey }} wallet={wallet}>
+      {children}
+    </AreteProvider>
+  );
+}
+
+export default function App() {
+  return (
+    // wallets={[]}: only Wallet Standard wallets, detected at runtime.
+    <WalletProvider wallets={[]} autoConnect>
+      <WalletModalProvider>
+        <AreteShell>
+          <Dashboard />
+        </AreteShell>
+      </WalletModalProvider>
+    </WalletProvider>
+  );
+}
+```
+
+Do not add wallet-specific adapter packages to `wallets`; Wallet Standard detection already covers wallets that support it. The web3.js adapter builds v0 transactions, so a wallet must support version `0`; see the [adapter README](https://github.com/AreteA4/arete/tree/main/typescript/adapters/web3js#peer-dependencies) for its peer-dependency matrix.
+
+Apps that do not use React or web3.js bridge a Wallet Standard account with `createWalletStandardSigner` from `@usearete/adapter-kit` and pass the signer to that package's `createWalletAdapter`:
+
+```ts
+import { createWalletAdapter, createWalletStandardSigner } from '@usearete/adapter-kit';
+
+const signer = createWalletStandardSigner({ wallet, account, chain: 'solana:mainnet' });
+const arete = createWalletAdapter({ transport: 'auto', signer });
+```
 
 ## `useArete` result
 
@@ -333,6 +390,26 @@ The mutation prepares the operation, asks the wallet to sign, submits once, and 
 
 Useful result fields include `phase`, `status`, `prepared`, `result`, `signatures`, `completedReceipts`, `displayError`, `failure`, `reconciliationError`, `isPreparing`, `isAwaitingWallet`, and `isReconciling`.
 
+### Mutation phases
+
+`phase` is the field to branch UI on. These are all of its values:
+
+| Phase                    | Meaning                                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `idle`                   | Nothing submitted yet, or `reset()` was called                                                         |
+| `preparing`              | Building the operation (reading accounts, deriving addresses) before the wallet is involved            |
+| `awaiting-wallet`        | The wallet is signing, and the adapter is sending and confirming the transaction                       |
+| `submitted`              | A transaction's receipt landed; a multi-transaction flow returns to `awaiting-wallet` for the next one |
+| `confirmed`              | Every transaction confirmed on chain                                                                   |
+| `reconciling`            | Waiting for the stream to process the confirmed slot and refreshing the supplied views and reads       |
+| `reconciled`             | The stream caught up and the refreshes completed                                                       |
+| `confirmed-unreconciled` | Confirmed on chain, but reconciliation timed out or failed; see `reconciliationError`                  |
+| `not-submitted`          | Failed before anything reached the network (preparation, wallet rejection, or a definite send refusal) |
+| `submitted-unknown`      | The transaction may have been sent; check `signature` before any retry, and never resend blindly       |
+| `chain-failed`           | Solana reported an on-chain error; `displayError` carries the parsed program error when available      |
+
+There is no separate `submitting` or `confirming` phase: `awaiting-wallet` covers signing, sending, and confirmation, because the wallet adapter performs all three in one call. The happy path is `preparing` → `awaiting-wallet` → `submitted` → `confirmed` → `reconciling` → `reconciled`; with reconciliation disabled or skipped it stops at `confirmed`. `status` is the coarser `'idle' | 'pending' | 'success' | 'error'`.
+
 See [Transactions](/using-stacks/transactions/) for transport, inspection, and failure-outcome details.
 
 ### Parse form amounts without throwing
@@ -421,6 +498,34 @@ artifact, provenance, or output drift.
 - Use `onConfirmed` for work that must happen after chain confirmation even if reconciliation later times out; reserve `onSuccess` for reconciled success.
 - One-shot extension reads expose imperative calls and hooks together under `arete.read.<name>`; `arete.reads` remains a deprecated alias.
 - Repeated `useArete` calls share a client when their stack and option identities match. Remove component-local connection ownership workarounds.
+
+## Testing
+
+`@usearete/react/testing` re-exports the [core testing helpers](/sdks/typescript/#testing) and adds two React-specific ones:
+
+- `createAreteTestConfig(harness, props?)` returns `<AreteProvider>` props that connect every client to a `createWebSocketHarness()` server, with no reconnects or batching delay. Everything else (views, reads, mutations, reconciliation) runs through the real provider and client.
+- `createMutationResultFixture(phase, overrides?)` returns a complete, internally consistent `useMutation()` result for any value in `MUTATION_PHASES`, so phase-specific UI can be rendered and tested without a wallet.
+
+```tsx
+import { AreteProvider } from '@usearete/react';
+import {
+  createAreteTestConfig,
+  createWalletFixture,
+  createWebSocketHarness,
+} from '@usearete/react/testing';
+
+const ws = createWebSocketHarness();
+const wallet = createWalletFixture();
+render(
+  <AreteProvider {...createAreteTestConfig(ws, { wallet })}>
+    <Dashboard />
+  </AreteProvider>,
+);
+
+// Poll with your test library's waitFor so React commits between checks.
+const subscription = await waitFor(() => ws.subscription('OreRound/latest'));
+ws.serve(subscription, [{ key: '1', data: round }]);
+```
 
 ## Low-level exports
 

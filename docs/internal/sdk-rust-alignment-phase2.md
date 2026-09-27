@@ -94,3 +94,41 @@ first connected member; `set_wallet` fans out; `close()` disconnects all.
 Rust shape: `Session::builder().stack("ore", OreStack).program("spl", …).connect().await`
 returning a struct with typed accessor generics is NOT feasible without codegen — use a
 runtime-keyed API (`session.stack::<OreStack>("ore")`) documented as the Rust idiom.
+
+### Program identity (canonical §9, added 2026-09-25)
+
+The session above never promoted stack-bundled programs: Rust reaches every program by
+a typed path. A stack's bundled programs are fields of its `Programs` struct
+(`client.programs.<field>`, `session.stack::<S>(key)?.programs.<field>`);
+`StackWithPrograms<S, P>` keeps them under `.stack` and puts the attachment under
+`.attached`; a standalone session program is recovered under its own member key with
+`session.program::<P>(key)`. No runtime key is shared between a stack's programs and an
+attached or standalone one, so the canonical `PROGRAM_KEY_CONFLICT` cases (a program
+attached under a key a stack provides, two stacks providing one key) cannot occur, and
+stack-scoped access is always there. That is the idiom; the guarantee the rule exists
+for — one key never resolves silently to one of two different releases — holds by
+construction.
+
+Identity itself is exposed so generated code and callers can apply it:
+`ProgramSdk::package_release_hash() -> Option<&'static str>` (default `None`; the Rust
+generator fills it from the program package release, as it does
+`packageReleaseHash` / `package_release_hash` in TS / Python) and
+`arete_sdk::same_program::<A, B>()` (same generated type, or both hashes present and
+equal).
+
+### No partial entities and unranked sort values (canonical §5, added 2026-09-25)
+
+`SharedStore` discards a `patch` for a key it does not hold — never received, or evicted
+by `max_entries_per_view` — without writing storage, tracking a sequence, granting
+membership or emitting an update, when the subscription's ack carried `wholeEntities:
+true` (`ServerFrame::Subscribed::whole_entities`); against an older server the patch is
+stored as before. Frames carrying an `offset` (tape records) are exempt. A patch dropped
+for a key the store evicted logs a `warn!` (first per view, `debug!` after), since the
+server still counts that key as held. Sorted membership puts entities whose sort field
+is missing or `null` after every ranked entity in both directions.
+
+### Extension API (canonical §9, added 2026-09-25)
+
+`arete_sdk::EXTENSION_API_VERSION: u32 = 1`, recorded as
+`[package.metadata.arete] extension-api = 1` in the crate's `Cargo.toml`; a unit test
+keeps the two in step.

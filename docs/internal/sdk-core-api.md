@@ -107,9 +107,13 @@ optional schema/parser override):
 State views take a **typed key** (generated from the entity's key fields) plus the same
 options. Dropping/breaking the stream releases the refcounted lease.
 
-**Update taxonomy** (identical everywhere): `upsert` (full entity entered/changed in
-window), `patch` (partial merge; `append` paths concatenate arrays), `remove` (left
-*this query's* window), `delete` (deleted from the source view globally).
+**Update taxonomy** (identical everywhere): `upsert` (the whole entity — sent whenever a
+key becomes a member of the subscription as far as the server knows: entering the
+window, its first change after a truncated or disabled snapshot, every change on a
+derived view), `patch` (partial merge into an entity the client holds; `append` paths
+concatenate arrays), `remove` (left *this query's* window), `delete` (deleted from the
+source view globally). A key that only moves position is not resent; clients order
+members from the declared sort (§5).
 
 **Subscription identity**: canonical JSON of `{query, snapshot}`. Equivalent queries
 share one wire subscription; leases are reference-counted; ids stay stable across
@@ -121,6 +125,29 @@ reconnect.
   batch, `authoritative: true` **replaces** membership, `authoritative: false` (cursor
   resumes via `after`) **merges**.
 - Patches deep-merge with `append`-path array concatenation.
+- **No partial entities**: a live `patch` for a key the store does not hold — never
+  received, or evicted locally (e.g. by a max-entries bound) — is not an entity. When
+  the subscription's `subscribed` ack carries `wholeEntities: true`, it is discarded: no
+  storage write, no tracked sequence, no membership, no update emitted. The entity
+  appears with the next full `upsert`, which such a server guarantees for every key it
+  has not sent (`docs/websocket-v2-protocol.md`, "Partial entities"). Without the field
+  (an older server, which may send a key's first change as a patch) the patch is stored
+  as the entity, as before. SDKs may apply the latest ack on a connection to all its
+  subscriptions (TS) or each ack to its own subscription (Rust, Python); one connection
+  talks to one server, so the two agree. Frames carrying `offset` are exempt: they are
+  records from a replayable append view — events, applied as received (the server
+  never promotes them to `upsert`, and a consumer resuming from a cursor holds what
+  came before it). The same `offset` exemption applies to the stale-sequence guard
+  below, because every event decoded from one transaction shares a `seq`.
+- **Local eviction**: the server still counts a key the store evicted as held, so it
+  keeps sending patches and no `upsert` until the key re-enters the window or the
+  subscription is re-established; those patches are discarded and the entity stays
+  missing until then. The protocol has no per-key re-fetch. SDKs that evict report each
+  such drop distinctly (TS: diagnostic `reason: 'evicted-key'`, code
+  `PATCH_FOR_EVICTED_KEY`, plus one `console.warn` per view; Rust: a `warn!` on the
+  first per view), and keep the local limit's documentation explicit that it must
+  exceed the subscription's size. Rust evicts only keys no subscription's membership
+  references, so there the case needs membership and storage to disagree.
 - **Stale-sequence guard**: a live `upsert`/`patch` whose `seq` is not newer than the
   cached entity's tracked sequence (`compare <= 0`, so equal counts as duplicate) must not
   write storage. It still grants query membership and emits an update carrying the
@@ -132,7 +159,11 @@ reconnect.
 - Ordering follows the server-declared `sort` from the `subscribed` ack. Entities tied on
   the sort field break the tie on entity key, and that tie-break is **always ascending** —
   the `desc` negation applies to the sort-field comparison only. Both comparisons use the
-  §2 ordering rule.
+  §2 ordering rule. An entity whose sort value is **missing or `null`** cannot be ranked:
+  it sorts **after** every entity that has one in both directions (the `desc` negation
+  does not apply to it), and such entities order among themselves by the key tie-break.
+  The server applies the same rule when it fills derived-view windows, so an unranked
+  entity never displaces a ranked one.
 - The store is an internal engine detail; languages may expose it (TS `store`) or keep
   it private (Rust/Python) — the six view verbs are the public contract.
 
@@ -201,10 +232,59 @@ auth tokens per binding.
 - **Amounts/SPL helpers**: raw⇄UI amount conversion pinned to mint decimals, associated
   token account derivation, token-program resolution.
 - **Sessions**: `create_session({stacks, programs}, options)` — each member gets its own
-  client; standalone programs become synthetic HTTP-only stacks; program promotion is
-  by reference (first-stack-wins warning); composition mode requires explicit
-  chain + transactions (no endpoint fallback); execution host is the first connected
-  member; `set_wallet` fans out; `close` disconnects all.
+  client; standalone programs become synthetic HTTP-only stacks; programs bundled by
+  stacks are promoted by reference to the top-level program namespace, under the program
+  identity rule below; composition mode requires explicit chain + transactions (no
+  endpoint fallback) and promotes nothing, so its top level holds only the explicit
+  programs; execution host is the first connected member; `set_wallet` fans out;
+  `close` disconnects all.
+- **Program identity**: a program SDK's identity is the package release it was
+  generated from (`packageReleaseHash` / `package_release_hash`; absent for local
+  builds). It describes exactly the generated SDK, so it is set last: generated entries
+  apply the package's own extension (and TS read descriptor) first, then stamp the
+  identity (`withProgramIdentity` / `with_program_identity`; Python stamps it in the
+  package `__init__.py` after the extension import, or in the `ProgramDef` when the
+  package has no extension). Applying an extension outside generated code
+  (`extendProgram`, `extendPrograms`, TS `withProgramRead`; Python `extend_program`,
+  `extend_programs`) drops it. Programs are matched by identity, never by name
+  (`compareProgramIdentity` / `compare_program_identity` → `same | unproven |
+  different`), wherever a key can name two programs: session promotion and attaching
+  programs to a stack (`withPrograms`, `ConnectOptions.programs`, per-member
+  `programs`, `useArete(…, {programs})`):
+  - **Both identities known** → equal (or the same object) is **the same program**: one
+    program, no warning; a standalone session program that a stack already provides is
+    served by that stack's connected instance (no second member). Different →
+    `PROGRAM_KEY_CONFLICT`.
+  - **At least one unknown, same `programSpecHash`** → **unproven**: the explicitly
+    attached program wins for the key it is attached under, with one warning (TS
+    `console.warn`, Python `logging`, once per distinct message) saying the programs
+    could not be proven identical. A standalone session program takes
+    `session.programs.<key>`; attached to a stack (`withPrograms` and the rest above),
+    it replaces the stack's program in that client's `programs.<key>`. Two stacks with
+    unproven copies promote the first stack's program, with one warning.
+  - **Otherwise** (different or missing `programSpecHash`) → `PROGRAM_KEY_CONFLICT` when
+    the session or stack is composed; the message names the stack and the key and gives
+    the fix: use the stack-scoped program (`session.stacks.<stack>.programs.<key>`), or
+    attach the standalone program under a different key. Two stacks providing different
+    programs under one key → the session is still created and both stay reachable
+    through their stacks; the top-level key is not promoted, and reading it fails with
+    `PROGRAM_KEY_CONFLICT` naming both stacks, the key and the stack-scoped paths.
+  - A session's stack-scoped access (`session.stacks.<stack>.programs.<key>`) is never
+    replaced by a session-level program, and a stack definition's `programs` are never
+    modified.
+- **Extension API contract**: every SDK exports `EXTENSION_API_VERSION` (currently `1`),
+  the version of the extension-authoring surface that generated code and published
+  extensions import: stack/program extension definition and composition helpers (TS
+  `defineStackExtensions`, `defineProgramExtensions`, `extendProgram`, `extendPrograms`,
+  `extendStack`; Python `extend_program`, `extend_programs`, `extend_stack`; Rust the
+  `Programs` / `ProgramSdk` / `StackWithPrograms` binding traits), program read attachment
+  (TS `withProgramRead` and its equivalents), and the instruction helpers generated code
+  imports (instruction handlers, PDA derivation, the borsh layout, prepared-operation
+  constructors). It bumps **only on a breaking change** to that surface; additive changes
+  keep it. Each package records it in its manifest: TypeScript `package.json`
+  `arete.extensionApi`, Rust `Cargo.toml` `[package.metadata.arete] extension-api`,
+  Python `pyproject.toml` `[tool.arete] extension-api`. An extension records the
+  `extensionApi` it targets; `sdkRange` stays as a floor for older CLIs.
 - **Extensions pipeline**: one `extensions.json` manifest
   (`entry`, `files`, `inputKind`, `inputHash`, `sdkRange`, optional `language` —
   absent = TypeScript, `"rust"`, `"python"`). CLI (`a4 sdk create/install/sync`)
@@ -234,6 +314,8 @@ standard style (casing, error, async, and options conventions).
 | errors | thrown `Error` subclasses / result objects | status unions | `Result<_, thiserror enums>` → `AreteError` | `AreteError` exception hierarchy |
 | absent vs empty | `undefined` vs `null`/`[]` | `isPending` vs `isEmpty` | `None` vs `Some(empty)` (nested `Option`) | sentinel `UNSET` vs `None`/`[]` (see Python doc) |
 | session | `createSession({stacks, programs})` → `session.stacks.<k>` | provider-level | `session.stack::<OreStack>("ore")` (runtime-keyed) | `create_session(stacks={…})` → `session.stacks.<k>` |
+| program identity | `ProgramSdkDefinition.packageReleaseHash`; `PROGRAM_KEY_CONFLICT` error code | same | `ProgramSdk::package_release_hash()`; `same_program::<A, B>()` (typed paths make key conflicts unrepresentable — see the Rust doc) | `ProgramDef.package_release_hash`; `ProgramKeyConflictError` (`code="PROGRAM_KEY_CONFLICT"`) |
+| extension API | `EXTENSION_API_VERSION`; `package.json` `arete.extensionApi` | — | `arete_sdk::EXTENSION_API_VERSION`; `[package.metadata.arete] extension-api` | `arete.EXTENSION_API_VERSION`; `[tool.arete] extension-api` |
 | wire payload casing | snake_case → camelCase transform (zod) | same | snake_case → snake_case (serde) | snake_case natively — no transform |
 | u64 | `bigint` | `bigint` | `u64`/`u128` | `int` |
 | validation | zod schemas + patch schemas | zod | serde typed structs | generated converters (typed dataclasses; u64-string → int) |
@@ -252,7 +334,9 @@ A language SDK claims alignment when it implements, with these exact semantics:
    across reconnect, gzip frames, structured error envelope, `refresh_auth`.
 2. The six view verbs with the full query-option set on both list and state views.
 3. Store semantics: snapshot staging + authoritative replacement, patch/append merge,
-   server sort.
+   no partial entities (patches for unheld keys discarded under an ack's
+   `wholeEntities`, stored without it; tape records exempt), server sort with unranked
+   entities last.
 4. Instruction runtime: shared borsh layout (byte-identical — port the test vectors),
    topo-sorted account resolution, PDA derivation, fail-closed builds, error metadata.
 5. Program SDK layers 1–8 (§6) generated from the stack artifacts by the interpreter's
@@ -263,7 +347,8 @@ A language SDK claims alignment when it implements, with these exact semantics:
    (v1 contract).
 7. Execution: prepared operations + composition, wallet adapter interface, signer
    validation, four-state outcome model, receipts, `wait_for_processed_slot`.
-8. Sessions with the §9 semantics.
+8. Sessions with the §9 semantics, including the program identity rule.
 9. Extensions: manifest `language` dimension, pin validation, verbatim staging,
-   language-native wiring, provenance file.
+   language-native wiring, provenance file, exported `EXTENSION_API_VERSION` recorded
+   in the package manifest.
 10. Generated example app in `examples/` regenerated from the live codegen.
