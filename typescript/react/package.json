@@ -6,6 +6,28 @@
   "main": "dist/index.cjs",
   "module": "dist/index.esm.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.esm.js",
+      "require": "./dist/index.cjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.esm.js",
+      "require": "./dist/testing.cjs"
+    },
+    "./eslint-plugin.cjs": "./eslint-plugin.cjs",
+    "./eslint-rules/*": "./eslint-rules/*",
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "testing": [
+        "./dist/testing.d.ts"
+      ]
+    }
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AreteA4/arete.git",

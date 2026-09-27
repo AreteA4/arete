@@ -9,6 +9,13 @@
   "arete": {
     "extensionApi": 1
   },
+  "typesVersions": {
+    "*": {
+      "testing": [
+        "./dist/testing.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "import": "./dist/index.esm.js",
@@ -39,6 +46,11 @@
       "import": "./dist/ssr/tanstack-start.esm.js",
       "require": "./dist/ssr/tanstack-start.cjs",
       "types": "./dist/ssr/tanstack-start.d.ts"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.esm.js",
+      "require": "./dist/testing.cjs"
     },
     "./package.json": "./package.json"
   },
