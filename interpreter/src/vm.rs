@@ -526,17 +526,24 @@ impl DirtyTracker {
     }
 }
 
-/// Entities whose next mutation must carry the whole entity, not only the
-/// fields that changed.
+/// Entities the VM must send whole, not only as the fields that changed.
 ///
 /// A consumer that bounds how many entities it keeps cannot rebuild one it
 /// dropped from later mutations: they carry only changed fields. It requests
-/// the key here instead. The next time the VM emits mutations for that
-/// entity, it follows them with one more carrying the entity as the VM holds
-/// it, minus non-emitted fields, marked with [`Mutation::mark_whole_entity`]
-/// and without append paths (its arrays are whole too). A request is answered
-/// once. Requests are bounded: past `capacity` the least recently requested
-/// is forgotten, and asking again is always safe.
+/// the key here instead. The VM answers every pending request at the end of
+/// its next call that returns mutations ([`VmContext::process_event`],
+/// [`VmContext::apply_resolver_result`]), whatever that call changed: after
+/// the call's own mutations comes one per requested entity, carrying the
+/// entity as the VM then holds it, minus non-emitted fields, marked with
+/// [`Mutation::mark_whole_entity`] and without append paths (its arrays are
+/// whole too). It rides in the same ordered output as the VM's patches, so it
+/// follows every patch emitted before it and precedes every one after.
+///
+/// A request for an entity the VM does not hold is dropped unanswered: the VM
+/// dropped the entity too, so its next mutation for the key starts a new row
+/// and is marked created, which is whole already. A request is answered once.
+/// Requests are bounded: past `capacity` the least recently requested is
+/// forgotten, and asking again is always safe.
 ///
 /// A VM given requests also marks each entity's first mutation with
 /// [`Mutation::mark_created`], its patch then being the whole new entity. So
@@ -555,7 +562,7 @@ pub struct WholeEntityRequests {
 struct WholeEntityRequestsInner {
     capacity: usize,
     /// Mirrors the set's length, so the VM can skip the lock when nothing is
-    /// pending (every emission checks).
+    /// pending (every call that returns mutations checks).
     pending: std::sync::atomic::AtomicUsize,
     /// Unbounded so nothing is allocated up front; `capacity` is enforced by
     /// hand.
@@ -574,7 +581,7 @@ impl WholeEntityRequests {
         }
     }
 
-    /// Ask for the whole of `entity` `key` with its next mutation.
+    /// Ask for the whole of `entity` `key` with the VM's next mutations.
     pub fn request(&self, entity: &str, key: &Value) {
         let mut keys = self.inner.keys.lock().unwrap_or_else(|e| e.into_inner());
         keys.put((entity.to_string(), key.clone()), ());
@@ -606,17 +613,20 @@ impl WholeEntityRequests {
         self.len() == 0
     }
 
-    /// Answer the request for `entity` `key`, if there is one.
-    fn take(&self, entity: &str, key: &Value) -> bool {
+    /// Take every pending request, least recently requested first.
+    fn take_all(&self) -> Vec<(String, Value)> {
         if self.is_empty() {
-            return false;
+            return Vec::new();
         }
         let mut keys = self.inner.keys.lock().unwrap_or_else(|e| e.into_inner());
-        let found = keys.pop(&(entity.to_string(), key.clone())).is_some();
+        let mut taken = Vec::with_capacity(keys.len());
+        while let Some((request, ())) = keys.pop_lru() {
+            taken.push(request);
+        }
         self.inner
             .pending
-            .store(keys.len(), std::sync::atomic::Ordering::Release);
-        found
+            .store(0, std::sync::atomic::Ordering::Release);
+        taken
     }
 }
 
@@ -656,7 +666,7 @@ pub struct VmContext {
     /// The register `UpdateState` moved into its table in this segment, with
     /// the table and key, for `EmitMutation` to read the entity from there.
     moved_state: Option<(Register, u32, Value)>,
-    /// Keys whose next mutation carries the whole entity; see
+    /// Entities to send whole at the end of the next call; see
     /// [`WholeEntityRequests`].
     whole_entity_requests: Option<WholeEntityRequests>,
 }
@@ -1499,7 +1509,10 @@ impl StateTable {
     /// used first, so inserting them in reverse restores the access order.
     ///
     /// Every restored entity counts as emitted: whoever consumed this table's
-    /// mutations may hold it, so its next mutation is not a creation.
+    /// mutations may hold it, so its next mutation is not a creation. The
+    /// snapshot does not record which rows were never emitted; a consumer
+    /// that lacks such a row refuses its first patch and asks for it, and the
+    /// VM's next call sends it whole (see [`WholeEntityRequests`]).
     pub fn from_snapshot(
         snapshot: &crate::snapshot::StateTableSnapshot,
         config: StateTableConfig,
@@ -1643,8 +1656,8 @@ impl VmContext {
 
     /// Answer whole-entity requests from `requests` in the mutations this VM
     /// returns from [`Self::process_event`] and [`Self::apply_resolver_result`]:
-    /// after a requested entity's last mutation comes one more, carrying the
-    /// whole entity.
+    /// each call ends with one more mutation per requested entity, carrying
+    /// the whole entity (see [`WholeEntityRequests`]).
     ///
     /// From then on the VM also marks each entity's first mutation since its
     /// row was created as its creation, carrying the whole row (see
@@ -1695,13 +1708,14 @@ impl VmContext {
         mutation
     }
 
-    /// Follow the last mutation of each requested entity with one carrying
-    /// the whole entity (see [`WholeEntityRequests`]).
+    /// Follow this call's mutations with one carrying the whole entity for
+    /// each requested entity the VM holds, and drop requests for any it does
+    /// not (see [`WholeEntityRequests`]).
     ///
     /// The patches themselves are left alone: consumers that record each
     /// mutation as an event (append views) still see what changed. The whole
-    /// entity goes right after the entity's last mutation, because the table
-    /// holds the entity as the whole event left it.
+    /// entities go last, as the call left the tables, so any change the call
+    /// made to one is in it as well as in the patch before it.
     fn fulfill_whole_entity_requests(
         &self,
         bytecode: &MultiEntityBytecode,
@@ -1710,39 +1724,25 @@ impl VmContext {
         let Some(requests) = &self.whole_entity_requests else {
             return;
         };
-        if requests.is_empty() || mutations.is_empty() {
-            return;
-        }
-        let mut wholes = Vec::new();
-        for (index, mutation) in mutations.iter().enumerate().rev() {
-            if !requests.take(&mutation.export, &mutation.key) {
-                continue;
-            }
-            let whole = bytecode.entities.get(&mutation.export).and_then(|entity| {
+        for (export, key) in requests.take_all() {
+            let whole = bytecode.entities.get(&export).and_then(|entity| {
                 let table = self.states.get(&entity.state_id)?;
-                let row = table.data.get(&mutation.key)?.value().clone();
+                let row = table.data.get(&key)?.value().clone();
                 let whole = Self::emitted_entity(row, &entity.non_emitted_fields);
                 whole.is_object().then_some(whole)
             });
-            match whole {
-                Some(whole) => {
-                    let mut whole = Mutation {
-                        export: mutation.export.clone(),
-                        key: mutation.key.clone(),
-                        patch: whole,
-                        append: Vec::new(),
-                    };
-                    whole.mark_whole_entity();
-                    wholes.push((index + 1, whole));
-                }
-                // Nothing to send; ask again for the next one.
-                None => requests.request(&mutation.export, &mutation.key),
-            }
-        }
-        // Collected back to front, so each insert leaves earlier positions
-        // where they were.
-        for (position, whole) in wholes {
-            mutations.insert(position, whole);
+            // An entity the VM does not hold has nothing to send.
+            let Some(whole) = whole else {
+                continue;
+            };
+            let mut whole = Mutation {
+                export,
+                key,
+                patch: whole,
+                append: Vec::new(),
+            };
+            whole.mark_whole_entity();
+            mutations.push(whole);
         }
     }
 

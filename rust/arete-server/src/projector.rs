@@ -30,7 +30,8 @@ const WHOLE_ENTITY_REQUEST_CAPACITY: usize = 4_096;
 /// ([`WholeEntity::Created`]), so the cache stores a creation and refuses any
 /// other patch for a key it lacks, whether it evicted the key or never held
 /// it. The projector then asks the VM, which holds the whole entity, to send
-/// all of it with the key's next mutation (see [`WholeEntityRequests`]).
+/// all of it at the end of its next batch of mutations, whether or not the
+/// key changes in it (see [`WholeEntityRequests`]).
 ///
 /// The generated runtime hands its VM over through
 /// [`crate::snapshot::register_runtime`], inside [`Self::scope`], before it

@@ -194,8 +194,8 @@ impl Default for EntityCacheConfig {
 /// patch from it for a key a view does not hold ([`PatchOrigin::Change`]) is
 /// refused with [`CacheWrite::Refused`] — whether the view evicted the key or
 /// never held it, as after a restore. The projector then asks the VM for the
-/// whole entity, which arrives with the key's next mutation and is stored
-/// with [`EntityCache::store_whole`]. That holds however many entities the VM
+/// whole entity, which follows in the VM's next batch and is stored with
+/// [`EntityCache::store_whole`]. That holds however many entities the VM
 /// keeps and however long ago the view evicted the key.
 ///
 /// A source that marks nothing ([`PatchOrigin::Unknown`]) leaves a new key and

@@ -2563,15 +2563,56 @@ mod tests {
         );
     }
 
+    /// A request does not wait for its entity to change: the VM's next call
+    /// ends with the whole entity, after whatever that call emitted.
     #[test]
-    fn a_request_waits_for_its_own_entity() {
+    fn a_request_is_answered_by_the_next_call_whatever_it_changes() {
+        let bytecode = pool_bytecode();
+        let (mut vm, requests) = linked_vm(Default::default());
+        process(&mut vm, &bytecode, pool_event_for("pool_1", 1, 10));
+        process(&mut vm, &bytecode, pool_event_for("pool_2", 1, 10));
+
+        requests.request("Pool", &json!("pool_1"));
+        let mut next = process(&mut vm, &bytecode, pool_event_for("pool_2", 2, 20));
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[0].key, json!("pool_2"));
+        assert!(!next[0].is_whole_entity());
+        assert_eq!(next[1].key, json!("pool_1"));
+        assert_eq!(next[1].take_whole_entity_mark(), Some(WholeEntity::Resent));
+        assert_eq!(
+            next[1].patch,
+            json!({"id": {"address": "pool_1"}, "state": {"price": 1, "fills": [10]}})
+        );
+        assert!(requests.is_empty());
+
+        // Even a call that changes nothing answers.
+        requests.request("Pool", &json!("pool_2"));
+        let answered = vm
+            .apply_resolver_result(&bytecode, "no-such-request", json!({}))
+            .unwrap();
+        assert_eq!(answered.len(), 1);
+        assert_eq!(answered[0].key, json!("pool_2"));
+        assert_eq!(answered[0].whole_entity_mark(), Some(WholeEntity::Resent));
+
+        let quiet = process(&mut vm, &bytecode, pool_event_for("pool_2", 3, 30));
+        assert_eq!(quiet.len(), 1, "a request is answered once");
+    }
+
+    /// The VM has nothing to send for an entity it does not hold. It dropped
+    /// the entity too, so the key's next mutation creates it again.
+    #[test]
+    fn a_request_for_an_entity_the_vm_does_not_hold_is_dropped() {
         let bytecode = pool_bytecode();
         let (mut vm, requests) = linked_vm(Default::default());
         requests.request("Pool", &json!("other_pool"));
         let mutations = process(&mut vm, &bytecode, pool_event(1, 10));
         assert_eq!(mutations.len(), 1);
-        assert_ne!(mutations[0].whole_entity_mark(), Some(WholeEntity::Resent));
-        assert!(requests.is_requested("Pool", &json!("other_pool")));
+        assert_eq!(mutations[0].whole_entity_mark(), Some(WholeEntity::Created));
+        assert!(requests.is_empty(), "dropped, not kept for later");
+
+        let created = process(&mut vm, &bytecode, pool_event_for("other_pool", 1, 10));
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].whole_entity_mark(), Some(WholeEntity::Created));
     }
 
     #[test]
@@ -2688,6 +2729,54 @@ mod tests {
         );
         let changed = process(&mut vm, &bytecode, pool_event_for("c", 2, 2));
         assert!(!changed[0].is_whole_entity(), "c was never dropped");
+    }
+
+    /// A row a non-emitting handler started and a snapshot then took before
+    /// its first mutation comes back as emitted: its first update after the
+    /// restore is a plain patch. A consumer that never held the key asks for
+    /// it, and the VM's next call sends it whole, with what that handler set.
+    #[test]
+    fn a_restored_row_never_emitted_is_sent_whole_on_request() {
+        let bytecode = pool_bytecode();
+        let (mut vm, _requests) = linked_vm(Default::default());
+        let config = vm
+            .process_event(
+                &bytecode,
+                json!({"__account_address": "pool_1", "fee": 30}),
+                "amm::PoolConfigState",
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(config.is_empty());
+        let snapshot = vm.dump();
+
+        let (mut restored, requests) = linked_vm(Default::default());
+        restored.hydrate(snapshot);
+        let first = process(&mut restored, &bytecode, pool_event(1, 10));
+        assert!(!first[0].is_whole_entity(), "counted as emitted already");
+        assert_eq!(
+            first[0].patch,
+            json!({"id": {"address": "pool_1"}, "state": {"price": 1, "fills": [10]}})
+        );
+
+        requests.request("Pool", &first[0].key);
+        let next = process(&mut restored, &bytecode, pool_event_for("pool_2", 1, 1));
+        let resent = next
+            .iter()
+            .find(|mutation| mutation.key == json!("pool_1"))
+            .expect("the requested entity follows the next call");
+        assert_eq!(resent.whole_entity_mark(), Some(WholeEntity::Resent));
+        let mut resent = resent.clone();
+        resent.take_whole_entity_mark();
+        assert_eq!(
+            resent.patch,
+            json!({
+                "id": {"address": "pool_1"},
+                "config": {"fee": 30},
+                "state": {"price": 1, "fills": [10]},
+            })
+        );
     }
 
     /// A resolver result for an entity the table does not hold starts the

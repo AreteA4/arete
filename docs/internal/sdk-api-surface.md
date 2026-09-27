@@ -484,11 +484,17 @@ of storing the fragment — the cause of partial, id-less entities at the top of
 (now last in both directions). Refusing alone would freeze out an active key for good,
 so the projector asks the VM for the whole entity (`WholeEntityRequests`, linked when
 the generated runtime calls `snapshot::register_runtime`, snapshots enabled or not).
-After the key's next mutation the VM appends one more mutation carrying the entity as
-its state table holds it, marked with `Mutation::mark_whole_entity`; the projector
-stores it in every view of the export and publishes it to list and state views as an
-`upsert` (append views and the journal never see it). A state subscriber that holds an
-evicted key keeps receiving its patches and is never sent `remove` for an eviction.
+The VM answers every pending request at the end of its next `process_event` or
+`apply_resolver_result` call, whatever that call changed (2026-09-27; before, a request
+waited for the key's own next mutation): after the call's mutations it appends one per
+requested entity, carrying the entity as its state table then holds it, marked with
+`Mutation::mark_whole_entity` (`WholeEntity::Resent`). It rides in the VM's ordered
+output, so it follows every patch emitted before it. A request for an entity the VM no
+longer holds is dropped: the VM's next mutation for the key starts a new row, marked
+created. The projector stores a resend in every view of the export and publishes it to
+list and state views as an `upsert` (append views and the journal never see it). A
+state subscriber that holds an evicted key keeps receiving its patches and is never
+sent `remove` for an eviction.
 
 Telling an evicted key from a new one does not depend on remembering evictions
 (2026-09-27): the linked VM also marks each entity's first mutation since its
@@ -499,7 +505,10 @@ recency entry, so it is dropped with the row; rows restored from a snapshot coun
 emitted. With a VM linked the cache stores a key it lacks only from a creation, merges a
 creation into a key it holds (as clients do), and refuses any other patch for a key it
 lacks — evicted however long ago, or never held, as after a restore or legacy migration
-— and requests the whole entity. So the guarantee holds whatever
+— and requests the whole entity, which follows in the VM's next batch. The flag is not
+persisted in snapshots: a row a non-emitting handler started just before a snapshot
+restores as emitted, so its first update is refused and the row appears whole with the
+VM's next batch. So the guarantee holds whatever
 `max_entities_per_view` is against the VM's table bound. A creation is still an
 ordinary `patch` frame and journal record; only a resend is a state-only `upsert`. A VM
 without requests marks nothing, so its output is unchanged for other consumers.

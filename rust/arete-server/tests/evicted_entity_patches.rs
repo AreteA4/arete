@@ -4,8 +4,8 @@
 //! key that patch merges into the full entity; once the bounded cache has
 //! evicted it, the patch alone would be stored — and served, and fed to
 //! derived views — as though it were the whole entity. The cache refuses it,
-//! and the projector asks the VM for the whole entity, which comes back with
-//! the key's next mutation.
+//! and the projector asks the VM for the whole entity, which follows in the
+//! VM's next batch of mutations, whatever that batch changes.
 //!
 //! A linked VM marks each entity's creation, so the cache needs no memory of
 //! what it evicted to tell the two apart: a key it lacks is stored only from
@@ -17,12 +17,15 @@ use arete_interpreter::ast::{
     TypedStreamSpec,
 };
 use arete_interpreter::compiler::MultiEntityBytecode;
+use arete_interpreter::snapshot::VmSnapshot;
 use arete_interpreter::vm::VmContext;
 use arete_interpreter::Mutation;
+use arete_server::journal::{EventJournal, JournalConfig};
 use arete_server::materialized_view::{SortConfig, SortOrder, ViewPipeline};
+use arete_server::snapshot::{SnapshotConfig, SnapshotService, SnapshotTrigger};
 use arete_server::{
     BusManager, Delivery, EntityCache, EntityCacheConfig, EntityResync, Filters, Mode,
-    MutationBatch, Projection, Projector, SlotContext, ViewIndex, ViewSpec,
+    MutationBatch, Projection, Projector, SlotContext, SlotTracker, Spec, ViewIndex, ViewSpec,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -358,8 +361,32 @@ fn pool_mapping(
     }
 }
 
+/// A handler keyed by the account address.
+fn pool_handler(
+    type_name: &str,
+    mappings: Vec<SerializableFieldMapping>,
+    emit: bool,
+) -> SerializableHandlerSpec {
+    SerializableHandlerSpec {
+        source: SourceSpec::Source {
+            program_id: None,
+            discriminator: None,
+            type_name: type_name.to_string(),
+            serialization: None,
+            is_account: true,
+        },
+        key_resolution: KeyResolutionStrategy::Embedded {
+            primary_field: FieldPath::new(&["__account_address"]),
+        },
+        mappings,
+        conditions: vec![],
+        emit,
+    }
+}
+
 /// `Pool`, keyed by its account address: a name set once, a price, and a
-/// fill history appended to on every update.
+/// fill history appended to on every update; plus a fee from its config
+/// account, whose handler emits nothing.
 fn pool_bytecode() -> MultiEntityBytecode {
     let spec = TypedStreamSpec::<Value>::from_serializable(SerializableStreamSpec {
         ast_version: arete_interpreter::ast::CURRENT_AST_VERSION.to_string(),
@@ -370,30 +397,31 @@ fn pool_bytecode() -> MultiEntityBytecode {
             primary_keys: vec!["id.address".to_string()],
             lookup_indexes: vec![],
         },
-        handlers: vec![SerializableHandlerSpec {
-            source: SourceSpec::Source {
-                program_id: None,
-                discriminator: None,
-                type_name: "amm::PoolState".to_string(),
-                serialization: None,
-                is_account: true,
-            },
-            key_resolution: KeyResolutionStrategy::Embedded {
-                primary_field: FieldPath::new(&["__account_address"]),
-            },
-            mappings: vec![
-                pool_mapping(
-                    "id.address",
-                    "__account_address",
-                    PopulationStrategy::SetOnce,
-                ),
-                pool_mapping("id.name", "name", PopulationStrategy::SetOnce),
-                pool_mapping("state.price", "price", PopulationStrategy::LastWrite),
-                pool_mapping("state.fills", "fill", PopulationStrategy::Append),
-            ],
-            conditions: vec![],
-            emit: true,
-        }],
+        handlers: vec![
+            pool_handler(
+                "amm::PoolState",
+                vec![
+                    pool_mapping(
+                        "id.address",
+                        "__account_address",
+                        PopulationStrategy::SetOnce,
+                    ),
+                    pool_mapping("id.name", "name", PopulationStrategy::SetOnce),
+                    pool_mapping("state.price", "price", PopulationStrategy::LastWrite),
+                    pool_mapping("state.fills", "fill", PopulationStrategy::Append),
+                ],
+                true,
+            ),
+            pool_handler(
+                "amm::PoolConfigState",
+                vec![pool_mapping(
+                    "config.fee",
+                    "fee",
+                    PopulationStrategy::LastWrite,
+                )],
+                false,
+            ),
+        ],
         sections: vec![],
         field_mappings: BTreeMap::new(),
         resolver_hooks: vec![],
@@ -421,8 +449,12 @@ impl PoolVm {
     /// A VM restored from `other`'s state, as the generated runtime restores
     /// one from a snapshot.
     fn restored_from(other: &PoolVm, resync: &EntityResync) -> Self {
+        Self::hydrated(other.vm.lock().unwrap().dump(), resync)
+    }
+
+    fn hydrated(snapshot: VmSnapshot, resync: &EntityResync) -> Self {
         let mut vm = VmContext::new();
-        vm.hydrate(other.vm.lock().unwrap().dump());
+        vm.hydrate(snapshot);
         Self::link(vm, resync)
     }
 
@@ -446,6 +478,16 @@ impl PoolVm {
             .lock()
             .unwrap()
             .process_event(&self.bytecode, event, "amm::PoolState", None, None)
+            .unwrap()
+    }
+
+    /// An update to the pool's config account, whose handler emits nothing.
+    fn configure(&self, address: &str, fee: u64) -> Vec<Mutation> {
+        let event = json!({"__account_address": address, "fee": fee});
+        self.vm
+            .lock()
+            .unwrap()
+            .process_event(&self.bytecode, event, "amm::PoolConfigState", None, None)
             .unwrap()
     }
 
@@ -599,4 +641,101 @@ async fn an_entity_restored_into_the_vm_alone_comes_back_whole() {
             "state": {"price": 1, "fills": [1]},
         }))
     );
+}
+
+/// A row a handler that emits nothing starts, snapshotted before its first
+/// mutation, restores as a row the cache never held — and one the VM counts
+/// as emitted, so its first update after the restore is a plain patch. That
+/// patch is refused, and the pool appears with the VM's very next batch,
+/// though that batch changes another pool: whole, with the fee only the
+/// silent handler set, never as the fragment.
+#[tokio::test]
+async fn a_row_started_silently_before_a_snapshot_appears_promptly_after_restore() {
+    let dir = std::env::temp_dir().join(format!(
+        "arete-evicted-entity-restore-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let config = SnapshotConfig {
+        enabled: true,
+        url: Some(dir.display().to_string()),
+        interval: Duration::from_secs(3_600),
+        ..SnapshotConfig::default()
+    };
+    let spec = Spec::new(pool_bytecode(), "Program111");
+    let mut index = ViewIndex::new();
+    index.add_spec(view("Pool/list", None, None));
+    let journal = || Arc::new(EventJournal::new(JournalConfig::default()));
+
+    // First lifetime: the config account starts pool "a" and emits nothing;
+    // pool "b" is created and cached. The snapshot comes before "a" emits.
+    let resync = EntityResync::new();
+    let pools = PoolVm::linked_to(&resync);
+    let mut before = Harness::start_with(index.clone(), resync);
+    let service = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        before.cache.clone(),
+        &index,
+        journal(),
+        before.tx.clone(),
+    )
+    .await
+    .unwrap();
+    service
+        .runtime()
+        .register_runtime(pools.vm.clone(), SlotTracker::new());
+    assert!(pools.configure("a", 30).is_empty());
+    before.send_batch(pools.update("b", 1)).await;
+    before.flush().await;
+    assert!(service
+        .snapshot_now(SnapshotTrigger::Shutdown)
+        .await
+        .unwrap());
+
+    // Restart: the cache comes back with "b" only, the VM with both.
+    let resync = EntityResync::new();
+    let mut after = Harness::start_with(index.clone(), resync.clone());
+    let service = SnapshotService::initialize(
+        config,
+        &spec,
+        after.cache.clone(),
+        &index,
+        journal(),
+        after.tx.clone(),
+    )
+    .await
+    .unwrap();
+    let restored = service.runtime().take_restored().expect("a snapshot");
+    let pools = PoolVm::hydrated(restored.vm, &resync);
+    assert!(after.cached_in("Pool/list", "b").await.is_some());
+    assert!(after.cached_in("Pool/list", "a").await.is_none());
+
+    let first = pools.update("a", 1);
+    assert_eq!(first.len(), 1);
+    assert!(
+        !first[0].is_whole_entity(),
+        "restored rows count as emitted"
+    );
+    after.send_batch(first).await;
+    after.flush().await;
+    assert_eq!(
+        after.cached_in("Pool/list", "a").await,
+        None,
+        "the patch lacks the fee: not the entity"
+    );
+    assert!(resync.requests().is_requested("Pool", &json!("a")));
+
+    after.send_batch(pools.update("b", 2)).await;
+    after.flush().await;
+    assert_eq!(
+        after.cached_in("Pool/list", "a").await,
+        Some(json!({
+            "id": {"address": "a", "name": "pool a"},
+            "config": {"fee": 30},
+            "state": {"price": 1, "fills": [1]},
+        }))
+    );
+    assert!(resync.requests().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
 }
