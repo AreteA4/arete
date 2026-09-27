@@ -175,7 +175,7 @@ export interface AlphaHeader {
   owner: string;
 }
 
-export interface BetaHeader2 {
+export interface BetaHeaderAccount {
   version: number;
   owner: string;
   flags: number;
@@ -189,7 +189,7 @@ export const AlphaHeaderSchema = z.object({
   owner: value.owner,
 }));
 
-export const BetaHeader2Schema = z.object({
+export const BetaHeaderAccountSchema = z.object({
   version: z.number(),
   owner: z.string(),
   flags: z.number(),
@@ -198,6 +198,11 @@ export const BetaHeader2Schema = z.object({
   owner: value.owner,
   flags: value.flags,
 }));
+
+/** @deprecated Use BetaHeaderAccount. */
+export type BetaHeader2 = BetaHeaderAccount;
+/** @deprecated Use BetaHeaderAccountSchema. */
+export const BetaHeader2Schema = BetaHeaderAccountSchema;
 
 // ============================================================================
 // Instruction Handlers
@@ -327,6 +332,7 @@ export const HEADER_STREAM_STACK_CORE = {
     AlphaVault: AlphaVaultSchema,
     AlphaVaultState: AlphaVaultStateSchema,
     BetaHeader2: BetaHeader2Schema,
+    BetaHeaderAccount: BetaHeaderAccountSchema,
     BetaHeader: BetaHeaderSchema,
     BetaVaultCompleted: BetaVaultCompletedSchema,
     BetaVaultId: BetaVaultIdSchema,
@@ -342,7 +348,7 @@ export const HEADER_STREAM_STACK_CORE = {
     alpha: {
       name: 'alpha',
       programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:64b24970e9209e0bdb1a33958061f08ce028f580b0a119efe97c2e93ea31487f',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:306ab2e54b3560a2ad4a1f6d2ffb38fad9389a5eaae13646778c9557b0fcd98b',
       programSpecHash: 'arete:h1:program-spec:sha256:2cfe95cf0c7d0085085dab5d3bbf8faed0a698519e740ceb126751f45fa9a2b4',
       idlContentHash: 'arete:h1:idl-content:sha256:6e5dd6926c3f40fd2a5a546909c0c773cb9cd3349ac7c28227efbdc920f9e081',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:9ed97cc808f1573ab3e5511f10deeaffea26dd2157815a393b0e8b7c68e4a6ea',
@@ -373,12 +379,12 @@ export const HEADER_STREAM_STACK_CORE = {
     beta: {
       name: 'beta',
       programId: 'Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:d3ab2c3fc08ae86de35bd57e97a47a5db7801cf6290daf82cf43cca0f180aa7d',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:7526b7719f9d93ed283f0915c8491a3eb5d371b02869ae8e52681ac84df005c2',
       programSpecHash: 'arete:h1:program-spec:sha256:7d8147800015e11cbcff4976c7a05ab11c4a21a0b0c48f530930e20fcf6c3834',
       idlContentHash: 'arete:h1:idl-content:sha256:e4efcbe4e507599083453738cedd4458914f5f50ea03c0099ce777c5b1377b89',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:e5fa59e25754d764dcabc4fe1eb49c610379f1b63e93b368520e0031637bec6e',
       accounts: {
-        Header: programAccountRead<BetaHeader2>({ account: 'Header', schema: BetaHeader2Schema }),
+        Header: programAccountRead<BetaHeaderAccount>({ account: 'Header', schema: BetaHeaderAccountSchema }),
       },
       rawInstructions: {
         configure: betaConfigureInstruction,

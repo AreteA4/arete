@@ -2182,8 +2182,9 @@ fn generate_idl_account_artifacts(
     idls: &[IdlSnapshot],
     reserved_type_names: &HashSet<String>,
 ) -> IdlAccountArtifacts {
-    let mut used_type_names = reserved_type_names.clone();
+    let mut used_type_names = IdlTypeNames::new(reserved_type_names);
     let mut emitted_type_names = HashSet::new();
+    let mut declared_type_names = HashSet::new();
     let mut seen_schema_names = HashSet::new();
     let mut interface_blocks = Vec::new();
     let mut schema_blocks = Vec::new();
@@ -2206,8 +2207,12 @@ fn generate_idl_account_artifacts(
         let mut local_name_map = BTreeMap::new();
 
         for account in &idl.accounts {
-            let unique_name =
-                unique_idl_type_name(&account.name, &program_prefix, &mut used_type_names);
+            let unique_name = unique_idl_type_name(
+                &account.name,
+                &program_prefix,
+                IDL_ACCOUNT_ROLE,
+                &mut used_type_names,
+            );
             emitted_type_names.insert(unique_name.clone());
             local_name_map.insert(account.name.clone(), unique_name.clone());
             account_type_names.insert((program_key.clone(), account.name.clone()), unique_name);
@@ -2229,8 +2234,12 @@ fn generate_idl_account_artifacts(
             if local_name_map.contains_key(type_name) {
                 continue;
             }
-            let unique_name =
-                unique_idl_type_name(type_name, &program_prefix, &mut used_type_names);
+            let unique_name = unique_idl_type_name(
+                type_name,
+                &program_prefix,
+                IDL_TYPE_ROLE,
+                &mut used_type_names,
+            );
             emitted_type_names.insert(unique_name.clone());
             local_name_map.insert(type_name.clone(), unique_name);
         }
@@ -2243,6 +2252,7 @@ fn generate_idl_account_artifacts(
                 if let Some((interface_def, schema_name, schema_def)) =
                     generate_type_defs_from_idl_type(type_def, &local_name_map)
                 {
+                    declared_type_names.extend(local_name_map.get(type_name).cloned());
                     interface_blocks.push(interface_def);
                     if seen_schema_names.insert(schema_name.clone()) {
                         schema_names.push(schema_name.clone());
@@ -2257,6 +2267,7 @@ fn generate_idl_account_artifacts(
                 continue;
             };
             let account_fields = resolve_idl_account_fields(account, &type_defs);
+            declared_type_names.insert(type_name.clone());
             interface_blocks.push(generate_interface_from_idl_fields(
                 type_name,
                 account_fields,
@@ -2273,6 +2284,31 @@ fn generate_idl_account_artifacts(
             }
         }
     }
+
+    // Deprecated aliases for the numeric names earlier releases emitted,
+    // after the schemas they point at. The schema alias keeps the old key in
+    // the stack's `schemas` map too.
+    let mut alias_blocks = Vec::new();
+    for (legacy, canonical) in &used_type_names.aliases {
+        if !declared_type_names.contains(canonical) {
+            continue;
+        }
+        let mut block =
+            format!("/** @deprecated Use {canonical}. */\nexport type {legacy} = {canonical};");
+        let canonical_schema = format!("{canonical}Schema");
+        let legacy_schema = format!("{legacy}Schema");
+        if seen_schema_names.contains(&canonical_schema)
+            && seen_schema_names.insert(legacy_schema.clone())
+        {
+            block.push_str(&format!(
+                "\n/** @deprecated Use {canonical_schema}. */\nexport const {legacy_schema} = {canonical_schema};"
+            ));
+            schema_names.push(legacy_schema);
+        }
+        emitted_type_names.insert(legacy.clone());
+        alias_blocks.push(block);
+    }
+    schema_blocks.extend(alias_blocks);
 
     let code = if interface_blocks.is_empty() && schema_blocks.is_empty() {
         String::new()
@@ -2314,7 +2350,66 @@ fn resolve_idl_account_fields<'a>(
     }
 }
 
+/// Role suffixes for IDL types whose plain and program-prefixed names are
+/// both taken (for example by stack entity types).
+const IDL_ACCOUNT_ROLE: &str = "Account";
+const IDL_TYPE_ROLE: &str = "Type";
+
+/// Names claimed by IDL account and defined types, plus the names releases
+/// up to 0.23 gave the same types (a numeric suffix where the role suffix is
+/// now used), kept as deprecated aliases.
+struct IdlTypeNames {
+    used: HashSet<String>,
+    legacy: HashSet<String>,
+    /// `(legacy, canonical)` pairs whose names differ.
+    aliases: Vec<(String, String)>,
+}
+
+impl IdlTypeNames {
+    fn new(reserved: &HashSet<String>) -> Self {
+        Self {
+            used: reserved.clone(),
+            legacy: reserved.clone(),
+            aliases: Vec::new(),
+        }
+    }
+}
+
+/// Name an IDL type: its own name, else the program-prefixed name
+/// (`OreBoard`), else the prefixed name with its role (`OreBoardAccount`,
+/// `OreHeaderType`), numbered only if that is taken too. Where earlier
+/// releases named the type differently (`OreBoard2`), that name is recorded
+/// as a deprecated alias so code written against it keeps compiling.
 fn unique_idl_type_name(
+    raw_name: &str,
+    program_prefix: &str,
+    role: &str,
+    names: &mut IdlTypeNames,
+) -> String {
+    let legacy = numbered_idl_type_name(raw_name, program_prefix, &mut names.legacy);
+    let base_name = to_pascal_case(raw_name);
+    let prefixed = format!("{}{}", program_prefix, base_name);
+    let role_named = format!("{prefixed}{role}");
+    let canonical = [base_name, prefixed]
+        .into_iter()
+        .find(|candidate| names.used.insert(candidate.clone()))
+        .unwrap_or_else(|| {
+            (1..)
+                .map(|index| match index {
+                    1 => role_named.clone(),
+                    index => format!("{role_named}{index}"),
+                })
+                .find(|candidate| names.used.insert(candidate.clone()))
+                .expect("an unused numbered name exists")
+        });
+    if legacy != canonical && names.used.insert(legacy.clone()) {
+        names.aliases.push((legacy, canonical.clone()));
+    }
+    canonical
+}
+
+/// The naming earlier releases used: plain, program-prefixed, then numbered.
+fn numbered_idl_type_name(
     raw_name: &str,
     program_prefix: &str,
     used_type_names: &mut HashSet<String>,
@@ -7669,6 +7764,143 @@ mod tests {
             "missing totalDeposit transform:\n{}",
             artifacts.code
         );
+    }
+
+    #[test]
+    fn reserved_idl_type_names_take_a_role_suffix_and_keep_numeric_aliases() {
+        let field = |name: &str, type_name: &str| IdlFieldSnapshot {
+            name: name.to_string(),
+            type_: IdlTypeSnapshot::Simple(type_name.to_string()),
+            amount_hint: None,
+        };
+        let idl_snapshot = IdlSnapshot {
+            name: "ore".to_string(),
+            program_id: None,
+            version: "0.1.0".to_string(),
+            accounts: vec![
+                IdlAccountSnapshot {
+                    name: "Board".to_string(),
+                    discriminator: vec![1, 0, 0, 0, 0, 0, 0, 0],
+                    docs: vec![],
+                    serialization: None,
+                    fields: vec![field("round_id", "u64")],
+                    type_def: None,
+                },
+                IdlAccountSnapshot {
+                    name: "Config".to_string(),
+                    discriminator: vec![2, 0, 0, 0, 0, 0, 0, 0],
+                    docs: vec![],
+                    serialization: None,
+                    fields: vec![IdlFieldSnapshot {
+                        name: "header".to_string(),
+                        type_: IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                            defined: IdlDefinedInnerSnapshot::Simple("Header".to_string()),
+                        }),
+                        amount_hint: None,
+                    }],
+                    type_def: None,
+                },
+            ],
+            instructions: vec![],
+            types: vec![IdlTypeDefSnapshot {
+                name: "Header".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Struct {
+                    kind: "struct".to_string(),
+                    fields: vec![field("version", "u8")],
+                },
+            }],
+            events: vec![],
+            errors: vec![],
+            discriminant_size: 8,
+        };
+        // Stack entity types already use the plain and prefixed names.
+        let reserved = HashSet::from([
+            "Board".to_string(),
+            "OreBoard".to_string(),
+            "Header".to_string(),
+            "OreHeader".to_string(),
+        ]);
+
+        let artifacts = generate_idl_account_artifacts(&[idl_snapshot], &reserved);
+
+        assert_eq!(
+            artifacts
+                .account_type_names
+                .get(&("ore".to_string(), "Board".to_string()))
+                .map(String::as_str),
+            Some("OreBoardAccount")
+        );
+        assert_eq!(
+            artifacts
+                .account_type_names
+                .get(&("ore".to_string(), "Config".to_string()))
+                .map(String::as_str),
+            Some("Config")
+        );
+        let code = &artifacts.code;
+        assert!(
+            code.contains("export interface OreBoardAccount {"),
+            "{code}"
+        );
+        assert!(
+            code.contains("export const OreBoardAccountSchema = z.object({"),
+            "{code}"
+        );
+        assert!(code.contains("export interface OreHeaderType {"), "{code}");
+        assert!(code.contains("header: OreHeaderType;"), "{code}");
+        assert!(
+            code.contains(
+                "/** @deprecated Use OreBoardAccount. */\nexport type OreBoard2 = OreBoardAccount;\n/** @deprecated Use OreBoardAccountSchema. */\nexport const OreBoard2Schema = OreBoardAccountSchema;"
+            ),
+            "{code}"
+        );
+        assert!(
+            code.contains("export type OreHeader2 = OreHeaderType;")
+                && code.contains("export const OreHeader2Schema = OreHeaderTypeSchema;"),
+            "{code}"
+        );
+        // Aliases follow the schemas they reference.
+        assert!(
+            code.find("export const OreBoard2Schema").unwrap()
+                > code.find("export const OreBoardAccountSchema").unwrap()
+        );
+        for name in [
+            "OreBoardAccount",
+            "OreBoard2",
+            "OreHeaderType",
+            "OreHeader2",
+        ] {
+            assert!(artifacts.type_names.contains(name), "{name}");
+        }
+        for name in [
+            "OreBoardAccountSchema",
+            "OreBoard2Schema",
+            "OreHeader2Schema",
+        ] {
+            assert!(
+                artifacts.schema_names.iter().any(|schema| schema == name),
+                "{name}"
+            );
+        }
+
+        // Without reserved names nothing is renamed or aliased.
+        let unreserved = generate_idl_account_artifacts(
+            &[IdlSnapshot {
+                name: "ore".to_string(),
+                program_id: None,
+                version: "0.1.0".to_string(),
+                accounts: vec![],
+                instructions: vec![],
+                types: vec![],
+                events: vec![],
+                errors: vec![],
+                discriminant_size: 8,
+            }],
+            &HashSet::new(),
+        );
+        assert!(!unreserved.code.contains("@deprecated"));
     }
 
     #[test]
