@@ -1207,6 +1207,7 @@ mod tests {
             status_text: "404 Not Found".into(),
             message: "not found".into(),
             code: None,
+            upgrade_command: None,
         }
         .into();
         assert_eq!(

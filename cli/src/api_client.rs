@@ -142,6 +142,9 @@ pub struct ApiHttpError {
     pub status_text: String,
     pub message: String,
     pub code: Option<String>,
+    /// The command a refusal suggests running instead, when it names one
+    /// (for example the version that replaces a retired stack version).
+    pub upgrade_command: Option<String>,
 }
 
 impl std::fmt::Display for ApiHttpError {
@@ -168,6 +171,8 @@ struct ErrorResponse {
     error: String,
     #[serde(default)]
     code: Option<String>,
+    #[serde(default, rename = "upgradeCommand")]
+    upgrade_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1442,12 +1447,14 @@ impl ApiClient {
 
     /// Resolve a complete project dependency batch against one exact registry snapshot.
     ///
-    /// The batch opts into `include=delivery,program-sdks`, so every resolved
-    /// stack names its delivery mode, a hosted stack carries its live and
-    /// gateway bindings, and each stack program names the program package
-    /// release (and its SDK extensions) the stack references, all in the same
-    /// response: one request, however many stacks. Registries that predate an
-    /// opt-in ignore it, so every field it adds is optional.
+    /// The batch opts into `include=delivery,delivery-lifecycle,program-sdks`,
+    /// so every resolved stack names its delivery mode, a hosted stack carries
+    /// its live and gateway bindings, a version being retired says until when
+    /// it is served (and a retired version resolves as `retired` instead of
+    /// failing), and each stack program names the program package release (and
+    /// its SDK extensions) the stack references, all in the same response: one
+    /// request, however many stacks. Registries that predate an opt-in ignore
+    /// it, so every field it adds is optional.
     pub fn resolve_registry_dependencies(
         &self,
         request: &crate::project::resolver::RegistryResolveRequest,
@@ -1456,7 +1463,7 @@ impl ApiClient {
             .with_optional_auth(
                 self.client
                     .post(format!(
-                        "{}/api/registry/v1/resolve?include=delivery,program-sdks",
+                        "{}/api/registry/v1/resolve?include=delivery,delivery-lifecycle,program-sdks",
                         self.base_url
                     ))
                     .json(request),
@@ -1834,8 +1841,8 @@ impl ApiClient {
         } else {
             let status = response.status();
             let body = response.text().unwrap_or_default();
-            let (message, code) = serde_json::from_str::<ErrorResponse>(&body)
-                .map(|error| (error.error, error.code))
+            let (message, code, upgrade_command) = serde_json::from_str::<ErrorResponse>(&body)
+                .map(|error| (error.error, error.code, error.upgrade_command))
                 .unwrap_or_else(|_| {
                     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
                     let compact: String = if compact.is_empty() {
@@ -1843,13 +1850,14 @@ impl ApiClient {
                     } else {
                         compact.chars().take(1024).collect()
                     };
-                    (compact, None)
+                    (compact, None, None)
                 });
             Err(ApiHttpError {
                 status: status.as_u16(),
                 status_text: status.to_string(),
                 message,
                 code,
+                upgrade_command,
             }
             .into())
         }

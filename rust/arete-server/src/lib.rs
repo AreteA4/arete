@@ -58,7 +58,7 @@ pub use arete_auth::{
     SolanaGatewayScope, TargetKind, TokenVerifier, VerifyingKey, SCOPE_READ,
     SCOPE_TRANSACTION_INSPECT, SCOPE_TRANSACTION_SEND, SOLANA_GATEWAY_AUDIENCE,
 };
-pub use bus::{BusManager, BusMessage};
+pub use bus::{BusManager, BusMessage, StateUpdate};
 pub use cache::{CacheWrite, EntityCache, EntityCacheConfig, PatchOrigin};
 pub use config::{
     HealthConfig, HttpHealthConfig, HttpServerConfig, ReconnectionConfig, RuntimePlan,

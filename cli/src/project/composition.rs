@@ -288,13 +288,29 @@ pub(crate) fn compose_parts(
                     .filter(|view| view.live_alias == source_alias)
                     .map(|view| view.view_id.clone())
                     .collect::<Vec<_>>();
-                let binding = match delivery.as_deref() {
+                // A retired version still bound to the stack's own endpoints
+                // is bound as a direct install binds it: sessions name this
+                // version and are refused with the one served instead. Once it
+                // is no longer hosted at all it has no endpoints to bind.
+                let bound = match delivery.as_deref() {
                     Some(ResolvedStackDelivery::Hosted {
                         live_bindings,
                         chain_binding,
                         transaction_binding,
                         ..
-                    }) => {
+                    }) => Some((live_bindings, chain_binding, transaction_binding)),
+                    Some(ResolvedStackDelivery::Retired {
+                        live_bindings,
+                        chain_binding,
+                        transaction_binding,
+                        ..
+                    }) if !live_bindings.is_empty() => {
+                        Some((live_bindings, chain_binding, transaction_binding))
+                    }
+                    _ => None,
+                };
+                let binding = match bound {
+                    Some((live_bindings, chain_binding, transaction_binding)) => {
                         let binding = live_bindings
                             .iter()
                             .find(|binding| {
@@ -313,7 +329,7 @@ pub(crate) fn compose_parts(
                         ));
                         Some(binding.binding.clone())
                     }
-                    _ => None,
+                    None => None,
                 };
                 let views = select_views(
                     name,

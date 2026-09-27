@@ -106,6 +106,18 @@ snapshot. Recovery is authoritative even when the original query contains
 Because `snapshotLimit` applies only to the initial transfer, it does not
 truncate this recovery snapshot.
 
+A keyed state subscription holds only the latest frame for its key. If more
+than one patch is published before the subscription reads them, the latest
+patch alone would lose the fields of the ones before it. The server sends the
+key's full cached entity as a `patch` instead, merged like any other. That
+`patch` carries no `seq`, because the entity is newer than anything the
+subscription was sent and seqs are not ordered within a slot. The entity's
+`_seq` still holds its latest sequence. While the server's cache does not hold
+the key (see [Partial entities](#partial-entities)) there is no whole entity to
+send: the subscription forwards the latest patch, and sends the catch-up with
+the first frame that finds the entity cached again, usually the `upsert` that
+brings it back.
+
 Receiver registration happens before snapshot capture for state, list, append, and derived-source subscriptions. Updates published while a snapshot is being built or sent remain pending for live delivery after the snapshot. The implementation does not use timing sleeps for this handoff.
 
 ## Replayable append views

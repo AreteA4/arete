@@ -3470,6 +3470,7 @@ source = { workspace = "ore-local" }
             status_text: "409 Conflict".into(),
             message: "programSdks names a program SDK that does not fit ProgramSpec arete:h1:program-spec:sha256:1".into(),
             code: Some(PROGRAM_SDK_REFERENCE_INVALID.into()),
+            upgrade_command: None,
         });
         let error = deploy_artifact_stack_with_deployment_name(
             &api,
@@ -3499,6 +3500,7 @@ source = { workspace = "ore-local" }
             status_text: "400 Bad Request".into(),
             message: "Failed to deserialize the JSON body: unknown field `programSdks`".into(),
             code: None,
+            upgrade_command: None,
         });
         let result = deploy_artifact_stack_with_deployment_name(
             &api,
@@ -3529,6 +3531,7 @@ source = { workspace = "ore-local" }
             status_text: "400 Bad Request".into(),
             message: "unknown field `somethingElse`".into(),
             code: None,
+            upgrade_command: None,
         });
         assert!(deploy_artifact_stack_with_deployment_name(
             &api,
