@@ -1062,10 +1062,15 @@ release keeps generating their core program SDKs.
 
 `a4 install --locked` fails if a locked stack release would resolve a
 different program package release than `arete.lock` records; nothing is
-changed. Rust and Python stack SDKs cannot include per-program SDK extensions
-yet: installing such a stack for Rust or Python fails with a message rather
-than generating a smaller surface, and `a4 install program <package> --rust`
-(or `--python`) generates the program with its extension.
+changed. A lock written by an older `a4`, which records no program package
+releases, still installs with `--locked` if it records exactly the program SDK
+extensions generated for the project's targets; otherwise run `a4 install`
+once to record the program SDK pins.
+
+Rust and Python stack SDKs cannot include per-program SDK extensions yet:
+installing such a stack for Rust or Python fails with a message rather than
+generating a smaller surface, and `a4 install program <package> --rust` (or
+`--python`) generates the program with its extension.
 
 A stack with several live views applies a stack extension by name, because it
 has no single stack for a default export to extend. Export

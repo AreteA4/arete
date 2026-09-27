@@ -975,14 +975,12 @@ fn install_loaded_project(
 
     let resolved = resolve_dependencies(&manifest, previous_lock.as_ref(), options.update)?;
     let prospective_lock = build_lock(&manifest, &resolved)?;
-    // `--locked` never rewrites arete.lock: it installs what the lock pins,
-    // which a lock written before program SDK identities were resolved pins
-    // less of, but not differently.
+    // `--locked` never rewrites arete.lock: it installs exactly what the lock
+    // pins, which for a lock written before program SDK identities were
+    // resolved leaves only the program package releases implied.
     let prospective_lock = match previous_lock.as_ref() {
         Some(previous) if options.locked => {
-            if !locked_resolution_matches(previous, &prospective_lock, &resolved) {
-                bail!("--locked resolution differs from arete.lock; no output was changed");
-            }
+            check_locked_resolution(previous, &prospective_lock, &resolved)?;
             previous.clone()
         }
         _ => prospective_lock,
@@ -2477,84 +2475,144 @@ fn build_lock(
     Ok(lock)
 }
 
-/// Whether `next`, resolved now, installs what the existing lock `previous`
-/// pins. They must be equal, except that a lock written by a CLI that did
-/// not resolve program SDK identities pins no program package release for a
-/// stack's programs and, per program, only the legacy extension hash. Such a
-/// program matches when everything it does pin matches.
-fn locked_resolution_matches(
+/// Checks that `next`, resolved now, installs exactly what the existing lock
+/// `previous` pins. They must be equal, except for a stack program locked by
+/// a CLI that did not resolve program SDK identities: it pins no program
+/// package release, which the immutable stack package release the lock pins
+/// implies. Its SDK extension hashes must still be exactly the ones
+/// generation uses for the project's targets, or the lock does not pin what
+/// would be generated.
+fn check_locked_resolution(
     previous: &ProjectLock,
     next: &ProjectLock,
     resolved: &[ResolvedProjectDependency],
-) -> bool {
+) -> Result<()> {
+    const DIFFERS: &str = "--locked resolution differs from arete.lock; no output was changed";
     if previous == next {
-        return true;
+        return Ok(());
     }
     if previous.lock_version != next.lock_version
         || previous.manifest_hash != next.manifest_hash
         || previous.resolver_contract != next.resolver_contract
         || previous.dependencies.len() != next.dependencies.len()
     {
-        return false;
+        bail!(DIFFERS);
     }
-    previous
-        .dependencies
-        .iter()
-        .zip(&next.dependencies)
-        .all(|(before, after)| {
-            if before == after {
-                return true;
+    for (before, after) in previous.dependencies.iter().zip(&next.dependencies) {
+        if before == after {
+            continue;
+        }
+        let stack_programs = resolved.iter().find_map(|dependency| match dependency {
+            ResolvedProjectDependency::Registry {
+                kind: DependencyKind::Stack,
+                resolved,
+                ..
+            } if resolved.alias() == after.alias => match resolved.as_ref() {
+                ResolvedRegistryDependency::Stack { programs, .. } => Some(programs),
+                ResolvedRegistryDependency::Program { .. } => None,
+            },
+            _ => None,
+        });
+        let Some(stack_programs) = stack_programs else {
+            bail!(DIFFERS);
+        };
+        let unenriched = |dependency: &LockedDependency| LockedDependency {
+            programs: Vec::new(),
+            ..dependency.clone()
+        };
+        if unenriched(before) != unenriched(after) || before.programs.len() != after.programs.len()
+        {
+            bail!(DIFFERS);
+        }
+        for (was, now) in before.programs.iter().zip(&after.programs) {
+            let Some(program) = stack_programs.iter().find(|program| {
+                program.definition.program_id == now.program_id
+                    && program.definition.program_spec_hash == now.program_spec_hash
+            }) else {
+                bail!(DIFFERS);
+            };
+            let generated = after
+                .targets
+                .iter()
+                .filter_map(|target| {
+                    super::resolver::program_extension_for_target(program, *target).transpose()
+                })
+                .map(|extension| extension.map(|extension| extension_lock_hash(&extension)))
+                .collect::<Result<BTreeSet<_>>>()?;
+            // Older CLIs recorded the legacy single extension whatever its
+            // target; for a target the project does not generate it pins
+            // nothing.
+            let ungenerated_legacy = program
+                .definition
+                .extensions
+                .as_ref()
+                .filter(|extension| {
+                    !super::resolver::legacy_extension_target(extension)
+                        .is_some_and(|target| after.targets.contains(&target))
+                })
+                .map(extension_lock_hash);
+            match locked_program_match(was, now, &generated, ungenerated_legacy.as_deref()) {
+                LockedProgramMatch::Same => {}
+                LockedProgramMatch::Differs => bail!(DIFFERS),
+                LockedProgramMatch::Unpinned => bail!(
+                    "arete.lock was written before program SDK pins and does not record exactly the SDK extensions that stack '{}' generates for program {}. Run `a4 install` once to record the program SDK pins, then commit arete.lock; --locked changed nothing",
+                    after.alias,
+                    now.program_id
+                ),
             }
-            let stack_programs = resolved.iter().find_map(|dependency| match dependency {
-                ResolvedProjectDependency::Registry {
-                    kind: DependencyKind::Stack,
-                    resolved,
-                    ..
-                } if resolved.alias() == after.alias => match resolved.as_ref() {
-                    ResolvedRegistryDependency::Stack { programs, .. } => Some(programs),
-                    ResolvedRegistryDependency::Program { .. } => None,
-                },
-                _ => None,
-            });
-            let Some(stack_programs) = stack_programs else {
-                return false;
-            };
-            let unenriched = |dependency: &LockedDependency| LockedDependency {
-                programs: Vec::new(),
-                ..dependency.clone()
-            };
-            unenriched(before) == unenriched(after)
-                && before.programs.len() == after.programs.len()
-                && before
-                    .programs
-                    .iter()
-                    .zip(&after.programs)
-                    .all(|(was, now)| {
-                        let legacy = stack_programs
-                            .iter()
-                            .find(|program| {
-                                program.definition.program_spec_hash == now.program_spec_hash
-                            })
-                            .and_then(|program| program.definition.extensions.as_ref())
-                            .map(extension_lock_hash);
-                        locked_program_matches(was, now, legacy.as_deref())
-                    })
-        })
+        }
+    }
+    Ok(())
 }
 
-/// A locked program matches its resolution when they are equal, or when the
-/// lock predates program SDK identities: it pins no program package release,
-/// the same program and Program Release, and only extension hashes the
-/// resolution still has (or the legacy extension's).
-fn locked_program_matches(was: &LockedProgram, now: &LockedProgram, legacy: Option<&str>) -> bool {
-    was == now
-        || (was.package_release_hash.is_none()
-            && was.program_id == now.program_id
-            && was.program_spec_hash == now.program_spec_hash
-            && was.program_release_hash == now.program_release_hash
-            && was.sdk_extension_hashes.iter().all(|hash| {
-                now.sdk_extension_hashes.contains(hash) || legacy == Some(hash.as_str())
-            }))
+/// How a locked stack program compares with its resolution.
+#[derive(Debug, PartialEq, Eq)]
+enum LockedProgramMatch {
+    /// The lock pins what is resolved.
+    Same,
+    /// The lock pins something else.
+    Differs,
+    /// The lock predates program SDK identities and its SDK extension
+    /// hashes are not exactly the ones generation uses.
+    Unpinned,
+}
+
+/// Compares a locked stack program with its resolution. `generated` holds
+/// the SDK extension hashes generation uses for the project's targets, where
+/// a legacy single extension counts for its own target; `ungenerated_legacy`
+/// is the legacy extension's hash when that target is not generated.
+///
+/// A lock that predates program SDK identities pins no program package
+/// release and matches when it pins the same program and Program Release
+/// and exactly the generated extensions: more would leave generation using
+/// extension content the lock never recorded.
+fn locked_program_match(
+    was: &LockedProgram,
+    now: &LockedProgram,
+    generated: &BTreeSet<String>,
+    ungenerated_legacy: Option<&str>,
+) -> LockedProgramMatch {
+    if was == now {
+        return LockedProgramMatch::Same;
+    }
+    if was.package_release_hash.is_some()
+        || was.program_id != now.program_id
+        || was.program_spec_hash != now.program_spec_hash
+        || was.program_release_hash != now.program_release_hash
+    {
+        return LockedProgramMatch::Differs;
+    }
+    let pinned = was
+        .sdk_extension_hashes
+        .iter()
+        .map(String::as_str)
+        .filter(|hash| Some(*hash) != ungenerated_legacy)
+        .collect::<BTreeSet<_>>();
+    if pinned == generated.iter().map(String::as_str).collect() {
+        LockedProgramMatch::Same
+    } else {
+        LockedProgramMatch::Unpinned
+    }
 }
 
 fn registry_lock(
@@ -6552,43 +6610,168 @@ source = { workspace = "ore-sdk" }
     }
 
     #[test]
-    fn an_older_lock_matches_only_what_it_pins() {
-        let program = |package: Option<char>, extensions: Vec<String>| LockedProgram {
+    fn a_locked_install_refuses_an_older_lock_missing_a_target_s_program_sdk_extension() {
+        let extensions = |targets: &[(&str, char)]| {
+            resolution(vec![ore_stack_with_program_sdk(
+                '7',
+                "1.0.2",
+                targets
+                    .iter()
+                    .map(|(target, marker)| ore_program_extension(target, *marker))
+                    .collect(),
+            )])
+        };
+        let sandbox = RegistrySandbox::new(
+            vec![
+                (200, extensions(&[("typescript", 'e')])),
+                (200, extensions(&[("typescript", 'e'), ("python", 'c')])),
+            ],
+            false,
+        );
+        let manifest = typescript_project(&sandbox, ORE_STACK_DEPENDENCY);
+        install_project(&manifest, InstallOptions::default()).expect("install");
+        sandbox.request();
+
+        // The project now generates Python too, under a lock as an older a4
+        // wrote it: no program SDK release, only the TypeScript extension.
+        let text = fs::read_to_string(&manifest).unwrap().replace(
+            "targets = [\"typescript\"]",
+            "targets = [\"typescript\", \"python\"]",
+        );
+        fs::write(&manifest, text).unwrap();
+        let mut lock = lock_of(&manifest);
+        lock.manifest_hash = ProjectManifest::load(&manifest).unwrap().manifest_hash;
+        let stack = &mut lock.dependencies[0];
+        stack.targets = vec![InstallTarget::TypeScript, InstallTarget::Python];
+        for program in &mut stack.programs {
+            program.package_release_hash = None;
+        }
+        let lock_path = manifest.with_file_name("arete.lock");
+        lock.write_atomic(&lock_path).unwrap();
+        let before = fs::read(&lock_path).unwrap();
+
+        let error = install_project(
+            &manifest,
+            InstallOptions {
+                locked: true,
+                ..InstallOptions::default()
+            },
+        )
+        .expect_err("the Python extension would be generated unpinned");
+        sandbox.request();
+        let text = format!("{error:#}");
+        assert!(
+            text.contains(&format!(
+                "does not record exactly the SDK extensions that stack 'ore' generates for program {ORE_PROGRAM_ID}"
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains("Run `a4 install` once to record the program SDK pins"),
+            "{text}"
+        );
+        assert_eq!(fs::read(&lock_path).unwrap(), before, "lock unchanged");
+    }
+
+    #[test]
+    fn an_older_lock_matches_exactly_what_is_generated() {
+        use LockedProgramMatch::{Differs, Same, Unpinned};
+        let program = |package: Option<char>, extensions: &[&String]| LockedProgram {
             program_id: ORE_PROGRAM_ID.into(),
             program_spec_hash: ore_program_spec_hash(),
             program_release_hash: Some("release".into()),
             package_release_hash: package.map(release_hash),
-            sdk_extension_hashes: extensions,
+            sdk_extension_hashes: extensions.iter().map(|hash| hash.to_string()).collect(),
         };
-        let (typescript, rust, legacy) = ("e".repeat(64), "f".repeat(64), "d".repeat(64));
-        let now = program(Some('7'), vec![typescript.clone(), rust.clone()]);
-        // Enrichments a newer CLI adds: a package release, more targets.
-        assert!(locked_program_matches(
-            &program(None, vec![typescript.clone()]),
-            &now,
-            None
-        ));
-        assert!(locked_program_matches(&program(None, vec![]), &now, None));
-        // The legacy extension's hash is consistent with the legacy field.
-        assert!(locked_program_matches(
-            &program(None, vec![legacy.clone()]),
-            &now,
-            Some(legacy.as_str())
-        ));
-        // What the older lock does pin still has to match.
-        assert!(!locked_program_matches(
-            &program(None, vec![legacy]),
-            &now,
-            None
-        ));
-        assert!(!locked_program_matches(
-            &program(Some('6'), vec![typescript.clone(), rust.clone()]),
-            &now,
-            None
-        ));
-        let mut moved = program(None, vec![typescript]);
+        let generated = |hashes: &[&String]| {
+            hashes
+                .iter()
+                .map(|hash| hash.to_string())
+                .collect::<BTreeSet<_>>()
+        };
+        let (typescript, python, legacy) = ("e".repeat(64), "c".repeat(64), "d".repeat(64));
+        let now = program(Some('7'), &[&typescript]);
+        let generates_typescript = generated(&[&typescript]);
+        // The package release is implied by the locked stack release.
+        assert_eq!(
+            locked_program_match(
+                &program(None, &[&typescript]),
+                &now,
+                &generates_typescript,
+                None
+            ),
+            Same
+        );
+        // Extensions generated for a target the lock never recorded, or no
+        // longer generated although recorded, are not pinned.
+        let both = program(Some('7'), &[&typescript, &python]);
+        assert_eq!(
+            locked_program_match(
+                &program(None, &[&typescript]),
+                &both,
+                &generated(&[&typescript, &python]),
+                None
+            ),
+            Unpinned
+        );
+        assert_eq!(
+            locked_program_match(&program(None, &[]), &now, &generates_typescript, None),
+            Unpinned
+        );
+        assert_eq!(
+            locked_program_match(
+                &program(None, &[&typescript, &python]),
+                &now,
+                &generates_typescript,
+                None
+            ),
+            Unpinned
+        );
+        // The legacy single extension counts as its own target's hash: it
+        // pins that target, and nothing when the target is not generated.
+        assert_eq!(
+            locked_program_match(
+                &program(None, &[&legacy]),
+                &program(Some('7'), &[&legacy]),
+                &generated(&[&legacy]),
+                None
+            ),
+            Same
+        );
+        assert_eq!(
+            locked_program_match(
+                &program(None, &[&legacy]),
+                &program(Some('7'), &[]),
+                &generated(&[]),
+                Some(legacy.as_str())
+            ),
+            Same
+        );
+        assert_eq!(
+            locked_program_match(
+                &program(None, &[&legacy]),
+                &now,
+                &generates_typescript,
+                None
+            ),
+            Unpinned
+        );
+        // What the lock does pin still has to match.
+        assert_eq!(
+            locked_program_match(
+                &program(Some('6'), &[&typescript]),
+                &now,
+                &generates_typescript,
+                None
+            ),
+            Differs
+        );
+        let mut moved = program(None, &[&typescript]);
         moved.program_release_hash = Some("other".into());
-        assert!(!locked_program_matches(&moved, &now, None));
+        assert_eq!(
+            locked_program_match(&moved, &now, &generates_typescript, None),
+            Differs
+        );
     }
 
     /// A project whose `@usearete/sdk` provides extension API `api`.

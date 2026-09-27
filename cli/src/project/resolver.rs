@@ -173,7 +173,7 @@ impl ResolvedSdkExtension {
 
 /// The target a legacy single program extension was authored for: its
 /// manifest `language`, TypeScript when absent.
-fn legacy_extension_target(
+pub(crate) fn legacy_extension_target(
     artifact: &crate::api_client::RegistrySdkExtensionArtifact,
 ) -> Option<InstallTarget> {
     match artifact.manifest.language.as_deref() {
