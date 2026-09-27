@@ -11,10 +11,22 @@ pub struct BusMessage {
     pub payload: Arc<Bytes>,
 }
 
+/// The latest frame published to one state key, and how many frames the key
+/// has published in total.
+///
+/// A state bus keeps only the latest frame, so frames published faster than a
+/// subscriber reads them are overwritten. The count lets the subscriber tell:
+/// if it moved by more than one since its last read, frames were skipped.
+#[derive(Debug, Clone, Default)]
+pub struct StateUpdate {
+    pub published: u64,
+    pub payload: Arc<Bytes>,
+}
+
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
 pub struct BusManager {
-    state_buses: Arc<RwLock<HashMap<(String, String), watch::Sender<Arc<Bytes>>>>>,
+    state_buses: Arc<RwLock<HashMap<(String, String), watch::Sender<StateUpdate>>>>,
     list_buses: Arc<RwLock<HashMap<String, broadcast::Sender<Arc<BusMessage>>>>>,
     broadcast_capacity: usize,
 }
@@ -38,16 +50,13 @@ impl BusManager {
         &self,
         view_id: &str,
         key: &str,
-    ) -> watch::Receiver<Arc<Bytes>> {
+    ) -> watch::Receiver<StateUpdate> {
         let mut buses = self.state_buses.write().await;
         let entry = (view_id.to_string(), key.to_string());
 
         let tx = buses
             .entry(entry)
-            .or_insert_with(|| {
-                let empty = Arc::new(Bytes::new());
-                watch::channel(empty).0
-            })
+            .or_insert_with(|| watch::channel(StateUpdate::default()).0)
             .clone();
 
         tx.subscribe()
@@ -71,7 +80,10 @@ impl BusManager {
     pub async fn publish_state(&self, view_id: &str, key: &str, frame: Arc<Bytes>) {
         let buses = self.state_buses.read().await;
         if let Some(tx) = buses.get(&(view_id.to_string(), key.to_string())) {
-            let _ = tx.send(frame);
+            tx.send_modify(|update| {
+                update.published += 1;
+                update.payload = frame;
+            });
         }
     }
 
