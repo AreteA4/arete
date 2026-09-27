@@ -14,7 +14,7 @@ use crate::api_client::{
     ApiClient, DeploymentResponse, RegistryCapabilityInstallBinding,
     RegistryProgramInstallResponse, RegistryProgramInstallTransport, RegistryProgramItem,
     RegistrySdkExtensionArtifact, RegistryStackInstallResponse, RegistryStackItem,
-    DEFAULT_DOMAIN_SUFFIX,
+    CAPABILITY_TRANSACTION_INSPECT, CAPABILITY_TRANSACTION_SEND, DEFAULT_DOMAIN_SUFFIX,
 };
 use crate::commands::stack::deployment_selection_key;
 use crate::project::manifest::{DependencySourceV1, DependencyV1, ProjectManifest};
@@ -184,6 +184,9 @@ struct StackExploreOutput {
     /// Which stream endpoints the generated SDK reads: arete.toml endpoints
     /// recorded by `a4 up`, or the registry's hosted ones.
     sdk_endpoints: Value,
+    /// Whether the logged-in account meets the transaction requirement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<Value>,
     install_command: String,
 }
 
@@ -430,6 +433,7 @@ pub fn show_stack(reference: &str, options: StackOptions<'_>, json: bool) -> Res
         let (install_ref, typescript, rust) = resolve_stack_descriptors(&client, lookup)?;
         let mut output = build_stack_output(&install_ref, &typescript, &rust)?;
         output.sdk_endpoints = sdk_endpoints(&typescript, project.as_ref());
+        output.account = account_readiness(&client, &output.auth_requirements);
         if json {
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
@@ -446,6 +450,9 @@ pub fn show_stack(reference: &str, options: StackOptions<'_>, json: bool) -> Res
     }
     let mut output = if options.views.is_empty() {
         let mut summary = shape::stack_summary(&stack);
+        if let Some(account) = account_readiness(&client, &summary["auth"]) {
+            summary["account"] = account;
+        }
         summary["installCommand"] = json!(format!("a4 install stack {install_ref} --ts"));
         summary
     } else {
@@ -494,6 +501,7 @@ pub fn show_program(reference: &str, options: ProgramOptions<'_>, json: bool) ->
     if let Some(operation) = options.operation {
         let mut output = shape::program_operation(&program, state, operation)?;
         output["schemaVersion"] = json!(EXPLORE_SCHEMA_VERSION);
+        add_operation_account(&client, &mut output);
         return print_operation(&output, json);
     }
     let mut output = shape::program_sections(&program, state, &sections);
@@ -560,6 +568,7 @@ fn show_stack_operation(
     };
     output["schemaVersion"] = json!(EXPLORE_SCHEMA_VERSION);
     output["stack"] = json!(install_ref);
+    add_operation_account(client, &mut output);
     print_operation(&output, json)
 }
 
@@ -596,6 +605,52 @@ fn program_surface(
         .knowledge_program(&slug, Some("surface"))
         .map_err(|error| format!("{error:#}"))?;
     ProgramSurface::from_knowledge(&response, program_id).map_err(|error| error.to_string())
+}
+
+/// Report whether the logged-in account can use an operation's transport.
+fn add_operation_account(client: &ApiClient, output: &mut Value) {
+    if let Some(account) = account_readiness(client, &output["operation"]["transport"]["auth"]) {
+        output["account"] = account;
+    }
+}
+
+/// Whether the logged-in account has the transaction access these auth
+/// requirements call for. `None` when no transaction entitlement is required.
+fn account_readiness(client: &ApiClient, requirements: &Value) -> Option<Value> {
+    if requirements
+        .get("transactionEntitlementRequired")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return None;
+    }
+    let transactions = if !client.has_api_key() {
+        json!({
+            "status": "unknown",
+            "detail": "not logged in; run `a4 auth login` (or `a4 auth signup`) to check transaction access",
+        })
+    } else {
+        match client.account_capabilities() {
+            Ok(account) => {
+                let missing =
+                    account.missing(&[CAPABILITY_TRANSACTION_INSPECT, CAPABILITY_TRANSACTION_SEND]);
+                if missing.is_empty() {
+                    json!({ "status": "ready" })
+                } else {
+                    json!({
+                        "status": "not-ready",
+                        "missing": missing,
+                        "detail": "your account doesn't have transaction access yet; reads and subscriptions are unaffected",
+                    })
+                }
+            }
+            Err(error) => json!({
+                "status": "unknown",
+                "detail": crate::commands::doctor::account_unavailable_reason(&error),
+            }),
+        }
+    };
+    Some(json!({ "transactions": transactions }))
 }
 
 /// The stack dependency in arete.toml that `reference` names, by alias or by
@@ -944,6 +999,7 @@ fn build_stack_output(
         transaction,
         auth_requirements: shape::auth_requirements(&serde_json::to_value(typescript)?),
         sdk_endpoints: sdk_endpoints(typescript, None),
+        account: None,
         install_command: format!("a4 install stack {install_ref} --ts"),
     })
 }
@@ -1293,14 +1349,17 @@ fn render_stack(output: &StackExploreOutput) -> String {
             auth_requirement(&program.program_read.auth)
         ));
     }
-    text.push_str(&render_auth_notes(&output.auth_requirements));
+    text.push_str(&render_auth_notes(
+        &output.auth_requirements,
+        output.account.as_ref(),
+    ));
     text.push_str(&render_sdk_endpoints(&output.sdk_endpoints));
     text.push_str(&format!("\nInstall\n  {}\n", output.install_command));
     text
 }
 
 /// Browser-key and transaction-access notes under a stack's authentication.
-fn render_auth_notes(requirements: &Value) -> String {
+fn render_auth_notes(requirements: &Value, account: Option<&Value>) -> String {
     let mut text = String::new();
     if requirements.get("browser").is_some() {
         text.push_str(
@@ -1309,6 +1368,21 @@ fn render_auth_notes(requirements: &Value) -> String {
     }
     if requirements["transactionEntitlementRequired"] == true {
         text.push_str("  Transactions: require transaction access on your account\n");
+    }
+    if let Some(transactions) = account.and_then(|account| account.get("transactions")) {
+        let mut line = format!(
+            "  Your account: transactions {}",
+            transactions["status"].as_str().unwrap_or("unknown")
+        );
+        let missing = string_list(transactions, "missing");
+        if missing != "none" {
+            line.push_str(&format!(" (missing {missing})"));
+        }
+        if let Some(detail) = transactions["detail"].as_str() {
+            line.push_str(&format!("; {detail}"));
+        }
+        text.push_str(&line);
+        text.push('\n');
     }
     text
 }
@@ -1439,7 +1513,7 @@ fn render_stack_summary(output: &Value) -> String {
             render_auth_surface(read)
         ));
     }
-    text.push_str(&render_auth_notes(auth));
+    text.push_str(&render_auth_notes(auth, output.get("account")));
     text.push_str(&format!(
         "\nInstall\n  {}\n\nMore: --views <Entity/view,...> for view schemas, --operation <id> for one program operation\n",
         output["installCommand"].as_str().unwrap_or("-")
@@ -1605,6 +1679,12 @@ fn render_operation(output: &Value) -> String {
             "\nTransport\n  {}  {}\n",
             transport["endpoint"].as_str().unwrap_or("-"),
             render_auth_surface(&transport["auth"])
+        ));
+    }
+    if let Some(transactions) = output["account"].get("transactions") {
+        text.push_str(&render_auth_notes(
+            &Value::Null,
+            Some(&json!({ "transactions": transactions })),
         ));
     }
     if let Some(usage) = operation["usage"].as_object() {
@@ -2915,6 +2995,46 @@ mod tests {
         assert_eq!(output.fields[0].path, "id.address");
         assert_eq!(output.fields[0].rust_type, "Pubkey");
         assert_eq!(output.views[0].view_id, "Position/state");
+    }
+
+    #[test]
+    fn account_readiness_is_only_reported_when_transactions_need_an_entitlement() {
+        let anonymous = ApiClient::with_base_url("http://127.0.0.1:9");
+        assert_eq!(
+            account_readiness(
+                &anonymous,
+                &json!({"transactionEntitlementRequired": false})
+            ),
+            None
+        );
+        let unknown =
+            account_readiness(&anonymous, &json!({"transactionEntitlementRequired": true}))
+                .unwrap();
+        assert_eq!(unknown["transactions"]["status"], "unknown");
+
+        let server = crate::api_client::test_support::MockServer::json_sequence(vec![
+            (
+                200,
+                r#"{"accountKind":"agent","capabilities":["transaction_inspect"]}"#.into(),
+            ),
+            (404, r#"{"error":"not found"}"#.into()),
+        ]);
+        let client = ApiClient::with_base_url(server.base_url()).with_api_key("a4_sk_x".into());
+        let required = json!({"transactionEntitlementRequired": true});
+        let not_ready = account_readiness(&client, &required).unwrap();
+        assert_eq!(not_ready["transactions"]["status"], "not-ready");
+        assert_eq!(
+            not_ready["transactions"]["missing"],
+            json!(["transaction_send"])
+        );
+        let unknown = account_readiness(&client, &required).unwrap();
+        assert_eq!(
+            unknown["transactions"]["detail"],
+            "this API does not report account capabilities yet"
+        );
+        assert!(
+            render_auth_notes(&required, Some(&not_ready)).contains("(missing transaction_send)")
+        );
     }
 
     #[test]

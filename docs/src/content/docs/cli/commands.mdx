@@ -246,26 +246,28 @@ a4 doctor --json
 a4 doctor --fix      # re-run the init writers for every agents.* warning, then re-check
 ```
 
-| Check id                | What it verifies                                                       | On failure                                           |
-| ----------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------- |
-| `cli.version`           | Install receipt present; current version vs latest (2 s timeout)       | `warn`: `a4 self update` (`info` when offline)       |
-| `cli.install`           | Receipt binary is the running executable; no `a4` shadowing it on PATH | `warn` with the shadowing path                       |
-| `cli.path`              | Install directory is on PATH                                           | `warn`: prints the `export PATH=…` line              |
-| `project.manifest`      | `arete.toml` parses                                                    | `fail`: `a4 init` / `a4 config validate`             |
-| `project.lock`          | `arete.lock` is fresh                                                  | `warn`: `a4 install`                                 |
-| `auth.credentials`      | Key present for the active API URL                                     | `info`: `a4 auth signup` (not needed to explore)     |
-| `auth.whoami`           | Credentials are accepted by the server                                 | `fail`: `a4 auth login --key …`                      |
-| `net.api`               | `https://api.arete.run` reachable                                      | `fail`                                               |
-| `net.docs-mcp`          | `https://docs.arete.run/mcp` reachable                                 | `warn`                                               |
-| `tools.node`            | `npx` on PATH (skills only)                                            | `info`                                               |
-| `tools.rust`            | `cargo` on PATH (authoring only)                                       | `info`; `warn` if `arete.toml` has `[authoring]`     |
-| `agents.detected`       | Detected agents                                                        | `info`                                               |
-| `agents.<id>.mcp`       | Both MCP servers present with the expected shape                       | `warn`: `a4 doctor --fix`                            |
-| `agents.<id>.skills`    | All five Arete workflow skills installed for that agent                | `warn`: `npx skills add AreteA4/skills --agent <id>` |
-| `agents.agents-md`      | `AGENTS.md` block present and current (`v2`)                           | `warn`: `a4 doctor --fix`                            |
-| `agents.claude-md`      | `CLAUDE.md` imports `@AGENTS.md` (Claude Code only)                    | `warn`                                               |
-| `agents.gemini-context` | Gemini `context.fileName` includes `AGENTS.md` (Gemini CLI only)       | `warn`                                               |
-| `agents.codex-trust`    | Project trusted in `~/.codex/config.toml` (Codex only)                 | `info`                                               |
+| Check id                | What it verifies                                                                      | On failure                                                                                    |
+| ----------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `cli.version`           | Install receipt present; current version vs latest (2 s timeout)                      | `warn`: `a4 self update` (`info` when offline)                                                |
+| `cli.install`           | Receipt binary is the running executable; no `a4` shadowing it on PATH                | `warn` with the shadowing path                                                                |
+| `cli.path`              | Install directory is on PATH                                                          | `warn`: prints the `export PATH=…` line                                                       |
+| `project.manifest`      | `arete.toml` parses                                                                   | `fail`: `a4 init` / `a4 config validate`                                                      |
+| `project.lock`          | `arete.lock` is fresh                                                                 | `warn`: `a4 install`                                                                          |
+| `auth.credentials`      | Key present for the active API URL                                                    | `info`: `a4 auth signup` (not needed to explore)                                              |
+| `auth.whoami`           | Credentials are accepted by the server                                                | `fail`: `a4 auth login --key …`                                                               |
+| `account.transactions`  | Account can inspect and send transactions (`transaction_inspect`, `transaction_send`) | `info`, naming the missing capabilities; `unknown` when the server cannot say                 |
+| `account.deploy`        | Account can deploy stacks with `a4 up` (`create_deployment`)                          | `info`; `warn` if `arete.toml` has `[authoring]` stacks; `unknown` when the server cannot say |
+| `net.api`               | `https://api.arete.run` reachable                                                     | `fail`                                                                                        |
+| `net.docs-mcp`          | `https://docs.arete.run/mcp` reachable                                                | `warn`                                                                                        |
+| `tools.node`            | `npx` on PATH (skills only)                                                           | `info`                                                                                        |
+| `tools.rust`            | `cargo` on PATH (authoring only)                                                      | `info`; `warn` if `arete.toml` has `[authoring]`                                              |
+| `agents.detected`       | Detected agents                                                                       | `info`                                                                                        |
+| `agents.<id>.mcp`       | Both MCP servers present with the expected shape                                      | `warn`: `a4 doctor --fix`                                                                     |
+| `agents.<id>.skills`    | All five Arete workflow skills installed for that agent                               | `warn`: `npx skills add AreteA4/skills --agent <id>`                                          |
+| `agents.agents-md`      | `AGENTS.md` block present and current (`v2`)                                          | `warn`: `a4 doctor --fix`                                                                     |
+| `agents.claude-md`      | `CLAUDE.md` imports `@AGENTS.md` (Claude Code only)                                   | `warn`                                                                                        |
+| `agents.gemini-context` | Gemini `context.fileName` includes `AGENTS.md` (Gemini CLI only)                      | `warn`                                                                                        |
+| `agents.codex-trust`    | Project trusted in `~/.codex/config.toml` (Codex only)                                | `info`                                                                                        |
 
 **`--json` output:**
 
@@ -277,7 +279,9 @@ a4 doctor --fix      # re-run the init writers for every agents.* warning, then 
 }
 ```
 
-`status` is `ok`, `warn`, or `fail`; each check is `ok | warn | fail | info`. Exit 0 for `ok` and `warn`, 1 for `fail`. `--fix` never touches auth, network, or tool checks. Human output is one line per check followed by the list of fixes.
+`status` is `ok`, `warn`, or `fail`; each check is `ok | warn | fail | info | unknown`. `unknown` means the check could not be decided (for example, the API does not report account capabilities) and, like `info`, never changes the overall status. Exit 0 for `ok` and `warn`, 1 for `fail`. `--fix` never touches auth, account, network, or tool checks. Human output is one line per check followed by the list of fixes.
+
+The `account.*` checks read your account's capabilities from `GET /api/auth/me` with the stored key, and are skipped when no key is configured. A missing capability is reported, not failed: reads and subscriptions work without transaction access.
 
 ### a4 config validate
 
@@ -627,7 +631,10 @@ guessed. `--operation` on a stack searches the stack's program SDKs.
 `--summary`, `auth`). For each surface (stream, query, chain, transaction and
 Program Read) it lists the accepted key classes and scopes, and whether a
 transaction entitlement is required. `browser` appears when publishable keys
-are accepted; each one is bound to exactly one origin.
+are accepted; each one is bound to exactly one origin. When the stack's
+transactions need an entitlement, `account.transactions` says whether your
+account has transaction access: `ready`, `not-ready` with the missing
+capabilities, or `unknown` (for example when you are not logged in).
 
 **Endpoints inside a project.** When `arete.toml` declares the stack as a
 dependency, `sdkEndpoints` shows which stream endpoints the generated SDK

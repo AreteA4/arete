@@ -2095,6 +2095,85 @@ impl ApiClient {
             .context("Failed to fetch agent identity")?;
         Self::handle_response(response)
     }
+
+    /// `GET /api/auth/me`: the caller's account kind, plan and capabilities,
+    /// for human and agent keys alike. Decoded with
+    /// [`AccountCapabilities::from_value`], which tolerates unknown fields.
+    pub fn account_capabilities(&self) -> Result<AccountCapabilities> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .get(format!("{}/api/auth/me", self.base_url))
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to fetch account capabilities")?;
+        let value: serde_json::Value = Self::handle_response(response)?;
+        AccountCapabilities::from_value(&value)
+            .ok_or_else(|| anyhow::anyhow!("the account response did not list capabilities"))
+    }
+}
+
+/// Capability that lets an account inspect (simulate) transactions.
+pub const CAPABILITY_TRANSACTION_INSPECT: &str = "transaction_inspect";
+/// Capability that lets an account submit transactions.
+pub const CAPABILITY_TRANSACTION_SEND: &str = "transaction_send";
+/// Capability that lets an account deploy stacks (`a4 up`).
+pub const CAPABILITY_CREATE_DEPLOYMENT: &str = "create_deployment";
+
+/// What `GET /api/auth/me` reports about the caller's account.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountCapabilities {
+    /// `human` or `agent`, when reported.
+    pub account_kind: Option<String>,
+    /// The account's plan name, when reported.
+    pub plan: Option<String>,
+    pub capabilities: Vec<String>,
+}
+
+impl AccountCapabilities {
+    /// Decode tolerantly: camelCase or snake_case keys, and capabilities as
+    /// strings or as `{ "name" | "id" | "capability": … }` objects. `None`
+    /// when there is no capability list to judge readiness by.
+    pub fn from_value(value: &serde_json::Value) -> Option<Self> {
+        let text = |keys: &[&str]| {
+            keys.iter()
+                .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+                .map(str::to_string)
+        };
+        let capabilities = ["capabilities", "capability"]
+            .iter()
+            .find_map(|key| value.get(*key).and_then(serde_json::Value::as_array))?
+            .iter()
+            .filter_map(|capability| {
+                capability.as_str().or_else(|| {
+                    ["name", "id", "capability"]
+                        .iter()
+                        .find_map(|key| capability.get(*key).and_then(serde_json::Value::as_str))
+                })
+            })
+            .map(|capability| capability.trim().to_string())
+            .filter(|capability| !capability.is_empty())
+            .collect();
+        Some(Self {
+            account_kind: text(&["accountKind", "account_kind", "kind"]),
+            plan: text(&["plan", "planName", "plan_name"]),
+            capabilities,
+        })
+    }
+
+    /// The entries of `required` this account lacks, in order.
+    pub fn missing<'a>(&self, required: &[&'a str]) -> Vec<&'a str> {
+        required
+            .iter()
+            .copied()
+            .filter(|required| {
+                !self
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == required)
+            })
+            .collect()
+    }
 }
 
 /// Minimal canned-response HTTP server for unit tests of `ApiClient` and the
@@ -2298,6 +2377,50 @@ mod agent_tests {
         let client = ApiClient::with_base_url(server.base_url());
         let err = client.agent_signup(None).expect_err("429 is an error");
         assert_eq!(err.to_string(), SIGNUP_RATE_LIMIT_MESSAGE);
+    }
+
+    #[test]
+    fn account_capabilities_reads_auth_me_with_the_stored_key() {
+        let server = MockServer::json(
+            200,
+            r#"{"accountKind":"agent","plan":"example-plan","capabilities":["transaction_inspect",{"name":"create_deployment"}],"future":true}"#,
+        );
+        let client = ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_me".into());
+        let account = client.account_capabilities().expect("capabilities decode");
+        assert_eq!(account.account_kind.as_deref(), Some("agent"));
+        assert_eq!(account.plan.as_deref(), Some("example-plan"));
+        assert_eq!(
+            account.missing(&[CAPABILITY_TRANSACTION_INSPECT, CAPABILITY_TRANSACTION_SEND]),
+            vec![CAPABILITY_TRANSACTION_SEND]
+        );
+        assert!(account.missing(&[CAPABILITY_CREATE_DEPLOYMENT]).is_empty());
+        let req = server.request();
+        assert_eq!(req.request_line, "GET /api/auth/me HTTP/1.1");
+        assert_eq!(req.header("authorization"), Some("Bearer a4_ak_me"));
+    }
+
+    #[test]
+    fn account_capabilities_decodes_snake_case_and_refuses_a_missing_list() {
+        let account = AccountCapabilities::from_value(&serde_json::json!({
+            "account_kind": "human",
+            "capabilities": [" transaction_send ", ""]
+        }))
+        .expect("capability list present");
+        assert_eq!(account.account_kind.as_deref(), Some("human"));
+        assert_eq!(account.plan, None);
+        assert_eq!(account.capabilities, vec!["transaction_send"]);
+        assert_eq!(
+            AccountCapabilities::from_value(&serde_json::json!({"plan": "x"})),
+            None
+        );
+
+        let server = MockServer::json(404, r#"{"error":"not found"}"#);
+        let client = ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_me".into());
+        let err = client.account_capabilities().expect_err("404 is an error");
+        assert_eq!(
+            err.downcast_ref::<ApiHttpError>().map(|error| error.status),
+            Some(404)
+        );
     }
 
     #[test]

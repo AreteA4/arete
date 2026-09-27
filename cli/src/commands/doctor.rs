@@ -16,7 +16,10 @@ use crate::agents::detect::{detect, Detection};
 use crate::agents::mcp_config::{self, McpState, Scope};
 use crate::agents::skills;
 use crate::agents::{find_on_path, read_optional, Env};
-use crate::api_client::ApiClient;
+use crate::api_client::{
+    AccountCapabilities, ApiClient, ApiHttpError, CAPABILITY_CREATE_DEPLOYMENT,
+    CAPABILITY_TRANSACTION_INSPECT, CAPABILITY_TRANSACTION_SEND,
+};
 use crate::selfhost::{latest, platform, receipt::Receipt};
 use crate::ui;
 
@@ -38,6 +41,9 @@ pub enum Status {
     Warn,
     Fail,
     Info,
+    /// The check could not be decided (e.g. the server does not report the
+    /// fact yet). Neutral: it never changes the aggregate status.
+    Unknown,
 }
 
 impl Status {
@@ -47,6 +53,7 @@ impl Status {
             Status::Warn => "warn",
             Status::Fail => "fail",
             Status::Info => "info",
+            Status::Unknown => "unknown",
         }
     }
 }
@@ -79,6 +86,9 @@ impl Check {
     }
     fn fail(id: &str, detail: impl Into<String>, fix: Option<String>) -> Self {
         Self::new(id, Status::Fail, detail, fix)
+    }
+    fn unknown(id: &str, detail: impl Into<String>) -> Self {
+        Self::new(id, Status::Unknown, detail, None)
     }
 }
 
@@ -172,6 +182,7 @@ fn render(checks: &[Check], status: Status) -> String {
             Status::Warn => ("!".yellow().bold(), "warn".yellow()),
             Status::Fail => ("✗".red().bold(), "fail".red().bold()),
             Status::Info => ("i".blue().bold(), "info".blue()),
+            Status::Unknown => ("?".dimmed(), "unkn".dimmed()),
         };
         out.push_str(&format!(
             "{symbol} {label} {:<width$}  {}\n",
@@ -199,7 +210,7 @@ fn render(checks: &[Check], status: Status) -> String {
         Status::Ok => "ok".green().bold().to_string(),
         Status::Warn => "warn".yellow().bold().to_string(),
         Status::Fail => "fail".red().bold().to_string(),
-        Status::Info => "ok".green().bold().to_string(),
+        Status::Info | Status::Unknown => "ok".green().bold().to_string(),
     };
     out.push_str(&format!("\nStatus: {summary}\n"));
     out
@@ -292,6 +303,16 @@ pub fn run_checks(env: &Env, config_path: &Path) -> Vec<Check> {
         Some(key) => auth_whoami(key),
     });
 
+    // account.transactions / account.deploy
+    let authoring = facts.as_ref().map(|f| f.authoring_stacks).unwrap_or(0);
+    checks.extend(match &key {
+        None => vec![
+            Check::info("account.transactions", "skipped (no credentials)", None),
+            Check::info("account.deploy", "skipped (no credentials)", None),
+        ],
+        Some(key) => account_checks(account_capabilities(key), authoring),
+    });
+
     // net.api / net.docs-mcp
     checks.push(net_api(&api_url));
     checks.push(net_docs_mcp(env));
@@ -305,7 +326,6 @@ pub fn run_checks(env: &Env, config_path: &Path) -> Vec<Check> {
             Some("install Node.js, then: npx skills add AreteA4/skills".to_string()),
         ),
     });
-    let authoring = facts.as_ref().map(|f| f.authoring_stacks).unwrap_or(0);
     checks.push(match find_on_path(&path_env, "cargo") {
         Some(cargo) => Check::ok("tools.rust", cargo.display().to_string()),
         None if authoring > 0 => Check::warn(
@@ -508,6 +528,95 @@ fn auth_whoami(key: &str) -> Check {
             Some("a4 auth login --key <a4_ak_...> (or a4 auth signup)".to_string()),
         ),
     }
+}
+
+/// The caller's account capabilities from `GET /api/auth/me`, or a neutral
+/// reason they could not be read. Never an error for the doctor as a whole:
+/// servers without the endpoint answer 404.
+fn account_capabilities(key: &str) -> std::result::Result<AccountCapabilities, String> {
+    let client = ApiClient::new()
+        .map_err(|error| format!("{error:#}"))?
+        .with_api_key(key.to_string());
+    client
+        .account_capabilities()
+        .map_err(|error| account_unavailable_reason(&error))
+}
+
+/// A neutral, user-facing reason account capabilities could not be read.
+pub(crate) fn account_unavailable_reason(error: &anyhow::Error) -> String {
+    match error
+        .downcast_ref::<ApiHttpError>()
+        .map(|error| error.status)
+    {
+        Some(404) => "this API does not report account capabilities yet".to_string(),
+        Some(401 | 403) => "the API key was not accepted for account details".to_string(),
+        _ => format!(
+            "could not read account capabilities ({})",
+            root_cause(error)
+        ),
+    }
+}
+
+/// `account.transactions` (needs `transaction_inspect` and
+/// `transaction_send`) and `account.deploy` (needs `create_deployment`).
+/// Missing capabilities are `info`, like other optional tooling, except that
+/// deploy is `warn` when arete.toml has authoring stacks for `a4 up`.
+fn account_checks(
+    account: std::result::Result<AccountCapabilities, String>,
+    authoring_stacks: usize,
+) -> Vec<Check> {
+    let account = match account {
+        Ok(account) => account,
+        Err(reason) => {
+            return vec![
+                Check::unknown("account.transactions", format!("unknown: {reason}")),
+                Check::unknown("account.deploy", format!("unknown: {reason}")),
+            ]
+        }
+    };
+    let described = |detail: String| match (&account.account_kind, &account.plan) {
+        (Some(kind), Some(plan)) => format!("{detail} ({kind} account, plan {plan})"),
+        (Some(kind), None) => format!("{detail} ({kind} account)"),
+        (None, Some(plan)) => format!("{detail} (plan {plan})"),
+        (None, None) => detail,
+    };
+
+    let missing = account.missing(&[CAPABILITY_TRANSACTION_INSPECT, CAPABILITY_TRANSACTION_SEND]);
+    let transactions = if missing.is_empty() {
+        Check::ok(
+            "account.transactions",
+            described("can inspect and send transactions".to_string()),
+        )
+    } else {
+        Check::info(
+            "account.transactions",
+            described(format!(
+                "your account doesn't have transaction access yet (missing {}); reads and subscriptions are unaffected",
+                missing.join(", ")
+            )),
+            None,
+        )
+    };
+
+    let deploy = if account.missing(&[CAPABILITY_CREATE_DEPLOYMENT]).is_empty() {
+        Check::ok("account.deploy", described("can deploy stacks".to_string()))
+    } else {
+        let detail = described(format!(
+            "your account can't deploy stacks yet (missing {CAPABILITY_CREATE_DEPLOYMENT})"
+        ));
+        if authoring_stacks > 0 {
+            Check::warn(
+                "account.deploy",
+                format!(
+                    "{detail}; arete.toml has {authoring_stacks} authoring stack(s) for `a4 up`"
+                ),
+                None,
+            )
+        } else {
+            Check::info("account.deploy", detail, None)
+        }
+    };
+    vec![transactions, deploy]
 }
 
 fn http_client() -> Result<reqwest::blocking::Client> {
@@ -737,6 +846,95 @@ mod tests {
         assert_eq!(aggregate(&checks), Status::Warn);
         let checks = vec![Check::warn("a", "", None), Check::fail("b", "", None)];
         assert_eq!(aggregate(&checks), Status::Fail);
+    }
+
+    #[test]
+    fn unknown_status_is_neutral_in_the_aggregate() {
+        let checks = vec![Check::ok("a", ""), Check::unknown("b", "")];
+        assert_eq!(aggregate(&checks), Status::Ok);
+        let json = serde_json::to_value(&checks[1]).unwrap();
+        assert_eq!(json["status"], "unknown");
+    }
+
+    fn account(capabilities: &[&str]) -> AccountCapabilities {
+        AccountCapabilities {
+            account_kind: Some("agent".into()),
+            plan: None,
+            capabilities: capabilities.iter().map(|c| c.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn account_checks_report_ready_capabilities() {
+        let checks = account_checks(
+            Ok(account(&[
+                "transaction_inspect",
+                "transaction_send",
+                "create_deployment",
+            ])),
+            0,
+        );
+        assert_eq!(checks[0].id, "account.transactions");
+        assert_eq!(checks[0].status, Status::Ok);
+        assert_eq!(
+            checks[0].detail,
+            "can inspect and send transactions (agent account)"
+        );
+        assert_eq!(checks[1].id, "account.deploy");
+        assert_eq!(checks[1].status, Status::Ok);
+    }
+
+    #[test]
+    fn account_checks_name_missing_capabilities_without_failing() {
+        let checks = account_checks(Ok(account(&["transaction_inspect"])), 0);
+        assert_eq!(checks[0].status, Status::Info);
+        assert!(
+            checks[0].detail.contains("missing transaction_send")
+                && !checks[0].detail.contains("transaction_inspect,"),
+            "{}",
+            checks[0].detail
+        );
+        assert_eq!(checks[1].status, Status::Info);
+        assert!(checks[1].detail.contains("missing create_deployment"));
+
+        // Deploying matters once arete.toml has something to deploy.
+        let checks = account_checks(Ok(account(&[])), 2);
+        assert!(checks[0]
+            .detail
+            .contains("missing transaction_inspect, transaction_send"));
+        assert_eq!(checks[1].status, Status::Warn);
+        assert!(checks[1].detail.contains("2 authoring stack(s)"));
+        assert_ne!(aggregate(&checks), Status::Fail);
+    }
+
+    #[test]
+    fn account_checks_are_unknown_when_the_server_cannot_say() {
+        let checks = account_checks(
+            Err("this API does not report account capabilities yet".into()),
+            3,
+        );
+        assert!(checks.iter().all(|check| check.status == Status::Unknown));
+        assert_eq!(
+            checks[0].detail,
+            "unknown: this API does not report account capabilities yet"
+        );
+        assert_eq!(aggregate(&checks), Status::Ok);
+
+        let not_found: anyhow::Error = ApiHttpError {
+            status: 404,
+            status_text: "404 Not Found".into(),
+            message: "not found".into(),
+            code: None,
+        }
+        .into();
+        assert_eq!(
+            account_unavailable_reason(&not_found),
+            "this API does not report account capabilities yet"
+        );
+        assert!(
+            account_unavailable_reason(&anyhow::anyhow!("connection refused"))
+                .contains("connection refused")
+        );
     }
 
     #[test]
