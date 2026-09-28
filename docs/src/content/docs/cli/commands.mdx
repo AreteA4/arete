@@ -814,9 +814,17 @@ a4 stack compose --name ore-plus-token \
   --selected-view ore=OreRound/latest \
   --selected-view ore=OreMiner/state
 
-# Also declare it under [dependencies.stacks] and install it
-a4 stack compose --name ore-plus-token --live ore --program spl-token@^1 --install
+# Also declare it under [dependencies.stacks] and install its TypeScript SDK
+a4 stack compose --name ore-plus-token --live ore --program spl-token@^1 --install --ts
 ```
+
+`--install` also declares the composed stack as `[dependencies.stacks.<name>]`
+(`source = { workspace = "<name>" }`) and installs it. `--ts`, `--rust`, or
+`--python` choose the SDK it generates and are recorded as the dependency's
+`targets`, as `a4 install stack <ref> --ts` records them. Without one, the
+dependency uses `[sdk].targets` (TypeScript and Rust unless set). Composing
+again keeps a declared dependency as written; a flag replaces only its
+`targets`. The flags require `--install`.
 
 | Value                                      | Part                                                                 |
 | ------------------------------------------ | -------------------------------------------------------------------- |
@@ -1175,7 +1183,8 @@ in TypeScript.
 
 A composed `[authoring.stacks]` entry groups live views and program SDKs from
 published stacks, program packages, and local files. `a4 stack compose` writes
-it, or you can write it yourself:
+it (and with `--install --ts` the dependency below), or you can write it
+yourself:
 
 ```toml
 [authoring.stacks.ore-plus-token]
