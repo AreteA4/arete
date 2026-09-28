@@ -1,8 +1,8 @@
 use crate::collation::{collation_key, locale_compare, CollationKey};
 use crate::error::{AreteError, GapCode, StreamGap};
 use crate::frame::{
-    compare_seq, Mode, Operation, ProtocolErrorFrame, ReplayWindow, ServerFrame, SnapshotEntity,
-    SortConfig, SortOrder,
+    compare_seq, is_stale_version, Mode, Operation, ProtocolErrorFrame, ReplayWindow, ServerFrame,
+    SnapshotEntity, SortConfig, SortOrder,
 };
 use crate::subscription::{canonical_subscription_identity, SnapshotOptions, SubscriptionQuery};
 use serde::de::DeserializeOwned;
@@ -45,6 +45,9 @@ struct ViewData {
     /// every write goes through [`ViewData::insert`]/[`ViewData::set_seq`] and
     /// every eviction through [`ViewData::remove`].
     seqs: HashMap<String, String>,
+    /// Last `_version` written for each key, beside `seqs` for the same
+    /// reason: the guard orders by it when the server stamps one.
+    versions: HashMap<String, String>,
     access_order: VecDeque<String>,
     /// Keys `max_entries_per_view` dropped, so a later patch for one can be
     /// reported as such. Bounded by the same limit; `evicted_order` may hold
@@ -55,11 +58,12 @@ struct ViewData {
 }
 
 impl ViewData {
-    fn insert(&mut self, key: String, value: Value, seq: Option<String>) {
+    fn insert(&mut self, key: String, value: Value, seq: Option<String>, version: Option<String>) {
         self.access_order.retain(|existing| existing != &key);
         self.access_order.push_back(key.clone());
         self.evicted.remove(&key);
         self.set_seq(key.clone(), seq);
+        self.set_version(key.clone(), version);
         self.entities.insert(key, value);
     }
 
@@ -99,9 +103,18 @@ impl ViewData {
         }
     }
 
+    /// Record a version for `key`. An unversioned write keeps the tracked
+    /// one, for the same reason [`ViewData::set_seq`] keeps a sequence.
+    fn set_version(&mut self, key: String, version: Option<String>) {
+        if let Some(version) = version {
+            self.versions.insert(key, version);
+        }
+    }
+
     fn remove(&mut self, key: &str) -> Option<Value> {
         self.access_order.retain(|existing| existing != key);
         self.seqs.remove(key);
+        self.versions.remove(key);
         self.evicted.remove(key);
         self.entities.remove(key)
     }
@@ -117,6 +130,13 @@ fn extract_seq(data: &Value) -> Option<String> {
         Some(Value::Number(seq)) => Some(seq.to_string()),
         _ => None,
     }
+}
+
+/// Read the `_version` a server stamps into a frame's data.
+fn extract_version(data: &Value) -> Option<String> {
+    data.get("_version")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 #[derive(Debug, Clone)]
@@ -652,7 +672,8 @@ impl SharedStore {
                 // (`store.py:282`) both write unconditionally — but they still
                 // publish their `_seq` so later live frames can be ordered.
                 let seq = extract_seq(&row.data);
-                view.insert(row.key.clone(), row.data.clone(), seq);
+                let version = extract_version(&row.data);
+                view.insert(row.key.clone(), row.data.clone(), seq, version);
                 updates.push(StoreUpdate {
                     subscription_id: subscription_id.to_string(),
                     view: stage.entity.clone(),
@@ -749,13 +770,16 @@ impl SharedStore {
                     .map(|epoch| format!("{epoch}:{offset}"))
             });
 
-            // `handleEntityFrameWithoutEnforce` (`frame-processor.ts:627`):
-            //   frame.offset === undefined && frame.seq !== undefined
-            //     && previousSequence !== undefined
-            //     && compareSeq(frame.seq, previousSequence) <= 0
-            // A frame at or behind the sequence already stored must not overwrite
-            // the newer cached entity. `<= 0` makes an exact replay a duplicate,
-            // and a frame with no `seq` is never stale.
+            // `handleEntityFrameWithoutEnforce` (`frame-processor.ts`): a frame
+            // at or behind the one already stored must not overwrite the newer
+            // cached entity, and an exact replay is a duplicate.
+            //
+            // A server that stamps `_version` orders one key's frames by it.
+            // `seq` cannot: every update decoded from one transaction shares
+            // one, and within a slot account updates and instructions number
+            // themselves differently, so a later frame can carry a lower seq.
+            // Without a version (an older server) the seq rule applies, and a
+            // frame with no `seq` is never stale.
             //
             // On a tape the offset is the identity: two events decoded from one
             // transaction share a seq, so the guard would discard the second and
@@ -765,18 +789,30 @@ impl SharedStore {
                 .views
                 .get(&entity)
                 .and_then(|view| view.seqs.get(&key).cloned());
-            let duplicate_or_stale_sequence = match (seq.as_deref(), previous_seq.as_deref()) {
-                (Some(incoming), Some(previous)) if offset.is_none() => {
-                    compare_seq(incoming, previous) != Ordering::Greater
+            let frame_version = extract_version(&data);
+            let duplicate_or_stale = if offset.is_some() {
+                false
+            } else if let Some(version) = frame_version.as_deref() {
+                let held = state
+                    .views
+                    .get(&entity)
+                    .and_then(|view| view.versions.get(&key))
+                    .map(String::as_str);
+                is_stale_version(version, held)
+            } else {
+                match (seq.as_deref(), previous_seq.as_deref()) {
+                    (Some(incoming), Some(previous)) => {
+                        compare_seq(incoming, previous) != Ordering::Greater
+                    }
+                    _ => false,
                 }
-                _ => false,
             };
 
             match operation {
                 Operation::Upsert => {
                     let view = state.views.entry(entity.clone()).or_default();
                     let previous = view.entities.get(&key).cloned();
-                    let stale_cached = if duplicate_or_stale_sequence {
+                    let stale_cached = if duplicate_or_stale {
                         previous.clone()
                     } else {
                         None
@@ -801,7 +837,7 @@ impl SharedStore {
                     } else {
                         // `frame.seq ?? extractSeq(frame.data)` (`frame-processor.ts:662`).
                         let next_seq = seq.clone().or_else(|| extract_seq(&data));
-                        view.insert(key.clone(), data.clone(), next_seq);
+                        view.insert(key.clone(), data.clone(), next_seq, frame_version.clone());
                         StoreUpdate {
                             subscription_id: subscription_id.clone(),
                             view: entity.clone(),
@@ -872,7 +908,7 @@ impl SharedStore {
                     }
                     let view = state.views.entry(entity.clone()).or_default();
                     let previous = view.entities.get(&key).cloned();
-                    let stale_existing = if duplicate_or_stale_sequence {
+                    let stale_existing = if duplicate_or_stale {
                         previous.clone()
                     } else {
                         None
@@ -910,6 +946,7 @@ impl SharedStore {
                             .or_else(|| extract_seq(&data))
                             .or_else(|| previous_seq.clone());
                         view.set_seq(key.clone(), next_seq);
+                        view.set_version(key.clone(), frame_version.clone());
                         StoreUpdate {
                             subscription_id: subscription_id.clone(),
                             view: entity.clone(),
@@ -1322,6 +1359,7 @@ fn enforce_max_entries(state: &mut StoreState, view: &str, max: Option<usize>) {
             .expect("access order index exists");
         view_data.entities.remove(&key);
         view_data.seqs.remove(&key);
+        view_data.versions.remove(&key);
         view_data.remember_evicted(key, max);
     }
 }
@@ -1693,6 +1731,81 @@ mod tests {
         assert_eq!(entity(&store, "k").await, Some(json!({"v": "second"})));
     }
 
+    /// An unversioned frame falls back to the `seq` rule and keeps the
+    /// version the entity already had, so a later frame from before it is
+    /// still caught. Mirrors `test_an_unversioned_frame_keeps_the_tracked_version`.
+    #[tokio::test]
+    async fn an_unversioned_frame_keeps_the_tracked_version() {
+        let store = SharedStore::new();
+        register(&store, "s", SubscriptionQuery::new("Thing/state")).await;
+
+        store
+            .apply_frame(upsert(
+                "s",
+                "k",
+                json!({"v": "first", "_version": "3f9a2c1d:5"}),
+                Some("50:000000000009"),
+            ))
+            .await
+            .unwrap();
+        store
+            .apply_frame(patch(
+                "s",
+                "k",
+                json!({"w": "second"}),
+                vec![],
+                Some("51:000000000001"),
+            ))
+            .await
+            .unwrap();
+        store
+            .apply_frame(patch(
+                "s",
+                "k",
+                json!({"v": "stale", "_version": "3f9a2c1d:4"}),
+                vec![],
+                Some("52:000000000001"),
+            ))
+            .await
+            .unwrap();
+
+        let stored = entity(&store, "k").await.unwrap();
+        assert_eq!(
+            (&stored["v"], &stored["w"]),
+            (&json!("first"), &json!("second"))
+        );
+    }
+
+    /// A version that does not parse cannot be ordered, so it never makes a
+    /// frame stale.
+    #[tokio::test]
+    async fn a_version_that_does_not_parse_is_never_stale() {
+        let store = SharedStore::new();
+        register(&store, "s", SubscriptionQuery::new("Thing/state")).await;
+
+        store
+            .apply_frame(upsert(
+                "s",
+                "k",
+                json!({"v": 1, "_version": "3f9a2c1d:5"}),
+                Some("50:000000000001"),
+            ))
+            .await
+            .unwrap();
+        store
+            .apply_frame(patch(
+                "s",
+                "k",
+                json!({"v": 2, "_version": "not-a-version"}),
+                vec![],
+                Some("50:000000000001"),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(entity(&store, "k").await.unwrap()["v"], 2);
+    }
+
     /// `_seq` inside the payload is the fallback sequence source
     /// (`extractSeq`), and a patch with no sequence of its own inherits the
     /// entity's (`frame-processor.ts:721`) — so a later stale frame is still
@@ -1902,7 +2015,7 @@ mod tests {
         }
         assert!(!view.evicted.contains("a"));
         assert!(view.evicted.contains("b") && view.evicted.contains("c"));
-        view.insert("b".to_string(), json!({}), None);
+        view.insert("b".to_string(), json!({}), None, None);
         assert!(!view.evicted.contains("b"), "held again");
     }
 

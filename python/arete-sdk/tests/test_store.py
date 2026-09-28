@@ -84,7 +84,23 @@ class TestConformanceFixtures:
             "replay-cursors.json",
             "replay-gaps.json",
             "whole-entities.json",
+            "frame-versions.json",
         ]
+
+    def test_frames_are_ordered_by_version_and_by_seq_without_one(self):
+        spec = fixture("frame-versions.json")
+        h = Harness()
+        for request in spec["client"]:
+            h.register(request["subscriptionId"], request["query"])
+        for frame in spec["server"]:
+            h.process(frame)
+        for request in spec["client"]:
+            view = request["query"]["view"]
+            expected = spec["expected"][view]
+            assert sorted(h.result(request["subscriptionId"]).keys) == sorted(expected)
+            for key, entity in expected.items():
+                stored = h.store.get_entity(view, key)
+                assert {field: stored.get(field) for field in entity} == entity, view
 
     def test_patches_for_unheld_keys_follow_the_whole_entity_guarantee(self):
         spec = fixture("whole-entities.json")
@@ -545,6 +561,45 @@ class TestPatchMerge:
         h.process({**base, "data": {"v": "new"}, "seq": "50:000000000002"})
         h.process({**base, "data": {"v": "old"}, "seq": "50:000000000001"})
         assert h.store.get_entity("Thing/state", "k") == {"v": "new"}
+
+    def test_an_unversioned_frame_keeps_the_tracked_version(self):
+        h = Harness()
+        h.register("s", {"view": "Thing/state", "key": "k"})
+        base = {
+            "protocolVersion": 2,
+            "subscriptionId": "s",
+            "mode": "state",
+            "entity": "Thing/state",
+            "key": "k",
+        }
+        h.process({
+            **base, "op": "upsert",
+            "data": {"v": "first", "_version": "3f9a2c1d:5"}, "seq": "50:000000000009",
+        })
+        # No version: the seq rule decides, and this seq is newer.
+        h.process({**base, "op": "patch", "data": {"w": "second"}, "seq": "51:000000000001"})
+        # The version recorded before the unversioned write still orders frames.
+        h.process({
+            **base, "op": "patch",
+            "data": {"v": "stale", "_version": "3f9a2c1d:4"}, "seq": "52:000000000001",
+        })
+        stored = h.store.get_entity("Thing/state", "k")
+        assert (stored["v"], stored["w"]) == ("first", "second")
+
+    def test_a_version_that_does_not_parse_is_never_stale(self):
+        h = Harness()
+        h.register("s", {"view": "Thing/state", "key": "k"})
+        base = {
+            "protocolVersion": 2,
+            "subscriptionId": "s",
+            "mode": "state",
+            "entity": "Thing/state",
+            "key": "k",
+            "seq": "50:000000000001",
+        }
+        h.process({**base, "op": "upsert", "data": {"v": 1, "_version": "3f9a2c1d:5"}})
+        h.process({**base, "op": "patch", "data": {"v": 2, "_version": "not-a-version"}})
+        assert h.store.get_entity("Thing/state", "k")["v"] == 2
 
 
 class TestServerSort:

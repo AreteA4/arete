@@ -47,6 +47,7 @@ from arete.wire import (
     Update,
     compare_seq,
     format_cursor,
+    is_stale_version,
 )
 
 _MISSING = object()
@@ -175,12 +176,21 @@ def _extract_seq(data: Any) -> Optional[str]:
     return None
 
 
+def _extract_version(data: Any) -> Optional[str]:
+    if not isinstance(data, Mapping):
+        return None
+    version = data.get("_version")
+    return version if isinstance(version, str) else None
+
+
 class Store:
     """Internal engine: entity storage + per-subscription query records."""
 
     def __init__(self) -> None:
         self._entities: Dict[str, Dict[str, Any]] = {}
         self._seqs: Dict[str, Dict[str, str]] = {}
+        # The latest ``_version`` applied per view and key; see _handle_entity.
+        self._versions: Dict[str, Dict[str, str]] = {}
         self._records: Dict[str, _Record] = {}
 
     # -- registration ------------------------------------------------------
@@ -295,7 +305,10 @@ class Store:
         view = frame.entity
         accepted: List[str] = []
         for entity in frame.data:
-            self._set_entity(view, entity.key, entity.data, _extract_seq(entity.data))
+            self._set_entity(
+                view, entity.key, entity.data,
+                _extract_seq(entity.data), _extract_version(entity.data),
+            )
             accepted.append(entity.key)
         self._stage_snapshot(frame, accepted)
 
@@ -359,15 +372,26 @@ class Store:
         previous = self._entities.get(view, {}).get(frame.key, _MISSING)
         previous_value = None if previous is _MISSING else previous
         previous_seq = self._seqs.get(view, {}).get(frame.key)
-        # On a tape the offset is the identity: two events decoded from one
-        # transaction share a seq, so the seq guard would discard the second
-        # (TS frame-processor.ts, Rust store.rs apply_live).
-        stale = (
-            frame.offset is None
-            and frame.seq is not None
-            and previous_seq is not None
-            and compare_seq(frame.seq, previous_seq) <= 0
-        )
+        # A server that stamps ``_version`` orders one key's frames by it.
+        # ``seq`` cannot: every update decoded from one transaction shares one,
+        # and within a slot account updates and instructions number themselves
+        # differently, so a later frame can carry a lower seq. Without a
+        # version (an older server) the seq rule applies. On a tape the offset
+        # is the identity, so neither does (TS frame-processor.ts, Rust
+        # store.rs apply_live).
+        frame_version = _extract_version(frame.data)
+        if frame.offset is not None:
+            stale = False
+        elif frame_version is not None:
+            stale = is_stale_version(
+                frame_version, self._versions.get(view, {}).get(frame.key)
+            )
+        else:
+            stale = (
+                frame.seq is not None
+                and previous_seq is not None
+                and compare_seq(frame.seq, previous_seq) <= 0
+            )
 
         if frame.op == "upsert":
             if frame.data is None:
@@ -380,7 +404,7 @@ class Store:
                 )
                 return
             seq = frame.seq or _extract_seq(frame.data)
-            self._set_entity(view, frame.key, frame.data, seq)
+            self._set_entity(view, frame.key, frame.data, seq, frame_version)
             update = Update(op="upsert", key=frame.key, data=frame.data)
             rich = self._make_rich(frame.key, previous, frame.data)
             self._apply_live(frame.subscription_id, frame.key, update, rich, seq, frame.offset)
@@ -424,7 +448,7 @@ class Store:
                 else frame.data
             )
             seq = frame.seq or _extract_seq(frame.data) or previous_seq
-            self._set_entity(view, frame.key, merged, seq)
+            self._set_entity(view, frame.key, merged, seq, frame_version)
             update = Update(op="patch", key=frame.key, data=frame.data)
             rich = self._make_rich(frame.key, previous, merged, patch=frame.data)
             self._apply_live(
@@ -443,6 +467,7 @@ class Store:
         if frame.op == "delete":
             self._entities.get(view, {}).pop(frame.key, None)
             self._seqs.get(view, {}).pop(frame.key, None)
+            self._versions.get(view, {}).pop(frame.key, None)
             self._delete_global(
                 view,
                 frame.key,
@@ -614,6 +639,7 @@ class Store:
         self._records.clear()
         self._entities.clear()
         self._seqs.clear()
+        self._versions.clear()
 
     # -- internals ---------------------------------------------------------
 
@@ -624,10 +650,21 @@ class Store:
         record.staged = None
         self._touch(record)
 
-    def _set_entity(self, view: str, key: str, data: Any, seq: Optional[str]) -> None:
+    def _set_entity(
+        self,
+        view: str,
+        key: str,
+        data: Any,
+        seq: Optional[str],
+        version: Optional[str] = None,
+    ) -> None:
         self._entities.setdefault(view, {})[key] = data
+        # An unsequenced or unversioned write keeps what it replaces, so the
+        # guard stays armed for the next frame.
         if seq is not None:
             self._seqs.setdefault(view, {})[key] = seq
+        if version is not None:
+            self._versions.setdefault(view, {})[key] = version
 
     def _make_rich(self, key: str, previous: Any, after: Any, patch: Any = None) -> RichUpdate:
         if previous is _MISSING:

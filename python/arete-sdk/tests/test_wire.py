@@ -17,6 +17,7 @@ from arete.wire import (
     UnsubscribedFrame,
     compare_seq,
     format_u64,
+    is_stale_version,
     frame_slot,
     is_gzip_data,
     parse_frame,
@@ -284,6 +285,23 @@ class TestSeq:
 
     def test_extra_colons_use_second_segment_as_index(self):
         assert compare_seq("1:2:3", "1:2:9") == 0
+
+
+class TestVersion:
+    def test_counters_order_frames_within_an_epoch(self):
+        assert is_stale_version("3f9a2c1d:4", "3f9a2c1d:5")
+        assert is_stale_version("3f9a2c1d:5", "3f9a2c1d:5")
+        assert not is_stale_version("3f9a2c1d:6", "3f9a2c1d:5")
+        assert not is_stale_version("3f9a2c1d:10", "3f9a2c1d:9")  # numeric, not lexicographic
+
+    def test_another_epoch_or_nothing_held_is_never_stale(self):
+        assert not is_stale_version("a1b2c3d4:1", "3f9a2c1d:500")
+        assert not is_stale_version("3f9a2c1d:1", None)
+
+    def test_a_version_that_does_not_parse_is_never_stale(self):
+        assert not is_stale_version("garbage", "3f9a2c1d:5")
+        assert not is_stale_version("3f9a2c1d:x", "3f9a2c1d:5")
+        assert not is_stale_version("3f9a2c1d:1", "garbage")
 
 
 class TestU64:

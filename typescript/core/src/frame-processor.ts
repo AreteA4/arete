@@ -13,6 +13,7 @@ import { AreteError, DEFAULT_MAX_ENTRIES_PER_VIEW } from './types';
 import type { QueryStore } from './query-store';
 
 const INTERNAL_SEQ_FIELD = '__seq';
+const INTERNAL_VERSION_FIELD = '__version';
 
 export interface WaitForProcessedSlotOptions {
   /** Reject if the requested slot has not been processed within this duration. */
@@ -173,6 +174,9 @@ function toCamelCaseSegment(value: string): string {
   if (value === '_seq') {
     return INTERNAL_SEQ_FIELD;
   }
+  if (value === '_version') {
+    return INTERNAL_VERSION_FIELD;
+  }
 
   const pascal = value
     .split(/[_.-]/)
@@ -185,6 +189,15 @@ function toCamelCaseSegment(value: string): string {
   }
 
   return pascal[0]!.toLowerCase() + pascal.slice(1);
+}
+
+/** `{epoch}:{counter}` from a frame's `_version`, or null if it does not parse. */
+function parseVersion(version: string): { epoch: string; counter: bigint } | null {
+  const separator = version.lastIndexOf(':');
+  if (separator <= 0) return null;
+  const counter = version.slice(separator + 1);
+  if (!/^\d+$/.test(counter)) return null;
+  return { epoch: version.slice(0, separator), counter: BigInt(counter) };
 }
 
 export class FrameProcessor {
@@ -373,6 +386,58 @@ export class FrameProcessor {
       if (leftValue !== rightValue) return leftValue < rightValue ? -1 : 1;
     }
     return leftIndex.localeCompare(rightIndex);
+  }
+
+  private extractVersion(data: unknown): string | undefined {
+    if (!isObject(data)) {
+      return undefined;
+    }
+
+    const version = data._version;
+    return typeof version === 'string' ? version : undefined;
+  }
+
+  private getInternalVersion(data: unknown): string | undefined {
+    if (!isObject(data)) {
+      return undefined;
+    }
+
+    const version = (data as Record<string, unknown>)[INTERNAL_VERSION_FIELD];
+    return typeof version === 'string' ? version : undefined;
+  }
+
+  /**
+   * Whether a frame at `incoming` is one this client already applied, or older.
+   * A version is `{epoch}:{counter}`, and counters compare only within an
+   * epoch: a server restart or a reloaded stack starts a new one, whose first
+   * frame is newer than anything from the old one. A version that does not
+   * parse cannot be ordered and is never stale.
+   */
+  private isStaleVersion(incoming: string, held: string | undefined): boolean {
+    if (held === undefined) {
+      return false;
+    }
+    const next = parseVersion(incoming);
+    const current = parseVersion(held);
+    if (next === null || current === null || next.epoch !== current.epoch) {
+      return false;
+    }
+    return next.counter <= current.counter;
+  }
+
+  private attachInternalVersion<T>(data: T, version?: string): T {
+    if (!version || !isObject(data)) {
+      return data;
+    }
+
+    Object.defineProperty(data, INTERNAL_VERSION_FIELD, {
+      value: version,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+
+    return data;
   }
 
   private attachInternalSeq<T>(_viewPath: string, data: T, seq?: string): T {
@@ -656,7 +721,10 @@ export class FrameProcessor {
         continue;
       }
 
-      const nextValue = this.attachInternalSeq(viewPath, normalized, this.extractSeq(entity.data));
+      const nextValue = this.attachInternalVersion(
+        this.attachInternalSeq(viewPath, normalized, this.extractSeq(entity.data)),
+        this.extractVersion(entity.data)
+      );
       acceptedKeys.push(entity.key);
       const previousValue = this.storage.get<T>(viewPath, entity.key);
       this.storage.set(viewPath, entity.key, nextValue);
@@ -683,18 +751,26 @@ export class FrameProcessor {
     const previousValue = this.storage.get<T>(viewPath, frame.key);
     const previousSequence = this.getInternalSeq(previousValue);
     const cursor = this.cursors.observe(frame);
-    // On a tape the offset is the identity: two events decoded from one
-    // transaction share a seq, so the seq guard would discard the second.
-    const duplicateOrStaleSequence = frame.offset === undefined
-      && frame.seq !== undefined
-      && previousSequence !== undefined
-      && this.compareSeq(frame.seq, previousSequence) <= 0;
+    // A server that stamps `_version` orders one key's frames by it. `seq`
+    // cannot: every update decoded from one transaction shares one, and within
+    // a slot account updates and instructions number themselves differently,
+    // so a later frame can carry a lower `seq`. Without a version (an older
+    // server) the `seq` rule applies. On a tape the offset is the identity, so
+    // neither does.
+    const frameVersion = this.extractVersion(frame.data);
+    const duplicateOrStale = frame.offset === undefined && (
+      frameVersion !== undefined
+        ? this.isStaleVersion(frameVersion, this.getInternalVersion(previousValue))
+        : frame.seq !== undefined
+          && previousSequence !== undefined
+          && this.compareSeq(frame.seq, previousSequence) <= 0
+    );
 
     switch (frame.op) {
       case 'upsert':
         {
           if (frame.data === null) break;
-          if (duplicateOrStaleSequence && previousValue !== null) {
+          if (duplicateOrStale && previousValue !== null) {
             const update: Update<T> = {
               type: 'upsert',
               key: frame.key,
@@ -718,15 +794,19 @@ export class FrameProcessor {
             break;
           }
 
-          const nextValue = this.attachInternalSeq(
-            viewPath,
-            normalized,
-            // Fall back to the previous entity's sequence, as the patch branch
-            // below does. Without this an unsequenced upsert drops the tracked
-            // sequence (it rides on the object being replaced), disarming the
-            // staleness guard until the next sequenced frame and letting a
-            // later older frame overwrite newer data.
-            frame.seq ?? this.extractSeq(frame.data) ?? this.getInternalSeq(previousValue)
+          const nextValue = this.attachInternalVersion(
+            this.attachInternalSeq(
+              viewPath,
+              normalized,
+              // Fall back to the previous entity's sequence, as the patch branch
+              // below does. Without this an unsequenced upsert drops the tracked
+              // sequence (it rides on the object being replaced), disarming the
+              // staleness guard until the next sequenced frame and letting a
+              // later older frame overwrite newer data.
+              frame.seq ?? this.extractSeq(frame.data) ?? this.getInternalSeq(previousValue)
+            ),
+            // An unversioned write keeps the version it replaces, likewise.
+            frameVersion ?? this.getInternalVersion(previousValue)
           );
           this.storage.set(viewPath, frame.key, nextValue);
           this.forgetEvicted(viewPath, frame.key);
@@ -779,7 +859,7 @@ export class FrameProcessor {
         if (normalizedPatch === null) {
           break;
         }
-        if (duplicateOrStaleSequence && existing !== null) {
+        if (duplicateOrStale && existing !== null) {
           const update: Update<T> = {
             type: 'patch',
             key: frame.key,
@@ -799,10 +879,13 @@ export class FrameProcessor {
         const merged = existing
           ? deepMergeWithAppend(existing, normalizedPatch, appendPaths)
           : normalizedPatch;
-        const nextValue = this.attachInternalSeq(
-          viewPath,
-          merged as T,
-          frame.seq ?? this.extractSeq(frame.data) ?? this.getInternalSeq(existing)
+        const nextValue = this.attachInternalVersion(
+          this.attachInternalSeq(
+            viewPath,
+            merged as T,
+            frame.seq ?? this.extractSeq(frame.data) ?? this.getInternalSeq(existing)
+          ),
+          frameVersion ?? this.getInternalVersion(existing)
         );
         this.storage.set(viewPath, frame.key, nextValue);
         const update: Update<T> = {

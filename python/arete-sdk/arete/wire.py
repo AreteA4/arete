@@ -107,6 +107,30 @@ def compare_seq(left: str, right: str) -> int:
     return -1 if left_parsed.index < right_parsed.index else 1
 
 
+def _parse_version(version: str) -> Optional[Tuple[str, int]]:
+    epoch, separator, counter = version.rpartition(":")
+    if not separator or not epoch or not counter.isascii() or not counter.isdigit():
+        return None
+    return epoch, int(counter)
+
+
+def is_stale_version(incoming: str, held: Optional[str]) -> bool:
+    """Whether a frame at version ``incoming`` was already applied, or is older.
+
+    A version is ``{epoch}:{counter}``, and counters compare only within an
+    epoch: a server restart or a reloaded stack starts a new one, whose first
+    frame is newer than anything from the old one. A version that does not
+    parse cannot be ordered and is never stale.
+    """
+    if held is None:
+        return False
+    next_version = _parse_version(incoming)
+    current = _parse_version(held)
+    if next_version is None or current is None or next_version[0] != current[0]:
+        return False
+    return next_version[1] <= current[1]
+
+
 # ---------------------------------------------------------------------------
 # Client envelopes (every message carries protocolVersion: 2)
 # ---------------------------------------------------------------------------

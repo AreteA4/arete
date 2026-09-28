@@ -477,4 +477,4 @@ Stable protocol codes include `malformed-message`, `invalid-subscription`, `inva
 
 ## Conformance Fixtures
 
-Deterministic shared examples live in `tests/fixtures/websocket-v2`. The manifest covers keyed state, independent list windows, exact filters, authoritative multi-batch and empty snapshots, query-scoped remove, global delete, incremental snapshots, reconnect replacement, error envelopes, replay cursors and gaps, and patches for keys the client does not hold with and without `wholeEntities`.
+Deterministic shared examples live in `tests/fixtures/websocket-v2`. The manifest covers keyed state, independent list windows, exact filters, authoritative multi-batch and empty snapshots, query-scoped remove, global delete, incremental snapshots, reconnect replacement, error envelopes, replay cursors and gaps, patches for keys the client does not hold with and without `wholeEntities`, and frames ordered by `_version` with a `seq` fallback.
