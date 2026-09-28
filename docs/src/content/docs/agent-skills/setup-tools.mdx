@@ -108,9 +108,11 @@ and implement [FEATURE] using generated names and types. Do not edit generated
 files or reuse MCP cache data as an application dependency.
 </CopyPrompt>
 
-The agent uses `a4 install program ...` when you need standalone program reads
-and transactions, or `a4 install stack ...` when the application needs live
-views as well.
+The agent uses `a4 install stack ...` when the application needs live views,
+with or without transactions: a stack includes the Program SDK for each program
+its views read from, the same one a standalone install gives you. It uses `a4
+install program ...` when you only need program reads and transactions, and
+composes a stack when no single stack groups the views and programs you need.
 
 ## What the setup writes
 
