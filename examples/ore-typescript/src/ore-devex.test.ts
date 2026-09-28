@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { buildInstruction } from '@usearete/sdk';
+
 import {
   AutomationStrategy,
+  ENTROPY_PROGRAM_ADDRESS,
   ORE_PROGRAM_ADDRESS,
   U64_MAX,
   buildPreparedOreInstruction,
   didHitMotherlode,
+  getEntropyVarPda,
   prepareConfigureAutomation,
   prepareDeploy,
   quoteAutomationFunding,
@@ -16,7 +20,11 @@ import {
   reverseBits64,
 } from './generated/ore-devex.js';
 import { ORE_STREAM_STACK } from './generated/ore-stack.js';
-import { oreBuryInstruction, oreBuybackInstruction } from './generated/ore-stack-core.js';
+import {
+  oreBuryInstruction,
+  oreBuybackInstruction,
+  oreDeployInstruction,
+} from './generated/ore-stack-core.js';
 
 function deployed(entries: ReadonlyArray<readonly [number, bigint]> = []): bigint[] {
   const amounts = Array<bigint>(25).fill(0n);
@@ -46,17 +54,32 @@ test('keeps the validated automation strategy discriminants', () => {
   assert.equal(prepared.params.strategy, AutomationStrategy.Preferred);
 });
 
-test('builds a prepared deploy without the optional entropy program', () => {
+test('builds a deploy without its optional entropy accounts', () => {
   assert.doesNotThrow(() =>
-    buildPreparedOreInstruction(
-      prepareDeploy({
-        signer: ORE_PROGRAM_ADDRESS,
-        amountPerSquare: 1n,
-        squares: [0],
-        roundId: 1n,
-      }),
-    ),
+    buildInstruction(oreDeployInstruction, {
+      amount: 1n,
+      squares: 1,
+      signer: ORE_PROGRAM_ADDRESS,
+      authority: ORE_PROGRAM_ADDRESS,
+      round: ORE_PROGRAM_ADDRESS,
+    }),
   );
+});
+
+test('prepared deploy passes the entropy var and program the round-opening deploy needs', () => {
+  const instruction = buildPreparedOreInstruction(
+    prepareDeploy({
+      signer: ORE_PROGRAM_ADDRESS,
+      amountPerSquare: 1n,
+      squares: [0],
+      roundId: 1n,
+    }),
+  );
+  const [entropyVar, entropyProgram] = instruction.keys.slice(-2);
+  assert.equal(entropyVar?.pubkey, getEntropyVarPda());
+  assert.equal(entropyVar?.isWritable, true);
+  assert.equal(entropyProgram?.pubkey, ENTROPY_PROGRAM_ADDRESS);
+  assert.equal(entropyProgram?.isWritable, false);
 });
 
 test('encodes reloadWinnings in the automation instruction bytes', () => {
