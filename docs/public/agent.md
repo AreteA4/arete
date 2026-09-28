@@ -89,6 +89,12 @@ Arete can:
     generated output. `arete.toml` records intent; `arete.lock` records exact
     resolution.
 
+    A stack includes the program SDKs for the programs its views index, at
+    `arete.programs.<name>`, and they are the same SDKs a standalone program
+    install gives. Install a stack when the app needs live views, with or
+    without transactions; install a program on its own only when no stack you
+    use covers it. Never merge stack and program objects by hand.
+
 Authentication may be required for the knowledge layer or hosted connections:
 
        a4 auth signup
