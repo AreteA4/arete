@@ -108,8 +108,13 @@ truncate this recovery snapshot.
 
 A keyed state subscription holds only the latest frame for its key. If more
 than one patch is published before the subscription reads them, the latest
-patch alone would lose the fields of the ones before it. The server sends the
-key's full cached entity as a `patch` instead, merged like any other. If one of
+patch alone would lose the fields of the ones before it. The server sends a
+`patch` of the cached entity instead, merged like any other. It holds every
+field that changed since the subscription last sent the entity whole (its
+snapshot row, an `upsert`, or the previous such catch-up), and every field a
+patch forwarded in between set, at its current value: that covers a patch a
+client dropped and a field the entity has since set back. A field the entity
+no longer has is sent as `null`. If one of
 the frames the subscription missed replaced the entity instead of patching it
 (a `delete`, for example of an entity created again since, or an `upsert`),
 merging would keep fields the entity no longer has, so the server sends the

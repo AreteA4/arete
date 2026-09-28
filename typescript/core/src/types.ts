@@ -330,6 +330,15 @@ export interface WatchOptions<TSchema = unknown> {
   snapshotLimit?: number;
 }
 
+/** Options for the one-shot reads `get` and `getOne`. */
+export interface GetOptions extends WatchOptions {
+  /**
+   * How long to wait for the initial snapshot before rejecting with
+   * `InitialDataTimeoutError` (defaults to 5000). `null` waits forever.
+   */
+  timeoutMs?: number | null;
+}
+
 export interface AreteOptions<TStack extends StackDefinition> {
   stack: TStack;
   /** Connect immediately when the client is created (defaults to true). */
@@ -606,7 +615,15 @@ export interface TypedStateView<T, TKey = string> {
   use<TSchema = T>(key: TKey, options?: WatchOptions<TSchema>): AsyncIterable<TSchema>;
   watch(key: TKey, options?: WatchOptions): AsyncIterable<Update<T>>;
   watchRich(key: TKey, options?: WatchOptions): AsyncIterable<RichUpdate<T>>;
-  get(key: TKey, options?: WatchOptions): Promise<T | null>;
+  /**
+   * Open (or reuse) the equivalent subscription, wait for its initial
+   * snapshot, and release it. Resolves `null` when the entity is absent.
+   */
+  get(key: TKey, options?: GetOptions): Promise<T | null>;
+  /**
+   * Read an already active equivalent subscription without waiting;
+   * `undefined` when none is active (absent is not the same as empty).
+   */
   getSync(key: TKey, options?: WatchOptions): T | null | undefined;
 }
 
@@ -614,7 +631,17 @@ export interface TypedListView<T> {
   use<TSchema = T>(options?: WatchOptions<TSchema>): AsyncIterable<TSchema>;
   watch(options?: WatchOptions): AsyncIterable<Update<T>>;
   watchRich(options?: WatchOptions): AsyncIterable<RichUpdate<T>>;
-  get(options?: WatchOptions): Promise<T[]>;
+  /**
+   * Open (or reuse) the equivalent subscription, wait for its initial
+   * snapshot, and release it.
+   */
+  get(options?: GetOptions): Promise<T[]>;
+  /** Like `get` with `take: 1`: the first item, or `null` when the list is empty. */
+  getOne(options?: Omit<GetOptions, 'take'>): Promise<T | null>;
+  /**
+   * Read an already active equivalent subscription without waiting;
+   * `undefined` when none is active (absent is not the same as empty).
+   */
   getSync(options?: WatchOptions): T[] | undefined;
 }
 
