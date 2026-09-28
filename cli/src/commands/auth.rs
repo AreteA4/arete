@@ -1,6 +1,7 @@
 use anyhow::Result;
 use colored::Colorize;
 use std::io::{self, Write};
+use std::path::{Component, Path, PathBuf};
 
 use crate::api_client::ApiClient;
 use crate::config;
@@ -230,14 +231,36 @@ pub fn whoami() -> Result<()> {
 // Publishable Key Management
 // ============================================================================
 
-pub fn list_keys() -> Result<()> {
+pub fn list_keys(json: bool) -> Result<()> {
     let client = ApiClient::new()?;
 
-    let spinner = ui::create_spinner("Fetching API keys...");
+    let spinner = (!json).then(|| ui::create_spinner("Fetching API keys..."));
+    let result = client.list_api_keys();
+    if let Some(spinner) = spinner {
+        spinner.finish_and_clear();
+    }
 
-    match client.list_api_keys() {
+    match result {
         Ok(keys) => {
-            spinner.finish_and_clear();
+            if json {
+                let keys = keys
+                    .iter()
+                    .map(|key| {
+                        serde_json::json!({
+                            "id": key.id,
+                            "name": key.name,
+                            "keyClass": key.key_class,
+                            "origins": key.origin_allowlist.clone().unwrap_or_default(),
+                            "expiresAt": key.expires_at,
+                            "lastUsedAt": key.last_used_at,
+                            "createdAt": key.created_at,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let payload = serde_json::json!({ "schemaVersion": 1, "keys": keys });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+                return Ok(());
+            }
 
             if keys.is_empty() {
                 println!("{}", "No API keys found.".yellow());
@@ -290,89 +313,485 @@ pub fn list_keys() -> Result<()> {
                 println!();
             }
         }
-        Err(e) => {
-            spinner.finish_and_clear();
-            ui::print_error(&format!("Failed to list keys: {}", e));
+        Err(error) => {
+            let message = format!("Failed to list keys: {error}");
+            return Err(error.context(message));
         }
     }
 
     Ok(())
 }
 
-pub fn create_publishable_key(
-    name: Option<String>,
-    origins: Vec<String>,
-    expiry_days: Option<i64>,
-) -> Result<()> {
-    // Validate origins
-    if origins.is_empty() {
-        anyhow::bail!("At least one origin is required for publishable keys (e.g., https://example.com or http://localhost:5173)");
-    }
+/// Options for `a4 auth keys create-publishable`.
+pub struct CreatePublishableArgs {
+    pub name: Option<String>,
+    pub origins: Vec<String>,
+    pub expiry_days: Option<i64>,
+    /// Write only the key's environment variable into this file.
+    pub env_file: Option<String>,
+}
 
-    for origin in &origins {
-        if !origin.starts_with("https://") && !origin.starts_with("http://") {
-            anyhow::bail!(
-                "Invalid origin '{}'. Origins must start with https:// or http://",
-                origin
-            );
+/// The browser framework a project uses, which decides the environment
+/// variable its bundler exposes to client code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Framework {
+    NextJs,
+    Vite,
+    Generic,
+}
+
+impl Framework {
+    fn id(self) -> &'static str {
+        match self {
+            Framework::NextJs => "nextjs",
+            Framework::Vite => "vite",
+            Framework::Generic => "generic",
         }
     }
+
+    fn env_var(self) -> &'static str {
+        match self {
+            Framework::NextJs => "NEXT_PUBLIC_ARETE_PUBLISHABLE_KEY",
+            Framework::Vite => "VITE_ARETE_PUBLISHABLE_KEY",
+            Framework::Generic => "ARETE_PUBLISHABLE_KEY",
+        }
+    }
+
+    fn how(self) -> &'static str {
+        match self {
+            Framework::NextJs => "Next.js exposes NEXT_PUBLIC_* variables to browser code",
+            Framework::Vite => "Vite exposes VITE_* variables to browser code as import.meta.env",
+            Framework::Generic => "read it from the environment and pass it as auth.publishableKey",
+        }
+    }
+}
+
+const NEXT_CONFIGS: [&str; 5] = [
+    "next.config.js",
+    "next.config.mjs",
+    "next.config.cjs",
+    "next.config.ts",
+    "next.config.mts",
+];
+const VITE_CONFIGS: [&str; 6] = [
+    "vite.config.js",
+    "vite.config.mjs",
+    "vite.config.cjs",
+    "vite.config.ts",
+    "vite.config.mts",
+    "vite.config.cts",
+];
+
+/// Detect the framework from config files and package.json dependencies in
+/// the project directory. Next.js wins over Vite, because a Next.js app may
+/// carry Vite as a test dependency.
+fn detect_framework(root: &Path) -> Framework {
+    let package_deps = std::fs::read_to_string(root.join("package.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .map(|package| {
+            ["dependencies", "devDependencies"]
+                .iter()
+                .filter_map(|key| package.get(*key).and_then(serde_json::Value::as_object))
+                .flat_map(|deps| deps.keys().cloned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let has_dep = |name: &str| package_deps.iter().any(|dep| dep == name);
+    let has_file = |names: &[&str]| names.iter().any(|name| root.join(name).is_file());
+    if has_file(&NEXT_CONFIGS) || has_dep("next") {
+        Framework::NextJs
+    } else if has_file(&VITE_CONFIGS) || has_dep("vite") {
+        Framework::Vite
+    } else {
+        Framework::Generic
+    }
+}
+
+/// Check the one origin a publishable key allows. The browser sends
+/// `scheme://host[:port]` with no path, so anything else could never match.
+fn validate_origins(origins: &[String]) -> Result<String> {
+    let origin = match origins {
+        [origin] => origin.trim(),
+        [] => anyhow::bail!(
+            "A publishable key needs exactly one origin (e.g. https://example.com or http://localhost:5173)"
+        ),
+        many => anyhow::bail!(
+            "A publishable key allows exactly one origin; got {} ({}). Create one key per origin.",
+            many.len(),
+            many.join(", ")
+        ),
+    };
+    if !origin.starts_with("https://") && !origin.starts_with("http://") {
+        anyhow::bail!("Invalid origin '{origin}'. Origins must start with https:// or http://");
+    }
+    let parsed = url::Url::parse(origin)
+        .map_err(|error| anyhow::anyhow!("Invalid origin '{origin}': {error}"))?;
+    let normalized = parsed.origin().ascii_serialization();
+    if normalized != origin {
+        anyhow::bail!(
+            "Invalid origin '{origin}'. Browsers send the origin as scheme://host[:port] with no path or trailing slash; use --origin {normalized}"
+        );
+    }
+    Ok(normalized)
+}
+
+/// Resolve `--env-file`. A relative path is taken from the project directory
+/// and must stay inside it, including through symlinked directories, and must
+/// not name a symlink; it resolves to its real location. An absolute path is
+/// an explicit choice and is used as given, following a symlink to the file
+/// it points to.
+fn resolve_env_file(root: &Path, raw: &str) -> Result<PathBuf> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        anyhow::bail!("--env-file must not be empty");
+    }
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        if is_symlink(path) {
+            return std::fs::canonicalize(path).map_err(|error| {
+                anyhow::anyhow!("--env-file {raw} is a symlink that cannot be followed: {error}")
+            });
+        }
+        return Ok(path.to_path_buf());
+    }
+    let project = std::fs::canonicalize(root).map_err(|error| {
+        anyhow::anyhow!(
+            "Failed to resolve the project directory {}: {error}",
+            root.display()
+        )
+    })?;
+    let outside = || {
+        anyhow::anyhow!(
+            "--env-file {raw} points outside the project directory ({}). Pass an absolute path to write there explicitly.",
+            project.display()
+        )
+    };
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => parts.push(part),
+            Component::CurDir => {}
+            _ => return Err(outside()),
+        }
+    }
+    let Some(file_name) = parts.pop() else {
+        anyhow::bail!("--env-file {raw} must name a file");
+    };
+    // The lexical check alone would follow a symlinked directory out of the
+    // project: resolve the directory and check where it really is.
+    let parent = parts
+        .iter()
+        .fold(root.to_path_buf(), |directory, part| directory.join(part));
+    let directory = match std::fs::canonicalize(&parent) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => anyhow::bail!(
+            "--env-file {raw}: directory {} does not exist",
+            parent.display()
+        ),
+        Err(error) => anyhow::bail!("Failed to resolve --env-file {raw}: {error}"),
+    };
+    if !directory.starts_with(&project) {
+        return Err(outside());
+    }
+    let resolved = directory.join(file_name);
+    if is_symlink(&resolved) {
+        anyhow::bail!(
+            "--env-file {raw} is a symlink; pass the absolute path of the file it points to"
+        );
+    }
+    Ok(resolved)
+}
+
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+}
+
+/// Read the current env file (if any) before the key is created, so a path
+/// problem fails without creating a key that could then be lost.
+fn read_env_file(path: &Path) -> Result<Option<String>> {
+    if path.is_dir() {
+        anyhow::bail!("--env-file {} is a directory", path.display());
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if !parent.is_dir() {
+        anyhow::bail!(
+            "--env-file {}: directory {} does not exist",
+            path.display(),
+            parent.display()
+        );
+    }
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(anyhow::anyhow!(
+            "Failed to read --env-file {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+/// Replace the env file with `content` atomically: write a temporary file
+/// beside it and rename it over the original, so a failed write leaves every
+/// other variable in place. An existing file keeps its permissions (env files
+/// are often private); a new one gets the default mode.
+fn write_env_file(path: &Path, content: &str) -> io::Result<()> {
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary_name = std::ffi::OsString::from(".");
+    temporary_name.push(path.file_name().unwrap_or_default());
+    temporary_name.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let temporary = directory.join(temporary_name);
+    let permissions = match std::fs::metadata(path) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // Private until the original's permissions are applied.
+        #[cfg(unix)]
+        if permissions.is_some() {
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(content.as_bytes())?;
+        if let Some(permissions) = permissions {
+            file.set_permissions(permissions)?;
+        }
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// How an env file changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnvChange {
+    Created,
+    Replaced,
+    Appended,
+    Unchanged,
+}
+
+impl EnvChange {
+    fn as_str(self) -> &'static str {
+        match self {
+            EnvChange::Created => "created",
+            EnvChange::Replaced => "replaced",
+            EnvChange::Appended => "appended",
+            EnvChange::Unchanged => "unchanged",
+        }
+    }
+}
+
+/// Whether `line` assigns `name` (`NAME=…` or `export NAME=…`, any leading
+/// whitespace).
+fn assigns(line: &str, name: &str) -> bool {
+    let line = line.trim_start();
+    let line = line
+        .strip_prefix("export")
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .map(str::trim_start)
+        .unwrap_or(line);
+    line.strip_prefix(name)
+        .is_some_and(|rest| rest.trim_start().starts_with('='))
+}
+
+/// Set `name=value` in env-file text, touching no other line: every existing
+/// assignment of `name` is rewritten in place (keeping `export` and
+/// indentation); otherwise one line is appended.
+fn upsert_env_var(existing: Option<&str>, name: &str, value: &str) -> (String, EnvChange) {
+    let Some(existing) = existing else {
+        return (format!("{name}={value}\n"), EnvChange::Created);
+    };
+    let mut output = String::with_capacity(existing.len() + name.len() + value.len() + 2);
+    let mut replaced = false;
+    for line in existing.split_inclusive('\n') {
+        let (body, ending) = match line.strip_suffix("\r\n") {
+            Some(body) => (body, "\r\n"),
+            None => match line.strip_suffix('\n') {
+                Some(body) => (body, "\n"),
+                None => (line, ""),
+            },
+        };
+        if assigns(body, name) {
+            let indent_len = body.len() - body.trim_start().len();
+            let exported = body.trim_start().starts_with("export");
+            output.push_str(&body[..indent_len]);
+            if exported {
+                output.push_str("export ");
+            }
+            output.push_str(&format!("{name}={value}{ending}"));
+            replaced = true;
+        } else {
+            output.push_str(line);
+        }
+    }
+    if replaced {
+        let change = if output == existing {
+            EnvChange::Unchanged
+        } else {
+            EnvChange::Replaced
+        };
+        return (output, change);
+    }
+    let newline = if existing.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push_str(newline);
+    }
+    output.push_str(&format!("{name}={value}{newline}"));
+    (output, EnvChange::Appended)
+}
+
+pub fn create_publishable_key(
+    args: CreatePublishableArgs,
+    config_path: &str,
+    json: bool,
+) -> Result<()> {
+    let origin = validate_origins(&args.origins)?;
+    let root = super::init::project_root(config_path);
+    let framework = detect_framework(&root);
+    let env_var = framework.env_var();
+    let env_target = match args.env_file.as_deref() {
+        Some(raw) => {
+            let path = resolve_env_file(&root, raw)?;
+            let existing = read_env_file(&path)?;
+            Some((path, existing))
+        }
+        None => None,
+    };
 
     let client = ApiClient::new()?;
-
-    let spinner = ui::create_spinner("Creating publishable key...");
-
-    match client.create_publishable_key(name.clone(), origins.clone(), expiry_days) {
-        Ok(response) => {
-            spinner.finish_and_clear();
-
-            println!(
-                "{}",
-                "✓ Publishable key created successfully!".green().bold()
-            );
-            println!();
-            println!(
-                "{}",
-                "⚠️  IMPORTANT: Save this key now - it won't be shown again!"
-                    .yellow()
-                    .bold()
-            );
-            println!();
-
-            if let Some(name) = &name {
-                println!("  Name:       {}", name);
-            }
-            println!("  Key ID:     {}", response.id);
-            println!("  Type:       {}", "publishable".green());
-            println!("  Origins:    {}", origins.join(", "));
-            println!(
-                "  Expires:    {}",
-                response
-                    .expires_at
-                    .split('T')
-                    .next()
-                    .unwrap_or(&response.expires_at)
-            );
-            println!();
-            println!("  {}", "Publishable Key:".bold());
-            println!("  {}", response.key.green().bold());
-            println!();
-            println!(
-                "{}",
-                "This key is safe to use in browser/client-side code.".dimmed()
-            );
-            println!(
-                "{}",
-                "It can only access WebSocket endpoints from the allowed origins.".dimmed()
-            );
+    let spinner = (!json).then(|| ui::create_spinner("Creating publishable key..."));
+    let result =
+        client.create_publishable_key(args.name.clone(), vec![origin.clone()], args.expiry_days);
+    if let Some(spinner) = spinner {
+        spinner.finish_and_clear();
+    }
+    let response = match result {
+        Ok(response) => response,
+        Err(error) => {
+            let message = format!("Failed to create publishable key: {error}");
+            return Err(error.context(message));
         }
-        Err(e) => {
-            spinner.finish_and_clear();
-            ui::print_error(&format!("Failed to create key: {}", e));
+    };
+
+    // The key exists now and is shown only once: report it even if writing
+    // the env file fails, then fail the command.
+    let written = env_target.map(|(path, existing)| {
+        let (content, change) = upsert_env_var(existing.as_deref(), env_var, &response.key);
+        let result = if change == EnvChange::Unchanged {
+            Ok(())
+        } else {
+            write_env_file(&path, &content)
+        };
+        (path, change, result)
+    });
+    let (env_file, env_change, write_error) = match written {
+        Some((path, change, Ok(()))) => (Some(path), Some(change), None),
+        Some((path, _, Err(error))) => (
+            None,
+            None,
+            Some(anyhow::anyhow!(
+                "Created the key, but failed to write {}: {error}. Set {env_var} yourself from the key above.",
+                path.display()
+            )),
+        ),
+        None => (None, None, None),
+    };
+    let name = response.name.clone().or(args.name);
+
+    if json {
+        let payload = serde_json::json!({
+            "schemaVersion": 1,
+            "id": response.id,
+            "name": name,
+            "keyClass": response.key_class,
+            "origins": [origin],
+            "expiresAt": response.expires_at,
+            "key": response.key,
+            "framework": framework.id(),
+            "envVar": env_var,
+            "envFile": env_file.as_ref().map(|path| path.display().to_string()),
+            "envFileChange": env_change.map(EnvChange::as_str),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        println!("{}", "✓ Publishable key created".green().bold());
+        println!();
+        println!(
+            "{}",
+            "Save this key now; it won't be shown again."
+                .yellow()
+                .bold()
+        );
+        println!();
+        if let Some(name) = &name {
+            println!("  Name:       {}", name);
         }
+        println!("  Key ID:     {}", response.id);
+        println!("  Type:       {}", "publishable".green());
+        println!("  Origin:     {}", origin);
+        println!(
+            "  Expires:    {}",
+            response
+                .expires_at
+                .split('T')
+                .next()
+                .unwrap_or(&response.expires_at)
+        );
+        println!();
+        println!("  {}", "Publishable Key:".bold());
+        println!("  {}", response.key.green().bold());
+        println!();
+        match (&env_file, env_change) {
+            (Some(path), Some(change)) => println!(
+                "  {} {env_var} in {} ({})",
+                match change {
+                    EnvChange::Created | EnvChange::Appended => "Wrote",
+                    EnvChange::Replaced => "Replaced",
+                    EnvChange::Unchanged => "Kept",
+                },
+                path.display(),
+                framework.how()
+            ),
+            _ => println!(
+                "  Set {} in your environment ({}), or rerun with --env-file .env.local",
+                format!("{env_var}=<key>").cyan(),
+                framework.how()
+            ),
+        }
+        println!();
+        println!(
+            "{}",
+            "This key is safe in browser code. Each publishable key allows exactly one origin;"
+                .dimmed()
+        );
+        println!(
+            "{}",
+            "create another key for every other origin (e.g. production and localhost).".dimmed()
+        );
     }
 
-    Ok(())
+    match write_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 // ============================================================================
@@ -463,6 +882,276 @@ pub fn signup(name: Option<String>, force: bool, json: bool) -> Result<()> {
     println!();
     println!("Next: {}", "a4 explore --json".cyan());
     Ok(())
+}
+
+#[cfg(test)]
+mod publishable_tests {
+    use super::*;
+    use crate::api_client::test_support::{MockServer, ENV_LOCK};
+
+    #[test]
+    fn framework_detection_prefers_next_then_vite() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(detect_framework(dir.path()), Framework::Generic);
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"devDependencies":{"vite":"^5"}}"#,
+        )
+        .unwrap();
+        assert_eq!(detect_framework(dir.path()), Framework::Vite);
+        assert_eq!(Framework::Vite.env_var(), "VITE_ARETE_PUBLISHABLE_KEY");
+        std::fs::write(dir.path().join("next.config.mjs"), "export default {}").unwrap();
+        assert_eq!(detect_framework(dir.path()), Framework::NextJs);
+        assert_eq!(
+            Framework::NextJs.env_var(),
+            "NEXT_PUBLIC_ARETE_PUBLISHABLE_KEY"
+        );
+        assert_eq!(Framework::Generic.env_var(), "ARETE_PUBLISHABLE_KEY");
+    }
+
+    #[test]
+    fn exactly_one_bare_origin_is_accepted() {
+        assert_eq!(
+            validate_origins(&["http://localhost:5173".into()]).unwrap(),
+            "http://localhost:5173"
+        );
+        let many = validate_origins(&["https://a.test".into(), "https://b.test".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(many.contains("exactly one origin"), "{many}");
+        assert!(validate_origins(&[]).is_err());
+        assert!(validate_origins(&["example.com".into()]).is_err());
+        let slash = validate_origins(&["https://example.com/".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(slash.contains("--origin https://example.com"), "{slash}");
+    }
+
+    #[test]
+    fn env_file_paths_stay_in_the_project_unless_absolute() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = std::fs::canonicalize(dir.path()).unwrap();
+        assert_eq!(
+            resolve_env_file(dir.path(), ".env.local").unwrap(),
+            project.join(".env.local")
+        );
+        std::fs::create_dir_all(dir.path().join("apps/web")).unwrap();
+        assert_eq!(
+            resolve_env_file(dir.path(), "./apps/web/.env").unwrap(),
+            project.join("apps/web/.env")
+        );
+        assert!(resolve_env_file(dir.path(), "../.env").is_err());
+        assert!(resolve_env_file(dir.path(), "web/../../.env").is_err());
+        assert!(resolve_env_file(dir.path(), " ").is_err());
+        assert!(resolve_env_file(dir.path(), ".").is_err());
+        let absolute = dir.path().join("elsewhere.env");
+        assert_eq!(
+            resolve_env_file(Path::new("/unrelated"), absolute.to_str().unwrap()).unwrap(),
+            absolute
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn env_file_paths_cannot_leave_the_project_through_a_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let project = std::fs::canonicalize(dir.path()).unwrap();
+        symlink(outside.path(), dir.path().join("web")).unwrap();
+        for raw in ["web/.env", "./web/.env"] {
+            let error = resolve_env_file(dir.path(), raw).unwrap_err().to_string();
+            assert!(error.contains("outside the project directory"), "{error}");
+        }
+        std::fs::create_dir_all(dir.path().join("apps/site")).unwrap();
+        symlink(dir.path().join("apps"), dir.path().join("linked")).unwrap();
+        assert_eq!(
+            resolve_env_file(dir.path(), "linked/site/.env").unwrap(),
+            project.join("apps/site/.env"),
+            "a symlinked directory that stays inside the project is fine"
+        );
+        symlink(outside.path().join(".env"), dir.path().join(".env.local")).unwrap();
+        let error = resolve_env_file(dir.path(), ".env.local")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("is a symlink"), "{error}");
+        // An absolute path is explicit: it follows the link.
+        std::fs::write(outside.path().join(".env"), "A=1\n").unwrap();
+        let linked = dir.path().join(".env.local");
+        assert_eq!(
+            resolve_env_file(dir.path(), linked.to_str().unwrap()).unwrap(),
+            std::fs::canonicalize(outside.path().join(".env")).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rewriting_an_env_file_keeps_its_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env.local");
+        for mode in [0o600, 0o640, 0o604] {
+            std::fs::write(&path, "SECRET=keep\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            write_env_file(&path, "SECRET=keep\nA=1\n").unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "SECRET=keep\nA=1\n"
+            );
+            let actual = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(actual, mode, "{actual:o} != {mode:o}");
+        }
+        let entries = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(entries, 1, "no temporary file is left behind");
+    }
+
+    #[test]
+    fn env_upsert_touches_only_the_variable() {
+        let name = "VITE_ARETE_PUBLISHABLE_KEY";
+        assert_eq!(
+            upsert_env_var(None, name, "hspk_new"),
+            (format!("{name}=hspk_new\n"), EnvChange::Created)
+        );
+        let existing = "SECRET=keep\r\n  export VITE_ARETE_PUBLISHABLE_KEY = hspk_old\r\nVITE_ARETE_PUBLISHABLE_KEY_OTHER=x\r\n";
+        let (content, change) = upsert_env_var(Some(existing), name, "hspk_new");
+        assert_eq!(change, EnvChange::Replaced);
+        assert_eq!(
+            content,
+            "SECRET=keep\r\n  export VITE_ARETE_PUBLISHABLE_KEY=hspk_new\r\nVITE_ARETE_PUBLISHABLE_KEY_OTHER=x\r\n"
+        );
+        let (content, change) = upsert_env_var(Some("A=1"), name, "hspk_new");
+        assert_eq!(change, EnvChange::Appended);
+        assert_eq!(content, format!("A=1\n{name}=hspk_new\n"));
+        let same = format!("{name}=hspk_new\n");
+        assert_eq!(
+            upsert_env_var(Some(&same), name, "hspk_new").1,
+            EnvChange::Unchanged
+        );
+    }
+
+    struct Sandbox {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        dir: tempfile::TempDir,
+    }
+
+    impl Sandbox {
+        fn new(server: &MockServer) -> Self {
+            let guard = ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let dir = tempfile::tempdir().unwrap();
+            let credentials = dir.path().join("credentials.toml");
+            std::fs::write(
+                &credentials,
+                format!("[keys]\n\"{}\" = \"a4_sk_owner\"\n", server.base_url()),
+            )
+            .unwrap();
+            std::env::set_var("ARETE_API_URL", server.base_url());
+            std::env::set_var("ARETE_CREDENTIALS_PATH", &credentials);
+            std::fs::write(
+                dir.path().join("package.json"),
+                r#"{"dependencies":{"vite":"^5"}}"#,
+            )
+            .unwrap();
+            Self { _guard: guard, dir }
+        }
+
+        fn config(&self) -> String {
+            self.dir.path().join("arete.toml").display().to_string()
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            std::env::remove_var("ARETE_API_URL");
+            std::env::remove_var("ARETE_CREDENTIALS_PATH");
+        }
+    }
+
+    fn args(env_file: Option<&str>) -> CreatePublishableArgs {
+        CreatePublishableArgs {
+            name: Some("web".into()),
+            origins: vec!["http://localhost:5173".into()],
+            expiry_days: None,
+            env_file: env_file.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn api_failure_is_an_error_and_writes_nothing() {
+        let server = MockServer::json(
+            400,
+            r#"{"error":"A publishable key must have exactly one allowed origin","code":"origin-allowlist-too-many"}"#,
+        );
+        let sandbox = Sandbox::new(&server);
+        let env = sandbox.dir.path().join(".env.local");
+        std::fs::write(&env, "OTHER=1\n").unwrap();
+        let error = create_publishable_key(args(Some(".env.local")), &sandbox.config(), true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Failed to create publishable key")
+                && error.contains("origin-allowlist-too-many"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_to_string(&env).unwrap(), "OTHER=1\n");
+    }
+
+    #[test]
+    fn created_key_is_written_to_the_env_file_for_the_detected_framework() {
+        let server = MockServer::json(
+            201,
+            r#"{"id":7,"key":"hspk_fresh","name":"web","key_class":"publishable","expires_at":"2027-09-25T00:00:00Z","message":"ok"}"#,
+        );
+        let sandbox = Sandbox::new(&server);
+        let env = sandbox.dir.path().join(".env.local");
+        std::fs::write(&env, "OTHER=1\nVITE_ARETE_PUBLISHABLE_KEY=hspk_old\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&env, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        create_publishable_key(args(Some(".env.local")), &sandbox.config(), true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&env).unwrap(),
+            "OTHER=1\nVITE_ARETE_PUBLISHABLE_KEY=hspk_fresh\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&env).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "a private env file stays private");
+        }
+        let body: serde_json::Value = serde_json::from_str(&server.request().body).unwrap();
+        assert_eq!(
+            body["origin_allowlist"],
+            serde_json::json!(["http://localhost:5173"])
+        );
+    }
+
+    #[test]
+    fn a_bad_env_file_path_fails_before_any_key_is_created() {
+        let server = MockServer::json(500, r#"{"error":"must not be called"}"#);
+        let sandbox = Sandbox::new(&server);
+        let error = create_publishable_key(args(Some("missing-dir/.env")), &sandbox.config(), true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("does not exist"), "{error}");
+        let error = create_publishable_key(args(Some("../.env")), &sandbox.config(), true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("outside the project"), "{error}");
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(outside.path(), sandbox.dir.path().join("web")).unwrap();
+            let error = create_publishable_key(args(Some("web/.env")), &sandbox.config(), true)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("outside the project"), "{error}");
+            assert!(!outside.path().join(".env").exists());
+        }
+    }
 }
 
 #[cfg(test)]

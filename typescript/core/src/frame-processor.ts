@@ -9,7 +9,7 @@ import {
 } from './frame';
 import type { StorageAdapter } from './storage/adapter';
 import type { RichUpdate, Schema, Update } from './types';
-import { DEFAULT_MAX_ENTRIES_PER_VIEW } from './types';
+import { AreteError, DEFAULT_MAX_ENTRIES_PER_VIEW } from './types';
 import type { QueryStore } from './query-store';
 
 const INTERNAL_SEQ_FIELD = '__seq';
@@ -43,6 +43,11 @@ interface ProcessedSlotWaiter {
 }
 
 export interface FrameProcessorConfig {
+  /**
+   * Entities kept per view (see `AreteConfig.maxEntriesPerView`). Keep it
+   * above every subscription's size: patches for an entity dropped here are
+   * discarded until the server sends it whole again.
+   */
   maxEntriesPerView?: number | null;
   /**
    * Interval in milliseconds to buffer frames before flushing to storage.
@@ -56,9 +61,13 @@ export interface FrameProcessorConfig {
   schemas?: Record<string, Schema<unknown>>;
   patchSchemas?: Record<string, Schema<unknown>>;
   queryStore?: QueryStore;
-  /** Whether rejected frames should also be written to `console.warn`. */
+  /** Whether schema-rejected frames should also be written to `console.warn`. */
   warnOnValidationError?: boolean;
-  /** Receives structured details whenever a generated schema rejects a frame. */
+  /**
+   * Receives structured details whenever a frame is not stored: a generated
+   * schema rejected it, or it was a `patch` for a key the client holds no
+   * entity for.
+   */
   onValidationError?: (diagnostic: FrameValidationDiagnostic) => void;
 }
 
@@ -67,6 +76,25 @@ export interface FrameValidationDiagnostic {
   readonly key?: string;
   readonly seq?: string;
   readonly operation: 'snapshot' | 'upsert' | 'patch';
+  /**
+   * Why the frame was not stored. `'schema'`: a generated schema rejected it.
+   * `'unknown-key'`: a `patch` for a key the client never received. A patch
+   * is a partial entity, so it is discarded; the entity appears when the
+   * server sends a full `upsert` for the key. `'evicted-key'`: a `patch` for a
+   * key this client dropped to stay within `maxEntriesPerView`. The server
+   * still counts the client as holding it, so it keeps sending patches and
+   * sends no `upsert` until the key re-enters the query or the subscription
+   * is re-established; raise `maxEntriesPerView` above the subscription's
+   * size to avoid this.
+   *
+   * Patches are discarded only when the server's `subscribed` acknowledgement
+   * carries `wholeEntities: true`; with an older server a patch for an unknown
+   * key is stored as the entity, as before. Replayable append-view records
+   * (frames with an `offset`) are events and are never discarded this way.
+   * `'schema'` diagnostics, and the first `'evicted-key'` one per view, are
+   * written to `console.warn` when `warnOnValidationError` is on.
+   */
+  readonly reason: 'schema' | 'unknown-key' | 'evicted-key';
   readonly error: unknown;
 }
 
@@ -174,6 +202,15 @@ export class FrameProcessor {
   private latestProcessedSlot: bigint | null = null;
   private processedSlotWaiters = new Set<ProcessedSlotWaiter>();
   private cursors = new CursorTracker();
+  /**
+   * Whether the server's latest acknowledgement guaranteed whole entities.
+   * One connection talks to one server, so its latest ack speaks for every
+   * subscription on it; a reconnect re-acknowledges each one.
+   */
+  private serverSendsWholeEntities = false;
+  /** Keys dropped by `maxEntriesPerView`, per view, oldest first; bounded. */
+  private evictedKeys = new Map<string, Set<string>>();
+  private warnedEvictedViews = new Set<string>();
 
   /**
    * Observe the connection's cursor tracker instead of a private one.
@@ -211,7 +248,7 @@ export class FrameProcessor {
   private normalizeEntity<T>(
     viewPath: string,
     data: unknown,
-    context: Omit<FrameValidationDiagnostic, 'view' | 'error'>,
+    context: Omit<FrameValidationDiagnostic, 'view' | 'error' | 'reason'>,
     patch = false
   ): T | null {
     const fullSchema = this.getSchema(viewPath);
@@ -240,17 +277,22 @@ export class FrameProcessor {
     const diagnostic: FrameValidationDiagnostic = {
       view: viewPath,
       ...context,
+      reason: 'schema',
       error: validationError,
     };
+    this.reportDiagnostic(diagnostic);
+    if (this.warnOnValidationError) {
+      console.warn('[Arete] Frame validation failed:', diagnostic);
+    }
+    return null;
+  }
+
+  private reportDiagnostic(diagnostic: FrameValidationDiagnostic): void {
     try {
       this.onValidationError?.(diagnostic);
     } catch (callbackError) {
       console.error('[Arete] Frame validation callback failed:', callbackError);
     }
-    if (this.warnOnValidationError) {
-      console.warn('[Arete] Frame validation failed:', diagnostic);
-    }
-    return null;
   }
 
   private hasSchema(viewPath: string): boolean {
@@ -580,6 +622,7 @@ export class FrameProcessor {
 
   private handleSubscribedFrame(frame: SubscribedFrame): void {
     this.cursors.observe(frame);
+    this.serverSendsWholeEntities = frame.wholeEntities === true;
     const viewPath = frame.query.view;
     if (this.storage.setViewConfig && frame.sort) {
       this.storage.setViewConfig(viewPath, {
@@ -617,6 +660,7 @@ export class FrameProcessor {
       acceptedKeys.push(entity.key);
       const previousValue = this.storage.get<T>(viewPath, entity.key);
       this.storage.set(viewPath, entity.key, nextValue);
+      this.forgetEvicted(viewPath, entity.key);
 
       this.storage.notifyUpdate(viewPath, entity.key, {
         type: 'upsert',
@@ -685,6 +729,7 @@ export class FrameProcessor {
             frame.seq ?? this.extractSeq(frame.data) ?? this.getInternalSeq(previousValue)
           );
           this.storage.set(viewPath, frame.key, nextValue);
+          this.forgetEvicted(viewPath, frame.key);
           const update: Update<T> = {
             type: 'upsert',
             key: frame.key,
@@ -713,6 +758,19 @@ export class FrameProcessor {
       case 'patch': {
         if (frame.data === null) break;
         const existing = this.storage.get<T>(viewPath, frame.key);
+        if (existing === null && frame.offset === undefined && this.serverSendsWholeEntities) {
+          // A patch carries only changed fields. With no entity to merge into
+          // (never received, or evicted) it would be stored as a partial
+          // entity typed as complete, so it is discarded: no storage write, no
+          // sequence, no query membership, no update. The key appears when the
+          // server sends a full upsert, which a server acknowledging
+          // `wholeEntities` guarantees for every key it has not sent. Tape
+          // records (frames with an `offset`) are events rather than entity
+          // state and are always applied: a consumer resuming from a cursor
+          // holds what came before it.
+          this.reportDiscardedPatch(viewPath, frame);
+          break;
+        }
         const normalizedPatch = this.normalizeEntity<Partial<T>>(viewPath, frame.data, {
           key: frame.key,
           operation: 'patch',
@@ -782,6 +840,7 @@ export class FrameProcessor {
 
       case 'delete':
         this.storage.delete(viewPath, frame.key);
+        this.forgetEvicted(viewPath, frame.key);
         this.storage.notifyUpdate(viewPath, frame.key, {
           type: 'delete',
           key: frame.key,
@@ -840,7 +899,63 @@ export class FrameProcessor {
 
     while (this.storage.size(viewPath) > this.maxEntriesPerView) {
       const evicted = this.storage.evictOldest(viewPath);
-      if (evicted !== undefined) this.queryStore?.evict(viewPath, evicted);
+      if (evicted === undefined) continue;
+      this.queryStore?.evict(viewPath, evicted);
+      this.rememberEvicted(viewPath, evicted, this.maxEntriesPerView);
+    }
+  }
+
+  /**
+   * Remember a key `maxEntriesPerView` dropped, so a later patch for it can be
+   * reported as such. At most `limit` keys per view, most recent kept.
+   */
+  private rememberEvicted(viewPath: string, key: string, limit: number): void {
+    let keys = this.evictedKeys.get(viewPath);
+    if (!keys) {
+      keys = new Set();
+      this.evictedKeys.set(viewPath, keys);
+    }
+    keys.delete(key);
+    keys.add(key);
+    while (keys.size > Math.max(limit, 1)) {
+      const oldest = keys.values().next().value;
+      if (oldest === undefined) break;
+      keys.delete(oldest);
+    }
+  }
+
+  private forgetEvicted(viewPath: string, key: string): void {
+    this.evictedKeys.get(viewPath)?.delete(key);
+  }
+
+  private reportDiscardedPatch<T>(viewPath: string, frame: EntityFrame<T>): void {
+    const seq = frame.seq ?? this.extractSeq(frame.data);
+    const evicted = this.evictedKeys.get(viewPath)?.has(frame.key) === true;
+    const error = evicted
+      ? new AreteError(
+        `Discarded patch for '${frame.key}' in ${viewPath}: this client dropped the entity to `
+          + `stay within maxEntriesPerView (${String(this.maxEntriesPerView)}), and the server `
+          + 'sends no upsert for it until it re-enters the query or the subscription is '
+          + 're-established; raise maxEntriesPerView above the subscription size',
+        'PATCH_FOR_EVICTED_KEY'
+      )
+      : new AreteError(
+        `Discarded patch for '${frame.key}' in ${viewPath}: the client holds no entity for `
+          + 'this key; it appears when the server sends a full upsert',
+        'PATCH_FOR_UNKNOWN_KEY'
+      );
+    const diagnostic: FrameValidationDiagnostic = {
+      view: viewPath,
+      key: frame.key,
+      ...(seq !== undefined ? { seq } : {}),
+      operation: 'patch',
+      reason: evicted ? 'evicted-key' : 'unknown-key',
+      error,
+    };
+    this.reportDiagnostic(diagnostic);
+    if (evicted && this.warnOnValidationError && !this.warnedEvictedViews.has(viewPath)) {
+      this.warnedEvictedViews.add(viewPath);
+      console.warn('[Arete] Patch dropped for a locally evicted entity:', diagnostic);
     }
   }
 }

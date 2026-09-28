@@ -98,9 +98,16 @@ session.programs.token.accounts;
 session.chain;
 ```
 
-Programs that arrive inside a stack are also reachable through the canonical
-program surface, wherever their identities allow it. The generated types sort
-out any naming clashes, so there is no need to merge program clients by hand.
+Programs that arrive inside a stack are also reachable at
+`session.programs.<key>`. A Program SDK's identity is its program package
+release, so the same program installed standalone and inside a stack is one
+program with one client. Local builds have no release identity: a local
+standalone copy of a stack's program (the same program spec) takes
+`session.programs.<key>` with a warning, and the stack keeps its own at
+`session.stacks.<name>.programs.<key>`. A different program under a key a stack
+already uses is rejected with `PROGRAM_KEY_CONFLICT`, which tells you to use
+`session.stacks.<name>.programs.<key>` or attach the standalone program under
+another key. There is no need to merge program clients by hand.
 
 ## Portable definitions and hosted capabilities
 

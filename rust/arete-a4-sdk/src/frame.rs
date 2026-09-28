@@ -99,6 +99,11 @@ pub enum ServerFrame {
         /// which have no per-event identity.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         replay_window: Option<ReplayWindow>,
+        /// The server sends every key whole (`upsert` or a snapshot row)
+        /// before any `patch` for it, so a patch for a key the client does not
+        /// hold can be dropped. Older servers omit it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        whole_entities: bool,
     },
     Unsubscribed {
         protocol_version: u8,

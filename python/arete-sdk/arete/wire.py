@@ -186,6 +186,10 @@ class SubscribedFrame:
     mode: str  # 'state' | 'append' | 'list'
     sort: Optional[SortConfig] = None
     replay_window: Optional[ReplayWindow] = None  # replayable append views only
+    #: The server sends every key whole (``upsert`` or a snapshot row) before
+    #: any ``patch`` for it, so a patch for a key the client does not hold can
+    #: be dropped. Older servers omit it.
+    whole_entities: bool = False
 
 
 @dataclass(frozen=True)
@@ -480,6 +484,7 @@ def _frame_from_dict(frame: Mapping[str, Any]) -> Frame:
             mode=frame["mode"],
             sort=SortConfig(field=tuple(sort["field"]), order=sort["order"]) if sort else None,
             replay_window=_replay_window_from_dict(frame.get("replayWindow")),
+            whole_entities=frame.get("wholeEntities") is True,
         )
     if op == "snapshot":
         return SnapshotFrame(

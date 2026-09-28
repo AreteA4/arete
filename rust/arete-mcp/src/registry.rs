@@ -20,10 +20,13 @@
 //! up front with an actionable error (pointing at `a4 auth login`) when no key
 //! resolves, instead of sending a request that can only come back 401.
 //!
-//! Responses are proxied through as raw JSON rather than being reshaped into
-//! local structs. The registry's payloads are the contract the CLI and docs
-//! already describe, and re-modelling them here would add a second place to
-//! update every time the platform grows a field.
+//! Responses are returned as raw JSON rather than being reshaped into local
+//! structs. The registry's payloads are the contract the CLI and docs already
+//! describe, and re-modelling them here would add a second place to update
+//! every time the platform grows a field. The `explore_stack` and
+//! `explore_program` tools cut a summary, sections, views or one operation out
+//! of the full descriptor (see [`crate::descriptor`]) unless the caller asks
+//! for `full: true`, which returns these bytes unchanged.
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -37,7 +40,12 @@ const ENV_VAR_API_URL: &str = "ARETE_API_URL";
 /// unbounded in principle, and an oversized body would blow up the agent's
 /// context window rather than fail cleanly. Refusing with a pointer to the CLI
 /// is a better outcome than silently truncating JSON into something unparseable.
-const MAX_RESPONSE_BYTES: usize = 512 * 1024;
+pub(crate) const MAX_RESPONSE_BYTES: usize = 512 * 1024;
+
+/// Install descriptors are requested with the managed gateway capability, as
+/// `a4 install` requests them, so a program descriptor carries the chain and
+/// transaction bindings its operations use.
+const INSTALL_CAPABILITIES: &str = "capabilities=managed-solana-gateway-v1";
 
 /// Artifact kinds accepted by `resolve_artifact`, mirroring the three
 /// `/api/registry/artifacts/{kind}/{hash}` routes.
@@ -78,8 +86,10 @@ impl RegistryClient {
     /// `a4 install` would consume.
     pub async fn stack_install(&self, stack: &str) -> Result<String> {
         let stack = path_segment(stack, "stack")?;
-        self.get(&format!("/api/registry/stacks/{stack}/install"))
-            .await
+        self.get(&format!(
+            "/api/registry/stacks/{stack}/install?{INSTALL_CAPABILITIES}"
+        ))
+        .await
     }
 
     /// Entity and view schema for one stack. This is where an agent gets the
@@ -97,8 +107,10 @@ impl RegistryClient {
     /// The pinned install descriptor for one standalone program.
     pub async fn program_install(&self, program: &str) -> Result<String> {
         let program = path_segment(program, "program")?;
-        self.get(&format!("/api/registry/programs/{program}/install"))
-            .await
+        self.get(&format!(
+            "/api/registry/programs/{program}/install?{INSTALL_CAPABILITIES}"
+        ))
+        .await
     }
 
     /// Fetch a content-addressed artifact by kind and hash.

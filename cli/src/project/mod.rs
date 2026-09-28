@@ -1,4 +1,5 @@
 pub mod alias;
+pub mod composition;
 pub mod graph;
 pub mod installer;
 pub mod lockfile;
@@ -6,6 +7,7 @@ pub mod manifest;
 pub mod paths;
 pub mod registry_cache;
 pub mod resolver;
+pub mod runtime;
 
 pub use graph::InstallPlan;
 pub use lockfile::ProjectLock;

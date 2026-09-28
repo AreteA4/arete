@@ -111,9 +111,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::connections::ConnectionRegistry;
 use crate::filter::{Filter, StructuredPredicate};
-use crate::registry::RegistryClient;
+use crate::registry::{RegistryClient, MAX_RESPONSE_BYTES};
 use crate::subscriptions::SubscriptionRegistry;
-use crate::{credentials, filter};
+use crate::{credentials, descriptor, filter};
 
 #[derive(Clone)]
 pub struct AreteMcp {
@@ -163,8 +163,47 @@ pub struct UnsubscribeArgs {
     pub subscription_id: String,
 }
 
+/// One string or a list of strings. Agents pass either shape; comma-separated
+/// entries inside a string are split too.
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum StringList {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl StringList {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            StringList::One(value) => vec![value],
+            StringList::Many(values) => values,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ExploreStackArgs {
+    /// Bare stack reference as listed by `explore_stacks` (e.g. `ore`).
+    /// Not a URL and not a path.
+    pub stack: String,
+    /// Return the compact summary: entities with their subscribable view ids,
+    /// program SDKs, endpoints and auth requirements. This is the default;
+    /// `false` is the same as `full: true`.
+    #[serde(default)]
+    pub summary: Option<bool>,
+    /// Only these selected views, each with its entity's field schema. View
+    /// ids like `OreRound/latest`; prefix `alias:` when several LiveSpecs
+    /// select the same id. A list or a comma-separated string.
+    #[serde(default)]
+    pub views: Option<StringList>,
+    /// Return the whole pinned install descriptor (hundreds of KB for real
+    /// stacks) instead of the summary.
+    #[serde(default)]
+    pub full: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExploreStackSchemaArgs {
     /// Bare stack reference as listed by `explore_stacks` (e.g. `ore`).
     /// Not a URL and not a path.
     pub stack: String,
@@ -175,6 +214,20 @@ pub struct ExploreProgramArgs {
     /// Bare program reference as listed by `explore_programs`
     /// (e.g. `spl-token`), or a program ID.
     pub program: String,
+    /// Return one operation: a semantic path such as
+    /// `transactions.mining.deployWithCheckpoint`, a full operation id, a
+    /// generated binding, or a raw IDL instruction name such as `deploy`.
+    #[serde(default, rename = "operationId", alias = "operation_id")]
+    pub operation_id: Option<String>,
+    /// Return these sections in detail: `accounts`, `events`,
+    /// `instructions` (with error codes), `operations` (every SDK surface
+    /// entry), `types`. A list or a comma-separated string.
+    #[serde(default)]
+    pub sections: Option<StringList>,
+    /// Return the whole pinned install descriptor (IDL, ProgramSpec and SDK
+    /// extension sources) instead of the summary.
+    #[serde(default)]
+    pub full: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -399,16 +452,53 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Fetch the pinned install descriptor for one stack: the exact \
-                          StackManifest, AST, LiveSpec, view, and Program Release \
-                          identities that `a4 install` would consume.\n\n\
+        description = "Describe one stack from its pinned install descriptor.\n\n\
+                          By default returns a compact summary: entities with their \
+                          subscribable view ids, the program SDKs the stack carries, \
+                          stream/chain/transaction/Program Read endpoints, and auth \
+                          requirements (accepted key classes, scopes, whether browser \
+                          keys are origin-bound, whether a transaction entitlement is \
+                          required).\n\n\
+                          `views: [\"OreRound/latest\"]` returns only those views with \
+                          their entity field schemas. `full: true` returns the whole \
+                          descriptor `a4 install` consumes (StackManifest, LiveSpecs, \
+                          programs, extensions) — hundreds of KB, so ask for it only \
+                          when you need artifact bodies.\n\n\
                           Pass a bare stack reference (e.g. `ore`), not a URL."
     )]
     async fn explore_stack(
         &self,
         Parameters(args): Parameters<ExploreStackArgs>,
     ) -> Result<CallToolResult, McpError> {
-        registry_result(self.registry.stack_install(&args.stack).await)
+        let views = args
+            .views
+            .map(StringList::into_vec)
+            .map(|views| descriptor::split_list(&views))
+            .unwrap_or_default();
+        let full = args.full == Some(true) || args.summary == Some(false);
+        if full && !views.is_empty() {
+            return Err(McpError::invalid_params(
+                "`full` returns the whole descriptor; drop it (and `summary: false`) to select `views`"
+                    .to_string(),
+                None,
+            ));
+        }
+        let body = self.registry.stack_install(&args.stack).await;
+        if full {
+            return registry_result(body);
+        }
+        let stack = parse_descriptor(body)?;
+        let shaped = if views.is_empty() {
+            let mut summary = descriptor::stack_summary(&stack);
+            summary["next"] = serde_json::json!(
+                "Pass `views` for view schemas (subscribe with those ids), or `full: true` for the whole descriptor. Program operations: explore_program { program, operationId }."
+            );
+            summary
+        } else {
+            descriptor::stack_views(&stack, &views)
+                .map_err(|error| McpError::invalid_params(error.to_string(), None))?
+        };
+        shaped_result(&shaped)
     }
 
     #[tool(
@@ -419,7 +509,7 @@ impl AreteMcp {
     )]
     async fn explore_stack_schema(
         &self,
-        Parameters(args): Parameters<ExploreStackArgs>,
+        Parameters(args): Parameters<ExploreStackSchemaArgs>,
     ) -> Result<CallToolResult, McpError> {
         registry_result(self.registry.stack_schema(&args.stack).await)
     }
@@ -433,23 +523,85 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Fetch the pinned install descriptor for one standalone program: \
-                          program identity and hashes, accounts, instructions, events, \
-                          types, and Program Read availability.\n\n\
-                          Pass a bare program reference (e.g. `spl-token`), not a URL."
+        description = "Describe one standalone program from its pinned install \
+                          descriptor.\n\n\
+                          By default returns a compact summary: identity and hashes, the \
+                          names of its accounts, instructions, events and types, its \
+                          semantic SDK operations (e.g. \
+                          `transactions.mining.deployWithCheckpoint`), and its Program \
+                          Read and transaction transports.\n\n\
+                          `operationId` returns one operation: generated paths, input \
+                          type, required versus derived accounts, signers, transaction \
+                          count, program errors, transport and scopes, and a minimal \
+                          usage line. It accepts a semantic path, a full operation id, or \
+                          a raw IDL instruction name (`deploy`). `sections` returns \
+                          `accounts`, `events`, `instructions`, `operations` or `types` \
+                          in detail. `full: true` returns the whole descriptor (IDL, \
+                          ProgramSpec, SDK extension sources) — hundreds of KB.\n\n\
+                          Semantic operations come from the knowledge surface, which \
+                          needs an API key (`a4 auth login`); without one, raw IDL \
+                          instructions still resolve. Pass a bare program reference \
+                          (e.g. `spl-token`), not a URL."
     )]
     async fn explore_program(
         &self,
         Parameters(args): Parameters<ExploreProgramArgs>,
     ) -> Result<CallToolResult, McpError> {
-        registry_result(self.registry.program_install(&args.program).await)
+        let operation = args
+            .operation_id
+            .map(|operation| operation.trim().to_string())
+            .filter(|operation| !operation.is_empty());
+        let sections = descriptor::parse_sections(
+            &args.sections.map(StringList::into_vec).unwrap_or_default(),
+            "sections",
+        )
+        .map_err(|error| McpError::invalid_params(error.to_string(), None))?;
+        let full = args.full == Some(true);
+        if full && (operation.is_some() || !sections.is_empty()) {
+            return Err(McpError::invalid_params(
+                "`full` returns the whole descriptor; drop it to select `operationId` or `sections`"
+                    .to_string(),
+                None,
+            ));
+        }
+        if operation.is_some() && !sections.is_empty() {
+            return Err(McpError::invalid_params(
+                "pass either `operationId` or `sections`, not both".to_string(),
+                None,
+            ));
+        }
+        let body = self.registry.program_install(&args.program).await;
+        if full {
+            return registry_result(body);
+        }
+        let program = parse_descriptor(body)?;
+        let needs_surface = sections.is_empty() || sections.iter().any(|s| s == "operations");
+        let surface = if needs_surface {
+            self.program_surface(&program).await
+        } else {
+            Err("not requested".to_string())
+        };
+        let surface_state = surface.as_ref().map_err(String::as_str);
+        let shaped = if let Some(operation) = operation {
+            descriptor::program_operation(&program, surface_state, &operation)
+                .map_err(|error| McpError::invalid_params(error.to_string(), None))?
+        } else if !sections.is_empty() {
+            descriptor::program_sections(&program, surface_state, &sections)
+        } else {
+            let mut summary = descriptor::program_summary(&program, surface_state);
+            summary["next"] = serde_json::json!(
+                "Pass `operationId` for one operation, `sections` (accounts, events, instructions, operations, types) for detail, or `full: true` for the whole descriptor."
+            );
+            summary
+        };
+        shaped_result(&shaped)
     }
 
     #[tool(
         description = "Fetch a content-addressed artifact by hash. `kind` must be one \
                           of `program-spec`, `live-spec`, or `stack-manifest`; the hash \
-                          comes from an install descriptor returned by explore_stack or \
-                          explore_program.\n\n\
+                          comes from explore_stack or explore_program (`stackManifestHash`, \
+                          `liveSpecHash`, `programSpecHash`).\n\n\
                           Large artifacts are refused rather than truncated — use the \
                           `a4` CLI for those."
     )]
@@ -996,21 +1148,53 @@ impl AreteMcp {
 fn registry_result(result: anyhow::Result<String>) -> Result<CallToolResult, McpError> {
     match result {
         Ok(body) => Ok(CallToolResult::success(vec![Content::text(body)])),
-        Err(error) => {
-            let message = error.to_string();
-            let caller_fixable = message.contains("must not be empty")
-                || message.contains("invalid character")
-                || message.contains("must not be a relative path segment")
-                || message.contains("unknown artifact kind")
-                || message.contains("requires at least one of")
-                || message.contains("must be one of");
-            Err(if caller_fixable {
-                McpError::invalid_params(message, None)
-            } else {
-                McpError::internal_error(message, None)
-            })
-        }
+        Err(error) => Err(registry_error(error)),
     }
+}
+
+/// Classify a registry client failure: argument rejections are the caller's
+/// to fix (`invalid_params`); everything else is `internal_error`.
+fn registry_error(error: anyhow::Error) -> McpError {
+    let message = error.to_string();
+    let caller_fixable = message.contains("must not be empty")
+        || message.contains("invalid character")
+        || message.contains("must not be a relative path segment")
+        || message.contains("unknown artifact kind")
+        || message.contains("requires at least one of")
+        || message.contains("must be one of");
+    if caller_fixable {
+        McpError::invalid_params(message, None)
+    } else {
+        McpError::internal_error(message, None)
+    }
+}
+
+/// Parse a registry descriptor for client-side shaping. Registry failures keep
+/// the classification [`registry_result`] gives them.
+fn parse_descriptor(body: anyhow::Result<String>) -> Result<serde_json::Value, McpError> {
+    let body = body.map_err(registry_error)?;
+    serde_json::from_str(&body)
+        .map_err(|error| McpError::internal_error(format!("invalid registry JSON: {error}"), None))
+}
+
+/// A shaped (summary, sections, views or operation) result. It is cut from a
+/// descriptor that was already bounded, but the 512 KiB cap is re-checked on
+/// the bytes actually returned so the advertised bound holds for every tool.
+fn shaped_result(value: &serde_json::Value) -> Result<CallToolResult, McpError> {
+    let text = serde_json::to_string(value)
+        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+    if text.len() > MAX_RESPONSE_BYTES {
+        return Err(McpError::internal_error(
+            format!(
+                "shaped response is {} bytes, over the {MAX_RESPONSE_BYTES} byte limit for a single \
+                 tool result. Narrow it (fewer `views` or `sections`), or use `a4 explore` on the \
+                 command line.",
+                text.len()
+            ),
+            None,
+        ));
+    }
+    Ok(CallToolResult::success(vec![Content::text(text)]))
 }
 
 /// Validate that a subscribe `view` argument has the expected
@@ -1058,6 +1242,32 @@ fn validate_view_name(view: &str) -> Result<(), McpError> {
 }
 
 impl AreteMcp {
+    /// The knowledge surface for a program descriptor, or why it is
+    /// unavailable (no API key, no knowledge for the program, or knowledge
+    /// that describes a different program id).
+    async fn program_surface(
+        &self,
+        program: &serde_json::Value,
+    ) -> Result<descriptor::ProgramSurface, String> {
+        let install_name = program
+            .get("installName")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "the descriptor names no install name".to_string())?;
+        let program_id = program
+            .pointer("/definition/programId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "the descriptor names no program id".to_string())?;
+        let body = self
+            .registry
+            .knowledge_program(install_name, Some("surface"))
+            .await
+            .map_err(|error| error.to_string())?;
+        let response: serde_json::Value =
+            serde_json::from_str(&body).map_err(|error| error.to_string())?;
+        descriptor::ProgramSurface::from_knowledge(&response, program_id)
+            .map_err(|error| error.to_string())
+    }
+
     /// Resolve a `subscription_id` to its connection's `SharedStore` and the
     /// view name to query inside it. Returns an MCP `invalid_params` error if
     /// either the subscription or its underlying connection is gone.
@@ -1146,6 +1356,116 @@ mod view_validation_tests {
     #[test]
     fn rejects_empty_entity_with_mode() {
         assert!(validate_view_name("/list").is_err());
+    }
+}
+
+#[cfg(test)]
+mod explore_args_tests {
+    use super::*;
+    use rmcp::model::ErrorCode;
+
+    #[test]
+    fn explore_program_accepts_camel_and_snake_operation_ids_and_either_list_shape() {
+        let args: ExploreProgramArgs = serde_json::from_value(serde_json::json!({
+            "program": "ore",
+            "operationId": "transactions.mining.deployWithCheckpoint",
+            "sections": "accounts,types"
+        }))
+        .unwrap();
+        assert_eq!(
+            args.operation_id.as_deref(),
+            Some("transactions.mining.deployWithCheckpoint")
+        );
+        assert_eq!(
+            descriptor::parse_sections(&args.sections.unwrap().into_vec(), "sections").unwrap(),
+            vec!["accounts", "types"]
+        );
+
+        let args: ExploreProgramArgs = serde_json::from_value(serde_json::json!({
+            "program": "ore",
+            "operation_id": "deploy",
+            "sections": ["instructions"],
+            "full": false
+        }))
+        .unwrap();
+        assert_eq!(args.operation_id.as_deref(), Some("deploy"));
+        assert_eq!(args.sections.unwrap().into_vec(), vec!["instructions"]);
+    }
+
+    #[test]
+    fn explore_stack_defaults_to_the_summary() {
+        let args: ExploreStackArgs =
+            serde_json::from_value(serde_json::json!({"stack": "ore"})).unwrap();
+        assert!(args.summary.is_none() && args.views.is_none() && args.full.is_none());
+        let args: ExploreStackArgs = serde_json::from_value(serde_json::json!({
+            "stack": "ore",
+            "views": ["OreRound/latest", "OreMiner/list"]
+        }))
+        .unwrap();
+        assert_eq!(args.views.unwrap().into_vec().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn conflicting_explore_arguments_are_invalid_params_before_any_request() {
+        let server = AreteMcp::new();
+        let err = server
+            .explore_stack(Parameters(ExploreStackArgs {
+                stack: "ore".into(),
+                summary: None,
+                views: Some(StringList::One("OreRound/latest".into())),
+                full: Some(true),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+
+        for args in [
+            ExploreProgramArgs {
+                program: "ore".into(),
+                operation_id: Some("deploy".into()),
+                sections: None,
+                full: Some(true),
+            },
+            ExploreProgramArgs {
+                program: "ore".into(),
+                operation_id: Some("deploy".into()),
+                sections: Some(StringList::One("accounts".into())),
+                full: None,
+            },
+            ExploreProgramArgs {
+                program: "ore".into(),
+                operation_id: None,
+                sections: Some(StringList::Many(vec!["idl".into()])),
+                full: None,
+            },
+        ] {
+            let err = server.explore_program(Parameters(args)).await.unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "{}", err.message);
+        }
+    }
+
+    #[test]
+    fn shaped_results_are_compact_and_bounded() {
+        let result = shaped_result(&serde_json::json!({"kind": "stack-summary"})).unwrap();
+        let rendered = serde_json::to_string(&result).unwrap();
+        assert!(
+            rendered.contains(r#"{\"kind\":\"stack-summary\"}"#),
+            "{rendered}"
+        );
+
+        let oversized = serde_json::json!({"blob": "x".repeat(MAX_RESPONSE_BYTES + 1)});
+        let err = shaped_result(&oversized).unwrap_err();
+        assert!(err.message.contains("byte limit"), "{}", err.message);
+    }
+
+    #[test]
+    fn registry_failures_keep_their_classification_when_shaping() {
+        let err = parse_descriptor(Err(anyhow::anyhow!("stack must not be empty"))).unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        let err = parse_descriptor(Err(anyhow::anyhow!("registry returned 500"))).unwrap_err();
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        let err = parse_descriptor(Ok("<html>".into())).unwrap_err();
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
     }
 }
 

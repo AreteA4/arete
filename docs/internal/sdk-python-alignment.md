@@ -198,6 +198,29 @@ semantics):
   (`ð þ ı ŋ`) fall to the letter band's tail, and contractions beyond a small fold table
   (`ß æ œ ø đ ł ŧ`) are unmodelled. `tests/test_collation.py` re-runs the whole table
   against a live `node` when present, so the captured values cannot rot.
+- **Program identity (canonical §9)** projects as `ProgramDef.package_release_hash`
+  plus `arete.same_program(a, b)` (same object, or equal non-`None` hashes). The
+  conflict is `ProgramKeyConflictError` (`code="PROGRAM_KEY_CONFLICT"`, `details`
+  `{"key", "stacks"}`), raised by `with_programs` / `Arete.connect(programs=…)` / member
+  `programs`, and by `create_session` *before connecting any member* for an explicit
+  program that differs from a stack's program under the same key. An explicit program
+  that *is* a stack's program is served by that stack's connected instance (no second
+  member; `program_options` for it is rejected), as in TS. When two stacks
+  provide different programs under one key the session is created, the key is left out
+  of `session.programs` (`"ore" in session.programs` is false), and reading it raises the
+  same error. It subclasses `AttributeError` too, so `hasattr` and `getattr` defaults keep
+  working on that path — idiom only. The old first-stack-wins / stack-wins warnings are
+  gone.
+- **No partial entities (canonical §5)**: `Store` discards a `patch` for a key it does
+  not hold when the subscription's ack carried `wholeEntities: true`
+  (`SubscribedFrame.whole_entities`), and stores it otherwise (older servers). Python
+  never evicts locally, so "not held" means never received or deleted. Frames with an
+  `offset` are exempt from both that rule and the stale-sequence guard,
+  matching TS and Rust. Sorting puts entities with a missing or `None` sort value last
+  in both directions.
+- **Extension API**: `arete.EXTENSION_API_VERSION` (defined in `arete.extensions`),
+  recorded as `[tool.arete] extension-api` in `pyproject.toml`; a test keeps the two in
+  step.
 - **Wallet-rejection heuristic scope**: TS runs its rejection regex over every thrown
   value; Python skips it for `WalletError` (adapters own their classification, so an
   outcome-less `WalletError` is `not-submitted`/`send` rather than `/wallet`) and applies

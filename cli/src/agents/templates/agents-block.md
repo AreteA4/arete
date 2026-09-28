@@ -16,6 +16,9 @@ detailed workflows.
   descriptor with `a4 install stack <ref> --ts` or
   `a4 install program <ref> --ts`; use `--rust` or `--python` only when the
   descriptor advertises that target.
+- Starting a new app? `a4 create <dir> --template react-ore` scaffolds a
+  working example in a new directory (also `typescript-ore`, `rust-ore`,
+  `python-ore`).
 - Account: `a4 auth signup` (agent) or `a4 auth login --key <a4_ak_…>`.
 - Live data in your loop: the `arete` MCP server (`a4 mcp`) is configured;
   use it for exploration, use generated SDKs for shipped code.

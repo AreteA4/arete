@@ -6,6 +6,7 @@
 
 mod connections;
 mod credentials;
+pub mod descriptor;
 mod filter;
 mod registry;
 pub mod server;

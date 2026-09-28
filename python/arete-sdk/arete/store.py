@@ -9,11 +9,18 @@ Semantics:
 - Snapshot batches sharing a ``snapshotId`` are staged; on the final
   ``complete: true`` batch, ``authoritative: true`` replaces membership,
   ``authoritative: false`` merges.
-- Patches deep-merge with ``append``-path array concatenation.
+- Patches deep-merge with ``append``-path array concatenation. A patch for a
+  key the store does not hold is not an entity and is discarded when the
+  subscription's ``subscribed`` ack carries ``wholeEntities: true``; the
+  entity arrives with the next full ``upsert``. Without it (an older server)
+  such a patch is stored as the entity. Tape records (frames with an
+  ``offset``) are events and are always applied.
 - ``remove`` evicts a key from one query only; ``delete`` removes the entity
   from the source view globally.
 - Ordering follows the server-declared ``sort`` from the ``subscribed`` ack.
-  String comparison and the entity-key tie-break use
+  An entity whose sort field is missing or ``None`` sorts after every entity
+  that has one, in both directions. String comparison and the entity-key
+  tie-break use
   :func:`arete.subscription.locale_compare` — the shared
   ``String.prototype.localeCompare`` equivalent TS uses at ``query-store.ts``
   lines 64 and 387 — so key order matches TS for mixed-case base58 keys.
@@ -80,6 +87,8 @@ class _Record:
     #: Tape lifetime the view's offsets belong to, from the ack's replay
     #: window. Without it an offset cannot be turned into a cursor.
     epoch: Optional[str] = None
+    #: Whether the ack promised whole entities (see ``_handle_entity``).
+    whole_entities: bool = False
     staged: Optional[_StagedSnapshot] = None
     refresh_future: Optional["asyncio.Future[None]"] = None
     change_listeners: Set[Callable[[], None]] = field(default_factory=set)
@@ -267,6 +276,7 @@ class Store:
             return
         record.mode = frame.mode
         record.sort = frame.sort
+        record.whole_entities = frame.whole_entities
         if frame.replay_window is not None:
             record.epoch = frame.replay_window.epoch
         record.error = None
@@ -349,8 +359,12 @@ class Store:
         previous = self._entities.get(view, {}).get(frame.key, _MISSING)
         previous_value = None if previous is _MISSING else previous
         previous_seq = self._seqs.get(view, {}).get(frame.key)
+        # On a tape the offset is the identity: two events decoded from one
+        # transaction share a seq, so the seq guard would discard the second
+        # (TS frame-processor.ts, Rust store.rs apply_live).
         stale = (
-            frame.seq is not None
+            frame.offset is None
+            and frame.seq is not None
             and previous_seq is not None
             and compare_seq(frame.seq, previous_seq) <= 0
         )
@@ -374,6 +388,25 @@ class Store:
 
         if frame.op == "patch":
             if frame.data is None:
+                return
+            record = self._records.get(frame.subscription_id)
+            if (
+                previous is _MISSING
+                and frame.offset is None
+                and record is not None
+                and record.whole_entities
+            ):
+                # A patch for a key this store holds no copy of is not an
+                # entity: treating its few fields as the whole value would
+                # hand consumers a partial entity typed as complete. Drop it
+                # without touching storage, sequence or membership; a server
+                # that acked ``wholeEntities`` sends a full ``upsert``
+                # whenever a key becomes a member, and the entity appears
+                # then. An older server may send a key's first change as a
+                # patch, which is then all there is, so it is kept. Tape
+                # records (frames with an ``offset``) are events and are
+                # always applied — a consumer resuming from a cursor holds
+                # what came before it.
                 return
             if stale and previous is not _MISSING:
                 update = Update(op="patch", key=frame.key, data=frame.data)
@@ -518,13 +551,23 @@ class Store:
             if sort_field is not None:
                 left = _get_nested(entities.get(left_key), sort_field)
                 right = _get_nested(entities.get(right_key), sort_field)
-                compared = _compare_values(left, right)
             else:
-                compared = _compare_sequences(
-                    record.sequences.get(left_key), record.sequences.get(right_key)
+                left = record.sequences.get(left_key)
+                right = record.sequences.get(right_key)
+            left_unranked = left is None or left is _MISSING
+            right_unranked = right is None or right is _MISSING
+            if left_unranked or right_unranked:
+                # No sort value: after every ranked entity in both
+                # directions (canonical §5); ``desc`` does not flip it.
+                compared = int(left_unranked) - int(right_unranked)
+            else:
+                compared = (
+                    _compare_values(left, right)
+                    if sort_field is not None
+                    else _compare_sequences(left, right)
                 )
-            if order == "desc":
-                compared = -compared
+                if order == "desc":
+                    compared = -compared
             if compared == 0:
                 # TS query-store.ts:387 — leftKey.localeCompare(rightKey).
                 return locale_compare(left_key, right_key)

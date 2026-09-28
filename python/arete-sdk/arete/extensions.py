@@ -25,12 +25,21 @@ from arete.stack import (
     normalize_program_operations,
 )
 
+#: Version of the extension-authoring surface (canonical §9 "Extension API
+#: contract"): the extension helpers in this module, program read attachment,
+#: and the instruction helpers generated code imports. Bumped only on a
+#: breaking change; recorded as ``[tool.arete] extension-api`` in
+#: ``pyproject.toml``. The TypeScript and Rust SDKs export the same value.
+EXTENSION_API_VERSION = 1
+
 __all__ = [
+    "EXTENSION_API_VERSION",
     "merge_namespace",
     "merge_program_operations",
     "extend_program",
     "extend_programs",
     "extend_stack",
+    "with_program_identity",
     "apply_connected_stack_extensions",
 ]
 
@@ -88,9 +97,12 @@ def extend_program(
     factories composed (base first, extension merged over it).
 
     The extended definition drops ``sdk_definition_hash`` — it no longer
-    byte-matches the generated artifact.
+    byte-matches the generated artifact — and ``package_release_hash``: a
+    program extended outside its generated SDK is no longer provably that SDK
+    (canonical §9). A generated package stamps identity back with
+    :func:`with_program_identity` after applying its own extension.
     """
-    updates: Dict[str, Any] = {"sdk_definition_hash": None}
+    updates: Dict[str, Any] = {"sdk_definition_hash": None, "package_release_hash": None}
     provided = {
         "pdas": pdas,
         "accounts": accounts,
@@ -127,6 +139,21 @@ def extend_program(
         updates["create_operations"] = composed
 
     return dataclasses.replace(program, **updates)
+
+
+def with_program_identity(
+    program: ProgramDef, *, package_release_hash: Optional[str]
+) -> ProgramDef:
+    """A copy of ``program`` carrying the identity of the program SDK it is
+    (TS ``withProgramIdentity``).
+
+    Generated program packages call this last, after their own extension, so
+    the identity describes exactly the generated SDK; :func:`extend_program`
+    drops it again. An empty or ``None`` release removes the identity.
+    """
+    return dataclasses.replace(
+        program, package_release_hash=package_release_hash or None
+    )
 
 
 def extend_programs(

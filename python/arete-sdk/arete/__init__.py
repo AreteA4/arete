@@ -42,6 +42,7 @@ from arete.errors import (  # noqa: E402
     AuthError,
     HttpRequestError,
     ProcessedSlotTimeoutError,
+    ProgramKeyConflictError,
     SubscriptionError,
 )
 from arete.auth import (  # noqa: E402
@@ -183,14 +184,18 @@ from arete.stack import (  # noqa: E402
     StackRelease,
     flow_operation,
     instruction_operation,
+    compare_program_identity,
+    same_program,
     transaction_operation,
     with_programs,
 )
 from arete.extensions import (  # noqa: E402
+    EXTENSION_API_VERSION,
     apply_connected_stack_extensions,
     extend_program,
     extend_programs,
     extend_stack,
+    with_program_identity,
 )
 from arete.client import Arete  # noqa: E402
 from arete.session import Session, SessionError, create_session  # noqa: E402
@@ -214,6 +219,7 @@ __all__ = [
     "OperationCallbackError",
     "OperationExecutionError",
     "ProcessedSlotTimeoutError",
+    "ProgramKeyConflictError",
     "ReadRequestError",
     "SubscriptionError",
     "TransactionExecutionError",
@@ -240,11 +246,15 @@ __all__ = [
     "ProgramOperations",
     "ProgramOperationContext",
     "ConnectedProgram",
+    "compare_program_identity",
+    "same_program",
     "with_programs",
     # extensions
+    "EXTENSION_API_VERSION",
     "extend_stack",
     "extend_program",
     "extend_programs",
+    "with_program_identity",
     "apply_connected_stack_extensions",
     "Operation",
     "instruction_operation",

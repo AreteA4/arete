@@ -156,7 +156,17 @@ session.programs.market;
 session.programs.splToken;
 ```
 
-Promotion reuses the stack's connected program object and endpoint. If multiple stacks package the same key, the first stack owns the promoted alias and a warning is emitted; use `session.stacks.<name>.programs.<program>` to disambiguate. An explicit standalone program wins its top-level key.
+Promotion reuses the stack's connected program object and endpoint. `session.stacks.<name>.programs.<program>` always stays available.
+
+Programs are matched by identity, not by name. A program SDK's identity is its `packageReleaseHash`: the program package release a registry-installed SDK was generated from. Local builds have none. When two programs claim one key:
+
+- **Both have a `packageReleaseHash`.** Equal hashes, or the same object, mean the same program. A standalone program that a stack also provides is then served by that stack's connected instance, so `session.programs.ore === session.stacks.ore.programs.ore` and there is one client, not two. Configure it through the stack member's options. The exception is a standalone program whose `programReads.<key>` descriptor in the session definition differs from the one the stack reads through. It keeps its own read configuration and is handled like the unproven case below, with one warning. Different hashes throw an `AreteError` with code `PROGRAM_KEY_CONFLICT` before anything connects.
+- **At least one has none, with the same `programSpecHash`.** The programs describe the same on-chain program but cannot be proven to be the same SDK, for example a local stack and a local standalone build of its program. The program you attached explicitly takes the key, and the SDK logs one warning saying so. A standalone session program takes `session.programs.<key>` while `session.stacks.<name>.programs.<key>` keeps the stack's program. When two stacks bundle such copies, the first stack's program takes `session.programs.<key>`.
+- **Anything else is a conflict.** A different or missing `programSpecHash` throws `PROGRAM_KEY_CONFLICT`. The message names the stack and key: use `session.stacks.<name>.programs.<key>`, or attach the standalone program under a different key. When two stacks bundle different programs under one key, both stay reachable through `session.stacks`, and reading `session.programs.<key>` throws `PROGRAM_KEY_CONFLICT` with the stack-scoped paths to use instead.
+
+The same rule applies to programs attached to one stack with `withPrograms(stack, programs)`, `Arete.connect(stack, { programs })`, a session member's `programs`, and React's `useArete(stack, { programs })`. There the attached program replaces the stack's under that key for that client, and the stack definition itself is unchanged.
+
+`extendProgram`, `extendPrograms`, and `withProgramRead` drop `packageReleaseHash`, because a program changed outside its generated SDK is no longer provably that SDK. A program you extend yourself is therefore never mistaken for the stack's copy: attached under the stack's key, it takes that key with a warning instead of being silently replaced by the stack's program. Generated SDK entries stamp their identity last with `withProgramIdentity(program, { packageReleaseHash })`, after applying the package's own extension.
 
 ### Direct Single-Stack Connection
 
@@ -607,6 +617,12 @@ const ore = await Arete.connect(ORE_STREAM_STACK, {
 
 Set `validateFrames: false` to suppress the default warning while keeping normalization, rejection, and `onFrameValidationError` active.
 
+### Patches Never Create Entities
+
+A `patch` frame carries only the fields that changed. When it names a key the client holds no entity for (never received, or evicted by `maxEntriesPerView`), the SDK discards it rather than storing a partial object typed as complete: no store write, no query membership, no update. The entity appears when the server sends a full `upsert` for that key, and later patches merge into it as usual. Records from replayable append views carry an `offset`; they are events, not entity state, and are always applied.
+
+Each discarded patch is reported to `onFrameValidationError` with `reason: 'unknown-key'` (schema rejections have `reason: 'schema'`). Only schema rejections are written to the console.
+
 ### Query-Level Validation
 
 Pass a `schema` to `.use()` to filter out entities that don't match:
@@ -687,7 +703,61 @@ try {
 
 ---
 
+## Testing
+
+`@usearete/sdk/testing` contains supported helpers for testing an application without a network, wallet, or chain. They depend only on `@usearete/sdk` and work under any test runner.
+
+| Helper                               | Purpose                                                                                                                                                       |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createWebSocketHarness()`           | Scripted WebSocket server for a real client: pass `harness.websocketFactory` as `auth.websocketFactory`, then await subscriptions and answer them with frames |
+| `frames`                             | Builders for protocol v2 server frames (`subscribed`, `snapshot`, `upsert`, `patch`, `remove`, `delete`, `error`)                                             |
+| `createFrameHarness()`               | The client store engine without a socket: feed frames, read query snapshots                                                                                   |
+| `createFakeTransactionTransport()`   | Recording transaction relay. `calls` shows whether anything was sent; options make it fail, stall, or report a status                                         |
+| `createWalletFixture()`              | Recording wallet adapter that holds no keys. `responses` scripts each send: a receipt, a failure outcome, an error, or `'stall'`                              |
+| `createTransactionOutcomeFixtures()` | One outcome for every status and phase: `confirmed`, `not-submitted`, `submitted-unknown`, `chain-failed`                                                     |
+| `createFetchStub(routes)`            | Routed, recording `fetch` for program reads, chain reads, and stack queries. `bigint` values are written as decimal strings                                   |
+
+```typescript
+import { Arete } from "@usearete/sdk";
+import {
+  createWalletFixture,
+  createTransactionOutcomeFixtures,
+  createWebSocketHarness,
+  frames,
+} from "@usearete/sdk/testing";
+
+const ws = createWebSocketHarness();
+const wallet = createWalletFixture({
+  responses: [createTransactionOutcomeFixtures()["submitted-unknown:send"]],
+});
+const client = await Arete.connect(MY_STACK, {
+  auth: { websocketFactory: ws.websocketFactory },
+  wallet,
+});
+
+const updates = client.views.Position.list.watch()[Symbol.asyncIterator]();
+const first = updates.next();
+const subscription = await ws.waitForSubscription("Position/list");
+ws.serve(subscription, [{ key: "p1", data: { id: "p1", size: "10" } }]);
+await first; // the snapshot row, as an upsert
+ws.send(frames.patch(subscription, "p1", { size: "12" }));
+
+ws.restore();
+```
+
+On runtimes without a global `WebSocket` (Node.js 20), the harness installs a stand-in while it is in use; `restore()` removes it. `@usearete/react/testing` re-exports these helpers and adds React-specific fixtures.
+
+---
+
 ## API Reference
+
+### `EXTENSION_API_VERSION`
+
+The version of the extension contract: `defineStackExtensions`, `defineProgramExtensions`, `extendProgram`, `extendPrograms`, `extendStack`, `withProgramRead`, and the instruction helpers generated code imports. It changes only on a breaking change to that contract, so generated SDKs and extensions keep working across SDK releases that export the same value. Tools can read it without loading the package from `package.json` as `arete.extensionApi`.
+
+An SDK extension's `extensions.json` can declare the value it was written against as `extensionApi`. `a4` refuses to generate an SDK with an extension whose `extensionApi` differs from the installed `@usearete/sdk`'s, and `a4 doctor` reports the same mismatch for generated code (see [SDK extension compatibility](/cli/commands/#sdk-extension-compatibility)).
+
+Generated stack and program objects keep their runtime extensions (`read`, `flows`, program operations, and the program read descriptor) under symbol keys. Spreading them (`{ ...MY_STACK }`) keeps those extensions, while `Object.keys` and `JSON.stringify` do not list them.
 
 ### `createSession(definition, options?)`
 
@@ -714,7 +784,7 @@ Returns the connected generated stack inserted under that name. Use its `views`,
 
 ### `session.programs.<name>`
 
-Returns a connected program packaged by a stack, attached to a stack, or declared standalone. Program namespaces are `programId`, `schemas`, `pdas`, `addresses`, `accounts`, `queries`, `raw`, `instructions`, `transactions`, `flows`, `constants`, `defaults`, and `math`.
+Returns a connected program packaged by a stack, attached to a stack, or declared standalone. The same program SDK reached several ways is one object; see [Multiple Stacks and Programs](#multiple-stacks-and-programs) for how a key claimed by two programs resolves. Program namespaces are `programId`, `schemas`, `pdas`, `addresses`, `accounts`, `queries`, `raw`, `instructions`, `transactions`, `flows`, `constants`, `defaults`, and `math`.
 
 ### `session.chain`
 

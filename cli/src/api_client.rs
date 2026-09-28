@@ -533,6 +533,36 @@ pub struct StackDeploymentPlanRequest {
     pub branch: Option<String>,
     pub allow_unverified_programs: bool,
     pub idempotency_key: String,
+    /// The program SDK each listed ProgramSpec should carry. Present, even
+    /// empty, to ask for the response's `programSdks` report; absent only
+    /// for a registry that does not know the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_sdks: Option<Vec<ProgramSdkReference>>,
+}
+
+/// The program SDK one ProgramSpec of a deployed StackManifest should carry:
+/// an exact program package release.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProgramSdkReference {
+    pub program_spec_hash: String,
+    pub program_package_release: String,
+}
+
+/// The program SDK one program of a deployment plan carries. No `source`
+/// means the core program SDK only, and `reason` says why.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProgramSdkAssignment {
+    pub program_id: String,
+    pub program_spec_hash: String,
+    pub program_release_hash: String,
+    pub program_package_release: Option<String>,
+    pub package: Option<String>,
+    pub version: Option<String>,
+    /// `requested`, `catalog` or `owner`.
+    pub source: Option<String>,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -589,6 +619,9 @@ pub struct StackDeploymentPlanResponse {
     pub created_at: String,
     pub expires_at: String,
     pub idempotent: bool,
+    /// Present only when the request carried `programSdks`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_sdks: Option<Vec<ProgramSdkAssignment>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -791,6 +824,11 @@ pub struct RegistrySdkExtensionManifest {
     /// language dimension on sdk_extension_contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Extension API contract the bundle was written against: a positive
+    /// integer the installed SDK runtime must report as its own
+    /// `extensionApi`. `sdkRange` stays as the floor for older CLIs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension_api: Option<std::num::NonZeroU32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -897,6 +935,25 @@ pub struct RegistryProgramInstallResponse {
     pub chain_binding: Option<RegistryCapabilityInstallBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction_binding: Option<RegistryCapabilityInstallBinding>,
+    /// The program package release a stack references for this program: its
+    /// program SDK identity. Present only under the `program-sdks` resolver
+    /// opt-in, and only when the stack references a program package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_package: Option<RegistryProgramPackageReference>,
+    /// The referenced program package's SDK extensions for the requested
+    /// targets. `None` when the registry did not send the field, in which
+    /// case the legacy `definition.extensions` applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sdk_extensions: Option<Vec<crate::project::resolver::ResolvedSdkExtension>>,
+}
+
+/// One exact program package release: the identity of a program SDK.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistryProgramPackageReference {
+    pub package: String,
+    pub version: String,
+    pub package_release_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1390,12 +1447,14 @@ impl ApiClient {
 
     /// Resolve a complete project dependency batch against one exact registry snapshot.
     ///
-    /// The batch opts into `include=delivery`, so every resolved stack names
-    /// its delivery mode and a hosted stack carries its live and gateway
-    /// bindings in the same response: one request, however many stacks. It
-    /// also opts into `delivery-lifecycle`, so a version being retired says
-    /// until when it is served, and a retired version resolves as `retired`
-    /// instead of failing. Registries that predate it ignore the token.
+    /// The batch opts into `include=delivery,delivery-lifecycle,program-sdks`,
+    /// so every resolved stack names its delivery mode, a hosted stack carries
+    /// its live and gateway bindings, a version being retired says until when
+    /// it is served (and a retired version resolves as `retired` instead of
+    /// failing), and each stack program names the program package release (and
+    /// its SDK extensions) the stack references, all in the same response: one
+    /// request, however many stacks. Registries that predate an opt-in ignore
+    /// it, so every field it adds is optional.
     pub fn resolve_registry_dependencies(
         &self,
         request: &crate::project::resolver::RegistryResolveRequest,
@@ -1404,7 +1463,7 @@ impl ApiClient {
             .with_optional_auth(
                 self.client
                     .post(format!(
-                        "{}/api/registry/v1/resolve?include=delivery,delivery-lifecycle",
+                        "{}/api/registry/v1/resolve?include=delivery,delivery-lifecycle,program-sdks",
                         self.base_url
                     ))
                     .json(request),
@@ -2104,6 +2163,85 @@ impl ApiClient {
             .context("Failed to fetch agent identity")?;
         Self::handle_response(response)
     }
+
+    /// `GET /api/auth/me`: the caller's account kind, plan and capabilities,
+    /// for human and agent keys alike. Decoded with
+    /// [`AccountCapabilities::from_value`], which tolerates unknown fields.
+    pub fn account_capabilities(&self) -> Result<AccountCapabilities> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .get(format!("{}/api/auth/me", self.base_url))
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to fetch account capabilities")?;
+        let value: serde_json::Value = Self::handle_response(response)?;
+        AccountCapabilities::from_value(&value)
+            .ok_or_else(|| anyhow::anyhow!("the account response did not list capabilities"))
+    }
+}
+
+/// Capability that lets an account inspect (simulate) transactions.
+pub const CAPABILITY_TRANSACTION_INSPECT: &str = "transaction_inspect";
+/// Capability that lets an account submit transactions.
+pub const CAPABILITY_TRANSACTION_SEND: &str = "transaction_send";
+/// Capability that lets an account deploy stacks (`a4 up`).
+pub const CAPABILITY_CREATE_DEPLOYMENT: &str = "create_deployment";
+
+/// What `GET /api/auth/me` reports about the caller's account.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountCapabilities {
+    /// `human` or `agent`, when reported.
+    pub account_kind: Option<String>,
+    /// The account's plan name, when reported.
+    pub plan: Option<String>,
+    pub capabilities: Vec<String>,
+}
+
+impl AccountCapabilities {
+    /// Decode tolerantly: camelCase or snake_case keys, and capabilities as
+    /// strings or as `{ "name" | "id" | "capability": … }` objects. `None`
+    /// when there is no capability list to judge readiness by.
+    pub fn from_value(value: &serde_json::Value) -> Option<Self> {
+        let text = |keys: &[&str]| {
+            keys.iter()
+                .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+                .map(str::to_string)
+        };
+        let capabilities = ["capabilities", "capability"]
+            .iter()
+            .find_map(|key| value.get(*key).and_then(serde_json::Value::as_array))?
+            .iter()
+            .filter_map(|capability| {
+                capability.as_str().or_else(|| {
+                    ["name", "id", "capability"]
+                        .iter()
+                        .find_map(|key| capability.get(*key).and_then(serde_json::Value::as_str))
+                })
+            })
+            .map(|capability| capability.trim().to_string())
+            .filter(|capability| !capability.is_empty())
+            .collect();
+        Some(Self {
+            account_kind: text(&["accountKind", "account_kind", "kind"]),
+            plan: text(&["plan", "planName", "plan_name"]),
+            capabilities,
+        })
+    }
+
+    /// The entries of `required` this account lacks, in order.
+    pub fn missing<'a>(&self, required: &[&'a str]) -> Vec<&'a str> {
+        required
+            .iter()
+            .copied()
+            .filter(|required| {
+                !self
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == required)
+            })
+            .collect()
+    }
 }
 
 /// Minimal canned-response HTTP server for unit tests of `ApiClient` and the
@@ -2307,6 +2445,50 @@ mod agent_tests {
         let client = ApiClient::with_base_url(server.base_url());
         let err = client.agent_signup(None).expect_err("429 is an error");
         assert_eq!(err.to_string(), SIGNUP_RATE_LIMIT_MESSAGE);
+    }
+
+    #[test]
+    fn account_capabilities_reads_auth_me_with_the_stored_key() {
+        let server = MockServer::json(
+            200,
+            r#"{"accountKind":"agent","plan":"example-plan","capabilities":["transaction_inspect",{"name":"create_deployment"}],"future":true}"#,
+        );
+        let client = ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_me".into());
+        let account = client.account_capabilities().expect("capabilities decode");
+        assert_eq!(account.account_kind.as_deref(), Some("agent"));
+        assert_eq!(account.plan.as_deref(), Some("example-plan"));
+        assert_eq!(
+            account.missing(&[CAPABILITY_TRANSACTION_INSPECT, CAPABILITY_TRANSACTION_SEND]),
+            vec![CAPABILITY_TRANSACTION_SEND]
+        );
+        assert!(account.missing(&[CAPABILITY_CREATE_DEPLOYMENT]).is_empty());
+        let req = server.request();
+        assert_eq!(req.request_line, "GET /api/auth/me HTTP/1.1");
+        assert_eq!(req.header("authorization"), Some("Bearer a4_ak_me"));
+    }
+
+    #[test]
+    fn account_capabilities_decodes_snake_case_and_refuses_a_missing_list() {
+        let account = AccountCapabilities::from_value(&serde_json::json!({
+            "account_kind": "human",
+            "capabilities": [" transaction_send ", ""]
+        }))
+        .expect("capability list present");
+        assert_eq!(account.account_kind.as_deref(), Some("human"));
+        assert_eq!(account.plan, None);
+        assert_eq!(account.capabilities, vec!["transaction_send"]);
+        assert_eq!(
+            AccountCapabilities::from_value(&serde_json::json!({"plan": "x"})),
+            None
+        );
+
+        let server = MockServer::json(404, r#"{"error":"not found"}"#);
+        let client = ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_me".into());
+        let err = client.account_capabilities().expect_err("404 is an error");
+        assert_eq!(
+            err.downcast_ref::<ApiHttpError>().map(|error| error.status),
+            Some(404)
+        );
     }
 
     #[test]
@@ -2605,6 +2787,34 @@ mod tests {
             artifact.sdk_output_tree_hash.as_deref(),
             Some("arete:h1:sdk-output-tree:sha256:typed-tree")
         );
+        assert_eq!(artifact.manifest.extension_api, None);
+        // An absent extensionApi is not written back, so cached manifests
+        // round-trip unchanged.
+        assert!(!serde_json::to_string(&artifact.manifest)
+            .unwrap()
+            .contains("extensionApi"));
+    }
+
+    #[test]
+    fn sdk_extension_manifest_accepts_only_a_positive_extension_api() {
+        let manifest = |extension_api: serde_json::Value| {
+            serde_json::from_value::<RegistrySdkExtensionManifest>(json!({
+                "entry": "index.ts",
+                "files": ["index.ts"],
+                "inputKind": null,
+                "inputHash": null,
+                "sdkRange": "^0.23.0",
+                "extensionApi": extension_api
+            }))
+        };
+        assert_eq!(
+            manifest(json!(1)).unwrap().extension_api.map(|v| v.get()),
+            Some(1)
+        );
+        assert_eq!(manifest(json!(null)).unwrap().extension_api, None);
+        for invalid in [json!(0), json!(-1), json!(1.5), json!("1")] {
+            assert!(manifest(invalid.clone()).is_err(), "{invalid}");
+        }
     }
 
     #[test]
@@ -2864,10 +3074,62 @@ mod tests {
             branch: preflight.branch,
             allow_unverified_programs: preflight.allow_unverified_programs,
             idempotency_key: "8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a".into(),
+            program_sdks: None,
         };
         let mut expected = preflight_value;
         expected["idempotencyKey"] = json!("8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a");
-        assert_eq!(serde_json::to_value(plan).unwrap(), expected);
+        assert_eq!(serde_json::to_value(&plan).unwrap(), expected);
+
+        // Asking for the program SDK report sends the key, even empty.
+        let mut empty = plan.clone();
+        empty.program_sdks = Some(Vec::new());
+        expected["programSdks"] = json!([]);
+        assert_eq!(serde_json::to_value(&empty).unwrap(), expected);
+        let mut requested = plan;
+        requested.program_sdks = Some(vec![ProgramSdkReference {
+            program_spec_hash: "arete:h1:program-spec:sha256:1".into(),
+            program_package_release: "arete:registry-package-release:v2:sha256:2".into(),
+        }]);
+        expected["programSdks"] = json!([{
+            "programSpecHash": "arete:h1:program-spec:sha256:1",
+            "programPackageRelease": "arete:registry-package-release:v2:sha256:2",
+        }]);
+        assert_eq!(serde_json::to_value(&requested).unwrap(), expected);
+    }
+
+    #[test]
+    fn deployment_plan_responses_carry_the_program_sdk_report_when_asked() {
+        let mut plan_value = plan_response_snapshot();
+        plan_value["programSdks"] = json!([
+            {
+                "programId": "ore111",
+                "programSpecHash": "arete:h1:program-spec:sha256:1",
+                "programReleaseHash": "arete:h1:program-release:sha256:1",
+                "programPackageRelease": "arete:registry-package-release:v2:sha256:2",
+                "package": "ore",
+                "version": "1.0.2",
+                "source": "requested",
+                "reason": null,
+            },
+            {
+                "programId": "entropy111",
+                "programSpecHash": "arete:h1:program-spec:sha256:3",
+                "programReleaseHash": "arete:h1:program-release:sha256:3",
+                "programPackageRelease": null,
+                "package": null,
+                "version": null,
+                "source": null,
+                "reason": "no program package is published for this program",
+            },
+        ]);
+        let plan: StackDeploymentPlanResponse = serde_json::from_value(plan_value.clone()).unwrap();
+        let report = plan.program_sdks.as_ref().unwrap();
+        assert_eq!(report[0].source.as_deref(), Some("requested"));
+        assert_eq!(report[1].source, None);
+        assert_eq!(serde_json::to_value(plan).unwrap(), plan_value);
+
+        plan_value["programSdks"][0]["private"] = json!(true);
+        assert!(serde_json::from_value::<StackDeploymentPlanResponse>(plan_value).is_err());
     }
 
     #[test]

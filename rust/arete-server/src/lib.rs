@@ -59,7 +59,7 @@ pub use arete_auth::{
     SCOPE_TRANSACTION_INSPECT, SCOPE_TRANSACTION_SEND, SOLANA_GATEWAY_AUDIENCE,
 };
 pub use bus::{BusManager, BusMessage, StateUpdate};
-pub use cache::{EntityCache, EntityCacheConfig};
+pub use cache::{CacheWrite, EntityCache, EntityCacheConfig, PatchOrigin};
 pub use config::{
     HealthConfig, HttpHealthConfig, HttpServerConfig, ReconnectionConfig, RuntimePlan,
     ServerConfig, TransactionConfig, WebSocketConfig, WebSocketDeliveryConfig, YellowstoneConfig,
@@ -76,7 +76,7 @@ pub use program_runtime::{
     IdlContentHash, NormalizedIdlHash, ProgramAccountReaderFn, ProgramReleaseHash,
     ProgramRuntimeCatalog, ProgramRuntimeDefinition, ProgramSpecHash,
 };
-pub use projector::Projector;
+pub use projector::{EntityResync, Projector};
 pub use runtime::{ConnectionServer, Runtime, RuntimeHandle};
 pub use snapshot::{SnapshotConfig, SnapshotService};
 pub use telemetry::{init as init_telemetry, TelemetryConfig};

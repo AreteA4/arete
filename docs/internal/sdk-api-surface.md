@@ -66,6 +66,10 @@ Server → client (`op`-tagged):
   the final `complete: true` batch, `authoritative: false` (from `after` cursors) merges.
 - `upsert | patch | remove | delete` — live frames with `key`, `data`, optional
   `seq: "<slot>:<index>"`, and `append: [dot.paths]` whose arrays concatenate on patch.
+  `upsert` is always a whole entity and arrives whenever a key becomes a member as far
+  as the server knows; a `patch` for a key the client does not hold is discarded
+  (frames with `offset` — tape records — excepted). See the protocol doc, "Partial
+  entities".
 - `unsubscribed` — ack.
 - error envelope: `{"type":"error", "subscriptionId": string|null, "code": "<kebab>",
   "message", "retryable", "retry_after"?, "suggested_action"?, "docs_url"?, "fatal"}`.
@@ -158,6 +162,12 @@ provenance hashes), `programReads` descriptors. Extensions attach via
 `extendStack`/`extendProgram` and surface on the connected client as `read`, `flows`,
 `addresses`, `constants`, `defaults`, `math`; operations attach via
 `createOperations(context)` with access to the fully connected program.
+
+Program definitions may carry `packageReleaseHash`; `createSession`, `withPrograms`,
+`ConnectOptions.programs` and `useArete(…, {programs})` match programs by it (canonical
+§9 "Program identity") and report `PROGRAM_KEY_CONFLICT` instead of warning. The
+package exports `EXTENSION_API_VERSION` and records it as `arete.extensionApi` in
+`package.json` (canonical §9 "Extension API contract").
 
 ### 3.5 React (`@usearete/react`)
 
@@ -457,3 +467,76 @@ Still open (tracked as roadmap, see §5.5): execution layer (wallet/transaction/
 HTTP program reads + chain client, sessions, stack runtime extensions (`read`/`flows`/
 `math`/`addresses`) in Rust, semantic `prepare()` operations, and refreshing the public
 `docs/src/content/docs/sdks/rust.mdx` plus the `arete-streams` and `arete-programs` skill references.
+
+### No partial entities — server and all three SDKs, 2026-09-25
+
+A `patch` for a key the client does not hold is not an entity (canonical §5; protocol
+doc "Partial entities"). Server: only keys a frame actually carried count as held, so
+after a `snapshotLimit`-truncated or disabled snapshot a key's first change is a full
+`upsert`, and keys never sent get no `remove`/`delete` (state, list, derived and
+coalesced paths); every `subscribed` ack says so with `wholeEntities: true`.
+Replayable append views keep delivering records verbatim; clients exempt frames with
+`offset`.
+
+The server's bounded entity cache refuses a source patch for a key it evicted instead
+of storing the fragment — the cause of partial, id-less entities at the top of
+`OreRound/latest`, together with derived windows ranking a missing sort value first
+(now last in both directions). Refusing alone would freeze out an active key for good,
+so the projector asks the VM for the whole entity (`WholeEntityRequests`, linked when
+the generated runtime calls `snapshot::register_runtime`, snapshots enabled or not).
+The VM answers every pending request at the end of its next `process_event` or
+`apply_resolver_result` call, whatever that call changed (2026-09-27; before, a request
+waited for the key's own next mutation): after the call's mutations it appends one per
+requested entity, carrying the entity as its state table then holds it, marked with
+`Mutation::mark_whole_entity` (`WholeEntity::Resent`). It rides in the VM's ordered
+output, so it follows every patch emitted before it. A request for an entity the VM no
+longer holds is dropped: the VM's next mutation for the key starts a new row, marked
+created. The projector stores a resend in every view of the export and publishes it to
+list and state views as an `upsert` (append views and the journal never see it). A
+resend is not a change, so it keeps the `_seq` of the key's latest change rather than
+its batch's (2026-09-28): `EntityResync` remembers, per requested key, the position of
+the refused patch and of any later change it sees for the key, bounded at 4,096 like
+the requests, and stamps the resend's cache entry, derived views and `upsert` with it.
+The projector owns this because positions are assigned per batch, after the VM emits;
+it sees each key's changes in stream order. A resend without a remembered position (past
+the bound, or a whole entity from a source without a VM) takes its batch's. A
+state subscriber that holds an evicted key keeps receiving its patches and is never
+sent `remove` for an eviction.
+
+Telling an evicted key from a new one does not depend on remembering evictions
+(2026-09-27): the linked VM also marks each entity's first mutation since its
+state-table row was created (`Mutation::mark_created`, `WholeEntity::Created`), and
+that patch is the whole row — more than the change when a handler that emits nothing
+(an instruction hook, `emit: false`) started the row. The flag rides on the table's
+recency entry, so it is dropped with the row; rows restored from a snapshot count as
+emitted. With a VM linked the cache stores a key it lacks only from a creation, merges a
+creation into a key it holds (as clients do), and refuses any other patch for a key it
+lacks — evicted however long ago, or never held, as after a restore or legacy migration
+— and requests the whole entity, which follows in the VM's next batch. The flag is not
+persisted in snapshots: a row a non-emitting handler started just before a snapshot
+restores as emitted, so its first update is refused and the row appears whole with the
+VM's next batch. So the guarantee holds whatever
+`max_entities_per_view` is against the VM's table bound. A creation is still an
+ordinary `patch` frame and journal record; only a resend is a state-only `upsert`. A VM
+without requests marks nothing, so its output is unchanged for other consumers.
+
+Without a linked VM the cache falls back to remembering evictions: each view remembers
+8× its cache bound of evicted keys (4,000 by default), allocated on first eviction, and
+refuses patches for them (one warning per projector); restores mark every VM key the
+cache lacks as evicted; a key forgotten after that many *distinct* later evictions is
+taken for new. A view fed by a linked VM drops that memory with its first patch and
+keeps none. A mutation source without a VM can mark whole entities itself; otherwise
+its evicted keys stay out until a source delete.
+
+Bounds: requests are capped at 4,096 (asking again is safe). Entities are whole as far
+as the VM holds them: a key the VM itself dropped restarts from what its next update
+sets, and that update's mutation is a creation again.
+
+SDKs discard a patch for an unheld key only under `wholeEntities`, so they keep working
+against older servers. TypeScript (`frame-processor.ts`, the latest ack per
+connection), Rust (`store.rs::apply_live`, per subscription) and Python
+(`store.py::_handle_entity`, per subscription) implement the same rule, pinned by the
+shared `whole-entities.json` fixture, and sort unranked entities last. TypeScript and
+Rust report a patch dropped for a key they evicted locally (`evicted-key` /
+`PATCH_FOR_EVICTED_KEY`; a `warn!`), since the server still counts that key as held.
+

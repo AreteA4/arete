@@ -220,6 +220,7 @@ fn generate_all(name: &str, output: &Path) -> Result<()> {
         &none,
         &none,
     )
+    .map(|_| ())
 }
 
 /// Relative path -> contents for every generated file. Provenance manifests

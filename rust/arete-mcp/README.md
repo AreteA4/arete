@@ -151,23 +151,34 @@ error here.
 
 - `explore_stacks()` — stacks in the registry. The `websocket_url` in each entry
   is what `connect` takes; `entities` tells you what to look for in the schema.
-- `explore_stack({ stack })` — pinned install descriptor for one stack: the exact
-  StackManifest, AST, LiveSpec, view, and Program Release identities `a4 install`
-  would consume.
+- `explore_stack({ stack, summary?, views?, full? })` — one stack from its pinned
+  install descriptor. By default a compact summary: entities with their view ids,
+  program SDKs, endpoints, and auth requirements (key classes, scopes, origin-bound
+  browser keys, transaction entitlement). `views` returns only those views with
+  their entity schemas; `full: true` returns the whole descriptor `a4 install`
+  consumes.
 - `explore_stack_schema({ stack })` — entity and view schema: field paths, types,
   primary keys, and the `<EntityName>/<view>` ids `subscribe` accepts. Use this
   instead of guessing a view id from the template.
 - `explore_programs()` — standalone Solana programs installable independent of
   any stack.
-- `explore_program({ program })` — pinned install descriptor for one program:
-  identity hashes, accounts, instructions, events, types, Program Read.
+- `explore_program({ program, operationId?, sections?, full? })` — one program
+  from its pinned install descriptor. By default a compact summary: identity,
+  account/instruction/event/type names, semantic SDK operations, transports.
+  `operationId` returns one operation (generated paths, input, required and
+  derived accounts, signers, transaction count, errors, transport, usage);
+  `sections` returns `accounts`, `events`, `instructions`, `operations` or
+  `types` in detail; `full: true` returns the whole descriptor. Semantic
+  operations come from the knowledge surface and need an API key.
 - `resolve_artifact({ kind, hash })` — fetch a content-addressed artifact.
   `kind` is one of `program-spec`, `live-spec`, `stack-manifest`; the hash comes
-  from an install descriptor.
+  from `explore_stack` or `explore_program`.
 
-Responses are the registry's JSON, passed through unchanged. Bodies over 512 KB
-are refused rather than truncated — use `a4 explore` or `a4 install` on the
-command line for payloads that large.
+Summaries, sections, views and operations are cut from the full descriptor on
+the client (`arete_mcp::descriptor`, shared with `a4 explore`). `full: true`
+bodies are the registry's JSON, passed through unchanged. Any response over
+512 KB is refused rather than truncated — use `a4 explore` or `a4 install` on
+the command line for payloads that large.
 
 **Key casing is not uniform.** `explore_stacks` and `explore_stack_schema` return
 snake_case (`websocket_url`, `stack_name`, `primary_keys`, `rust_type`).

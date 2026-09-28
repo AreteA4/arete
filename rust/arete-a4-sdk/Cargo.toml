@@ -11,6 +11,11 @@ documentation = "https://docs.rs/arete-sdk"
 keywords = ["arete", "streaming", "sdk", "client", "websocket"]
 categories = ["api-bindings", "asynchronous"]
 
+# Extension API contract version (docs/internal/sdk-core-api.md §9); must equal
+# `arete_sdk::EXTENSION_API_VERSION`.
+[package.metadata.arete]
+extension-api = 1
+
 [features]
 default = ["rustls"]
 rustls = ["tokio-tungstenite/rustls-tls-webpki-roots"]

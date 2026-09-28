@@ -6,7 +6,8 @@
 // /mcp/sse for older links via rewrites in vercel.json.
 //
 // Tools exposed:
-//   - search_docs(query): keyword search across docs-index.json (per-page chunks)
+//   - search_docs(query): term-ranked search across docs-index.json pages and
+//                         their heading sections (see lib/docs-search.mjs)
 //   - fetch_page(slug):   returns raw markdown for a single doc page
 //
 // Discovery manifest lives at /.well-known/mcp.json.
@@ -17,6 +18,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import {
+  buildSearchIndex,
+  searchDocs,
+  type DocsSearchIndex,
+} from "../../lib/docs-search.mjs";
 
 const PROD_DOCS_BASE = "https://docs.arete.run";
 
@@ -121,13 +127,13 @@ interface DocPage {
 
 // Cached index across warm invocations on the same Vercel function instance.
 // Stateless across cold starts (the JSON is CDN-cacheable anyway), but saves
-// the extra hop on warm reuse.
-let indexCache: { pages: DocPage[]; fetchedAt: number } | null = null;
+// the extra hop on warm reuse. Term statistics are built once per fetch.
+let indexCache: { search: DocsSearchIndex; fetchedAt: number } | null = null;
 
-async function getIndex(): Promise<DocPage[]> {
+async function getIndex(): Promise<DocsSearchIndex> {
   const now = Date.now();
   if (indexCache && now - indexCache.fetchedAt < INDEX_TTL_MS) {
-    return indexCache.pages;
+    return indexCache.search;
   }
   const res = await fetch(`${DOCS_BASE}/docs-index.json`, {
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
@@ -136,8 +142,9 @@ async function getIndex(): Promise<DocPage[]> {
     throw new Error(`Failed to load docs-index.json: HTTP ${res.status}`);
   }
   const pages = (await res.json()) as DocPage[];
-  indexCache = { pages, fetchedAt: now };
-  return pages;
+  const search = buildSearchIndex(pages);
+  indexCache = { search, fetchedAt: now };
+  return search;
 }
 
 function buildServer(): McpServer {
@@ -151,9 +158,9 @@ function buildServer(): McpServer {
     SEARCH_DOCS_DESCRIPTION,
     SearchDocsInput.shape,
     async ({ query, limit }) => {
-      let pages: DocPage[];
+      let index: DocsSearchIndex;
       try {
-        pages = await getIndex();
+        index = await getIndex();
       } catch (err) {
         return {
           content: [
@@ -165,40 +172,22 @@ function buildServer(): McpServer {
           isError: true,
         };
       }
-      const q = query.toLowerCase();
-      const qRe = new RegExp(escapeRegex(q), "g");
-      const scored = pages
-        .map((page) => {
-          const titleHits = (page.title.toLowerCase().match(qRe) ?? []).length;
-          const contentHits = (page.content.toLowerCase().match(qRe) ?? [])
-            .length;
-          // Title hits weighted more heavily than body hits.
-          const score = titleHits * 5 + contentHits;
-          return {
-            slug: page.slug,
-            title: page.title,
-            snippet: extractSnippet(page.content, q),
-            score,
-          };
-        })
-        .filter((p) => p.score > 0)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, limit);
+      const results = searchDocs(index, query, limit);
 
-      if (scored.length === 0) {
+      if (results.length === 0) {
         return {
           content: [
             {
               type: "text",
-              text: `No matches for "${query}". Try broader keywords.`,
+              text: `No matches for "${query}". Try other keywords, an API name such as AreteProvider, or a CLI command.`,
             },
           ],
         };
       }
-      const text = scored
+      const text = results
         .map(
           (p, i) =>
-            `## Result ${i + 1}: ${p.title}\n` +
+            `## Result ${i + 1}: ${p.title}${p.section ? ` › ${p.section}` : ""}\n` +
             `slug: \`${p.slug}\`  (call \`fetch_page\` with this slug for full content)\n\n` +
             `${p.snippet}`,
         )
@@ -300,23 +289,6 @@ function buildDescriptor() {
   };
 }
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// Returns ~600 chars of context around the first occurrence of `query` in
-// `content`, falling back to the document head if there's no hit (which
-// happens when the score came purely from a title match).
-function extractSnippet(content: string, query: string): string {
-  const idx = content.toLowerCase().indexOf(query);
-  if (idx < 0) return content.slice(0, 600).trim();
-  const start = Math.max(0, idx - 150);
-  const end = Math.min(content.length, idx + 450);
-  const prefix = start > 0 ? "…" : "";
-  const suffix = end < content.length ? "…" : "";
-  return prefix + content.slice(start, end).trim() + suffix;
-}
-
 function acceptsEventStream(
   acceptHeader: string | string[] | undefined,
 ): boolean {
@@ -386,11 +358,7 @@ export default async function handler(
     return;
   }
 
-  if (
-    req.method !== "GET" &&
-    req.method !== "POST" &&
-    req.method !== "HEAD"
-  ) {
+  if (req.method !== "GET" && req.method !== "POST" && req.method !== "HEAD") {
     sendApiError(
       res,
       405,

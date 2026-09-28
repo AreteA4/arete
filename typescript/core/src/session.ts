@@ -10,6 +10,13 @@ import {
 } from './client';
 import { createChainClient, type ChainClient } from './chain';
 import { getProgramReadDescriptor } from './program-sdk';
+import {
+  ambiguousSessionProgram,
+  compareProgramIdentity,
+  sessionProgramKeyConflict,
+  warnUnprovenSessionProgram,
+  warnUnprovenStackPrograms,
+} from './program-identity';
 import { createHostedSolanaGatewayTransports } from './solana-gateway';
 import {
   AreteError,
@@ -46,6 +53,17 @@ export interface SessionDefinition<
 > {
   readonly mode?: 'composition';
   readonly stacks?: Record<string, StackDefinition>;
+  /**
+   * Standalone program SDKs, available at `session.programs.<key>`. Under a key
+   * a stack also provides, the same program SDK (the same object or the same
+   * `packageReleaseHash`) is served from the stack's connected instance, unless
+   * this definition's `programReads.<key>` resolves to a descriptor other than
+   * the one the stack reads through. That program, or one with the same
+   * `programSpecHash` that cannot be proven identical, takes
+   * `session.programs.<key>` with its own read configuration, with a warning,
+   * while `session.stacks.<stack>.programs.<key>` keeps the stack's; anything
+   * else throws `PROGRAM_KEY_CONFLICT`.
+   */
   readonly programs?: TPrograms;
   /** Hosted chain and transaction capabilities shared by a generated composition. */
   readonly gateway?: HostedSolanaGatewayBindings;
@@ -282,6 +300,44 @@ function resolveSessionProgramReads(
   return Object.keys(reads).length > 0 ? reads : undefined;
 }
 
+/**
+ * The program read descriptor a session member connected for `stack` reads
+ * `programKey` through, resolved the way `Arete.connect` resolves it: session
+ * and member overrides, then the stack's `programReads`, then the descriptor
+ * the program carries.
+ */
+function memberProgramRead(
+  stack: StackDefinition,
+  programKey: string,
+  member: SessionConnectionMemberOptions | undefined,
+  options: SessionConnectionOptions | undefined
+): ProgramReadDescriptor | undefined {
+  return resolveSessionProgramReads(stack, member, options)?.[programKey]
+    ?? stack.programReads?.[programKey]
+    ?? getProgramReadDescriptor(stack.programs?.[programKey]);
+}
+
+/** Structural equality of two program read descriptors (plain JSON data). */
+function sameProgramRead(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (
+    left === null || right === null
+    || typeof left !== 'object' || typeof right !== 'object'
+    || Array.isArray(left) !== Array.isArray(right)
+  ) {
+    return false;
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).filter((key) => leftRecord[key] !== undefined);
+  const rightKeys = Object.keys(rightRecord).filter((key) => rightRecord[key] !== undefined);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) =>
+      Object.prototype.hasOwnProperty.call(rightRecord, key)
+      && sameProgramRead(leftRecord[key], rightRecord[key])
+    );
+}
+
 function resolveMemberConnectOptions(
   stack: StackDefinition,
   member: SessionConnectionMemberOptions | undefined,
@@ -422,16 +478,90 @@ export async function createSession<
     }
   }
 
+  // Program identity, resolved before anything connects. Every stack's
+  // effective programs (its own plus member-attached ones, matched by
+  // `withPrograms`) are the providers for each key.
+  const effectiveStacks = new Map(stackEntries.map(([key, stack]) => {
+    const memberOptions = options?.stacks?.[key as keyof NonNullable<TDef['stacks']>];
+    return [key, withPrograms(
+      stack,
+      memberOptions?.programs as Record<string, ProgramSdkDefinition> | undefined
+    ) as StackDefinition] as const;
+  }));
+  const stackProviders = new Map<string, { stackKey: string; program: ProgramSdkDefinition }[]>();
+  for (const [stackKey, stack] of effectiveStacks) {
+    for (const [programKey, program] of Object.entries(stack.programs ?? {})) {
+      const providers = stackProviders.get(programKey) ?? [];
+      providers.push({ stackKey, program });
+      stackProviders.set(programKey, providers);
+    }
+  }
+  // Standalone programs a stack already provides as the same program SDK, read
+  // through the same program read configuration, are served by that stack's
+  // connected instance instead of a second member. One with the same program
+  // spec but no provable identity match, or the same program SDK with its own
+  // `programReads` descriptor that differs from the stack's, gets its own
+  // member and takes session.programs.<key>; the stacks keep theirs.
+  const sharedStandalonePrograms = new Set<string>();
+  if (definition.mode !== 'composition') {
+    for (const [programKey, program] of programEntries) {
+      const providers = stackProviders.get(programKey) ?? [];
+      if (providers.length === 0) continue;
+      const matches = providers.map((provider) => ({
+        ...provider,
+        match: compareProgramIdentity(provider.program, program),
+      }));
+      const conflicting = matches.find(({ match }) => match === 'different');
+      if (conflicting) {
+        throw sessionProgramKeyConflict(conflicting.stackKey, programKey, conflicting.program, program);
+      }
+      if (matches.some(({ match }) => match === 'unproven')) {
+        warnUnprovenSessionProgram(programKey, program, providers);
+        continue;
+      }
+      const explicitRead = definition.programReads?.[programKey];
+      if (explicitRead !== undefined) {
+        // Sharing would read through the serving stack's configuration, so an
+        // explicit descriptor must resolve to the same one.
+        const servingStack = providers[0]!.stackKey;
+        const standaloneRead = memberProgramRead(
+          programAsStack(programKey, program, explicitRead),
+          programKey,
+          options?.programs?.[programKey],
+          options
+        );
+        const stackRead = memberProgramRead(
+          effectiveStacks.get(servingStack)!,
+          programKey,
+          options?.stacks?.[servingStack as keyof NonNullable<TDef['stacks']>],
+          options
+        );
+        if (!sameProgramRead(standaloneRead, stackRead)) {
+          warnUnprovenSessionProgram(programKey, program, providers, 'program-read');
+          continue;
+        }
+      }
+      if (options?.programs?.[programKey] !== undefined) {
+        throw new AreteError(
+          `Standalone program '${programKey}' is the same program SDK that stack `
+            + `'${providers[0]!.stackKey}' provides, so the session serves it from the stack's `
+            + `connected instance; configure it through options.stacks.${providers[0]!.stackKey} `
+            + `instead of options.programs.${programKey}`,
+          'INVALID_CONFIG'
+        );
+      }
+      sharedStandalonePrograms.add(programKey);
+    }
+  }
+  const memberProgramEntries = programEntries.filter(([key]) => !sharedStandalonePrograms.has(key));
+
   let wallet = options?.wallet;
   const signerRegistry = options?.signerRegistry ?? createSignerRegistry();
 
   const connectedStacks = await Promise.all(
     stackEntries.map(async ([key, stack]) => {
       const memberOptions = options?.stacks?.[key as keyof NonNullable<TDef['stacks']>];
-      const effectiveStack = withPrograms(
-        stack,
-        memberOptions?.programs as Record<string, ProgramSdkDefinition> | undefined
-      );
+      const effectiveStack = effectiveStacks.get(key)!;
       const connectOptions = resolveMemberConnectOptions(
         effectiveStack,
         memberOptions,
@@ -452,7 +582,7 @@ export async function createSession<
   );
 
   const connectedPrograms = await Promise.all(
-    programEntries.map(async ([key, program]) => {
+    memberProgramEntries.map(async ([key, program]) => {
       const syntheticStack = programAsStack(key, program, definition.programReads?.[key]);
       const connectOptions = resolveMemberConnectOptions(
         syntheticStack,
@@ -477,8 +607,6 @@ export async function createSession<
   const transactions = sharedTransactions ?? executionHost.transactions;
 
   const stacks = Object.fromEntries(connectedStacks) as unknown as SessionStacks<TDef, TStackPrograms>;
-  const explicitProgramKeys = new Set(connectedPrograms.map(([key]) => key));
-  const programOwners = new Map<string, { stack: string; programId?: string }>();
   const connectedProgramEntries = connectedPrograms.map(([key, client]) => [
     key,
     (client.programs as Record<string, ProgramInterface<ProgramSdkDefinition>>)[key],
@@ -489,26 +617,35 @@ export async function createSession<
   >;
 
   if (definition.mode !== 'composition') {
-    for (const [stackKey, client] of connectedStacks) {
-      for (const [programKey, program] of Object.entries(
-        client.programs as Record<string, ProgramInterface<ProgramSdkDefinition>>
-      )) {
-        if (explicitProgramKeys.has(programKey)) {
-          continue;
-        }
-        const existingOwner = programOwners.get(programKey);
-        if (existingOwner) {
-          console.warn(
-            `Program '${programKey}' is bundled by stacks '${existingOwner.stack}'` +
-            ` (${existingOwner.programId ?? 'unknown program ID'}) and '${stackKey}'` +
-            ` (${program.programId ?? 'unknown program ID'}); session.programs.${programKey}` +
-            ` uses '${existingOwner.stack}' because it was connected first`
-          );
-          continue;
-        }
-        promotedPrograms[programKey] = program;
-        programOwners.set(programKey, { stack: stackKey, programId: program.programId });
+    const connectedStackClients = new Map(connectedStacks);
+    for (const [programKey, providers] of stackProviders) {
+      if (Object.prototype.hasOwnProperty.call(promotedPrograms, programKey)) continue;
+      const first = providers[0]!;
+      const matches = providers.flatMap((left, index) =>
+        providers.slice(index + 1).map((right) => compareProgramIdentity(left.program, right.program))
+      );
+      if (!matches.includes('different')) {
+        // One program, however many stacks bundle it: the first stack's
+        // connected instance serves the top-level key. Copies with the same
+        // program spec that cannot be proven identical say so once.
+        if (matches.includes('unproven')) warnUnprovenStackPrograms(programKey, providers);
+        promotedPrograms[programKey] = (connectedStackClients.get(first.stackKey)!.programs as Record<
+          string,
+          ProgramInterface<ProgramSdkDefinition>
+        >)[programKey]!;
+        continue;
       }
+      // Different program SDKs under one key: every stack keeps its own at
+      // session.stacks.<stack>.programs.<key>, and the ambiguous top-level key
+      // explains how to choose instead of silently picking one.
+      const error = ambiguousSessionProgram(programKey, providers);
+      Object.defineProperty(promotedPrograms, programKey, {
+        get() {
+          throw error;
+        },
+        enumerable: false,
+        configurable: true,
+      });
     }
   }
 

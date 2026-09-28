@@ -88,6 +88,17 @@ export interface ProgramSdkDefinition {
   readonly programId?: string;
   /** Typed identity of generated program content. V2 excludes compiler provenance. */
   readonly sdkDefinitionHash?: string;
+  /**
+   * Program package release this SDK was generated from, for program SDKs
+   * installed from the registry. It is the program SDK's identity: a stack's
+   * embedded program and a standalone install with the same value are the same
+   * program, and the SDK runtime treats them as one when both are attached.
+   * Generated entries stamp it with `withProgramIdentity` after applying the
+   * package's own extension; `extendProgram`, `extendPrograms` and
+   * `withProgramRead` drop it, because a program changed outside its generated
+   * SDK is no longer provably that SDK.
+   */
+  readonly packageReleaseHash?: string;
   readonly programSpecHash?: string;
   readonly idlContentHash?: string;
   readonly normalizedIdlHash?: string;
@@ -407,6 +418,13 @@ export interface AreteConfig {
   reconnectIntervals?: number[];
   maxReconnectAttempts?: number;
   initialSubscriptions?: Subscription[];
+  /**
+   * Entities kept per view; the oldest are dropped past it. `null` keeps all.
+   * Keep it above the size of every subscription on a view: the server still
+   * counts a dropped entity as held and sends only patches for it, which are
+   * discarded (reported as `'evicted-key'` diagnostics), so it stays missing
+   * until it re-enters the query or the subscription is re-established.
+   */
   maxEntriesPerView?: number | null;
   /** Authentication configuration */
   auth?: AuthConfig;

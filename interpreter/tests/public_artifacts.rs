@@ -526,6 +526,117 @@ fn hosted_python_generation_only_adds_the_release_to_ast_generation() {
 }
 
 #[test]
+fn a_composed_alias_names_the_served_version_of_the_deployment_it_reads() {
+    let program = program();
+    let shared = adapted_live(&program, "SharedState", "shared_pda");
+    let lives = vec![
+        ("borrowed".to_string(), shared.clone()),
+        ("own".to_string(), shared),
+    ];
+    let manifest = compose_stack_manifest_v2(
+        "Composed",
+        std::slice::from_ref(&program),
+        lives
+            .iter()
+            .map(|(alias, live)| (alias.clone(), live))
+            .collect(),
+        vec![SelectedViewV2 {
+            live_alias: "borrowed".to_string(),
+            view_id: "SharedState/list".to_string(),
+        }],
+    )
+    .unwrap();
+    let own_hash = manifest.artifact_hash.to_string();
+    let source = StackRelease {
+        stack_manifest_hash: format!("arete:h1:stack-manifest:sha256:{}", "e".repeat(64)),
+        live_alias: "live".to_string(),
+    };
+    let live_releases = BTreeMap::from([("borrowed".to_string(), source.clone())]);
+    let live_urls = BTreeMap::from([
+        (
+            "borrowed".to_string(),
+            "wss://source.example.test".to_string(),
+        ),
+        ("own".to_string(), "wss://own.example.test".to_string()),
+    ]);
+    let names = |text: &str, hash: &str, alias: &str| {
+        text.contains(hash) && text.contains(&format!("'{alias}'"))
+            || text.contains(hash) && text.contains(&format!("\"{alias}\""))
+    };
+
+    let typescript = compile_typescript_composition(
+        std::slice::from_ref(&program),
+        &lives,
+        &manifest,
+        Some(TypeScriptCompositionConfig {
+            live_endpoints: live_urls
+                .iter()
+                .map(|(alias, url)| {
+                    (
+                        alias.clone(),
+                        TypeScriptLiveEndpoints {
+                            websocket_url: Some(url.clone()),
+                            http_url: None,
+                        },
+                    )
+                })
+                .collect(),
+            live_releases: live_releases.clone(),
+            ..TypeScriptCompositionConfig::default()
+        }),
+    )
+    .unwrap();
+    let rust = compile_rust_composition(
+        std::slice::from_ref(&program),
+        &lives,
+        &manifest,
+        Some(RustCompositionConfig {
+            live_urls: live_urls.clone(),
+            live_releases: live_releases.clone(),
+            ..RustCompositionConfig::default()
+        }),
+    )
+    .unwrap();
+    let python = compile_python_composition(
+        std::slice::from_ref(&program),
+        &lives,
+        &manifest,
+        Some(PythonCompositionConfig {
+            live_urls,
+            live_releases,
+            ..PythonCompositionConfig::default()
+        }),
+    )
+    .unwrap();
+    let generated = [
+        typescript
+            .live_stacks
+            .iter()
+            .map(|live| (live.alias.clone(), live.output.stack_definition.clone()))
+            .collect::<Vec<_>>(),
+        rust.live_stacks
+            .iter()
+            .map(|live| (live.alias.clone(), live.output.entity_rs.clone()))
+            .collect(),
+        python
+            .live_stacks
+            .iter()
+            .map(|live| (live.alias.clone(), live.output.init_py.clone()))
+            .collect(),
+    ];
+    for language in generated {
+        for (alias, text) in language {
+            if alias == "borrowed" {
+                assert!(names(&text, &source.stack_manifest_hash, "live"), "{text}");
+                assert!(!text.contains(&own_hash), "{text}");
+            } else {
+                assert!(names(&text, &own_hash, "own"), "{text}");
+            }
+        }
+    }
+}
+
+#[test]
 fn compositions_name_the_served_version_of_each_bound_alias_only() {
     let program = program();
     let shared = adapted_live(&program, "SharedState", "shared_pda");

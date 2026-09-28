@@ -20,7 +20,24 @@ pub struct BusMessage {
 #[derive(Debug, Clone, Default)]
 pub struct StateUpdate {
     pub published: u64,
+    /// `published` as of the latest frame that replaced the entity instead
+    /// of patching it: an `upsert` or a `delete`. If it is past a
+    /// subscriber's last read, a client's copy may hold fields the entity no
+    /// longer has, which no patch removes. Zero until one is published.
+    pub replaced: u64,
     pub payload: Arc<Bytes>,
+}
+
+/// Whether a state frame replaces its entity (`upsert`, `delete`) rather than
+/// patching it. A frame that does not parse is taken for a patch.
+fn replaces_entity(frame: &[u8]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Frame<'a> {
+        #[serde(borrow)]
+        op: std::borrow::Cow<'a, str>,
+    }
+    serde_json::from_slice::<Frame<'_>>(frame)
+        .is_ok_and(|frame| matches!(frame.op.as_ref(), "upsert" | "delete"))
 }
 
 #[derive(Clone)]
@@ -80,8 +97,12 @@ impl BusManager {
     pub async fn publish_state(&self, view_id: &str, key: &str, frame: Arc<Bytes>) {
         let buses = self.state_buses.read().await;
         if let Some(tx) = buses.get(&(view_id.to_string(), key.to_string())) {
+            let replaces = replaces_entity(&frame);
             tx.send_modify(|update| {
                 update.published += 1;
+                if replaces {
+                    update.replaced = update.published;
+                }
                 update.payload = frame;
             });
         }
@@ -122,5 +143,40 @@ impl BusManager {
 impl Default for BusManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(op: &str) -> Arc<Bytes> {
+        Arc::new(Bytes::from(format!(
+            r#"{{"mode":"state","entity":"Round/state","op":"{op}","key":"7","data":{{}}}}"#
+        )))
+    }
+
+    /// The bus remembers where the latest whole replacement (an upsert or a
+    /// delete) sits among the frames it published, so a subscriber that
+    /// skipped frames can tell whether a patch will do.
+    #[tokio::test]
+    async fn a_state_bus_records_its_latest_replacing_frame() {
+        let bus = BusManager::new();
+        let receiver = bus.get_or_create_state_bus("Round/state", "7").await;
+        bus.publish_state("Round/state", "7", frame("patch")).await;
+        assert_eq!(receiver.borrow().replaced, 0);
+        bus.publish_state("Round/state", "7", frame("upsert")).await;
+        bus.publish_state("Round/state", "7", frame("patch")).await;
+        assert_eq!(receiver.borrow().replaced, 2);
+        bus.publish_state("Round/state", "7", frame("delete")).await;
+        assert_eq!(receiver.borrow().replaced, 4);
+        assert_eq!(receiver.borrow().published, 4);
+        bus.publish_state(
+            "Round/state",
+            "7",
+            Arc::new(Bytes::from_static(b"not json")),
+        )
+        .await;
+        assert_eq!(receiver.borrow().replaced, 4, "unparsed frames are patches");
     }
 }

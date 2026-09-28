@@ -243,6 +243,7 @@ pub(crate) fn cache_ore_stack_fixture(cache_root: &Path, alias: &str) -> LockedD
         program_release_hash: None,
         live_specs: Vec::new(),
         programs: Vec::new(),
+        parts: Vec::new(),
         sdk_extension_hashes: Vec::new(),
         targets: vec![InstallTarget::TypeScript],
         generator_contract: crate::project::GENERATOR_CONTRACT.into(),
@@ -269,6 +270,7 @@ pub(crate) fn cache_ore_stack_fixture(cache_root: &Path, alias: &str) -> LockedD
                 program_id: value["payload"]["programId"].as_str().unwrap().into(),
                 program_spec_hash: hash,
                 program_release_hash: None,
+                package_release_hash: None,
                 sdk_extension_hashes: Vec::new(),
             }),
         }
@@ -361,12 +363,12 @@ impl ArtifactCatalog {
         }
         let mut catalog = Self::default();
         for path in files {
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            let Some(kind) = artifact_file_kind(&path) else {
                 continue;
             };
             let bytes = fs::read(&path)
                 .with_context(|| format!("Failed to read artifact {}", path.display()))?;
-            if name.ends_with(".program-spec.json") {
+            if kind == ArtifactFileKind::Program {
                 let artifact = load_program_spec(&bytes)
                     .with_context(|| format!("Invalid ProgramSpec {}", path.display()))?
                     .artifact;
@@ -375,7 +377,7 @@ impl ArtifactCatalog {
                     .entry(artifact.artifact_hash.to_string())
                     .or_default()
                     .push((path, artifact));
-            } else if name.ends_with(".live-spec.json") {
+            } else {
                 let schema = serde_json::from_slice::<serde_json::Value>(&bytes)?["payload"]
                     ["schema"]
                     .as_str()
@@ -412,6 +414,13 @@ impl ArtifactCatalog {
 
     fn unique_program(&self, hash: &str) -> Result<ProgramSpecArtifact> {
         unique_match(&self.programs, hash, "ProgramSpec")
+    }
+
+    /// The one file holding ProgramSpec `hash`, with its artifact.
+    fn unique_program_entry(&self, hash: &str) -> Result<(PathBuf, ProgramSpecArtifact)> {
+        let artifact = self.unique_program(hash)?;
+        let path = self.programs[hash][0].0.clone();
+        Ok((path, artifact))
     }
 
     fn unique_v1_live(&self, hash: &str) -> Result<LiveSpecArtifact> {
@@ -480,14 +489,7 @@ fn collect_artifact_files(
         }
         if metadata.is_dir() {
             collect_artifact_files(root, &path, files)?;
-        } else if metadata.is_file()
-            && path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name.ends_with(".program-spec.json") || name.ends_with(".live-spec.json")
-                })
-        {
+        } else if metadata.is_file() && artifact_file_kind(&path).is_some() {
             let canonical = fs::canonicalize(&path)?;
             if !canonical.starts_with(root) {
                 bail!("artifact file escaped approved root: {}", path.display());
@@ -496,6 +498,33 @@ fn collect_artifact_files(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactFileKind {
+    Program,
+    Live,
+}
+
+/// An artifact file under an artifact root: `*.program-spec.json` and
+/// `*.live-spec.json`, or the registry cache's `program-spec/<hash>.json`
+/// and `live-spec/<hash>.json`.
+fn artifact_file_kind(path: &Path) -> Option<ArtifactFileKind> {
+    let name = path.file_name()?.to_str()?;
+    if name.ends_with(".program-spec.json") {
+        return Some(ArtifactFileKind::Program);
+    }
+    if name.ends_with(".live-spec.json") {
+        return Some(ArtifactFileKind::Live);
+    }
+    if !name.ends_with(".json") || name.starts_with('.') {
+        return None;
+    }
+    match path.parent()?.file_name()?.to_str()? {
+        "program-spec" => Some(ArtifactFileKind::Program),
+        "live-spec" => Some(ArtifactFileKind::Live),
+        _ => None,
+    }
 }
 
 fn reject_parent_traversal(path: &Path, kind: &str) -> Result<()> {
@@ -535,6 +564,573 @@ pub fn build_program(input: &str, output: &str, program_id: Option<&str>) -> Res
     println!("ProgramSpec: {}", output_path.display());
     println!("ProgramSpec hash: {}", artifact.artifact_hash);
     Ok(())
+}
+
+/// `a4 stack compose`.
+pub struct ComposeArgs<'a> {
+    pub config_path: &'a str,
+    pub name: &'a str,
+    pub programs: &'a [String],
+    pub lives: &'a [String],
+    pub artifact_dirs: &'a [String],
+    pub selected_views: &'a [String],
+    /// Write a raw StackManifest here instead of arete.toml.
+    pub output: Option<&'a str>,
+    /// Also declare the composed stack as a dependency and install it.
+    pub install: bool,
+}
+
+/// One `--live` value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LiveArg {
+    /// `<alias>=<path>`: a LiveSpec file.
+    File { alias: String, path: String },
+    /// `<stack>[@<version>]`, `stack:<stack>[@<version>][#<live alias>]`, or
+    /// either after `<alias>=`: views from a published stack.
+    Registry {
+        alias: String,
+        package: String,
+        requirement: Option<String>,
+        live_alias: Option<String>,
+    },
+}
+
+impl LiveArg {
+    fn alias(&self) -> &str {
+        match self {
+            Self::File { alias, .. } | Self::Registry { alias, .. } => alias,
+        }
+    }
+}
+
+/// One `--program` value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProgramArg {
+    /// A ProgramSpec file: a path ending in `.json`, or an existing file.
+    File(String),
+    /// `<package>[@<version>]` or `program:<package>[@<version>]`.
+    Registry {
+        package: String,
+        requirement: Option<String>,
+    },
+}
+
+fn parse_registry_reference(value: &str, flag: &str) -> Result<(String, Option<String>)> {
+    let (package, requirement) = match value.rfind('@').filter(|position| *position > 0) {
+        Some(position) => (&value[..position], Some(&value[position + 1..])),
+        None => (value, None),
+    };
+    if package.is_empty() || requirement.is_some_and(str::is_empty) {
+        bail!("{flag} '{value}' must name a package, optionally with @<version>");
+    }
+    Ok((package.to_string(), requirement.map(str::to_string)))
+}
+
+fn looks_like_file(value: &str) -> bool {
+    value.ends_with(".json") || Path::new(value).is_file()
+}
+
+fn parse_live_arg(value: &str) -> Result<LiveArg> {
+    let (alias, reference) = match value.split_once('=') {
+        Some((alias, reference)) => (Some(alias), reference),
+        None => (None, value),
+    };
+    if alias.is_some_and(str::is_empty) || reference.is_empty() {
+        bail!("--live must use a non-empty alias and source, received '{value}'");
+    }
+    let registry = match reference.strip_prefix("stack:") {
+        Some(reference) => reference,
+        // `alias=path` is a LiveSpec file, as it always was.
+        None if alias.is_some() => {
+            return Ok(LiveArg::File {
+                alias: alias.unwrap_or_default().to_string(),
+                path: reference.to_string(),
+            })
+        }
+        None if looks_like_file(reference) => {
+            bail!("--live must use alias=path syntax for a LiveSpec file, received '{value}'")
+        }
+        None => reference,
+    };
+    let (registry, live_alias) = match registry.rsplit_once('#') {
+        Some((registry, live_alias)) if !live_alias.is_empty() => {
+            (registry, Some(live_alias.to_string()))
+        }
+        Some(_) => bail!("--live '{value}' names an empty live alias after '#'"),
+        None => (registry, None),
+    };
+    let (package, requirement) = parse_registry_reference(registry, "--live")?;
+    Ok(LiveArg::Registry {
+        alias: alias
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::project::alias::derive_local_alias(&package)),
+        package,
+        requirement,
+        live_alias,
+    })
+}
+
+fn parse_program_arg(value: &str) -> Result<ProgramArg> {
+    if value.is_empty() {
+        bail!("--program cannot be empty");
+    }
+    match value.strip_prefix("program:") {
+        Some(reference) => {
+            let (package, requirement) = parse_registry_reference(reference, "--program")?;
+            Ok(ProgramArg::Registry {
+                package,
+                requirement,
+            })
+        }
+        None if looks_like_file(value) => Ok(ProgramArg::File(value.to_string())),
+        None => {
+            let (package, requirement) = parse_registry_reference(value, "--program")?;
+            Ok(ProgramArg::Registry {
+                package,
+                requirement,
+            })
+        }
+    }
+}
+
+/// `--selected-view alias=view_id` values, grouped by alias in order.
+fn views_by_alias(values: &[String], lives: &[LiveArg]) -> Result<BTreeMap<String, Vec<String>>> {
+    let mut views = BTreeMap::<String, Vec<String>>::new();
+    for selected in parse_selected_views(values)? {
+        if !lives.iter().any(|live| live.alias() == selected.live_alias) {
+            bail!(
+                "--selected-view '{}={}' does not name a declared LiveSpec alias",
+                selected.live_alias,
+                selected.view_id
+            );
+        }
+        views
+            .entry(selected.live_alias)
+            .or_default()
+            .push(selected.view_id);
+    }
+    Ok(views)
+}
+
+/// `a4 stack compose`: registry parts and/or artifact files, written to
+/// arete.toml as `[authoring.stacks.<name>]`, or with `-o` as a raw
+/// StackManifest.
+pub fn compose(args: ComposeArgs<'_>) -> Result<()> {
+    let lives = args
+        .lives
+        .iter()
+        .map(|value| parse_live_arg(value))
+        .collect::<Result<Vec<_>>>()?;
+    let programs = args
+        .programs
+        .iter()
+        .map(|value| parse_program_arg(value))
+        .collect::<Result<Vec<_>>>()?;
+    let mut aliases = BTreeSet::new();
+    for live in &lives {
+        if !aliases.insert(live.alias()) {
+            bail!(
+                "--live alias '{}' was supplied more than once",
+                live.alias()
+            );
+        }
+    }
+    let registry = lives
+        .iter()
+        .any(|live| matches!(live, LiveArg::Registry { .. }))
+        || programs
+            .iter()
+            .any(|program| matches!(program, ProgramArg::Registry { .. }));
+    match args.output {
+        Some(_) if args.install => {
+            bail!("--install declares the composed stack in arete.toml; omit -o to use it")
+        }
+        // Files only: exactly the StackManifest `a4 stack compose` always wrote.
+        Some(output) if !registry => compose_stack(
+            args.name,
+            args.programs,
+            args.lives,
+            args.artifact_dirs,
+            args.selected_views,
+            output,
+        ),
+        Some(output) => compose_to_file(&args, lives, programs, output),
+        None => compose_into_project(&args, lives, programs),
+    }
+}
+
+/// Registry parts and files, resolved and composed exactly as `a4 install`
+/// composes an `[authoring.stacks]` entry. A LiveSpec file's ProgramSpecs
+/// that nothing else provides are looked up under `--artifact-dir`.
+struct CliComposition {
+    composed: crate::project::composition::ComposedStack,
+    /// The ProgramSpec files found under `--artifact-dir`.
+    discovered: Vec<PathBuf>,
+}
+
+fn compose_cli_parts(
+    name: &str,
+    lives: &[LiveArg],
+    programs: &[ProgramArg],
+    mut views: BTreeMap<String, Vec<String>>,
+    artifact_dirs: &[String],
+    targets: &[crate::project::manifest::InstallTarget],
+) -> Result<CliComposition> {
+    use crate::project::composition::{LivePart, LivePartSource, ProgramPart};
+    use crate::project::manifest::DependencyKind;
+    use crate::project::resolver::ResolvedRegistryDependency;
+
+    let mut requests = Vec::new();
+    for live in lives {
+        if let LiveArg::Registry {
+            alias,
+            package,
+            requirement,
+            ..
+        } = live
+        {
+            requests.push(registry_request(
+                DependencyKind::Stack,
+                alias,
+                package,
+                requirement.as_deref(),
+            ));
+        }
+    }
+    for program in programs {
+        if let ProgramArg::Registry {
+            package,
+            requirement,
+        } = program
+        {
+            requests.push(registry_request(
+                DependencyKind::Program,
+                package,
+                package,
+                requirement.as_deref(),
+            ));
+        }
+    }
+    let responses = if requests.is_empty() {
+        Vec::new()
+    } else {
+        crate::project::installer::resolve_registry_batch(
+            crate::project::manifest::MANIFEST_VERSION,
+            targets,
+            &requests,
+            None,
+        )?
+    };
+    for response in &responses {
+        crate::project::installer::cache_registry_dependency(response)?;
+    }
+    let mut responses = responses.into_iter();
+
+    let mut provided = BTreeSet::new();
+    let mut live_parts = Vec::new();
+    for live in lives {
+        let source = match live {
+            LiveArg::File { path, .. } => LivePartSource::File {
+                source: format!("path:{path}"),
+                artifact: load_live_v2(path)?,
+            },
+            LiveArg::Registry {
+                requirement,
+                live_alias,
+                ..
+            } => {
+                let resolved = responses.next().expect("one response per request");
+                if let ResolvedRegistryDependency::Stack { programs, .. } = &resolved {
+                    provided.extend(
+                        programs
+                            .iter()
+                            .map(|program| program.definition.program_spec_hash.clone()),
+                    );
+                }
+                LivePartSource::Registry {
+                    requirement: requirement.clone().unwrap_or_else(|| "*".into()),
+                    live_alias: live_alias.clone(),
+                    resolved,
+                }
+            }
+        };
+        live_parts.push(LivePart {
+            alias: live.alias().to_string(),
+            views: views.remove(live.alias()),
+            source,
+        });
+    }
+    let mut program_parts = Vec::new();
+    for program in programs {
+        program_parts.push(match program {
+            ProgramArg::File(path) => {
+                let artifact = load_program(path)?;
+                provided.insert(artifact.artifact_hash.to_string());
+                ProgramPart::File {
+                    source: format!("path:{path}"),
+                    artifact: Box::new(artifact),
+                }
+            }
+            ProgramArg::Registry { requirement, .. } => {
+                let resolved = responses.next().expect("one response per request");
+                if let ResolvedRegistryDependency::Program { install, .. } = &resolved {
+                    provided.insert(install.definition.program_spec_hash.clone());
+                }
+                ProgramPart::Registry {
+                    requirement: requirement.clone().unwrap_or_else(|| "*".into()),
+                    resolved: Box::new(resolved),
+                }
+            }
+        });
+    }
+    let mut discovered = Vec::new();
+    for (path, artifact) in discovered_programs(&live_parts, &provided, artifact_dirs)? {
+        program_parts.push(ProgramPart::File {
+            source: format!("path:{}", path.display()),
+            artifact: Box::new(artifact),
+        });
+        discovered.push(path);
+    }
+    Ok(CliComposition {
+        composed: crate::project::composition::compose_parts(name, live_parts, program_parts)?,
+        discovered,
+    })
+}
+
+/// The StackManifest of registry parts and files, written to `output`. The
+/// registry parts are cached, so `--artifact-dir` can find them later.
+fn compose_to_file(
+    args: &ComposeArgs<'_>,
+    lives: Vec<LiveArg>,
+    programs: Vec<ProgramArg>,
+    output: &str,
+) -> Result<()> {
+    let views = views_by_alias(args.selected_views, &lives)?;
+    let CliComposition { composed, .. } = compose_cli_parts(
+        args.name,
+        &lives,
+        &programs,
+        views,
+        args.artifact_dirs,
+        &[crate::project::manifest::InstallTarget::TypeScript],
+    )?;
+    let output = PathBuf::from(output);
+    write_json(&output, &composed.stack_manifest)?;
+    println!("StackManifest: {}", output.display());
+    println!(
+        "StackManifest hash: {}",
+        composed.stack_manifest.artifact_hash
+    );
+    for note in &composed.notes {
+        println!("{note}");
+    }
+    println!(
+        "note: a StackManifest lists ProgramSpecs, not program SDKs; omit -o to compose into arete.toml, where `a4 install` generates each program's SDK."
+    );
+    Ok(())
+}
+
+fn registry_request(
+    kind: crate::project::manifest::DependencyKind,
+    alias: &str,
+    package: &str,
+    requirement: Option<&str>,
+) -> crate::project::resolver::RegistryDependencyRequest {
+    crate::project::resolver::RegistryDependencyRequest {
+        kind,
+        alias: crate::project::alias::derive_local_alias(alias),
+        package: package.to_string(),
+        requirement: requirement.unwrap_or("*").to_string(),
+        locked_package_release_hash: None,
+        locked_programs: Vec::new(),
+    }
+}
+
+/// ProgramSpecs a LiveSpec file requires that neither an explicit program
+/// nor a composed stack provides, found under `--artifact-dir`.
+fn discovered_programs(
+    lives: &[crate::project::composition::LivePart],
+    provided: &BTreeSet<String>,
+    artifact_dirs: &[String],
+) -> Result<Vec<(PathBuf, ProgramSpecArtifact)>> {
+    let missing = lives
+        .iter()
+        .filter_map(|live| match &live.source {
+            crate::project::composition::LivePartSource::File { artifact, .. } => Some(artifact),
+            _ => None,
+        })
+        .flat_map(|artifact| &artifact.payload.programs)
+        .map(|requirement| requirement.program_spec_hash.to_string())
+        .filter(|hash| !provided.contains(hash))
+        .collect::<BTreeSet<_>>();
+    if missing.is_empty() || artifact_dirs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let roots = artifact_dirs.iter().map(PathBuf::from).collect::<Vec<_>>();
+    let catalog = ArtifactCatalog::scan(&roots)?;
+    missing
+        .iter()
+        .map(|hash| catalog.unique_program_entry(hash))
+        .collect()
+}
+
+/// Writes `[authoring.stacks.<name>]` from the parts, after resolving and
+/// composing them as `a4 install` will. Registry parts without a version are
+/// saved at `^<resolved version>`, as `a4 install` saves a package.
+fn compose_into_project(
+    args: &ComposeArgs<'_>,
+    lives: Vec<LiveArg>,
+    programs: Vec<ProgramArg>,
+) -> Result<()> {
+    use crate::project::manifest::{AuthoringStackV1, ComposedLiveV1, ComposedProgramV1};
+
+    let manifest_path = Path::new(args.config_path);
+    let project = crate::project::ProjectManifest::load(manifest_path).with_context(|| {
+        format!(
+            "`a4 stack compose` without -o writes [authoring.stacks.{}] to {}",
+            args.name,
+            manifest_path.display()
+        )
+    })?;
+    let relative = |path: &Path, kind: &str| -> Result<String> {
+        let canonical = fs::canonicalize(path)
+            .with_context(|| format!("Failed to resolve {kind} {}", path.display()))?;
+        project_relative(&project.root, &canonical, kind)
+    };
+    let views = views_by_alias(args.selected_views, &lives)?;
+    let mut entry = AuthoringStackV1 {
+        manifest: None,
+        artifact_roots: Vec::new(),
+        deployment_name: None,
+        live: BTreeMap::new(),
+        programs: Vec::new(),
+    };
+    for live in &lives {
+        let part = match live {
+            LiveArg::File { path, .. } => ComposedLiveV1 {
+                path: Some(relative(Path::new(path), "LiveSpec")?),
+                ..ComposedLiveV1::default()
+            },
+            LiveArg::Registry {
+                package,
+                requirement,
+                live_alias,
+                ..
+            } => ComposedLiveV1 {
+                stack: Some(package.clone()),
+                version: requirement.clone(),
+                live_alias: live_alias.clone(),
+                ..ComposedLiveV1::default()
+            },
+        };
+        entry.live.insert(
+            live.alias().to_string(),
+            ComposedLiveV1 {
+                views: views.get(live.alias()).cloned(),
+                ..part
+            },
+        );
+    }
+    for program in &programs {
+        entry.programs.push(match program {
+            ProgramArg::File(path) => ComposedProgramV1 {
+                path: Some(relative(Path::new(path), "ProgramSpec")?),
+                ..ComposedProgramV1::default()
+            },
+            ProgramArg::Registry {
+                package,
+                requirement,
+            } => ComposedProgramV1 {
+                package: Some(package.clone()),
+                version: requirement.clone(),
+                ..ComposedProgramV1::default()
+            },
+        });
+    }
+    let CliComposition {
+        composed,
+        discovered,
+    } = compose_cli_parts(
+        args.name,
+        &lives,
+        &programs,
+        views,
+        args.artifact_dirs,
+        &project.document.sdk.targets,
+    )?;
+    for path in discovered {
+        entry.programs.push(ComposedProgramV1 {
+            path: Some(relative(&path, "ProgramSpec")?),
+            ..ComposedProgramV1::default()
+        });
+    }
+    // Pin what the registry resolved, as `a4 install <package>` does.
+    for (alias, live) in &mut entry.live {
+        if live.stack.is_some() && live.version.is_none() {
+            live.version = resolved_requirement(&composed, Some(alias), live.stack.as_deref());
+        }
+    }
+    for program in &mut entry.programs {
+        if program.package.is_some() && program.version.is_none() {
+            program.version = resolved_requirement(&composed, None, program.package.as_deref());
+        }
+    }
+    let dependency = args.install.then_some(args.name);
+    let declared =
+        crate::project::installer::save_composition(manifest_path, args.name, &entry, dependency)?;
+    if args.install {
+        return Ok(());
+    }
+    println!(
+        "Wrote [authoring.stacks.{}] to {} (StackManifest {})",
+        args.name,
+        manifest_path.display(),
+        composed.stack_manifest.artifact_hash
+    );
+    for note in &composed.notes {
+        println!("{note}");
+    }
+    match declared {
+        Some(alias) => println!(
+            "Run `a4 install` to generate it (declared as [dependencies.stacks.{alias}])."
+        ),
+        None => println!(
+            "Declare it under [dependencies.stacks] with `source = {{ workspace = \"{}\" }}` and run `a4 install`, or re-run with --install.",
+            args.name
+        ),
+    }
+    Ok(())
+}
+
+/// `^<version>` of the registry part that provides live `alias` (or, with
+/// no alias, the program part) from `package`.
+fn resolved_requirement(
+    composed: &crate::project::composition::ComposedStack,
+    alias: Option<&str>,
+    package: Option<&str>,
+) -> Option<String> {
+    let source = format!("registry:{}", package?);
+    composed
+        .parts
+        .iter()
+        .find(|part| part.source == source && part.live.as_deref() == alias)
+        .and_then(|part| part.version.as_deref())
+        .and_then(|version| semver::Version::parse(version).ok())
+        .map(|version| format!("^{version}"))
+}
+
+fn project_relative(root: &Path, path: &Path, kind: &str) -> Result<String> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        anyhow::anyhow!(
+            "{kind} {} is outside the project; arete.toml references files inside {}. Copy it into the project, or compose it from the registry",
+            path.display(),
+            root.display()
+        )
+    })?;
+    Ok(format!(
+        "./{}",
+        relative.to_string_lossy().replace('\\', "/")
+    ))
 }
 
 pub fn compose_stack(
@@ -935,6 +1531,166 @@ mod tests {
                 .map(|selected| { (selected.live_alias.as_str(), selected.view_id.as_str()) })
                 .collect::<Vec<_>>(),
             vec![("beta", "BetaState/list"), ("alpha", "AlphaState/state")]
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn live_and_program_arguments_name_registry_parts_or_files() {
+        let registry =
+            |alias: &str, package: &str, requirement: Option<&str>, live: Option<&str>| {
+                LiveArg::Registry {
+                    alias: alias.into(),
+                    package: package.into(),
+                    requirement: requirement.map(str::to_string),
+                    live_alias: live.map(str::to_string),
+                }
+            };
+        for (value, expected) in [
+            ("ore", registry("ore", "ore", None, None)),
+            ("ore@^1", registry("ore", "ore", Some("^1"), None)),
+            ("stack:ore@^1", registry("ore", "ore", Some("^1"), None)),
+            (
+                "mine=stack:ore@^1.2",
+                registry("mine", "ore", Some("^1.2"), None),
+            ),
+            (
+                "stack:multi#beta",
+                registry("multi", "multi", None, Some("beta")),
+            ),
+            (
+                "b=stack:multi@^2#beta",
+                registry("b", "multi", Some("^2"), Some("beta")),
+            ),
+            ("My_Stack", registry("my-stack", "My_Stack", None, None)),
+            (
+                "alpha=./alpha.live-spec.json",
+                LiveArg::File {
+                    alias: "alpha".into(),
+                    path: "./alpha.live-spec.json".into(),
+                },
+            ),
+        ] {
+            assert_eq!(parse_live_arg(value).unwrap(), expected, "{value}");
+        }
+        for (value, expected) in [
+            ("alpha.live-spec.json", "alias=path syntax"),
+            ("=ore", "non-empty alias"),
+            ("ore@", "optionally with @<version>"),
+            ("stack:multi#", "empty live alias"),
+        ] {
+            let error = parse_live_arg(value).unwrap_err().to_string();
+            assert!(error.contains(expected), "{value}: {error}");
+        }
+
+        for (value, expected) in [
+            (
+                "spl-token",
+                ProgramArg::Registry {
+                    package: "spl-token".into(),
+                    requirement: None,
+                },
+            ),
+            (
+                "spl-token@^4",
+                ProgramArg::Registry {
+                    package: "spl-token".into(),
+                    requirement: Some("^4".into()),
+                },
+            ),
+            (
+                "program:token.json@=1.0.0",
+                ProgramArg::Registry {
+                    package: "token.json".into(),
+                    requirement: Some("=1.0.0".into()),
+                },
+            ),
+            (
+                "./system.program-spec.json",
+                ProgramArg::File("./system.program-spec.json".into()),
+            ),
+        ] {
+            assert_eq!(parse_program_arg(value).unwrap(), expected, "{value}");
+        }
+    }
+
+    #[test]
+    fn compose_from_files_writes_the_same_stack_manifest_as_before() {
+        let directory = test_directory("compose-files-unchanged");
+        let program = program();
+        let program_path = directory.join("system.program-spec.json");
+        let live = entity_live(&program, "AlphaState");
+        let live_path = directory.join("alpha.live-spec.json");
+        write_json(&program_path, &program).unwrap();
+        write_json(&live_path, &live).unwrap();
+        let programs = [program_path.display().to_string()];
+        let lives = [format!("alpha={}", live_path.display())];
+        let views = ["alpha=AlphaState/list".to_string()];
+
+        let direct = directory.join("direct.stack-manifest.json");
+        compose_stack(
+            "Files",
+            &programs,
+            &lives,
+            &[],
+            &views,
+            direct.to_str().unwrap(),
+        )
+        .unwrap();
+        let through = directory.join("through.stack-manifest.json");
+        let through_path = through.display().to_string();
+        for install in [false, true] {
+            let result = compose(ComposeArgs {
+                config_path: "arete.toml",
+                name: "Files",
+                programs: &programs,
+                lives: &lives,
+                artifact_dirs: &[],
+                selected_views: &views,
+                output: Some(&through_path),
+                install,
+            });
+            if install {
+                assert!(result.unwrap_err().to_string().contains("--install"));
+            } else {
+                result.unwrap();
+                assert_eq!(fs::read(&direct).unwrap(), fs::read(&through).unwrap());
+            }
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn artifact_dirs_find_registry_cache_files() {
+        let directory = test_directory("compose-cache-layout");
+        let cache = directory.join("cache");
+        let program = program();
+        let cached =
+            registry_cache::file(&cache, "program-spec", &program.artifact_hash.to_string())
+                .unwrap();
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        write_json(&cached, &program).unwrap();
+        // Other cache kinds are not artifacts to compose.
+        fs::create_dir_all(cache.join("stack-manifest")).unwrap();
+        fs::write(cache.join("stack-manifest/ignored.json"), "not json").unwrap();
+        let live_path = directory.join("alpha.live-spec.json");
+        write_json(&live_path, &entity_live(&program, "AlphaState")).unwrap();
+        let output = directory.join("cached.stack-manifest.json");
+        compose_stack(
+            "Cached",
+            &[],
+            &[format!("alpha={}", live_path.display())],
+            &[cache.display().to_string()],
+            &[],
+            output.to_str().unwrap(),
+        )
+        .unwrap();
+        let composed = load_stack_manifest_v2(&fs::read(&output).unwrap())
+            .unwrap()
+            .artifact;
+        assert_eq!(
+            composed.payload.programs[0].artifact_hash,
+            program.artifact_hash
         );
         fs::remove_dir_all(directory).unwrap();
     }
