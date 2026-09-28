@@ -221,6 +221,23 @@ test("project installs run the recorded binary instead of self install", notWind
   assert.equal(result.stdout, "argv=install stack ore --ts\n");
 });
 
+test("a project install without a receipt installs the CLI first, then forwards", notWindows, async (t) => {
+  const home = tempHome(t);
+  const base = await serveRelease(t);
+  const logs = [];
+  let result;
+  const status = await a4.launch(["install", "stack", "ore", "--ts"], {
+    env: installEnv(home, base), homedir: home, publicKey: TEST_PUBLIC_KEY, stdio: "pipe", log: (m) => logs.push(m), onResult: (r) => { result = r; },
+  });
+  assert.equal(status, 0);
+  assert.match(logs[0], /not installed yet/);
+  const args = readArgs(home);
+  assert.equal(args.length, 2);
+  assert.match(args[0], /^self install --source npm --checksums \S+ --signature \S+$/);
+  assert.equal(args[1], "install stack ore --ts");
+  assert.equal(result.stdout, '{"schemaVersion":1,"fake":true,"argv":["install","stack","ore","--ts"]}\n');
+});
+
 test("install: downloads, verifies and hands over to a4 self install --source npm", notWindows, async (t) => {
   const home = tempHome(t);
   const base = await serveRelease(t);
