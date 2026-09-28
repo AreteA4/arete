@@ -1026,9 +1026,10 @@ same set is `runtime[]`, each entry a `{ "package", "version" }` pair.
 Generated TypeScript is ES module source (`import`/`export` with `.js`
 specifiers). A project whose nearest `package.json` is not `"type": "module"`
 (`npm init` writes `"commonjs"`) and whose `tsconfig.json` sets
-`verbatimModuleSyntax` with a Node `module` setting (`nodenext`, `node16`,
-`node18`, `node20` or `commonjs`), as `tsc --init` does, makes `tsc` reject
-every `import` in the project, its own files' as well as the generated SDK's.
+`verbatimModuleSyntax` with a `module` setting that follows `package.json`
+(`nodenext`, `node16`, `node18` or `node20`), directly or through `extends`, as
+`tsc --init` does, makes `tsc` reject every `import` in the project, its own
+files' as well as the generated SDK's.
 The summary then adds a `Module type` line with the fix:
 
 ```text
