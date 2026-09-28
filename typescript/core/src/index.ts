@@ -226,6 +226,8 @@ export {
   createTypedListView,
   createTypedViews,
   serializeViewKey,
+  DEFAULT_INITIAL_DATA_TIMEOUT_MS,
+  InitialDataTimeoutError,
 } from './views';
 
 export type {
@@ -270,6 +272,7 @@ export type {
   Schema,
   SchemaResult,
   WatchOptions,
+  GetOptions,
   AreteOptions,
   AreteConfig,
   AuthConfig,

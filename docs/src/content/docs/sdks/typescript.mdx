@@ -397,16 +397,17 @@ type RichUpdate<T> =
 
 ## One-Shot Methods
 
-One-shot methods return a point-in-time snapshot without subscribing to updates. Use these when you need the current state but don't need real-time streaming.
+One-shot methods return a point-in-time snapshot instead of a stream of updates. Use these when you need the current state but don't need real-time streaming.
 
-| Method       | Returns          | Behavior                                              |
-| ------------ | ---------------- | ----------------------------------------------------- |
-| `.get()`     | `Promise<T>`     | Async — waits for data if not yet loaded              |
-| `.getSync()` | `T \| undefined` | Sync — returns immediately, `undefined` if not loaded |
+| Method       | Returns              | Behavior                                                         |
+| ------------ | -------------------- | ---------------------------------------------------------------- |
+| `.get()`     | `Promise<T>`         | Async — waits for the snapshot, then releases the subscription   |
+| `.getOne()`  | `Promise<T \| null>` | Async — `get()` with `take: 1`, first item of a list view        |
+| `.getSync()` | `T \| undefined`     | Sync — reads an already active subscription, `undefined` if none |
 
 ### `.get()` — Async Snapshot
 
-Fetches the current state. Returns a promise that resolves when data is available:
+Opens a subscription for the query (or reuses an equivalent one that is already active), waits for its initial snapshot, and releases it. A query that fails rejects with its error. If no snapshot arrives within `timeoutMs` (5000 by default), the promise rejects with `InitialDataTimeoutError`; pass `timeoutMs: null` to wait indefinitely.
 
 ```typescript
 // List view — returns all entities
@@ -424,15 +425,41 @@ if (round) {
 
 ```typescript
 // State view — returns single entity or null if not found
-get(key: TKey): Promise<T | null>
+get(key: TKey, options?: GetOptions): Promise<T | null>
 
 // List view — returns array of all entities
-get(): Promise<T[]>
+get(options?: GetOptions): Promise<T[]>
+```
+
+```typescript
+import { InitialDataTimeoutError } from "@usearete/sdk";
+
+try {
+  const rounds = await session.stacks.ore.views.OreRound.latest.get({ timeoutMs: 2_000 });
+} catch (error) {
+  if (error instanceof InitialDataTimeoutError) {
+    console.log(`No snapshot for ${error.view} within ${error.timeoutMs}ms`);
+  }
+}
+```
+
+### `.getOne()` — First Item
+
+Reads the first item of a list view through a `take: 1` query. Resolves `null` when the list is empty:
+
+```typescript
+const latest = await session.stacks.ore.views.OreRound.latest.getOne();
+```
+
+**Signature:**
+
+```typescript
+getOne(options?: Omit<GetOptions, "take">): Promise<T | null>
 ```
 
 ### `.getSync()` — Synchronous Snapshot
 
-Returns immediately with cached data. Returns `undefined` if data hasn't been loaded yet:
+Returns immediately with the data of an already active equivalent subscription (for example one held by a running `.use()` loop or a React hook). Returns `undefined` when no such subscription exists; it never opens one:
 
 ```typescript
 // List view
@@ -820,8 +847,8 @@ For views in state mode (keyed lookup). All methods require a `key` parameter:
 | `use`       | `use(key, options?)`       | `AsyncIterable<T>`             |
 | `watch`     | `watch(key, options?)`     | `AsyncIterable<Update<T>>`     |
 | `watchRich` | `watchRich(key, options?)` | `AsyncIterable<RichUpdate<T>>` |
-| `get`       | `get(key)`                 | `Promise<T \| null>`           |
-| `getSync`   | `getSync(key)`             | `T \| null \| undefined`       |
+| `get`       | `get(key, options?)`       | `Promise<T \| null>`           |
+| `getSync`   | `getSync(key, options?)`   | `T \| null \| undefined`       |
 
 #### List Mode Methods
 
@@ -832,8 +859,9 @@ For views in list mode (collections). No key parameter:
 | `use`       | `use(options?)`       | `AsyncIterable<T>`             |
 | `watch`     | `watch(options?)`     | `AsyncIterable<Update<T>>`     |
 | `watchRich` | `watchRich(options?)` | `AsyncIterable<RichUpdate<T>>` |
-| `get`       | `get()`               | `Promise<T[]>`                 |
-| `getSync`   | `getSync()`           | `T[] \| undefined`             |
+| `get`       | `get(options?)`       | `Promise<T[]>`                 |
+| `getOne`    | `getOne(options?)`    | `Promise<T \| null>`           |
+| `getSync`   | `getSync(options?)`   | `T[] \| undefined`             |
 
 #### WatchOptions
 
@@ -853,6 +881,17 @@ interface WatchOptions {
 ```
 
 See [Schema Validation](/sdks/validation/) for details on using schemas to filter and validate streamed data.
+
+#### GetOptions
+
+`get` and `getOne` accept the query options above plus a bound on the wait:
+
+```typescript
+interface GetOptions extends WatchOptions {
+  /** Reject with InitialDataTimeoutError after this long (default 5000). null waits forever. */
+  timeoutMs?: number | null;
+}
+```
 
 ### `session.stacks.<name>.connectionState`
 
