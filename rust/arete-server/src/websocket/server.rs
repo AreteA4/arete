@@ -1418,6 +1418,11 @@ async fn attach_state_subscription(
             // place, but while the cache lacks the key there is none, so the
             // debt waits for the next frame that finds it cached.
             let mut behind = false;
+            // Whether, while behind, a frame the client missed replaced the
+            // entity (a delete, or a whole upsert): its copy may then hold
+            // fields the entity no longer has, which merging keeps, so the
+            // catch-up must replace it.
+            let mut replaced = false;
             loop {
                 tokio::select! {
                     _ = cancel_token.cancelled() => break,
@@ -1425,15 +1430,16 @@ async fn attach_state_subscription(
                         if changed.is_err() {
                             break;
                         }
-                        let (payload, published) = {
+                        let (payload, published, replaced_at) = {
                             let update = receiver.borrow_and_update();
-                            (update.payload.clone(), update.published)
+                            (update.payload.clone(), update.published, update.replaced)
                         };
                         // The bus keeps only the latest frame. If more than one
                         // was published since the last read, the earlier ones
                         // were overwritten and the latest patch alone would
                         // drop their fields, so send the cached entity instead.
                         behind |= published > seen + 1;
+                        replaced |= behind && replaced_at > seen;
                         seen = published;
                         let metadata = source_frame_metadata(&payload);
                         if metadata.op == "delete" {
@@ -1451,6 +1457,7 @@ async fn attach_state_subscription(
                             }
                             member = false;
                             behind = false;
+                            replaced = false;
                             continue;
                         }
 
@@ -1469,7 +1476,9 @@ async fn attach_state_subscription(
                             .get(&view_spec_task.id, &key)
                             .await
                         else {
-                            if member && send_scoped_source_payload(
+                            // A copy of a replaced entity takes no patch: it
+                            // waits for the whole entity to replace it.
+                            if member && !replaced && send_scoped_source_payload(
                                 &task_context,
                                 &subscription_id,
                                 &query.view,
@@ -1483,6 +1492,7 @@ async fn attach_state_subscription(
                             select_query_entities(vec![(key.clone(), cached)], &query, true, false);
                         let is_member = !selected.is_empty();
                         let caught_up = !std::mem::take(&mut behind);
+                        let replace = std::mem::take(&mut replaced);
                         let result = match (member, selected.into_iter().next()) {
                             (true, Some(_)) if caught_up => send_scoped_source_payload(
                                 &task_context,
@@ -1492,17 +1502,21 @@ async fn attach_state_subscription(
                             ),
                             // The whole cached entity, as a patch: it merges into
                             // what the client holds, so a field the cache lost
-                            // to eviction is kept, not replaced. It carries no
-                            // seq, because it is newer than anything this
-                            // subscriber was sent and seqs are not ordered within
-                            // a slot: account updates and instructions number
-                            // themselves differently, so the latest patch's seq
-                            // can sort below one already delivered.
+                            // to eviction is kept, not replaced. If a missed frame
+                            // replaced the entity, it is an upsert instead, which
+                            // replaces the client's copy: merging would keep the
+                            // fields of the entity that was deleted or replaced.
+                            // Either carries no seq, because it is newer than
+                            // anything this subscriber was sent and seqs are not
+                            // ordered within a slot: account updates and
+                            // instructions number themselves differently, so the
+                            // latest patch's seq can sort below one already
+                            // delivered.
                             (true, Some((entity_key, data))) => send_membership_frame(
                                 &task_context,
                                 &subscription_id,
                                 &view_spec_task,
-                                "patch",
+                                if replace { "upsert" } else { "patch" },
                                 &entity_key,
                                 data,
                                 None,
@@ -3981,13 +3995,152 @@ mod tests {
             socket.close(None).await.ok();
         }
 
+        /// A key deleted and created again before the subscriber reads
+        /// either frame: the bus keeps only the new entity's. Merged into the
+        /// client's copy it would leave the deleted entity's fields in place,
+        /// so the client gets the new entity whole, replacing its copy.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_key_deleted_and_recreated_between_reads_replaces_the_clients_copy() {
+            let server = StateServer::start().await;
+            server
+                .publish("7", json!({"id": 7, "old": true}), "100:000000000001")
+                .await;
+            let mut socket = server.subscribe("7").await;
+
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer.entity_cache.remove(ROUND, "7").await;
+                writer
+                    .publish_frame("7", "delete", Value::Null, "101:000000000001")
+                    .await;
+                writer
+                    .publish("7", json!({"id": 7, "fresh": true}), "101:000000000002")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({"id": 7, "fresh": true, "_seq": "101:000000000002"})
+            );
+            assert!(frame.get("seq").is_none(), "unexpected seq: {frame}");
+
+            // Deleted, with a patch overwritten before it: the delete is final.
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer
+                    .publish("7", json!({"n": 1}), "102:000000000001")
+                    .await;
+                writer.entity_cache.remove(ROUND, "7").await;
+                writer
+                    .publish_frame("7", "delete", Value::Null, "102:000000000002")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "delete", "unexpected frame: {frame}");
+
+            // Created again: the client holds nothing, so it arrives whole.
+            server
+                .publish("7", json!({"id": 7, "third": true}), "103:000000000001")
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["data"]["third"], true);
+            assert!(frame["data"].get("fresh").is_none(), "{frame}");
+            socket.close(None).await.ok();
+        }
+
+        /// A missed delete, then a patch the cache refused (it lacks the new
+        /// entity): the client's copy is of the deleted entity, so the patch
+        /// is not merged into it. The new entity replaces it once it is whole.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_copy_of_a_deleted_entity_takes_no_patch_until_it_is_replaced() {
+            let server = StateServer::start().await;
+            server
+                .publish("7", json!({"id": 7, "old": true}), "100:000000000001")
+                .await;
+            let mut socket = server.subscribe("7").await;
+
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer.entity_cache.remove(ROUND, "7").await;
+                writer
+                    .publish_frame("7", "delete", Value::Null, "101:000000000001")
+                    .await;
+                writer
+                    .publish_frame("7", "patch", json!({"n": 1}), "101:000000000002")
+                    .await;
+            })
+            .await
+            .unwrap();
+            // Let the subscriber read the patch, and withhold it, before the
+            // whole entity arrives. Nothing is sent, so there is no frame to
+            // wait for.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let whole = json!({"id": 7, "n": 1, "_seq": "101:000000000002"});
+            server
+                .entity_cache
+                .store_whole(ROUND, "7", whole.clone())
+                .await;
+            server
+                .publish_frame("7", "upsert", whole.clone(), "101:000000000002")
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["data"], whole);
+            socket.close(None).await.ok();
+        }
+
+        /// The source replaced the entity whole (an `upsert`, dropping a field)
+        /// and then patched it, both before the subscriber read either. The
+        /// patch alone, or the entity merged in, would keep the dropped field.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_whole_entity_among_overwritten_frames_replaces_the_clients_copy() {
+            let server = StateServer::start().await;
+            server
+                .publish("7", json!({"id": 7, "dropped": 1}), "100:000000000001")
+                .await;
+            let mut socket = server.subscribe("7").await;
+
+            let writer = server.clone();
+            tokio::spawn(async move {
+                let whole = json!({"id": 7, "_seq": "101:000000000001"});
+                writer
+                    .entity_cache
+                    .store_whole(ROUND, "7", whole.clone())
+                    .await;
+                writer
+                    .publish_frame("7", "upsert", whole, "101:000000000001")
+                    .await;
+                writer
+                    .publish("7", json!({"n": 1}), "101:000000000002")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({"id": 7, "n": 1, "_seq": "101:000000000002"})
+            );
+            assert!(frame.get("seq").is_none(), "unexpected seq: {frame}");
+            socket.close(None).await.ok();
+        }
+
         /// Patches overwritten on the bus while the cache lacks the key (it
         /// evicted it, and refused them) leave nothing whole to send in their
         /// place: the holder gets the latest patch, as a holder of an evicted
         /// key does, and stays behind. The resend that brings the entity back
         /// carries the seq of the key's latest change, which the holder
         /// already has and would drop as stale, so it gets the cached entity
-        /// as a patch without a seq instead.
+        /// without a seq instead: as an upsert, since the resend is the whole
+        /// entity and replaces what the holder has.
         #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
         async fn a_holder_behind_on_an_evicted_key_catches_up_when_it_returns() {
             let server = StateServer::start().await;
@@ -4023,7 +4176,7 @@ mod tests {
                 .publish_frame("7", "upsert", whole.clone(), "101:000000000002")
                 .await;
             let frame = next_frame(&mut socket).await;
-            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
             assert_eq!(frame["data"], whole);
             assert!(frame.get("seq").is_none(), "unexpected seq: {frame}");
 
