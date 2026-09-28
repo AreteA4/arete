@@ -71,7 +71,7 @@ A program descriptor can include:
 A stack descriptor can include:
 
 - its exact composition identity;
-- selected live views and their programs;
+- selected live views and the Program SDKs for the programs they read from;
 - independent live, Program Read, chain, and transaction bindings;
 - authentication requirements;
 - supported SDK targets; and
@@ -91,6 +91,21 @@ a4 explore programs --json
 a4 explore stack <ref> --json
 a4 explore program <ref> --json
 ```
+
+When you need only part of a descriptor, ask for that part. It keeps the output
+to a few KB:
+
+```bash
+a4 explore stack <ref> --summary --json
+a4 explore stack <ref> --operation <operation> --json
+a4 explore program <ref> --operation <operation> --json
+a4 explore program <ref> --section instructions --json
+```
+
+`--summary` lists a stack's entities and views, its Program SDKs, endpoints, and
+auth requirements. `--operation` shows one operation, and on a stack it
+searches the stack's Program SDKs. See [`a4 explore`](/cli/commands/#a4-explore)
+for every option.
 
 Prefer `a4 explore catalog` when starting from intent or filtering by capability
 mode. Prefer the explicit `stack` and `program` forms over legacy positional
@@ -125,6 +140,11 @@ Prefer the descriptor's reported command:
 a4 install program <slug> --ts
 a4 install stack <slug> --ts
 ```
+
+Install a stack when you need live views, with or without transactions. It
+includes the Program SDK for each program its views read from, the same one `a4
+install program` gives you, so its operations need no separate program install.
+Install a program on its own when you only need reads and transactions.
 
 A saved install updates `arete.toml`, resolves `arete.lock`, and generates code
 for the complete set of dependencies. Use `--no-save` only when you deliberately

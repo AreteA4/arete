@@ -102,6 +102,12 @@ a4 install stack <slug> --ts
 a4 install --locked
 ```
 
+A stack includes the program SDKs for the programs its views index, at
+`arete.programs.<name>`, and they are the same SDKs a standalone program install
+gives. Install a stack when the app needs live views, with or without
+transactions; install a program on its own only when no stack you use covers
+it. Never merge stack and program objects by hand.
+
 Use `--rust` or `--python` only when the descriptor lists that target. A saved
 install updates:
 

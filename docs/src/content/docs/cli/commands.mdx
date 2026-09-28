@@ -810,12 +810,12 @@ an existing entry, such as `deployment_name`, are kept.
 # ORE's round and miner views, plus the spl-token program SDK
 a4 stack compose --name ore-plus-token \
   --live ore \
-  --program spl-token@^4 \
+  --program spl-token@^1 \
   --selected-view ore=OreRound/latest \
   --selected-view ore=OreMiner/state
 
 # Also declare it under [dependencies.stacks] and install it
-a4 stack compose --name ore-plus-token --live ore --program spl-token@^4 --install
+a4 stack compose --name ore-plus-token --live ore --program spl-token@^1 --install
 ```
 
 | Value                                      | Part                                                                 |
@@ -1180,7 +1180,7 @@ it, or you can write it yourself:
 ```toml
 [authoring.stacks.ore-plus-token]
 live.ore = { stack = "ore", version = "^1", views = ["OreRound/latest", "OreMiner/state"] }
-programs = [{ package = "spl-token", version = "^4" }]
+programs = [{ package = "spl-token", version = "^1" }]
 
 [dependencies.stacks.ore-plus-token]
 source = { workspace = "ore-plus-token" }
@@ -1193,8 +1193,8 @@ other stack dependency:
 ```tsx
 const arete = useArete(ORE_PLUS_TOKEN_STACK);
 arete.views.OreRound.latest.use();
-arete.programs.ore;       // the program SDK the ore stack references
-arete.programs.splToken;  // the spl-token program SDK
+arete.programs.ore;   // the program SDK the ore stack references
+arete.programs.token; // the spl-token program SDK
 ```
 
 - **Program SDKs.** Every program uses its program SDK. For programs the views
@@ -1286,7 +1286,7 @@ artifact_roots = ["./.arete"]
 # A composed stack (`a4 stack compose` writes this; see Composed stacks)
 [authoring.stacks.ore-plus-token]
 live.ore = { stack = "ore", version = "^1.0.0", views = ["OreRound/latest"] }
-programs = [{ package = "spl-token", version = "^4.0.0" }]
+programs = [{ package = "spl-token", version = "^1.0.0" }]
 ```
 
 Default output paths are kind-scoped. TypeScript uses
