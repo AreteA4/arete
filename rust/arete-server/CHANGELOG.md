@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.24.0](https://github.com/AreteA4/arete/compare/arete-server-v0.23.1...arete-server-v0.24.0) (2026-09-27)
+
+
+### Bug Fixes
+
+* **server:** catch a state subscriber up when a patch is overwritten ([41b22ec](https://github.com/AreteA4/arete/commit/41b22ec57a03499559a3b64e45ee86f5eb8e2fe3))
+* **server:** merge a state catch-up into the client's entity ([33d2612](https://github.com/AreteA4/arete/commit/33d2612b7ca2013a6b3333965b4b0030711fc370))
+* **server:** send the cached entity when a state subscriber misses a patch ([4730460](https://github.com/AreteA4/arete/commit/4730460b5676f74a12a5a48a0fd18b2f8009ea08))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.23.1 to 0.24.0
+
 ## [0.23.1](https://github.com/AreteA4/arete/compare/arete-server-v0.23.0...arete-server-v0.23.1) (2026-09-25)
 
 
