@@ -62,7 +62,8 @@ function resolveTimeout(options?: GetOptions): number | null {
 
 /**
  * Open (or reuse) the equivalent subscription, wait until its snapshot has
- * resolved or its query has failed, and release it. Bounded by `timeoutMs`
+ * resolved or its query has failed, and release it. A terminal connection
+ * failure or a disconnect rejects with that reason. Bounded by `timeoutMs`
  * (`null` waits forever) so a socket that never delivers cannot hang the caller.
  */
 async function readResolved<T>(
@@ -89,10 +90,19 @@ async function readResolved<T>(
         const error = lease.getError();
         if (error) finish(error);
         else if (!lease.getSnapshot().isLoading) finish();
+        else {
+          const connectionError = registry.getConnectionError();
+          if (connectionError) finish(connectionError);
+        }
       };
       check();
       if (settled) return;
-      stop = lease.onChange(check);
+      const stopChanges = lease.onChange(check);
+      const stopFailures = registry.onFailure(finish);
+      stop = () => {
+        stopChanges();
+        stopFailures();
+      };
       if (timeoutMs !== null) {
         timer = setTimeout(
           () => finish(new InitialDataTimeoutError(query.view, timeoutMs)),

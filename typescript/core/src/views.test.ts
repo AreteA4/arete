@@ -241,6 +241,52 @@ describe('get', () => {
   });
 });
 
+describe('get when the connection fails', () => {
+  it('rejects with the connection error instead of timing out', async () => {
+    const { registry, subscribed, unsubscribed, list } = setup();
+
+    const pending = list.get({ timeoutMs: null });
+    registry.handleConnectionState('error', 'Authentication refused');
+
+    await expect(pending).rejects.toMatchObject({
+      code: 'CONNECTION_ERROR',
+      message: 'Authentication refused',
+    });
+    expect(unsubscribed).toEqual([subscribed[0]!.subscriptionId]);
+  });
+
+  it('rejects at once while the connection is failed, and waits again once it restarts', async () => {
+    const { registry, subscribed, deliver, list } = setup();
+    registry.handleConnectionState('error', 'Authentication refused');
+
+    await expect(list.get()).rejects.toMatchObject({ code: 'CONNECTION_ERROR' });
+
+    registry.handleConnectionState('connecting');
+    const pending = list.get();
+    deliver(subscribed[1]!, { a: { name: 'round a' } });
+    await expect(pending).resolves.toEqual([{ name: 'round a' }]);
+  });
+
+  it('still reads an active subscription that already has its snapshot', async () => {
+    const { registry, subscribed, deliver, list } = setup();
+    const live = registry.subscribe({ view: 'OreRound/list' });
+    deliver(subscribed[0]!, { a: { name: 'round a' } });
+    registry.handleConnectionState('error', 'Connection lost');
+
+    await expect(list.get()).resolves.toEqual([{ name: 'round a' }]);
+    live.release();
+  });
+
+  it('rejects an unbounded read when a disconnect clears the subscriptions', async () => {
+    const { registry, list } = setup();
+
+    const pending = list.get({ timeoutMs: null });
+    registry.clear();
+
+    await expect(pending).rejects.toMatchObject({ code: 'CONNECTION_CANCELLED' });
+  });
+});
+
 describe('getOne', () => {
   it('reads the first item through a take: 1 subscription', async () => {
     const { subscribed, deliver, list } = setup();
