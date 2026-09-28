@@ -382,7 +382,10 @@ for await (const update of session.stacks.myStack.views.settlementGame.list.watc
 }
 
 const game = await session.stacks.myStack.views.settlementGame.state.get('game-123');
+const latest = await session.stacks.ore.views.OreRound.latest.getOne();
 ```
+
+`get` and `getOne` open (or reuse) an equivalent subscription, wait for its initial snapshot, and release it. They reject with `InitialDataTimeoutError` after `timeoutMs` (5000 by default; `null` waits forever). `getSync` only reads a subscription that is already active and returns `undefined` when there is none.
 
 Every options object is a protocol v2 query with independent ordered membership. Different windows and filters on the same view can run concurrently, while equivalent normalized queries share one reference-counted wire subscription:
 

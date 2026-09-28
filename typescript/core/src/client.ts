@@ -660,8 +660,8 @@ export class Arete<TStack extends StackDefinition> {
     this.connection.onFrame((frame: Frame) => {
       this.processor.handleFrame(frame);
     });
-    this.connection.onStateChange((state) => {
-      this.subscriptionRegistry.handleConnectionState(state);
+    this.connection.onStateChange((state, error) => {
+      this.subscriptionRegistry.handleConnectionState(state, error);
     });
 
     this._views = createTypedViews(this.stack, this.storage, this.subscriptionRegistry);
