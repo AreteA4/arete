@@ -156,9 +156,9 @@ per-view cursor assigned when the event is retained.
 is `{epoch}:{offset}`, where the epoch comes from the acknowledgement's
 `replayWindow`.
 
-`seq` is not usable as a replay cursor: its second component is the
-transaction index, so every event decoded from one transaction shares a
-`seq`. Offsets are scoped to one view and are not comparable across views.
+`seq` is not usable as a replay cursor: every event decoded from one
+transaction shares a `seq` (see [Versions](#versions)). Offsets are scoped to
+one view and are not comparable across views.
 
 The acknowledgement advertises the window the view can still serve:
 
@@ -298,7 +298,7 @@ All live frames include `protocolVersion` and `subscriptionId`:
   "entity": "OreRound/latest",
   "op": "upsert",
   "key": "101",
-  "data": { "id": { "roundId": "101" } },
+  "data": { "id": { "roundId": "101" }, "_version": "3f9a2c1d:5812" },
   "seq": "1235:000000000001"
 }
 ```
@@ -320,6 +320,40 @@ The guarantee covers keys the server has not sent. A client that drops an entity
 Frames that carry an `offset` are exempt. They are records from a [replayable append view](#replayable-append-views): events delivered verbatim in offset order, never promoted to `upsert`. The server keeps only each entity's latest state, not its state as of a given offset, so it has nothing faithful to substitute, and a consumer resuming from a cursor already holds whatever came before it. Clients apply them as received.
 
 The server holds itself to the same rule. A source patch carries only the fields that changed, so for a key the server's bounded entity cache does not hold it is stored only when the state machine that produced it marks it as the entity's creation. Any other patch for such a key — one the cache evicted, however long ago, or one the state machine kept across a restore — is not stored. The server then asks the state machine for the whole entity, which follows with the state machine's next batch of changes, whether or not that batch changes the key: the key returns to snapshots and windows, and clients receive it as an `upsert`. That `upsert` is not a change: it carries the `seq` of the key's latest change, and the key keeps that position in recency (`_seq`) order instead of taking the batch's. Until then the key is out of the view's snapshots. If the state machine no longer holds the entity it has nothing to send; its next change to the key starts the entity afresh and is stored as its creation. A state subscription that holds it keeps receiving its patches and is never sent `remove` for an eviction. A list view's cache bound is also the extent of its windows, so an evicted key leaves list windows the way a key past `take` does, with a `remove`, and re-enters as an `upsert`. Such a patch never adds the key to a derived view either; a derived view that still holds the whole entity (derived views are bounded by sort position, not recency) merges the change into its copy. Snapshot rows and `upsert` data are always whole entities, as far as the server's state machine holds them: it keeps a bounded number of entities too (2,500 per entity type by default), and an entity it has dropped restarts from the fields its next update sets.
+
+### Versions
+
+Every entity the server sends carries `_version` in its `data`: the frame of a
+source change, a snapshot row, an `upsert`, and a state subscription's
+catch-up. It is a string `"{epoch}:{counter}"`, such as `"3f9a2c1d:5812"`. The
+counter is the frame's place in the order the server applied changes to its
+entity cache, and the epoch names that order: a server restart, or the stack
+being loaded again, starts a new one. `remove` and `delete` carry no data and no
+version.
+
+Clients order one key's frames by `_version`, not `seq`. `seq` orders slots,
+but within a slot it cannot order updates: every update decoded from one
+transaction shares one, and account updates and instructions number themselves
+differently, so a later update can carry a lower `seq`. A client that treated a
+`seq` at or below the one it holds as a duplicate would drop a transaction's
+second patch. `seq` (and `_seq`) remain the recency order and the `after`
+cursor.
+
+For a live `upsert` or `patch` without an `offset`:
+
+- If it carries `_version` and the client holds a version of the same epoch for
+  the key, it is stale, and not applied, unless its counter is greater. One
+  frame routed to two subscriptions of the same view arrives twice with one
+  version and is applied once.
+- If it carries `_version` in any other case (the client holds no version for
+  the key, or one from another epoch), it is applied and its version recorded.
+- If it carries no `_version`, from a server that predates versions, the client
+  compares `seq` as before.
+
+Snapshot rows record their version without the check, as they bypass the
+sequence rule. An entity the server restored from a saved snapshot keeps the
+version it was saved with. Every later change to it carries the running epoch,
+so within one server lifetime a key never goes back to an older epoch.
 
 `remove` and `delete` are deliberately different:
 
