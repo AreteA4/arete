@@ -985,12 +985,14 @@ prunes its lock entry, and deletes only generated output whose provenance
 matches that project dependency. It refuses output containing unowned files;
 `--keep-output` removes only the manifest and lock entries.
 
-When a dependency stops generating an SDK because its `targets`,
-`[sdk].targets`, or `outputs` changed (for example `a4 install stack ore --rust`
-after `--ts`), `a4 install` removes the output it no longer writes, but only
-when that output's provenance shows it is the dependency's generated SDK and
-its files are unchanged. Otherwise it keeps the directory and prints a note
-naming it.
+When a dependency stops generating an SDK because its `targets` or
+`[sdk].targets` changed (for example `a4 install stack ore --rust` after
+`--ts`), or because `a4 install <package> -o` moved its output, `a4 install`
+removes the output it no longer writes, but only when that output's provenance
+shows it is the dependency's generated SDK and its files are unchanged.
+Otherwise it keeps the directory and prints a note naming it. `arete.lock` does
+not record output paths, so after you change `outputs` in `arete.toml` by hand,
+delete the old directory yourself.
 
 `a4 sdk list` reports normalized manifest dependencies and lock status.
 Low-level `a4 sdk create` accepts explicit `--manifest` or
