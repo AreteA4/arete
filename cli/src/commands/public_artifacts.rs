@@ -578,6 +578,11 @@ pub struct ComposeArgs<'a> {
     pub output: Option<&'a str>,
     /// Also declare the composed stack as a dependency and install it.
     pub install: bool,
+    /// With `install`, the one SDK target the dependency generates, recorded
+    /// as its `targets` as `a4 install <package> --ts` records them. None
+    /// keeps a declared dependency's `targets`, or leaves a new one on
+    /// `[sdk].targets`.
+    pub target: Option<crate::project::manifest::InstallTarget>,
 }
 
 /// One `--live` value.
@@ -716,6 +721,11 @@ fn views_by_alias(values: &[String], lives: &[LiveArg]) -> Result<BTreeMap<Strin
 /// arete.toml as `[authoring.stacks.<name>]`, or with `-o` as a raw
 /// StackManifest.
 pub fn compose(args: ComposeArgs<'_>) -> Result<()> {
+    if args.target.is_some() && !args.install {
+        bail!(
+            "--ts, --rust and --python choose the SDK --install generates; add --install, or declare the stack under [dependencies.stacks] with `targets` and run `a4 install`"
+        )
+    }
     let lives = args
         .lives
         .iter()
@@ -1076,8 +1086,13 @@ fn compose_into_project(
         }
     }
     let dependency = args.install.then_some(args.name);
-    let declared =
-        crate::project::installer::save_composition(manifest_path, args.name, &entry, dependency)?;
+    let declared = crate::project::installer::save_composition(
+        manifest_path,
+        args.name,
+        &entry,
+        dependency,
+        args.target,
+    )?;
     if args.install {
         return Ok(());
     }
@@ -1095,8 +1110,8 @@ fn compose_into_project(
             "Run `a4 install` to generate it (declared as [dependencies.stacks.{alias}])."
         ),
         None => println!(
-            "Declare it under [dependencies.stacks] with `source = {{ workspace = \"{}\" }}` and run `a4 install`, or re-run with --install.",
-            args.name
+            "Re-run with --install --ts (or --rust, --python) to declare and install it, or declare [dependencies.stacks.{name}] with `source = {{ workspace = \"{name}\" }}` and `targets = [\"typescript\"]`, then run `a4 install`.",
+            name = args.name
         ),
     }
     Ok(())
@@ -1649,6 +1664,7 @@ mod tests {
                 selected_views: &views,
                 output: Some(&through_path),
                 install,
+                target: None,
             });
             if install {
                 assert!(result.unwrap_err().to_string().contains("--install"));
@@ -1657,6 +1673,39 @@ mod tests {
                 assert_eq!(fs::read(&direct).unwrap(), fs::read(&through).unwrap());
             }
         }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn an_sdk_target_requires_install() {
+        let directory = test_directory("compose-target-without-install");
+        let manifest = directory.join("arete.toml");
+        let original = "manifest_version = 1\n\n[project]\nname = \"compose\"\n";
+        fs::write(&manifest, original).unwrap();
+        let config = manifest.display().to_string();
+        let output = directory
+            .join("out.stack-manifest.json")
+            .display()
+            .to_string();
+        for output in [None, Some(output.as_str())] {
+            // Refused before anything is resolved or written.
+            let error = compose(ComposeArgs {
+                config_path: &config,
+                name: "ore-plus-token",
+                programs: &["spl-token".to_string()],
+                lives: &["ore".to_string()],
+                artifact_dirs: &[],
+                selected_views: &[],
+                output,
+                install: false,
+                target: Some(crate::project::manifest::InstallTarget::TypeScript),
+            })
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("add --install"), "{error}");
+        }
+        assert_eq!(fs::read_to_string(&manifest).unwrap(), original);
+        assert!(!directory.join("out.stack-manifest.json").exists());
         fs::remove_dir_all(directory).unwrap();
     }
 

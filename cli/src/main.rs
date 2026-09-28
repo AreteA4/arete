@@ -654,6 +654,10 @@ enum StackCommands {
         /// Also declare the composed stack under [dependencies.stacks] and install it
         #[arg(long, conflicts_with = "output")]
         install: bool,
+
+        // With --install, the dependency's `targets`, as `a4 install` records them.
+        #[command(flatten)]
+        sdk_target: SdkTargetArgs,
     },
 
     /// List all stacks with their deployment status
@@ -1342,6 +1346,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 selected_views,
                 output,
                 install,
+                sdk_target,
             } => commands::public_artifacts::compose(commands::public_artifacts::ComposeArgs {
                 config_path: &cli.config,
                 name: &name,
@@ -1351,6 +1356,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 selected_views: &selected_views,
                 output: output.as_deref(),
                 install,
+                target: sdk_target.target(),
             }),
             StackCommands::List => commands::stack::list(cli.json),
             StackCommands::Show {
@@ -1517,6 +1523,65 @@ mod tests {
                 );
             }
             _ => panic!("expected install command"),
+        }
+    }
+
+    #[test]
+    fn parse_stack_compose_install_target() {
+        for (flag, expected) in [
+            ("--ts", project::manifest::InstallTarget::TypeScript),
+            ("--rust", project::manifest::InstallTarget::Rust),
+            ("--python", project::manifest::InstallTarget::Python),
+        ] {
+            let cli = Cli::try_parse_from([
+                "a4",
+                "stack",
+                "compose",
+                "--name",
+                "ore-transfers",
+                "--live",
+                "ore",
+                "--program",
+                "spl-token",
+                "--install",
+                flag,
+            ])
+            .expect("cli should parse");
+            match cli.command {
+                Some(Commands::Stack(StackCommands::Compose {
+                    install,
+                    sdk_target,
+                    ..
+                })) => {
+                    assert!(install);
+                    assert_eq!(sdk_target.target(), Some(expected), "{flag}");
+                }
+                _ => panic!("expected stack compose command"),
+            }
+        }
+
+        let cli = Cli::try_parse_from(["a4", "stack", "compose", "--name", "x", "--install"])
+            .expect("cli should parse");
+        match cli.command {
+            Some(Commands::Stack(StackCommands::Compose { sdk_target, .. })) => {
+                assert_eq!(sdk_target.target(), None);
+            }
+            _ => panic!("expected stack compose command"),
+        }
+
+        // One target, as `a4 install` accepts.
+        for command in [
+            &["a4", "stack", "compose", "--name", "x", "--install"][..],
+            &["a4", "install", "stack", "ore"][..],
+        ] {
+            let error = Cli::try_parse_from(command.iter().chain(&["--ts", "--rust"]))
+                .err()
+                .expect("conflicting targets are refused");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{command:?}"
+            );
         }
     }
 

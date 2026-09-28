@@ -469,12 +469,15 @@ fn render_manifest_addition(
 /// `deployment_name`) as written. With `dependency`, also declares
 /// `[dependencies.stacks.<dependency>] source = { workspace = "<name>" }`
 /// when no stack dependency reads the composition yet, and installs; a
-/// failed install restores arete.toml.
+/// failed install restores arete.toml. `target` is that dependency's
+/// `targets`, as `a4 install <package> --ts` records them: a new dependency
+/// without one uses `[sdk].targets`, and one already declared keeps its own.
 pub(crate) fn save_composition(
     manifest_path: &Path,
     name: &str,
     entry: &super::manifest::AuthoringStackV1,
     dependency: Option<&str>,
+    target: Option<InstallTarget>,
 ) -> Result<Option<String>> {
     let original = fs::read(manifest_path)
         .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
@@ -521,7 +524,7 @@ pub(crate) fn save_composition(
                     workspace: name.to_string(),
                 }),
                 version: None,
-                targets: None,
+                targets: target.map(|target| vec![target]),
                 outputs: DependencyOutputsV1::default(),
                 endpoints: BTreeMap::new(),
             };
@@ -536,7 +539,23 @@ pub(crate) fn save_composition(
                 .insert(alias.to_string(), workspace);
             Some(alias.to_string())
         }
-        (_, declared) => declared,
+        // Already declared: kept as written, except that a target replaces
+        // its `targets`.
+        (Some(_), Some(declared)) => {
+            if let Some(target) = target {
+                let targets = vec![target];
+                insert_manifest_item(
+                    document.as_item_mut(),
+                    &["dependencies", "stacks", &declared, "targets"],
+                    targets_manifest_item(&targets),
+                )?;
+                if let Some(existing) = manifest.dependencies.stacks.get_mut(&declared) {
+                    existing.targets = Some(targets);
+                }
+            }
+            Some(declared)
+        }
+        (None, declared) => declared,
     };
     manifest.validate()?;
     let replacement = document.to_string();
@@ -737,9 +756,7 @@ fn dependency_manifest_item(dependency: &DependencyV1) -> Item {
         table.insert("version", value(version.clone()));
     }
     if let Some(targets) = dependency.targets.as_ref() {
-        let mut targets: Array = targets.iter().map(|target| target.as_str()).collect();
-        targets.fmt();
-        table.insert("targets", value(targets));
+        table.insert("targets", targets_manifest_item(targets));
     }
     let mut outputs = InlineTable::new();
     if let Some(output) = dependency.outputs.typescript.as_ref() {
@@ -759,6 +776,13 @@ fn dependency_manifest_item(dependency: &DependencyV1) -> Item {
         table.insert("endpoints", endpoints_manifest_item(&dependency.endpoints));
     }
     Item::Table(table)
+}
+
+/// `targets = ["typescript"]`.
+fn targets_manifest_item(targets: &[InstallTarget]) -> Item {
+    let mut targets: Array = targets.iter().map(|target| target.as_str()).collect();
+    targets.fmt();
+    value(targets)
 }
 
 /// `endpoints = { <live> = { websocket = "...", query = "..." } }`, inline so
@@ -6875,6 +6899,7 @@ targets = ["typescript"]
                     ],
                     output: None,
                     install,
+                    target: None,
                 },
             )
         };
@@ -6912,6 +6937,79 @@ targets = ["typescript"]
         assert_eq!(lock.dependencies[0].source, "workspace:ore-plus-token");
         assert!(generated_files(&manifest, "typescript")
             .contains_key("stacks/ore-plus-token/ore-plus-token.ts"));
+    }
+
+    #[test]
+    fn compose_install_records_the_sdk_target_as_install_does_and_keeps_it() {
+        let sandbox = RegistrySandbox::new(
+            (0..7)
+                .map(|_| (200, composed_resolution('7', '8')))
+                .collect(),
+            false,
+        );
+        let root = sandbox.dir.path().join("compose-target-project");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = root.join("arete.toml");
+        // No [sdk]: the default targets are TypeScript and Rust.
+        fs::write(
+            &manifest,
+            "manifest_version = 1\n\n[project]\nname = \"compose\"\n",
+        )
+        .unwrap();
+        let config = manifest.display().to_string();
+        let compose = |install: bool, target: Option<InstallTarget>| {
+            crate::commands::public_artifacts::compose(
+                crate::commands::public_artifacts::ComposeArgs {
+                    config_path: &config,
+                    name: "ore-plus-token",
+                    programs: &["spl-token@^4".to_string()],
+                    lives: &["ore".to_string()],
+                    artifact_dirs: &[],
+                    selected_views: &[],
+                    output: None,
+                    install,
+                    target,
+                },
+            )
+        };
+        let declared = "[dependencies.stacks.ore-plus-token]\nsource = { workspace = \"ore-plus-token\" }\ntargets = [\"typescript\"]\n";
+
+        // --install --ts records the target, as `a4 install stack <ref> --ts`
+        // does, and generates only TypeScript.
+        compose(true, Some(InstallTarget::TypeScript)).expect("compose --install --ts");
+        let text = fs::read_to_string(&manifest).unwrap();
+        assert!(text.contains(declared), "{text}");
+        assert_eq!(
+            lock_of(&manifest).dependencies[0].targets,
+            vec![InstallTarget::TypeScript]
+        );
+        assert!(generated_files(&manifest, "typescript")
+            .contains_key("stacks/ore-plus-token/ore-plus-token.ts"));
+        assert!(!root.join("generated/rust").exists());
+
+        // Composing again without a target keeps the declared one.
+        compose(true, None).expect("compose --install again");
+        compose(false, None).expect("compose again");
+        let text = fs::read_to_string(&manifest).unwrap();
+        assert!(text.contains(declared), "{text}");
+        assert!(!root.join("generated/rust").exists());
+
+        // A target replaces only `targets`; what the user added stays.
+        let outputs = "outputs = { rust = \"./crates/ore-plus-token\" }\n";
+        fs::write(&manifest, format!("{text}{outputs}")).unwrap();
+        compose(true, Some(InstallTarget::Rust)).expect("compose --install --rust");
+        let text = fs::read_to_string(&manifest).unwrap();
+        assert!(
+            text.contains(&format!(
+                "[dependencies.stacks.ore-plus-token]\nsource = {{ workspace = \"ore-plus-token\" }}\ntargets = [\"rust\"]\n{outputs}"
+            )),
+            "{text}"
+        );
+        assert_eq!(
+            lock_of(&manifest).dependencies[0].targets,
+            vec![InstallTarget::Rust]
+        );
+        assert!(root.join("crates/ore-plus-token").is_dir());
     }
 
     // ---------------------------------------------------------------------
