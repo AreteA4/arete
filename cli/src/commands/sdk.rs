@@ -4060,6 +4060,42 @@ fn finish_typescript_module(module: String) -> String {
     }
 }
 
+/// The object type of `{ ...base, key: value, ... }` spelled with `typeof`:
+/// `Omit<base, keys> & { readonly key: typeof value; ... }`.
+fn typescript_spread_type(base: &str, members: &[(String, String)]) -> String {
+    let keys = members
+        .iter()
+        .map(|(key, _)| ts_ident::single_quoted(key))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let fields = members
+        .iter()
+        .map(|(key, value)| {
+            format!(
+                "  readonly {}: typeof {value};",
+                arete_interpreter::typescript::typescript_property_key(key)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("Omit<{base}, {keys}> & {{\n{fields}\n}}")
+}
+
+/// `{ key: typeof value; ... }`: the extensions argument of `extendPrograms`.
+fn typescript_program_extensions_type(bindings: &[ProgramExtensionBinding]) -> String {
+    let fields = bindings
+        .iter()
+        .map(|binding| format!("{}: typeof {}", binding.program_key, binding.export_name))
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("{{ {fields} }}")
+}
+
+/// Every value an entry derives from extensions or hosted program modules is
+/// annotated with a type spelled from the entry's own imports (`typeof`,
+/// `ReturnType<typeof extendStack<...>>`). Inferred, those types restate the
+/// extensions' own types, which declaration emit (`declaration: true`) cannot
+/// name when an extension keeps them unexported.
 fn render_typescript_stack_entry(
     layout: &TypeScriptLayout,
     stack_name: &str,
@@ -4119,11 +4155,19 @@ fn render_typescript_stack_entry(
                 )
             })
             .collect::<Vec<_>>();
+        let hosted_programs_type = typescript_spread_type(
+            &format!("typeof {core_export_name}.programs"),
+            &hosted_program_modules
+                .iter()
+                .map(|program| (program.program_key.clone(), program.import_name.clone()))
+                .collect::<Vec<_>>(),
+        );
         let stack_program_layer = if stack_program_lines.is_empty() {
             String::new()
         } else {
             format!(
-                "\nconst EXTENDED_PROGRAMS = extendPrograms(HOSTED_PROGRAMS, {{\n{}\n}});\n",
+                "\nconst EXTENDED_PROGRAMS: ReturnType<typeof extendPrograms<typeof HOSTED_PROGRAMS, {}>> = extendPrograms(HOSTED_PROGRAMS, {{\n{}\n}});\n",
+                typescript_program_extensions_type(program_extension_bindings),
                 stack_program_lines.join("\n")
             )
         };
@@ -4133,7 +4177,7 @@ fn render_typescript_stack_entry(
             "EXTENDED_PROGRAMS"
         };
 
-        let (stack_import, final_value) = if let Some(extension_entry) = extension_entry {
+        let (stack_import, stack_declarations) = if let Some(extension_entry) = extension_entry {
             let extension_import = extension_entry
                 .strip_suffix(".ts")
                 .unwrap_or(extension_entry);
@@ -4149,9 +4193,19 @@ fn render_typescript_stack_entry(
                     named_imports.join(", ")
                 )
             };
-            (import, "extendStack(CORE, stackExtensions)".to_string())
+            (
+                import,
+                format!(
+                    "export type {type_name} = ReturnType<typeof extendStack<typeof CORE, typeof stackExtensions>>;\n\nexport const {export_name}: {type_name} = extendStack(CORE, stackExtensions);"
+                ),
+            )
         } else {
-            (String::new(), "CORE".to_string())
+            (
+                String::new(),
+                format!(
+                    "export const {export_name}: typeof CORE = CORE;\n\nexport type {type_name} = typeof {export_name};"
+                ),
+            )
         };
 
         return finish_typescript_module(format!(
@@ -4163,19 +4217,17 @@ import {{ {core_export_name} }} from '{core_import}';
 
 export * from '{core_import}';
 
-const HOSTED_PROGRAMS = {{
+const HOSTED_PROGRAMS: {hosted_programs_type} = {{
   ...{core_export_name}.programs,
 {hosted_program_lines}
-}} as const;{stack_program_layer}
+}};{stack_program_layer}
 
-const CORE = {{
+const CORE: Omit<typeof {core_export_name}, 'programs'> & {{ readonly programs: typeof {programs_value} }} = {{
   ...{core_export_name},
   programs: {programs_value},
-}} as const;
+}};
 
-export const {export_name} = {final_value};
-
-export type {type_name} = typeof {export_name};
+{stack_declarations}
 
 export default {export_name};"#,
             hosted_program_lines = hosted_program_lines.join("\n"),
@@ -4196,12 +4248,12 @@ import stackExtensions from './{extension_runtime_import}';
 
 export * from '{core_import}';
 
-export const {export_name} = extendStack(
+export type {type_name} = ReturnType<typeof extendStack<typeof {core_export_name}, typeof stackExtensions>>;
+
+export const {export_name}: {type_name} = extendStack(
   {core_export_name},
   stackExtensions
 );
-
-export type {type_name} = typeof {export_name};
 
 export default {export_name};"#,
                 core_export_name = core_export_name,
@@ -4221,6 +4273,8 @@ export default {export_name};"#,
                 .map(|binding| format!("    {}: {},", binding.program_key, binding.export_name))
                 .collect::<Vec<_>>()
                 .join("\n");
+            let program_extensions_type =
+                typescript_program_extensions_type(program_extension_bindings);
 
             finish_typescript_module(format!(
                 r#"import {{ extendPrograms, extendStack }} from '@usearete/sdk';
@@ -4230,19 +4284,21 @@ import stackExtensions, {{ {named_imports} }} from './{extension_runtime_import}
 
 export * from '{core_import}';
 
-const CORE = {{
+const CORE: Omit<typeof {core_export_name}, 'programs'> & {{
+  readonly programs: ReturnType<typeof extendPrograms<typeof {core_export_name}.programs, {program_extensions_type}>>;
+}} = {{
   ...{core_export_name},
   programs: extendPrograms({core_export_name}.programs, {{
 {program_extension_lines}
   }}),
-}} as const;
+}};
 
-export const {export_name} = extendStack(
+export type {type_name} = ReturnType<typeof extendStack<typeof CORE, typeof stackExtensions>>;
+
+export const {export_name}: {type_name} = extendStack(
   CORE,
   stackExtensions
 );
-
-export type {type_name} = typeof {export_name};
 
 export default {export_name};"#,
                 core_export_name = core_export_name,
@@ -4348,6 +4404,20 @@ fn render_typescript_program_entry(
         ),
     };
 
+    // An extended program's type is spelled from the entry's own imports.
+    // Inferred, it would restate the extension's operation types, which
+    // declaration emit (`declaration: true`) cannot name when the extension
+    // keeps them unexported.
+    let declarations = if extension_import.is_some() {
+        format!(
+            "export type {type_name} = ReturnType<typeof extendProgram<typeof {core_import_name}, typeof programExtensions>>;\n\nexport const {export_name}: {type_name} = {program_value};\nexport const {read_export_name} = {core_read_import_name};"
+        )
+    } else {
+        format!(
+            "export const {export_name} = {program_value};\nexport const {read_export_name} = {core_read_import_name};\n\nexport type {type_name} = typeof {export_name};"
+        )
+    };
+
     finish_typescript_module(format!(
         r#"import {{ {sdk_imports} }} from '@usearete/sdk';
 
@@ -4356,10 +4426,7 @@ import {{ {core_const_name} as {core_import_name}, {core_read_const_name} as {co
 export * from '{core_import}';
 export {{ {core_const_name} as {core_import_name} }} from '{core_import}';
 
-export const {export_name} = {program_value};
-export const {read_export_name} = {core_read_import_name};
-
-export type {type_name} = typeof {export_name};
+{declarations}
 
 export default {export_name};"#,
         sdk_imports = sdk_imports.join(", "),
@@ -4412,15 +4479,33 @@ fn render_typescript_program_collection_entry(
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let (explicit_import, base_expression) = extension_entry
+        let (explicit_import, base_type, base_expression) = extension_entry
             .map(|entry| entry.strip_suffix(".ts").unwrap_or(entry))
             .map(|entry| {
                 (
                     format!("import programExtensions from './{entry}.js';"),
+                    format!(
+                        "ReturnType<typeof extendPrograms<typeof {core_export_name}, typeof programExtensions>>"
+                    ),
                     format!("extendPrograms({core_export_name}, programExtensions)"),
                 )
             })
-            .unwrap_or_else(|| (String::new(), core_export_name.clone()));
+            .unwrap_or_else(|| {
+                (
+                    String::new(),
+                    format!("typeof {core_export_name}"),
+                    core_export_name.clone(),
+                )
+            });
+        // Annotated like the stack entry's values: see
+        // `render_typescript_stack_entry`.
+        let programs_type = typescript_spread_type(
+            "typeof BASE_PROGRAMS",
+            &hosted_program_modules
+                .iter()
+                .map(|program| (program.program_key.clone(), program.import_name.clone()))
+                .collect::<Vec<_>>(),
+        );
 
         return finish_typescript_module(format!(
             r#"{sdk_import}import {{ {export_name} as {core_export_name} }} from '{core_import}';
@@ -4429,14 +4514,14 @@ fn render_typescript_program_collection_entry(
 
 export * from '{core_import}';
 
-const BASE_PROGRAMS = {base_expression};
+const BASE_PROGRAMS: {base_type} = {base_expression};
 
-export const {export_name} = {{
+export type {type_name} = {programs_type};
+
+export const {export_name}: {type_name} = {{
   ...BASE_PROGRAMS,
 {hosted_lines}
-}} as const;
-
-export type {type_name} = typeof {export_name};
+}};
 
 export default {export_name};"#,
         ));
@@ -4455,9 +4540,9 @@ import programExtensions from './{extension_runtime_import}';
 
 export * from '{core_import}';
 
-export const {export_name} = extendPrograms({core_export_name}, programExtensions);
+export type {type_name} = ReturnType<typeof extendPrograms<typeof {core_export_name}, typeof programExtensions>>;
 
-export type {type_name} = typeof {export_name};
+export const {export_name}: {type_name} = extendPrograms({core_export_name}, programExtensions);
 
 export default {export_name};"#,
             export_name = export_name,
@@ -7179,7 +7264,14 @@ mod tests {
             .contains("import { SQUADS_V4_STREAM_STACK_CORE } from './squads-v4-stream-core.js';"));
         assert!(rendered.contains("import stackExtensions from './squads-v4-extensions.js';"));
         assert!(!rendered.contains("export * from './squads-v4-extensions.js';"));
-        assert!(rendered.contains("export const SQUADS_V4_STREAM_STACK = extendStack("));
+        // Named from the imports, so declaration emit never restates the
+        // extension's own types.
+        assert!(rendered.contains(
+            "export type SquadsV4StreamStack = ReturnType<typeof extendStack<typeof SQUADS_V4_STREAM_STACK_CORE, typeof stackExtensions>>;"
+        ));
+        assert!(rendered
+            .contains("export const SQUADS_V4_STREAM_STACK: SquadsV4StreamStack = extendStack("));
+        assert!(!rendered.contains("= typeof SQUADS_V4_STREAM_STACK;"));
         assert!(rendered.contains("export default SQUADS_V4_STREAM_STACK;"));
     }
 
@@ -7203,12 +7295,18 @@ mod tests {
         ));
         assert!(!rendered.contains("export * from './squads-v4-devex.js';"));
         assert!(!rendered.contains("export * from './squads-v4-extensions.js';"));
-        assert!(rendered.contains("const CORE = {"));
+        assert!(rendered.contains(
+            "const CORE: Omit<typeof SQUADS_V4_STREAM_STACK_CORE, 'programs'> & {\n  readonly programs: ReturnType<typeof extendPrograms<typeof SQUADS_V4_STREAM_STACK_CORE.programs, { squadsMultisigProgram: typeof squadsProgramExtensions }>>;\n} = {"
+        ), "{rendered}");
         assert!(
             rendered.contains("programs: extendPrograms(SQUADS_V4_STREAM_STACK_CORE.programs, {")
         );
         assert!(rendered.contains("squadsMultisigProgram: squadsProgramExtensions,"));
-        assert!(rendered.contains("export const SQUADS_V4_STREAM_STACK = extendStack("));
+        assert!(rendered.contains(
+            "export type SquadsV4StreamStack = ReturnType<typeof extendStack<typeof CORE, typeof stackExtensions>>;"
+        ));
+        assert!(rendered
+            .contains("export const SQUADS_V4_STREAM_STACK: SquadsV4StreamStack = extendStack("));
         assert!(rendered.contains("  CORE,"));
     }
 
@@ -7231,10 +7329,17 @@ mod tests {
             "import hostedSplTokenProgram from './programs/spl-token/__arete-program.js';"
         ));
         assert!(rendered.contains("...TOKEN_STACK_STACK_CORE,"));
-        assert!(rendered.contains("const HOSTED_PROGRAMS = {"));
+        // Each hosted program is named by its module, never restated.
+        assert!(rendered.contains(
+            "const HOSTED_PROGRAMS: Omit<typeof TOKEN_STACK_STACK_CORE.programs, 'splToken'> & {\n  readonly splToken: typeof hostedSplTokenProgram;\n} = {"
+        ), "{rendered}");
         assert!(rendered.contains("...TOKEN_STACK_STACK_CORE.programs,"));
+        assert!(rendered.contains(
+            "const CORE: Omit<typeof TOKEN_STACK_STACK_CORE, 'programs'> & { readonly programs: typeof HOSTED_PROGRAMS } = {"
+        ));
         assert!(rendered.contains("programs: HOSTED_PROGRAMS,"));
         assert!(rendered.contains("splToken: hostedSplTokenProgram,"));
+        assert!(rendered.contains("export const TOKEN_STACK_STACK: typeof CORE = CORE;"));
         assert!(!rendered.contains("programReads:"));
     }
 
@@ -7423,7 +7528,12 @@ mod tests {
             rendered.contains("import programExtensions from './system-program-extensions.js';")
         );
         assert!(!rendered.contains("export * from './system-program-extensions.js';"));
-        assert!(rendered.contains("export const SYSTEM_PROGRAM = withProgramRead("));
+        assert!(rendered.contains(
+            "export type SystemProgramProgram = ReturnType<typeof extendProgram<typeof SYSTEM_PROGRAM_CORE, typeof programExtensions>>;"
+        ));
+        assert!(rendered
+            .contains("export const SYSTEM_PROGRAM: SystemProgramProgram = withProgramRead("));
+        assert!(!rendered.contains("= typeof SYSTEM_PROGRAM;"));
         assert!(rendered.contains("extendProgram(SYSTEM_PROGRAM_CORE, programExtensions),"));
         assert!(rendered.contains("SYSTEM_PROGRAM_READ_CORE,"));
         assert!(rendered.contains("export default SYSTEM_PROGRAM;"));
@@ -7442,7 +7552,7 @@ mod tests {
             "import { extendProgram, withProgramIdentity, withProgramRead } from '@usearete/sdk';"
         ));
         assert!(extended.contains(&format!(
-            "export const ORE_PROGRAM = withProgramIdentity(\n  withProgramRead(\n    extendProgram(ORE_PROGRAM_CORE, programExtensions),\n    ORE_PROGRAM_READ_CORE,\n  ),\n  {{ packageReleaseHash: '{release}' }},\n);"
+            "export const ORE_PROGRAM: OreProgram = withProgramIdentity(\n  withProgramRead(\n    extendProgram(ORE_PROGRAM_CORE, programExtensions),\n    ORE_PROGRAM_READ_CORE,\n  ),\n  {{ packageReleaseHash: '{release}' }},\n);"
         )), "{extended}");
 
         let plain = render_typescript_program_entry(&layout("ore"), "ore", None, Some(release));
@@ -7480,7 +7590,8 @@ mod tests {
         assert!(rendered.contains("import { extendPrograms } from '@usearete/sdk';"));
         assert!(rendered.contains("import programExtensions from './ore-program-extensions.js';"));
         assert!(!rendered.contains("export * from './ore-program-extensions.js';"));
-        assert!(rendered.contains("export const ORE_STREAM_PROGRAMS = extendPrograms(ORE_STREAM_PROGRAMS_CORE, programExtensions);"));
+        assert!(rendered.contains("export type OreStreamPrograms = ReturnType<typeof extendPrograms<typeof ORE_STREAM_PROGRAMS_CORE, typeof programExtensions>>;"));
+        assert!(rendered.contains("export const ORE_STREAM_PROGRAMS: OreStreamPrograms = extendPrograms(ORE_STREAM_PROGRAMS_CORE, programExtensions);"));
     }
 
     fn degradation(

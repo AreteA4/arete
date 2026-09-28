@@ -5591,7 +5591,7 @@ version = "^1.0.0"
         let typescript = generated_files(&manifest, "typescript");
         let entry = &typescript["stacks/ore/programs/ore/__arete-program.ts"];
         assert!(
-            entry.contains("export const ORE_PROGRAM = withProgramIdentity(\n  withProgramRead(\n    extendProgram(ORE_PROGRAM_CORE, programExtensions),"),
+            entry.contains("export const ORE_PROGRAM: OreProgram = withProgramIdentity(\n  withProgramRead(\n    extendProgram(ORE_PROGRAM_CORE, programExtensions),"),
             "{entry}"
         );
         assert!(entry.contains("import programExtensions from './ore-extensions.js';"));
