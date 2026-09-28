@@ -175,6 +175,7 @@ pub fn install_without_saving(
                 ..InstallOptions::default()
             },
             &[(kind, requested_alias)],
+            None,
         )
     })();
     let _ = fs::remove_dir_all(&temporary_root);
@@ -190,7 +191,8 @@ pub fn add_and_install(
     let manifest_path = manifest_path.as_ref();
     let original = fs::read(manifest_path)
         .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
-    let mut manifest = ProjectManifest::load(manifest_path)?.document;
+    let previous = ProjectManifest::load(manifest_path)?;
+    let mut manifest = previous.document.clone();
     let (package, supplied_requirement) = split_package_requirement(package_spec)?;
     // The remote lookup (`package`) is sent to the registry unchanged; the
     // local alias is a deterministic cross-language identifier derived from it
@@ -333,6 +335,7 @@ pub fn add_and_install(
             ..InstallOptions::default()
         },
         &[(kind, alias.clone())],
+        Some(&previous),
     );
     if result.is_err() {
         let install_committed =
@@ -406,6 +409,7 @@ pub fn remove_and_install(
             },
             removals,
             &[],
+            None,
         )
     });
     if result.is_err() {
@@ -469,17 +473,20 @@ fn render_manifest_addition(
 /// `deployment_name`) as written. With `dependency`, also declares
 /// `[dependencies.stacks.<dependency>] source = { workspace = "<name>" }`
 /// when no stack dependency reads the composition yet, and installs; a
-/// failed install restores arete.toml.
+/// failed install restores arete.toml. `target` is that dependency's
+/// `targets`, as `a4 install <package> --ts` records them: a new dependency
+/// without one uses `[sdk].targets`, and one already declared keeps its own.
 pub(crate) fn save_composition(
     manifest_path: &Path,
     name: &str,
     entry: &super::manifest::AuthoringStackV1,
     dependency: Option<&str>,
+    target: Option<InstallTarget>,
 ) -> Result<Option<String>> {
     let original = fs::read(manifest_path)
         .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
     let loaded = ProjectManifest::load(manifest_path)?;
-    let mut manifest = loaded.document;
+    let mut manifest = loaded.document.clone();
     if manifest
         .authoring
         .stacks
@@ -521,7 +528,7 @@ pub(crate) fn save_composition(
                     workspace: name.to_string(),
                 }),
                 version: None,
-                targets: None,
+                targets: target.map(|target| vec![target]),
                 outputs: DependencyOutputsV1::default(),
                 endpoints: BTreeMap::new(),
             };
@@ -536,7 +543,23 @@ pub(crate) fn save_composition(
                 .insert(alias.to_string(), workspace);
             Some(alias.to_string())
         }
-        (_, declared) => declared,
+        // Already declared: kept as written, except that a target replaces
+        // its `targets`.
+        (Some(_), Some(declared)) => {
+            if let Some(target) = target {
+                let targets = vec![target];
+                insert_manifest_item(
+                    document.as_item_mut(),
+                    &["dependencies", "stacks", &declared, "targets"],
+                    targets_manifest_item(&targets),
+                )?;
+                if let Some(existing) = manifest.dependencies.stacks.get_mut(&declared) {
+                    existing.targets = Some(targets);
+                }
+            }
+            Some(declared)
+        }
+        (None, declared) => declared,
     };
     manifest.validate()?;
     let replacement = document.to_string();
@@ -556,6 +579,7 @@ pub(crate) fn save_composition(
         manifest_path,
         InstallOptions::default(),
         &[(DependencyKind::Stack, alias)],
+        Some(&loaded),
     );
     if result.is_err() {
         let install_committed =
@@ -737,9 +761,7 @@ fn dependency_manifest_item(dependency: &DependencyV1) -> Item {
         table.insert("version", value(version.clone()));
     }
     if let Some(targets) = dependency.targets.as_ref() {
-        let mut targets: Array = targets.iter().map(|target| target.as_str()).collect();
-        targets.fmt();
-        table.insert("targets", value(targets));
+        table.insert("targets", targets_manifest_item(targets));
     }
     let mut outputs = InlineTable::new();
     if let Some(output) = dependency.outputs.typescript.as_ref() {
@@ -759,6 +781,13 @@ fn dependency_manifest_item(dependency: &DependencyV1) -> Item {
         table.insert("endpoints", endpoints_manifest_item(&dependency.endpoints));
     }
     Item::Table(table)
+}
+
+/// `targets = ["typescript"]`.
+fn targets_manifest_item(targets: &[InstallTarget]) -> Item {
+    let mut targets: Array = targets.iter().map(|target| target.as_str()).collect();
+    targets.fmt();
+    value(targets)
 }
 
 /// `endpoints = { <live> = { websocket = "...", query = "..." } }`, inline so
@@ -928,25 +957,29 @@ pub fn validate_project(
 }
 
 pub fn install_project(manifest_path: impl AsRef<Path>, options: InstallOptions<'_>) -> Result<()> {
-    install_project_requesting(manifest_path, options, &[])
+    install_project_requesting(manifest_path, options, &[], None)
 }
 
 /// Install the project, reporting `requested` as what this invocation asked
-/// for; every other dependency is reported as regenerated.
+/// for; every other dependency is reported as regenerated. `previous` is the
+/// manifest as it was before this command edited it, so outputs it moved
+/// are found as well as the targets arete.lock says were generated.
 fn install_project_requesting(
     manifest_path: impl AsRef<Path>,
     options: InstallOptions<'_>,
     requested: &[(DependencyKind, String)],
+    previous: Option<&ProjectManifest>,
 ) -> Result<()> {
     let manifest = ProjectManifest::load(manifest_path)?;
-    install_loaded_project(manifest, options, Vec::new(), requested)
+    install_loaded_project(manifest, options, Vec::new(), requested, previous)
 }
 
 fn install_loaded_project(
     manifest: ProjectManifest,
     options: InstallOptions<'_>,
-    removals: Vec<RemovalOutput>,
+    mut removals: Vec<RemovalOutput>,
     requested: &[(DependencyKind, String)],
+    previous: Option<&ProjectManifest>,
 ) -> Result<()> {
     recover_interrupted_install(&manifest.root)?;
     let plan = InstallPlan::build(&manifest, options.allow_outside_project)?;
@@ -1000,6 +1033,14 @@ fn install_loaded_project(
             return Err(error);
         }
     };
+    let (stale, stale_notes) = stale_outputs(
+        &manifest,
+        &plan,
+        previous_lock.as_ref(),
+        previous,
+        options.allow_outside_project,
+    );
+    removals.extend(stale);
     commit_install(
         &manifest.root,
         &lock_path,
@@ -1035,6 +1076,7 @@ fn install_loaded_project(
         notes: redeploy_notes(&manifest, previous_lock.as_ref(), &prospective_lock)
             .into_iter()
             .chain(composition_notes(&resolved))
+            .chain(stale_notes)
             .collect(),
         warnings: served_version_notices(&manifest, &resolved),
     }
@@ -2951,6 +2993,103 @@ fn validate_local_closure(manifest: &ProjectManifest) -> Result<()> {
 struct StagedOutput {
     final_path: PathBuf,
     staged_path: PathBuf,
+}
+
+/// SDK outputs a declared dependency generated before that `plan` no longer
+/// generates: targets arete.lock records for it that it no longer selects
+/// (its own `targets`, or `[sdk].targets`, changed), and, from `previous`,
+/// outputs it moved. Each one that is provably that dependency's untouched
+/// output for that target is returned for removal, with a note; any other is
+/// kept, with a note naming it.
+fn stale_outputs(
+    manifest: &ProjectManifest,
+    plan: &InstallPlan,
+    previous_lock: Option<&ProjectLock>,
+    previous: Option<&ProjectManifest>,
+    allow_outside_project: bool,
+) -> (Vec<RemovalOutput>, Vec<String>) {
+    let mut candidates = BTreeMap::new();
+    let mut candidate = |kind: DependencyKind, alias: &str, target, path: PathBuf| {
+        if manifest.dependency(kind, alias).is_some() {
+            candidates.entry(path.clone()).or_insert(RemovalOutput {
+                final_path: path,
+                kind,
+                alias: alias.to_string(),
+                target,
+            });
+        }
+    };
+    if let Ok(paths) = ProjectPaths::new(
+        &manifest.root,
+        manifest.document.install.allow_outside_project,
+        allow_outside_project,
+    ) {
+        for locked in previous_lock
+            .into_iter()
+            .flat_map(|lock| &lock.dependencies)
+        {
+            let Some(dependency) = manifest.dependency(locked.kind, &locked.alias) else {
+                continue;
+            };
+            let selected = dependency.selected_targets(&manifest.document.sdk);
+            for &target in locked
+                .targets
+                .iter()
+                .filter(|target| !selected.contains(target))
+            {
+                let path = super::graph::output_path(
+                    manifest,
+                    &paths,
+                    locked.kind,
+                    &locked.alias,
+                    dependency,
+                    target,
+                );
+                if let Ok(path) = path {
+                    candidate(locked.kind, &locked.alias, target, path);
+                }
+            }
+        }
+    }
+    if let Some(previous) =
+        previous.and_then(|previous| InstallPlan::build(previous, allow_outside_project).ok())
+    {
+        for output in previous.outputs {
+            candidate(output.kind, &output.alias, output.target, output.path);
+        }
+    }
+
+    let mut removals = Vec::new();
+    let mut notes = Vec::new();
+    for (path, output) in candidates {
+        // Only a directory this install neither writes nor writes into.
+        if plan
+            .outputs
+            .iter()
+            .any(|planned| planned.path.starts_with(&path) || path.starts_with(&planned.path))
+            || fs::symlink_metadata(&path).is_err()
+        {
+            continue;
+        }
+        let owned = reject_unowned_files(&path)
+            .and_then(|()| validate_project_output_ownership(&output))
+            .and_then(|()| crate::commands::sdk::verify_generated_sdk_output(&path));
+        let generated = format!(
+            "{} '{}' no longer generates its {} SDK there",
+            output.kind, output.alias, output.target
+        );
+        match owned {
+            Ok(()) => {
+                notes.push(format!("note: removed {}: {generated}.", path.display()));
+                removals.push(output);
+            }
+            Err(error) => notes.push(format!(
+                "note: kept {}: {generated}, but it cannot be shown to hold only what a4 generated ({error:#}). Delete it if you no longer need it.",
+                path.display()
+            )),
+        }
+    }
+    (removals, notes)
 }
 
 struct RemovalOutput {
@@ -6875,6 +7014,7 @@ targets = ["typescript"]
                     ],
                     output: None,
                     install,
+                    target: None,
                 },
             )
         };
@@ -6912,6 +7052,238 @@ targets = ["typescript"]
         assert_eq!(lock.dependencies[0].source, "workspace:ore-plus-token");
         assert!(generated_files(&manifest, "typescript")
             .contains_key("stacks/ore-plus-token/ore-plus-token.ts"));
+    }
+
+    #[test]
+    fn compose_install_records_the_sdk_target_as_install_does_and_keeps_it() {
+        let sandbox = RegistrySandbox::new(
+            (0..7)
+                .map(|_| (200, composed_resolution('7', '8')))
+                .collect(),
+            false,
+        );
+        let root = sandbox.dir.path().join("compose-target-project");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = root.join("arete.toml");
+        // No [sdk]: the default targets are TypeScript and Rust.
+        fs::write(
+            &manifest,
+            "manifest_version = 1\n\n[project]\nname = \"compose\"\n",
+        )
+        .unwrap();
+        let config = manifest.display().to_string();
+        let compose = |install: bool, target: Option<InstallTarget>| {
+            crate::commands::public_artifacts::compose(
+                crate::commands::public_artifacts::ComposeArgs {
+                    config_path: &config,
+                    name: "ore-plus-token",
+                    programs: &["spl-token@^4".to_string()],
+                    lives: &["ore".to_string()],
+                    artifact_dirs: &[],
+                    selected_views: &[],
+                    output: None,
+                    install,
+                    target,
+                },
+            )
+        };
+        let declared = "[dependencies.stacks.ore-plus-token]\nsource = { workspace = \"ore-plus-token\" }\ntargets = [\"typescript\"]\n";
+
+        // --install --ts records the target, as `a4 install stack <ref> --ts`
+        // does, and generates only TypeScript.
+        compose(true, Some(InstallTarget::TypeScript)).expect("compose --install --ts");
+        let text = fs::read_to_string(&manifest).unwrap();
+        assert!(text.contains(declared), "{text}");
+        assert_eq!(
+            lock_of(&manifest).dependencies[0].targets,
+            vec![InstallTarget::TypeScript]
+        );
+        assert!(generated_files(&manifest, "typescript")
+            .contains_key("stacks/ore-plus-token/ore-plus-token.ts"));
+        assert!(!root.join("generated/rust").exists());
+
+        // Composing again without a target keeps the declared one.
+        compose(true, None).expect("compose --install again");
+        compose(false, None).expect("compose again");
+        let text = fs::read_to_string(&manifest).unwrap();
+        assert!(text.contains(declared), "{text}");
+        assert!(!root.join("generated/rust").exists());
+
+        // A target replaces only `targets`; what the user added stays.
+        let outputs = "outputs = { rust = \"./crates/ore-plus-token\" }\n";
+        fs::write(&manifest, format!("{text}{outputs}")).unwrap();
+        compose(true, Some(InstallTarget::Rust)).expect("compose --install --rust");
+        let text = fs::read_to_string(&manifest).unwrap();
+        assert!(
+            text.contains(&format!(
+                "[dependencies.stacks.ore-plus-token]\nsource = {{ workspace = \"ore-plus-token\" }}\ntargets = [\"rust\"]\n{outputs}"
+            )),
+            "{text}"
+        );
+        assert_eq!(
+            lock_of(&manifest).dependencies[0].targets,
+            vec![InstallTarget::Rust]
+        );
+        assert!(root.join("crates/ore-plus-token").is_dir());
+        // The TypeScript SDK it no longer generates is removed.
+        assert!(!root
+            .join("generated/typescript/stacks/ore-plus-token")
+            .exists());
+    }
+
+    // ---------------------------------------------------------------------
+    // Outputs a dependency no longer generates.
+    // ---------------------------------------------------------------------
+
+    fn hosted_ore() -> (u16, String) {
+        (
+            200,
+            resolution(vec![ore_stack_dependency(Some(hosted_delivery(
+                HOSTED_WS,
+                HOSTED_HTTP,
+                4,
+            )))]),
+        )
+    }
+
+    /// `[sdk].targets` TypeScript and Rust, and no dependencies yet.
+    fn two_target_project(sandbox: &RegistrySandbox) -> PathBuf {
+        let root = sandbox.dir.path().join("retarget-project");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = root.join("arete.toml");
+        fs::write(
+            &manifest,
+            "manifest_version = 1\n\n[project]\nname = \"retarget\"\n\n[sdk]\ntargets = [\"typescript\", \"rust\"]\n",
+        )
+        .unwrap();
+        manifest
+    }
+
+    /// `a4 install stack ore@^1.0.0`, with `target` and `output` as flags.
+    fn add_ore(manifest: &Path, target: Option<InstallTarget>, output: Option<&str>) {
+        add_and_install(
+            manifest,
+            DependencyKind::Stack,
+            "ore@^1.0.0",
+            AddDependencyOptions {
+                target,
+                output: output.map(str::to_string),
+                ..AddDependencyOptions::default()
+            },
+        )
+        .expect("install stack ore");
+    }
+
+    /// What an install of `manifest` as it stands would do with the outputs
+    /// arete.lock says were generated.
+    fn stale(manifest: &Path) -> (Vec<RemovalOutput>, Vec<String>) {
+        let project = ProjectManifest::load(manifest).unwrap();
+        let plan = InstallPlan::build(&project, false).unwrap();
+        stale_outputs(&project, &plan, Some(&lock_of(manifest)), None, false)
+    }
+
+    #[test]
+    fn a_new_target_or_output_removes_the_owned_output_it_replaces() {
+        let sandbox = RegistrySandbox::new((0..5).map(|_| hosted_ore()).collect(), false);
+        let manifest = two_target_project(&sandbox);
+        let root = manifest.parent().unwrap().to_path_buf();
+        let typescript = root.join("generated/typescript/stacks/ore");
+        let rust = root.join("generated/rust/stacks/ore-stack");
+
+        add_ore(&manifest, Some(InstallTarget::TypeScript), None);
+        assert!(typescript.is_dir());
+        // Installing again as it was removes nothing.
+        add_ore(&manifest, Some(InstallTarget::TypeScript), None);
+        install_project(&manifest, InstallOptions::default()).unwrap();
+        let (removals, notes) = stale(&manifest);
+        assert!(removals.is_empty() && notes.is_empty(), "{notes:?}");
+        assert!(typescript.is_dir());
+        assert!(!rust.exists());
+
+        // `--rust` after `--ts`: the TypeScript SDK is no longer generated.
+        add_ore(&manifest, Some(InstallTarget::Rust), None);
+        assert!(rust.is_dir());
+        assert!(!typescript.exists());
+
+        // A new output moves the SDK: the old one is removed.
+        add_ore(&manifest, Some(InstallTarget::Rust), Some("./crates/ore"));
+        assert!(root.join("crates/ore").is_dir());
+        assert!(!rust.exists());
+    }
+
+    #[test]
+    fn narrowing_sdk_targets_removes_the_owned_output_a_dependency_no_longer_inherits() {
+        let sandbox = RegistrySandbox::new((0..2).map(|_| hosted_ore()).collect(), false);
+        let manifest = two_target_project(&sandbox);
+        let root = manifest.parent().unwrap().to_path_buf();
+        add_ore(&manifest, None, None);
+        assert!(root.join("generated/typescript/stacks/ore").is_dir());
+        assert!(root.join("generated/rust/stacks/ore-stack").is_dir());
+
+        let text = fs::read_to_string(&manifest).unwrap().replace(
+            "targets = [\"typescript\", \"rust\"]",
+            "targets = [\"typescript\"]",
+        );
+        fs::write(&manifest, text).unwrap();
+        install_project(&manifest, InstallOptions::default()).unwrap();
+        assert!(root.join("generated/typescript/stacks/ore").is_dir());
+        assert!(!root.join("generated/rust/stacks/ore-stack").exists());
+    }
+
+    #[test]
+    fn an_old_output_with_files_a4_did_not_generate_is_kept_with_a_note() {
+        let sandbox = RegistrySandbox::new((0..2).map(|_| hosted_ore()).collect(), false);
+        let manifest = two_target_project(&sandbox);
+        add_ore(&manifest, Some(InstallTarget::TypeScript), None);
+        let typescript = ProjectManifest::load(&manifest)
+            .unwrap()
+            .root
+            .join("generated/typescript/stacks/ore");
+        let text = fs::read_to_string(&manifest).unwrap();
+        fs::write(
+            &manifest,
+            text.replace("targets = [\"typescript\"]\n", "targets = [\"rust\"]\n"),
+        )
+        .unwrap();
+
+        // Untouched: removed, with a note.
+        let (removals, notes) = stale(&manifest);
+        assert_eq!(removals.len(), 1);
+        assert_eq!(removals[0].final_path, typescript);
+        assert_eq!(
+            notes,
+            vec![format!(
+                "note: removed {}: stack 'ore' no longer generates its typescript SDK there.",
+                typescript.display()
+            )]
+        );
+
+        // A generated file edited: kept, with a note naming it.
+        let edited = typescript.join("ore.ts");
+        let generated = fs::read_to_string(&edited).unwrap();
+        fs::write(&edited, format!("{generated}// mine\n")).unwrap();
+        let (removals, notes) = stale(&manifest);
+        assert!(removals.is_empty());
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].starts_with(&format!("note: kept {}: ", typescript.display())),
+            "{notes:?}"
+        );
+        assert!(
+            notes[0].contains("differ from the ones generated"),
+            "{notes:?}"
+        );
+        fs::write(&edited, generated).unwrap();
+
+        // A file of the user's own: kept, and the install keeps it too.
+        fs::write(typescript.join("notes.md"), "mine\n").unwrap();
+        let (removals, notes) = stale(&manifest);
+        assert!(removals.is_empty());
+        assert!(notes[0].contains("notes.md"), "{notes:?}");
+        install_project(&manifest, InstallOptions::default()).unwrap();
+        assert!(typescript.join("notes.md").is_file());
+        assert!(edited.is_file());
+        assert!(!generated_files(&manifest, "rust").is_empty());
     }
 
     // ---------------------------------------------------------------------

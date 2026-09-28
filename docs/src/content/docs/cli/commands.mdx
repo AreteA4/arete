@@ -814,9 +814,17 @@ a4 stack compose --name ore-plus-token \
   --selected-view ore=OreRound/latest \
   --selected-view ore=OreMiner/state
 
-# Also declare it under [dependencies.stacks] and install it
-a4 stack compose --name ore-plus-token --live ore --program spl-token@^1 --install
+# Also declare it under [dependencies.stacks] and install its TypeScript SDK
+a4 stack compose --name ore-plus-token --live ore --program spl-token@^1 --install --ts
 ```
+
+`--install` also declares the composed stack as `[dependencies.stacks.<name>]`
+(`source = { workspace = "<name>" }`) and installs it. `--ts`, `--rust`, or
+`--python` choose the SDK it generates and are recorded as the dependency's
+`targets`, as `a4 install stack <ref> --ts` records them. Without one, the
+dependency uses `[sdk].targets` (TypeScript and Rust unless set). Composing
+again keeps a declared dependency as written; a flag replaces only its
+`targets`. The flags require `--install`.
 
 | Value                                      | Part                                                                 |
 | ------------------------------------------ | -------------------------------------------------------------------- |
@@ -976,6 +984,15 @@ whole project. Use `--no-save` for one-off exact registry generation.
 prunes its lock entry, and deletes only generated output whose provenance
 matches that project dependency. It refuses output containing unowned files;
 `--keep-output` removes only the manifest and lock entries.
+
+When a dependency stops generating an SDK because its `targets` or
+`[sdk].targets` changed (for example `a4 install stack ore --rust` after
+`--ts`), or because `a4 install <package> -o` moved its output, `a4 install`
+removes the output it no longer writes, but only when that output's provenance
+shows it is the dependency's generated SDK and its files are unchanged.
+Otherwise it keeps the directory and prints a note naming it. `arete.lock` does
+not record output paths, so after you change `outputs` in `arete.toml` by hand,
+delete the old directory yourself.
 
 `a4 sdk list` reports normalized manifest dependencies and lock status.
 Low-level `a4 sdk create` accepts explicit `--manifest` or
@@ -1175,7 +1192,8 @@ in TypeScript.
 
 A composed `[authoring.stacks]` entry groups live views and program SDKs from
 published stacks, program packages, and local files. `a4 stack compose` writes
-it, or you can write it yourself:
+it (and with `--install --ts` the dependency below), or you can write it
+yourself:
 
 ```toml
 [authoring.stacks.ore-plus-token]
