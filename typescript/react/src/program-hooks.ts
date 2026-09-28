@@ -1,3 +1,4 @@
+import { compareProgramIdentity } from '@usearete/sdk';
 import type {
   OperationExecutionOptions,
   OperationReceiptFor,
@@ -285,14 +286,16 @@ function useDisconnectedMutation() {
  *
  * The parts of a program that need no client (`name`, `programId`,
  * `schemas`, `pdas`, `addresses`, `constants`, `defaults`, `math`) come from
- * `definitions`, exactly as a connected client exposes them, so
+ * the program definitions the client will resolve, so
  * `arete.programs.ore.addresses.board()` works during the first render.
  */
 export function buildDisconnectedProgramHooks(
-  definitions: Record<string, ProgramSdkDefinition> = {},
+  stackPrograms: Record<string, ProgramSdkDefinition> = {},
+  attachedPrograms: Record<string, ProgramSdkDefinition> = {},
 ): Record<string, never> {
   const placeholder = buildDisconnectedNamespace();
   const programs: Record<string, unknown> = {};
+  const definitions = resolveAttachedPrograms(stackPrograms, attachedPrograms);
   for (const [name, definition] of Object.entries(definitions)) {
     programs[name] = withPlaceholder({
       name: definition.name,
@@ -306,6 +309,28 @@ export function buildDisconnectedProgramHooks(
     }, placeholder);
   }
   return withPlaceholder(programs, placeholder) as Record<string, never>;
+}
+
+/**
+ * The definition a connected client resolves for each key: an attached
+ * program replaces the stack's only when their identity is unproven. The
+ * same program SDK keeps the stack's definition, and a different one fails
+ * when the client connects.
+ */
+function resolveAttachedPrograms(
+  stackPrograms: Record<string, ProgramSdkDefinition>,
+  attachedPrograms: Record<string, ProgramSdkDefinition>,
+): Record<string, ProgramSdkDefinition> {
+  const resolved = { ...attachedPrograms };
+  for (const [name, definition] of Object.entries(stackPrograms)) {
+    const attached = Object.prototype.hasOwnProperty.call(attachedPrograms, name)
+      ? attachedPrograms[name]
+      : undefined;
+    resolved[name] = attached && compareProgramIdentity(definition, attached) === 'unproven'
+      ? attached
+      : definition;
+  }
+  return resolved;
 }
 
 /** `target`, with every other string property resolving to `placeholder`. */

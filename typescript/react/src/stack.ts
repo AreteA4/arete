@@ -400,10 +400,10 @@ export function useArete(
       // Placeholder hooks so components can render (and keep hook order)
       // before the client connects: addresses, PDAs and constants come from
       // the definitions, while submitting throws "not connected".
-      return buildDisconnectedProgramHooks({
-        ...(resolvedStack.programs ?? {}),
-        ...(attachedPrograms ?? {}),
-      } as Record<string, ProgramSdkDefinition>);
+      return buildDisconnectedProgramHooks(
+        resolvedStack.programs as Record<string, ProgramSdkDefinition> | undefined,
+        attachedPrograms as Record<string, ProgramSdkDefinition> | undefined,
+      );
     }
     return buildProgramHookInterfaces(
       client.programs as ProgramsInterface<Record<string, ProgramSdkDefinition>> | undefined,

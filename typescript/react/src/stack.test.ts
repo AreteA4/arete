@@ -236,4 +236,29 @@ describe('disconnected program hooks', () => {
     expect(() => programs.other.transactions.any.thing.prepare())
       .toThrow('Arete client is not connected');
   });
+
+  it('resolves attached programs by the connected client rules', () => {
+    const program = (name: string, identity: Record<string, string>) => ({
+      name,
+      programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+      schemas: {},
+      rawInstructions: {},
+      ...identity,
+    });
+    const stackOre = program('ore', { programSpecHash: 'spec', packageReleaseHash: 'release' });
+    const resolve = (attached: Record<string, unknown>) =>
+      buildDisconnectedProgramHooks({ ore: stackOre } as never, attached as never) as unknown as Record<
+        string,
+        { name: string }
+      >;
+
+    // The same program SDK keeps the stack's definition, as the client does.
+    expect(resolve({ ore: program('ore-attached', { programSpecHash: 'spec', packageReleaseHash: 'release' }) }).ore.name)
+      .toBe('ore');
+    // An unproven match (no package release on one side) uses the attached one.
+    expect(resolve({ ore: program('ore-local', { programSpecHash: 'spec' }) }).ore.name).toBe('ore-local');
+    // Programs the stack does not provide are added next to its own.
+    const added = resolve({ token: program('token', { programSpecHash: 'token-spec' }) });
+    expect([added.ore.name, added.token.name]).toEqual(['ore', 'token']);
+  });
 });
