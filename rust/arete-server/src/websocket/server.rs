@@ -1423,9 +1423,11 @@ async fn attach_state_subscription(
             let mut member = delivered;
             // The entity as the client last received it whole (its snapshot
             // row, an upsert or the last catch-up), in wire format. A catch-up
-            // sends only what changed since: every patch forwarded in between
-            // is covered, including any a client dropped.
+            // sends what changed since, and every field a patch forwarded in
+            // between set (`touched`, see `mark_fields`): the entity may have
+            // set it back, and a client may have dropped the patch.
             let mut synced = synced;
+            let mut touched = Value::Null;
             // Whether the client lacks fields of frames the bus overwrote
             // before this task read them. The cached entity is sent in their
             // place, but while the cache lacks the key there is none, so the
@@ -1472,6 +1474,7 @@ async fn attach_state_subscription(
                             behind = false;
                             replaced = false;
                             synced = None;
+                            touched = Value::Null;
                             continue;
                         }
 
@@ -1492,13 +1495,16 @@ async fn attach_state_subscription(
                         else {
                             // A copy of a replaced entity takes no patch: it
                             // waits for the whole entity to replace it.
-                            if member && !replaced && send_scoped_source_payload(
-                                &task_context,
-                                &subscription_id,
-                                &query.view,
-                                payload,
-                            ).is_err() {
-                                break;
+                            if member && !replaced {
+                                record_forwarded(&payload, &metadata.op, &mut synced, &mut touched);
+                                if send_scoped_source_payload(
+                                    &task_context,
+                                    &subscription_id,
+                                    &query.view,
+                                    payload,
+                                ).is_err() {
+                                    break;
+                                }
                             }
                             continue;
                         };
@@ -1509,11 +1515,7 @@ async fn attach_state_subscription(
                         let replace = std::mem::take(&mut replaced);
                         let result = match (member, selected.into_iter().next()) {
                             (true, Some(_)) if caught_up => {
-                                // A forwarded upsert hands the client the
-                                // entity whole.
-                                if metadata.op == "upsert" {
-                                    synced = source_frame_data(&payload);
-                                }
+                                record_forwarded(&payload, &metadata.op, &mut synced, &mut touched);
                                 send_scoped_source_payload(
                                     &task_context,
                                     &subscription_id,
@@ -1523,7 +1525,8 @@ async fn attach_state_subscription(
                             }
                             // The catch-up: a patch of the cached entity's
                             // fields that changed since the client last received
-                            // it whole, which merges into what the client holds.
+                            // it whole or that a forwarded patch set, which
+                            // merges into what the client holds.
                             // If a missed frame replaced the entity, it is the
                             // whole entity as an upsert instead, which replaces
                             // the client's copy: merging would keep the fields of
@@ -1537,10 +1540,11 @@ async fn attach_state_subscription(
                                 let mut current = data;
                                 apply_wire_format(&mut current, &view_spec_task.wire_format);
                                 let body = match (&synced, replace) {
-                                    (Some(base), false) => changed_fields(base, &current),
+                                    (Some(base), false) => changed_fields(base, &current, &touched),
                                     _ => Some(current.clone()),
                                 };
                                 synced = Some(current);
+                                touched = Value::Null;
                                 match body {
                                     Some(body) => send_membership_frame(
                                         &task_context,
@@ -1558,6 +1562,7 @@ async fn attach_state_subscription(
                                 let mut current = data;
                                 apply_wire_format(&mut current, &view_spec_task.wire_format);
                                 synced = Some(current.clone());
+                                touched = Value::Null;
                                 send_membership_frame(
                                     &task_context,
                                     &subscription_id,
@@ -1570,6 +1575,7 @@ async fn attach_state_subscription(
                             }
                             (true, None) => {
                                 synced = None;
+                                touched = Value::Null;
                                 send_membership_frame(
                                 &task_context,
                                 &subscription_id,
@@ -2365,18 +2371,61 @@ fn source_frame_data(payload: &[u8]) -> Option<Value> {
     frame.get_mut("data").map(Value::take)
 }
 
-/// The fields of `current` that differ from `base`, as a patch that turns
-/// `base` into `current` when merged: objects compare field by field, any
-/// other value is sent whole when it differs, and a field `current` no longer
-/// has is sent as `null`. `None` when nothing differs.
-fn changed_fields(base: &Value, current: &Value) -> Option<Value> {
-    match (base, current) {
-        (Value::Object(base), Value::Object(current)) => {
+/// Tracks what a client holds after a frame forwarded to it as published. An
+/// upsert hands it the entity whole, which a catch-up is then measured
+/// against; a patch sets fields (see [`mark_fields`]).
+fn record_forwarded(payload: &[u8], op: &str, synced: &mut Option<Value>, touched: &mut Value) {
+    let data = source_frame_data(payload);
+    if op == "upsert" {
+        *synced = data;
+        *touched = Value::Null;
+    } else if let Some(data) = data {
+        mark_fields(touched, &data);
+    }
+}
+
+/// Marks in `touched` the fields `patch` sets: objects field by field, any
+/// other value whole (`true`). `null` marks nothing.
+///
+/// A client holds whatever a forwarded patch set, which the entity may have
+/// set back before the next catch-up (or the client may have dropped the
+/// patch), so a catch-up sends these fields even when they match the entity
+/// the client last received whole.
+fn mark_fields(touched: &mut Value, patch: &Value) {
+    let Value::Object(fields) = patch else {
+        *touched = Value::Bool(true);
+        return;
+    };
+    if touched.is_null() {
+        *touched = Value::Object(serde_json::Map::new());
+    }
+    let Value::Object(marked) = touched else {
+        // Already marked whole.
+        return;
+    };
+    for (field, value) in fields {
+        mark_fields(marked.entry(field.clone()).or_insert(Value::Null), value);
+    }
+}
+
+/// The fields of `current` that differ from `base` or that `touched` marks
+/// (see [`mark_fields`]), as a patch that turns what the client holds into
+/// `current` when merged: objects compare field by field, any other value is
+/// sent whole, and a field `current` no longer has is sent as `null`. `None`
+/// when nothing needs sending.
+fn changed_fields(base: &Value, current: &Value, touched: &Value) -> Option<Value> {
+    match (base, current, touched) {
+        (_, _, Value::Bool(true)) => Some(current.clone()),
+        (Value::Object(base), Value::Object(current), _) => {
+            let marked = touched.as_object();
             let mut patch = serde_json::Map::new();
             for (field, value) in current {
+                let touched = marked
+                    .and_then(|marked| marked.get(field))
+                    .unwrap_or(&Value::Null);
                 match base.get(field) {
                     Some(old) => {
-                        if let Some(changed) = changed_fields(old, value) {
+                        if let Some(changed) = changed_fields(old, value, touched) {
                             patch.insert(field.clone(), changed);
                         }
                     }
@@ -2385,14 +2434,17 @@ fn changed_fields(base: &Value, current: &Value) -> Option<Value> {
                     }
                 }
             }
-            for field in base.keys() {
+            for field in base
+                .keys()
+                .chain(marked.into_iter().flat_map(|marked| marked.keys()))
+            {
                 if !current.contains_key(field) {
                     patch.insert(field.clone(), Value::Null);
                 }
             }
             (!patch.is_empty()).then_some(Value::Object(patch))
         }
-        _ => (base != current).then(|| current.clone()),
+        _ => (base != current || !touched.is_null()).then(|| current.clone()),
     }
 }
 
@@ -2846,7 +2898,7 @@ mod tests {
             "fresh": "x",
         });
         assert_eq!(
-            changed_fields(&base, &current),
+            changed_fields(&base, &current, &Value::Null),
             Some(json!({
                 // An array that changed is sent whole.
                 "state": {"deployed": [1, 2, 4]},
@@ -2856,10 +2908,40 @@ mod tests {
                 "gone": null,
             }))
         );
-        assert_eq!(changed_fields(&current, &current), None);
+        assert_eq!(changed_fields(&current, &current, &Value::Null), None);
         // Anything that is not an object on both sides is compared whole.
         assert_eq!(
-            changed_fields(&json!(null), &current),
+            changed_fields(&json!(null), &current, &Value::Null),
+            Some(current.clone())
+        );
+    }
+
+    #[test]
+    fn a_catch_up_resends_the_fields_forwarded_patches_set() {
+        let base = json!({"a": 1, "state": {"x": 1, "y": 1}, "list": [1]});
+        let mut touched = Value::Null;
+        mark_fields(&mut touched, &json!({"a": 2, "state": {"x": 2}}));
+        mark_fields(&mut touched, &json!({"list": [2], "extra": true}));
+        assert_eq!(
+            touched,
+            json!({"a": true, "state": {"x": true}, "list": true, "extra": true})
+        );
+        // The entity set `a` and `state.x` back and never kept `extra`: the
+        // client still holds what the forwarded patches set, so a catch-up
+        // compared with `base` alone would leave it stale.
+        let current = json!({"a": 1, "state": {"x": 1, "y": 1}, "list": [1, 2]});
+        assert_eq!(
+            changed_fields(&base, &current, &Value::Null),
+            Some(json!({"list": [1, 2]}))
+        );
+        assert_eq!(
+            changed_fields(&base, &current, &touched),
+            Some(json!({"a": 1, "state": {"x": 1}, "list": [1, 2], "extra": null}))
+        );
+        // A patch whose data is not an object marks everything.
+        mark_fields(&mut touched, &json!(null));
+        assert_eq!(
+            changed_fields(&base, &current, &touched),
             Some(current.clone())
         );
     }
@@ -4167,6 +4249,45 @@ mod tests {
                 frame["data"],
                 json!({"c": 3, "d": 4, "_seq": "102:000000000002"}),
                 "`b` came with the whole entity, so it is not sent again"
+            );
+            socket.close(None).await.ok();
+        }
+
+        /// A catch-up resends a field a forwarded patch set even when the
+        /// entity has set it back to the value the client last received
+        /// whole: the client still holds the forwarded value.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_catch_up_restores_a_field_a_forwarded_patch_set() {
+            let server = StateServer::start().await;
+            server
+                .publish("7", json!({"id": 7, "a": 1}), "100:000000000001")
+                .await;
+            let mut socket = server.subscribe("7").await;
+
+            server
+                .publish("7", json!({"a": 2}), "101:000000000001")
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert_eq!(frame["data"], json!({"a": 2, "_seq": "101:000000000001"}));
+
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer
+                    .publish("7", json!({"a": 1}), "102:000000000001")
+                    .await;
+                writer
+                    .publish("7", json!({"b": 1}), "102:000000000002")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({"a": 1, "b": 1, "_seq": "102:000000000002"}),
+                "`a` matches the snapshot but the client holds 2"
             );
             socket.close(None).await.ok();
         }
