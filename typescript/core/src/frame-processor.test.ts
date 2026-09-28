@@ -594,6 +594,45 @@ describe('FrameProcessor', () => {
     processor.handleFrame(upsert({ v: 'third' }, '50:000000000001'));
     expect(storage.get('Thing/state', 'k')).toEqual({ v: 'second' });
   });
+
+  it('keeps the tracked version when a frame arrives without one', () => {
+    const storage = new MemoryAdapter();
+    const processor = new FrameProcessor(storage);
+    const frame = (op: 'upsert' | 'patch', data: Record<string, unknown>, seq: string): EntityFrame => ({
+      mode: 'state',
+      entity: 'Thing/state',
+      op,
+      key: 'k',
+      data,
+      seq,
+    } as EntityFrame);
+
+    processor.handleFrame(frame('upsert', { v: 'first', _version: '3f9a2c1d:5' }, '50:000000000009'));
+    // No version: the seq rule decides, and this seq is newer.
+    processor.handleFrame(frame('patch', { w: 'second' }, '51:000000000001'));
+    expect(storage.get('Thing/state', 'k')).toMatchObject({ v: 'first', w: 'second' });
+
+    // The version recorded before the unversioned write still orders frames.
+    processor.handleFrame(frame('patch', { v: 'stale', _version: '3f9a2c1d:4' }, '52:000000000001'));
+    expect(storage.get('Thing/state', 'k')).toMatchObject({ v: 'first', w: 'second' });
+  });
+
+  it('never treats a version it cannot parse as stale', () => {
+    const storage = new MemoryAdapter();
+    const processor = new FrameProcessor(storage);
+    const frame = (data: Record<string, unknown>): EntityFrame => ({
+      mode: 'state',
+      entity: 'Thing/state',
+      op: 'patch',
+      key: 'k',
+      data,
+      seq: '50:000000000001',
+    } as EntityFrame);
+
+    processor.handleFrame({ ...frame({ v: 1, _version: '3f9a2c1d:5' }), op: 'upsert' } as EntityFrame);
+    processor.handleFrame(frame({ v: 2, _version: 'not-a-version' }));
+    expect(storage.get('Thing/state', 'k')).toMatchObject({ v: 2 });
+  });
 });
 
 describe('FrameProcessor patches for keys the client does not hold', () => {

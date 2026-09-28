@@ -423,6 +423,24 @@ All three now retain the sequence: `frame-processor.ts` upsert gained
 `seq 50:…01` and assert the unsequenced value survives; each fails if its fallback is
 removed.
 
+### Frame versions — all three SDKs
+
+The `seq` guard above dropped real updates. `seq` is `slot:index`, but the index is the
+transaction index for instruction updates and the account write version for account
+updates, and every update decoded from one transaction shares it. So an instruction
+patch that followed an account patch in the same slot sorted older, and a transaction's
+second patch was an exact duplicate. Replaying one live ORE round through the TypeScript
+SDK applied 44 patches and discarded 41 that carried new data.
+
+The equal-`seq` rule could not simply be loosened: queries on one view share storage,
+and it is what applies a patch routed to two subscriptions once (the conformance test
+"normalizes one sequenced patch once while routing it to multiple queries"). The server
+now stamps `_version` (`{epoch}:{counter}`, its merge order) into frame data, and all
+three SDKs guard on it when present, comparing counters only within an epoch, and fall
+back to `seq` without one. The helpers are `isStaleVersion` (`frame-processor.ts`),
+`is_stale_version` (`python/arete-sdk/arete/wire.py`) and `frame::is_stale_version`
+(Rust); tracked versions live beside tracked sequences and follow their lifecycle.
+
 ### Resolved-field typing — fixed 2026-08-04
 
 `RustCompiler::field_type_to_rust` never consulted `field.resolved_type` (the

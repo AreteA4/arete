@@ -148,14 +148,27 @@ reconnect.
   first per view), and keep the local limit's documentation explicit that it must
   exceed the subscription's size. Rust evicts only keys no subscription's membership
   references, so there the case needs membership and storage to disagree.
-- **Stale-sequence guard**: a live `upsert`/`patch` whose `seq` is not newer than the
-  cached entity's tracked sequence (`compare <= 0`, so equal counts as duplicate) must not
-  write storage. It still grants query membership and emits an update carrying the
-  *cached* value, so a query seeing the key for the first time converges on the
-  authoritative version rather than the stale one. Frames without a sequence are never
-  stale, and an unsequenced write must **not** clear the tracked sequence — doing so
-  disarms the guard until the next sequenced frame. Snapshot rows deliberately bypass this
-  guard; snapshot authority (above) governs them instead.
+- **Stale-frame guard**: a live `upsert`/`patch` that is not newer than the cached entity
+  must not write storage. It still grants query membership and emits an update carrying
+  the *cached* value, so a query seeing the key for the first time converges on the
+  authoritative version rather than the stale one. Snapshot rows deliberately bypass this
+  guard; snapshot authority (above) governs them instead. Frames with an `offset` are tape
+  records and bypass it too. "Newer" is decided by:
+  - **`_version`** in the frame's data, when the server stamps one (`{epoch}:{counter}`,
+    the server's merge order). Stale when the client tracks a version of the **same
+    epoch** for the key and the frame's counter is not greater (numeric compare, so equal
+    counts as duplicate: one frame routed to two queries of a view applies once). A frame
+    with a version is never stale against no tracked version, another epoch, or a version
+    that does not parse.
+  - **`seq`** otherwise, for servers that predate versions: stale when `compare <= 0`
+    against the tracked sequence. Frames without a sequence are never stale.
+  `seq` cannot decide when the server sends versions: every update decoded from one
+  transaction shares one, and within a slot account updates and instructions number
+  themselves differently, so a later frame can carry a lower `seq`. An unsequenced or
+  unversioned write must **not** clear the tracked sequence or version — doing so
+  disarms the guard until the next frame that carries one. Versions are tracked beside
+  sequences (TS: a non-enumerable `__version`; Python and Rust: a sibling map), and
+  snapshot rows record theirs. The shared `frame-versions.json` fixture pins the rule.
 - Ordering follows the server-declared `sort` from the `subscribed` ack. Entities tied on
   the sort field break the tie on entity key, and that tie-break is **always ascending** —
   the `desc` negation applies to the sort-field comparison only. Both comparisons use the
