@@ -282,8 +282,45 @@ function useDisconnectedMutation() {
  * but preparing, executing, or submitting throws "not connected" — matching
  * what the real wrappers do. This lets components render their full tree
  * while the stack is offline instead of gating on `arete.client`.
+ *
+ * The parts of a program that need no client (`name`, `programId`,
+ * `schemas`, `pdas`, `addresses`, `constants`, `defaults`, `math`) come from
+ * `definitions`, exactly as a connected client exposes them, so
+ * `arete.programs.ore.addresses.board()` works during the first render.
  */
-export function buildDisconnectedProgramHooks(): Record<string, never> {
+export function buildDisconnectedProgramHooks(
+  definitions: Record<string, ProgramSdkDefinition> = {},
+): Record<string, never> {
+  const placeholder = buildDisconnectedNamespace();
+  const programs: Record<string, unknown> = {};
+  for (const [name, definition] of Object.entries(definitions)) {
+    programs[name] = withPlaceholder({
+      name: definition.name,
+      programId: definition.programId,
+      schemas: definition.schemas,
+      pdas: definition.pdas ?? {},
+      addresses: definition.addresses ?? {},
+      constants: definition.constants ?? {},
+      defaults: definition.defaults ?? {},
+      math: definition.math ?? {},
+    }, placeholder);
+  }
+  return withPlaceholder(programs, placeholder) as Record<string, never>;
+}
+
+/** `target`, with every other string property resolving to `placeholder`. */
+function withPlaceholder(target: Record<string, unknown>, placeholder: unknown) {
+  return new Proxy(target, {
+    get(object, property) {
+      if (typeof property === 'string' && !(property in object)) {
+        return placeholder;
+      }
+      return Reflect.get(object, property);
+    },
+  });
+}
+
+function buildDisconnectedNamespace(): Record<string, never> {
   const notConnected = () => {
     throw new Error(NOT_CONNECTED_ERROR);
   };

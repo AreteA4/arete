@@ -203,4 +203,37 @@ describe('disconnected program hooks', () => {
     expect(() => deploy.execute()).toThrow('Arete client is not connected');
     expect(() => deploy.build()).toThrow('Arete client is not connected');
   });
+
+  it('serves the static program surface from the definitions', () => {
+    const ore = {
+      name: 'ore',
+      programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+      schemas: {},
+      rawInstructions: {},
+      pdas: { board: { seeds: [] } },
+      addresses: { board: () => 'board-address' },
+      constants: { squares: 25 },
+      math: { double: (value: number) => value * 2 },
+    };
+    const programs = buildDisconnectedProgramHooks({ ore } as never) as unknown as Record<string, {
+      programId: string;
+      pdas: Record<string, unknown>;
+      addresses: { board: () => string };
+      constants: { squares: number };
+      defaults: Record<string, unknown>;
+      math: { double: (value: number) => number };
+      transactions: Record<string, Record<string, { prepare: () => unknown }>>;
+    }>;
+
+    expect(programs.ore.programId).toBe(ore.programId);
+    expect(programs.ore.pdas).toBe(ore.pdas);
+    expect(programs.ore.addresses.board()).toBe('board-address');
+    expect(programs.ore.constants.squares).toBe(25);
+    expect(programs.ore.defaults).toEqual({});
+    expect(programs.ore.math.double(3)).toBe(6);
+    expect(() => programs.ore.transactions.mining.deployWithCheckpoint.prepare())
+      .toThrow('Arete client is not connected');
+    expect(() => programs.other.transactions.any.thing.prepare())
+      .toThrow('Arete client is not connected');
+  });
 });
