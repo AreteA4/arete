@@ -140,6 +140,41 @@ pub fn app_dependencies(output: &Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// `tsconfig.json` `module` settings under which `package.json` `"type"`
+/// decides whether a `.ts` file is an ES module or CommonJS.
+const PACKAGE_TYPE_MODULE_SETTINGS: [&str; 5] =
+    ["commonjs", "node16", "node18", "node20", "nodenext"];
+
+/// The CommonJS `package.json` of a TypeScript output whose `tsc` rejects ES
+/// module syntax. Generated TypeScript is ES modules (`import`/`export`), and
+/// with the `npm init` and `tsc --init` defaults (no `"type": "module"`;
+/// `verbatimModuleSyntax` with a Node `module` setting) `tsc` reports every
+/// `import` in the project, the generated SDK's and the app's own alike.
+/// `None` when the nearest `package.json` declares `"type": "module"`, or the
+/// nearest `tsconfig.json` does not compile that way.
+pub fn commonjs_package_json_rejecting_imports(output: &Path) -> Option<PathBuf> {
+    let package_json = nearest_package_json(output)?;
+    let package: serde_json::Value = serde_json::from_slice(&fs::read(&package_json).ok()?).ok()?;
+    if package.get("type").and_then(serde_json::Value::as_str) == Some("module") {
+        return None;
+    }
+    let tsconfig = output
+        .ancestors()
+        .map(|ancestor| ancestor.join("tsconfig.json"))
+        .find(|candidate| candidate.is_file())?;
+    let tsconfig =
+        crate::agents::jsonc::JsonDoc::parse(&fs::read_to_string(tsconfig).ok()?).ok()?;
+    let verbatim = tsconfig.get(&["compilerOptions", "verbatimModuleSyntax"])
+        == Some(serde_json::Value::Bool(true));
+    let module = tsconfig
+        .get(&["compilerOptions", "module"])
+        .and_then(|module| module.as_str().map(str::to_ascii_lowercase));
+    let by_package_type = module
+        .as_deref()
+        .is_some_and(|module| PACKAGE_TYPE_MODULE_SETTINGS.contains(&module));
+    (verbatim && by_package_type).then_some(package_json)
+}
+
 /// One copy-pasteable `npm install` line. Ranges are quoted so no shell
 /// expands them.
 pub fn npm_install_command(packages: &[RuntimePackage]) -> String {
@@ -454,6 +489,67 @@ mod tests {
             ]
         );
         assert!(typescript_runtime_for_outputs(std::iter::empty()).is_empty());
+    }
+
+    /// `tsc --init`'s output: JSONC with comments and a trailing comma.
+    const TSC_INIT_TSCONFIG: &str = r#"{
+  // Visit https://aka.ms/tsconfig to read more about this file
+  "compilerOptions": {
+    "module": "nodenext",
+    "target": "esnext",
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+  }
+}
+"#;
+
+    #[test]
+    fn a_commonjs_package_under_verbatim_module_syntax_rejects_imports() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let output = root.join("generated/typescript/stacks/ore");
+        write(&root.join("tsconfig.json"), TSC_INIT_TSCONFIG);
+
+        // `npm init -y` writes `"type": "commonjs"`; no `type` is CommonJS too.
+        for package in [r#"{"name":"app","type":"commonjs"}"#, r#"{"name":"app"}"#] {
+            write(&root.join("package.json"), package);
+            assert_eq!(
+                commonjs_package_json_rejecting_imports(&output),
+                Some(root.join("package.json")),
+                "{package}"
+            );
+        }
+
+        write(
+            &root.join("package.json"),
+            r#"{"name":"app","type":"module"}"#,
+        );
+        assert_eq!(commonjs_package_json_rejecting_imports(&output), None);
+    }
+
+    #[test]
+    fn a_commonjs_package_compiling_imports_needs_no_module_type() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let output = root.join("src/generated/ore");
+        write(&root.join("package.json"), r#"{"name":"app"}"#);
+        // No tsconfig.json: nothing type-checks the output.
+        assert_eq!(commonjs_package_json_rejecting_imports(&output), None);
+        for tsconfig in [
+            // Bundler projects: every file is an ES module.
+            r#"{"compilerOptions":{"module":"esnext","moduleResolution":"bundler","verbatimModuleSyntax":true}}"#,
+            // Without verbatimModuleSyntax, tsc compiles imports to require().
+            r#"{"compilerOptions":{"module":"nodenext"}}"#,
+        ] {
+            write(&root.join("tsconfig.json"), tsconfig);
+            assert_eq!(
+                commonjs_package_json_rejecting_imports(&output),
+                None,
+                "{tsconfig}"
+            );
+        }
     }
 
     #[test]
