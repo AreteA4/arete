@@ -119,11 +119,11 @@ export interface PrepareCheckpointInput {
   signer: Address;
   authority: Address;
   roundId: bigint;
-  automation?: Address;
-  board?: Address;
-  miner?: Address;
-  round?: Address;
-  treasury?: Address;
+  automation?: Address | undefined;
+  board?: Address | undefined;
+  miner?: Address | undefined;
+  round?: Address | undefined;
+  treasury?: Address | undefined;
 }
 
 export interface PrepareClaimOreInput {

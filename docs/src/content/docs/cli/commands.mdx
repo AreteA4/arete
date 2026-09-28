@@ -1040,6 +1040,23 @@ depends on `react`, `@usearete/adapter-web3js` when it depends on
 manager; run the line with the package manager you use. In `--json` output the
 same set is `runtime[]`, each entry a `{ "package", "version" }` pair.
 
+Generated TypeScript is ES module source (`import`/`export` with `.js`
+specifiers). A project whose nearest `package.json` is not `"type": "module"`
+(`npm init` writes `"commonjs"`) and whose `tsconfig.json` sets
+`verbatimModuleSyntax` with a `module` setting that follows `package.json`
+(`nodenext`, `node16`, `node18` or `node20`), directly or through `extends`, as
+`tsc --init` does, makes `tsc` reject every `import` in the project, its own
+files' as well as the generated SDK's.
+The summary then adds a `Module type` line with the fix:
+
+```text
+Module type: package.json is CommonJS and tsconfig.json sets verbatimModuleSyntax, so tsc rejects every import (yours and the generated SDK's, which is ES modules). Make the package ES modules:
+             npm pkg set type=module
+```
+
+In `--json` output it is `moduleType`, with `packageJson`, `required`
+(`"module"`) and `command`; it is absent when the project compiles ES modules.
+
 ### SDK extension compatibility
 
 An SDK extension's `extensions.json` can declare `extensionApi`, a positive

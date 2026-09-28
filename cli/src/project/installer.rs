@@ -1073,6 +1073,12 @@ fn install_loaded_project(
                 .filter(|output| output.target == InstallTarget::TypeScript)
                 .map(|output| output.path.as_path()),
         ),
+        module_type: ModuleTypeRequirement::for_outputs(
+            plan.outputs
+                .iter()
+                .filter(|output| output.target == InstallTarget::TypeScript)
+                .map(|output| output.path.as_path()),
+        ),
         notes: redeploy_notes(&manifest, previous_lock.as_ref(), &prospective_lock)
             .into_iter()
             .chain(composition_notes(&resolved))
@@ -1136,10 +1142,82 @@ struct InstallReport {
     /// The packages the generated TypeScript needs at run time, at the CLI's
     /// lockstep version. Printed, never written to package.json.
     runtime: Vec<runtime::RuntimePackage>,
+    /// Present when the project's `tsc` rejects the generated TypeScript's
+    /// ES module syntax until its package is ES modules. Printed, never
+    /// written to package.json.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    module_type: Option<ModuleTypeRequirement>,
     notes: Vec<String>,
     /// Hosted stack versions being retired or no longer served, with the
     /// command that installs the served version.
     warnings: Vec<String>,
+}
+
+/// A CommonJS `package.json` that must declare `"type": "module"`: see
+/// [`runtime::commonjs_package_json_rejecting_imports`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModuleTypeRequirement {
+    package_json: String,
+    /// The `"type"` the package needs: always `"module"`.
+    required: &'static str,
+    command: String,
+}
+
+impl ModuleTypeRequirement {
+    fn for_outputs<'a>(outputs: impl IntoIterator<Item = &'a Path>) -> Option<Self> {
+        let package_json = outputs
+            .into_iter()
+            .find_map(runtime::commonjs_package_json_rejecting_imports)?;
+        let directory = package_json.parent().unwrap_or(Path::new("."));
+        let command = match relative_to_current_dir(directory) {
+            Some(relative) if relative.as_os_str().is_empty() => {
+                "npm pkg set type=module".to_string()
+            }
+            relative => format!(
+                "npm pkg set type=module --prefix {}",
+                shell_quoted(
+                    &relative
+                        .as_deref()
+                        .unwrap_or(directory)
+                        .display()
+                        .to_string()
+                )
+            ),
+        };
+        Some(Self {
+            package_json: package_json.display().to_string(),
+            required: "module",
+            command,
+        })
+    }
+
+    /// The `package.json` path for people: relative to the current directory
+    /// when it is inside it.
+    fn display_package_json(&self) -> String {
+        let path = Path::new(&self.package_json);
+        relative_to_current_dir(path)
+            .map(|relative| relative.display().to_string())
+            .unwrap_or_else(|| self.package_json.clone())
+    }
+}
+
+fn relative_to_current_dir(path: &Path) -> Option<PathBuf> {
+    let current = fs::canonicalize(std::env::current_dir().ok()?).ok()?;
+    let path = fs::canonicalize(path).ok()?;
+    path.strip_prefix(current).ok().map(Path::to_path_buf)
+}
+
+/// `value` as one shell word.
+fn shell_quoted(value: &str) -> String {
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | '~'))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1351,6 +1429,13 @@ impl InstallReport {
                 "             {}",
                 runtime::npm_install_command(&self.runtime)
             );
+        }
+        if let Some(module_type) = &self.module_type {
+            println!(
+                "Module type: {} is CommonJS and tsconfig.json sets verbatimModuleSyntax, so tsc rejects every import (yours and the generated SDK's, which is ES modules). Make the package ES modules:",
+                module_type.display_package_json()
+            );
+            println!("             {}", module_type.command);
         }
         for note in &self.notes {
             println!("{note}");
@@ -5730,7 +5815,7 @@ version = "^1.0.0"
         let typescript = generated_files(&manifest, "typescript");
         let entry = &typescript["stacks/ore/programs/ore/__arete-program.ts"];
         assert!(
-            entry.contains("export const ORE_PROGRAM = withProgramIdentity(\n  withProgramRead(\n    extendProgram(ORE_PROGRAM_CORE, programExtensions),"),
+            entry.contains("export const ORE_PROGRAM: OreProgram = withProgramIdentity(\n  withProgramRead(\n    extendProgram(ORE_PROGRAM_CORE, programExtensions),"),
             "{entry}"
         );
         assert!(entry.contains("import programExtensions from './ore-extensions.js';"));
@@ -5989,6 +6074,45 @@ version = "^1.0.0"
     }
 
     #[test]
+    fn a_commonjs_typescript_project_is_told_to_declare_es_modules() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        // `npm init -y` and `tsc --init` defaults.
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"app","type":"commonjs"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("tsconfig.json"),
+            "{\n  // tsc --init\n  \"compilerOptions\": {\n    \"module\": \"nodenext\",\n    \"verbatimModuleSyntax\": true,\n  }\n}\n",
+        )
+        .unwrap();
+        let output = root.join("generated/typescript/stacks/ore");
+
+        let requirement =
+            ModuleTypeRequirement::for_outputs([output.as_path()]).expect("CommonJS package");
+        let value = serde_json::to_value(&requirement).unwrap();
+        assert_eq!(
+            value["packageJson"],
+            root.join("package.json").display().to_string()
+        );
+        assert_eq!(value["required"], "module");
+        let command = value["command"].as_str().unwrap();
+        assert!(
+            command.starts_with("npm pkg set type=module --prefix "),
+            "{command}"
+        );
+
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"app","type":"module"}"#,
+        )
+        .unwrap();
+        assert!(ModuleTypeRequirement::for_outputs([output.as_path()]).is_none());
+    }
+
+    #[test]
     fn the_install_report_json_separates_requested_regenerated_shared_and_auth() {
         let stack = resolved_registry(
             ore_stack_with_program_sdk('7', "1.0.2", vec![]),
@@ -6036,6 +6160,7 @@ version = "^1.0.0"
             shared: shared_program_sdks(&resolved),
             auth: Vec::new(),
             runtime: runtime::typescript_runtime_set(&BTreeSet::from(["react".to_string()])),
+            module_type: None,
             notes: Vec::new(),
             warnings: Vec::new(),
         }
@@ -6048,6 +6173,7 @@ version = "^1.0.0"
             json!([]),
             "always present in the document"
         );
+        assert!(value.get("moduleType").is_none(), "{value}");
         assert_eq!(value["requested"][0]["alias"], "ore");
         assert_eq!(value["requested"][0]["version"], "1.0.2");
         assert_eq!(value["regenerated"][0]["kind"], "stack");
@@ -6075,6 +6201,7 @@ version = "^1.0.0"
             shared: Vec::new(),
             auth: Vec::new(),
             runtime: Vec::new(),
+            module_type: None,
             notes: Vec::new(),
             warnings: Vec::new(),
         }

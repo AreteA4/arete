@@ -5,18 +5,20 @@ import stackExtensions, { oreProgramExtensions } from './ore-stack-extensions.js
 
 export * from './ore-stack-core.js';
 
-const CORE = {
+const CORE: Omit<typeof ORE_STREAM_STACK_CORE, 'programs'> & {
+  readonly programs: ReturnType<typeof extendPrograms<typeof ORE_STREAM_STACK_CORE.programs, { ore: typeof oreProgramExtensions }>>;
+} = {
   ...ORE_STREAM_STACK_CORE,
   programs: extendPrograms(ORE_STREAM_STACK_CORE.programs, {
     ore: oreProgramExtensions,
   }),
-} as const;
+};
 
-export const ORE_STREAM_STACK = extendStack(
+export type OreStreamStack = ReturnType<typeof extendStack<typeof CORE, typeof stackExtensions>>;
+
+export const ORE_STREAM_STACK: OreStreamStack = extendStack(
   CORE,
   stackExtensions
 );
-
-export type OreStreamStack = typeof ORE_STREAM_STACK;
 
 export default ORE_STREAM_STACK;

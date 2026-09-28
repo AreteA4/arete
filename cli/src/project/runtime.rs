@@ -140,6 +140,90 @@ pub fn app_dependencies(output: &Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// `tsconfig.json` `module` settings under which `package.json` `"type"`
+/// decides whether a `.ts` file is an ES module or CommonJS. Under
+/// `commonjs` every file is CommonJS whatever `"type"` says.
+const PACKAGE_TYPE_MODULE_SETTINGS: [&str; 4] = ["node16", "node18", "node20", "nodenext"];
+
+/// The longest `extends` chain followed; a longer or cyclic one stops there.
+const MAX_TSCONFIG_EXTENDS: usize = 8;
+
+/// The CommonJS `package.json` of a TypeScript output whose `tsc` rejects ES
+/// module syntax, and that `"type": "module"` would fix. Generated TypeScript
+/// is ES modules (`import`/`export`), and with the `npm init` and `tsc --init`
+/// defaults (no `"type": "module"`; `verbatimModuleSyntax` with a Node
+/// `module` setting) `tsc` reports every `import` in the project, the
+/// generated SDK's and the app's own alike. `None` when the nearest
+/// `package.json` declares `"type": "module"`, or the nearest `tsconfig.json`,
+/// with what it inherits through `extends`, does not compile that way.
+pub fn commonjs_package_json_rejecting_imports(output: &Path) -> Option<PathBuf> {
+    let package_json = nearest_package_json(output)?;
+    let package: serde_json::Value = serde_json::from_slice(&fs::read(&package_json).ok()?).ok()?;
+    if package.get("type").and_then(serde_json::Value::as_str) == Some("module") {
+        return None;
+    }
+    let tsconfig = output
+        .ancestors()
+        .map(|ancestor| ancestor.join("tsconfig.json"))
+        .find(|candidate| candidate.is_file())?;
+    let verbatim = compiler_option(&tsconfig, "verbatimModuleSyntax", 0)
+        == Some(serde_json::Value::Bool(true));
+    let module = compiler_option(&tsconfig, "module", 0)
+        .and_then(|module| module.as_str().map(str::to_ascii_lowercase));
+    let by_package_type = module
+        .as_deref()
+        .is_some_and(|module| PACKAGE_TYPE_MODULE_SETTINGS.contains(&module));
+    (verbatim && by_package_type).then_some(package_json)
+}
+
+/// A `compilerOptions` value as `tsc` resolves it: the config's own, or else
+/// the one it inherits through `extends` (one config or an array, where a
+/// later entry wins).
+fn compiler_option(tsconfig: &Path, option: &str, depth: usize) -> Option<serde_json::Value> {
+    if depth > MAX_TSCONFIG_EXTENDS {
+        return None;
+    }
+    let config = crate::agents::jsonc::JsonDoc::parse(&fs::read_to_string(tsconfig).ok()?).ok()?;
+    if let Some(value) = config.get(&["compilerOptions", option]) {
+        return Some(value);
+    }
+    let extends = match config.get(&["extends"])? {
+        serde_json::Value::String(one) => vec![one],
+        serde_json::Value::Array(many) => many
+            .into_iter()
+            .filter_map(|entry| entry.as_str().map(str::to_string))
+            .collect(),
+        _ => return None,
+    };
+    let directory = tsconfig.parent()?;
+    extends.iter().rev().find_map(|entry| {
+        resolve_extends(directory, entry).and_then(|base| compiler_option(&base, option, depth + 1))
+    })
+}
+
+/// The config an `extends` entry names: a path relative to the extending
+/// config, or a package config in `node_modules`
+/// (`@tsconfig/node20/tsconfig.json`, or a package's own `tsconfig.json`).
+fn resolve_extends(directory: &Path, entry: &str) -> Option<PathBuf> {
+    // As `tsc` does: the path as written, with `.json` added, or a
+    // directory's `tsconfig.json`.
+    let config_at = |path: PathBuf| {
+        [
+            path.clone(),
+            PathBuf::from(format!("{}.json", path.display())),
+            path.join("tsconfig.json"),
+        ]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+    };
+    if entry.starts_with("./") || entry.starts_with("../") || Path::new(entry).is_absolute() {
+        return config_at(directory.join(entry));
+    }
+    directory
+        .ancestors()
+        .find_map(|ancestor| config_at(ancestor.join("node_modules").join(entry)))
+}
+
 /// One copy-pasteable `npm install` line. Ranges are quoted so no shell
 /// expands them.
 pub fn npm_install_command(packages: &[RuntimePackage]) -> String {
@@ -454,6 +538,140 @@ mod tests {
             ]
         );
         assert!(typescript_runtime_for_outputs(std::iter::empty()).is_empty());
+    }
+
+    /// `tsc --init`'s output: JSONC with comments and a trailing comma.
+    const TSC_INIT_TSCONFIG: &str = r#"{
+  // Visit https://aka.ms/tsconfig to read more about this file
+  "compilerOptions": {
+    "module": "nodenext",
+    "target": "esnext",
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+  }
+}
+"#;
+
+    #[test]
+    fn a_commonjs_package_under_verbatim_module_syntax_rejects_imports() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let output = root.join("generated/typescript/stacks/ore");
+        write(&root.join("tsconfig.json"), TSC_INIT_TSCONFIG);
+
+        // `npm init -y` writes `"type": "commonjs"`; no `type` is CommonJS too.
+        for package in [r#"{"name":"app","type":"commonjs"}"#, r#"{"name":"app"}"#] {
+            write(&root.join("package.json"), package);
+            assert_eq!(
+                commonjs_package_json_rejecting_imports(&output),
+                Some(root.join("package.json")),
+                "{package}"
+            );
+        }
+
+        write(
+            &root.join("package.json"),
+            r#"{"name":"app","type":"module"}"#,
+        );
+        assert_eq!(commonjs_package_json_rejecting_imports(&output), None);
+    }
+
+    #[test]
+    fn a_commonjs_package_compiling_imports_needs_no_module_type() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let output = root.join("src/generated/ore");
+        write(&root.join("package.json"), r#"{"name":"app"}"#);
+        // No tsconfig.json: nothing type-checks the output.
+        assert_eq!(commonjs_package_json_rejecting_imports(&output), None);
+        for tsconfig in [
+            // Bundler projects: every file is an ES module.
+            r#"{"compilerOptions":{"module":"esnext","moduleResolution":"bundler","verbatimModuleSyntax":true}}"#,
+            // Without verbatimModuleSyntax, tsc compiles imports to require().
+            r#"{"compilerOptions":{"module":"nodenext"}}"#,
+        ] {
+            write(&root.join("tsconfig.json"), tsconfig);
+            assert_eq!(
+                commonjs_package_json_rejecting_imports(&output),
+                None,
+                "{tsconfig}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_commonjs_module_setting_is_not_fixed_by_the_package_type() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let output = root.join("generated/typescript/stacks/ore");
+        write(&root.join("package.json"), r#"{"name":"app"}"#);
+        write(
+            &root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"module":"commonjs","verbatimModuleSyntax":true}}"#,
+        );
+        assert_eq!(commonjs_package_json_rejecting_imports(&output), None);
+    }
+
+    #[test]
+    fn settings_inherited_through_extends_count() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let output = root.join("generated/typescript/stacks/ore");
+        write(&root.join("package.json"), r#"{"name":"app"}"#);
+        write(
+            &root.join("node_modules/@tsconfig/node20/tsconfig.json"),
+            r#"{"compilerOptions":{"module":"node16"}}"#,
+        );
+        write(
+            &root.join("tsconfig.base.json"),
+            r#"{
+  // A shared base, extending a package config.
+  "extends": "@tsconfig/node20/tsconfig.json",
+  "compilerOptions": { "verbatimModuleSyntax": true },
+}"#,
+        );
+
+        // A relative path, with or without `.json`, and an array.
+        for extends in [
+            r#""./tsconfig.base.json""#,
+            r#""./tsconfig.base""#,
+            r#"["./missing.json", "./tsconfig.base.json"]"#,
+        ] {
+            write(
+                &root.join("tsconfig.json"),
+                &format!(r#"{{"extends":{extends},"compilerOptions":{{"strict":true}}}}"#),
+            );
+            assert_eq!(
+                commonjs_package_json_rejecting_imports(&output),
+                Some(root.join("package.json")),
+                "{extends}"
+            );
+        }
+
+        // The extending config's own setting wins over the inherited one.
+        write(
+            &root.join("tsconfig.json"),
+            r#"{"extends":"./tsconfig.base.json","compilerOptions":{"verbatimModuleSyntax":false}}"#,
+        );
+        assert_eq!(commonjs_package_json_rejecting_imports(&output), None);
+        // So does a later entry of an array over an earlier one.
+        write(
+            &root.join("tsconfig.esm.json"),
+            r#"{"compilerOptions":{"module":"esnext"}}"#,
+        );
+        write(
+            &root.join("tsconfig.json"),
+            r#"{"extends":["./tsconfig.base.json","./tsconfig.esm.json"]}"#,
+        );
+        assert_eq!(commonjs_package_json_rejecting_imports(&output), None);
+        // A cycle ends.
+        write(
+            &root.join("tsconfig.json"),
+            r#"{"extends":"./tsconfig.json"}"#,
+        );
+        assert_eq!(commonjs_package_json_rejecting_imports(&output), None);
     }
 
     #[test]
