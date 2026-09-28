@@ -516,6 +516,9 @@ agent-independent set (manifest, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`,
      descriptor with `a4 install stack <ref> --ts` or
      `a4 install program <ref> --ts`; use `--rust` or `--python` only when the
      descriptor advertises that target.
+   - A stack includes the program SDKs for the programs its views index, at
+     `arete.programs.<name>`; install a program separately only when no stack
+     you use covers it.
    - Starting a new app? `a4 create <dir> --template react-ore` scaffolds a
      working example in a new directory (also `typescript-ore`, `rust-ore`,
      `python-ore`).
