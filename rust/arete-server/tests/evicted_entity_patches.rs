@@ -183,14 +183,17 @@ impl Harness {
             .unwrap();
     }
 
-    /// The cached entity, without the `_seq` the projector stamps on it.
+    /// The cached entity, without the `_seq` and `_version` the projector
+    /// stamps on it.
     async fn cached(&self, key: &str) -> Option<Value> {
         self.cached_in("Round/list", key).await
     }
 
     async fn cached_in(&self, view: &str, key: &str) -> Option<Value> {
         let mut entity = self.cache.get(view, key).await?;
-        entity.as_object_mut()?.remove("_seq");
+        let fields = entity.as_object_mut()?;
+        fields.remove("_seq");
+        fields.remove("_version");
         Some(entity)
     }
 

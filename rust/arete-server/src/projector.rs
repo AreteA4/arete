@@ -11,7 +11,7 @@ use serde_json::Value;
 use smallvec::SmallVec;
 use std::collections::HashSet;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::mpsc;
 use tracing::{debug, debug_span, error, instrument, warn};
@@ -178,6 +178,51 @@ pub(crate) fn link_active_resync(vm: &Arc<StdMutex<VmContext>>) {
     let _ = ACTIVE_ENTITY_RESYNC.try_with(|resync| resync.link(vm));
 }
 
+/// The `_version` stamped into every frame's data: `{epoch}:{counter}`.
+///
+/// Clients order one key's frames by it. `_seq` cannot do that: every update
+/// decoded from one transaction shares it, and within a slot account updates
+/// and instructions number themselves differently. The counter follows the
+/// order this projector merges changes into the entity cache, which is the
+/// order that defines the cached entity. The epoch names this projector, so a
+/// client never compares counters from another one (a restart, or a stack
+/// loaded again).
+///
+/// An entity restored from a snapshot keeps the version it was saved with,
+/// from an earlier epoch. Clients take a version from another epoch as newer,
+/// and every change the restored entity takes is stamped in this one, so an
+/// old version never follows a new one for the same key.
+struct FrameVersions {
+    epoch: String,
+    last: AtomicU64,
+}
+
+impl FrameVersions {
+    fn new() -> Self {
+        // Eight hex digits: enough to tell one projector's lifetime from
+        // another, and every frame carries them.
+        let epoch = hex::encode(&uuid::Uuid::new_v4().as_bytes()[..4]);
+        Self {
+            epoch,
+            last: AtomicU64::new(0),
+        }
+    }
+
+    /// Stamp the next version into `data`. Mutations are objects; anything
+    /// else has nowhere to carry one and goes out unversioned.
+    fn stamp(&self, data: &mut Value) {
+        let Value::Object(map) = data else {
+            debug!("mutation is not an object; publishing it without a version");
+            return;
+        };
+        let counter = self.last.fetch_add(1, Ordering::Relaxed) + 1;
+        map.insert(
+            "_version".to_string(),
+            Value::String(format!("{}:{counter}", self.epoch)),
+        );
+    }
+}
+
 pub struct Projector {
     view_index: Arc<ViewIndex>,
     bus_manager: BusManager,
@@ -186,6 +231,7 @@ pub struct Projector {
     snapshot_runtime: Option<crate::snapshot::SnapshotRuntime>,
     journal: Option<Arc<crate::journal::EventJournal>>,
     resync: EntityResync,
+    versions: FrameVersions,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -207,6 +253,7 @@ impl Projector {
             snapshot_runtime: None,
             journal: None,
             resync: EntityResync::new(),
+            versions: FrameVersions::new(),
             metrics,
         }
     }
@@ -226,6 +273,7 @@ impl Projector {
             snapshot_runtime: None,
             journal: None,
             resync: EntityResync::new(),
+            versions: FrameVersions::new(),
         }
     }
 
@@ -414,7 +462,11 @@ impl Projector {
                 patch.clone()
             };
 
-            let projected = spec.projection.apply(patch_data);
+            // Stamped after projection, which a field list could otherwise
+            // strip it from, and before the cache merge and the frame, so
+            // both carry it.
+            let mut projected = spec.projection.apply(patch_data);
+            self.versions.stamp(&mut projected);
             let mut wire_data = projected.clone();
             apply_wire_format(&mut wire_data, &spec.wire_format);
 

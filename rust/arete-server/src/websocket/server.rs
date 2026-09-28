@@ -4533,6 +4533,85 @@ mod tests {
             assert_eq!(frames[1]["data"]["name"], "thing-c");
             socket.close(None).await.ok();
         }
+
+        /// `(epoch, counter)` from an entity's `_version`.
+        fn version_of(data: &Value) -> (String, u64) {
+            let version = data["_version"]
+                .as_str()
+                .unwrap_or_else(|| panic!("no _version in {data}"));
+            let (epoch, counter) = version.split_once(':').expect("epoch:counter");
+            (epoch.to_string(), counter.parse().expect("decimal counter"))
+        }
+
+        /// Every entity a subscriber receives carries the projector's
+        /// `_version`: a snapshot row, a forwarded patch, and a state
+        /// subscription's catch-up, which sends the cached entity after the
+        /// bus overwrote a patch.
+        // One worker: the projector applies a batch without yielding, so its
+        // second patch overwrites the first on the state bus before the
+        // subscriber reads either.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn snapshot_rows_patches_and_catch_ups_carry_the_version() {
+            let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
+            harness.patch("7", json!({"name": "thing-7"})).await;
+
+            let mut list = harness.subscribe(json!({"view": "Thing/list"}), true).await;
+            let snapshot = next_frame(&mut list).await;
+            assert_eq!(snapshot["op"], "snapshot", "unexpected frame: {snapshot}");
+            let (epoch, _) = version_of(&snapshot["data"][0]["data"]);
+
+            let mut state = harness
+                .subscribe(json!({"view": "Thing/state", "key": "7"}), true)
+                .await;
+            let snapshot = next_frame(&mut state).await;
+            assert_eq!(snapshot["op"], "snapshot", "unexpected frame: {snapshot}");
+            let (state_epoch, seeded) = version_of(&snapshot["data"][0]["data"]);
+            assert_eq!(state_epoch, epoch, "one projector, one epoch");
+
+            harness.patch("7", json!({"count": 1})).await;
+            let patch = next_frame(&mut list).await;
+            assert_eq!(patch["op"], "patch", "unexpected frame: {patch}");
+            assert_eq!(version_of(&patch["data"]).0, epoch);
+            let patch = next_frame(&mut state).await;
+            assert_eq!(patch["op"], "patch", "unexpected frame: {patch}");
+            let (_, patched) = version_of(&patch["data"]);
+            assert!(patched > seeded, "{patched} after {seeded}");
+
+            // Two changes to the key in one batch.
+            let slot = harness
+                .slot
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mutation = |patch: Value| Mutation {
+                export: "Thing".to_string(),
+                key: json!("7"),
+                patch,
+                append: vec![],
+            };
+            harness
+                .tx
+                .send(MutationBatch::with_slot_context(
+                    vec![
+                        mutation(json!({"count": 2})),
+                        mutation(json!({"flag": true})),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    SlotContext::new(slot, 0),
+                ))
+                .await
+                .unwrap();
+
+            let catch_up = next_frame(&mut state).await;
+            assert_eq!(catch_up["op"], "patch", "unexpected frame: {catch_up}");
+            assert!(catch_up.get("seq").is_none(), "a catch-up: {catch_up}");
+            assert_eq!(catch_up["data"]["count"], 2);
+            assert_eq!(catch_up["data"]["flag"], true);
+            let (_, caught_up) = version_of(&catch_up["data"]);
+            assert!(caught_up > patched, "{caught_up} after {patched}");
+
+            list.close(None).await.ok();
+            state.close(None).await.ok();
+        }
     }
 
     /// Session tokens that expire while their socket is open.
