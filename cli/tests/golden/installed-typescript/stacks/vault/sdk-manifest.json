@@ -4,7 +4,7 @@
     "kind": "stack-manifest",
     "hash": "arete:h1:stack-manifest:sha256:7b3b5a825854a0e561c1a7eeff95e5871be702009b8952b606d07b66a8641b2a"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:40c37e61b05c6069d1481656a813404f5abd9819e9991fad567b72bb36f956ac",
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:49d49637c414227c11ac47037fcbbb3cabddc4159836f2a9b7986d36e6f7316f",
   "extensions": {
     "contentSha256": "c2ccd42e92638e903a96398afafcda98b319e3c6e2e4ead58dd73e20a669c82d"
   },
@@ -14,7 +14,7 @@
         "kind": "program-spec",
         "hash": "arete:h1:program-spec:sha256:7f8377cbaeffdc6a33986144c5abb640d00d000519185ff85ac1ccfe1917b976"
       },
-      "contentSha256": "40582338c32376787be906b58bddcbb04ec5f12e8047ce1eb6e2e2ed808c943f"
+      "contentSha256": "1e7feb21470993fa5841d88266cecdf106abc81126e765db6ea7a2bcd3f0c1be"
     }
   },
   "artifacts": [

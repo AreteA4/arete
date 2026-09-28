@@ -3,8 +3,9 @@ import {
   createPreparedInstruction,
   defineProgramExtensions,
   instructionOperation,
+  type AmountInput,
 } from '@usearete/sdk';
-import { depositInstruction, type VAULT } from './vault-core.js';
+import { depositInstruction, type DepositSemanticParams, type VAULT } from './vault-core.js';
 
 interface DepositToTreasuryInput {
   authority: string;
@@ -13,11 +14,27 @@ interface DepositToTreasuryInput {
   signers?: readonly string[];
 }
 
+interface TreasuryDepositInput {
+  authority: string;
+  mint: string;
+  amount: AmountInput;
+  decimals?: number;
+}
+
 const TREASURY_ADDRESS = 'Treasury11111111111111111111111111111111111';
 
 export default defineProgramExtensions<typeof VAULT>()({
   addresses: {
     treasury: () => TREASURY_ADDRESS,
+  },
+  defaults: {
+    treasuryDeposit: (input: TreasuryDepositInput): DepositSemanticParams => ({
+      authority: input.authority,
+      vault: TREASURY_ADDRESS,
+      mint: input.mint,
+      amount: input.amount,
+      amountDecimals: input.decimals,
+    }),
   },
   createOperations: () => ({
     instructions: {

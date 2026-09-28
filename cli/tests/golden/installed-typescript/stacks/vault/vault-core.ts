@@ -99,7 +99,7 @@ export interface DepositParams {
 
 export interface DepositSemanticParams {
   amount: AmountInput;
-  amountDecimals?: number;
+  amountDecimals?: number | undefined;
   authority: string;
   vault: string;
   mint: string;
@@ -132,7 +132,7 @@ export interface WithdrawParams {
 export interface WithdrawSemanticParams {
   amount: AmountInput;
   mint: string;
-  amountDecimals?: number;
+  amountDecimals?: number | undefined;
   authority: string;
   vault: string;
   build?: BuildOptions;
@@ -254,7 +254,7 @@ export const VAULT_STREAM_STACK_CORE = {
     vault: {
       name: 'vault',
       programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:207e2d6db9dfd5d7bb6e4874fe61cfafc4e2762bf0e29d23cb6a21259d588bac',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:af8578831baa09df0e6539f5ee2fecaf64b9e08b84e561318aa8eed260363349',
       programSpecHash: 'arete:h1:program-spec:sha256:7f8377cbaeffdc6a33986144c5abb640d00d000519185ff85ac1ccfe1917b976',
       idlContentHash: 'arete:h1:idl-content:sha256:e9f168d8b448ac603f8ed6c99f9bb9ba82a0908a723610a5f89877120dfc194c',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:c79563495cb02035c1def338b7349e986cfc64349f306e79d601ad33207f9799',

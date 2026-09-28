@@ -97,15 +97,17 @@ fn vault_program() -> ProgramSpecArtifact {
     ProgramSpecArtifact::new(spec).expect("golden ProgramSpec artifact")
 }
 
-/// The program package's extension. Its input type stays unexported, it adds
-/// addresses, and it passes an optional value on as it is.
+/// The program package's extension. Its input types stay unexported, it adds
+/// addresses, and it passes optional values on as they are, to the SDK and to
+/// the generated semantic parameters.
 const PROGRAM_EXTENSION: &str = r#"import {
   buildInstruction,
   createPreparedInstruction,
   defineProgramExtensions,
   instructionOperation,
+  type AmountInput,
 } from '@usearete/sdk';
-import { depositInstruction, type VAULT } from './vault-core.js';
+import { depositInstruction, type DepositSemanticParams, type VAULT } from './vault-core.js';
 
 interface DepositToTreasuryInput {
   authority: string;
@@ -114,11 +116,27 @@ interface DepositToTreasuryInput {
   signers?: readonly string[];
 }
 
+interface TreasuryDepositInput {
+  authority: string;
+  mint: string;
+  amount: AmountInput;
+  decimals?: number;
+}
+
 const TREASURY_ADDRESS = 'Treasury11111111111111111111111111111111111';
 
 export default defineProgramExtensions<typeof VAULT>()({
   addresses: {
     treasury: () => TREASURY_ADDRESS,
+  },
+  defaults: {
+    treasuryDeposit: (input: TreasuryDepositInput): DepositSemanticParams => ({
+      authority: input.authority,
+      vault: TREASURY_ADDRESS,
+      mint: input.mint,
+      amount: input.amount,
+      amountDecimals: input.decimals,
+    }),
   },
   createOperations: () => ({
     instructions: {
