@@ -82,6 +82,14 @@ type Field<TValue, TKey extends PropertyKey> = TKey extends keyof TValue
   ? TValue[TKey]
   : never;
 
+/**
+ * A field an extension provides. The helpers skip an extension value that is
+ * `undefined`, so an optional field is never `undefined` on the result either
+ * (which `exactOptionalPropertyTypes` would reject where the result is used as
+ * a `ProgramSdkDefinition`).
+ */
+type ExtensionField<TValue, TKey extends PropertyKey> = Exclude<Field<TValue, TKey>, undefined>;
+
 type DeepMerge<TBase, TExtension> =
   TBase extends Record<string, unknown>
     ? TExtension extends Record<string, unknown>
@@ -345,11 +353,11 @@ export function extendProgram<
   extensions: TExtension
 ): ExtendedProgramDefinition<
   TBase,
-  MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
-  MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
-  MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
+  MergeField<Field<TBase, 'addresses'>, ExtensionField<TExtension, 'addresses'>>,
+  MergeField<Field<TBase, 'constants'>, ExtensionField<TExtension, 'constants'>>,
+  MergeField<Field<TBase, 'defaults'>, ExtensionField<TExtension, 'defaults'>>,
   Extract<FactoryReturn<TExtension, 'createOperations'>, AnyProgramOperations>,
-  MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+  MergeField<Field<TBase, 'math'>, ExtensionField<TExtension, 'math'>>,
   FactoryReturn<TExtension, 'createRead'>
 > {
   const base = program as Record<PropertyKey, unknown> & ProgramRuntimeExtensionCarrier;
@@ -386,11 +394,11 @@ export function extendProgram<
           context: ProgramOperationContext<
             ExtendedProgramDefinition<
               TBase,
-              MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
-              MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
-              MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
+              MergeField<Field<TBase, 'addresses'>, ExtensionField<TExtension, 'addresses'>>,
+              MergeField<Field<TBase, 'constants'>, ExtensionField<TExtension, 'constants'>>,
+              MergeField<Field<TBase, 'defaults'>, ExtensionField<TExtension, 'defaults'>>,
               ProgramOperations,
-              MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+              MergeField<Field<TBase, 'math'>, ExtensionField<TExtension, 'math'>>,
               FactoryReturn<TExtension, 'createRead'>
             >
           >
@@ -421,11 +429,11 @@ export function extendProgram<
           context: ProgramOperationContext<
             ExtendedProgramDefinition<
               TBase,
-              MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
-              MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
-              MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
+              MergeField<Field<TBase, 'addresses'>, ExtensionField<TExtension, 'addresses'>>,
+              MergeField<Field<TBase, 'constants'>, ExtensionField<TExtension, 'constants'>>,
+              MergeField<Field<TBase, 'defaults'>, ExtensionField<TExtension, 'defaults'>>,
               ProgramOperations,
-              MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+              MergeField<Field<TBase, 'math'>, ExtensionField<TExtension, 'math'>>,
               FactoryReturn<TExtension, 'createRead'>
             >
           >
@@ -450,11 +458,11 @@ export function extendProgram<
 
   return extended as ExtendedProgramDefinition<
     TBase,
-    MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
-    MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
-    MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
+    MergeField<Field<TBase, 'addresses'>, ExtensionField<TExtension, 'addresses'>>,
+    MergeField<Field<TBase, 'constants'>, ExtensionField<TExtension, 'constants'>>,
+    MergeField<Field<TBase, 'defaults'>, ExtensionField<TExtension, 'defaults'>>,
     Extract<FactoryReturn<TExtension, 'createOperations'>, AnyProgramOperations>,
-    MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+    MergeField<Field<TBase, 'math'>, ExtensionField<TExtension, 'math'>>,
     FactoryReturn<TExtension, 'createRead'>
   >;
 }
@@ -618,10 +626,10 @@ export function extendStack<
   extensions: TExtension & ReadArgumentCountRequirement<TExtension>
 ): ExtendedStackDefinition<
   TBase,
-  MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
-  MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
-  MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
-  MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+  MergeField<Field<TBase, 'addresses'>, ExtensionField<TExtension, 'addresses'>>,
+  MergeField<Field<TBase, 'constants'>, ExtensionField<TExtension, 'constants'>>,
+  MergeField<Field<TBase, 'defaults'>, ExtensionField<TExtension, 'defaults'>>,
+  MergeField<Field<TBase, 'math'>, ExtensionField<TExtension, 'math'>>,
   MergeField<StackReadOf<TBase>, FactoryReturn<TExtension, 'createRead'>>,
   Extract<
     MergeField<StackFlowsOf<TBase>, FactoryReturn<TExtension, 'createFlows'>>,
@@ -666,10 +674,10 @@ export function extendStack<
   }
   return extended as ExtendedStackDefinition<
     TBase,
-    MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
-    MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
-    MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
-    MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+    MergeField<Field<TBase, 'addresses'>, ExtensionField<TExtension, 'addresses'>>,
+    MergeField<Field<TBase, 'constants'>, ExtensionField<TExtension, 'constants'>>,
+    MergeField<Field<TBase, 'defaults'>, ExtensionField<TExtension, 'defaults'>>,
+    MergeField<Field<TBase, 'math'>, ExtensionField<TExtension, 'math'>>,
     MergeField<StackReadOf<TBase>, FactoryReturn<TExtension, 'createRead'>>,
     Extract<
       MergeField<StackFlowsOf<TBase>, FactoryReturn<TExtension, 'createFlows'>>,

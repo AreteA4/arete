@@ -106,6 +106,23 @@ export type ExtendProgramsLeavesOtherPrograms = Assert<Equal<
   typeof CORE_STACK.programs.entropy
 >>;
 
+// An extension's optional fields arrive defined: the result is still a
+// `ProgramSdkDefinition` under `exactOptionalPropertyTypes`.
+const addressedOre = extendProgram(
+  CORE_STACK.programs.ore,
+  defineProgramExtensions<typeof CORE_STACK.programs.ore>()({
+    addresses: { board: () => 'board-address' },
+  }),
+);
+export type ExtensionAddressesAreDefined = Assert<Equal<
+  undefined extends typeof addressedOre.addresses ? true : false,
+  false
+>>;
+export type ExtensionWithoutAddressesAddsNone = Assert<Equal<
+  'addresses' extends keyof typeof extendedOre ? true : false,
+  false
+>>;
+
 // Stamping a read descriptor and identity keeps the program's type.
 const stampedOre = withProgramIdentity(
   withProgramRead(extendedOre, readDescriptor),

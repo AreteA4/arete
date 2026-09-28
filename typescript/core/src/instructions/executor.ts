@@ -126,15 +126,15 @@ export function createInstructionHandler<
  */
 export interface BuildOptions {
   /** Wallet, used only for accounts explicitly marked with signerKind: 'wallet'. */
-  wallet?: WalletAdapter;
+  wallet?: WalletAdapter | undefined;
   /** Explicit account-address overrides, including signer slots when needed. */
-  accounts?: Record<string, string>;
+  accounts?: Record<string, string> | undefined;
   /**
    * Extra account metas appended after the instruction's declared accounts
    * (Anchor's `remainingAccounts`) — for routers, transfer hooks, and other
    * composition patterns the IDL cannot express.
    */
-  remainingAccounts?: BuiltAccountMeta[];
+  remainingAccounts?: BuiltAccountMeta[] | undefined;
 }
 
 /**
