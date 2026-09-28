@@ -71,7 +71,7 @@ A program descriptor can include:
 A stack descriptor can include:
 
 - its exact composition identity;
-- selected live views and their programs;
+- selected live views and the Program SDKs for the programs they read from;
 - independent live, Program Read, chain, and transaction bindings;
 - authentication requirements;
 - supported SDK targets; and
@@ -125,6 +125,11 @@ Prefer the descriptor's reported command:
 a4 install program <slug> --ts
 a4 install stack <slug> --ts
 ```
+
+Install a stack when you need live views, with or without transactions. It
+includes the Program SDK for each program its views read from, the same one `a4
+install program` gives you, so its operations need no separate program install.
+Install a program on its own when you only need reads and transactions.
 
 A saved install updates `arete.toml`, resolves `arete.lock`, and generates code
 for the complete set of dependencies. Use `--no-save` only when you deliberately
