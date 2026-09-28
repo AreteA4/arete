@@ -935,6 +935,9 @@ export function prepareDeploy(
       miner: input.miner ?? getMinerPda(authority),
       round: input.round ?? getRoundPda(input.roundId),
       entropyVar: input.entropyVar ?? getEntropyVarPda(),
+      // The deploy that opens a round calls Entropy and takes exactly
+      // [var, entropy program]; without the program it fails.
+      entropyProgram: ENTROPY_PROGRAM_ADDRESS,
     },
     signers: { signer: input.signer },
   };
