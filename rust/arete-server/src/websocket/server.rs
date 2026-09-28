@@ -4235,7 +4235,12 @@ mod tests {
                 let view_index = Arc::new(thing_index());
                 let bus_manager = BusManager::new();
                 let (tx, rx) = mpsc::channel::<MutationBatch>(64);
-                tokio::spawn(
+                // Unconstrained, so Tokio's cooperative budget never makes the
+                // projector yield partway through a batch: a test on one
+                // worker then knows no subscriber runs until the whole batch
+                // is published (see
+                // `snapshot_rows_patches_and_catch_ups_carry_the_version`).
+                tokio::spawn(tokio::task::unconstrained(
                     Projector::new(
                         view_index.clone(),
                         bus_manager.clone(),
@@ -4245,7 +4250,7 @@ mod tests {
                         None,
                     )
                     .run(),
-                );
+                ));
                 let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let addr = listener.local_addr().unwrap();
                 let server = WebSocketServer::new(
@@ -4547,9 +4552,10 @@ mod tests {
         /// `_version`: a snapshot row, a forwarded patch, and a state
         /// subscription's catch-up, which sends the cached entity after the
         /// bus overwrote a patch.
-        // One worker: the projector applies a batch without yielding, so its
-        // second patch overwrites the first on the state bus before the
-        // subscriber reads either.
+        // One worker, and a projector the cooperative budget cannot interrupt:
+        // within a batch it awaits only locks no other task holds, so it
+        // publishes both changes before the subscriber can run, and the
+        // second overwrites the first on the state bus.
         #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
         async fn snapshot_rows_patches_and_catch_ups_carry_the_version() {
             let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
