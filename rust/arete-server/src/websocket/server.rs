@@ -1391,11 +1391,19 @@ async fn attach_state_subscription(
     // without a copy, so its first change must be a full `upsert`: a patch
     // would have nothing to merge into.
     let delivered = subscription.snapshot.enabled && !snapshot_entities.is_empty();
+    let snapshot_rows = to_wire_snapshot_entities(snapshot_entities, &view_spec);
+    // The entity as the client last received it whole, which a catch-up is
+    // measured against.
+    let synced = if delivered {
+        snapshot_rows.first().map(|row| row.data.clone())
+    } else {
+        None
+    };
     if subscription.snapshot.enabled {
         send_snapshot_batches(
             context,
             &subscription,
-            &to_wire_snapshot_entities(snapshot_entities, &view_spec),
+            &snapshot_rows,
             view_spec.mode,
             SnapshotPurpose::Initial,
             &context.entity_cache.snapshot_config(),
@@ -1413,6 +1421,11 @@ async fn attach_state_subscription(
         async move {
             // Whether the client holds this key, not whether it exists.
             let mut member = delivered;
+            // The entity as the client last received it whole (its snapshot
+            // row, an upsert or the last catch-up), in wire format. A catch-up
+            // sends only what changed since: every patch forwarded in between
+            // is covered, including any a client dropped.
+            let mut synced = synced;
             // Whether the client lacks fields of frames the bus overwrote
             // before this task read them. The cached entity is sent in their
             // place, but while the cache lacks the key there is none, so the
@@ -1458,6 +1471,7 @@ async fn attach_state_subscription(
                             member = false;
                             behind = false;
                             replaced = false;
+                            synced = None;
                             continue;
                         }
 
@@ -1494,43 +1508,69 @@ async fn attach_state_subscription(
                         let caught_up = !std::mem::take(&mut behind);
                         let replace = std::mem::take(&mut replaced);
                         let result = match (member, selected.into_iter().next()) {
-                            (true, Some(_)) if caught_up => send_scoped_source_payload(
-                                &task_context,
-                                &subscription_id,
-                                &query.view,
-                                payload,
-                            ),
-                            // The whole cached entity, as a patch: it merges into
-                            // what the client holds, so a field the cache lost
-                            // to eviction is kept, not replaced. If a missed frame
-                            // replaced the entity, it is an upsert instead, which
-                            // replaces the client's copy: merging would keep the
-                            // fields of the entity that was deleted or replaced.
-                            // Either carries no seq, because it is newer than
-                            // anything this subscriber was sent and seqs are not
-                            // ordered within a slot: account updates and
-                            // instructions number themselves differently, so the
-                            // latest patch's seq can sort below one already
-                            // delivered.
-                            (true, Some((entity_key, data))) => send_membership_frame(
-                                &task_context,
-                                &subscription_id,
-                                &view_spec_task,
-                                if replace { "upsert" } else { "patch" },
-                                &entity_key,
-                                data,
-                                None,
-                            ),
-                            (false, Some((entity_key, data))) => send_membership_frame(
-                                &task_context,
-                                &subscription_id,
-                                &view_spec_task,
-                                "upsert",
-                                &entity_key,
-                                data,
-                                metadata.seq,
-                            ),
-                            (true, None) => send_membership_frame(
+                            (true, Some(_)) if caught_up => {
+                                // A forwarded upsert hands the client the
+                                // entity whole.
+                                if metadata.op == "upsert" {
+                                    synced = source_frame_data(&payload);
+                                }
+                                send_scoped_source_payload(
+                                    &task_context,
+                                    &subscription_id,
+                                    &query.view,
+                                    payload,
+                                )
+                            }
+                            // The catch-up: a patch of the cached entity's
+                            // fields that changed since the client last received
+                            // it whole, which merges into what the client holds.
+                            // If a missed frame replaced the entity, it is the
+                            // whole entity as an upsert instead, which replaces
+                            // the client's copy: merging would keep the fields of
+                            // the entity that was deleted or replaced. Either
+                            // carries no seq, because it is newer than anything
+                            // this subscriber was sent and seqs are not ordered
+                            // within a slot: account updates and instructions
+                            // number themselves differently, so the latest
+                            // patch's seq can sort below one already delivered.
+                            (true, Some((entity_key, data))) => {
+                                let mut current = data;
+                                apply_wire_format(&mut current, &view_spec_task.wire_format);
+                                let body = match (&synced, replace) {
+                                    (Some(base), false) => changed_fields(base, &current),
+                                    _ => Some(current.clone()),
+                                };
+                                synced = Some(current);
+                                match body {
+                                    Some(body) => send_membership_frame(
+                                        &task_context,
+                                        &subscription_id,
+                                        &view_spec_task,
+                                        if replace { "upsert" } else { "patch" },
+                                        &entity_key,
+                                        body,
+                                        None,
+                                    ),
+                                    None => Ok(()),
+                                }
+                            }
+                            (false, Some((entity_key, data))) => {
+                                let mut current = data;
+                                apply_wire_format(&mut current, &view_spec_task.wire_format);
+                                synced = Some(current.clone());
+                                send_membership_frame(
+                                    &task_context,
+                                    &subscription_id,
+                                    &view_spec_task,
+                                    "upsert",
+                                    &entity_key,
+                                    current,
+                                    metadata.seq,
+                                )
+                            }
+                            (true, None) => {
+                                synced = None;
+                                send_membership_frame(
                                 &task_context,
                                 &subscription_id,
                                 &view_spec_task,
@@ -1538,7 +1578,8 @@ async fn attach_state_subscription(
                                 &key,
                                 Value::Null,
                                 metadata.seq,
-                            ),
+                                )
+                            }
                             (false, None) => Ok(()),
                         };
                         if result.is_err() {
@@ -2318,6 +2359,43 @@ fn source_frame_metadata(payload: &[u8]) -> SourceFrameMetadata {
         .unwrap_or_default()
 }
 
+/// The `data` of a source frame, as a client receives it.
+fn source_frame_data(payload: &[u8]) -> Option<Value> {
+    let mut frame: Value = serde_json::from_slice(payload).ok()?;
+    frame.get_mut("data").map(Value::take)
+}
+
+/// The fields of `current` that differ from `base`, as a patch that turns
+/// `base` into `current` when merged: objects compare field by field, any
+/// other value is sent whole when it differs, and a field `current` no longer
+/// has is sent as `null`. `None` when nothing differs.
+fn changed_fields(base: &Value, current: &Value) -> Option<Value> {
+    match (base, current) {
+        (Value::Object(base), Value::Object(current)) => {
+            let mut patch = serde_json::Map::new();
+            for (field, value) in current {
+                match base.get(field) {
+                    Some(old) => {
+                        if let Some(changed) = changed_fields(old, value) {
+                            patch.insert(field.clone(), changed);
+                        }
+                    }
+                    None => {
+                        patch.insert(field.clone(), value.clone());
+                    }
+                }
+            }
+            for field in base.keys() {
+                if !current.contains_key(field) {
+                    patch.insert(field.clone(), Value::Null);
+                }
+            }
+            (!patch.is_empty()).then_some(Value::Object(patch))
+        }
+        _ => (base != current).then(|| current.clone()),
+    }
+}
+
 fn send_scoped_source_payload(
     context: &SubscriptionContext,
     subscription_id: &str,
@@ -2752,6 +2830,39 @@ mod tests {
     use crate::view::{Delivery, Filters, Projection};
     use serde_json::json;
     use tokio::sync::oneshot;
+
+    #[test]
+    fn a_catch_up_carries_only_the_fields_that_changed() {
+        let base = json!({
+            "id": 7,
+            "state": {"deployed": [1, 2, 3], "total": 6},
+            "results": {"square": null},
+            "gone": true,
+        });
+        let current = json!({
+            "id": 7,
+            "state": {"deployed": [1, 2, 4], "total": 6},
+            "results": {"square": 3},
+            "fresh": "x",
+        });
+        assert_eq!(
+            changed_fields(&base, &current),
+            Some(json!({
+                // An array that changed is sent whole.
+                "state": {"deployed": [1, 2, 4]},
+                "results": {"square": 3},
+                "fresh": "x",
+                // A field the entity no longer has is cleared.
+                "gone": null,
+            }))
+        );
+        assert_eq!(changed_fields(&current, &current), None);
+        // Anything that is not an object on both sides is compared whole.
+        assert_eq!(
+            changed_fields(&json!(null), &current),
+            Some(current.clone())
+        );
+    }
 
     fn list_spec() -> ViewSpec {
         ViewSpec {
@@ -3967,10 +4078,11 @@ mod tests {
             .unwrap();
             let frame = next_frame(&mut socket).await;
             assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            // Everything that changed since the snapshot, the forwarded patch
+            // included; `id` has not.
             assert_eq!(
                 frame["data"],
                 json!({
-                    "id": 7,
                     "results": {"slot_hash": "abc"},
                     "entropy": {"seed": "def"},
                     "total": 1,
@@ -3992,6 +4104,70 @@ mod tests {
                 json!({"total": 2, "_seq": "141:000000000002"})
             );
 
+            // The next catch-up is measured against the last one: only what
+            // changed since it, not the fields that one already carried.
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer
+                    .publish("7", json!({"total": 3}), "142:000000000001")
+                    .await;
+                writer
+                    .publish("7", json!({"flag": true}), "142:000000000001")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert!(frame.get("seq").is_none(), "unexpected seq: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({"total": 3, "flag": true, "_seq": "142:000000000001"})
+            );
+
+            socket.close(None).await.ok();
+        }
+
+        /// A whole entity forwarded as it was published replaces the client's
+        /// copy, so a later catch-up is measured against it.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_forwarded_whole_entity_is_what_a_catch_up_is_measured_against() {
+            let server = StateServer::start().await;
+            server
+                .publish("7", json!({"id": 7, "a": 1}), "100:000000000001")
+                .await;
+            let mut socket = server.subscribe("7").await;
+
+            let whole = json!({"id": 7, "a": 1, "b": 2, "_seq": "101:000000000001"});
+            server
+                .entity_cache
+                .store_whole(ROUND, "7", whole.clone())
+                .await;
+            server
+                .publish_frame("7", "upsert", whole.clone(), "101:000000000001")
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["data"], whole);
+
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer
+                    .publish("7", json!({"c": 3}), "102:000000000001")
+                    .await;
+                writer
+                    .publish("7", json!({"d": 4}), "102:000000000002")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({"c": 3, "d": 4, "_seq": "102:000000000002"}),
+                "`b` came with the whole entity, so it is not sent again"
+            );
             socket.close(None).await.ok();
         }
 
