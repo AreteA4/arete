@@ -180,6 +180,47 @@ test("receipt passthrough runs the recorded binary with argv", notWindows, async
   assert.equal(result.stdout, "argv=explore --json\nsentinel=1\n");
 });
 
+test("isSelfInstall: only self-install options keep install on the bootstrap path", () => {
+  for (const argv of [
+    ["install"],
+    ["install", "--no-modify-path", "--json"],
+    ["install", "--install-dir", "/opt/a4/bin", "--force"],
+    ["install", "--install-dir=/opt/a4/bin", "-y"],
+    ["install", "--help"],
+  ]) {
+    assert.equal(a4.isSelfInstall(argv), true, argv.join(" "));
+  }
+  for (const argv of [
+    ["install", "stack", "ore", "--ts"],
+    ["install", "program", "ore", "--rust"],
+    ["install", "--locked"],
+    ["install", "--dry-run", "--json"],
+    ["install", "--json", "stack", "ore"],
+    ["explore", "--json"],
+    [],
+  ]) {
+    assert.equal(a4.isSelfInstall(argv), false, argv.join(" "));
+  }
+});
+
+test("project installs run the recorded binary instead of self install", notWindows, async (t) => {
+  const home = tempHome(t);
+  const areteHome = path.join(home, ".arete");
+  fs.mkdirSync(areteHome);
+  const binary = path.join(home, "fake-a4");
+  fs.writeFileSync(binary, "#!/bin/sh\necho \"argv=$*\"\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(areteHome, "receipt.json"), JSON.stringify({ schemaVersion: 1, binary }));
+  let result;
+  const status = await a4.launch(["install", "stack", "ore", "--ts"], {
+    env: { PATH: process.env.PATH, ARETE_HOME: areteHome },
+    homedir: home,
+    stdio: "pipe",
+    onResult: (r) => { result = r; },
+  });
+  assert.equal(status, 0);
+  assert.equal(result.stdout, "argv=install stack ore --ts\n");
+});
+
 test("install: downloads, verifies and hands over to a4 self install --source npm", notWindows, async (t) => {
   const home = tempHome(t);
   const base = await serveRelease(t);
