@@ -1447,7 +1447,7 @@ fn composed_deployment_source(
         .collect::<Vec<_>>();
     let Some(locked) = dependents.first() else {
         anyhow::bail!(
-            "Composed stack '{name}' is not installed: `a4 up` deploys what arete.lock pins. Declare it under [dependencies.stacks] with `source = {{ workspace = \"{name}\" }}` (or run `a4 stack compose --name {name} ... --install`), run `a4 install`, then deploy it"
+            "Composed stack '{name}' is not installed: `a4 up` deploys what arete.lock pins. Declare it under [dependencies.stacks] with `source = {{ workspace = \"{name}\" }}` (or run `a4 stack compose --name {name} ... --install --ts`, or `--rust`/`--python`), run `a4 install`, then deploy it"
         );
     };
     let directory = crate::project::composition::composition_dir(&manifest.root, name);
