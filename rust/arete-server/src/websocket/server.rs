@@ -4235,7 +4235,12 @@ mod tests {
                 let view_index = Arc::new(thing_index());
                 let bus_manager = BusManager::new();
                 let (tx, rx) = mpsc::channel::<MutationBatch>(64);
-                tokio::spawn(
+                // Unconstrained, so Tokio's cooperative budget never makes the
+                // projector yield partway through a batch: a test on one
+                // worker then knows no subscriber runs until the whole batch
+                // is published (see
+                // `snapshot_rows_patches_and_catch_ups_carry_the_version`).
+                tokio::spawn(tokio::task::unconstrained(
                     Projector::new(
                         view_index.clone(),
                         bus_manager.clone(),
@@ -4245,7 +4250,7 @@ mod tests {
                         None,
                     )
                     .run(),
-                );
+                ));
                 let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let addr = listener.local_addr().unwrap();
                 let server = WebSocketServer::new(
@@ -4547,9 +4552,10 @@ mod tests {
         /// `_version`: a snapshot row, a forwarded patch, and a state
         /// subscription's catch-up, which sends the cached entity after the
         /// bus overwrote a patch.
-        // One worker: the projector applies a batch without yielding, so its
-        // second patch overwrites the first on the state bus before the
-        // subscriber reads either.
+        // One worker, and a projector the cooperative budget cannot interrupt:
+        // within a batch it awaits only locks no other task holds, so it
+        // publishes both changes before the subscriber can run, and the
+        // second overwrites the first on the state bus.
         #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
         async fn snapshot_rows_patches_and_catch_ups_carry_the_version() {
             let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
@@ -4577,57 +4583,37 @@ mod tests {
             let (_, patched) = version_of(&patch["data"]);
             assert!(patched > seeded, "{patched} after {seeded}");
 
-            // Two changes to the key in one batch. On one worker the projector
-            // publishes both before the subscriber reads, so the second
-            // overwrites the first and the subscriber catches up. Should the
-            // subscriber ever read in between, it gets both patches instead,
-            // so the batch is tried again.
+            // Two changes to the key in one batch.
+            let slot = harness
+                .slot
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mutation = |patch: Value| Mutation {
                 export: "Thing".to_string(),
                 key: json!("7"),
                 patch,
                 append: vec![],
             };
-            let mut latest = patched;
-            let mut caught_up = false;
-            for attempt in 0..5u64 {
-                let slot = harness
-                    .slot
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                harness
-                    .tx
-                    .send(MutationBatch::with_slot_context(
-                        vec![
-                            mutation(json!({"count": attempt + 2})),
-                            mutation(json!({"flag": attempt})),
-                        ]
-                        .into_iter()
-                        .collect(),
-                        SlotContext::new(slot, 0),
-                    ))
-                    .await
-                    .unwrap();
-                loop {
-                    let frame = next_frame(&mut state).await;
-                    assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
-                    let (frame_epoch, counter) = version_of(&frame["data"]);
-                    assert_eq!(frame_epoch, epoch);
-                    assert!(counter > latest, "{counter} after {latest}");
-                    latest = counter;
-                    if frame.get("seq").is_none() {
-                        // The catch-up: the cached entity, both changes in it.
-                        assert_eq!(frame["data"]["count"], attempt + 2);
-                        caught_up = true;
-                    }
-                    if frame["data"]["flag"] == attempt {
-                        break;
-                    }
-                }
-                if caught_up {
-                    break;
-                }
-            }
-            assert!(caught_up, "no batch overwrote a patch on the state bus");
+            harness
+                .tx
+                .send(MutationBatch::with_slot_context(
+                    vec![
+                        mutation(json!({"count": 2})),
+                        mutation(json!({"flag": true})),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    SlotContext::new(slot, 0),
+                ))
+                .await
+                .unwrap();
+
+            let catch_up = next_frame(&mut state).await;
+            assert_eq!(catch_up["op"], "patch", "unexpected frame: {catch_up}");
+            assert!(catch_up.get("seq").is_none(), "a catch-up: {catch_up}");
+            assert_eq!(catch_up["data"]["count"], 2);
+            assert_eq!(catch_up["data"]["flag"], true);
+            let (_, caught_up) = version_of(&catch_up["data"]);
+            assert!(caught_up > patched, "{caught_up} after {patched}");
 
             list.close(None).await.ok();
             state.close(None).await.ok();
