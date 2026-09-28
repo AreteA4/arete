@@ -238,17 +238,8 @@ enum Commands {
         /// Program install identifier when using `a4 install program <program>`
         install_name: Option<String>,
 
-        /// Generate a TypeScript SDK
-        #[arg(long, conflicts_with_all = ["rust", "python"])]
-        ts: bool,
-
-        /// Generate a Rust SDK
-        #[arg(long, conflicts_with_all = ["ts", "python"])]
-        rust: bool,
-
-        /// Generate a Python SDK
-        #[arg(long, conflicts_with_all = ["ts", "rust"])]
-        python: bool,
+        #[command(flatten)]
+        sdk_target: SdkTargetArgs,
 
         /// Output path (file for TypeScript, directory for Rust or Python)
         #[arg(short, long)]
@@ -375,6 +366,35 @@ enum SdkCommands {
 
     /// List all available stacks from arete.toml
     List,
+}
+
+// The one SDK target a saved dependency generates, recorded as its
+// `targets`. Without a flag the dependency uses `[sdk].targets`.
+#[derive(Args)]
+struct SdkTargetArgs {
+    /// Generate a TypeScript SDK
+    #[arg(long, conflicts_with_all = ["rust", "python"])]
+    ts: bool,
+
+    /// Generate a Rust SDK
+    #[arg(long, conflicts_with_all = ["ts", "python"])]
+    rust: bool,
+
+    /// Generate a Python SDK
+    #[arg(long, conflicts_with_all = ["ts", "rust"])]
+    python: bool,
+}
+
+impl SdkTargetArgs {
+    fn target(&self) -> Option<project::manifest::InstallTarget> {
+        match (self.ts, self.rust, self.python) {
+            (true, false, false) => Some(project::manifest::InstallTarget::TypeScript),
+            (false, true, false) => Some(project::manifest::InstallTarget::Rust),
+            (false, false, true) => Some(project::manifest::InstallTarget::Python),
+            (false, false, false) => None,
+            _ => unreachable!("clap rejects conflicting target flags"),
+        }
+    }
 }
 
 #[derive(Args)]
@@ -1098,9 +1118,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Install {
             target,
             install_name,
-            ts,
-            rust,
-            python,
+            sdk_target,
             output,
             package_name,
             crate_name,
@@ -1116,9 +1134,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         } => match target.as_deref() {
             None
                 if install_name.is_some()
-                    || ts
-                    || rust
-                    || python
+                    || sdk_target.target().is_some()
                     || output.is_some()
                     || package_name.is_some()
                     || crate_name.is_some()
@@ -1170,15 +1186,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                             ));
                         }
                     };
-                    let selected_target = match (ts, rust, python) {
-                        (true, false, false) => {
-                            Some(project::manifest::InstallTarget::TypeScript)
-                        }
-                        (false, true, false) => Some(project::manifest::InstallTarget::Rust),
-                        (false, false, true) => Some(project::manifest::InstallTarget::Python),
-                        (false, false, false) => None,
-                        _ => unreachable!("clap rejects conflicting target flags"),
-                    };
+                    let selected_target = sdk_target.target();
                     if no_save {
                         if exact || allow_outside_project {
                             return Err(anyhow::anyhow!(
@@ -1498,12 +1506,15 @@ mod tests {
             Some(Commands::Install {
                 target,
                 install_name,
-                ts,
+                sdk_target,
                 ..
             }) => {
                 assert_eq!(target.as_deref(), Some("program"));
                 assert_eq!(install_name.as_deref(), Some("spl-token"));
-                assert!(ts);
+                assert_eq!(
+                    sdk_target.target(),
+                    Some(project::manifest::InstallTarget::TypeScript)
+                );
             }
             _ => panic!("expected install command"),
         }
