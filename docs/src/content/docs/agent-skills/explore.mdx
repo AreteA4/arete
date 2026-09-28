@@ -92,6 +92,21 @@ a4 explore stack <ref> --json
 a4 explore program <ref> --json
 ```
 
+When you need only part of a descriptor, ask for that part. It keeps the output
+to a few KB:
+
+```bash
+a4 explore stack <ref> --summary --json
+a4 explore stack <ref> --operation <operation> --json
+a4 explore program <ref> --operation <operation> --json
+a4 explore program <ref> --section instructions --json
+```
+
+`--summary` lists a stack's entities and views, its Program SDKs, endpoints, and
+auth requirements. `--operation` shows one operation, and on a stack it
+searches the stack's Program SDKs. See [`a4 explore`](/cli/commands/#a4-explore)
+for every option.
+
 Prefer `a4 explore catalog` when starting from intent or filtering by capability
 mode. Prefer the explicit `stack` and `program` forms over legacy positional
 stack syntax in new automation.
