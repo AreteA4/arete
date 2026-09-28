@@ -247,6 +247,9 @@ jobs:
       - name: Type-check golden shared-IDL-type SDKs
         run: typescript/core/node_modules/.bin/tsc -p cli/tests/golden/shared-idl-types/tsconfig.json
 
+      - name: Type-check golden SDKs under tsc --init options, with declaration emit
+        run: typescript/core/node_modules/.bin/tsc -p cli/tests/golden/tsconfig.strict.json
+
       - name: Install TypeScript example dependencies
         working-directory: examples/ore-typescript
         run: npm install ../../typescript/core --no-save

@@ -7,7 +7,8 @@
 //! Regenerate with `A4_UPDATE_GOLDEN=1 cargo test -p a4-cli stack_name_golden`.
 //!
 //! The TypeScript goldens are type-checked in CI
-//! (`cli/tests/golden/stack-names/tsconfig.json`).
+//! (`cli/tests/golden/stack-names/tsconfig.json`), and with declaration emit
+//! under the options `tsc --init` writes (`cli/tests/golden/tsconfig.strict.json`).
 
 use super::*;
 use arete_artifacts::{
@@ -62,7 +63,7 @@ fn program(name: &str, program_id: &str) -> ProgramSpecArtifact {
     ProgramSpecArtifact::new(spec).expect("golden ProgramSpec artifact")
 }
 
-fn entity(name: &str) -> PortableEntity {
+pub(super) fn entity(name: &str) -> PortableEntity {
     let mut entity = PortableEntity::new(name, "id.address");
     entity.sections = serde_json::from_value(serde_json::json!([
         {

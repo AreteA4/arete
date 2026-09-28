@@ -1,0 +1,33 @@
+{
+  "//": "Type-checks the golden TypeScript SDKs, with declaration emit, under the options `tsc --init` writes (TypeScript 5.9), against the local @usearete/sdk build (typescript/core: npm ci && npm run build). Declarations go to ./dist (ignored).",
+  "compilerOptions": {
+    "module": "nodenext",
+    "target": "esnext",
+    "types": [],
+    "sourceMap": true,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "outDir": "./dist",
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "strict": true,
+    "jsx": "react-jsx",
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "noUncheckedSideEffectImports": true,
+    "moduleDetection": "force",
+    "skipLibCheck": true,
+    "paths": {
+      "@usearete/sdk": ["../../../typescript/core/dist/index.d.ts"],
+      "zod": ["../../../typescript/core/node_modules/zod/index.d.ts"]
+    }
+  },
+  "include": [
+    "installed-typescript/**/*.ts",
+    "stack-names/*/typescript/*.ts",
+    "stack-names/*/typescript-programs/*.ts",
+    "stack-names/*/typescript-composition/*.ts",
+    "shared-idl-types/*/typescript/*.ts"
+  ]
+}
