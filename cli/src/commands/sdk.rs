@@ -3069,8 +3069,38 @@ fn write_sdk_provenance_manifest_file(
     })?;
     // Validate and hash every declared payload file before pruning or writing metadata.
     // Source fingerprints, absolute checkout paths and root metadata are excluded.
+    let (tree_hash, content) = sdk_payload_identity(&output, manifest, &manifest.artifacts)?;
+    let mut manifest = manifest.clone();
+    manifest.sdk_output_tree_hash = Some(tree_hash);
+    manifest.artifacts.push(SDK_MANIFEST_FILE.to_string());
+    manifest.artifacts.sort();
+    prune_stale_sdk_artifacts(&output, output_dir, &manifest.artifacts)?;
+    output.write(SDK_MANIFEST_FILE, content)?;
+    let contents = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&manifest)
+            .context("Failed to serialize SDK provenance manifest")?
+    );
+    let path = output_dir.join(SDK_PROVENANCE_FILE);
+    output
+        .write(SDK_PROVENANCE_FILE, contents)
+        .with_context(|| {
+            format!(
+                "Failed to write SDK provenance manifest to {}",
+                path.display()
+            )
+        })
+}
+
+/// The `sdkOutputTreeHash` of the payload files `artifacts` under `output`,
+/// and the `sdk-manifest.json` content that describes them.
+fn sdk_payload_identity(
+    output: &Dir,
+    manifest: &SdkProvenanceManifestV2,
+    artifacts: &[String],
+) -> Result<(String, String)> {
     let mut payload = Vec::new();
-    for name in &manifest.artifacts {
+    for name in artifacts {
         arete_hash::validate_artifact_path(name)?;
         if matches!(name.as_str(), SDK_PROVENANCE_FILE | SDK_MANIFEST_FILE) {
             anyhow::bail!("Reserved SDK metadata path in generated payload: {name}");
@@ -3096,29 +3126,43 @@ fn write_sdk_provenance_manifest_file(
         sdk_output_tree_hash: &tree_hash,
         extensions: &manifest.extensions,
         program_extensions: &manifest.program_extensions,
-        artifacts: &manifest.artifacts,
+        artifacts,
     };
     let content = format!("{}\n", serde_json::to_string_pretty(&content_manifest)?);
-    let mut manifest = manifest.clone();
-    manifest.sdk_output_tree_hash = Some(tree_hash);
-    manifest.artifacts.push(SDK_MANIFEST_FILE.to_string());
-    manifest.artifacts.sort();
-    prune_stale_sdk_artifacts(&output, output_dir, &manifest.artifacts)?;
-    output.write(SDK_MANIFEST_FILE, content)?;
-    let contents = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&manifest)
-            .context("Failed to serialize SDK provenance manifest")?
-    );
-    let path = output_dir.join(SDK_PROVENANCE_FILE);
-    output
-        .write(SDK_PROVENANCE_FILE, contents)
-        .with_context(|| {
-            format!(
-                "Failed to write SDK provenance manifest to {}",
-                path.display()
-            )
-        })
+    Ok((tree_hash, content))
+}
+
+/// Checks that an SDK output holds exactly what was generated into it: its
+/// payload files hash to the `sdkOutputTreeHash` its provenance records, and
+/// its `sdk-manifest.json` is the one written with them.
+pub(crate) fn verify_generated_sdk_output(output_dir: &Path) -> Result<()> {
+    let output = Dir::open_ambient_dir(output_dir, ambient_authority())?;
+    let SdkProvenanceManifest::V2(manifest) =
+        parse_sdk_provenance_manifest(&output.read_to_string(SDK_PROVENANCE_FILE)?)?
+    else {
+        anyhow::bail!("its provenance records no content hash");
+    };
+    let recorded = manifest
+        .sdk_output_tree_hash
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("its provenance records no content hash"))?;
+    let payload = manifest
+        .artifacts
+        .iter()
+        .filter(|name| name.as_str() != SDK_MANIFEST_FILE)
+        .cloned()
+        .collect::<Vec<_>>();
+    let (tree_hash, content) = sdk_payload_identity(&output, &manifest, &payload)
+        .context("its files are not the ones generated")?;
+    if tree_hash != recorded {
+        anyhow::bail!("its files differ from the ones generated");
+    }
+    if payload.len() != manifest.artifacts.len()
+        && output.read_to_string(SDK_MANIFEST_FILE)? != content
+    {
+        anyhow::bail!("its {SDK_MANIFEST_FILE} differs from the one generated");
+    }
+    Ok(())
 }
 
 fn is_removable_stale_sdk_artifact(output: &Dir, relative: &Path) -> bool {
