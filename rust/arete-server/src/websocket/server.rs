@@ -4577,37 +4577,57 @@ mod tests {
             let (_, patched) = version_of(&patch["data"]);
             assert!(patched > seeded, "{patched} after {seeded}");
 
-            // Two changes to the key in one batch.
-            let slot = harness
-                .slot
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Two changes to the key in one batch. On one worker the projector
+            // publishes both before the subscriber reads, so the second
+            // overwrites the first and the subscriber catches up. Should the
+            // subscriber ever read in between, it gets both patches instead,
+            // so the batch is tried again.
             let mutation = |patch: Value| Mutation {
                 export: "Thing".to_string(),
                 key: json!("7"),
                 patch,
                 append: vec![],
             };
-            harness
-                .tx
-                .send(MutationBatch::with_slot_context(
-                    vec![
-                        mutation(json!({"count": 2})),
-                        mutation(json!({"flag": true})),
-                    ]
-                    .into_iter()
-                    .collect(),
-                    SlotContext::new(slot, 0),
-                ))
-                .await
-                .unwrap();
-
-            let catch_up = next_frame(&mut state).await;
-            assert_eq!(catch_up["op"], "patch", "unexpected frame: {catch_up}");
-            assert!(catch_up.get("seq").is_none(), "a catch-up: {catch_up}");
-            assert_eq!(catch_up["data"]["count"], 2);
-            assert_eq!(catch_up["data"]["flag"], true);
-            let (_, caught_up) = version_of(&catch_up["data"]);
-            assert!(caught_up > patched, "{caught_up} after {patched}");
+            let mut latest = patched;
+            let mut caught_up = false;
+            for attempt in 0..5u64 {
+                let slot = harness
+                    .slot
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                harness
+                    .tx
+                    .send(MutationBatch::with_slot_context(
+                        vec![
+                            mutation(json!({"count": attempt + 2})),
+                            mutation(json!({"flag": attempt})),
+                        ]
+                        .into_iter()
+                        .collect(),
+                        SlotContext::new(slot, 0),
+                    ))
+                    .await
+                    .unwrap();
+                loop {
+                    let frame = next_frame(&mut state).await;
+                    assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+                    let (frame_epoch, counter) = version_of(&frame["data"]);
+                    assert_eq!(frame_epoch, epoch);
+                    assert!(counter > latest, "{counter} after {latest}");
+                    latest = counter;
+                    if frame.get("seq").is_none() {
+                        // The catch-up: the cached entity, both changes in it.
+                        assert_eq!(frame["data"]["count"], attempt + 2);
+                        caught_up = true;
+                    }
+                    if frame["data"]["flag"] == attempt {
+                        break;
+                    }
+                }
+                if caught_up {
+                    break;
+                }
+            }
+            assert!(caught_up, "no batch overwrote a patch on the state bus");
 
             list.close(None).await.ok();
             state.close(None).await.ok();
