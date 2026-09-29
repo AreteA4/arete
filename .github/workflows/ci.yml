@@ -97,6 +97,17 @@ jobs:
       - name: Syntax-check install.sh (POSIX sh)
         run: sh -n docs/public/install.sh
 
+      # Release Recovery rejects a rust_toolchain input that differs from
+      # rust-toolchain.toml, so its default must move with every toolchain bump.
+      - name: Check Release Recovery defaults to the pinned Rust toolchain
+        run: |
+          pinned="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          default="$(yq -r '.on.workflow_dispatch.inputs.rust_toolchain.default' .github/workflows/release-recovery.yml)"
+          if [ "$default" != "$pinned" ]; then
+            echo "release-recovery.yml defaults rust_toolchain to $default, but rust-toolchain.toml pins $pinned"
+            exit 1
+          fi
+
   npm-cli-wrapper:
     name: npm CLI Wrapper
     runs-on: ubuntu-latest

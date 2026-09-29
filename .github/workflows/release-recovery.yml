@@ -12,9 +12,9 @@ on:
         required: true
         type: string
       rust_toolchain:
-        description: Rust toolchain used to build recovery artifacts
+        description: Rust toolchain used to build recovery artifacts (must match rust-toolchain.toml when the source has one)
         required: true
-        default: 1.97.0
+        default: 1.98.0
         type: string
       publish:
         description: Publish crates, upload assets, and publish missing npm packages
@@ -61,7 +61,11 @@ jobs:
           # is installed, so the input must name it. Older sources have no file
           # and build with the input itself.
           if [ -f rust-toolchain.toml ]; then
-            test "$RUST_TOOLCHAIN" = "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+            pinned="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+            if [ "$RUST_TOOLCHAIN" != "$pinned" ]; then
+              echo "rust_toolchain $RUST_TOOLCHAIN does not match rust-toolchain.toml ($pinned) at this source"
+              exit 1
+            fi
           fi
 
       - name: Install Rust toolchain
