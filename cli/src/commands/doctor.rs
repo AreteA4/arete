@@ -13,7 +13,7 @@ use colored::Colorize;
 use serde::Serialize;
 
 use crate::agents::agents_md::{self, BlockState};
-use crate::agents::detect::{detect, Detection};
+use crate::agents::detect::{detect, Detection, How};
 use crate::agents::mcp_config::{self, McpState, Scope};
 use crate::agents::skills;
 use crate::agents::{find_on_path, read_optional, Env};
@@ -114,19 +114,25 @@ pub fn aggregate(checks: &[Check]) -> Status {
     }
 }
 
+/// Fix for a project config's portable `a4` that isn't on PATH. It names a
+/// machine setting; the writers leave the shared file alone.
+const NOT_ON_PATH_FIX: &str = "put a4 on PATH (open a new shell after installing), then: a4 doctor";
+
+/// Whether `--fix` re-runs the writers for `check`: a failing agent check,
+/// except one only a PATH change can clear.
+fn is_fixable(check: &Check) -> bool {
+    check.id.starts_with("agents.")
+        && matches!(check.status, Status::Warn | Status::Fail)
+        && check.fix.as_deref() != Some(NOT_ON_PATH_FIX)
+}
+
 pub fn run(args: DoctorArgs, config_path: &str, json: bool) -> Result<()> {
     let env = Env::from_process(init::project_root(config_path));
     let config = Path::new(config_path);
     let mut checks = run_checks(&env, config);
 
     if args.fix {
-        let fixable: Vec<&Check> = checks
-            .iter()
-            .filter(|check| {
-                check.id.starts_with("agents.")
-                    && matches!(check.status, Status::Warn | Status::Fail)
-            })
-            .collect();
+        let fixable: Vec<&Check> = checks.iter().filter(|check| is_fixable(check)).collect();
         if fixable.is_empty() {
             eprintln!("{} Nothing to fix.", "→".blue().bold());
         } else {
@@ -136,7 +142,10 @@ pub fn run(args: DoctorArgs, config_path: &str, json: bool) -> Result<()> {
                 name: None,
                 global: false,
                 skills_ref: None,
-                selection: Selection::List(detect(&env).ids()),
+                // Agents found only in the home directory are not set up in
+                // this project, so their checks never fail and --fix leaves
+                // them alone.
+                selection: Selection::List(project_agent_ids(&detect(&env))),
                 manifest: false,
                 agents_md: fixable.iter().any(|check| {
                     matches!(
@@ -950,6 +959,38 @@ fn net_docs_mcp(env: &Env) -> Check {
     }
 }
 
+/// Detected agents with a project or environment signal: the ones this
+/// project uses.
+fn project_agent_ids(detection: &Detection) -> Vec<String> {
+    detection
+        .agents
+        .iter()
+        .filter(|agent| agent.how != How::Home)
+        .map(|agent| agent.id.clone())
+        .collect()
+}
+
+/// A context file `agent` reads is missing or lacks AGENTS.md. For an agent
+/// found only in the home directory this is information: `--fix` leaves
+/// such agents alone, so a warning would outlive the fix.
+fn context_check(detection: &Detection, agent: &str, id: &str, detail: &str) -> Check {
+    let home_only = detection
+        .agents
+        .iter()
+        .any(|detected| detected.id == agent && detected.how == How::Home);
+    if home_only {
+        Check::info(
+            id,
+            format!("{detail} ({agent} is installed but not set up in this project)"),
+            Some(format!(
+                "a4 init --agents {agent} --no-manifest --no-skills --no-mcp"
+            )),
+        )
+    } else {
+        Check::warn(id, detail, Some("a4 doctor --fix".to_string()))
+    }
+}
+
 fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
     let mut checks = Vec::new();
     let detected: Vec<String> = detection
@@ -970,6 +1011,9 @@ fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
     let command = mcp_config::command_from_receipt();
     for agent in &detection.agents {
         let id = agent.id.as_str();
+        // Installed on this machine, but with no sign of use in this project.
+        let home_only = agent.how == How::Home;
+        let not_set_up = format!("{id} is installed but not set up in this project");
         // agents.<id>.mcp
         let check_id = format!("agents.{id}.mcp");
         let (scope, state) = match mcp_config::check(env, id, Scope::Project, &command) {
@@ -981,8 +1025,18 @@ fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
         };
         checks.push(match (scope, state) {
             (_, McpState::Ok) => Check::ok(&check_id, "arete + arete-docs servers configured"),
+            (Scope::Project, McpState::Missing(detail)) if home_only => Check::info(
+                &check_id,
+                format!("{detail} ({not_set_up})"),
+                Some(format!(
+                    "a4 init --agents {id} --no-manifest --no-agents-md --no-skills"
+                )),
+            ),
             (Scope::Project, McpState::Missing(detail)) => {
                 Check::warn(&check_id, detail, Some("a4 doctor --fix".to_string()))
+            }
+            (_, McpState::NotOnPath(detail)) => {
+                Check::warn(&check_id, detail, Some(NOT_ON_PATH_FIX.to_string()))
             }
             (Scope::Global, McpState::Missing(detail)) => Check::info(
                 &check_id,
@@ -1010,6 +1064,12 @@ fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
                 Check::ok(
                     &check_id,
                     format!("{} installed", skills::SKILL_NAMES.join(", ")),
+                )
+            } else if home_only {
+                Check::info(
+                    &check_id,
+                    format!("missing skills: {} ({not_set_up})", missing.join(", ")),
+                    Some(format!("npx skills add AreteA4/skills --agent {name}")),
                 )
             } else {
                 Check::warn(
@@ -1068,15 +1128,17 @@ fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
             Some(content) if agents_md::claude_md_ok(&content) => {
                 Check::ok("agents.claude-md", "CLAUDE.md imports @AGENTS.md")
             }
-            Some(_) => Check::warn(
+            Some(_) => context_check(
+                detection,
+                "claude-code",
                 "agents.claude-md",
                 "CLAUDE.md does not import @AGENTS.md",
-                Some("a4 doctor --fix".to_string()),
             ),
-            None => Check::warn(
+            None => context_check(
+                detection,
+                "claude-code",
                 "agents.claude-md",
                 "CLAUDE.md missing",
-                Some("a4 doctor --fix".to_string()),
             ),
         });
     }
@@ -1090,10 +1152,11 @@ fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
                 "agents.gemini-context",
                 ".gemini/settings.json context.fileName includes AGENTS.md",
             ),
-            _ => Check::warn(
+            _ => context_check(
+                detection,
+                "gemini-cli",
                 "agents.gemini-context",
                 ".gemini/settings.json context.fileName lacks AGENTS.md",
-                Some("a4 doctor --fix".to_string()),
             ),
         });
     }
@@ -1119,6 +1182,22 @@ fn root_cause(error: &anyhow::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fix_leaves_a_portable_a4_that_is_not_on_path_alone() {
+        let not_on_path = Check::warn(
+            "agents.claude-code.mcp",
+            ".mcp.json: `arete` server runs `a4`, which is not on PATH",
+            Some(NOT_ON_PATH_FIX.to_string()),
+        );
+        assert!(!is_fixable(&not_on_path));
+        let missing = Check::warn(
+            "agents.claude-code.mcp",
+            ".mcp.json missing",
+            Some("a4 doctor --fix".to_string()),
+        );
+        assert!(is_fixable(&missing));
+    }
 
     #[test]
     fn aggregate_status_prefers_fail_then_warn() {
@@ -1405,6 +1484,62 @@ mod tests {
         assert_eq!(json["checks"][0]["detail"], "0.13.0 (latest)");
         assert!(json["checks"][0]["fix"].is_null());
         assert_eq!(json["checks"][0].as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn agents_found_only_in_the_home_directory_are_information() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(root.join(".cursor")).unwrap();
+        std::fs::create_dir_all(home.join(".cursor")).unwrap();
+        std::fs::create_dir_all(home.join(".gemini")).unwrap();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let env = Env::new(&root, Some(home), &[]);
+        let detection = detect(&env);
+        assert_eq!(project_agent_ids(&detection), vec!["cursor".to_string()]);
+
+        let checks = agent_checks(&env, &detection);
+        let status = |id: &str| {
+            checks
+                .iter()
+                .find(|check| check.id == id)
+                .unwrap_or_else(|| panic!("{id}"))
+                .status
+        };
+        // Cursor has a project directory: its missing MCP config is a problem.
+        assert_eq!(status("agents.cursor.mcp"), Status::Warn);
+        // Gemini is only installed: nothing about this project is wrong.
+        assert_eq!(status("agents.gemini-cli.mcp"), Status::Info);
+        let gemini = checks
+            .iter()
+            .find(|check| check.id == "agents.gemini-cli.mcp")
+            .unwrap();
+        assert!(gemini.detail.contains("not set up in this project"));
+        assert_eq!(
+            gemini.fix.as_deref(),
+            Some("a4 init --agents gemini-cli --no-manifest --no-agents-md --no-skills")
+        );
+        let skills = checks
+            .iter()
+            .find(|check| check.id == "agents.gemini-cli.skills")
+            .expect("Gemini skills check should exist");
+        assert_eq!(skills.status, Status::Info);
+
+        // --fix skips home-only agents, so their context files are not
+        // warnings either: CLAUDE.md and the Gemini context setting.
+        assert_eq!(status("agents.claude-code.mcp"), Status::Info);
+        for id in ["agents.claude-md", "agents.gemini-context"] {
+            assert_eq!(status(id), Status::Info, "{id}");
+        }
+        let claude_md = checks
+            .iter()
+            .find(|check| check.id == "agents.claude-md")
+            .unwrap();
+        assert_eq!(
+            claude_md.fix.as_deref(),
+            Some("a4 init --agents claude-code --no-manifest --no-skills --no-mcp")
+        );
     }
 
     #[test]
