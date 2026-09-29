@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from arete import UNSET
-from arete.errors import SubscriptionError
+from arete.errors import AreteConnectionError, SubscriptionError
 from arete.store import Store
 from arete.subscription import SubscriptionRegistry
 from arete.views import (
@@ -419,6 +419,65 @@ class TestGetTimeout:
         )
         with pytest.raises(InitialDataTimeoutError):
             await asyncio.wait_for(views.ore_round.latest.get(), TIMEOUT)
+
+
+class TestGetConnectionFailure:
+    @pytest.mark.asyncio
+    async def test_raises_the_connection_error_instead_of_timing_out(self):
+        connection, _store, registry = make_env()
+        handle = ListViewHandle("Round/list", registry)
+
+        task = asyncio.create_task(handle.get(timeout=None))
+        await asyncio.sleep(0)
+        registry.handle_connection_state("error", "Authentication refused")
+
+        with pytest.raises(AreteConnectionError) as excinfo:
+            await asyncio.wait_for(task, TIMEOUT)
+        assert excinfo.value.code == "CONNECTION_ERROR"
+        assert excinfo.value.message == "Authentication refused"
+        assert connection.unsubscribed == [connection.subscribed[0].subscription_id]
+
+    @pytest.mark.asyncio
+    async def test_raises_at_once_while_failed_and_waits_again_after_a_restart(self):
+        connection, store, registry = make_env()
+        handle = ListViewHandle("Round/list", registry)
+        registry.handle_connection_state("error", "Authentication refused")
+
+        with pytest.raises(AreteConnectionError) as excinfo:
+            await asyncio.wait_for(handle.get(), TIMEOUT)
+        assert excinfo.value.code == "CONNECTION_ERROR"
+
+        registry.handle_connection_state("connecting")
+        task = asyncio.create_task(handle.get())
+        await asyncio.sleep(0)
+        feed(store, snapshot(connection.subscribed[-1].subscription_id,
+                             [("a", {"name": "round a"})], entity="Round/list"))
+        assert await asyncio.wait_for(task, TIMEOUT) == [{"name": "round a"}]
+
+    @pytest.mark.asyncio
+    async def test_still_reads_an_active_subscription_that_has_its_snapshot(self):
+        _connection, store, registry = make_env()
+        handle = ListViewHandle("Round/list", registry)
+        active = registry.subscribe({"view": "Round/list"})
+        feed(store, snapshot(active.subscription.subscription_id,
+                             [("a", {"name": "round a"})], entity="Round/list"))
+        registry.handle_connection_state("error", "Connection lost")
+
+        assert await asyncio.wait_for(handle.get(), TIMEOUT) == [{"name": "round a"}]
+        active.release()
+
+    @pytest.mark.asyncio
+    async def test_a_disconnect_cancels_an_unbounded_read(self):
+        _connection, _store, registry = make_env()
+        state = StateViewHandle("OreRound/state", registry, key_fields=("round_id",))
+
+        task = asyncio.create_task(state.get(round_id=42, timeout=None))
+        await asyncio.sleep(0)
+        registry.clear()
+
+        with pytest.raises(AreteConnectionError) as excinfo:
+            await asyncio.wait_for(task, TIMEOUT)
+        assert excinfo.value.code == "CONNECTION_CANCELLED"
 
 
 class TestGetSync:
