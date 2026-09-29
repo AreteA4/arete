@@ -9,6 +9,7 @@ Read this reference when changing `arete.toml`, resolving `arete.lock`, or maint
 - Generated SDK outputs are owned through recorded provenance.
 - `[dependencies]` is for installable stack and program SDKs.
 - `[authoring]` is for local ProgramSpec and StackManifest artifacts. Do not put legacy `.stack.json` inputs there.
+- A registry stack dependency may carry `endpoints`, one `{ websocket, query }` entry per LiveSpec alias. It points the generated SDK at the user's own deployment of the stack, and `a4 up <alias>` writes it. Do not invent or hand-copy these URLs. Removing `endpoints` and reinstalling returns the SDK to the stack's delivered endpoints, which are empty for a definition-only stack.
 
 Inspect an unfamiliar project before changing it:
 
@@ -60,6 +61,16 @@ a4 remove program <alias>
 ```
 
 Use `--keep-output` only when the user wants to retain generated files after removing the dependency.
+
+## Deploy an Installed Stack
+
+An installed stack can be deployed by its alias. The deployment is an external mutation, so use `arete-deploy` and require the user's authorization:
+
+```bash
+a4 up <alias> --dry-run
+```
+
+A healthy production `a4 up <alias>` records the deployment's endpoints under the dependency and reinstalls, which changes `arete.toml`, `arete.lock`, and the generated SDK together. Commit them together.
 
 ## Boundaries
 

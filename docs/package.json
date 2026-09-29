@@ -10,6 +10,7 @@
     "lint": "prettier --check \"src/**/*.{astro,md,mdx,ts,js}\" \"*.{json,mjs}\"",
     "lint:fix": "prettier --write \"src/**/*.{astro,md,mdx,ts,js}\" \"*.{json,mjs}\"",
     "test": "node --test scripts/agent-http.test.mjs scripts/agent-skills.test.mjs scripts/docs-search.test.mjs",
+    "sync-skills": "bash scripts/sync-agent-skills.sh",
     "verify:agent": "node scripts/verify-agent-readiness.mjs"
   },
   "dependencies": {

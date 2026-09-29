@@ -2,8 +2,8 @@
 name: arete-deploy
 description: Publish Solana ProgramSpecs and plan, deploy, inspect, stop, archive, promote, or delete hosted Arete resources. Use for a4 program lifecycle, a4 up, deployment branches/previews, and hosted stack operations. This skill performs external mutations only when the user's request authorizes them; use arete-stack-authoring for local DSL and artifact work.
 metadata:
-  version: "1.0.0"
-  min-cli: ">=0.13.0"
+  version: "1.1.0"
+  min-cli: ">=0.23.0"
 ---
 
 # Publish and Operate Hosted Arete Resources
@@ -72,6 +72,19 @@ a4 up .arete/<Stack>.stack-manifest.json --preview --dry-run
 
 Run `a4 up --help` for the installed surface and read [references/deployment-lifecycle.md](references/deployment-lifecycle.md) before a live deploy, stop, or delete.
 
+## Deploy an Installed Stack
+
+A stack installed with `a4 install stack` deploys by its dependency alias. This is how a definition-only catalog stack (one with no hosted stream) gets a stream of its own:
+
+```bash
+a4 up <alias> --dry-run
+a4 up <alias>
+```
+
+`a4 up <alias>` deploys exactly the StackManifest, LiveSpecs, and ProgramSpecs `arete.lock` pins for that dependency; an `[authoring.stacks]` entry with the same name takes precedence. The lock must be fresh, so run `a4 install` first when it is not.
+
+After a healthy production deployment, `a4 up <alias>` also edits the project: it records the deployment's endpoints under that dependency in `arete.toml` and reinstalls, so the generated SDK connects to the new deployment. Treat that as part of the mutation the user authorized. Branch, preview, and `--json` deployments leave `arete.toml` unchanged. See [references/deployment-lifecycle.md](references/deployment-lifecycle.md#installed-stacks).
+
 ## Mutation Boundaries
 
 The following require explicit scope from the user:
@@ -95,5 +108,6 @@ After a mutation:
 - wait only when requested or needed for the requested outcome, using bounded status polling;
 - inspect final admission, build, deployment, endpoint, and health state;
 - report branch/preview identity and returned endpoints without exposing credentials;
+- for an installed stack, confirm `arete.toml` records the returned endpoints and the regenerated SDK uses them, or report why `a4 up` did not record them;
 - distinguish a submitted operation from a ready deployment;
 - do not silently clean up a failed resource if deletion/archive was not requested.

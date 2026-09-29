@@ -42,6 +42,8 @@ a4 stack compose \
 
 Use stable aliases. `--selected-view` is an exact ordered allowlist; omit it only when every view should be exposed. Run `a4 stack compose --help` for current repeatable flag syntax.
 
+With `--output`, the command writes a StackManifest. A StackManifest lists ProgramSpecs, not program SDKs. To get each program's SDK generated, or to compose from published stacks and program packages, omit `--output`: the command then writes an `[authoring.stacks]` entry in `arete.toml` that `a4 install` resolves (see "Compose From Published Parts First" in the skill).
+
 ## Validate Locally
 
 ```bash
