@@ -495,6 +495,10 @@ class SubscriptionRegistry:
         ))
         # Queries still waiting for their first snapshot are not failed above;
         # one-shot reads learn about the failure here instead of timing out.
+        # The connection reports str(error), which already carries this code.
+        prefix = "[CONNECTION_ERROR] "
+        if message and message.startswith(prefix):
+            message = message[len(prefix):]
         self._connection_error = AreteConnectionError(
             message or "Connection failed", "CONNECTION_ERROR"
         )
