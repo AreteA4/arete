@@ -117,6 +117,9 @@ jobs:
       - name: Require the verified-tree marker to wait for every job
         run: bash ./scripts/check-verified-tree-needs.sh .github/workflows/ci.yml
 
+      - name: Test the verified-tree lookup the release gate uses
+        run: bash ./scripts/test-find-verified-tree.sh
+
   npm-cli-wrapper:
     name: npm CLI Wrapper
     runs-on: ubuntu-latest
