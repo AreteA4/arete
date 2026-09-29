@@ -31,20 +31,22 @@ pub fn command_from_receipt() -> String {
     }
 }
 
-/// Commands accepted for an existing `arete` server entry. A project config
-/// is often committed and shared across machines, so the portable `a4` is
-/// accepted there alongside the installed binary's path, as long as `a4`
-/// resolves on this PATH. (A GUI host's own PATH can't be checked from here.)
-fn accepted_commands<'a>(env: &Env, scope: Scope, command: &'a str) -> Vec<&'a str> {
-    let mut commands = vec![command];
-    let portable_resolves = env
-        .var("PATH")
+/// Whether the portable `a4` resolves on this PATH. (A GUI host's own PATH
+/// can't be checked from here.)
+fn portable_resolves(env: &Env) -> bool {
+    env.var("PATH")
         .and_then(|path| super::find_on_path(std::ffi::OsStr::new(path), PORTABLE_COMMAND))
-        .is_some();
-    if scope == Scope::Project && command != PORTABLE_COMMAND && portable_resolves {
-        commands.push(PORTABLE_COMMAND);
-    }
-    commands
+        .is_some()
+}
+
+/// Whether a project config's `arete` server runs the portable `a4`. Such a
+/// file is often committed and shared across machines, so it is checked and
+/// rewritten with `a4`, never with this machine's installed path.
+fn runs_portable_command(id: &str, format: Format, content: &str) -> bool {
+    let shapes = acceptable_shapes(id, PORTABLE_COMMAND, Scope::Project, true);
+    let candidates: Vec<&Value> = shapes.iter().map(|shape| &shape.arete).collect();
+    current_entries(format, content, shapes[0].top_key)
+        .is_ok_and(|(arete, _)| entry_matches(arete.as_ref(), &candidates))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -372,6 +374,9 @@ pub enum McpState {
     Ok,
     /// File missing or entries absent/different.
     Missing(String),
+    /// A project config runs the portable `a4`, which is not on this PATH.
+    /// The writer leaves it alone: the file is shared.
+    NotOnPath(String),
     Skipped(&'static str),
     Error(String),
 }
@@ -414,10 +419,11 @@ pub fn check(env: &Env, id: &str, scope: Scope, command: &str) -> McpState {
         Ok(None) => return McpState::Missing(format!("{shown} missing")),
         Err(error) => return McpState::Error(format!("{error:#}")),
     };
-    let shapes: Vec<Shape> = accepted_commands(env, scope, command)
-        .into_iter()
-        .flat_map(|command| acceptable_shapes(id, command, scope, true))
-        .collect();
+    let portable = scope == Scope::Project
+        && command != PORTABLE_COMMAND
+        && runs_portable_command(id, format, &content);
+    let command = if portable { PORTABLE_COMMAND } else { command };
+    let shapes = acceptable_shapes(id, command, scope, true);
     let top_key = shapes[0].top_key;
     match current_entries(format, &content, top_key) {
         Ok((arete, docs)) => {
@@ -430,6 +436,11 @@ pub fn check(env: &Env, id: &str, scope: Scope, command: &str) -> McpState {
                 &shapes.iter().map(|s| &s.docs).collect::<Vec<_>>(),
             );
             match (arete_ok, docs_ok) {
+                (true, true) if portable && !portable_resolves(env) => {
+                    McpState::NotOnPath(format!(
+                        "{shown}: `{ARETE_SERVER}` server runs `{PORTABLE_COMMAND}`, which is not on PATH"
+                    ))
+                }
                 (true, true) => McpState::Ok,
                 (false, true) => McpState::Missing(format!(
                     "{shown}: `{ARETE_SERVER}` server missing or different"
@@ -494,6 +505,15 @@ pub fn write(
         }
     };
     let file_exists = existing.is_some();
+    // A project config that runs the portable `a4` keeps it, even when `a4`
+    // is not on this PATH: the file is shared, and this machine's installed
+    // path would dirty it for everyone else.
+    let command = match existing.as_deref() {
+        Some(content) if scope == Scope::Project && runs_portable_command(id, format, content) => {
+            PORTABLE_COMMAND
+        }
+        _ => command,
+    };
     // Already correct in any acceptable shape: leave the file alone.
     if file_exists && check(env, id, scope, command) == McpState::Ok {
         return (ItemResult::new(item, Outcome::Unchanged, Some(shown)), None);
@@ -706,10 +726,13 @@ mod tests {
             let (result, _) = write(&env, id, Scope::Project, PORTABLE_COMMAND, false);
             assert_eq!(result.outcome, Outcome::Created, "{id}");
         }
-        let before: Vec<String> = [".mcp.json", "opencode.json", ".codex/config.toml"]
-            .iter()
-            .map(|file| fs::read_to_string(env.root.join(file)).unwrap())
-            .collect();
+        let read_all = || -> Vec<String> {
+            [".mcp.json", "opencode.json", ".codex/config.toml"]
+                .iter()
+                .map(|file| fs::read_to_string(env.root.join(file)).unwrap())
+                .collect()
+        };
+        let before = read_all();
 
         // With an installed binary, doctor accepts the committed `a4` and init
         // leaves it alone instead of writing a machine-specific path.
@@ -725,17 +748,44 @@ mod tests {
                 "{id}"
             );
         }
-        let after: Vec<String> = [".mcp.json", "opencode.json", ".codex/config.toml"]
-            .iter()
-            .map(|file| fs::read_to_string(env.root.join(file)).unwrap())
-            .collect();
-        assert_eq!(after, before);
+        assert_eq!(read_all(), before);
 
-        // Without `a4` on PATH the portable entry can't start: report it.
-        assert!(matches!(
-            check(&without_a4, "claude-code", Scope::Project, "/opt/a4"),
-            McpState::Missing(_)
-        ));
+        // Without `a4` on PATH (say, a4 run by its full path from a shell that
+        // lacks it) the portable entry can't start from here: doctor reports
+        // it, but init still leaves the shared file alone.
+        for id in ["claude-code", "opencode", "codex"] {
+            assert!(
+                matches!(
+                    check(&without_a4, id, Scope::Project, "/opt/a4"),
+                    McpState::NotOnPath(_)
+                ),
+                "{id}"
+            );
+            assert_eq!(
+                write(&without_a4, id, Scope::Project, "/opt/a4", false)
+                    .0
+                    .outcome,
+                Outcome::Unchanged,
+                "{id}"
+            );
+        }
+        assert_eq!(read_all(), before);
+
+        // Repairing the other server keeps the portable command too.
+        let mcp_json = env.root.join(".mcp.json");
+        fs::write(
+            &mcp_json,
+            r#"{ "mcpServers": { "arete": { "type": "stdio", "command": "a4", "args": ["mcp"] } } }"#,
+        )
+        .unwrap();
+        let (result, _) = write(&without_a4, "claude-code", Scope::Project, "/opt/a4", false);
+        assert_eq!(result.outcome, Outcome::Updated);
+        let parsed: Value = serde_json::from_str(&fs::read_to_string(&mcp_json).unwrap()).unwrap();
+        assert_eq!(parsed["mcpServers"]["arete"]["command"], PORTABLE_COMMAND);
+        assert_eq!(
+            parsed["mcpServers"]["arete-docs"],
+            json!({"type": "http", "url": DOCS_MCP_URL})
+        );
 
         // A user-scope config is not shared, so it still wants the installed
         // binary: GUI hosts do not inherit the shell PATH.

@@ -984,6 +984,14 @@ fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
             (Scope::Project, McpState::Missing(detail)) => {
                 Check::warn(&check_id, detail, Some("a4 doctor --fix".to_string()))
             }
+            (_, McpState::NotOnPath(detail)) => Check::warn(
+                &check_id,
+                detail,
+                Some(
+                    "put a4 on PATH (open a new shell after installing), then: a4 doctor"
+                        .to_string(),
+                ),
+            ),
             (Scope::Global, McpState::Missing(detail)) => Check::info(
                 &check_id,
                 format!("{detail} ({id} reads MCP config from the user scope only)"),
