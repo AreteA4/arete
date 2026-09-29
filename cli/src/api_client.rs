@@ -43,6 +43,10 @@ const DEFAULT_API_URL: &str = "http://localhost:3000";
 /// Default domain suffix for WebSocket URLs
 pub const DEFAULT_DOMAIN_SUFFIX: &str = "stack.arete.run";
 
+/// How long an optional lookup that only adds context to another command's
+/// output may take before it is skipped.
+const OPTIONAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Debug, Clone)]
 pub struct ApiClient {
     base_url: String,
@@ -1261,6 +1265,32 @@ impl ApiClient {
             .send()
             .context("Failed to send catalog entry request")?;
         Self::handle_response(response)
+    }
+
+    /// The knowledge document an active catalog entry publishes: for a
+    /// stack, entity and view summaries and curated field descriptions.
+    ///
+    /// Optional context, so every failure is `None`: no catalog entry, no
+    /// document, a registry that predates the route (404), a non-JSON body
+    /// or a transport error. The body is returned as raw JSON and read
+    /// leniently by the caller, since documents gain keys over time. A short
+    /// timeout keeps it from holding up the command it accompanies.
+    pub fn catalog_entry_knowledge(&self, kind: &str, slug: &str) -> Option<serde_json::Value> {
+        let response = self
+            .with_optional_auth(self.client.get(format!(
+                "{}/api/registry/v1/catalog/entries/{}/{}/knowledge",
+                self.base_url, kind, slug
+            )))
+            .timeout(OPTIONAL_REQUEST_TIMEOUT)
+            .send()
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        response
+            .json::<serde_json::Value>()
+            .ok()
+            .filter(serde_json::Value::is_object)
     }
 
     /// Concept and category vocabularies of the active catalog snapshot.

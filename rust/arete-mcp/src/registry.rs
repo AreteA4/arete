@@ -26,7 +26,9 @@
 //! every time the platform grows a field. The `explore_stack` and
 //! `explore_program` tools cut a summary, sections, views or one operation out
 //! of the full descriptor (see [`crate::descriptor`]) unless the caller asks
-//! for `full: true`, which returns these bytes unchanged.
+//! for `full: true`, which returns these bytes unchanged. `explore_stack` and
+//! `explore_stack_schema` also attach the curated field descriptions of the
+//! stack's catalog knowledge when it has one (see [`crate::stack_knowledge`]).
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -50,6 +52,10 @@ const INSTALL_CAPABILITIES: &str = "capabilities=managed-solana-gateway-v1";
 /// Artifact kinds accepted by `resolve_artifact`, mirroring the three
 /// `/api/registry/artifacts/{kind}/{hash}` routes.
 const ARTIFACT_KINDS: [&str; 3] = ["program-spec", "live-spec", "stack-manifest"];
+
+/// How long the optional knowledge lookup that accompanies a stack schema or
+/// summary may take before it is skipped.
+const OPTIONAL_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct RegistryClient {
@@ -159,6 +165,19 @@ impl RegistryClient {
             .await
     }
 
+    /// The knowledge document an active catalog entry publishes: for a
+    /// stack, entity and view summaries and curated field descriptions.
+    /// Registries that predate the route answer 404, like an entry without
+    /// a document; callers treat every failure as "no knowledge". Bounded by
+    /// a short timeout because it only ever adds context.
+    pub async fn catalog_entry_knowledge(&self, kind: &str, slug: &str) -> Result<String> {
+        let kind = catalog_kind(kind)?;
+        let slug = path_segment(slug, "slug")?;
+        let path = format!("/api/registry/v1/catalog/entries/{kind}/{slug}/knowledge");
+        self.send(&path, self.public_key(), Some(OPTIONAL_REQUEST_TIMEOUT))
+            .await
+    }
+
     /// Concept and category vocabularies of the active catalog snapshot.
     pub async fn catalog_vocabulary(&self) -> Result<String> {
         self.get("/api/registry/v1/catalog/vocabulary").await
@@ -226,6 +245,11 @@ impl RegistryClient {
     /// usefully, and agents comparing a hash-relevant artifact against the CLI
     /// would see a body the platform never sent.
     async fn get(&self, path: &str) -> Result<String> {
+        self.send(path, self.public_key(), None).await
+    }
+
+    /// The key [`RegistryClient::get`] attaches: see there.
+    fn public_key(&self) -> Option<String> {
         // Best-effort auth, but only ever to an Arete origin. `ARETE_API_URL` can
         // point anywhere, and `ARETE_API_KEY` (unlike the credentials file, which
         // is keyed by API URL) is not scoped to a destination — so attaching it
@@ -239,14 +263,13 @@ impl RegistryClient {
         // The empty target passed to `resolve` keeps a missing key non-fatal — it
         // is a hosted *stack* URL that makes absence an error, which is a `connect`
         // concern, not ours.
-        let key = if is_arete_origin(&self.base_url) {
+        if is_arete_origin(&self.base_url) {
             credentials::resolve(None, "")
                 .ok()
                 .and_then(|resolved| resolved.key)
         } else {
             None
-        };
-        self.send(path, key).await
+        }
     }
 
     /// Like [`RegistryClient::get`], but for the knowledge routes, where auth
@@ -261,14 +284,22 @@ impl RegistryClient {
             .ok()
             .and_then(|resolved| resolved.key);
         let key = knowledge_key(&self.base_url, resolved)?;
-        self.send(path, Some(key)).await
+        self.send(path, Some(key), None).await
     }
 
-    async fn send(&self, path: &str, key: Option<String>) -> Result<String> {
+    async fn send(
+        &self,
+        path: &str,
+        key: Option<String>,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<String> {
         let url = format!("{}{path}", self.base_url);
         let mut request = self.http.get(&url);
         if let Some(key) = key {
             request = request.bearer_auth(key);
+        }
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
         }
 
         let response = request
