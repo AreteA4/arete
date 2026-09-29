@@ -222,7 +222,6 @@ fn select(detection: &Detection, selection: &Selection) -> (Vec<String>, bool) {
         Selection::Detected => (detection.ids(), false),
         Selection::All => (AGENT_IDS.iter().map(|id| id.to_string()).collect(), false),
         Selection::None => (Vec::new(), false),
-        Selection::List(ids) if ids.is_empty() && detection.universal => (Vec::new(), true),
         Selection::List(ids) => (ids.clone(), false),
     }
 }
@@ -246,7 +245,15 @@ pub fn execute(env: &Env, config_path: &Path, plan: &InitPlan) -> Result<InitRep
     // agent credential. The file contains no secret and may safely travel
     // with the repository; a human opts up explicitly with --profile.
     let existing_auth_profile = crate::config::project_auth_profile_path(&env.root).exists();
-    if !plan.global && (fallback || !selected.is_empty() || existing_auth_profile) {
+    // Doctor represents detected project agents as an explicit list. A
+    // universal `.agents/` project therefore arrives as an empty list: it
+    // still needs the restricted auth default, but it must not enable the
+    // general fallback that also configures Claude-specific files.
+    let universal_project_repair =
+        detection.universal && matches!(&plan.selection, Selection::List(ids) if ids.is_empty());
+    if !plan.global
+        && (fallback || !selected.is_empty() || existing_auth_profile || universal_project_repair)
+    {
         results.push(write_auth_profile(env, plan.dry_run));
     }
 
@@ -405,14 +412,14 @@ mod tests {
     }
 
     #[test]
-    fn empty_doctor_selection_uses_the_universal_agent_fallback() {
+    fn empty_doctor_selection_does_not_select_an_unrelated_agent() {
         let detection = Detection {
             agents: Vec::new(),
             universal: true,
         };
         assert_eq!(
             select(&detection, &Selection::List(Vec::new())),
-            (Vec::new(), true)
+            (Vec::new(), false)
         );
     }
 

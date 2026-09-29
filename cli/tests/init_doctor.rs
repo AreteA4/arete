@@ -601,9 +601,11 @@ fn doctor_fix_writes_agent_profile_for_a_universal_agent_project() {
     assert!(output.status.success());
     assert!(!sb.root.join(".arete/auth.toml").exists());
     fs::create_dir_all(sb.root.join(".agents")).unwrap();
+    fs::remove_file(sb.root.join("AGENTS.md")).unwrap();
 
     let (doctor, _) = a4_json(&sb, &["doctor", "--json"]);
     assert_eq!(checks(&doctor)["project.auth-profile"]["status"], "warn");
+    assert_eq!(checks(&doctor)["agents.agents-md"]["status"], "warn");
 
     let (doctor, output) = a4_json(&sb, &["doctor", "--fix", "--json"]);
     assert!(
@@ -612,6 +614,8 @@ fn doctor_fix_writes_agent_profile_for_a_universal_agent_project() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(checks(&doctor)["project.auth-profile"]["status"], "ok");
+    assert_eq!(checks(&doctor)["agents.agents-md"]["status"], "ok");
+    assert!(!sb.root.join("CLAUDE.md").exists());
     assert_eq!(
         read(&sb, ".arete/auth.toml"),
         "default_profile = \"agent\"\n"
