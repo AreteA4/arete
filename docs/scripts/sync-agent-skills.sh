@@ -9,10 +9,13 @@ ref=${1:-${ARETE_SKILLS_REF:-main}}
 docs="$(cd "$(dirname "$0")/.." && pwd)"
 dest="$docs/public/.well-known/agent-skills"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+# Staged beside the checkout, not in $tmp: on the same filesystem each
+# replacement below is a rename, never a copy that can fail halfway.
+staged="$(mktemp -d "$docs/.agent-skills-staged.XXXXXX")"
+trap 'rm -rf "$tmp" "$staged"' EXIT
 
 names=(arete arete-streams arete-programs arete-stack-authoring arete-deploy)
-mkdir -p "$tmp/source" "$tmp/staged"
+mkdir -p "$tmp/source"
 curl -fsSL "https://codeload.github.com/AreteA4/skills/tar.gz/$ref" |
   tar -xz -C "$tmp/source" --strip-components=1
 
@@ -23,12 +26,12 @@ for name in "${names[@]}"; do
     echo "AreteA4/skills@$ref has no skills/$name/SKILL.md" >&2
     exit 1
   }
-  cp -R "$tmp/source/skills/$name" "$tmp/staged/$name"
+  cp -R "$tmp/source/skills/$name" "$staged/$name"
 done
 for name in "${names[@]}"; do
   rm -rf "${dest:?}/$name"
-  mv "$tmp/staged/$name" "$dest/$name"
+  mv "$staged/$name" "$dest/$name"
 done
 
-node "$docs/scripts/pack-agent-skills.mjs"
+node "$docs/scripts/pack-agent-skills.mjs" "$dest"
 git -C "$docs" status --short -- public/.well-known/agent-skills

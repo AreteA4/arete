@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, readFile, cp } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, cp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -34,8 +34,9 @@ test("well-known skill directories publish SKILL.md, not skill.md", async () => 
   }
 });
 
-test("packAgentSkills writes a v0.2 index with digest-verified archives", async () => {
+test("packAgentSkills writes a v0.2 index with digest-verified archives", async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), "arete-skills-"));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
   await cp(PUBLIC_SKILLS, tmp, { recursive: true });
   const index = await packAgentSkills(tmp);
 
@@ -75,11 +76,12 @@ test("packAgentSkills writes a v0.2 index with digest-verified archives", async 
   }
 });
 
-test("the published archives and index.json match the published skill trees", async () => {
+test("the published archives and index.json match the published skill trees", async (t) => {
   const published = JSON.parse(
     await readFile(join(PUBLIC_SKILLS, "index.json"), "utf8"),
   );
   const tmp = await mkdtemp(join(tmpdir(), "arete-skills-"));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
   await cp(PUBLIC_SKILLS, tmp, { recursive: true });
   const repacked = await packAgentSkills(tmp);
 
