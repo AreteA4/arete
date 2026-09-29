@@ -438,6 +438,16 @@ class TestGetConnectionFailure:
         assert connection.unsubscribed == [connection.subscribed[0].subscription_id]
 
     @pytest.mark.asyncio
+    async def test_keeps_a_message_that_happens_to_start_with_the_code(self):
+        _connection, _store, registry = make_env()
+        handle = ListViewHandle("Round/list", registry)
+        registry.handle_connection_state("error", "[CONNECTION_ERROR] upstream unavailable")
+
+        with pytest.raises(AreteConnectionError) as excinfo:
+            await asyncio.wait_for(handle.get(), TIMEOUT)
+        assert excinfo.value.message == "[CONNECTION_ERROR] upstream unavailable"
+
+    @pytest.mark.asyncio
     async def test_raises_at_once_while_failed_and_waits_again_after_a_restart(self):
         connection, store, registry = make_env()
         handle = ListViewHandle("Round/list", registry)

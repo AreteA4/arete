@@ -229,6 +229,24 @@ class TestConnectLifecycle:
         assert excinfo.value.message == "Failed to create WebSocket connection"
         await a4.disconnect()
 
+    async def test_get_keeps_a_fatal_server_message_as_sent(self):
+        factory = FakeConnectFactory()
+        a4 = await Arete.connect(make_stack(), connect_factory=factory)
+        pending = asyncio.create_task(a4.views.ore_round.latest.get(timeout=None))
+        await asyncio.sleep(0)
+        factory.sockets[0].push({
+            "type": "error",
+            "code": "internal-error",
+            "message": "[CONNECTION_ERROR] upstream unavailable",
+            "fatal": True,
+        })
+
+        with pytest.raises(AreteConnectionError) as excinfo:
+            await asyncio.wait_for(pending, TIMEOUT)
+        assert excinfo.value.code == "CONNECTION_ERROR"
+        assert excinfo.value.message == "[CONNECTION_ERROR] upstream unavailable"
+        await a4.disconnect()
+
     async def test_disconnect_cancels_a_pending_get(self):
         factory = FakeConnectFactory()
         a4 = await Arete.connect(make_stack(), connect_factory=factory)

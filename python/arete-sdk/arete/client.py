@@ -310,7 +310,9 @@ class Arete:
         self._registry = SubscriptionRegistry(self._connection, self._store)
         self._connection.on_frame(self._store.handle_frame)
         self._connection.on_connection_state_change(
-            lambda state, error=None: self._registry.handle_connection_state(state, error)
+            lambda state, error=None: self._registry.handle_connection_state(
+                state, error, self._connection.state_error
+            )
         )
         self._views = ViewsNamespace(
             self._registry, stack.views, initial_data_timeout

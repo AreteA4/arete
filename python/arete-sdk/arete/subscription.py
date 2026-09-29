@@ -484,7 +484,12 @@ class SubscriptionRegistry:
             return None
         return self._store.get_result(tracker.subscription.subscription_id)
 
-    def handle_connection_state(self, state: str, message: Optional[str] = None) -> None:
+    def handle_connection_state(
+        self,
+        state: str,
+        message: Optional[str] = None,
+        cause: Optional[AreteError] = None,
+    ) -> None:
         if state == "reconnecting":
             self._store.begin_reconnect()
         if state != "error":
@@ -495,10 +500,11 @@ class SubscriptionRegistry:
         ))
         # Queries still waiting for their first snapshot are not failed above;
         # one-shot reads learn about the failure here instead of timing out.
-        # The connection reports str(error), which already carries this code.
-        prefix = "[CONNECTION_ERROR] "
-        if message and message.startswith(prefix):
-            message = message[len(prefix):]
+        # ``message`` is str(cause) when the connection raised the failure
+        # itself, which already carries this code; a server's text is kept
+        # as sent.
+        if cause is not None and cause.code == "CONNECTION_ERROR":
+            message = cause.message
         self._connection_error = AreteConnectionError(
             message or "Connection failed", "CONNECTION_ERROR"
         )

@@ -156,6 +156,7 @@ class ConnectionManager:
         self._connect_factory = connect_factory or _default_connect
 
         self._state = "disconnected"
+        self._state_error: Optional[AreteError] = None
         self._ws: Optional[Any] = None
         self._run_task: Optional["asyncio.Task[None]"] = None
         self._closing = False
@@ -189,6 +190,12 @@ class ConnectionManager:
     @property
     def connection_state(self) -> str:
         return self._state
+
+    @property
+    def state_error(self) -> Optional[AreteError]:
+        """The error behind the current ``error`` state when the connection
+        raised it itself; state handlers only get its text."""
+        return self._state_error
 
     def is_connected(self) -> bool:
         return self._state == "connected" and self._ws is not None
@@ -343,7 +350,7 @@ class ConnectionManager:
                             continue
                         self._reject_connect_waiters(error)
                         return
-                    self._set_state("error", str(error))
+                    self._set_state("error", str(error), error)
                     self._reject_connect_waiters(error)
                     return
 
@@ -361,7 +368,7 @@ class ConnectionManager:
                             continue
                         self._reject_connect_waiters(error)
                         return
-                    self._set_state("error", str(error))
+                    self._set_state("error", str(error), error)
                     self._reject_connect_waiters(error)
                     return
 
@@ -668,8 +675,11 @@ class ConnectionManager:
             )
         return self._websocket_url
 
-    def _set_state(self, state: str, error: Optional[str] = None) -> None:
+    def _set_state(
+        self, state: str, error: Optional[str] = None, cause: Optional[AreteError] = None
+    ) -> None:
         self._state = state
+        self._state_error = cause
         for handler in list(self._state_handlers):
             handler(state, error)
 
