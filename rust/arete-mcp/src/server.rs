@@ -457,6 +457,14 @@ impl AreteMcp {
     }
 
     #[tool(
+        description = "List explicitly curated `serviceClass=starter` stacks using the existing Arete registry. These are the authenticated stacks eligible for an agent trial. Public stacks remain available regardless of service class; use `explore_stacks` to see them. This tool is read-only and never creates an account or changes trial state."
+    )]
+    async fn explore_starter_stacks(&self) -> Result<CallToolResult, McpError> {
+        self.registry_result(self.registry.list_starter_stacks().await)
+            .await
+    }
+
+    #[tool(
         description = "Describe one stack from its pinned install descriptor.\n\n\
                           By default returns a compact summary: entities with their \
                           subscribable view ids, the program SDKs the stack carries, \
@@ -845,7 +853,7 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Show the authenticated agent account, including its slug, status, and claim state. The API key is resolved from the environment or credentials file and is never returned."
+        description = "Show the authenticated agent account, including slug, status, plan, entitlement expiry, claim state, whether trial access is enabled, and starter-stack guidance. The API key is resolved from the environment or credentials file and is never returned."
     )]
     async fn account_status(&self) -> Result<CallToolResult, McpError> {
         match self.recovery.account_status().await {

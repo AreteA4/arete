@@ -4194,6 +4194,19 @@ mod tests {
     }
 
     #[test]
+    fn registry_list_item_without_service_class_defaults_to_standard() {
+        let item: RegistryStackItem = serde_json::from_value(serde_json::json!({
+            "name": "legacy-public",
+            "description": null,
+            "websocket_url": "wss://legacy-public.stack.arete.run",
+            "entities": ["Position"],
+            "visibility": "public"
+        }))
+        .expect("legacy registry item");
+        assert_eq!(item.service_class, "standard");
+    }
+
+    #[test]
     fn public_contract_dtos_reject_private_or_unknown_fields() {
         let mut build = serde_json::to_value(artifact_build_request(1)).unwrap();
         build["runtimeArtifactHash"] = json!("private");

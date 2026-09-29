@@ -200,6 +200,10 @@ enum Commands {
         #[arg(long)]
         vocabulary: bool,
 
+        /// Root stack list: filter registry entries to `starter` or `standard`
+        #[arg(long, value_parser = ["starter", "standard"])]
+        service_class: Option<String>,
+
         /// Program or stack: one operation, by semantic path
         /// (`transactions.mining.deployWithCheckpoint`), operation id, or raw instruction name
         #[arg(long, value_name = "ID")]
@@ -1070,6 +1074,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             limit,
             cursor,
             vocabulary,
+            service_class,
             operation,
             sections,
             summary,
@@ -1135,6 +1140,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     "--vocabulary cannot be combined with catalog search options"
                 ));
             }
+            let is_stack_list = target.is_none() && reference.is_none() && entity.is_none();
+            if service_class.is_some() && !is_stack_list {
+                return Err(anyhow::anyhow!(
+                    "--service-class applies only to the root `a4 explore` stack list"
+                ));
+            }
             match (target.as_deref(), reference.as_deref(), entity.as_deref()) {
             (Some("catalog"), None, None) if vocabulary => {
                 commands::explore::catalog_vocabulary(cli.json)
@@ -1158,7 +1169,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             (Some("catalog"), Some(_), None) => Err(anyhow::anyhow!(
                 "Usage: a4 explore catalog <program|stack> <slug>"
             )),
-            (None, None, None) => commands::explore::list(cli.json),
+            (None, None, None) => commands::explore::list(cli.json, service_class.as_deref()),
             (Some("programs"), None, None) => commands::explore::list_programs(cli.json),
             (Some("program"), Some(reference), None) => commands::explore::show_program(
                 reference,
@@ -1709,6 +1720,20 @@ mod tests {
     }
 
     #[test]
+    fn starter_filter_is_scoped_to_the_root_stack_list() {
+        let cli = Cli::try_parse_from(["a4", "explore", "--service-class", "starter"])
+            .expect("starter list should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Explore {
+                service_class: Some(ref class),
+                ..
+            }) if class == "starter"
+        ));
+        assert!(Cli::try_parse_from(["a4", "explore", "--service-class", "fast"]).is_err());
+    }
+
+    #[test]
     fn parse_program_list_and_program_explore() {
         for (args, expected_reference) in [
             (vec!["a4", "explore", "programs"], None),
@@ -2052,6 +2077,17 @@ mod tests {
             (
                 &["a4", "explore", "stack", "ore", "Position", "--summary"][..],
                 "entity drill-down",
+            ),
+            (
+                &[
+                    "a4",
+                    "explore",
+                    "stack",
+                    "ore",
+                    "--service-class",
+                    "starter",
+                ][..],
+                "--service-class applies only",
             ),
         ] {
             let cli = Cli::try_parse_from(args).expect("parses");

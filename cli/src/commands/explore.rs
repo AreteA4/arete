@@ -31,6 +31,16 @@ struct ExploreStackListOutput {
     registry: Vec<RegistryStackItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     user_stacks: Option<Vec<UserStackItem>>,
+    discovery: StackDiscoveryGuidance,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StackDiscoveryGuidance {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requested_service_class: Option<String>,
+    public_stacks_remain_available: bool,
+    guidance: &'static str,
 }
 
 #[derive(Serialize)]
@@ -294,9 +304,25 @@ struct StackDescriptorIdentity {
     programs: Vec<(String, String, String)>,
 }
 
-pub fn list(json: bool) -> Result<()> {
+fn filter_registry_stacks(
+    stacks: Vec<RegistryStackItem>,
+    service_class: Option<&str>,
+) -> Result<Vec<RegistryStackItem>> {
+    let Some(service_class) = service_class else {
+        return Ok(stacks);
+    };
+    if !matches!(service_class, "starter" | "standard") {
+        anyhow::bail!("service class must be `starter` or `standard`");
+    }
+    Ok(stacks
+        .into_iter()
+        .filter(|stack| stack.service_class == service_class)
+        .collect())
+}
+
+pub fn list(json: bool, service_class: Option<&str>) -> Result<()> {
     let client = ApiClient::new()?;
-    let registry_stacks = client.list_registry()?;
+    let registry_stacks = filter_registry_stacks(client.list_registry()?, service_class)?;
     let user_stacks = client.list_specs().ok();
     let user_deployments = if user_stacks.is_some() {
         client.list_deployments(100).ok()
@@ -332,13 +358,18 @@ pub fn list(json: bool) -> Result<()> {
                 schema_version: EXPLORE_SCHEMA_VERSION,
                 registry: registry_stacks,
                 user_stacks: user_items,
+                discovery: StackDiscoveryGuidance {
+                    requested_service_class: service_class.map(str::to_string),
+                    public_stacks_remain_available: true,
+                    guidance: "serviceClass=starter marks trial-eligible authenticated stacks; public stacks remain available regardless of service class.",
+                },
             })?
         );
         return Ok(());
     }
 
     if !registry_stacks.is_empty() {
-        println!("\n{}", "Public Registry".bold());
+        println!("\n{}", "Stack Registry".bold());
         println!("{}", "-".repeat(60).dimmed());
         for stack in &registry_stacks {
             println!(
@@ -381,8 +412,19 @@ pub fn list(json: bool) -> Result<()> {
     }
 
     if registry_stacks.is_empty() {
-        println!("{}", "No stacks found in registry.".yellow());
+        let suffix = service_class
+            .map(|class| format!(" for service class `{class}`"))
+            .unwrap_or_default();
+        println!(
+            "{}",
+            format!("No stacks found in registry{suffix}.").yellow()
+        );
     }
+    println!(
+        "{}",
+        "Trial guidance: serviceClass=starter marks trial-eligible authenticated stacks; public stacks remain available regardless of service class."
+            .dimmed()
+    );
     println!(
         "{}",
         "Tip: Run `a4 explore stack <ref>` for deployment-pinned details".dimmed()
@@ -2441,6 +2483,37 @@ mod tests {
     use super::*;
     use crate::api_client::{DeploymentLiveStatus, DeploymentPhase, DeploymentStatus};
     use serde_json::json;
+
+    fn registry_stack(name: &str, visibility: &str, service_class: &str) -> RegistryStackItem {
+        RegistryStackItem {
+            name: name.to_string(),
+            description: None,
+            websocket_url: format!("wss://{name}.stack.arete.run"),
+            entities: vec!["Position".to_string()],
+            visibility: Some(visibility.to_string()),
+            service_class: service_class.to_string(),
+        }
+    }
+
+    #[test]
+    fn stack_list_service_class_filter_is_optional_and_exact() {
+        let stacks = vec![
+            registry_stack("public-feed", "public", "standard"),
+            registry_stack("trial-feed", "global", "starter"),
+        ];
+        assert_eq!(
+            filter_registry_stacks(stacks.clone(), None).unwrap().len(),
+            2,
+            "the default list must not hide standard or public resources"
+        );
+        let starter = filter_registry_stacks(stacks.clone(), Some("starter")).unwrap();
+        assert_eq!(starter.len(), 1);
+        assert_eq!(starter[0].name, "trial-feed");
+        let standard = filter_registry_stacks(stacks, Some("standard")).unwrap();
+        assert_eq!(standard.len(), 1);
+        assert_eq!(standard[0].name, "public-feed");
+        assert!(filter_registry_stacks(Vec::new(), Some("fast")).is_err());
+    }
 
     #[test]
     fn catalog_rendering_shows_install_ref_targets_capabilities_and_delivery() {
