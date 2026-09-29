@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.25.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.25.0...arete-interpreter-v0.25.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* generated TypeScript compiles under tsc --init defaults ([b8aba03](https://github.com/AreteA4/arete/commit/b8aba03d1436be844697ac3d016cdf1e5d894f2d))
+* **interpreter:** let semantic decimals overrides be passed on as undefined ([5976ec2](https://github.com/AreteA4/arete/commit/5976ec232c887c058b677c942d02ce448191a45a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.25.0 to 0.25.1
+
 ## [0.25.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.24.0...arete-interpreter-v0.25.0) (2026-09-28)
 
 

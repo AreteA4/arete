@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.25.1](https://github.com/AreteA4/arete/compare/arete-server-v0.25.0...arete-server-v0.25.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* **server:** resend the fields forwarded patches set in a catch-up ([87e436d](https://github.com/AreteA4/arete/commit/87e436db82f43c5b2c10d07de1fd20cb0c0c8997))
+* **server:** send only changed fields when a state subscriber catches up ([73e020f](https://github.com/AreteA4/arete/commit/73e020fea8d1bb5fb73136e2f24f4077ba2fb9f5))
+* **server:** send only changed fields when a state subscriber catches up ([5f8835d](https://github.com/AreteA4/arete/commit/5f8835d1e4c9dcea8355c360424999ea73f8ced4))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.25.0 to 0.25.1
+
 ## [0.25.0](https://github.com/AreteA4/arete/compare/arete-server-v0.24.0...arete-server-v0.25.0) (2026-09-28)
 
 
