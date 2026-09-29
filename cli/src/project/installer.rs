@@ -3457,9 +3457,14 @@ fn commit_install(
         Ok(journal) => journal,
         Err(error) => {
             // Nothing has moved yet, so the staging tree holds only generated
-            // output and no backups a recovery would need.
-            let _ = remove_journal(project_root);
-            let _ = fs::remove_dir_all(staging_root);
+            // output and no backups a recovery would need. The journal write is
+            // the last step, so no journal of this install exists either.
+            if let Err(cleanup) = fs::remove_dir_all(staging_root) {
+                return Err(error.context(format!(
+                    "the staging tree {} could not be removed ({cleanup}); delete it by hand",
+                    staging_root.display()
+                )));
+            }
             return Err(error);
         }
     };
@@ -3654,8 +3659,12 @@ fn write_journal(project_root: &Path, journal: &InstallJournal) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let temporary = path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
-    fs::write(&temporary, serde_json::to_vec_pretty(journal)?)?;
-    fs::rename(&temporary, path)?;
+    let written = fs::write(&temporary, serde_json::to_vec_pretty(journal)?)
+        .and_then(|()| fs::rename(&temporary, &path));
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.into());
+    }
     Ok(())
 }
 
