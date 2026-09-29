@@ -7,12 +7,69 @@ use anyhow::{anyhow, Context, Result};
 use arete_sdk::{ApiProblemV1, ReadyRecoveryActionV1};
 use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use crate::credentials;
 
 const DEFAULT_API_URL: &str = "https://api.arete.run";
 const DEFAULT_APP_ORIGIN: &str = "https://arete.run";
 const MAX_RECOVERY_BODY_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountStatus {
+    pub schema_version: u8,
+    pub slug: String,
+    pub display_name: String,
+    pub status: String,
+    pub created_at: String,
+    pub last_seen_at: Option<String>,
+    pub claim_state: String,
+    pub plan: Option<String>,
+    pub entitlement_expires_at: Option<String>,
+    pub trial_access_enabled: bool,
+    pub starter_guidance: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AccountStatusWire {
+    slug: String,
+    #[serde(alias = "displayName")]
+    display_name: String,
+    status: String,
+    #[serde(alias = "createdAt")]
+    created_at: String,
+    #[serde(default, alias = "lastSeenAt")]
+    last_seen_at: Option<String>,
+    #[serde(rename = "claimState", alias = "claim_state")]
+    claim_state: String,
+    #[serde(default)]
+    plan: Option<String>,
+    #[serde(rename = "entitlementExpiresAt", default)]
+    entitlement_expires_at: Option<String>,
+    #[serde(rename = "trialAccessEnabled", default)]
+    trial_access_enabled: bool,
+    #[serde(rename = "starterGuidance", default)]
+    starter_guidance: Option<String>,
+}
+
+impl From<AccountStatusWire> for AccountStatus {
+    fn from(value: AccountStatusWire) -> Self {
+        Self {
+            schema_version: 1,
+            slug: value.slug,
+            display_name: value.display_name,
+            status: value.status,
+            created_at: value.created_at,
+            last_seen_at: value.last_seen_at,
+            claim_state: value.claim_state,
+            plan: value.plan,
+            entitlement_expires_at: value.entitlement_expires_at,
+            trial_access_enabled: value.trial_access_enabled,
+            starter_guidance: value.starter_guidance,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct RecoveryApiError {
@@ -57,8 +114,9 @@ impl RecoveryClient {
         }
     }
 
-    pub async fn account_status(&self) -> Result<serde_json::Value> {
-        self.request_json(Method::GET, "/api/agents/me").await
+    pub async fn account_status(&self) -> Result<AccountStatus> {
+        let status: AccountStatusWire = self.request_json(Method::GET, "/api/agents/me").await?;
+        Ok(status.into())
     }
 
     pub async fn create_claim_link(&self) -> Result<ReadyRecoveryActionV1> {
@@ -205,5 +263,33 @@ mod tests {
             default_app_origin("https://api.arete.run").as_str(),
             "https://arete.run/"
         );
+    }
+
+    #[test]
+    fn account_status_reports_trial_fields_and_defaults_old_responses_safely() {
+        let current: AccountStatus = serde_json::from_str::<AccountStatusWire>(
+            r#"{"slug":"agent-1","display_name":"Agent One","status":"active","created_at":"2026-09-29T00:00:00Z","last_seen_at":null,"claimState":"unclaimed","plan":"agent_trial","entitlementExpiresAt":"2026-10-06T00:00:00Z","trialAccessEnabled":true,"starterGuidance":"Use starter stacks; public stacks remain available."}"#,
+        )
+        .unwrap()
+        .into();
+        let value = serde_json::to_value(&current).unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["plan"], "agent_trial");
+        assert_eq!(value["trialAccessEnabled"], true);
+        assert_eq!(value["claimState"], "unclaimed");
+        assert!(value["starterGuidance"]
+            .as_str()
+            .unwrap()
+            .contains("public stacks"));
+
+        let old: AccountStatus = serde_json::from_str::<AccountStatusWire>(
+            r#"{"slug":"agent-1","display_name":"Agent One","status":"active","created_at":"2026-09-29T00:00:00Z","claimState":"unclaimed"}"#,
+        )
+        .unwrap()
+        .into();
+        assert_eq!(old.plan, None);
+        assert_eq!(old.entitlement_expires_at, None);
+        assert!(!old.trial_access_enabled);
+        assert_eq!(old.starter_guidance, None);
     }
 }

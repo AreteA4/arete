@@ -32,7 +32,7 @@
 
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use arete_sdk::ApiProblemV1;
 use serde_json::Value;
 
@@ -112,6 +112,13 @@ impl RegistryClient {
     /// List stacks. Public stacks always; global stacks too when a key resolves.
     pub async fn list_stacks(&self) -> Result<String> {
         self.get("/api/registry").await
+    }
+
+    /// List only explicitly curated starter stacks while keeping discovery on
+    /// the existing registry. Missing `serviceClass` is the legacy `standard`
+    /// default and is therefore never promoted into the trial set.
+    pub async fn list_starter_stacks(&self) -> Result<String> {
+        starter_stacks_response(&self.list_stacks().await?)
     }
 
     /// The pinned install descriptor for one stack — the exact identities
@@ -372,6 +379,38 @@ impl RegistryClient {
             .map_err(|e| anyhow!("registry returned invalid JSON for {path}: {e}"))?;
         Ok(body)
     }
+}
+
+fn starter_stacks_response(body: &str) -> Result<String> {
+    let stacks = serde_json::from_str::<Value>(body)
+        .map_err(|error| anyhow!("registry returned invalid stack list JSON: {error}"))?;
+    let Value::Array(stacks) = stacks else {
+        return Err(anyhow!("registry stack list must be a JSON array"));
+    };
+    let stacks = stacks
+        .into_iter()
+        .filter(|stack| {
+            stack
+                .get("serviceClass")
+                .and_then(Value::as_str)
+                .unwrap_or("standard")
+                == "starter"
+        })
+        .collect::<Vec<_>>();
+    let response = serde_json::to_string(&serde_json::json!({
+        "schemaVersion": 1,
+        "serviceClass": "starter",
+        "stacks": stacks,
+        "publicStacksRemainAvailable": true,
+        "guidance": "These are trial-eligible authenticated starter stacks. Public stacks remain available through explore_stacks regardless of service class.",
+    }))
+    .context("could not serialize starter stack discovery")?;
+    if response.len() > MAX_RESPONSE_BYTES {
+        return Err(anyhow!(
+            "starter stack discovery exceeded the safe response size limit"
+        ));
+    }
+    Ok(response)
 }
 
 /// Read a response body, aborting as soon as it exceeds [`MAX_RESPONSE_BYTES`].
@@ -711,6 +750,36 @@ fn truncate_for_error(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn starter_discovery_filters_explicit_starters_and_defaults_legacy_items_to_standard() {
+        let response = starter_stacks_response(
+            r#"[
+                {"name":"legacy-public","visibility":"public"},
+                {"name":"public-standard","visibility":"public","serviceClass":"standard"},
+                {"name":"trial-feed","visibility":"global","serviceClass":"starter"}
+            ]"#,
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["serviceClass"], "starter");
+        assert_eq!(value["stacks"].as_array().unwrap().len(), 1);
+        assert_eq!(value["stacks"][0]["name"], "trial-feed");
+        assert_eq!(value["publicStacksRemainAvailable"], true);
+        assert!(value["guidance"]
+            .as_str()
+            .unwrap()
+            .contains("explore_stacks"));
+    }
+
+    #[test]
+    fn starter_discovery_rejects_non_array_registry_responses() {
+        assert!(starter_stacks_response(r#"{"stacks":[]}"#)
+            .unwrap_err()
+            .to_string()
+            .contains("JSON array"));
+    }
 
     #[test]
     fn catalog_search_paths_are_bounded_and_encoded() {
