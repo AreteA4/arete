@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.26.0...arete-typescript-v0.27.0) (2026-09-29)
+
+
+### Features
+
+* isolate agent credentials and propagate recovery actions ([cf3716a](https://github.com/AreteA4/arete/commit/cf3716a5bb888a265b05e292bca4ae706844f893))
+
 ## [0.26.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.25.1...arete-typescript-v0.26.0) (2026-09-29)
 
 

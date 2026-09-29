@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## [0.27.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.26.0...a4-cli-v0.27.0) (2026-09-29)
+
+
+### Features
+
+* **cli:** make agent trial signup crash-safe ([d25850b](https://github.com/AreteA4/arete/commit/d25850bbb5281f0d687beca8304803713bdd6f1a))
+* **cli:** make agent trial signup crash-safe ([551abad](https://github.com/AreteA4/arete/commit/551abad73b376838b38cde37fc24ff0a02116e50))
+* **discovery:** guide agent trials to starter stacks ([a6a9d61](https://github.com/AreteA4/arete/commit/a6a9d617bf5ffc0143fc5953ec541bfe841c1bd9))
+* **discovery:** guide agent trials to starter stacks ([97883dc](https://github.com/AreteA4/arete/commit/97883dc21ee328a662befe24c8c3c06aa6a36a52))
+* isolate agent credentials and propagate recovery actions ([cf3716a](https://github.com/AreteA4/arete/commit/cf3716a5bb888a265b05e292bca4ae706844f893))
+
+
+### Bug Fixes
+
+* address agent credential recovery review ([c5cdd56](https://github.com/AreteA4/arete/commit/c5cdd569037701bdfb4a252401c826c9a842f1f4))
+* harden agent signup retries ([6a0ea0b](https://github.com/AreteA4/arete/commit/6a0ea0b6e7dfd050db71adb41b382fea25927c29))
+* preserve replaced agent credentials ([f9d0513](https://github.com/AreteA4/arete/commit/f9d0513c80e08100c9d77544e62ac68f54c1ef8f))
+* satisfy recovery error clippy checks ([04f58c0](https://github.com/AreteA4/arete/commit/04f58c0ebabb3bd5612099f2ea4792d87a218458))
+* scope universal agent repair ([b751ee7](https://github.com/AreteA4/arete/commit/b751ee7eb0b07f6cb282ab25f2df6611f79aa337))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.26.0 to 0.27.0
+    * arete-mcp bumped from 0.26.0 to 0.27.0
+
 ## [0.26.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.25.1...a4-cli-v0.26.0) (2026-09-29)
 
 
