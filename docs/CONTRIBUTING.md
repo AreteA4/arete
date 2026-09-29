@@ -111,6 +111,19 @@ We use Prettier to maintain a consistent style across all documentation files.
 | Check for issues | `npm run lint` |
 | Fix formatting | `npm run lint:fix` |
 
+## Agent Skills
+
+`public/.well-known/agent-skills/` serves the public Arete skills. Each skill has a
+directory tree, a `.tar.gz` archive, and an entry in `index.json`. The trees
+are copies of [AreteA4/skills](https://github.com/AreteA4/skills), so do not
+edit them here. Fix the skill upstream, then refresh the copies and review the
+diff:
+
+```bash
+npm run sync-skills            # main
+npm run sync-skills -- <ref>   # a tag or commit
+```
+
 ## General Workflow
 
 For the general contribution workflow (forking, branching, pull requests, and conventional commits), please refer to the main [CONTRIBUTING.md](../CONTRIBUTING.md) in the root of the repository.
