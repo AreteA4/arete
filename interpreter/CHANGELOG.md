@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.27.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.26.0...arete-interpreter-v0.27.0) (2026-09-29)
+
+
+### Miscellaneous Chores
+
+* **arete-interpreter:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.26.0 to 0.27.0
+
 ## [0.26.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.25.1...arete-interpreter-v0.26.0) (2026-09-29)
 
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.27.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.26.0...arete-mcp-v0.27.0) (2026-09-29)
+
+
+### Features
+
+* **discovery:** guide agent trials to starter stacks ([97883dc](https://github.com/AreteA4/arete/commit/97883dc21ee328a662befe24c8c3c06aa6a36a52))
+* isolate agent credentials and propagate recovery actions ([cf3716a](https://github.com/AreteA4/arete/commit/cf3716a5bb888a265b05e292bca4ae706844f893))
+
+
+### Bug Fixes
+
+* address agent credential recovery review ([c5cdd56](https://github.com/AreteA4/arete/commit/c5cdd569037701bdfb4a252401c826c9a842f1f4))
+* preserve MCP account status fields ([3134bed](https://github.com/AreteA4/arete/commit/3134beda351828c978423dfb7ba0bafc236f7a6d))
+
 ## [0.26.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.25.1...arete-mcp-v0.26.0) (2026-09-29)
 
 
