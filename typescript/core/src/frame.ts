@@ -1,5 +1,5 @@
 import { inflate } from 'pako';
-import type { SubscriptionQuery } from './types';
+import type { RecoveryAction, SubscriptionQuery, UsageLimit } from './types';
 
 export type FrameMode = 'state' | 'append' | 'list';
 export type FrameOp =
@@ -106,6 +106,8 @@ export interface ErrorFrame {
   replayWindow?: ReplayWindow;
   /** Present on `replay-lagged`: cursor of the last record delivered before the gap. */
   recoverFrom?: string;
+  usage?: UsageLimit;
+  action?: RecoveryAction;
 }
 
 export type Frame<T = unknown> =

@@ -14,16 +14,19 @@ import type {
   StackRelease,
   StackVersionRefusal,
   Subscription,
+  UsageLimit,
+  RecoveryAction,
   WebSocketFactoryInit,
 } from './types';
-import {
-  DEFAULT_CONFIG,
-  AreteError,
-  isKnownWireErrorCode,
-  isStackVersionRefusalCode,
-  parseErrorCode,
-  parseWireErrorCode,
-  shouldRefreshToken,
+  import {
+    DEFAULT_CONFIG,
+    AreteError,
+    isKnownWireErrorCode,
+    isStackVersionRefusalCode,
+    parseApiProblem,
+    parseErrorCode,
+    parseWireErrorCode,
+    shouldRefreshToken,
 } from './types';
 import {
   normalizeSubscription,
@@ -184,13 +187,15 @@ interface SocketIssueWireMessage {
   message?: string;
   code: string;
   retryable?: boolean;
-  retryAfter?: number;
-  suggestedAction?: string;
-  docsUrl?: string;
   /** Older servers sent these in snake_case; read only when the camelCase field is absent. */
   retry_after?: number;
+  retryAfter?: number;
+  usage?: UsageLimit;
+  action?: RecoveryAction;
   suggested_action?: string;
+  suggestedAction?: string;
   docs_url?: string;
+  docsUrl?: string;
   fatal: boolean;
 }
 
@@ -791,10 +796,12 @@ export class ConnectionManager {
     if (!response.ok) {
       const rawError = await response.text();
       let parsedError: TokenEndpointErrorResponse | undefined;
+      let parsedValue: unknown;
 
       if (rawError) {
         try {
-          parsedError = JSON.parse(rawError) as TokenEndpointErrorResponse;
+          parsedValue = JSON.parse(rawError) as unknown;
+          parsedError = parsedValue as TokenEndpointErrorResponse;
         } catch {
           parsedError = undefined;
         }
@@ -811,6 +818,18 @@ export class ConnectionManager {
         ? parsedError.error
         : rawError || response.statusText || 'Authentication request failed';
 
+      const retryAfterHeader = response.headers.get('Retry-After');
+      const retryAfterSeconds = retryAfterHeader && /^\d+$/.test(retryAfterHeader)
+        ? Number(retryAfterHeader)
+        : undefined;
+      const parsedProblem = parseApiProblem(parsedValue);
+      const apiProblem = parsedProblem
+        ? {
+            ...parsedProblem,
+            ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+          }
+        : undefined;
+
       if (isStackVersionRefusalCode(errorCode)) {
         const refusal = parseStackVersionRefusal(parsedError);
         throw new AreteError(
@@ -823,6 +842,7 @@ export class ConnectionManager {
             status: response.status,
             wireErrorCode,
             responseBody: rawError || null,
+            apiProblem,
             ...refusal,
           }
         );
@@ -834,7 +854,8 @@ export class ConnectionManager {
         {
           status: response.status,
           wireErrorCode,
-          responseBody: rawError || null,
+          apiProblem,
+          retryAfterSeconds,
         }
       );
     }
@@ -1188,6 +1209,8 @@ export class ConnectionManager {
       code: parseWireErrorCode(message.code),
       retryable: message.retryable ?? false,
       retryAfter: message.retryAfter ?? message.retry_after,
+      usage: message.usage,
+      action: message.action,
       suggestedAction: message.suggestedAction ?? message.suggested_action,
       docsUrl: message.docsUrl ?? message.docs_url,
       fatal: message.fatal,
@@ -1367,9 +1390,9 @@ export class ConnectionManager {
                 'WebSocket closed for token refresh and automatic reconnection is disabled'
               );
               return;
-            }
-            void this.connect(true).catch((error: unknown) => {
-              this.recoverFromFailedConnect(error);
+              }
+              void this.connect(true).catch((error: unknown) => {
+                this.recoverFromFailedConnect(error);
             });
             return;
           }
@@ -1399,9 +1422,9 @@ export class ConnectionManager {
                 );
                 return;
               }
-              // Try to reconnect immediately with a fresh token
-              void this.connect(true).catch((error: unknown) => {
-                this.recoverFromFailedConnect(error);
+                // Try to reconnect immediately with a fresh token
+                void this.connect(true).catch((error: unknown) => {
+                  this.recoverFromFailedConnect(error);
               });
               return;
             }
@@ -1615,13 +1638,26 @@ export class ConnectionManager {
    * with the `reconnecting` state and kept for the terminal error if the
    * attempts run out, so a server's close reason is never dropped.
    */
-  private handleReconnect(reason?: string): void {
+  private handleReconnect(error?: unknown): void {
+    const reason = typeof error === 'string'
+      ? error
+      : error instanceof Error
+        ? error.message
+        : undefined;
     if (reason !== undefined) {
       this.lastDisconnectReason = reason;
     }
     if (!this.autoReconnect) {
       this.updateState('error', 'Automatic reconnection is disabled');
       return;
+    }
+
+    if (error instanceof AreteError) {
+      const problem = error.apiProblem();
+      if (problem?.action || problem?.retryable === false) {
+        this.updateState('error', error.message);
+        return;
+      }
     }
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       const lastReason = this.lastDisconnectReason;
@@ -1639,16 +1675,20 @@ export class ConnectionManager {
       this.reconnectAttempts,
       this.reconnectIntervals.length - 1
     );
-    const delay = this.reconnectIntervals[attemptIndex] ?? 1000;
+    const configuredDelay = this.reconnectIntervals[attemptIndex] ?? 1000;
+    const serverDelay = error instanceof AreteError
+      ? (error.retryAfter() ?? 0) * 1000
+      : 0;
+    const delay = Math.max(configuredDelay, serverDelay);
 
     this.reconnectAttempts++;
 
     this.reconnectTimeout = setTimeout(() => {
-      this.connect(true).catch((error: unknown) => {
+      this.connect(true).catch((connectError: unknown) => {
         // Once a socket exists, its close event owns the next retry. Token
         // acquisition and socket construction can fail before that point.
         if (this.ws === null && this.currentState !== 'disconnected') {
-          this.recoverFromFailedConnect(error);
+          this.recoverFromFailedConnect(connectError);
         }
       });
     }, delay);
@@ -1660,7 +1700,7 @@ export class ConnectionManager {
       // connect() already reported the refusal as the terminal error state.
       return;
     }
-    this.handleReconnect(error instanceof Error ? error.message : undefined);
+    this.handleReconnect(error);
   }
 
   private clearReconnectTimeout(): void {

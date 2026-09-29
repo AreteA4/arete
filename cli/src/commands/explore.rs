@@ -174,6 +174,7 @@ struct StackExploreOutput {
     install_ref: String,
     description: Option<String>,
     visibility: String,
+    service_class: String,
     identity: StackIdentitySummary,
     live_specs: Vec<LiveSpecSummary>,
     selected_views: Vec<SelectedViewSummary>,
@@ -286,6 +287,7 @@ struct StackDescriptorIdentity {
     name: String,
     stack: String,
     visibility: String,
+    service_class: String,
     spec_version_id: Option<i32>,
     stack_manifest_hash: String,
     live_specs: Vec<(String, String)>,
@@ -348,6 +350,7 @@ pub fn list(json: bool) -> Result<()> {
                 println!("    {}", description.dimmed());
             }
             println!("    Entities: {}", stack.entities.join(", "));
+            println!("    Service class: {}", stack.service_class);
             println!();
         }
     }
@@ -949,6 +952,7 @@ fn descriptor_identity(descriptor: &RegistryStackInstallResponse) -> StackDescri
         name: descriptor.name.clone(),
         stack: descriptor.stack.clone(),
         visibility: descriptor.visibility.clone(),
+        service_class: descriptor.service_class.clone(),
         spec_version_id: descriptor.spec_version_id,
         stack_manifest_hash: descriptor.stack_manifest_hash.clone(),
         live_specs: descriptor
@@ -1048,6 +1052,7 @@ fn build_stack_output(
         install_ref: install_ref.to_string(),
         description: typescript.description.clone(),
         visibility: typescript.visibility.clone(),
+        service_class: typescript.service_class.clone(),
         identity: StackIdentitySummary {
             stack_manifest_hash: typescript.stack_manifest_hash.clone(),
             spec_version_id: typescript.spec_version_id,
@@ -1352,8 +1357,8 @@ fn build_entity_output(
 
 fn render_stack(output: &StackExploreOutput) -> String {
     let mut text = format!(
-        "\nStack: {}\n  Install reference: {}\n  Visibility: {}\n",
-        output.name, output.install_ref, output.visibility
+        "\nStack: {}\n  Install reference: {}\n  Visibility: {}\n  Service class: {}\n",
+        output.name, output.install_ref, output.visibility, output.service_class
     );
     if let Some(description) = &output.description {
         text.push_str(&format!("  Description: {description}\n"));

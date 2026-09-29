@@ -5,9 +5,10 @@
 //! config that launches it.
 
 mod connections;
-mod credentials;
+pub mod credentials;
 pub mod descriptor;
 mod filter;
+mod recovery;
 mod registry;
 pub mod server;
 pub mod stack_knowledge;

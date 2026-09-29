@@ -496,6 +496,11 @@ impl RuntimeAuthState {
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
         let fallback_message = status.canonical_reason().map(str::to_string);
+        let retry_after = response
+            .headers()
+            .get("Retry-After")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
         let body = response.bytes().await.map_err(|error| {
             AreteError::ConnectionFailed(format!("Failed to read token endpoint response: {error}"))
         })?;
@@ -506,6 +511,7 @@ impl RuntimeAuthState {
                 header_code.as_deref(),
                 Some(body.as_ref()),
                 fallback_message.as_deref(),
+                retry_after,
             ));
         }
 
@@ -1029,6 +1035,8 @@ fn protocol_error_to_socket_issue(error: ProtocolErrorFrame) -> SocketIssue {
         code: crate::error::AuthErrorCode::from_wire(&error.code),
         retryable: error.retryable,
         retry_after: error.retry_after,
+        usage: error.usage,
+        action: error.action,
         suggested_action: error.suggested_action,
         docs_url: error.docs_url,
         fatal: error.fatal,

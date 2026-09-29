@@ -163,7 +163,7 @@ Separately, `a4 explore --json` is camelCase throughout, so CLI field names do n
 
 ### Knowledge tools
 
-Read-only lookups against `/api/registry/knowledge/*` — the curated knowledge layer that maps an intent to protocols, programs, stacks, and recipes. Unlike the discovery tools, **every knowledge tool requires an API key** (`ARETE_API_KEY`, or the file `a4 auth login` writes). Without one the call fails up front with an error pointing at `a4 auth login`; there is no public subset. The tool descriptions below are the ones the server publishes.
+Read-only lookups against `/api/registry/knowledge/*` — the curated, human-reviewed layer that maps an intent to protocols, programs, stacks, and recipes. Unlike the discovery tools, **every knowledge tool requires an API key** (normally the `agent` profile written by `a4 auth signup`). Without one the call fails up front with an error pointing at signup/login; there is no public subset. The tool descriptions below are the ones the server publishes.
 
 **`search_knowledge`** `{ query?, concept?, category?, limit? }`
 
@@ -173,7 +173,7 @@ Read-only lookups against `/api/registry/knowledge/*` — the curated knowledge 
 >
 > Each result carries coverage flags: `read` (fetch on-chain account state), `build` (construct transactions), `subscribe` (stream live entities from a hosted stack) — pick the mode you need, then drill in with get_protocol, get_program_knowledge, or get_recipe.
 >
-> AUTH: unlike the `explore_*` tools, this requires an Arete API key (`ARETE_API_KEY` env var, or the file `a4 auth login` writes).
+> AUTH: unlike the `explore_*` tools, this requires an Arete API key (normally the `agent` profile written by `a4 auth signup`).
 
 **`get_protocol`** `{ protocol }`
 
@@ -266,11 +266,16 @@ query_entities({ subscription_id, … })  → data
 
 Do not pass `api_key` in tool calls. The server resolves credentials in this order:
 
-1. Explicit `api_key` argument on `connect` (override — avoid in agent calls)
-2. `ARETE_API_KEY` environment variable
-3. The credentials file written by `a4 auth signup` or `a4 auth login`
+1. Explicit `api_key` argument on `connect` (override — avoid in agent calls;
+   it must match the selected built-in profile)
+2. When `ARETE_PROFILE` is selected, that named profile in the credentials file
+3. Without a selected profile, `ARETE_API_KEY`, then an unambiguous profile or
+   legacy entry in the credentials file
 
-Run `a4 auth signup` (or `a4 auth login --key <a4_ak_…>`) once and omit the argument.
+Generated MCP config runs `a4 --profile agent mcp`; the selected profile
+deliberately outranks an ambient human key. Run `a4 auth signup` once and omit
+the argument. Humans store a separate key with
+`a4 auth login --profile human --key <a4_sk_…>`.
 
 The knowledge tools (`search_knowledge`, `get_protocol`, `get_program_knowledge`, `get_recipe`, `list_concepts`) require a key from step 2 or 3 and fail with an actionable error when none resolves. The discovery tools attach a resolved key **only when `ARETE_API_URL` names an Arete origin over HTTPS** — `https://arete.run` or any `https://*.arete.run` subdomain. Plain HTTP is accepted only for loopback (`localhost`, `127.0.0.1`, `[::1]`), where the request never reaches a network. Everything else, including `http://api.arete.run`, gets an unauthenticated request rather than your key in cleartext or sent to a host it does not belong to — the endpoints these tools touch are public, so you still get the public result set.
 
@@ -283,7 +288,7 @@ These are the files and shapes `a4 init` writes (project scope; `--global` uses 
 ```json
 {
   "mcpServers": {
-    "arete": { "type": "stdio", "command": "a4", "args": ["mcp"] },
+    "arete": { "type": "stdio", "command": "a4", "args": ["--profile", "agent", "mcp"] },
     "arete-docs": { "type": "http", "url": "https://docs.arete.run/mcp" }
   }
 }
@@ -294,7 +299,7 @@ These are the files and shapes `a4 init` writes (project scope; `--global` uses 
 ```json
 {
   "mcpServers": {
-    "arete": { "command": "a4", "args": ["mcp"] },
+    "arete": { "command": "a4", "args": ["--profile", "agent", "mcp"] },
     "arete-docs": { "url": "https://docs.arete.run/mcp" }
   }
 }
@@ -305,7 +310,7 @@ These are the files and shapes `a4 init` writes (project scope; `--global` uses 
 ```json
 {
   "servers": {
-    "arete": { "type": "stdio", "command": "a4", "args": ["mcp"] },
+    "arete": { "type": "stdio", "command": "a4", "args": ["--profile", "agent", "mcp"] },
     "arete-docs": { "type": "http", "url": "https://docs.arete.run/mcp" }
   }
 }
@@ -316,7 +321,7 @@ These are the files and shapes `a4 init` writes (project scope; `--global` uses 
 ```toml
 [mcp_servers.arete]
 command = "a4"
-args = ["mcp"]
+args = ["--profile", "agent", "mcp"]
 
 [mcp_servers.arete-docs]
 url = "https://docs.arete.run/mcp"
@@ -330,7 +335,7 @@ Codex only loads the project file for trusted projects; `a4 doctor` reports an u
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "arete": { "type": "local", "command": ["a4", "mcp"], "enabled": true },
+    "arete": { "type": "local", "command": ["a4", "--profile", "agent", "mcp"], "enabled": true },
     "arete-docs": { "type": "remote", "url": "https://docs.arete.run/mcp", "enabled": true }
   }
 }
@@ -341,7 +346,7 @@ Codex only loads the project file for trusted projects; `a4 doctor` reports an u
 ```json
 {
   "mcpServers": {
-    "arete": { "command": "a4", "args": ["mcp"] },
+    "arete": { "command": "a4", "args": ["--profile", "agent", "mcp"] },
     "arete-docs": { "httpUrl": "https://docs.arete.run/mcp" }
   }
 }

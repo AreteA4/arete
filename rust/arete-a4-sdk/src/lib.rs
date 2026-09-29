@@ -88,7 +88,11 @@ pub use collation::{collation_key, locale_compare, CollationKey};
 pub use config::{AreteConfig, ConnectionConfig};
 pub use connection::{ConnectionManager, ConnectionState, SubscriptionLease, SubscriptionOptions};
 pub use entity::Stack;
-pub use error::{AreteError, AuthErrorCode, GapCode, SocketIssue, StackVersionRefusal, StreamGap};
+pub use error::{
+    ApiProblemV1, AreteError, AuthErrorCode, GapCode, ReadyRecoveryAction, ReadyRecoveryActionV1,
+    RecoveryAction, SocketIssue, StackVersionRefusal, StreamGap, UsageLimit,
+    API_PROBLEM_SCHEMA_VERSION, CLAIM_AGENT_MATERIALIZER_PATH,
+};
 pub use frame::{
     parse_frame, parse_server_message, parse_snapshot_entities, try_parse_subscribed_frame, Frame,
     Mode, Operation, ProtocolErrorFrame, ReplayWindow, ServerFrame, ServerMessage, SnapshotEntity,

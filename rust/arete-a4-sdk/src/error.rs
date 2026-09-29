@@ -1,6 +1,145 @@
-use serde::Deserialize;
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 use tokio_tungstenite::tungstenite::{self, http::Response};
+use url::{Host, Url};
+
+pub const API_PROBLEM_SCHEMA_VERSION: u8 = 1;
+pub const CLAIM_AGENT_MATERIALIZER_PATH: &str = "/api/agents/me/claim-links";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLimit {
+    pub unit: String,
+    pub used: u64,
+    pub limit: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<String>,
+}
+
+/// Tolerant recovery metadata from an API problem.
+///
+/// Unknown action types and future fields remain available to callers but are
+/// never executable unless [`RecoveryAction::is_claim_agent_materializer`]
+/// validates the complete closed v1 contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryAction {
+    #[serde(rename = "type")]
+    pub action_type: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+impl RecoveryAction {
+    pub fn is_claim_agent_materializer(&self) -> bool {
+        self.action_type == "claim_agent"
+            && self.method.as_deref() == Some("POST")
+            && self.path.as_deref() == Some(CLAIM_AGENT_MATERIALIZER_PATH)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiProblemV1 {
+    #[serde(default, serialize_with = "serialize_problem_schema_version")]
+    pub schema_version: Option<u8>,
+    pub error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retryable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageLimit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<RecoveryAction>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+fn serialize_problem_schema_version<S>(value: &Option<u8>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_u8(value.unwrap_or(API_PROBLEM_SCHEMA_VERSION))
+}
+
+impl ApiProblemV1 {
+    pub fn recovery_action(&self) -> Option<&RecoveryAction> {
+        self.action.as_ref()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadyRecoveryAction {
+    #[serde(rename = "type")]
+    pub action_type: String,
+    pub url: String,
+    pub elicitation_id: String,
+    pub expires_at: String,
+}
+
+impl std::fmt::Debug for ReadyRecoveryAction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReadyRecoveryAction")
+            .field("action_type", &self.action_type)
+            .field("url", &"[REDACTED]")
+            .field("elicitation_id", &self.elicitation_id)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+impl ReadyRecoveryAction {
+    pub fn is_safe_claim_url_for_origin(&self, expected_origin: &Url) -> bool {
+        if self.action_type != "claim_agent" {
+            return false;
+        }
+
+        let Ok(url) = Url::parse(&self.url) else {
+            return false;
+        };
+        let loopback = match url.host() {
+            Some(Host::Domain(host)) => host == "localhost",
+            Some(Host::Ipv4(address)) => address.is_loopback(),
+            Some(Host::Ipv6(address)) => address.is_loopback(),
+            None => false,
+        };
+        let secure = url.scheme() == "https" || (url.scheme() == "http" && loopback);
+        let same_origin = url.scheme() == expected_origin.scheme()
+            && url.host_str() == expected_origin.host_str()
+            && url.port_or_known_default() == expected_origin.port_or_known_default();
+
+        secure
+            && same_origin
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.path() == "/claim"
+            && url.query().is_none()
+            && url.fragment().is_some_and(|fragment| !fragment.is_empty())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadyRecoveryActionV1 {
+    pub schema_version: u8,
+    pub action: ReadyRecoveryAction,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocketIssue {
@@ -12,6 +151,8 @@ pub struct SocketIssue {
     pub code: Option<AuthErrorCode>,
     pub retryable: bool,
     pub retry_after: Option<u64>,
+    pub usage: Option<UsageLimit>,
+    pub action: Option<RecoveryAction>,
     pub suggested_action: Option<String>,
     pub docs_url: Option<String>,
     pub fatal: bool,
@@ -138,6 +279,7 @@ pub enum AuthErrorCode {
     SnapshotLimitExceeded,
     EgressLimitExceeded,
     QuotaExceeded,
+    AgentClaimRequired,
     InvalidStaticToken,
     /// The session endpoint no longer serves the stack version this client
     /// was generated for. Terminal: see [`StackVersionRefusal`].
@@ -177,6 +319,7 @@ impl AuthErrorCode {
             "snapshot-limit-exceeded" => Self::SnapshotLimitExceeded,
             "egress-limit-exceeded" => Self::EgressLimitExceeded,
             "quota-exceeded" => Self::QuotaExceeded,
+            "agent-claim-required" => Self::AgentClaimRequired,
             "invalid-static-token" => Self::InvalidStaticToken,
             "stack-version-retired" => Self::StackVersionRetired,
             "stack-version-unknown" => Self::StackVersionUnknown,
@@ -213,6 +356,7 @@ impl AuthErrorCode {
             Self::SnapshotLimitExceeded => "snapshot-limit-exceeded",
             Self::EgressLimitExceeded => "egress-limit-exceeded",
             Self::QuotaExceeded => "quota-exceeded",
+            Self::AgentClaimRequired => "agent-claim-required",
             Self::InvalidStaticToken => "invalid-static-token",
             Self::StackVersionRetired => "stack-version-retired",
             Self::StackVersionUnknown => "stack-version-unknown",
@@ -320,6 +464,7 @@ pub enum AreteError {
         /// Present when `code` is a stack version refusal; `message` then
         /// already names the replacement and upgrade command.
         stack_version: Option<Box<StackVersionRefusal>>,
+        problem: Option<Box<ApiProblemV1>>,
     },
 
     #[error("WebSocket closed by server: {message}")]
@@ -373,12 +518,6 @@ pub enum AreteError {
         message = .0.message()
     )]
     TransactionFailed(Box<crate::operations::TransactionFailureOutcome>),
-}
-
-#[derive(Debug, Deserialize)]
-struct ErrorPayload {
-    error: Option<String>,
-    code: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -445,6 +584,27 @@ impl AreteError {
         }
     }
 
+    pub fn api_problem(&self) -> Option<&ApiProblemV1> {
+        match self {
+            Self::AuthRequestFailed { problem, .. } => problem.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn recovery_action(&self) -> Option<&RecoveryAction> {
+        self.api_problem().and_then(ApiProblemV1::recovery_action)
+    }
+
+    pub fn retry_after(&self) -> Option<u64> {
+        match self {
+            Self::AuthRequestFailed { problem, .. } => problem
+                .as_deref()
+                .and_then(|problem| problem.retry_after_seconds),
+            Self::SocketIssue(issue) => issue.retry_after,
+            _ => None,
+        }
+    }
+
     /// Structured failure outcome for [`AreteError::TransactionFailed`].
     pub fn transaction_outcome(&self) -> Option<&crate::operations::TransactionFailureOutcome> {
         match self {
@@ -455,8 +615,21 @@ impl AreteError {
 
     pub fn should_retry(&self) -> bool {
         match self {
-            Self::HandshakeRejected { status, code, .. }
-            | Self::AuthRequestFailed { status, code, .. } => code
+            Self::AuthRequestFailed {
+                status,
+                code,
+                problem,
+                ..
+            } => problem
+                .as_deref()
+                .and_then(|problem| problem.retryable)
+                .unwrap_or_else(|| {
+                    *status == 429
+                        || code
+                            .map(AuthErrorCode::should_retry)
+                            .unwrap_or(*status >= 500)
+                }),
+            Self::HandshakeRejected { status, code, .. } => code
                 .map(AuthErrorCode::should_retry)
                 .unwrap_or(*status >= 500),
             Self::ServerClosed { code, .. } | Self::WebSocket { code, .. } => {
@@ -506,7 +679,7 @@ impl AreteError {
             .get("X-Error-Code")
             .and_then(|value| value.to_str().ok())
             .and_then(AuthErrorCode::from_wire);
-        let (body_message, body_code) = parse_error_payload(response.body().as_deref());
+        let (body_message, body_code, _) = parse_error_payload(response.body().as_deref());
         let code = header_code.or(body_code);
 
         let message = body_message.unwrap_or_else(|| {
@@ -529,9 +702,13 @@ impl AreteError {
         header_code: Option<&str>,
         body: Option<&[u8]>,
         fallback_message: Option<&str>,
+        retry_after_header: Option<u64>,
     ) -> Self {
         let header_code = header_code.and_then(AuthErrorCode::from_wire);
-        let (body_message, body_code) = parse_error_payload(body);
+        let (body_message, body_code, mut problem) = parse_error_payload(body);
+        if let Some(problem) = problem.as_mut() {
+            problem.retry_after_seconds = retry_after_header.or(problem.retry_after_seconds);
+        }
         let code = header_code.or(body_code);
         let message = body_message.unwrap_or_else(|| {
             fallback_message
@@ -546,6 +723,7 @@ impl AreteError {
                 message: refusal.describe(message),
                 code,
                 stack_version: Some(Box::new(refusal)),
+                problem: problem.map(Box::new),
             };
         }
 
@@ -554,6 +732,7 @@ impl AreteError {
             message,
             code,
             stack_version: None,
+            problem: problem.map(Box::new),
         }
     }
 
@@ -584,22 +763,28 @@ impl From<tungstenite::Error> for AreteError {
     }
 }
 
-fn parse_error_payload(body: Option<&[u8]>) -> (Option<String>, Option<AuthErrorCode>) {
+fn parse_error_payload(
+    body: Option<&[u8]>,
+) -> (Option<String>, Option<AuthErrorCode>, Option<ApiProblemV1>) {
     let Some(body) = body.filter(|value| !value.is_empty()) else {
-        return (None, None);
+        return (None, None, None);
     };
 
-    if let Ok(payload) = serde_json::from_slice::<ErrorPayload>(body) {
+    if let Ok(payload) = serde_json::from_slice::<ApiProblemV1>(body) {
         let code = payload.code.as_deref().and_then(AuthErrorCode::from_wire);
-        let message = payload.error.map(|value| value.trim().to_string());
-        return (message.filter(|value| !value.is_empty()), code);
+        let message = payload.error.trim().to_string();
+        return (
+            (!message.is_empty()).then_some(message),
+            code,
+            Some(payload),
+        );
     }
 
     let message = String::from_utf8_lossy(body).trim().to_string();
     if message.is_empty() {
-        (None, None)
+        (None, None, None)
     } else {
-        (Some(message), None)
+        (Some(message), None, None)
     }
 }
 
@@ -661,6 +846,7 @@ mod tests {
                 br#"{"error":"WebSocket session mint rate limit exceeded","code":"websocket-session-rate-limit-exceeded"}"#,
             ),
             Some("Too Many Requests"),
+            Some(12),
         );
 
         assert!(matches!(
@@ -671,7 +857,8 @@ mod tests {
                 ..
             }
         ));
-        assert!(!error.should_retry());
+        assert!(error.should_retry());
+        assert_eq!(error.retry_after(), Some(12));
     }
 
     #[test]
@@ -683,6 +870,7 @@ mod tests {
                 br#"{"error":"Stack ore 1.2.0 was retired.","code":"stack-version-retired","replacement":{"version":"1.3.0","stackManifestHash":"arete:h1:stack-manifest:sha256:bb"},"upgradeCommand":"a4 install stack ore@1.3.0","retiredAt":"2026-10-01T00:00:00Z"}"#,
             ),
             Some("Conflict"),
+            None,
         );
 
         assert_eq!(
@@ -713,6 +901,7 @@ mod tests {
             None,
             Some(br#"{"error":"Stack version is not served here","code":"stack-version-unknown"}"#),
             Some("Conflict"),
+            None,
         );
 
         assert!(matches!(
@@ -722,6 +911,7 @@ mod tests {
                 code: Some(AuthErrorCode::StackVersionUnknown),
                 message,
                 stack_version: Some(_),
+                ..
             } if message == "Stack version is not served here"
         ));
         assert!(error.is_stack_version_refusal());
@@ -734,6 +924,7 @@ mod tests {
             403,
             Some("origin-required"),
             Some(br#"{"error":"Origin required","code":"origin-required"}"#),
+            None,
             None,
         );
 
@@ -800,6 +991,8 @@ mod tests {
             code: Some(AuthErrorCode::SubscriptionLimitExceeded),
             retryable: false,
             retry_after: None,
+            usage: None,
+            action: None,
             suggested_action: Some("unsubscribe first".to_string()),
             docs_url: None,
             fatal: false,
@@ -809,5 +1002,83 @@ mod tests {
         assert!(
             matches!(error.socket_issue(), Some(issue) if issue.message == "subscription limit exceeded")
         );
+    }
+
+    #[test]
+    fn problem_reader_accepts_legacy_and_future_fields() {
+        let legacy: ApiProblemV1 =
+            serde_json::from_str(r#"{"error":"legacy","code":"invalid-api-key"}"#)
+                .expect("legacy problem");
+        assert_eq!(legacy.schema_version, None);
+        assert_eq!(legacy.code.as_deref(), Some("invalid-api-key"));
+
+        let future: ApiProblemV1 = serde_json::from_str(
+            r#"{
+                "schemaVersion":1,
+                "error":"claim it",
+                "code":"agent-claim-required",
+                "retryable":false,
+                "usage":{"unit":"bytes","used":5,"limit":5,"resetsAt":null},
+                "action":{"type":"claim_agent","label":"Claim","method":"POST","path":"/api/agents/me/claim-links","futureActionField":true},
+                "futureProblemField":{"v":2}
+            }"#,
+        )
+        .expect("future problem");
+        assert!(future
+            .recovery_action()
+            .expect("action")
+            .is_claim_agent_materializer());
+        assert!(future.extra.contains_key("futureProblemField"));
+        assert!(future
+            .action
+            .unwrap()
+            .extra
+            .contains_key("futureActionField"));
+    }
+
+    #[test]
+    fn problem_writer_adds_v1_to_legacy_problem() {
+        let problem = ApiProblemV1 {
+            schema_version: None,
+            error: "legacy".to_string(),
+            code: None,
+            retryable: None,
+            request_id: None,
+            retry_after_seconds: None,
+            usage: None,
+            action: None,
+            extra: Default::default(),
+        };
+        let value = serde_json::to_value(problem).expect("serialize problem");
+        assert_eq!(value["schemaVersion"], API_PROBLEM_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn unknown_or_malformed_actions_are_not_executable() {
+        for body in [
+            r#"{"error":"x","action":{"type":"future_action","method":"POST","path":"/api/agents/me/claim-links"}}"#,
+            r#"{"error":"x","action":{"type":"claim_agent","method":"GET","path":"/api/agents/me/claim-links"}}"#,
+            r#"{"error":"x","action":{"type":"claim_agent","method":"POST","path":"https://evil.example/claim"}}"#,
+        ] {
+            let problem: ApiProblemV1 = serde_json::from_str(body).expect("tolerant action");
+            assert!(!problem.action.unwrap().is_claim_agent_materializer());
+        }
+    }
+
+    #[test]
+    fn ready_action_url_validation_is_origin_and_fragment_bound() {
+        let origin = Url::parse("https://arete.run").unwrap();
+        let action = ReadyRecoveryAction {
+            action_type: "claim_agent".to_string(),
+            url: "https://arete.run/claim#secret".to_string(),
+            elicitation_id: "claim-id".to_string(),
+            expires_at: "2026-09-22T12:30:00Z".to_string(),
+        };
+        assert!(action.is_safe_claim_url_for_origin(&origin));
+        let mut bad = action.clone();
+        bad.url = "https://evil.example/claim#secret".to_string();
+        assert!(!bad.is_safe_claim_url_for_origin(&origin));
+        bad.url = "https://arete.run/claim?token=secret".to_string();
+        assert!(!bad.is_safe_claim_url_for_origin(&origin));
     }
 }

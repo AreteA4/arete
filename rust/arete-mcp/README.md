@@ -55,7 +55,7 @@ started from a desktop launcher may need a full restart after installing
 ```json
 {
   "mcpServers": {
-    "arete": { "type": "stdio", "command": "a4", "args": ["mcp"] },
+    "arete": { "type": "stdio", "command": "a4", "args": ["--profile", "agent", "mcp"] },
     "arete-docs": { "type": "http", "url": "https://docs.arete.run/mcp" }
   }
 }
@@ -69,7 +69,7 @@ Or via the CLI: `claude mcp add --transport stdio arete --scope project -- a4 mc
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "arete": { "type": "local", "command": ["a4", "mcp"], "enabled": true },
+    "arete": { "type": "local", "command": ["a4", "--profile", "agent", "mcp"], "enabled": true },
     "arete-docs": { "type": "remote", "url": "https://docs.arete.run/mcp", "enabled": true }
   }
 }
@@ -80,7 +80,7 @@ Or via the CLI: `claude mcp add --transport stdio arete --scope project -- a4 mc
 ```json
 {
   "mcpServers": {
-    "arete": { "command": "a4", "args": ["mcp"] }
+    "arete": { "command": "a4", "args": ["--profile", "agent", "mcp"] }
   }
 }
 ```
@@ -90,7 +90,7 @@ Or via the CLI: `claude mcp add --transport stdio arete --scope project -- a4 mc
 ```json
 {
   "servers": {
-    "arete": { "command": "a4", "args": ["mcp"] }
+    "arete": { "command": "a4", "args": ["--profile", "agent", "mcp"] }
   }
 }
 ```
@@ -100,7 +100,7 @@ Or via the CLI: `claude mcp add --transport stdio arete --scope project -- a4 mc
 ```json
 {
   "context_servers": {
-    "arete": { "command": "a4", "args": ["mcp"], "env": {} }
+    "arete": { "command": "a4", "args": ["--profile", "agent", "mcp"], "env": {} }
   }
 }
 ```
@@ -112,17 +112,17 @@ mcpServers:
   - name: arete
     type: stdio
     command: a4
-    args: ["mcp"]
+    args: ["--profile", "agent", "mcp"]
 ```
 
 ## Authentication
 
-Run `a4 auth signup` once (agent self-registration) or `a4 auth login --key
-<a4_ak_...>` with a key from https://arete.run/keys; the server reads
-`~/.arete/credentials.toml`. For headless/CI use set `ARETE_API_KEY` in the
-server's environment instead. Never pass the key as a tool-call argument. See
-[Authentication](#authentication-1) under the tool reference for the exact
-precedence.
+Run `a4 auth signup` once for a restricted agent credential. Human keys from
+https://arete.run/keys are stored separately with `a4 auth login --profile
+human --key <a4_sk_...>`. Generated MCP config runs `a4 --profile agent mcp`,
+which resolves the agent profile even if a human `ARETE_API_KEY` is ambient.
+Never pass a key as a tool-call argument. See [Authentication](#authentication-1)
+under the tool reference for the exact precedence.
 
 ## Tool reference
 
@@ -264,21 +264,22 @@ chat transcript, and the JSON-RPC stdio traffic between the client and
 `a4 mcp`. Instead, `a4 mcp` resolves the key itself using this precedence:
 
 1. **Explicit `api_key` argument** on the `connect` call (override, useful
-   for testing or multi-stack setups)
-2. **`ARETE_API_KEY` env var** set in the MCP server's process
-   environment — the recommended pattern for headless/CI use. Set it in
-   `.vscode/mcp.json`'s `env` block, or via
-   `claude mcp add -e ARETE_API_KEY=a4_sk_... arete -- a4 mcp` (legacy `hsk_...` keys still work).
-3. **`~/.arete/credentials.toml`** — the file managed by the CLI's
-   `a4 auth login` command. Both schemas the CLI writes are supported:
+   for testing or multi-stack setups; it must match a selected built-in profile)
+2. When **`ARETE_PROFILE` is selected**, that named profile in the credentials
+   file. A selected profile deliberately outranks `ARETE_API_KEY`.
+3. Without a selected profile, **`ARETE_API_KEY`**, then an unambiguous named
+   profile or legacy entry in **`~/.arete/credentials.toml`**:
 
    ```toml
-   # New format (URL-keyed, written by recent `a4 auth login`):
-   [keys]
+   [profiles.agent.keys]
+   "https://api.arete.run" = "a4_ak_..."
+
+   [profiles.human.keys]
    "https://api.arete.run" = "a4_sk_..."
 
-   # Legacy format (top-level key, still honored):
-   api_key = "a4_sk_..."  # older keys may use hsk_ / hspk_ prefixes
+   # Legacy format (still honored when unambiguous/compatible):
+   [keys]
+   "https://api.arete.run" = "a4_sk_..."
    ```
 
    The file lookup honors `ARETE_API_URL` if set; otherwise falls back

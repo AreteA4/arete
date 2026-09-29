@@ -1,21 +1,39 @@
 use anyhow::{Context, Result};
+use arete_mcp::credentials::{
+    inferred_profile_for_key, lookup_credentials, normalize_api_url, validate_key_for_profile,
+    validate_profile_name, ENV_VAR_API_KEY, ENV_VAR_CREDENTIALS_PATH, ENV_VAR_PROFILE,
+};
+use arete_sdk::{ApiProblemV1, ReadyRecoveryActionV1, RecoveryAction};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-fn ensure_no_dangling_symlink(path: &Path) -> Result<()> {
-    for candidate in path.ancestors() {
+fn ensure_safe_credentials_path(path: &Path) -> Result<()> {
+    // The credential file and its dedicated directory must not be symlinks.
+    // Do not reject symlinks in filesystem-owned ancestors: on macOS, for
+    // example, `/var` and `/tmp` intentionally resolve through `/private`.
+    for candidate in std::iter::once(path).chain(path.parent()) {
         match fs::symlink_metadata(candidate) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                fs::metadata(candidate).with_context(|| {
-                    format!(
-                        "Credentials path contains a dangling symlink: {}",
-                        candidate.display()
-                    )
-                })?;
+                anyhow::bail!(
+                    "Credentials path must not contain symlinks: {}",
+                    candidate.display()
+                );
+            }
+            Ok(metadata) if candidate == path && !metadata.is_file() => {
+                anyhow::bail!(
+                    "Credentials target must be a regular file: {}",
+                    candidate.display()
+                );
+            }
+            Ok(metadata) if candidate != path && !metadata.is_dir() => {
+                anyhow::bail!(
+                    "Credentials path parent must be a directory: {}",
+                    candidate.display()
+                );
             }
             Ok(_) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => {}
@@ -30,6 +48,95 @@ fn ensure_no_dangling_symlink(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn ensure_owner_only_directory(path: &Path, created: bool) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if created {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).with_context(|| {
+                format!("Failed to protect credentials directory {}", path.display())
+            })?;
+        }
+        let mode = fs::metadata(path)?.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            anyhow::bail!(
+                "Credentials directory permissions are too broad ({mode:o}); set {} to mode 700",
+                path.display()
+            );
+        }
+    }
+
+    #[cfg(not(unix))]
+    let _ = (path, created);
+
+    Ok(())
+}
+
+fn write_credentials_atomic(path: &Path, content: &[u8]) -> Result<()> {
+    ensure_safe_credentials_path(path)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Credentials path must have a parent directory"))?;
+    let parent_existed = parent.exists();
+    fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "Failed to create credentials directory {}",
+            parent.display()
+        )
+    })?;
+    ensure_safe_credentials_path(path)?;
+    ensure_owner_only_directory(parent, !parent_existed)?;
+
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("Credentials filename must be valid UTF-8"))?;
+    let temporary = parent.join(format!(".{filename}.{}.tmp", uuid::Uuid::new_v4()));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let result = (|| -> Result<()> {
+        let mut file = options.open(&temporary).with_context(|| {
+            format!(
+                "Failed to create temporary credentials file {}",
+                temporary.display()
+            )
+        })?;
+        file.write_all(content)
+            .context("Failed to write temporary credentials file")?;
+        file.flush()
+            .context("Failed to flush temporary credentials file")?;
+        file.sync_all()
+            .context("Failed to sync temporary credentials file")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        drop(file);
+        fs::rename(&temporary, path)
+            .with_context(|| format!("Failed to atomically replace {}", path.display()))?;
+        #[cfg(unix)]
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| {
+                format!("Failed to sync credentials directory {}", parent.display())
+            })?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 /// Production API URL (used by default in release builds)
@@ -48,6 +155,39 @@ pub struct ApiClient {
     base_url: String,
     api_key: Option<String>,
     client: reqwest::blocking::Client,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredCredential {
+    pub profile: Option<String>,
+    pub api_url: String,
+    pub masked_key: String,
+}
+
+fn mask_api_key(api_key: &str) -> String {
+    if api_key.len() <= 12 {
+        return "****".to_string();
+    }
+    format!("{}...{}", &api_key[..8], &api_key[api_key.len() - 4..])
+}
+
+fn remove_url_key(keys: &mut toml::map::Map<String, toml::Value>, api_url: &str) -> bool {
+    if keys.remove(api_url).is_some() {
+        return true;
+    }
+    let wanted = normalize_api_url(api_url);
+    if wanted != api_url && keys.remove(&wanted).is_some() {
+        return true;
+    }
+    let mut candidates = keys
+        .keys()
+        .filter(|url| normalize_api_url(url) == wanted)
+        .cloned()
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates
+        .first()
+        .is_some_and(|candidate| keys.remove(candidate).is_some())
 }
 
 // DTOs matching backend models
@@ -133,9 +273,7 @@ pub struct SpecWithVersion {
 }
 
 /// A non-success API response with its status, message, and stable error
-/// code. Displays exactly like the historical `API error (...)` string so
-/// existing callers and tests keep their messages; callers that need the
-/// status downcast with `error.downcast_ref::<ApiHttpError>()`.
+/// code used by synthetic errors in command tests and compatibility adapters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiHttpError {
     pub status: u16,
@@ -165,15 +303,6 @@ impl std::fmt::Display for ApiHttpError {
 }
 
 impl std::error::Error for ApiHttpError {}
-
-#[derive(Debug, Deserialize)]
-struct ErrorResponse {
-    error: String,
-    #[serde(default)]
-    code: Option<String>,
-    #[serde(default, rename = "upgradeCommand")]
-    upgrade_command: Option<String>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -285,6 +414,76 @@ impl StackDestroyResponse {
         }
         Ok(())
     }
+}
+
+#[derive(Debug)]
+pub struct ApiClientError {
+    pub status: reqwest::StatusCode,
+    pub headers: reqwest::header::HeaderMap,
+    pub problem: ApiProblemV1,
+}
+
+impl ApiClientError {
+    pub fn recovery_action(&self) -> Option<&RecoveryAction> {
+        self.problem.recovery_action()
+    }
+
+    pub fn retry_after_seconds(&self) -> Option<u64> {
+        self.headers
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .or(self.problem.retry_after_seconds)
+    }
+}
+
+impl std::fmt::Display for ApiClientError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "API error ({}): {}",
+            self.status, self.problem.error
+        )?;
+        if let Some(code) = self.problem.code.as_deref() {
+            write!(formatter, " ({code})")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ApiClientError {}
+
+/// Compatibility view used by command code while API failures migrate from
+/// the legacy flat error to the structured problem contract.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ApiErrorDetails<'a> {
+    pub status: u16,
+    pub message: &'a str,
+    pub code: Option<&'a str>,
+    pub upgrade_command: Option<&'a str>,
+}
+
+pub(crate) fn api_error_details(error: &anyhow::Error) -> Option<ApiErrorDetails<'_>> {
+    if let Some(error) = error.downcast_ref::<ApiClientError>() {
+        return Some(ApiErrorDetails {
+            status: error.status.as_u16(),
+            message: &error.problem.error,
+            code: error.problem.code.as_deref(),
+            upgrade_command: error
+                .problem
+                .extra
+                .get("upgradeCommand")
+                .and_then(serde_json::Value::as_str),
+        });
+    }
+    error
+        .downcast_ref::<ApiHttpError>()
+        .map(|error| ApiErrorDetails {
+            status: error.status,
+            message: &error.message,
+            code: error.code.as_deref(),
+            upgrade_command: error.upgrade_command.as_deref(),
+        })
 }
 
 // ============================================================================
@@ -781,6 +980,10 @@ pub struct StopDeploymentResponse {
 // Registry DTOs
 // ========================================================================
 
+fn default_standard_service_class() -> String {
+    "standard".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryStackItem {
     pub name: String,
@@ -789,6 +992,8 @@ pub struct RegistryStackItem {
     pub entities: Vec<String>,
     #[serde(default)]
     pub visibility: Option<String>,
+    #[serde(rename = "serviceClass", default = "default_standard_service_class")]
+    pub service_class: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -859,6 +1064,8 @@ pub struct RegistryStackInstallResponse {
     pub http_auth: Option<serde_json::Value>,
     pub description: Option<String>,
     pub visibility: String,
+    #[serde(default = "default_standard_service_class")]
+    pub service_class: String,
     pub spec_version_id: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_spec_hash: Option<String>,
@@ -996,7 +1203,7 @@ impl ApiClient {
         let base_url =
             std::env::var("ARETE_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());
 
-        let api_key = Self::load_api_key_for_url(&base_url).ok();
+        let api_key = Self::load_optional_api_key_for_url(&base_url)?;
 
         Ok(ApiClient {
             base_url,
@@ -1861,40 +2068,49 @@ impl ApiClient {
         })
     }
 
+    fn response_error(response: reqwest::blocking::Response) -> ApiClientError {
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = response.text().unwrap_or_default();
+        let problem = serde_json::from_str::<ApiProblemV1>(&body).unwrap_or_else(|_| {
+            let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+            ApiProblemV1 {
+                schema_version: None,
+                error: if compact.is_empty() {
+                    "Empty error response".to_string()
+                } else {
+                    compact.chars().take(1024).collect()
+                },
+                code: None,
+                retryable: status.is_server_error().then_some(true),
+                request_id: None,
+                retry_after_seconds: None,
+                usage: None,
+                action: None,
+                extra: BTreeMap::new(),
+            }
+        });
+        ApiClientError {
+            status,
+            headers,
+            problem,
+        }
+    }
+
     fn handle_response<T: for<'de> Deserialize<'de>>(
         response: reqwest::blocking::Response,
     ) -> Result<T> {
         if response.status().is_success() {
             response.json().context("Failed to parse response JSON")
         } else {
-            let status = response.status();
-            let body = response.text().unwrap_or_default();
-            let (message, code, upgrade_command) = serde_json::from_str::<ErrorResponse>(&body)
-                .map(|error| (error.error, error.code, error.upgrade_command))
-                .unwrap_or_else(|_| {
-                    let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
-                    let compact: String = if compact.is_empty() {
-                        "Empty error response".to_string()
-                    } else {
-                        compact.chars().take(1024).collect()
-                    };
-                    (compact, None, None)
-                });
-            Err(ApiHttpError {
-                status: status.as_u16(),
-                status_text: status.to_string(),
-                message,
-                code,
-                upgrade_command,
-            }
-            .into())
+            Err(Self::response_error(response).into())
         }
     }
 
     // Credentials management
 
     fn credentials_path() -> Result<PathBuf> {
-        if let Some(path) = std::env::var_os("ARETE_CREDENTIALS_PATH") {
+        if let Some(path) = std::env::var_os(ENV_VAR_CREDENTIALS_PATH) {
             let path = PathBuf::from(path);
             if path.as_os_str().is_empty() {
                 anyhow::bail!("ARETE_CREDENTIALS_PATH must not be empty");
@@ -1906,13 +2122,28 @@ impl ApiClient {
         Ok(home.join(".arete").join("credentials.toml"))
     }
 
-    pub fn save_api_key(api_key: &str, api_url: Option<&str>) -> Result<()> {
-        let path = Self::credentials_path()?;
+    pub fn selected_profile() -> Result<Option<String>> {
+        std::env::var(ENV_VAR_PROFILE)
+            .ok()
+            .map(|profile| validate_profile_name(&profile).map(str::to_string))
+            .transpose()
+    }
 
-        // Create directory if it doesn't exist
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+    #[allow(dead_code)]
+    pub fn save_api_key(api_key: &str, api_url: Option<&str>) -> Result<()> {
+        let profile = inferred_profile_for_key(api_key);
+        Self::save_api_key_for_profile(api_key, api_url, profile)
+    }
+
+    pub fn save_api_key_for_profile(
+        api_key: &str,
+        api_url: Option<&str>,
+        profile: &str,
+    ) -> Result<()> {
+        let profile = validate_profile_name(profile)?;
+        validate_key_for_profile(profile, api_key)?;
+        let path = Self::credentials_path()?;
+        ensure_safe_credentials_path(&path)?;
 
         let target_url = api_url
             .map(|s| s.to_string())
@@ -1921,7 +2152,7 @@ impl ApiClient {
 
         // Read existing credentials or create new
         let creds_content = if path.exists() {
-            fs::read_to_string(&path).unwrap_or_default()
+            fs::read_to_string(&path).context("Failed to read existing credentials file")?
         } else {
             String::new()
         };
@@ -1931,73 +2162,65 @@ impl ApiClient {
             toml::Value::Table(toml::map::Map::new())
         } else {
             toml::from_str(&creds_content)
-                .unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()))
+                .context("Existing credentials file is malformed; refusing to replace it")?
         };
 
-        // Get or create keys table
-        let keys = creds
+        // Get or create [profiles.<profile>.keys]. Legacy [keys] entries are
+        // preserved for older clients and are used only when compatible with
+        // an explicitly selected built-in profile.
+        let profiles = creds
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("Invalid credentials format"))?
+            .entry("profiles")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("Invalid profiles format"))?;
+        let profile_table = profiles
+            .entry(profile)
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("Invalid profile `{profile}` format"))?;
+        let keys = profile_table
             .entry("keys")
             .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
             .as_table_mut()
-            .ok_or_else(|| anyhow::anyhow!("Invalid keys format"))?;
+            .ok_or_else(|| anyhow::anyhow!("Invalid profile `{profile}` keys format"))?;
 
         // Add or update the key for this URL
         keys.insert(target_url.clone(), toml::Value::String(api_key.to_string()));
 
         // Write back
         let content = toml::to_string_pretty(&creds)?;
-        fs::write(&path, content).context("Failed to save API key")?;
+        write_credentials_atomic(&path, content.as_bytes()).context("Failed to save API key")?;
 
         Ok(())
     }
 
+    fn parse_api_key_for_profile(
+        content: &str,
+        api_url: &str,
+        profile: Option<&str>,
+    ) -> Result<Option<String>> {
+        lookup_credentials(content, api_url, profile)
+            .context("Failed to parse credentials file")
+            .map(|lookup| lookup.key)
+    }
+
+    #[cfg(test)]
     fn parse_api_key(content: &str, api_url: &str) -> Result<Option<String>> {
-        let creds: toml::Value =
-            toml::from_str(content).context("Failed to parse credentials file")?;
-
-        // Try new format first: [keys] table with URL mapping
-        if let Some(keys) = creds.get("keys").and_then(|k| k.as_table()) {
-            // Look for exact match first
-            if let Some(key) = keys.get(api_url).and_then(|v| v.as_str()) {
-                return Ok(Some(key.to_string()));
-            }
-
-            // For localhost URLs, try to match any localhost URL
-            if api_url.contains("localhost") || api_url.contains("127.0.0.1") {
-                for (url, key_value) in keys.iter() {
-                    if url.contains("localhost") || url.contains("127.0.0.1") {
-                        if let Some(key) = key_value.as_str() {
-                            return Ok(Some(key.to_string()));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fall back to legacy format: api_key = "..."
-        #[derive(Deserialize)]
-        struct LegacyCredentials {
-            api_key: Option<String>,
-        }
-
-        let legacy: LegacyCredentials =
-            toml::from_str(content).context("Failed to parse credentials file")?;
-
-        if let Some(key) = legacy.api_key {
-            return Ok(Some(key));
-        }
-
-        Ok(None)
+        Self::parse_api_key_for_profile(content, api_url, None)
     }
 
     /// Load API key for a specific URL (new URL-based format)
     pub fn load_api_key_for_url(api_url: &str) -> Result<String> {
         Self::load_optional_api_key_for_url(api_url)?.ok_or_else(|| {
+            let profile = Self::selected_profile()
+                .ok()
+                .flatten()
+                .map(|profile| format!(" for profile `{profile}`"))
+                .unwrap_or_default();
             anyhow::anyhow!(
-                "No API key found for API URL: {}. Run 'a4 auth login' first.",
-                api_url
+                "No API key found{profile} for API URL: {api_url}. Run 'a4 auth signup' for an agent or 'a4 auth login --profile human' for a human key."
             )
         })
     }
@@ -2007,18 +2230,35 @@ impl ApiClient {
     /// Broken credential paths remain errors instead of silently becoming
     /// anonymous access.
     pub fn load_optional_api_key_for_url(api_url: &str) -> Result<Option<String>> {
+        let profile = Self::selected_profile()?;
+        if profile.is_none() {
+            if let Some(key) = std::env::var(ENV_VAR_API_KEY)
+                .ok()
+                .map(|key| key.trim().to_string())
+                .filter(|key| !key.is_empty())
+            {
+                return Ok(Some(key));
+            }
+        }
+        Self::load_optional_api_key_for_profile(api_url, profile.as_deref())
+    }
+
+    pub fn load_optional_api_key_for_profile(
+        api_url: &str,
+        profile: Option<&str>,
+    ) -> Result<Option<String>> {
         let path = Self::credentials_path()?;
+        ensure_safe_credentials_path(&path)?;
         let content = match fs::read_to_string(&path) {
             Ok(content) => content,
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                ensure_no_dangling_symlink(&path)?;
                 return Ok(None);
             }
             Err(error) => {
                 return Err(error).context("Failed to read credentials file");
             }
         };
-        Self::parse_api_key(&content, api_url)
+        Self::parse_api_key_for_profile(&content, api_url, profile)
     }
 
     /// Load API key for the current configured URL
@@ -2036,74 +2276,116 @@ impl ApiClient {
         Self::load_optional_api_key_for_url(&base_url)
     }
 
-    pub fn list_credentials() -> Result<Vec<(String, String)>> {
+    pub fn list_credentials() -> Result<Vec<StoredCredential>> {
         let path = Self::credentials_path()?;
+        ensure_safe_credentials_path(&path)?;
         let content = fs::read_to_string(&path).context("Failed to read credentials file")?;
 
         let creds: toml::Value =
             toml::from_str(&content).context("Failed to parse credentials file")?;
 
-        // Try new format first
-        if let Some(keys) = creds.get("keys").and_then(|k| k.as_table()) {
-            let mut result = Vec::new();
-            for (url, key_value) in keys.iter() {
-                if let Some(key) = key_value.as_str() {
-                    // Mask the key for display
-                    let masked = if key.len() > 12 {
-                        format!("{}...{}", &key[..8], &key[key.len() - 4..])
-                    } else {
-                        key.to_string()
-                    };
-                    result.push((url.clone(), masked));
+        let mut result = Vec::new();
+        if let Some(profiles) = creds.get("profiles").and_then(toml::Value::as_table) {
+            for (profile, value) in profiles {
+                let Some(keys) = value.get("keys").and_then(toml::Value::as_table) else {
+                    continue;
+                };
+                for (url, key_value) in keys {
+                    if let Some(key) = key_value.as_str() {
+                        result.push(StoredCredential {
+                            profile: Some(profile.clone()),
+                            api_url: url.clone(),
+                            masked_key: mask_api_key(key),
+                        });
+                    }
                 }
             }
-            return Ok(result);
         }
 
-        // Fall back to legacy format
-        #[derive(Deserialize)]
-        struct LegacyCredentials {
-            api_key: Option<String>,
+        // Preserve visibility into legacy URL-keyed entries during migration.
+        if let Some(keys) = creds.get("keys").and_then(|k| k.as_table()) {
+            for (url, key_value) in keys.iter() {
+                if let Some(key) = key_value.as_str() {
+                    result.push(StoredCredential {
+                        profile: None,
+                        api_url: url.clone(),
+                        masked_key: mask_api_key(key),
+                    });
+                }
+            }
         }
 
-        let legacy: LegacyCredentials = toml::from_str(&content)?;
-        if let Some(key) = legacy.api_key {
-            let masked = if key.len() > 12 {
-                format!("{}...{}", &key[..8], &key[key.len() - 4..])
-            } else {
-                key.to_string()
-            };
-            return Ok(vec![(DEFAULT_API_URL.to_string(), masked)]);
+        if let Some(key) = creds.get("api_key").and_then(toml::Value::as_str) {
+            result.push(StoredCredential {
+                profile: None,
+                api_url: DEFAULT_API_URL.to_string(),
+                masked_key: mask_api_key(key),
+            });
         }
 
-        Ok(Vec::new())
+        result.sort_by(|left, right| {
+            left.profile
+                .cmp(&right.profile)
+                .then_with(|| left.api_url.cmp(&right.api_url))
+        });
+        Ok(result)
     }
 
     pub fn delete_api_key_for_url(api_url: &str) -> Result<()> {
+        let profile = Self::selected_profile()?;
+        Self::delete_api_key_for_profile(api_url, profile.as_deref())
+    }
+
+    pub fn delete_api_key_for_profile(api_url: &str, profile: Option<&str>) -> Result<()> {
         let path = Self::credentials_path()?;
+        ensure_safe_credentials_path(&path)?;
         if !path.exists() {
             anyhow::bail!("No credentials file found");
         }
 
         let content = fs::read_to_string(&path)?;
         let mut creds: toml::Value = toml::from_str(&content)?;
+        let lookup = lookup_credentials(&content, api_url, profile)?;
+        if lookup.key.is_none() {
+            anyhow::bail!("No API key found for URL: {api_url}");
+        }
 
-        let keys = creds
-            .get_mut("keys")
-            .and_then(|k| k.as_table_mut())
-            .ok_or_else(|| anyhow::anyhow!("No keys found in credentials file"))?;
+        let removed = match lookup.profile.as_deref() {
+            Some(profile_name) => creds
+                .get_mut("profiles")
+                .and_then(toml::Value::as_table_mut)
+                .and_then(|profiles| profiles.get_mut(profile_name))
+                .and_then(toml::Value::as_table_mut)
+                .and_then(|profile| profile.get_mut("keys"))
+                .and_then(toml::Value::as_table_mut)
+                .is_some_and(|keys| remove_url_key(keys, api_url)),
+            None => {
+                let removed_url_key = creds
+                    .get_mut("keys")
+                    .and_then(toml::Value::as_table_mut)
+                    .is_some_and(|keys| remove_url_key(keys, api_url));
+                if removed_url_key {
+                    true
+                } else {
+                    creds
+                        .as_table_mut()
+                        .is_some_and(|table| table.remove("api_key").is_some())
+                }
+            }
+        };
 
-        if keys.remove(api_url).is_some() {
+        if removed {
             let content = toml::to_string_pretty(&creds)?;
-            fs::write(&path, content)?;
+            write_credentials_atomic(&path, content.as_bytes())?;
             Ok(())
         } else {
-            anyhow::bail!("No API key found for URL: {}", api_url)
+            anyhow::bail!("No API key found for URL: {api_url}")
         }
     }
 
     pub fn delete_all_api_keys() -> Result<()> {
         let path = Self::credentials_path()?;
+        ensure_safe_credentials_path(&path)?;
         if path.exists() {
             fs::remove_file(&path).context("Failed to delete credentials file")?;
         }
@@ -2127,17 +2409,46 @@ fn registry_install_url(base_url: &str, path: &str, language: Option<&str>) -> S
 // Agent self-registration (WP9: `a4 auth signup`, `a4 doctor`)
 // ============================================================================
 
-/// Error message for HTTP 429 from `/api/agents/signup`.
-pub const SIGNUP_RATE_LIMIT_MESSAGE: &str = "Signup limit reached (5 per hour per IP). Retry later, or use a key from https://arete.run/keys: a4 auth login --key <a4_ak_...>";
-
 /// Response from `POST /api/agents/signup`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AgentSignupResponse {
     pub slug: String,
     pub display_name: String,
     pub api_key: String,
     #[serde(default)]
     pub message: Option<String>,
+}
+
+impl std::fmt::Debug for AgentSignupResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentSignupResponse")
+            .field("slug", &self.slug)
+            .field("display_name", &self.display_name)
+            .field("api_key", &"[REDACTED]")
+            .field("message", &self.message)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMeResponse {
+    pub slug: String,
+    pub display_name: String,
+    pub status: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub last_seen_at: Option<String>,
+    #[serde(rename = "claimState", alias = "claim_state")]
+    pub claim_state: String,
+    #[serde(default)]
+    pub plan: Option<String>,
+    #[serde(rename = "entitlementExpiresAt", default)]
+    pub entitlement_expires_at: Option<String>,
+    #[serde(rename = "trialAccessEnabled", default)]
+    pub trial_access_enabled: Option<bool>,
+    #[serde(rename = "starterGuidance", default)]
+    pub starter_guidance: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2148,8 +2459,8 @@ struct AgentSignupRequest<'a> {
 
 impl ApiClient {
     /// Build a client against an explicit base URL with no stored key.
-    /// Test-only: production code goes through [`ApiClient::new`].
-    #[cfg(test)]
+    /// Used by unauthenticated signup and by login's explicit-key verification
+    /// so neither operation can accidentally inherit another profile.
     pub(crate) fn with_base_url(base_url: &str) -> Self {
         ApiClient {
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -2164,8 +2475,7 @@ impl ApiClient {
         Self::credentials_path()
     }
 
-    /// Register this machine as an agent (unauthenticated). On HTTP 429 the
-    /// error message is exactly [`SIGNUP_RATE_LIMIT_MESSAGE`].
+    /// Register this machine as an agent (unauthenticated).
     pub fn agent_signup(&self, display_name: Option<&str>) -> Result<AgentSignupResponse> {
         let response = self
             .client
@@ -2173,15 +2483,11 @@ impl ApiClient {
             .json(&AgentSignupRequest { display_name })
             .send()
             .context("Failed to reach the signup endpoint")?;
-        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            anyhow::bail!("{}", SIGNUP_RATE_LIMIT_MESSAGE);
-        }
         Self::handle_response(response)
     }
 
-    /// `GET /api/agents/me` with the stored key; the raw JSON is returned so
-    /// callers (`a4 doctor`) can report whatever the server includes.
-    pub fn agent_me(&self) -> Result<serde_json::Value> {
+    /// `GET /api/agents/me` with the stored agent key.
+    pub fn agent_me(&self) -> Result<AgentMeResponse> {
         let api_key = self.require_api_key()?;
         let response = self
             .client
@@ -2206,6 +2512,42 @@ impl ApiClient {
         let value: serde_json::Value = Self::handle_response(response)?;
         AccountCapabilities::from_value(&value)
             .ok_or_else(|| anyhow::anyhow!("the account response did not list capabilities"))
+    }
+
+    /// Materialize a short-lived human claim link for the current agent.
+    /// Callers must validate the returned URL before displaying it.
+    pub fn agent_claim_link(&self) -> Result<ReadyRecoveryActionV1> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .post(format!("{}/api/agents/me/claim-links", self.base_url))
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to create agent claim link")?;
+        Self::handle_response(response)
+    }
+
+    pub fn configured_claim_app_origin() -> Result<url::Url> {
+        let value = std::env::var("ARETE_APP_ORIGIN").unwrap_or_else(|_| {
+            if cfg!(feature = "local") {
+                "http://localhost:3000".to_string()
+            } else {
+                "https://arete.run".to_string()
+            }
+        });
+        let mut origin = url::Url::parse(&value)
+            .with_context(|| format!("Invalid ARETE_APP_ORIGIN: {value}"))?;
+        if !origin.username().is_empty()
+            || origin.password().is_some()
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+        {
+            anyhow::bail!(
+                "ARETE_APP_ORIGIN must be an origin without credentials, query, or fragment"
+            );
+        }
+        origin.set_path("");
+        Ok(origin)
     }
 }
 
@@ -2468,11 +2810,22 @@ mod agent_tests {
     }
 
     #[test]
-    fn agent_signup_maps_429_to_rate_limit_message() {
-        let server = MockServer::json(429, r#"{"error":"rate limited"}"#);
+    fn agent_signup_preserves_structured_rate_limit_problem() {
+        let server = MockServer::json(
+            429,
+            r#"{"schemaVersion":1,"error":"rate limited","code":"rate_limit_exceeded","retryable":true,"retryAfterSeconds":60}"#,
+        );
         let client = ApiClient::with_base_url(server.base_url());
         let err = client.agent_signup(None).expect_err("429 is an error");
-        assert_eq!(err.to_string(), SIGNUP_RATE_LIMIT_MESSAGE);
+        let api_error = err
+            .downcast_ref::<ApiClientError>()
+            .expect("typed API error");
+        assert_eq!(api_error.status, reqwest::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            api_error.problem.code.as_deref(),
+            Some("rate_limit_exceeded")
+        );
+        assert_eq!(api_error.retry_after_seconds(), Some(60));
     }
 
     #[test]
@@ -2513,10 +2866,7 @@ mod agent_tests {
         let server = MockServer::json(404, r#"{"error":"not found"}"#);
         let client = ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_me".into());
         let err = client.account_capabilities().expect_err("404 is an error");
-        assert_eq!(
-            err.downcast_ref::<ApiHttpError>().map(|error| error.status),
-            Some(404)
-        );
+        assert_eq!(api_error_details(&err).map(|error| error.status), Some(404));
     }
 
     #[test]
@@ -2531,12 +2881,16 @@ mod agent_tests {
     }
 
     #[test]
-    fn agent_me_sends_bearer_and_returns_raw_json() {
-        let server = MockServer::json(200, r#"{"slug":"agent-1","plan":"free"}"#);
+    fn agent_me_sends_bearer_and_returns_typed_identity() {
+        let server = MockServer::json(
+            200,
+            r#"{"slug":"agent-1","display_name":"Agent One","status":"active","created_at":"2026-09-22T00:00:00Z","last_seen_at":null,"claimState":"unclaimed"}"#,
+        );
         let client =
             ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_me".to_string());
         let me = client.agent_me().expect("me succeeds");
-        assert_eq!(me["slug"], "agent-1");
+        assert_eq!(me.slug, "agent-1");
+        assert_eq!(me.claim_state, "unclaimed");
         let req = server.request();
         assert_eq!(req.request_line, "GET /api/agents/me HTTP/1.1");
         assert_eq!(req.header("authorization"), Some("Bearer a4_ak_me"));
@@ -2716,11 +3070,11 @@ mod stack_destroy_tests {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::ensure_no_dangling_symlink;
+    use super::ensure_safe_credentials_path;
     use super::*;
     use serde_json::json;
     use std::fs;
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{symlink, PermissionsExt};
 
     #[test]
     fn dangling_credentials_symlink_is_not_treated_as_missing() {
@@ -2730,9 +3084,9 @@ mod tests {
         let credentials = root.join("credentials.toml");
         symlink(root.join("missing.toml"), &credentials).unwrap();
 
-        let error = ensure_no_dangling_symlink(&credentials).unwrap_err();
+        let error = ensure_safe_credentials_path(&credentials).unwrap_err();
 
-        assert!(error.to_string().contains("dangling symlink"));
+        assert!(error.to_string().contains("must not contain symlinks"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2745,10 +3099,52 @@ mod tests {
         symlink(root.join("missing-dir"), &credentials_dir).unwrap();
 
         let error =
-            ensure_no_dangling_symlink(&credentials_dir.join("credentials.toml")).unwrap_err();
+            ensure_safe_credentials_path(&credentials_dir.join("credentials.toml")).unwrap_err();
 
-        assert!(error.to_string().contains("dangling symlink"));
+        assert!(error.to_string().contains("must not contain symlinks"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn atomic_credentials_write_is_owner_only() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let credentials_dir = root.path().join(".arete");
+        let credentials = credentials_dir.join("credentials.toml");
+
+        write_credentials_atomic(&credentials, b"[keys]\n").expect("secure write");
+
+        assert_eq!(
+            fs::metadata(&credentials_dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&credentials).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(fs::read(&credentials).unwrap(), b"[keys]\n");
+    }
+
+    #[test]
+    fn atomic_credentials_write_refuses_symlink_without_touching_target() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("target.toml");
+        let credentials = root.path().join("credentials.toml");
+        fs::write(&target, "sentinel").unwrap();
+        symlink(&target, &credentials).unwrap();
+
+        let error = write_credentials_atomic(&credentials, b"replacement").unwrap_err();
+
+        assert!(error.to_string().contains("must not contain symlinks"));
+        assert_eq!(fs::read_to_string(target).unwrap(), "sentinel");
+    }
+
+    #[test]
+    fn malformed_credentials_are_errors_instead_of_anonymous_fallback() {
+        let error = ApiClient::parse_api_key("[keys\n", "https://api.arete.run")
+            .expect_err("malformed TOML must be preserved as an error");
+        assert!(error
+            .to_string()
+            .contains("Failed to parse credentials file"));
     }
 
     #[test]
@@ -2948,6 +3344,7 @@ mod tests {
             "httpAuth": {},
             "description": null,
             "visibility": "public",
+            "serviceClass": "standard",
             "specVersionId": 7,
             "liveSpecHash": "live-spec",
             "liveSpec": {"kind": "live-spec"},
@@ -3295,6 +3692,7 @@ mod tests {
             "stack": "snapshot-stack",
             "description": null,
             "visibility": "public",
+            "serviceClass": "standard",
             "specVersionId": 5,
             "liveSpecs": live_specs,
             "stackManifestHash": "manifest-hash",
@@ -3369,6 +3767,14 @@ mod tests {
         let response: RegistryStackInstallResponse = serde_json::from_value(value).unwrap();
         assert!(response.live_specs.is_empty());
         assert_eq!(response.live_spec_hash.as_deref(), Some("live-hash-0"));
+    }
+
+    #[test]
+    fn registry_install_without_service_class_defaults_to_standard() {
+        let mut value = registry_install_snapshot(1);
+        value.as_object_mut().unwrap().remove("serviceClass");
+        let response: RegistryStackInstallResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(response.service_class, "standard");
     }
 
     #[test]

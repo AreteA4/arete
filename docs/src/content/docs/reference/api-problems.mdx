@@ -1,0 +1,49 @@
+---
+title: API problems and recovery actions
+description: Stable error, retry, and human handoff semantics for Arete clients.
+---
+
+Arete errors keep `error` and `code` at the top level for compatibility and
+add a tolerant v1 envelope:
+
+```json
+{
+  "schemaVersion": 1,
+  "error": "This agent's trial has ended. A human owner must claim it.",
+  "code": "agent-claim-required",
+  "retryable": false,
+  "action": {
+    "type": "claim_agent",
+    "label": "Claim this agent",
+    "method": "POST",
+    "path": "/api/agents/me/claim-links"
+  }
+}
+```
+
+Readers ignore unknown fields. SDKs expose the typed metadata but do not act
+on it. A `429` is temporary and follows the `Retry-After` header. A `403
+agent-claim-required` is not retryable. `402` is reserved for a future payment
+flow.
+
+The problem never contains a live claim secret. The CLI and MCP server may
+POST the exact fixed `claim_agent` materializer once. The returned URL is
+accepted only when it uses the configured Arete app origin, path `/claim`,
+HTTPS (HTTP loopback is allowed in development), no query or user information,
+and a non-empty fragment.
+
+For a human handoff, run:
+
+```sh
+a4 auth claim-link
+```
+
+The agent should give that link to the human. It must not visit the link,
+complete the claim, log the URL, or retain it in connection history. MCP
+returns the standard URL-elicitation error (`-32042`) with only `url`,
+`elicitationId`, `expiresAt`, and `actionType`.
+
+CLI process exit codes are `20` for an action-required handoff, `75` for a
+temporary rate limit, and `77` for authentication failure. With `--json`, a
+failed API command writes one problem JSON object to stdout; diagnostics stay
+on stderr.

@@ -275,6 +275,8 @@ async fn exposes_socket_issues_via_public_api() {
             code: Some(arete_a4_sdk::AuthErrorCode::SubscriptionLimitExceeded),
             retryable: false,
             retry_after: None,
+            usage: None,
+            action: None,
             suggested_action: Some("unsubscribe first".to_string()),
             docs_url: None,
             fatal: false,
