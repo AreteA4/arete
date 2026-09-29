@@ -17,8 +17,10 @@ use crate::agents::detect::{detect, Detection, How};
 use crate::agents::mcp_config::{self, McpState, Scope};
 use crate::agents::skills;
 use crate::agents::{find_on_path, read_optional, Env};
+#[cfg(test)]
+use crate::api_client::ApiHttpError;
 use crate::api_client::{
-    AccountCapabilities, ApiClient, ApiHttpError, CAPABILITY_CREATE_DEPLOYMENT,
+    api_error_details, AccountCapabilities, ApiClient, CAPABILITY_CREATE_DEPLOYMENT,
     CAPABILITY_TRANSACTION_INSPECT, CAPABILITY_TRANSACTION_SEND,
 };
 use crate::project::manifest::InstallTarget;
@@ -121,7 +123,7 @@ const NOT_ON_PATH_FIX: &str = "put a4 on PATH (open a new shell after installing
 /// Whether `--fix` re-runs the writers for `check`: a failing agent check,
 /// except one only a PATH change can clear.
 fn is_fixable(check: &Check) -> bool {
-    check.id.starts_with("agents.")
+    (check.id.starts_with("agents.") || check.id == "project.auth-profile")
         && matches!(check.status, Status::Warn | Status::Fail)
         && check.fix.as_deref() != Some(NOT_ON_PATH_FIX)
 }
@@ -242,6 +244,7 @@ struct ProjectFacts {
 /// Run every check from the WP8 table, in order.
 pub fn run_checks(env: &Env, config_path: &Path) -> Vec<Check> {
     let mut checks = Vec::new();
+    let detection = detect(env);
     let receipt = Receipt::load().ok().flatten();
     let path_env = env.path_env();
     let current = env!("CARGO_PKG_VERSION");
@@ -294,6 +297,7 @@ pub fn run_checks(env: &Env, config_path: &Path) -> Vec<Check> {
             Some("a4 install".to_string()),
         ),
     });
+    checks.push(project_auth_profile(config_path, &detection));
 
     // sdk.runtime
     checks.push(match &facts {
@@ -303,11 +307,18 @@ pub fn run_checks(env: &Env, config_path: &Path) -> Vec<Check> {
 
     // auth.credentials / auth.whoami
     let api_url = crate::config::get_api_url(None);
-    let key = env.var("ARETE_API_KEY").map(str::to_string).or_else(|| {
+    let selected_profile = ApiClient::selected_profile().ok().flatten();
+    let key = if selected_profile.is_some() {
         ApiClient::load_optional_api_key_for_url(&api_url)
             .ok()
             .flatten()
-    });
+    } else {
+        env.var("ARETE_API_KEY").map(str::to_string).or_else(|| {
+            ApiClient::load_optional_api_key_for_url(&api_url)
+                .ok()
+                .flatten()
+        })
+    };
     match &key {
         Some(_) => checks.push(Check::ok(
             "auth.credentials",
@@ -362,9 +373,28 @@ pub fn run_checks(env: &Env, config_path: &Path) -> Vec<Check> {
     });
 
     // agents.*
-    let detection = detect(env);
     checks.extend(agent_checks(env, &detection));
     checks
+}
+
+fn project_auth_profile(config_path: &Path, detection: &Detection) -> Check {
+    let id = "project.auth-profile";
+    match crate::config::get_project_auth_profile(&config_path.display().to_string()) {
+        Ok(Some(profile)) => Check::ok(id, format!("default profile is {profile}")),
+        Ok(None) if detection.agents.is_empty() && !detection.universal => {
+            Check::info(id, "not configured (no coding agent detected)", None)
+        }
+        Ok(None) => Check::warn(
+            id,
+            format!("{} is missing", crate::config::PROJECT_AUTH_RELATIVE_PATH),
+            Some("a4 doctor --fix".to_string()),
+        ),
+        Err(error) => Check::fail(
+            id,
+            format!("{error:#}"),
+            Some("a4 doctor --fix".to_string()),
+        ),
+    }
 }
 
 fn cli_version(receipt: Option<&Receipt>, current: &str) -> Check {
@@ -540,20 +570,17 @@ fn auth_whoami(key: &str) -> Check {
     // key-scoped listing.
     let result = client
         .agent_me()
-        .map(|me| {
-            me.get("name")
-                .or_else(|| me.get("id"))
-                .and_then(|v| v.as_str())
-                .map(|name| format!("agent {name}"))
-                .unwrap_or_else(|| "agent key accepted".to_string())
-        })
+        .map(|me| format!("agent {} ({})", me.slug, me.claim_state))
         .or_else(|_| client.list_specs().map(|_| "API key accepted".to_string()));
     match result {
         Ok(detail) => Check::ok(id, detail),
         Err(error) => Check::fail(
             id,
             format!("API key rejected: {}", root_cause(&error)),
-            Some("a4 auth login --key <a4_ak_...> (or a4 auth signup)".to_string()),
+            Some(
+                "a4 auth signup (agent) or a4 auth login --profile human --key <a4_sk_...>"
+                    .to_string(),
+            ),
         ),
     }
 }
@@ -572,10 +599,7 @@ fn account_capabilities(key: &str) -> std::result::Result<AccountCapabilities, S
 
 /// A neutral, user-facing reason account capabilities could not be read.
 pub(crate) fn account_unavailable_reason(error: &anyhow::Error) -> String {
-    match error
-        .downcast_ref::<ApiHttpError>()
-        .map(|error| error.status)
-    {
+    match api_error_details(error).map(|error| error.status) {
         Some(404) => "this API does not report account capabilities yet".to_string(),
         Some(401 | 403) => "the API key was not accepted for account details".to_string(),
         _ => format!(

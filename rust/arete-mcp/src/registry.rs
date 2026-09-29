@@ -33,6 +33,7 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use arete_sdk::ApiProblemV1;
 use serde_json::Value;
 
 use crate::credentials;
@@ -60,6 +61,24 @@ pub struct RegistryClient {
     base_url: String,
     http: reqwest::Client,
 }
+
+#[derive(Debug)]
+pub struct RegistryApiError {
+    pub status: reqwest::StatusCode,
+    pub problem: ApiProblemV1,
+}
+
+impl std::fmt::Display for RegistryApiError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "registry returned {}: {}",
+            self.status, self.problem.error
+        )
+    }
+}
+
+impl std::error::Error for RegistryApiError {}
 
 impl Default for RegistryClient {
     fn default() -> Self {
@@ -331,18 +350,19 @@ impl RegistryClient {
         let body = read_capped_body(response, path).await?;
 
         if !status.is_success() {
-            // Surface the platform's structured `code` when there is one — those
-            // are stable, the English messages are not.
-            let code = serde_json::from_str::<Value>(&body)
-                .ok()
-                .and_then(|v| v.get("code").and_then(Value::as_str).map(str::to_string));
-            return Err(match code {
-                Some(code) => anyhow!("registry returned {status} ({code}) for {path}"),
-                None => anyhow!(
-                    "registry returned {status} for {path}: {}",
-                    truncate_for_error(&body)
-                ),
-            });
+            let problem =
+                serde_json::from_str::<ApiProblemV1>(&body).unwrap_or_else(|_| ApiProblemV1 {
+                    schema_version: None,
+                    error: truncate_for_error(&body),
+                    code: None,
+                    retryable: status.is_server_error().then_some(true),
+                    request_id: None,
+                    retry_after_seconds: None,
+                    usage: None,
+                    action: None,
+                    extra: std::collections::BTreeMap::new(),
+                });
+            return Err(RegistryApiError { status, problem }.into());
         }
 
         // Parse only to validate: a proxy's HTML error page must not reach the

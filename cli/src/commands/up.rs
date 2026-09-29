@@ -6,8 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+#[cfg(test)]
+use crate::api_client::ApiHttpError;
 use crate::api_client::{
-    ApiClient, ApiHttpError, BindStackCompositionRequest, BindStackCompositionResponse,
+    api_error_details, ApiClient, BindStackCompositionRequest, BindStackCompositionResponse,
     BuildStatus, BuildStatusResponse, CreateAliasedLiveSpecArtifact, CreateArtifactBuildRequest,
     CreateBuildResponse, CreateSpecRequest, DeploymentPhase, DeploymentResponse, DeploymentStatus,
     ProgramSdkAssignment, ProgramSdkReference, SelectedProgramRelease, Spec,
@@ -205,17 +207,17 @@ fn create_deployment_plan<A: HostedDeploymentApi + ?Sized>(
 /// A registry that does not know `programSdks` rejects it as an unknown
 /// request field.
 fn rejects_program_sdks(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<ApiHttpError>().is_some_and(|http| {
+    api_error_details(error).is_some_and(|http| {
         (400..500).contains(&http.status)
-            && http.code.as_deref() != Some(PROGRAM_SDK_REFERENCE_INVALID)
+            && http.code != Some(PROGRAM_SDK_REFERENCE_INVALID)
             && http.message.contains("programSdks")
     })
 }
 
 /// A requested program SDK the registry refused, with the fix.
 fn program_sdk_guidance(error: anyhow::Error, pins: Option<&ReleasePins<'_>>) -> anyhow::Error {
-    let invalid = error.downcast_ref::<ApiHttpError>().is_some_and(|http| {
-        http.status == 409 && http.code.as_deref() == Some(PROGRAM_SDK_REFERENCE_INVALID)
+    let invalid = api_error_details(&error).is_some_and(|http| {
+        http.status == 409 && http.code == Some(PROGRAM_SDK_REFERENCE_INVALID)
     });
     if !invalid {
         return error;

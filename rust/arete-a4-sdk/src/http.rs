@@ -206,6 +206,7 @@ fn invalid_auth_error(message: &str, code: Option<AuthErrorCode>) -> AreteError 
         message: message.to_string(),
         code,
         stack_version: None,
+        problem: None,
     }
 }
 
@@ -470,6 +471,11 @@ impl HttpAuthClient {
             .get(HEADER_ERROR_CODE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
+        let retry_after = response
+            .headers()
+            .get("Retry-After")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
         let body = response
             .bytes()
             .await
@@ -481,6 +487,7 @@ impl HttpAuthClient {
                 header_code.as_deref(),
                 Some(&body),
                 status.canonical_reason(),
+                retry_after,
             ));
         }
 

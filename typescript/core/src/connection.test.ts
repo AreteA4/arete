@@ -69,14 +69,18 @@ function subscription(
 
 function makeErrorResponse(
   status: number,
-  body: { error: string; code?: string } | string,
-  headerCode?: string
+  body: Record<string, unknown> | string,
+  headerCode?: string,
+  retryAfter?: number,
 ) {
   const rawBody = typeof body === 'string' ? body : JSON.stringify(body);
   const headers = new Headers();
 
   if (headerCode) {
     headers.set('X-Error-Code', headerCode);
+  }
+  if (retryAfter !== undefined) {
+    headers.set('Retry-After', String(retryAfter));
   }
 
   return {
@@ -648,6 +652,47 @@ describe('ConnectionManager auth', () => {
       'WebSocket closed before open (1008: stack-version-retired: Stack ore 1.2.0 was retired)',
     ]);
     manager.disconnect();
+  });
+
+  it('retains a claim recovery problem without exposing a raw response body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeErrorResponse(403, {
+        schemaVersion: 1,
+        error: "This agent's trial has ended.",
+        code: 'agent-claim-required',
+        retryable: false,
+        action: {
+          type: 'claim_agent',
+          label: 'Claim this agent',
+          method: 'POST',
+          path: '/api/agents/me/claim-links',
+        },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://global.stack.arete.run',
+      auth: { publishableKey: 'hspk_test_123' },
+    });
+
+    let thrown: unknown;
+    try {
+      await manager.connect();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(AreteError);
+    const areteError = thrown as AreteError;
+    expect(areteError.code).toBe('AGENT_CLAIM_REQUIRED');
+    expect(areteError.apiProblem()?.action).toMatchObject({
+      type: 'claim_agent',
+      method: 'POST',
+      path: '/api/agents/me/claim-links',
+    });
+    expect(areteError.details).not.toHaveProperty('responseBody');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes expiring tokens in the background via in-band refresh', async () => {

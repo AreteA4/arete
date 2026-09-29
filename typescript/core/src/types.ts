@@ -452,10 +452,156 @@ export interface SocketIssue {
   code: string | AuthErrorCode;
   retryable: boolean;
   retryAfter?: number;
+  usage?: UsageLimit;
+  action?: RecoveryAction;
   suggestedAction?: string;
   docsUrl?: string;
   fatal: boolean;
   subscriptionId?: string | null;
+}
+
+export const API_PROBLEM_SCHEMA_VERSION = 1 as const;
+export const CLAIM_AGENT_MATERIALIZER_PATH = '/api/agents/me/claim-links' as const;
+
+export interface UsageLimit {
+  readonly unit: string;
+  readonly used: number;
+  readonly limit: number;
+  readonly resetsAt?: string | null;
+}
+
+export interface RecoveryAction {
+  readonly type: string;
+  readonly label?: string;
+  readonly method?: string;
+  readonly path?: string;
+  readonly [key: string]: unknown;
+}
+
+export interface ApiProblemV1 {
+  readonly schemaVersion?: number;
+  readonly error: string;
+  readonly code?: string;
+  readonly retryable?: boolean;
+  readonly requestId?: string;
+  readonly retryAfterSeconds?: number | null;
+  readonly usage?: UsageLimit;
+  readonly action?: RecoveryAction;
+  readonly [key: string]: unknown;
+}
+
+export interface ReadyRecoveryAction {
+  readonly type: string;
+  readonly url: string;
+  readonly elicitationId: string;
+  readonly expiresAt: string;
+}
+
+export interface ReadyRecoveryActionV1 {
+  readonly schemaVersion: 1;
+  readonly action: ReadyRecoveryAction;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isSafeUnsignedInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function parseUsageLimit(value: unknown): UsageLimit | undefined {
+  if (!isRecord(value)
+    || typeof value['unit'] !== 'string'
+    || !isSafeUnsignedInteger(value['used'])
+    || !isSafeUnsignedInteger(value['limit'])
+    || (value['resetsAt'] !== undefined
+      && value['resetsAt'] !== null
+      && typeof value['resetsAt'] !== 'string')) {
+    return undefined;
+  }
+
+  return {
+    unit: value['unit'],
+    used: value['used'],
+    limit: value['limit'],
+    ...(value['resetsAt'] !== undefined ? { resetsAt: value['resetsAt'] as string | null } : {}),
+  };
+}
+
+function parseRecoveryAction(value: unknown): RecoveryAction | undefined {
+  if (!isRecord(value) || typeof value['type'] !== 'string') {
+    return undefined;
+  }
+
+  if ((value['label'] !== undefined && typeof value['label'] !== 'string')
+    || (value['method'] !== undefined && typeof value['method'] !== 'string')
+    || (value['path'] !== undefined && typeof value['path'] !== 'string')) {
+    return undefined;
+  }
+
+  return value as RecoveryAction;
+}
+
+export function isClaimAgentRecoveryAction(
+  action: RecoveryAction | undefined,
+): boolean {
+  return action?.type === 'claim_agent'
+    && action.method === 'POST'
+    && action.path === CLAIM_AGENT_MATERIALIZER_PATH;
+}
+
+export function parseApiProblem(value: unknown): ApiProblemV1 | undefined {
+  if (!isRecord(value) || typeof value['error'] !== 'string') {
+    return undefined;
+  }
+  if (value['schemaVersion'] !== undefined
+    && (!isSafeUnsignedInteger(value['schemaVersion']) || value['schemaVersion'] < 1)) {
+    return undefined;
+  }
+  if ((value['code'] !== undefined && typeof value['code'] !== 'string')
+    || (value['retryable'] !== undefined && typeof value['retryable'] !== 'boolean')
+    || (value['requestId'] !== undefined && typeof value['requestId'] !== 'string')
+    || (value['retryAfterSeconds'] !== undefined
+      && value['retryAfterSeconds'] !== null
+      && !isSafeUnsignedInteger(value['retryAfterSeconds']))) {
+    return undefined;
+  }
+
+  const usage = value['usage'] === undefined ? undefined : parseUsageLimit(value['usage']);
+  const action = value['action'] === undefined ? undefined : parseRecoveryAction(value['action']);
+  if ((value['usage'] !== undefined && !usage) || (value['action'] !== undefined && !action)) {
+    return undefined;
+  }
+
+  return {
+    ...value,
+    error: value['error'],
+    ...(usage ? { usage } : {}),
+    ...(action ? { action } : {}),
+  } as ApiProblemV1;
+}
+
+export function isSafeClaimActionUrl(action: ReadyRecoveryAction, expectedOrigin: string): boolean {
+  if (action.type !== 'claim_agent') return false;
+
+  try {
+    const url = new URL(action.url);
+    const origin = new URL(expectedOrigin);
+    const loopback = url.hostname === 'localhost'
+      || url.hostname === '127.0.0.1'
+      || url.hostname === '[::1]';
+    const secure = url.protocol === 'https:' || (url.protocol === 'http:' && loopback);
+    return secure
+      && url.origin === origin.origin
+      && url.username === ''
+      && url.password === ''
+      && url.pathname === '/claim'
+      && url.search === ''
+      && url.hash.length > 1;
+  } catch {
+    return false;
+  }
 }
 
 export const DEFAULT_CONFIG: Required<
@@ -502,6 +648,7 @@ export type AuthErrorCode =
   | 'SNAPSHOT_LIMIT_EXCEEDED'
   | 'EGRESS_LIMIT_EXCEEDED'
   | 'QUOTA_EXCEEDED'
+  | 'AGENT_CLAIM_REQUIRED'
   // Static token errors
   | 'INVALID_STATIC_TOKEN'
   // Stack version errors: the session endpoint no longer serves, or never
@@ -594,6 +741,19 @@ export class AreteError extends Error {
   ) {
     super(message);
     this.name = 'AreteError';
+  }
+
+  apiProblem(): ApiProblemV1 | undefined {
+    if (!isRecord(this.details)) return undefined;
+    return parseApiProblem(this.details['apiProblem']);
+  }
+
+  recoveryAction(): RecoveryAction | undefined {
+    return this.apiProblem()?.action;
+  }
+
+  retryAfter(): number | undefined {
+    return this.apiProblem()?.retryAfterSeconds ?? undefined;
   }
 }
 
@@ -716,6 +876,7 @@ const AUTH_ERROR_CODES_BY_WIRE: Readonly<Record<string, AuthErrorCode>> = {
   'secret-key-required': 'SECRET_KEY_REQUIRED',
   'deployment-access-denied': 'DEPLOYMENT_ACCESS_DENIED',
   'quota-exceeded': 'QUOTA_EXCEEDED',
+  'agent-claim-required': 'AGENT_CLAIM_REQUIRED',
   'stack-version-retired': 'STACK_VERSION_RETIRED',
   'stack-version-unknown': 'STACK_VERSION_UNKNOWN',
 };

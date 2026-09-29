@@ -292,14 +292,24 @@ export type {
   SocketIssue,
   SocketIssueCallback,
   ReplayErrorCode,
+  UsageLimit,
+  RecoveryAction,
+  ApiProblemV1,
+  ReadyRecoveryAction,
+  ReadyRecoveryActionV1,
 } from './types';
 
 export {
   DEFAULT_CONFIG,
   DEFAULT_MAX_ENTRIES_PER_VIEW,
+  API_PROBLEM_SCHEMA_VERSION,
+  CLAIM_AGENT_MATERIALIZER_PATH,
   AreteError,
+  isClaimAgentRecoveryAction,
   isReplayErrorCode,
+  isSafeClaimActionUrl,
   isStackVersionRefusalCode,
+  parseApiProblem,
 } from './types';
 
 export type {

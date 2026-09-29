@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use toml_edit::{value, Array, DocumentMut, InlineTable, Item, Table};
 
-use crate::api_client::ApiClient;
+use crate::api_client::{api_error_details, ApiClient};
 use crate::commands::public_artifacts::{load_local_artifact_stack_with_roots, LocalArtifactStack};
 use crate::commands::sdk::{
     generate_project_composed_stack, generate_project_local_program, generate_project_local_stack,
@@ -2629,7 +2629,7 @@ fn describe_resolver_batch_error(
         .filter(|request| request.locked_package_release_hash.is_some())
         .map(|request| format!("{} '{}'", request.kind, request.package))
         .collect::<Vec<_>>();
-    let Some(http) = error.downcast_ref::<crate::api_client::ApiHttpError>() else {
+    let Some(http) = api_error_details(&error) else {
         return error.context(format!("Failed to resolve {names} through the registry"));
     };
     match http.status {
@@ -2638,14 +2638,14 @@ fn describe_resolver_batch_error(
         }
         403 => anyhow::anyhow!("This account is not entitled to resolve one or more of {names}"),
         404 => anyhow::anyhow!("One or more of {names} is unavailable to this account or unknown"),
-        409 if http.code.as_deref() == Some(DELIVERY_NOT_READY) => anyhow::anyhow!(
+        409 if http.code == Some(DELIVERY_NOT_READY) => anyhow::anyhow!(
             "A hosted stack among {names} is published but its live delivery is not currently \
-             ready; nothing was installed and arete.lock is unchanged. Retry shortly ({http})"
+             ready; nothing was installed and arete.lock is unchanged. Retry shortly ({error})"
         ),
-        409 if http.code.as_deref() == Some(STACK_VERSION_RETIRED) => anyhow::anyhow!(
+        409 if http.code == Some(STACK_VERSION_RETIRED) => anyhow::anyhow!(
             "A stack version among {names} is no longer served; nothing was installed and \
-             arete.lock is unchanged.{} ({http})",
-            upgrade_hint(None, http.upgrade_command.as_deref())
+             arete.lock is unchanged.{} ({error})",
+            upgrade_hint(None, http.upgrade_command)
         ),
         409 if !locked.is_empty() => anyhow::anyhow!(
             "The registry could not honor the exact lock for one or more of {}; this is an \
@@ -2667,35 +2667,35 @@ fn describe_resolver_error(
     package: &str,
     locked: bool,
 ) -> anyhow::Error {
-    let Some(http) = error.downcast_ref::<crate::api_client::ApiHttpError>() else {
+    let Some(http) = api_error_details(&error) else {
         return error.context(format!(
             "Failed to resolve {kind} '{package}' through the registry"
         ));
     };
     match http.status {
         401 => anyhow::anyhow!(
-            "Registry resolution for {kind} '{package}' requires a login: run `a4 auth login`, then retry ({http})"
+            "Registry resolution for {kind} '{package}' requires a login: run `a4 auth login`, then retry ({error})"
         ),
         403 => anyhow::anyhow!(
-            "This account is not entitled to install {kind} '{package}' ({http})"
+            "This account is not entitled to install {kind} '{package}' ({error})"
         ),
         404 => anyhow::anyhow!(
-            "{kind} '{package}' is unavailable to this account or unknown; check the name, or log in as the owner if it is private ({http})"
+            "{kind} '{package}' is unavailable to this account or unknown; check the name, or log in as the owner if it is private ({error})"
         ),
-        409 if http.code.as_deref() == Some(DELIVERY_NOT_READY) => anyhow::anyhow!(
-            "{kind} '{package}' is published but its live delivery is not currently ready; nothing was installed and arete.lock is unchanged. Retry shortly ({http})"
+        409 if http.code == Some(DELIVERY_NOT_READY) => anyhow::anyhow!(
+            "{kind} '{package}' is published but its live delivery is not currently ready; nothing was installed and arete.lock is unchanged. Retry shortly ({error})"
         ),
-        409 if http.code.as_deref() == Some(STACK_VERSION_RETIRED) => anyhow::anyhow!(
-            "{kind} '{package}': this version is no longer served; nothing was installed and arete.lock is unchanged.{} ({http})",
-            upgrade_hint(None, http.upgrade_command.as_deref())
+        409 if http.code == Some(STACK_VERSION_RETIRED) => anyhow::anyhow!(
+            "{kind} '{package}': this version is no longer served; nothing was installed and arete.lock is unchanged.{} ({error})",
+            upgrade_hint(None, http.upgrade_command)
         ),
         409 if locked => anyhow::anyhow!(
-            "arete.lock integrity failure for {kind} '{package}': the locked release is no longer resolvable. Nothing was changed; run `a4 update {kind} <alias>` only if you intend to advance ({http})"
+            "arete.lock integrity failure for {kind} '{package}': the locked release is no longer resolvable. Nothing was changed; run `a4 update {kind} <alias>` only if you intend to advance ({error})"
         ),
         409 => anyhow::anyhow!(
-            "Registry could not satisfy {kind} '{package}' ({http})"
+            "Registry could not satisfy {kind} '{package}' ({error})"
         ),
-        _ => anyhow::Error::from(http.clone()),
+        _ => error,
     }
 }
 

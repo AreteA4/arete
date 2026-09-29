@@ -172,6 +172,7 @@ a4 init -y --no-skills --no-mcp  # manifest and AGENTS.md only
 | Item               | Path                                                 | Notes                                                                                                                                                  |
 | ------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Manifest           | `arete.toml`                                         | Created if absent; left untouched if present unless `--force`, which rewrites only `[project]`. Name from `--name` or the directory basename           |
+| Auth profile       | `.arete/auth.toml`                                   | Project scope only. Non-secret default selecting only the restricted `agent` profile; a repository cannot select `human`                               |
 | Agent guidance     | `AGENTS.md`                                          | A managed block between `<!-- BEGIN:arete v2 -->` and `<!-- END:arete -->`; content outside the markers is never touched                               |
 | Claude Code bridge | `CLAUDE.md`                                          | Created as `@AGENTS.md`, or that line is inserted first if the file exists                                                                             |
 | Gemini context     | `.gemini/settings.json`                              | `context.fileName` gains `AGENTS.md` (Gemini CLI only)                                                                                                 |
@@ -253,6 +254,7 @@ a4 doctor --fix      # re-run the init writers for every agents.* warning, then 
 | `cli.path`              | Install directory is on PATH                                                          | `warn`: prints the `export PATH=…` line                                                       |
 | `project.manifest`      | `arete.toml` parses                                                                   | `fail`: `a4 init` / `a4 config validate`                                                      |
 | `project.lock`          | `arete.lock` is fresh                                                                 | `warn`: `a4 install`                                                                          |
+| `project.auth-profile`  | `.arete/auth.toml` selects only the restricted `agent` profile                        | `warn`/`fail`: `a4 doctor --fix`                                                              |
 | `sdk.runtime`           | Installed TypeScript runtime matches the generated SDKs (see below)                   | `warn` with an `npm install` line; `fail` only for an `extensionApi` mismatch                 |
 | `auth.credentials`      | Key present for the active API URL                                                    | `info`: `a4 auth signup` (not needed to explore)                                              |
 | `auth.whoami`           | Credentials are accepted by the server                                                | `fail`: `a4 auth login --key …`                                                               |
@@ -358,13 +360,16 @@ a4 mcp
 ```json
 {
   "mcpServers": {
-    "arete": { "type": "stdio", "command": "a4", "args": ["mcp"] },
+    "arete": { "type": "stdio", "command": "a4", "args": ["--profile", "agent", "mcp"] },
     "arete-docs": { "type": "http", "url": "https://docs.arete.run/mcp" }
   }
 }
 ```
 
-Credentials resolve from `ARETE_API_KEY`, then `~/.arete/credentials.toml`. The npm package `@usearete/mcp` is deprecated in favour of this command. Tools and per-host shapes: [MCP Server](/agent-skills/mcp/).
+Generated MCP config explicitly selects the `agent` profile. That profile is
+resolved from `~/.arete/credentials.toml` before any ambient `ARETE_API_KEY`, so
+a human key cannot accidentally override it. The npm package `@usearete/mcp` is
+deprecated in favour of this command. Tools and per-host shapes: [MCP Server](/agent-skills/mcp/).
 
 ### a4 config validate
 
@@ -391,7 +396,9 @@ a4 auth signup --json
 a4 auth signup --force         # replace credentials that already exist for this API URL
 ```
 
-Calls `POST /api/agents/signup`, saves the key to `~/.arete/credentials.toml`, and prints the agent slug and the credentials path. The key itself is never printed in human mode.
+Calls `POST /api/agents/signup`, saves the `a4_ak_*` key under the `agent`
+profile in `~/.arete/credentials.toml`, and prints non-secret registration
+metadata. The key itself is never printed.
 
 **Options:**
 
@@ -403,12 +410,13 @@ Calls `POST /api/agents/signup`, saves the key to `~/.arete/credentials.toml`, a
 **`--json` output:**
 
 ```json
-{ "schemaVersion": 1, "slug": "agt_7k2m9q1r", "displayName": "my-agent", "credentialsPath": "/home/x/.arete/credentials.toml", "apiKey": "a4_ak_…" }
+{ "schemaVersion": 1, "slug": "agt_7k2m9q1r", "displayName": "my-agent", "credentialStored": true, "credentialPathKind": "default", "profile": "agent", "accountStatus": "active" }
 ```
 
-`apiKey` is a secret. It is included so an agent can pass it as `ARETE_API_KEY` to a sub-process; do not log it or commit it.
+The response confirms storage but deliberately omits the secret.
 
-Rate limit: 5 signups per hour per IP. On `429` the command prints `Signup limit reached (5 per hour per IP). Retry later, or use a key from https://arete.run/keys: a4 auth login --key <a4_ak_…>`.
+Rate limit: 5 signups per hour per IP. On `429` the command points the user at
+the human flow: `a4 auth login --profile human --key <a4_sk_…>`.
 
 ### a4 auth login
 
@@ -419,7 +427,7 @@ Save a human-issued API key.
 a4 auth login
 
 # Pass directly (required when non-interactive)
-a4 auth login --key <a4_ak_...>
+a4 auth login --profile human --key <a4_sk_...>
 ```
 
 **Options:**
@@ -452,7 +460,13 @@ Verify authentication with server.
 a4 auth whoami
 ```
 
-**Credentials location:** `~/.arete/credentials.toml`
+**Credentials location:** `~/.arete/credentials.toml`. Named profiles keep the
+restricted `agent` key separate from the broader `human` key. Inside a project
+initialized by `a4 init`, CLI calls default to `agent`. Humans can opt in with
+`a4 --profile human <command>`; `alias a4h='a4 --profile human'` is a convenient
+human-only shortcut. Inside an initialized repository the safe project default
+outranks inherited `ARETE_PROFILE`; only `--profile` opts up. The environment
+variable remains useful outside initialized repositories.
 
 ### a4 auth keys
 
@@ -1402,7 +1416,7 @@ a4 explore --json
 
 # Only when deploying or using the knowledge layer
 a4 auth signup                     # agent
-a4 auth login --key <a4_ak_...>    # human-issued key
+a4 auth login --profile human --key <a4_sk_...> # human-issued key
 ```
 
 ### Development Cycle
@@ -1463,19 +1477,20 @@ a4 telemetry disable
 
 ## Environment Variables
 
-| Variable                     | Description                                                                  |
-| ---------------------------- | ---------------------------------------------------------------------------- |
-| `ARETE_API_URL`              | Override API endpoint                                                        |
-| `ARETE_API_KEY`              | API key; takes precedence over the credentials file                          |
-| `ARETE_CREDENTIALS_PATH`     | Override the credentials file                                                |
-| `A4_INSTALL_DIR`             | Install directory for `a4 self install` and the bootstrappers                |
-| `A4_NO_MODIFY_PATH=1`        | Do not edit shell profiles or the Windows PATH on install                    |
-| `A4_NO_UPDATE_CHECK=1`       | Disable the once-per-day "update available" notice                           |
-| `A4_NON_INTERACTIVE=1`       | Never prompt (same as `--non-interactive`)                                   |
-| `A4_VERSION`                 | Version for `install.sh` / `install.ps1` to install                          |
-| `CI`                         | When set: never prompt, no PATH edits, no update notice, no telemetry banner |
-| `DO_NOT_TRACK=1`             | Disable telemetry (standard)                                                 |
-| `ARETE_TELEMETRY_DISABLED=1` | Disable telemetry (Arete-specific)                                           |
+| Variable                     | Description                                                                             |
+| ---------------------------- | --------------------------------------------------------------------------------------- |
+| `ARETE_API_URL`              | Override API endpoint                                                                   |
+| `ARETE_PROFILE`              | Named credential profile outside initialized repos; `.arete/auth.toml` wins inside them |
+| `ARETE_API_KEY`              | Legacy direct key override, used only when no profile is selected                       |
+| `ARETE_CREDENTIALS_PATH`     | Override the credentials file                                                           |
+| `A4_INSTALL_DIR`             | Install directory for `a4 self install` and the bootstrappers                           |
+| `A4_NO_MODIFY_PATH=1`        | Do not edit shell profiles or the Windows PATH on install                               |
+| `A4_NO_UPDATE_CHECK=1`       | Disable the once-per-day "update available" notice                                      |
+| `A4_NON_INTERACTIVE=1`       | Never prompt (same as `--non-interactive`)                                              |
+| `A4_VERSION`                 | Version for `install.sh` / `install.ps1` to install                                     |
+| `CI`                         | When set: never prompt, no PATH edits, no update notice, no telemetry banner            |
+| `DO_NOT_TRACK=1`             | Disable telemetry (standard)                                                            |
+| `ARETE_TELEMETRY_DISABLED=1` | Disable telemetry (Arete-specific)                                                      |
 
 ---
 
@@ -1483,7 +1498,7 @@ a4 telemetry disable
 
 | Error                                         | Solution                                                                                                                           |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `Not authenticated`                           | Run `a4 auth signup` (or `a4 auth login --key <a4_ak_…>`)                                                                          |
+| `Not authenticated`                           | Run `a4 auth signup` (agent) or `a4 auth login --profile human --key <a4_sk_…>`                                                    |
 | `a4: command not found`                       | Run `export PATH="$HOME/.local/bin:$PATH"` or use the `A4_BIN=` path the installer printed; `a4 doctor` reports this as `cli.path` |
 | `a4 was not installed by the Arete installer` | Reinstall with `curl -fsSL https://arete.run/install.sh \| sh`; Cargo builds must use `cargo install a4-cli --force`               |
 | `Stack not found`                             | Check `a4 stack list` for available stacks                                                                                         |

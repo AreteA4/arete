@@ -101,7 +101,7 @@ mod lenient {
     }
 }
 
-use arete_sdk::{Subscription, SubscriptionQuery};
+use arete_sdk::{ApiProblemV1, AreteError, Subscription, SubscriptionQuery};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
@@ -111,6 +111,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::connections::ConnectionRegistry;
 use crate::filter::{Filter, StructuredPredicate};
+use crate::recovery::{RecoveryApiError, RecoveryClient};
 use crate::registry::{RegistryClient, MAX_RESPONSE_BYTES};
 use crate::stack_knowledge::{self, StackKnowledge, LOOKUP_TIMEOUT};
 use crate::subscriptions::SubscriptionRegistry;
@@ -122,6 +123,7 @@ pub struct AreteMcp {
     connections: ConnectionRegistry,
     subscriptions: SubscriptionRegistry,
     registry: RegistryClient,
+    recovery: RecoveryClient,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -423,6 +425,7 @@ impl AreteMcp {
             connections: ConnectionRegistry::new(),
             subscriptions: SubscriptionRegistry::new(),
             registry: RegistryClient::new(),
+            recovery: RecoveryClient::new(),
         }
     }
 
@@ -449,7 +452,8 @@ impl AreteMcp {
                           api key is resolvable (ARETE_API_KEY or `a4 auth login`), \
                           global stacks are included too.")]
     async fn explore_stacks(&self) -> Result<CallToolResult, McpError> {
-        registry_result(self.registry.list_stacks().await)
+        self.registry_result(self.registry.list_stacks().await)
+            .await
     }
 
     #[tool(
@@ -488,11 +492,13 @@ impl AreteMcp {
                 None,
             ));
         }
-        let body = self.registry.stack_install(&args.stack).await;
+        let body = self
+            .registry_body(self.registry.stack_install(&args.stack).await)
+            .await?;
         if full {
-            return registry_result(body);
+            return self.registry_result(Ok(body)).await;
         }
-        let stack = parse_descriptor(body)?;
+        let stack = parse_descriptor(Ok(body))?;
         // Guidance is pinned to the StackManifest this descriptor serves; a
         // descriptor that names none gets none.
         let knowledge = match stack
@@ -542,10 +548,8 @@ impl AreteMcp {
         Parameters(args): Parameters<ExploreStackSchemaArgs>,
     ) -> Result<CallToolResult, McpError> {
         let body = self
-            .registry
-            .stack_schema(&args.stack)
-            .await
-            .map_err(registry_error)?;
+            .registry_body(self.registry.stack_schema(&args.stack).await)
+            .await?;
         let schema: serde_json::Value = parse_descriptor(Ok(body.clone()))?;
         // The response names the catalog package it resolved to.
         let slug = schema
@@ -561,7 +565,8 @@ impl AreteMcp {
                           registry, independent of any stack. No auth required."
     )]
     async fn explore_programs(&self) -> Result<CallToolResult, McpError> {
-        registry_result(self.registry.list_programs().await)
+        self.registry_result(self.registry.list_programs().await)
+            .await
     }
 
     #[tool(
@@ -612,11 +617,13 @@ impl AreteMcp {
                 None,
             ));
         }
-        let body = self.registry.program_install(&args.program).await;
+        let body = self
+            .registry_body(self.registry.program_install(&args.program).await)
+            .await?;
         if full {
-            return registry_result(body);
+            return self.registry_result(Ok(body)).await;
         }
-        let program = parse_descriptor(body)?;
+        let program = parse_descriptor(Ok(body))?;
         let needs_surface = sections.is_empty() || sections.iter().any(|s| s == "operations");
         let surface = if needs_surface {
             self.program_surface(&program).await
@@ -651,7 +658,8 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<ResolveArtifactArgs>,
     ) -> Result<CallToolResult, McpError> {
-        registry_result(self.registry.artifact(&args.kind, &args.hash).await)
+        self.registry_result(self.registry.artifact(&args.kind, &args.hash).await)
+            .await
     }
 
     #[tool(
@@ -674,7 +682,7 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<SearchCatalogArgs>,
     ) -> Result<CallToolResult, McpError> {
-        registry_result(
+        self.registry_result(
             self.registry
                 .catalog_search(
                     args.query.as_deref(),
@@ -688,6 +696,7 @@ impl AreteMcp {
                 )
                 .await,
         )
+        .await
     }
 
     #[tool(
@@ -705,7 +714,8 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<GetCatalogEntryArgs>,
     ) -> Result<CallToolResult, McpError> {
-        registry_result(self.registry.catalog_entry(&args.kind, &args.slug).await)
+        self.registry_result(self.registry.catalog_entry(&args.kind, &args.slug).await)
+            .await
     }
 
     #[tool(
@@ -714,7 +724,8 @@ impl AreteMcp {
                           `search_catalog` concept/category slugs. No credential required."
     )]
     async fn list_catalog_vocabulary(&self) -> Result<CallToolResult, McpError> {
-        registry_result(self.registry.catalog_vocabulary().await)
+        self.registry_result(self.registry.catalog_vocabulary().await)
+            .await
     }
 
     #[tool(
@@ -740,7 +751,7 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<SearchKnowledgeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        registry_result(
+        self.registry_result(
             self.registry
                 .knowledge_search(
                     args.query.as_deref(),
@@ -750,6 +761,7 @@ impl AreteMcp {
                 )
                 .await,
         )
+        .await
     }
 
     #[tool(
@@ -769,7 +781,8 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<GetProtocolArgs>,
     ) -> Result<CallToolResult, McpError> {
-        registry_result(self.registry.knowledge_protocol(&args.protocol).await)
+        self.registry_result(self.registry.knowledge_protocol(&args.protocol).await)
+            .await
     }
 
     #[tool(
@@ -790,11 +803,12 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<GetProgramKnowledgeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        registry_result(
+        self.registry_result(
             self.registry
                 .knowledge_program(&args.program, args.section.as_deref())
                 .await,
         )
+        .await
     }
 
     #[tool(description = "Fetch one cross-protocol recipe by slug (e.g. \
@@ -811,7 +825,8 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<GetRecipeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        registry_result(self.registry.knowledge_recipe(&args.recipe).await)
+        self.registry_result(self.registry.knowledge_recipe(&args.recipe).await)
+            .await
     }
 
     #[tool(
@@ -825,7 +840,30 @@ impl AreteMcp {
                           Requires an API key (`a4 auth login`)."
     )]
     async fn list_concepts(&self) -> Result<CallToolResult, McpError> {
-        registry_result(self.registry.knowledge_vocabulary().await)
+        self.registry_result(self.registry.knowledge_vocabulary().await)
+            .await
+    }
+
+    #[tool(
+        description = "Show the authenticated agent account, including its slug, status, and claim state. The API key is resolved from the environment or credentials file and is never returned."
+    )]
+    async fn account_status(&self) -> Result<CallToolResult, McpError> {
+        match self.recovery.account_status().await {
+            Ok(status) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string(&status).unwrap_or_default(),
+            )])),
+            Err(error) => Err(self.recovery_error(error).await),
+        }
+    }
+
+    #[tool(
+        description = "Create a short-lived ownership link for the authenticated agent. Returns MCP URL elicitation so the link can be handed to a human. The agent must not open or complete the link itself."
+    )]
+    async fn create_claim_link(&self) -> Result<CallToolResult, McpError> {
+        match self.recovery.create_claim_link().await {
+            Ok(ready) => Err(claim_url_elicitation(&ready.action)),
+            Err(error) => Err(self.recovery_error(error).await),
+        }
     }
 
     #[tool(description = "Open a WebSocket connection to a Arete stack. \
@@ -846,11 +884,14 @@ impl AreteMcp {
         let resolved = credentials::resolve(args.api_key, &args.url)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
 
-        let id = self
+        let id = match self
             .connections
             .connect(args.url.clone(), resolved.key)
             .await
-            .map_err(|e| McpError::internal_error(format!("connect failed: {e}"), None))?;
+        {
+            Ok(id) => id,
+            Err(error) => return Err(self.sdk_error(error).await),
+        };
 
         let info = ConnectionInfo {
             connection_id: id,
@@ -1310,6 +1351,88 @@ impl AreteMcp {
             .map_err(|error| error.to_string())
     }
 
+    async fn sdk_error(&self, error: AreteError) -> McpError {
+        if let Some(problem) = error.api_problem() {
+            return self.problem_error(problem, None, true).await;
+        }
+        if let Some(issue) = error.socket_issue() {
+            let problem = ApiProblemV1 {
+                schema_version: Some(1),
+                error: issue.message.clone(),
+                code: Some(issue.wire_code.clone()),
+                retryable: Some(issue.retryable),
+                request_id: None,
+                retry_after_seconds: issue.retry_after,
+                usage: issue.usage.clone(),
+                action: issue.action.clone(),
+                extra: Default::default(),
+            };
+            return self.problem_error(&problem, None, true).await;
+        }
+
+        let data = serde_json::json!({
+            "code": error.auth_code().map(|code| code.as_wire()),
+            "retryable": error.should_retry(),
+            "retryAfterSeconds": error.retry_after(),
+        });
+        McpError::internal_error("Arete connection failed", Some(data))
+    }
+
+    async fn registry_body(&self, result: anyhow::Result<String>) -> Result<String, McpError> {
+        match result {
+            Ok(body) => Ok(body),
+            Err(error) => {
+                if let Some(api_error) = error.downcast_ref::<crate::registry::RegistryApiError>() {
+                    return Err(self
+                        .problem_error(&api_error.problem, Some(api_error.status.as_u16()), true)
+                        .await);
+                }
+                Err(registry_error(error))
+            }
+        }
+    }
+
+    async fn registry_result(
+        &self,
+        result: anyhow::Result<String>,
+    ) -> Result<CallToolResult, McpError> {
+        let body = self.registry_body(result).await?;
+        Ok(CallToolResult::success(vec![Content::text(body)]))
+    }
+
+    async fn recovery_error(&self, error: anyhow::Error) -> McpError {
+        if let Some(api_error) = error.downcast_ref::<RecoveryApiError>() {
+            return self
+                .problem_error(&api_error.problem, Some(api_error.status.as_u16()), false)
+                .await;
+        }
+        McpError::internal_error(
+            "Arete account request failed",
+            Some(serde_json::json!({ "code": "account-request-failed" })),
+        )
+    }
+
+    async fn problem_error(
+        &self,
+        problem: &ApiProblemV1,
+        status: Option<u16>,
+        allow_materialize: bool,
+    ) -> McpError {
+        if allow_materialize
+            && problem
+                .recovery_action()
+                .is_some_and(|action| action.is_claim_agent_materializer())
+        {
+            return match self.recovery.create_claim_link().await {
+                Ok(ready) => claim_url_elicitation(&ready.action),
+                Err(_) => {
+                    structured_problem_error(problem, status, Some("claim-materialization-failed"))
+                }
+            };
+        }
+        structured_problem_error(problem, status, None)
+    }
+
     /// Resolve a `subscription_id` to its connection's `SharedStore` and the
     /// view name to query inside it. Returns an MCP `invalid_params` error if
     /// either the subscription or its underlying connection is gone.
@@ -1421,6 +1544,38 @@ fn described_schema_result(
     };
     stack_knowledge::describe_schema(&mut schema, knowledge);
     shaped_result(&schema)
+}
+
+fn claim_url_elicitation(action: &arete_sdk::ReadyRecoveryAction) -> McpError {
+    McpError::url_elicitation_required(
+        "A human owner must claim this agent. The agent must not open this URL itself.",
+        Some(serde_json::json!({
+            "url": action.url,
+            "elicitationId": action.elicitation_id,
+            "expiresAt": action.expires_at,
+            "actionType": action.action_type,
+        })),
+    )
+}
+
+fn structured_problem_error(
+    problem: &ApiProblemV1,
+    status: Option<u16>,
+    secondary_code: Option<&str>,
+) -> McpError {
+    let mut data = serde_json::to_value(problem).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(object) = data.as_object_mut() {
+        if let Some(status) = status {
+            object.insert("status".to_string(), serde_json::json!(status));
+        }
+        if let Some(secondary_code) = secondary_code {
+            object.insert(
+                "secondaryCode".to_string(),
+                serde_json::json!(secondary_code),
+            );
+        }
+    }
+    McpError::internal_error(problem.error.clone(), Some(data))
 }
 
 impl Default for AreteMcp {
@@ -1745,6 +1900,52 @@ mod explore_args_tests {
         assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
         let err = parse_descriptor(Ok("<html>".into())).unwrap_err();
         assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+    }
+}
+
+#[cfg(test)]
+mod recovery_error_tests {
+    use super::{claim_url_elicitation, structured_problem_error};
+    use arete_sdk::{ApiProblemV1, ReadyRecoveryAction};
+
+    #[test]
+    fn ready_claim_uses_standard_url_elicitation_with_only_handoff_metadata() {
+        let error = claim_url_elicitation(&ReadyRecoveryAction {
+            action_type: "claim_agent".to_string(),
+            url: "https://arete.run/claim#opaque-secret".to_string(),
+            elicitation_id: "0199-agent-claim".to_string(),
+            expires_at: "2026-09-22T12:30:00Z".to_string(),
+        });
+
+        assert_eq!(error.code.0, -32042);
+        let data = error.data.expect("URL elicitation data");
+        assert_eq!(data["url"], "https://arete.run/claim#opaque-secret");
+        assert_eq!(data["elicitationId"], "0199-agent-claim");
+        assert_eq!(data["expiresAt"], "2026-09-22T12:30:00Z");
+        assert_eq!(data["actionType"], "claim_agent");
+        assert_eq!(data.as_object().expect("object").len(), 4);
+    }
+
+    #[test]
+    fn structured_problem_keeps_contract_and_secondary_failure_code() {
+        let problem: ApiProblemV1 = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "error": "Claim this agent",
+            "code": "agent-claim-required",
+            "retryable": false,
+            "futureField": "preserved"
+        }))
+        .expect("problem");
+
+        let error =
+            structured_problem_error(&problem, Some(403), Some("claim-materialization-failed"));
+        let data = error.data.expect("structured problem data");
+        assert_eq!(data["schemaVersion"], 1);
+        assert_eq!(data["code"], "agent-claim-required");
+        assert_eq!(data["retryable"], false);
+        assert_eq!(data["status"], 403);
+        assert_eq!(data["secondaryCode"], "claim-materialization-failed");
+        assert_eq!(data["futureField"], "preserved");
     }
 }
 

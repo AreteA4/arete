@@ -325,11 +325,15 @@ pub struct ProtocolErrorFrame {
     pub code: String,
     #[serde(default)]
     pub retryable: bool,
-    #[serde(default)]
+    #[serde(default, alias = "retry_after")]
     pub retry_after: Option<u64>,
     #[serde(default)]
-    pub suggested_action: Option<String>,
+    pub usage: Option<crate::error::UsageLimit>,
     #[serde(default)]
+    pub action: Option<crate::error::RecoveryAction>,
+    #[serde(default, alias = "suggested_action")]
+    pub suggested_action: Option<String>,
+    #[serde(default, alias = "docs_url")]
     pub docs_url: Option<String>,
     #[serde(default)]
     pub fatal: bool,

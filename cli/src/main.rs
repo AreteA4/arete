@@ -66,6 +66,10 @@ struct Cli {
     #[arg(long, global = true, env = "ARETE_API_URL")]
     api_url: Option<String>,
 
+    /// Credential profile to use (overrides the repository's safe agent default)
+    #[arg(long, global = true)]
+    profile: Option<String>,
+
     /// Assume "yes" for every prompt and never wait on stdin
     #[arg(short = 'y', long, global = true)]
     yes: bool,
@@ -586,6 +590,9 @@ enum AuthCommands {
     /// Verify authentication and show user info
     Whoami,
 
+    /// Create a short-lived link for a human to claim this agent
+    ClaimLink,
+
     /// Manage API keys for browser/client use
     #[command(subcommand)]
     Keys(KeysCommands),
@@ -828,6 +835,33 @@ fn main() {
         std::env::set_var("ARETE_API_URL", api_url);
     }
 
+    let inherited_profile = std::env::var(arete_mcp::credentials::ENV_VAR_PROFILE).ok();
+    let selected_profile = config::resolve_auth_profile(
+        cli.profile.as_deref(),
+        &cli.config,
+        inherited_profile.as_deref(),
+    );
+    match selected_profile {
+        Ok(Some(profile)) => std::env::set_var("ARETE_PROFILE", profile),
+        Ok(None) => {}
+        Err(error)
+            if matches!(
+                &cli.command,
+                Some(Commands::Init(_)) | Some(Commands::Doctor(_))
+            ) =>
+        {
+            eprintln!(
+                "{} {} (continuing so this command can repair it)",
+                "Warning:".yellow().bold(),
+                error
+            );
+        }
+        Err(error) => {
+            eprintln!("{} {}", "Error:".red().bold(), error);
+            process::exit(2);
+        }
+    }
+
     // Mirror the interactivity flags into the environment so ui::interactive()
     // and child processes (npx skills, package managers) see them.
     if cli.yes {
@@ -874,6 +908,64 @@ fn main() {
     if let Err(e) = result {
         if let Some(ui::ExitCode(code)) = e.downcast_ref::<ui::ExitCode>() {
             process::exit(*code);
+        }
+        if let Some(api_error) = e.downcast_ref::<api_client::ApiClientError>() {
+            let has_claim_action = api_error
+                .recovery_action()
+                .is_some_and(|action| action.is_claim_agent_materializer());
+
+            if json {
+                match serde_json::to_string(&api_error.problem) {
+                    Ok(problem) => println!("{problem}"),
+                    Err(_) => println!(
+                        "{{\"schemaVersion\":1,\"error\":\"Request failed\",\"code\":\"request-failed\",\"retryable\":false}}"
+                    ),
+                }
+                eprintln!("Error: request failed ({})", api_error.status);
+            } else {
+                eprintln!("{} {}", "Error:".red().bold(), api_error);
+                if has_claim_action && ui::interactive() {
+                    match api_client::ApiClient::new()
+                        .and_then(|client| client.agent_claim_link())
+                        .and_then(|ready| {
+                            let origin = api_client::ApiClient::configured_claim_app_origin()?;
+                            if ready.action.is_safe_claim_url_for_origin(&origin) {
+                                Ok(ready)
+                            } else {
+                                anyhow::bail!("server returned an unsafe claim URL")
+                            }
+                        }) {
+                        Ok(ready) => {
+                            eprintln!();
+                            eprintln!("A human owner must open this link:");
+                            eprintln!("{}", ready.action.url);
+                            eprintln!("Expires: {}", ready.action.expires_at);
+                            eprintln!("The agent must not open or complete this link itself.");
+                        }
+                        Err(materialization_error) => eprintln!(
+                            "Could not create a claim link: {materialization_error}. Run `a4 auth claim-link`."
+                        ),
+                    }
+                } else if has_claim_action {
+                    eprintln!("Run `a4 auth claim-link --json` to create a human handoff URL.");
+                } else if let Some(seconds) = api_error.retry_after_seconds() {
+                    eprintln!("Retry after {seconds} seconds.");
+                }
+            }
+
+            let exit_code = if has_claim_action {
+                20
+            } else if api_error.status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                75
+            } else if matches!(
+                api_error.status,
+                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+            ) {
+                77
+            } else {
+                1
+            };
+            process::exit(exit_code);
         }
         eprintln!("{} {}", "Error:".red().bold(), e);
         process::exit(1);
@@ -1312,12 +1404,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             ConfigCommands::Validate => commands::config::validate(&cli.config),
         },
         Commands::Auth(auth_cmd) => match auth_cmd {
-            AuthCommands::Login { key } => commands::auth::login(key),
-            AuthCommands::Signup { name, force } => commands::auth::signup(name, force, cli.json),
+            AuthCommands::Login { key } => commands::auth::login(key, cli.profile.as_deref()),
+            AuthCommands::Signup { name, force } => {
+                commands::auth::signup(name, force, cli.json, cli.profile.as_deref())
+            }
             AuthCommands::Logout => commands::auth::logout(),
             AuthCommands::LogoutAll => commands::auth::logout_all(),
-            AuthCommands::Status => commands::auth::status(),
-            AuthCommands::Whoami => commands::auth::whoami(),
+            AuthCommands::Status => commands::auth::status(cli.json),
+            AuthCommands::Whoami => commands::auth::whoami(cli.json),
+            AuthCommands::ClaimLink => commands::auth::claim_link(cli.json),
             AuthCommands::Keys(keys_cmd) => match keys_cmd {
                 KeysCommands::List => commands::auth::list_keys(cli.json),
                 KeysCommands::CreatePublishable {
@@ -1775,6 +1870,7 @@ mod tests {
 
         let cli = Cli::try_parse_from(["a4", "auth", "signup", "bot", "--json"])
             .expect("signup should parse");
+        assert!(cli.json);
         match cli.command {
             Some(Commands::Auth(AuthCommands::Signup { name, force })) => {
                 assert_eq!(name.as_deref(), Some("bot"));
@@ -1782,6 +1878,14 @@ mod tests {
             }
             _ => panic!("expected auth signup"),
         }
+
+        let cli = Cli::try_parse_from(["a4", "auth", "login", "--profile", "human"])
+            .expect("global --profile should parse after nested subcommands");
+        assert_eq!(cli.profile.as_deref(), Some("human"));
+
+        let cli = Cli::try_parse_from(["a4", "--profile", "agent", "mcp"])
+            .expect("generated MCP command should parse");
+        assert_eq!(cli.profile.as_deref(), Some("agent"));
 
         let cli = Cli::try_parse_from(["a4", "mcp", "--stdio"]).expect("mcp should parse");
         assert!(matches!(cli.command, Some(Commands::Mcp(_))));

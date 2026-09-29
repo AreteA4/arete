@@ -22,8 +22,10 @@ detailed workflows.
 - Starting a new app? `a4 create <dir> --template react-ore` scaffolds a
   working example in a new directory (also `typescript-ore`, `rust-ore`,
   `python-ore`).
-- Account: `a4 auth signup` (agent) or `a4 auth login --key <a4_ak_…>`.
-- Live data in your loop: the `arete` MCP server (`a4 mcp`) is configured;
+- Account: `a4 --profile agent auth signup` stores a restricted `a4_ak_*` key
+  in the `agent` profile. Never request or use the human `a4_sk_*` key.
+- Live data in your loop: the `arete` MCP server
+  (`a4 --profile agent mcp`) is configured;
   use it for exploration, use generated SDKs for shipped code.
 - Building or preparing does not authorize transaction submission or hosted
   deployment. Keep external mutations within the user's request.

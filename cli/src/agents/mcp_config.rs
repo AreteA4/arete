@@ -165,7 +165,7 @@ pub struct Shape {
 }
 
 fn plain(command: &str) -> Value {
-    json!({"command": command, "args": ["mcp"]})
+    json!({"command": command, "args": ["--profile", "agent", "mcp"]})
 }
 
 /// Shape for `id`. `copilot_owned` selects the Copilot-CLI shape (with
@@ -176,29 +176,29 @@ pub fn shape(id: &str, command: &str, copilot_owned: bool) -> Shape {
     let (top_key, arete, docs) = match id {
         "claude-code" => (
             "mcpServers",
-            json!({"type": "stdio", "command": command, "args": ["mcp"]}),
+            json!({"type": "stdio", "command": command, "args": ["--profile", "agent", "mcp"]}),
             json!({"type": "http", "url": url}),
         ),
         "copilot-cli" if copilot_owned => (
             "mcpServers",
-            json!({"type": "local", "command": command, "args": ["mcp"], "tools": ["*"]}),
+            json!({"type": "local", "command": command, "args": ["--profile", "agent", "mcp"], "tools": ["*"]}),
             json!({"type": "http", "url": url, "tools": ["*"]}),
         ),
         "copilot-cli" => (
             "mcpServers",
-            json!({"type": "stdio", "command": command, "args": ["mcp"]}),
+            json!({"type": "stdio", "command": command, "args": ["--profile", "agent", "mcp"]}),
             json!({"type": "http", "url": url}),
         ),
         "cursor" | "kiro" => ("mcpServers", plain(command), json!({"url": url})),
         "vscode" => (
             "servers",
-            json!({"type": "stdio", "command": command, "args": ["mcp"]}),
+            json!({"type": "stdio", "command": command, "args": ["--profile", "agent", "mcp"]}),
             json!({"type": "http", "url": url}),
         ),
         "codex" => ("mcp_servers", plain(command), json!({"url": url})),
         "opencode" => (
             "mcp",
-            json!({"type": "local", "command": [command, "mcp"], "enabled": true}),
+            json!({"type": "local", "command": [command, "--profile", "agent", "mcp"], "enabled": true}),
             json!({"type": "remote", "url": url, "enabled": true}),
         ),
         "gemini-cli" => ("mcpServers", plain(command), json!({"httpUrl": url})),
@@ -217,7 +217,7 @@ pub fn shape(id: &str, command: &str, copilot_owned: bool) -> Shape {
         ),
         "goose" => (
             "extensions",
-            json!({"type": "stdio", "cmd": command, "args": ["mcp"], "enabled": true}),
+            json!({"type": "stdio", "cmd": command, "args": ["--profile", "agent", "mcp"], "enabled": true}),
             json!({"type": "streamable_http", "uri": url, "enabled": true}),
         ),
         _ => ("mcpServers", plain(command), json!({"url": url})),
@@ -664,7 +664,7 @@ mod tests {
         assert_eq!(parsed["mcpServers"]["other"]["command"], "x");
         assert_eq!(
             parsed["mcpServers"]["arete"],
-            json!({"type": "stdio", "command": "/opt/a4", "args": ["mcp"]})
+            json!({"type": "stdio", "command": "/opt/a4", "args": ["--profile", "agent", "mcp"]})
         );
         assert_eq!(
             parsed["mcpServers"]["arete-docs"],
@@ -775,7 +775,7 @@ mod tests {
         let mcp_json = env.root.join(".mcp.json");
         fs::write(
             &mcp_json,
-            r#"{ "mcpServers": { "arete": { "type": "stdio", "command": "a4", "args": ["mcp"] } } }"#,
+            r#"{ "mcpServers": { "arete": { "type": "stdio", "command": "a4", "args": ["--profile", "agent", "mcp"] } } }"#,
         )
         .unwrap();
         let (result, _) = write(&without_a4, "claude-code", Scope::Project, "/opt/a4", false);
@@ -837,7 +837,7 @@ mod tests {
         assert_eq!(parsed["$schema"], "https://opencode.ai/config.json");
         assert_eq!(
             parsed["mcp"]["arete"],
-            json!({"type": "local", "command": ["a4", "mcp"], "enabled": true})
+            json!({"type": "local", "command": ["a4", "--profile", "agent", "mcp"], "enabled": true})
         );
         assert_eq!(
             parsed["mcp"]["arete-docs"],

@@ -221,7 +221,11 @@ fn init_in_empty_dir_without_node_then_doctor_warns_on_skills() {
     assert_eq!(mcp["mcpServers"]["arete"]["command"], "a4");
     assert_eq!(
         mcp["mcpServers"]["arete"]["args"],
-        serde_json::json!(["mcp"])
+        serde_json::json!(["--profile", "agent", "mcp"])
+    );
+    assert_eq!(
+        read(&sb, ".arete/auth.toml"),
+        "default_profile = \"agent\"\n"
     );
     assert_eq!(
         mcp["mcpServers"]["arete-docs"]["url"],
@@ -259,6 +263,7 @@ fn init_in_empty_dir_without_node_then_doctor_warns_on_skills() {
     assert_eq!(c["cli.install"]["status"], "info");
     assert_eq!(c["project.manifest"]["status"], "ok");
     assert_eq!(c["project.lock"]["status"], "ok");
+    assert_eq!(c["project.auth-profile"]["status"], "ok");
     assert_eq!(c["auth.credentials"]["status"], "info");
     assert_eq!(c["auth.whoami"]["status"], "info");
     assert_eq!(c["account.transactions"]["status"], "info");
@@ -512,7 +517,7 @@ fn codex_toml_keeps_other_tables_and_warns_about_trust() {
     let parsed: toml::Value = toml::from_str(&text).unwrap();
     assert_eq!(
         parsed["mcp_servers"]["arete"]["args"],
-        toml::Value::Array(vec!["mcp".into()])
+        toml::Value::Array(vec!["--profile".into(), "agent".into(), "mcp".into()])
     );
     let (report, _) = a4_json(&sb, &["init", "-y", "--json", "--no-skills"]);
     assert_eq!(results(&report)["mcp:codex"]["status"], "unchanged");
@@ -539,6 +544,7 @@ fn doctor_on_empty_dir_fails_on_manifest() {
     assert_eq!(c["project.manifest"]["status"], "fail");
     assert_eq!(c["project.manifest"]["fix"], "a4 init");
     assert_eq!(c["project.lock"]["status"], "info");
+    assert_eq!(c["project.auth-profile"]["status"], "info");
     assert_eq!(c["agents.agents-md"]["status"], "warn");
 
     // Human mode also exits 1.
@@ -556,12 +562,14 @@ fn doctor_fix_restores_a_removed_agents_md_block() {
     assert!(output.status.success());
     fs::write(sb.root.join("AGENTS.md"), "# mine\n").unwrap();
     fs::remove_file(sb.root.join(".mcp.json")).unwrap();
+    fs::remove_file(sb.root.join(".arete/auth.toml")).unwrap();
     fs::create_dir_all(sb.root.join(".claude")).unwrap();
     let (doctor, _) = a4_json(&sb, &["doctor", "--json"]);
     let c = checks(&doctor);
     assert_eq!(c["agents.agents-md"]["status"], "warn");
     assert_eq!(c["agents.agents-md"]["fix"], "a4 doctor --fix");
     assert_eq!(c["agents.claude-code.mcp"]["status"], "warn");
+    assert_eq!(c["project.auth-profile"]["status"], "warn");
 
     let (doctor, output) = a4_json(&sb, &["doctor", "--fix", "--json"]);
     assert!(
@@ -572,10 +580,70 @@ fn doctor_fix_restores_a_removed_agents_md_block() {
     let c = checks(&doctor);
     assert_eq!(c["agents.agents-md"]["status"], "ok");
     assert_eq!(c["agents.claude-code.mcp"]["status"], "ok");
+    assert_eq!(c["project.auth-profile"]["status"], "ok");
     let content = read(&sb, "AGENTS.md");
     assert!(content.starts_with("# mine\n\n<!-- BEGIN:arete v2 -->"));
     assert!(sb.root.join(".mcp.json").exists());
+    assert_eq!(
+        read(&sb, ".arete/auth.toml"),
+        "default_profile = \"agent\"\n"
+    );
     assert!(sb.root.join("arete.toml").exists());
+}
+
+#[test]
+fn doctor_fix_writes_agent_profile_for_a_universal_agent_project() {
+    let sb = sandbox("empty", false);
+    let (_, output) = a4_json(
+        &sb,
+        &["init", "-y", "--json", "--no-skills", "--agents", "none"],
+    );
+    assert!(output.status.success());
+    assert!(!sb.root.join(".arete/auth.toml").exists());
+    fs::create_dir_all(sb.root.join(".agents")).unwrap();
+    fs::remove_file(sb.root.join("AGENTS.md")).unwrap();
+
+    let (doctor, _) = a4_json(&sb, &["doctor", "--json"]);
+    assert_eq!(checks(&doctor)["project.auth-profile"]["status"], "warn");
+    assert_eq!(checks(&doctor)["agents.agents-md"]["status"], "warn");
+
+    let (doctor, output) = a4_json(&sb, &["doctor", "--fix", "--json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(checks(&doctor)["project.auth-profile"]["status"], "ok");
+    assert_eq!(checks(&doctor)["agents.agents-md"]["status"], "ok");
+    assert!(!sb.root.join("CLAUDE.md").exists());
+    assert_eq!(
+        read(&sb, ".arete/auth.toml"),
+        "default_profile = \"agent\"\n"
+    );
+}
+
+#[test]
+fn doctor_repairs_a_project_that_attempts_to_select_human_profile() {
+    let sb = sandbox("empty", false);
+    let (_, output) = a4_json(&sb, &["init", "-y", "--json", "--no-skills"]);
+    assert!(output.status.success());
+    fs::write(
+        sb.root.join(".arete/auth.toml"),
+        "default_profile = \"human\"\n",
+    )
+    .unwrap();
+
+    let (doctor, output) = a4_json(&sb, &["doctor", "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(checks(&doctor)["project.auth-profile"]["status"], "fail");
+
+    let (doctor, output) = a4_json(&sb, &["doctor", "--fix", "--json"]);
+    assert!(output.status.success());
+    assert_eq!(checks(&doctor)["project.auth-profile"]["status"], "ok");
+    assert_eq!(
+        read(&sb, ".arete/auth.toml"),
+        "default_profile = \"agent\"\n"
+    );
 }
 
 #[test]
@@ -656,6 +724,7 @@ fn explicit_agent_list_and_config_path_root() {
     let (doctor, _) = a4_json(&sb, &["--config", "nested/arete.toml", "doctor", "--json"]);
     let c = checks(&doctor);
     assert_eq!(c["project.manifest"]["status"], "ok");
+    assert_eq!(c["project.auth-profile"]["status"], "ok");
     assert_eq!(c["agents.cursor.mcp"]["status"], "ok");
     assert_eq!(c["agents.gemini-cli.mcp"]["status"], "ok");
     assert_eq!(c["agents.gemini-context"]["status"], "ok");
