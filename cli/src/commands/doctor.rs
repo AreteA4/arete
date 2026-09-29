@@ -381,7 +381,7 @@ fn project_auth_profile(config_path: &Path, detection: &Detection) -> Check {
     let id = "project.auth-profile";
     match crate::config::get_project_auth_profile(&config_path.display().to_string()) {
         Ok(Some(profile)) => Check::ok(id, format!("default profile is {profile}")),
-        Ok(None) if detection.agents.is_empty() => {
+        Ok(None) if detection.agents.is_empty() && !detection.universal => {
             Check::info(id, "not configured (no coding agent detected)", None)
         }
         Ok(None) => Check::warn(

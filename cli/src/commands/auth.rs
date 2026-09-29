@@ -111,20 +111,20 @@ pub fn status(json: bool) -> Result<()> {
         let key = ApiClient::load_optional_api_key_for_url(&api_url)?;
         let direct_env_key = selected_profile.is_none()
             && std::env::var("ARETE_API_KEY").is_ok_and(|value| !value.trim().is_empty());
-        let identity = if key.as_deref().is_some_and(|key| key.starts_with("a4_ak_")) {
-            Some(ApiClient::new()?.agent_me()?)
-        } else {
-            None
+        let principal_kind = match key.as_deref() {
+            Some(key) if key.starts_with("a4_ak_") => "agent",
+            Some(_) => "human",
+            None => "unknown",
         };
         println!(
             "{}",
             serde_json::to_string(&serde_json::json!({
                 "schemaVersion": 1,
                 "authenticated": key.is_some(),
-                "principalKind": if identity.is_some() { "agent" } else if key.is_some() { "human" } else { "unknown" },
+                "principalKind": principal_kind,
                 "credentialSource": if direct_env_key { "env:ARETE_API_KEY" } else if key.is_some() { "credentials_file" } else { "none" },
                 "profile": selected_profile,
-                "agent": identity,
+                "agent": null,
             }))?
         );
         return Ok(());
@@ -142,11 +142,6 @@ pub fn status(json: bool) -> Result<()> {
     // Try to load key for current URL
     match ApiClient::load_api_key_for_url(&api_url) {
         Ok(api_key) => {
-            let agent_identity = if api_key.starts_with("a4_ak_") {
-                Some(ApiClient::new()?.agent_me()?)
-            } else {
-                None
-            };
             println!(
                 "{} {}",
                 ui::symbols::SUCCESS.green().bold(),
@@ -163,19 +158,14 @@ pub fn status(json: bool) -> Result<()> {
                 }
             );
             println!("  Credentials: {}", credentials_path().dimmed());
-            if let Some(identity) = agent_identity {
-                println!(
-                    "  Agent:       {} ({})",
-                    identity.slug, identity.display_name
-                );
-                println!("  Claim state: {}", identity.claim_state);
-                if let Some(plan) = identity.plan {
-                    println!("  Plan:        {plan}");
+            println!(
+                "  Principal:   {}",
+                if api_key.starts_with("a4_ak_") {
+                    "agent"
+                } else {
+                    "human"
                 }
-                if let Some(expires_at) = identity.entitlement_expires_at {
-                    println!("  Expires:     {expires_at}");
-                }
-            }
+            );
             println!();
             println!(
                 "  Run {} to verify with the server.",

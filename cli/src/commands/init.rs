@@ -222,6 +222,7 @@ fn select(detection: &Detection, selection: &Selection) -> (Vec<String>, bool) {
         Selection::Detected => (detection.ids(), false),
         Selection::All => (AGENT_IDS.iter().map(|id| id.to_string()).collect(), false),
         Selection::None => (Vec::new(), false),
+        Selection::List(ids) if ids.is_empty() && detection.universal => (Vec::new(), true),
         Selection::List(ids) => (ids.clone(), false),
     }
 }
@@ -400,6 +401,18 @@ mod tests {
             checked(&picker_defaults(&["emacs".to_string()])),
             vec![index("claude-code")],
             "unknown ids fall back like an empty detection"
+        );
+    }
+
+    #[test]
+    fn empty_doctor_selection_uses_the_universal_agent_fallback() {
+        let detection = Detection {
+            agents: Vec::new(),
+            universal: true,
+        };
+        assert_eq!(
+            select(&detection, &Selection::List(Vec::new())),
+            (Vec::new(), true)
         );
     }
 

@@ -49,7 +49,7 @@ impl RecoveryClient {
         let app_origin = std::env::var("ARETE_APP_ORIGIN")
             .ok()
             .and_then(|value| parse_app_origin(&value).ok())
-            .unwrap_or_else(|| Url::parse(DEFAULT_APP_ORIGIN).expect("static app origin"));
+            .unwrap_or_else(|| default_app_origin(&base_url));
         Self {
             base_url,
             app_origin,
@@ -118,6 +118,25 @@ impl RecoveryClient {
     }
 }
 
+fn default_app_origin(base_url: &str) -> Url {
+    let uses_loopback_api = Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        });
+    Url::parse(if uses_loopback_api {
+        "http://localhost:3000"
+    } else {
+        DEFAULT_APP_ORIGIN
+    })
+    .expect("static app origin")
+}
+
 fn parse_app_origin(value: &str) -> Result<Url> {
     let mut url = Url::parse(value.trim()).context("invalid ARETE_APP_ORIGIN")?;
     if !url.username().is_empty()
@@ -174,5 +193,17 @@ mod tests {
         assert!(validate_api_origin("https://evil.example").is_err());
         assert!(validate_api_origin("http://api.arete.run").is_err());
         assert!(validate_api_origin("https://user:pass@api.arete.run").is_err());
+    }
+
+    #[test]
+    fn loopback_api_defaults_to_the_local_claim_app() {
+        assert_eq!(
+            default_app_origin("http://127.0.0.1:8080").as_str(),
+            "http://localhost:3000/"
+        );
+        assert_eq!(
+            default_app_origin("https://api.arete.run").as_str(),
+            "https://arete.run/"
+        );
     }
 }

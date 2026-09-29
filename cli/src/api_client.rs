@@ -164,6 +164,18 @@ pub struct StoredCredential {
     pub masked_key: String,
 }
 
+/// A process-scoped exclusive lock for credentials mutations. The lock file
+/// remains on disk, but the kernel releases the lock if the process exits.
+pub struct CredentialsLock {
+    file: fs::File,
+}
+
+impl Drop for CredentialsLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
 fn mask_api_key(api_key: &str) -> String {
     if api_key.len() <= 12 {
         return "****".to_string();
@@ -2142,6 +2154,7 @@ impl ApiClient {
     ) -> Result<()> {
         let profile = validate_profile_name(profile)?;
         validate_key_for_profile(profile, api_key)?;
+        let _lock = Self::lock_credentials()?;
         let path = Self::credentials_path()?;
         ensure_safe_credentials_path(&path)?;
 
@@ -2337,6 +2350,7 @@ impl ApiClient {
     }
 
     pub fn delete_api_key_for_profile(api_url: &str, profile: Option<&str>) -> Result<()> {
+        let _lock = Self::lock_credentials()?;
         let path = Self::credentials_path()?;
         ensure_safe_credentials_path(&path)?;
         if !path.exists() {
@@ -2384,6 +2398,7 @@ impl ApiClient {
     }
 
     pub fn delete_all_api_keys() -> Result<()> {
+        let _lock = Self::lock_credentials()?;
         let path = Self::credentials_path()?;
         ensure_safe_credentials_path(&path)?;
         if path.exists() {
@@ -2473,6 +2488,51 @@ impl ApiClient {
     /// (`ARETE_CREDENTIALS_PATH` or `~/.arete/credentials.toml`).
     pub fn credentials_file_path() -> Result<PathBuf> {
         Self::credentials_path()
+    }
+
+    /// Serialize every read-modify-write of the shared credentials file.
+    pub fn lock_credentials() -> Result<CredentialsLock> {
+        use fs2::FileExt;
+
+        let credentials_path = Self::credentials_path()?;
+        ensure_safe_credentials_path(&credentials_path)?;
+        let parent = credentials_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Credentials path must have a parent directory"))?;
+        let parent_existed = parent.exists();
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create credentials directory {}",
+                parent.display()
+            )
+        })?;
+        ensure_owner_only_directory(parent, !parent_existed)?;
+        let filename = credentials_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("Credentials filename must be valid UTF-8"))?;
+        let lock_path = parent.join(format!(".{filename}.lock"));
+        ensure_safe_credentials_path(&lock_path)?;
+
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options
+            .open(&lock_path)
+            .with_context(|| format!("Failed to open credentials lock {}", lock_path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        ensure_safe_credentials_path(&lock_path)?;
+        file.lock_exclusive()
+            .context("Failed to acquire the credentials lock")?;
+        Ok(CredentialsLock { file })
     }
 
     /// Register this machine as an agent (unauthenticated).
@@ -3136,6 +3196,58 @@ mod tests {
 
         assert!(error.to_string().contains("must not contain symlinks"));
         assert_eq!(fs::read_to_string(target).unwrap(), "sentinel");
+    }
+
+    #[test]
+    fn credential_mutations_wait_for_the_shared_lock() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let _environment = test_support::ENV_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().expect("tempdir");
+        let credentials = root.path().join(".arete/credentials.toml");
+        std::env::set_var(ENV_VAR_CREDENTIALS_PATH, &credentials);
+
+        let held = ApiClient::lock_credentials().expect("first lock");
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let result = ApiClient::save_api_key_for_profile(
+                "a4_sk_human-test-key",
+                Some("https://api.arete.run"),
+                "human",
+            );
+            finished_tx.send(result).unwrap();
+        });
+        assert!(finished_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+        drop(held);
+        finished_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("writer acquires released lock")
+            .expect("writer succeeds");
+        writer.join().unwrap();
+
+        ApiClient::save_api_key_for_profile(
+            "a4_ak_agent-test-key",
+            Some("https://api.arete.run"),
+            "agent",
+        )
+        .expect("second profile is preserved");
+        assert!(ApiClient::load_optional_api_key_for_profile(
+            "https://api.arete.run",
+            Some("human")
+        )
+        .unwrap()
+        .is_some());
+        assert!(ApiClient::load_optional_api_key_for_profile(
+            "https://api.arete.run",
+            Some("agent")
+        )
+        .unwrap()
+        .is_some());
+
+        std::env::remove_var(ENV_VAR_CREDENTIALS_PATH);
     }
 
     #[test]

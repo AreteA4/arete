@@ -592,6 +592,33 @@ fn doctor_fix_restores_a_removed_agents_md_block() {
 }
 
 #[test]
+fn doctor_fix_writes_agent_profile_for_a_universal_agent_project() {
+    let sb = sandbox("empty", false);
+    let (_, output) = a4_json(
+        &sb,
+        &["init", "-y", "--json", "--no-skills", "--agents", "none"],
+    );
+    assert!(output.status.success());
+    assert!(!sb.root.join(".arete/auth.toml").exists());
+    fs::create_dir_all(sb.root.join(".agents")).unwrap();
+
+    let (doctor, _) = a4_json(&sb, &["doctor", "--json"]);
+    assert_eq!(checks(&doctor)["project.auth-profile"]["status"], "warn");
+
+    let (doctor, output) = a4_json(&sb, &["doctor", "--fix", "--json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(checks(&doctor)["project.auth-profile"]["status"], "ok");
+    assert_eq!(
+        read(&sb, ".arete/auth.toml"),
+        "default_profile = \"agent\"\n"
+    );
+}
+
+#[test]
 fn doctor_repairs_a_project_that_attempts_to_select_human_profile() {
     let sb = sandbox("empty", false);
     let (_, output) = a4_json(&sb, &["init", "-y", "--json", "--no-skills"]);
