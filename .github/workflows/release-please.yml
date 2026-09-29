@@ -141,6 +141,22 @@ jobs:
             git push origin "HEAD:$RELEASE_BRANCH"
           fi
 
+          # The push above normally triggers the pull_request CI run for the new
+          # head. Dispatch CI only if that run has not appeared, so the release PR
+          # is always tested exactly once. Only a run for this release PR counts:
+          # another PR with the same head commit tests a different merge tree.
+          HEAD_SHA="$(git rev-parse HEAD)"
+          RELEASE_PR_NUMBER="$(node -e 'process.stdout.write(String(JSON.parse(process.env.RELEASE_PR).number))')"
+          for _ in $(seq 1 12); do
+            runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${HEAD_SHA}&event=pull_request&per_page=20" \
+              --jq "[.workflow_runs[] | select(any(.pull_requests[]; .number == ${RELEASE_PR_NUMBER}))] | length")"
+            if [ "$runs" -gt 0 ]; then
+              echo "pull_request CI for release PR #${RELEASE_PR_NUMBER} is already running for $HEAD_SHA"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "No pull_request CI appeared for $HEAD_SHA after 120 s; dispatching ci.yml"
           gh workflow run ci.yml --ref "$RELEASE_BRANCH"
 
   publish-rust:
