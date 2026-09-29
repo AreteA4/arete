@@ -97,6 +97,17 @@ jobs:
       - name: Syntax-check install.sh (POSIX sh)
         run: sh -n docs/public/install.sh
 
+      # Release Recovery rejects a rust_toolchain input that differs from
+      # rust-toolchain.toml, so its default must move with every toolchain bump.
+      - name: Check Release Recovery defaults to the pinned Rust toolchain
+        run: |
+          pinned="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          default="$(yq -r '.on.workflow_dispatch.inputs.rust_toolchain.default' .github/workflows/release-recovery.yml)"
+          if [ "$default" != "$pinned" ]; then
+            echo "release-recovery.yml defaults rust_toolchain to $default, but rust-toolchain.toml pins $pinned"
+            exit 1
+          fi
+
   npm-cli-wrapper:
     name: npm CLI Wrapper
     runs-on: ubuntu-latest
@@ -136,10 +147,15 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-        with:
-          components: clippy
+      - name: Install pinned Rust toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+          # Also pins cargo runs outside the checkout (the generated crates
+          # in temporary directories), which rust-toolchain.toml cannot reach.
+          echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
+          rustc --version | grep -F "rustc $channel "
 
       - name: Cache cargo registry
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
@@ -192,8 +208,15 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - name: Install pinned Rust toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+          # Also pins cargo runs outside the checkout (the generated crates
+          # in temporary directories), which rust-toolchain.toml cannot reach.
+          echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
+          rustc --version | grep -F "rustc $channel "
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -606,10 +629,15 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-        with:
-          components: clippy
+      - name: Install pinned Rust toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+          # Also pins cargo runs outside the checkout (the generated crates
+          # in temporary directories), which rust-toolchain.toml cannot reach.
+          echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
+          rustc --version | grep -F "rustc $channel "
 
       - name: Cache cargo registry
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
