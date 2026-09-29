@@ -3,7 +3,7 @@ use colored::Colorize;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
-use crate::api_client::{AgentMeResponse, ApiClient, PendingAgentSignup};
+use crate::api_client::{api_error_details, AgentMeResponse, ApiClient, PendingAgentSignup};
 use crate::config;
 use crate::ui;
 
@@ -25,19 +25,25 @@ fn trial_remaining_seconds(expires_at: Option<&str>) -> Option<i64> {
 
 fn format_trial_remaining(expires_at: Option<&str>) -> Option<String> {
     let seconds = trial_remaining_seconds(expires_at)?;
+    Some(format_remaining_seconds(seconds))
+}
+
+fn format_remaining_seconds(seconds: i64) -> String {
     if seconds == 0 {
-        return Some("expired".to_string());
+        return "expired".to_string();
     }
     let days = seconds / 86_400;
     let hours = (seconds % 86_400) / 3_600;
     let minutes = (seconds % 3_600) / 60;
-    Some(if days > 0 {
+    if days > 0 {
         format!("{days}d {hours}h")
     } else if hours > 0 {
         format!("{hours}h {minutes}m")
-    } else {
+    } else if minutes > 0 {
         format!("{minutes}m")
-    })
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 pub fn login(api_key: Option<String>, requested_profile: Option<&str>) -> Result<()> {
@@ -1004,12 +1010,23 @@ fn perform_signup(
                         idempotent: None,
                     });
                 }
-                Err(error) if !force => {
+                Err(error)
+                    if matches!(
+                        api_error_details(&error).map(|details| details.status),
+                        Some(401 | 403)
+                    ) =>
+                {
                     anyhow::bail!(
                         "The stored `{profile}` credential for {api_url} is invalid or disabled ({error}). It was left untouched; rerun `a4 auth signup --force` to replace it"
                     );
                 }
-                Err(_) => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "Could not verify the stored `{profile}` credential for {api_url}; it was left untouched. Retry `a4 auth signup --if-missing`"
+                        )
+                    });
+                }
             }
         } else if !force {
             anyhow::bail!(
@@ -1519,6 +1536,10 @@ mod signup_tests {
             MockServer::json_sequence(vec![(200, OK_BODY.to_string()), (200, ME_BODY.to_string())]);
         let api_url = server.base_url().to_string();
         ApiClient::save_api_key("a4_ak_old", Some(&api_url)).expect("seed credentials");
+        let credentials_path = ApiClient::credentials_file_path().unwrap();
+        let mut duplicate = std::fs::read_to_string(&credentials_path).unwrap();
+        duplicate.push_str(&format!("\"{api_url}/\" = \"a4_ak_stale\"\n"));
+        std::fs::write(&credentials_path, duplicate).unwrap();
         let client = ApiClient::with_base_url(&api_url);
 
         let err = perform_signup(&client, &api_url, None, "agent", false, false)
@@ -1542,9 +1563,17 @@ mod signup_tests {
             .unwrap()
             .expect("replacement key");
         assert_ne!(replacement, "a4_ak_old");
+        assert_eq!(
+            ApiClient::load_optional_api_key_for_profile(&format!("{api_url}/"), Some("agent"))
+                .unwrap()
+                .as_deref(),
+            Some(replacement.as_str()),
+            "equivalent URL spellings must not retain a stale key"
+        );
         let stored = std::fs::read_to_string(ApiClient::credentials_file_path().unwrap()).unwrap();
         assert!(stored.contains("backupKeys"), "{stored}");
         assert!(stored.contains("a4_ak_old"), "{stored}");
+        assert!(!stored.contains("a4_ak_stale"), "{stored}");
         let body: serde_json::Value =
             serde_json::from_str(&server.request().body).expect("json body");
         assert!(body.get("displayName").is_none());
@@ -1721,6 +1750,37 @@ mod signup_tests {
                 .as_deref(),
             Some("a4_ak_disabled")
         );
+    }
+
+    #[test]
+    fn signup_if_missing_keeps_a_key_on_transient_verification_failure() {
+        let _sandbox = CredentialsSandbox::new();
+        let server = MockServer::json(
+            503,
+            r#"{"error":"temporarily unavailable","code":"service-unavailable"}"#,
+        );
+        let api_url = server.base_url();
+        ApiClient::save_api_key_for_profile("a4_ak_existing", Some(api_url), "agent").unwrap();
+        let client = ApiClient::with_base_url(api_url);
+
+        let error = perform_signup(&client, api_url, None, "agent", false, true)
+            .expect_err("transient verification failure is surfaced");
+
+        assert!(error.to_string().contains("Retry"), "{error:#}");
+        assert!(!error.to_string().contains("--force"), "{error:#}");
+        assert_eq!(
+            ApiClient::load_optional_api_key_for_profile(api_url, Some("agent"))
+                .unwrap()
+                .as_deref(),
+            Some("a4_ak_existing")
+        );
+    }
+
+    #[test]
+    fn short_positive_trial_time_is_not_reported_as_zero_minutes() {
+        assert_eq!(format_remaining_seconds(1), "1s");
+        assert_eq!(format_remaining_seconds(59), "59s");
+        assert_eq!(format_remaining_seconds(60), "1m");
     }
 
     #[test]

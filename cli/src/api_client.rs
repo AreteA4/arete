@@ -258,6 +258,11 @@ fn take_url_value(
         .and_then(|candidate| values.remove(candidate))
 }
 
+fn remove_equivalent_url_values(values: &mut toml::map::Map<String, toml::Value>, api_url: &str) {
+    let wanted = normalize_api_url(api_url);
+    values.retain(|url, _| normalize_api_url(url) != wanted);
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct PendingAgentSignup {
     pub credential: String,
@@ -2764,6 +2769,7 @@ impl ApiClient {
             .ok_or_else(|| anyhow::anyhow!("Invalid profile `{profile}` keys format"))
             .map(|keys| {
                 let old = take_url_value(keys, api_url);
+                remove_equivalent_url_values(keys, api_url);
                 keys.insert(
                     target_url.clone(),
                     toml::Value::String(expected.credential.clone()),
