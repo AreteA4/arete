@@ -7,9 +7,7 @@
 
 ### Features
 
-* **cli:** make agent trial signup crash-safe ([d25850b](https://github.com/AreteA4/arete/commit/d25850bbb5281f0d687beca8304803713bdd6f1a))
 * **cli:** make agent trial signup crash-safe ([551abad](https://github.com/AreteA4/arete/commit/551abad73b376838b38cde37fc24ff0a02116e50))
-* **discovery:** guide agent trials to starter stacks ([a6a9d61](https://github.com/AreteA4/arete/commit/a6a9d617bf5ffc0143fc5953ec541bfe841c1bd9))
 * **discovery:** guide agent trials to starter stacks ([97883dc](https://github.com/AreteA4/arete/commit/97883dc21ee328a662befe24c8c3c06aa6a36a52))
 * isolate agent credentials and propagate recovery actions ([cf3716a](https://github.com/AreteA4/arete/commit/cf3716a5bb888a265b05e292bca4ae706844f893))
 
