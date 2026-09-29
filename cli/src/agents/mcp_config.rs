@@ -33,10 +33,15 @@ pub fn command_from_receipt() -> String {
 
 /// Commands accepted for an existing `arete` server entry. A project config
 /// is often committed and shared across machines, so the portable `a4` is
-/// accepted there alongside the installed binary's path.
-fn accepted_commands(scope: Scope, command: &str) -> Vec<&str> {
+/// accepted there alongside the installed binary's path, as long as `a4`
+/// resolves on this PATH. (A GUI host's own PATH can't be checked from here.)
+fn accepted_commands<'a>(env: &Env, scope: Scope, command: &'a str) -> Vec<&'a str> {
     let mut commands = vec![command];
-    if scope == Scope::Project && command != PORTABLE_COMMAND {
+    let portable_resolves = env
+        .var("PATH")
+        .and_then(|path| super::find_on_path(std::ffi::OsStr::new(path), PORTABLE_COMMAND))
+        .is_some();
+    if scope == Scope::Project && command != PORTABLE_COMMAND && portable_resolves {
         commands.push(PORTABLE_COMMAND);
     }
     commands
@@ -409,7 +414,7 @@ pub fn check(env: &Env, id: &str, scope: Scope, command: &str) -> McpState {
         Ok(None) => return McpState::Missing(format!("{shown} missing")),
         Err(error) => return McpState::Error(format!("{error:#}")),
     };
-    let shapes: Vec<Shape> = accepted_commands(scope, command)
+    let shapes: Vec<Shape> = accepted_commands(env, scope, command)
         .into_iter()
         .flat_map(|command| acceptable_shapes(id, command, scope, true))
         .collect();
@@ -678,7 +683,25 @@ mod tests {
     #[test]
     fn a_project_config_may_use_the_portable_command() {
         let dir = tempfile::tempdir().unwrap();
-        let env = env(dir.path());
+        let without_a4 = env(dir.path());
+        let bin = dir.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join(PORTABLE_COMMAND), "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                bin.join(PORTABLE_COMMAND),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let path = bin.to_string_lossy().into_owned();
+        let env = Env::new(
+            &without_a4.root,
+            without_a4.home.clone(),
+            &[("PATH", path.as_str())],
+        );
         for id in ["claude-code", "opencode", "codex"] {
             let (result, _) = write(&env, id, Scope::Project, PORTABLE_COMMAND, false);
             assert_eq!(result.outcome, Outcome::Created, "{id}");
@@ -707,6 +730,12 @@ mod tests {
             .map(|file| fs::read_to_string(env.root.join(file)).unwrap())
             .collect();
         assert_eq!(after, before);
+
+        // Without `a4` on PATH the portable entry can't start: report it.
+        assert!(matches!(
+            check(&without_a4, "claude-code", Scope::Project, "/opt/a4"),
+            McpState::Missing(_)
+        ));
 
         // A user-scope config is not shared, so it still wants the installed
         // binary: GUI hosts do not inherit the shell PATH.
