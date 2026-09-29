@@ -16,18 +16,22 @@ const DEFAULT_APP_ORIGIN: &str = "https://arete.run";
 const MAX_RECOVERY_BODY_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct AccountStatus {
+    #[serde(rename = "schemaVersion")]
     pub schema_version: u8,
     pub slug: String,
     pub display_name: String,
     pub status: String,
     pub created_at: String,
     pub last_seen_at: Option<String>,
+    #[serde(rename = "claimState")]
     pub claim_state: String,
     pub plan: Option<String>,
+    #[serde(rename = "entitlementExpiresAt")]
     pub entitlement_expires_at: Option<String>,
+    #[serde(rename = "trialAccessEnabled")]
     pub trial_access_enabled: bool,
+    #[serde(rename = "starterGuidance")]
     pub starter_guidance: Option<String>,
 }
 
@@ -277,6 +281,10 @@ mod tests {
         assert_eq!(value["plan"], "agent_trial");
         assert_eq!(value["trialAccessEnabled"], true);
         assert_eq!(value["claimState"], "unclaimed");
+        assert_eq!(value["display_name"], "Agent One");
+        assert_eq!(value["created_at"], "2026-09-29T00:00:00Z");
+        assert!(value.get("displayName").is_none());
+        assert!(value.get("createdAt").is_none());
         assert!(value["starterGuidance"]
             .as_str()
             .unwrap()
