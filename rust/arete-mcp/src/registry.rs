@@ -30,6 +30,8 @@
 //! `explore_stack_schema` also attach the curated field descriptions of the
 //! stack's catalog knowledge when it has one (see [`crate::stack_knowledge`]).
 
+use std::time::Duration;
+
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
@@ -53,10 +55,6 @@ const INSTALL_CAPABILITIES: &str = "capabilities=managed-solana-gateway-v1";
 /// `/api/registry/artifacts/{kind}/{hash}` routes.
 const ARTIFACT_KINDS: [&str; 3] = ["program-spec", "live-spec", "stack-manifest"];
 
-/// How long the optional knowledge lookup that accompanies a stack schema or
-/// summary may take before it is skipped.
-const OPTIONAL_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
 #[derive(Clone)]
 pub struct RegistryClient {
     base_url: String,
@@ -70,6 +68,15 @@ impl Default for RegistryClient {
 }
 
 impl RegistryClient {
+    /// A client for `base_url`, for tests against a local server.
+    #[cfg(test)]
+    pub(crate) fn with_base_url(base_url: &str) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            http: reqwest::Client::new(),
+        }
+    }
+
     pub fn new() -> Self {
         let base_url = std::env::var(ENV_VAR_API_URL)
             .ok()
@@ -91,11 +98,19 @@ impl RegistryClient {
     /// The pinned install descriptor for one stack — the exact identities
     /// `a4 install` would consume.
     pub async fn stack_install(&self, stack: &str) -> Result<String> {
+        self.stack_install_within(stack, None).await
+    }
+
+    /// [`RegistryClient::stack_install`], abandoned after `timeout` when one
+    /// is given.
+    pub async fn stack_install_within(
+        &self,
+        stack: &str,
+        timeout: Option<Duration>,
+    ) -> Result<String> {
         let stack = path_segment(stack, "stack")?;
-        self.get(&format!(
-            "/api/registry/stacks/{stack}/install?{INSTALL_CAPABILITIES}"
-        ))
-        .await
+        let path = format!("/api/registry/stacks/{stack}/install?{INSTALL_CAPABILITIES}");
+        self.send(&path, self.public_key(), timeout).await
     }
 
     /// Entity and view schema for one stack. This is where an agent gets the
@@ -168,14 +183,19 @@ impl RegistryClient {
     /// The knowledge document an active catalog entry publishes: for a
     /// stack, entity and view summaries and curated field descriptions.
     /// Registries that predate the route answer 404, like an entry without
-    /// a document; callers treat every failure as "no knowledge". Bounded by
-    /// a short timeout because it only ever adds context.
-    pub async fn catalog_entry_knowledge(&self, kind: &str, slug: &str) -> Result<String> {
+    /// a document; callers treat every failure as "no knowledge". Abandoned
+    /// after `timeout`, connecting included, because it only ever adds
+    /// context.
+    pub async fn catalog_entry_knowledge(
+        &self,
+        kind: &str,
+        slug: &str,
+        timeout: Duration,
+    ) -> Result<String> {
         let kind = catalog_kind(kind)?;
         let slug = path_segment(slug, "slug")?;
         let path = format!("/api/registry/v1/catalog/entries/{kind}/{slug}/knowledge");
-        self.send(&path, self.public_key(), Some(OPTIONAL_REQUEST_TIMEOUT))
-            .await
+        self.send(&path, self.public_key(), Some(timeout)).await
     }
 
     /// Concept and category vocabularies of the active catalog snapshot.
@@ -291,7 +311,7 @@ impl RegistryClient {
         &self,
         path: &str,
         key: Option<String>,
-        timeout: Option<std::time::Duration>,
+        timeout: Option<Duration>,
     ) -> Result<String> {
         let url = format!("{}{path}", self.base_url);
         let mut request = self.http.get(&url);
@@ -1025,6 +1045,40 @@ mod tests {
     fn absent_declared_length_is_not_a_failure() {
         // Chunked responses declare nothing; the streaming path bounds those.
         assert!(check_size(None, "/x").is_ok());
+    }
+
+    /// A server that accepts every connection and never answers.
+    fn silent_server() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming().flatten() {
+                held.push(stream);
+            }
+        });
+        format!("http://{address}")
+    }
+
+    #[tokio::test]
+    async fn a_timeout_bounds_a_request_to_a_server_that_never_answers() {
+        let client = RegistryClient::with_base_url(&silent_server());
+        let started = std::time::Instant::now();
+        let error = client
+            .send(
+                "/api/registry/v1/catalog/entries/stack/ore/knowledge",
+                None,
+                Some(Duration::from_millis(300)),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(error.contains("failed"), "{error}");
     }
 
     #[tokio::test]

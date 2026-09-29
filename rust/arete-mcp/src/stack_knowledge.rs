@@ -17,9 +17,33 @@
 //! schema may report `results.pre_reveal_winning_square` or the camelCase
 //! form, so paths are compared through [`normalize_path`].
 
+use std::time::Duration;
+
 use serde_json::{json, Map, Value};
 
 use crate::descriptor::EntityField;
+
+/// How long the optional knowledge lookup may take in total, connecting
+/// included, before explore prints what it already has without it. For a
+/// schema this also bounds reading the StackManifest the knowledge is
+/// checked against.
+pub const LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Whether a stack could have catalog knowledge, so that looking it up is
+/// worth a request. Knowledge is published for public and global catalog
+/// stacks, under their package slug, so a private stack, or a name that is
+/// not a package slug (a display name, or anything that is not one path
+/// segment), is skipped without a request.
+pub fn may_have_catalog_knowledge(slug: &str, visibility: Option<&str>) -> bool {
+    let bytes = slug.as_bytes();
+    let package_slug = !bytes.is_empty()
+        && bytes.len() <= 128
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+    package_slug && visibility.is_none_or(|visibility| !visibility.eq_ignore_ascii_case("private"))
+}
 
 /// One path segment, compared case-insensitively with `_` removed.
 fn normalize_segment(segment: &str) -> String {
@@ -395,6 +419,33 @@ pub(crate) mod tests {
         assert!(StackKnowledge::from_response(&anonymous).is_none());
         assert!(StackKnowledge::from_response(&json!({"error": "not found"})).is_none());
         assert!(StackKnowledge::from_response(&Value::Null).is_none());
+    }
+
+    #[test]
+    fn knowledge_is_only_looked_up_where_the_catalog_can_have_it() {
+        for slug in ["ore", "ore-stream", "meteora_damm", "pump.fun", "Ore2"] {
+            assert!(may_have_catalog_knowledge(slug, Some("public")), "{slug}");
+            assert!(may_have_catalog_knowledge(slug, Some("global")), "{slug}");
+            assert!(may_have_catalog_knowledge(slug, None), "{slug}");
+        }
+        assert!(!may_have_catalog_knowledge("ore", Some("private")));
+        assert!(!may_have_catalog_knowledge("ore", Some("Private")));
+        for slug in [
+            "",
+            "Ore Mining",
+            "ore/stream",
+            "..",
+            "-ore",
+            ".ore",
+            "ore?x=1",
+            "ore%2F",
+        ] {
+            assert!(
+                !may_have_catalog_knowledge(slug, Some("public")),
+                "{slug:?}"
+            );
+        }
+        assert!(!may_have_catalog_knowledge(&"a".repeat(129), None));
     }
 
     #[test]

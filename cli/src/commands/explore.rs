@@ -678,11 +678,20 @@ fn account_readiness(client: &ApiClient, requirements: &Value) -> Option<Value> 
 /// the knowledge document's own slug may differ. `None`, silently, for a
 /// stack without a catalog entry or document, a registry that does not
 /// serve the route, knowledge published for another StackManifest, or any
-/// failure: it only ever adds to the output.
+/// failure: it only ever adds to the output. A stack that cannot have
+/// catalog knowledge (a private stack, or one not named by a package slug)
+/// is not looked up, and the lookup is abandoned after
+/// [`arete_mcp::stack_knowledge::LOOKUP_TIMEOUT`].
 fn stack_knowledge(
     client: &ApiClient,
     descriptor: &RegistryStackInstallResponse,
 ) -> Option<StackKnowledge> {
+    if !arete_mcp::stack_knowledge::may_have_catalog_knowledge(
+        &descriptor.name,
+        Some(&descriptor.visibility),
+    ) {
+        return None;
+    }
     let slug = catalog_slug(&descriptor.name).ok()?;
     let response = client.catalog_entry_knowledge("stack", &slug)?;
     StackKnowledge::from_response(&response)
@@ -3320,6 +3329,48 @@ mod tests {
                 "{response:?}"
             );
         }
+    }
+
+    #[test]
+    fn stacks_that_cannot_have_catalog_knowledge_are_not_looked_up() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let client =
+            ApiClient::with_base_url(&format!("http://{}", listener.local_addr().unwrap()));
+        let mut private = catalog_descriptor();
+        private.visibility = "private".into();
+        let mut display_name = catalog_descriptor();
+        display_name.name = "Ore Mining".into();
+        for descriptor in [private, display_name] {
+            assert!(stack_knowledge(&client, &descriptor).is_none());
+        }
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "no request was made"
+        );
+    }
+
+    #[test]
+    fn a_slow_knowledge_route_costs_at_most_the_lookup_timeout() {
+        let server = crate::api_client::test_support::MockServer::json_delayed(
+            200,
+            &catalog_knowledge().to_string(),
+            std::time::Duration::from_secs(8),
+        );
+        let client = ApiClient::with_base_url(server.base_url());
+        let started = std::time::Instant::now();
+        assert!(stack_knowledge(&client, &catalog_descriptor()).is_none());
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed
+                < arete_mcp::stack_knowledge::LOOKUP_TIMEOUT + std::time::Duration::from_secs(2),
+            "{elapsed:?}"
+        );
+        assert_eq!(
+            server.request().request_line,
+            "GET /api/registry/v1/catalog/entries/stack/ore/knowledge HTTP/1.1"
+        );
     }
 
     #[test]

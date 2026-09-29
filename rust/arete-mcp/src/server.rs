@@ -112,7 +112,7 @@ use serde::{Deserialize, Serialize};
 use crate::connections::ConnectionRegistry;
 use crate::filter::{Filter, StructuredPredicate};
 use crate::registry::{RegistryClient, MAX_RESPONSE_BYTES};
-use crate::stack_knowledge::{self, StackKnowledge};
+use crate::stack_knowledge::{self, StackKnowledge, LOOKUP_TIMEOUT};
 use crate::subscriptions::SubscriptionRegistry;
 use crate::{credentials, descriptor, filter};
 
@@ -504,7 +504,9 @@ impl AreteMcp {
                     .get("name")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or(&args.stack);
-                self.stack_knowledge(slug, stack_manifest_hash).await
+                let visibility = stack.get("visibility").and_then(serde_json::Value::as_str);
+                self.stack_knowledge(slug, visibility, stack_manifest_hash)
+                    .await
             }
             None => None,
         };
@@ -1339,15 +1341,20 @@ impl AreteMcp {
     /// The catalog knowledge of the stack published as `slug`, when there is
     /// one and it was published for `stack_manifest_hash`, the StackManifest
     /// being described. Any failure, including a registry without the route,
-    /// means no knowledge.
+    /// means no knowledge. A stack that cannot have catalog knowledge is not
+    /// looked up, and the lookup is abandoned after [`LOOKUP_TIMEOUT`].
     async fn stack_knowledge(
         &self,
         slug: &str,
+        visibility: Option<&str>,
         stack_manifest_hash: &str,
     ) -> Option<StackKnowledge> {
+        if !stack_knowledge::may_have_catalog_knowledge(slug, visibility) {
+            return None;
+        }
         let body = self
             .registry
-            .catalog_entry_knowledge("stack", slug)
+            .catalog_entry_knowledge("stack", slug, LOOKUP_TIMEOUT)
             .await
             .ok()?;
         stack_knowledge_from_body(&body, stack_manifest_hash)
@@ -1358,14 +1365,27 @@ impl AreteMcp {
     /// install descriptor the registry serves for the same `reference`, the
     /// stack the schema describes. It is omitted when that descriptor cannot
     /// be read, names no StackManifest, or names another one. The descriptor
-    /// is only fetched once there is knowledge to check.
+    /// is only fetched once there is knowledge to check, and both requests
+    /// together are abandoned after [`LOOKUP_TIMEOUT`].
     async fn schema_knowledge(&self, reference: &str, slug: &str) -> Option<StackKnowledge> {
+        if !stack_knowledge::may_have_catalog_knowledge(slug, None) {
+            return None;
+        }
+        let deadline = std::time::Instant::now() + LOOKUP_TIMEOUT;
         let knowledge = self
             .registry
-            .catalog_entry_knowledge("stack", slug)
+            .catalog_entry_knowledge("stack", slug, LOOKUP_TIMEOUT)
             .await
             .ok()?;
-        let descriptor = self.registry.stack_install(reference).await.ok()?;
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        let descriptor = self
+            .registry
+            .stack_install_within(reference, Some(remaining))
+            .await
+            .ok()?;
         schema_knowledge_from_bodies(&knowledge, &descriptor)
     }
 }
@@ -1638,6 +1658,42 @@ mod explore_args_tests {
         );
         assert!(stack_knowledge_from_body("<html>not json</html>", "manifest-exact").is_none());
         assert!(stack_knowledge_from_body(r#"{"error":"not found"}"#, "manifest-exact").is_none());
+    }
+
+    /// A registry address that records whether anything connected.
+    fn watched_registry() -> (std::net::TcpListener, AreteMcp) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = AreteMcp {
+            registry: RegistryClient::with_base_url(&format!(
+                "http://{}",
+                listener.local_addr().unwrap()
+            )),
+            ..AreteMcp::new()
+        };
+        (listener, server)
+    }
+
+    #[tokio::test]
+    async fn stacks_that_cannot_have_catalog_knowledge_are_not_looked_up() {
+        let (listener, server) = watched_registry();
+        assert!(server
+            .stack_knowledge("vault", Some("private"), "manifest-exact")
+            .await
+            .is_none());
+        assert!(server
+            .stack_knowledge("Vault Stack", Some("global"), "manifest-exact")
+            .await
+            .is_none());
+        assert!(server
+            .schema_knowledge("vault", "Vault Stack")
+            .await
+            .is_none());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "no request was made"
+        );
     }
 
     #[test]
