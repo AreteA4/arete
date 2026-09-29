@@ -26,7 +26,11 @@
 //! every time the platform grows a field. The `explore_stack` and
 //! `explore_program` tools cut a summary, sections, views or one operation out
 //! of the full descriptor (see [`crate::descriptor`]) unless the caller asks
-//! for `full: true`, which returns these bytes unchanged.
+//! for `full: true`, which returns these bytes unchanged. `explore_stack` and
+//! `explore_stack_schema` also attach the curated field descriptions of the
+//! stack's catalog knowledge when it has one (see [`crate::stack_knowledge`]).
+
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -64,6 +68,15 @@ impl Default for RegistryClient {
 }
 
 impl RegistryClient {
+    /// A client for `base_url`, for tests against a local server.
+    #[cfg(test)]
+    pub(crate) fn with_base_url(base_url: &str) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            http: reqwest::Client::new(),
+        }
+    }
+
     pub fn new() -> Self {
         let base_url = std::env::var(ENV_VAR_API_URL)
             .ok()
@@ -85,11 +98,19 @@ impl RegistryClient {
     /// The pinned install descriptor for one stack — the exact identities
     /// `a4 install` would consume.
     pub async fn stack_install(&self, stack: &str) -> Result<String> {
+        self.stack_install_within(stack, None).await
+    }
+
+    /// [`RegistryClient::stack_install`], abandoned after `timeout` when one
+    /// is given.
+    pub async fn stack_install_within(
+        &self,
+        stack: &str,
+        timeout: Option<Duration>,
+    ) -> Result<String> {
         let stack = path_segment(stack, "stack")?;
-        self.get(&format!(
-            "/api/registry/stacks/{stack}/install?{INSTALL_CAPABILITIES}"
-        ))
-        .await
+        let path = format!("/api/registry/stacks/{stack}/install?{INSTALL_CAPABILITIES}");
+        self.send(&path, self.public_key(), timeout).await
     }
 
     /// Entity and view schema for one stack. This is where an agent gets the
@@ -159,6 +180,24 @@ impl RegistryClient {
             .await
     }
 
+    /// The knowledge document an active catalog entry publishes: for a
+    /// stack, entity and view summaries and curated field descriptions.
+    /// Registries that predate the route answer 404, like an entry without
+    /// a document; callers treat every failure as "no knowledge". Abandoned
+    /// after `timeout`, connecting included, because it only ever adds
+    /// context.
+    pub async fn catalog_entry_knowledge(
+        &self,
+        kind: &str,
+        slug: &str,
+        timeout: Duration,
+    ) -> Result<String> {
+        let kind = catalog_kind(kind)?;
+        let slug = path_segment(slug, "slug")?;
+        let path = format!("/api/registry/v1/catalog/entries/{kind}/{slug}/knowledge");
+        self.send(&path, self.public_key(), Some(timeout)).await
+    }
+
     /// Concept and category vocabularies of the active catalog snapshot.
     pub async fn catalog_vocabulary(&self) -> Result<String> {
         self.get("/api/registry/v1/catalog/vocabulary").await
@@ -226,6 +265,11 @@ impl RegistryClient {
     /// usefully, and agents comparing a hash-relevant artifact against the CLI
     /// would see a body the platform never sent.
     async fn get(&self, path: &str) -> Result<String> {
+        self.send(path, self.public_key(), None).await
+    }
+
+    /// The key [`RegistryClient::get`] attaches: see there.
+    fn public_key(&self) -> Option<String> {
         // Best-effort auth, but only ever to an Arete origin. `ARETE_API_URL` can
         // point anywhere, and `ARETE_API_KEY` (unlike the credentials file, which
         // is keyed by API URL) is not scoped to a destination — so attaching it
@@ -239,14 +283,13 @@ impl RegistryClient {
         // The empty target passed to `resolve` keeps a missing key non-fatal — it
         // is a hosted *stack* URL that makes absence an error, which is a `connect`
         // concern, not ours.
-        let key = if is_arete_origin(&self.base_url) {
+        if is_arete_origin(&self.base_url) {
             credentials::resolve(None, "")
                 .ok()
                 .and_then(|resolved| resolved.key)
         } else {
             None
-        };
-        self.send(path, key).await
+        }
     }
 
     /// Like [`RegistryClient::get`], but for the knowledge routes, where auth
@@ -261,14 +304,22 @@ impl RegistryClient {
             .ok()
             .and_then(|resolved| resolved.key);
         let key = knowledge_key(&self.base_url, resolved)?;
-        self.send(path, Some(key)).await
+        self.send(path, Some(key), None).await
     }
 
-    async fn send(&self, path: &str, key: Option<String>) -> Result<String> {
+    async fn send(
+        &self,
+        path: &str,
+        key: Option<String>,
+        timeout: Option<Duration>,
+    ) -> Result<String> {
         let url = format!("{}{path}", self.base_url);
         let mut request = self.http.get(&url);
         if let Some(key) = key {
             request = request.bearer_auth(key);
+        }
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
         }
 
         let response = request
@@ -994,6 +1045,40 @@ mod tests {
     fn absent_declared_length_is_not_a_failure() {
         // Chunked responses declare nothing; the streaming path bounds those.
         assert!(check_size(None, "/x").is_ok());
+    }
+
+    /// A server that accepts every connection and never answers.
+    fn silent_server() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming().flatten() {
+                held.push(stream);
+            }
+        });
+        format!("http://{address}")
+    }
+
+    #[tokio::test]
+    async fn a_timeout_bounds_a_request_to_a_server_that_never_answers() {
+        let client = RegistryClient::with_base_url(&silent_server());
+        let started = std::time::Instant::now();
+        let error = client
+            .send(
+                "/api/registry/v1/catalog/entries/stack/ore/knowledge",
+                None,
+                Some(Duration::from_millis(300)),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(error.contains("failed"), "{error}");
     }
 
     #[tokio::test]

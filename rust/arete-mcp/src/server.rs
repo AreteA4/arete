@@ -112,6 +112,7 @@ use serde::{Deserialize, Serialize};
 use crate::connections::ConnectionRegistry;
 use crate::filter::{Filter, StructuredPredicate};
 use crate::registry::{RegistryClient, MAX_RESPONSE_BYTES};
+use crate::stack_knowledge::{self, StackKnowledge, LOOKUP_TIMEOUT};
 use crate::subscriptions::SubscriptionRegistry;
 use crate::{credentials, descriptor, filter};
 
@@ -460,7 +461,11 @@ impl AreteMcp {
                           keys are origin-bound, whether a transaction entitlement is \
                           required).\n\n\
                           `views: [\"OreRound/latest\"]` returns only those views with \
-                          their entity field schemas. `full: true` returns the whole \
+                          their entity field schemas. When the stack is published in the \
+                          catalog, entities and views carry a curated `summary` and \
+                          fields a `description` (the summary lists them as \
+                          `fieldDescriptions`) with usage guidance, e.g. which of two \
+                          similar fields a live UI should show. `full: true` returns the whole \
                           descriptor `a4 install` consumes (StackManifest, LiveSpecs, \
                           programs, extensions) — hundreds of KB, so ask for it only \
                           when you need artifact bodies.\n\n\
@@ -488,14 +493,31 @@ impl AreteMcp {
             return registry_result(body);
         }
         let stack = parse_descriptor(body)?;
+        // Guidance is pinned to the StackManifest this descriptor serves; a
+        // descriptor that names none gets none.
+        let knowledge = match stack
+            .get("stackManifestHash")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(stack_manifest_hash) => {
+                let slug = stack
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(&args.stack);
+                let visibility = stack.get("visibility").and_then(serde_json::Value::as_str);
+                self.stack_knowledge(slug, visibility, stack_manifest_hash)
+                    .await
+            }
+            None => None,
+        };
         let shaped = if views.is_empty() {
-            let mut summary = descriptor::stack_summary(&stack);
+            let mut summary = descriptor::stack_summary(&stack, knowledge.as_ref());
             summary["next"] = serde_json::json!(
                 "Pass `views` for view schemas (subscribe with those ids), or `full: true` for the whole descriptor. Program operations: explore_program { program, operationId }."
             );
             summary
         } else {
-            descriptor::stack_views(&stack, &views)
+            descriptor::stack_views(&stack, &views, knowledge.as_ref())
                 .map_err(|error| McpError::invalid_params(error.to_string(), None))?
         };
         shaped_result(&shaped)
@@ -505,13 +527,33 @@ impl AreteMcp {
         description = "Fetch the entity and view schema for one stack — field paths, \
                           types, primary keys, and the view ids `subscribe` accepts.\n\n\
                           Use this to resolve a `<EntityName>/<view>` id before calling \
-                          subscribe, instead of guessing from a template."
+                          subscribe, instead of guessing from a template.\n\n\
+                          When the stack is published in the catalog, fields carry a \
+                          curated `description` and entities and views a `summary`. \
+                          Descriptions carry usage guidance, e.g. which of two similar \
+                          fields a live UI should show or when a field fills in; read \
+                          them before choosing fields. They are attached only when the \
+                          knowledge was published for the StackManifest the registry \
+                          serves for this stack. `knowledge` names the document they \
+                          come from."
     )]
     async fn explore_stack_schema(
         &self,
         Parameters(args): Parameters<ExploreStackSchemaArgs>,
     ) -> Result<CallToolResult, McpError> {
-        registry_result(self.registry.stack_schema(&args.stack).await)
+        let body = self
+            .registry
+            .stack_schema(&args.stack)
+            .await
+            .map_err(registry_error)?;
+        let schema: serde_json::Value = parse_descriptor(Ok(body.clone()))?;
+        // The response names the catalog package it resolved to.
+        let slug = schema
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&args.stack);
+        let knowledge = self.schema_knowledge(&args.stack, slug).await;
+        described_schema_result(body, schema, knowledge.as_ref())
     }
 
     #[tool(
@@ -1295,6 +1337,92 @@ impl AreteMcp {
     }
 }
 
+impl AreteMcp {
+    /// The catalog knowledge of the stack published as `slug`, when there is
+    /// one and it was published for `stack_manifest_hash`, the StackManifest
+    /// being described. Any failure, including a registry without the route,
+    /// means no knowledge. A stack that cannot have catalog knowledge is not
+    /// looked up, and the lookup is abandoned after [`LOOKUP_TIMEOUT`].
+    async fn stack_knowledge(
+        &self,
+        slug: &str,
+        visibility: Option<&str>,
+        stack_manifest_hash: &str,
+    ) -> Option<StackKnowledge> {
+        if !stack_knowledge::may_have_catalog_knowledge(slug, visibility) {
+            return None;
+        }
+        let body = self
+            .registry
+            .catalog_entry_knowledge("stack", slug, LOOKUP_TIMEOUT)
+            .await
+            .ok()?;
+        stack_knowledge_from_body(&body, stack_manifest_hash)
+    }
+
+    /// The catalog knowledge for a schema response. The schema names no
+    /// StackManifest, so the guidance is pinned to the StackManifest of the
+    /// install descriptor the registry serves for the same `reference`, the
+    /// stack the schema describes. It is omitted when that descriptor cannot
+    /// be read, names no StackManifest, or names another one. The descriptor
+    /// is only fetched once there is knowledge to check, and both requests
+    /// together are abandoned after [`LOOKUP_TIMEOUT`].
+    async fn schema_knowledge(&self, reference: &str, slug: &str) -> Option<StackKnowledge> {
+        if !stack_knowledge::may_have_catalog_knowledge(slug, None) {
+            return None;
+        }
+        let deadline = std::time::Instant::now() + LOOKUP_TIMEOUT;
+        let knowledge = self
+            .registry
+            .catalog_entry_knowledge("stack", slug, LOOKUP_TIMEOUT)
+            .await
+            .ok()?;
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        let descriptor = self
+            .registry
+            .stack_install_within(reference, Some(remaining))
+            .await
+            .ok()?;
+        schema_knowledge_from_bodies(&knowledge, &descriptor)
+    }
+}
+
+/// A knowledge response, kept only when it was published for
+/// `stack_manifest_hash`.
+fn stack_knowledge_from_body(body: &str, stack_manifest_hash: &str) -> Option<StackKnowledge> {
+    let response = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    StackKnowledge::from_response(&response)
+        .filter(|knowledge| knowledge.belongs_to(stack_manifest_hash))
+}
+
+/// A knowledge response, kept only when it was published for the
+/// StackManifest `descriptor` (an install descriptor) serves.
+fn schema_knowledge_from_bodies(knowledge: &str, descriptor: &str) -> Option<StackKnowledge> {
+    let descriptor = serde_json::from_str::<serde_json::Value>(descriptor).ok()?;
+    let stack_manifest_hash = descriptor
+        .get("stackManifestHash")
+        .and_then(serde_json::Value::as_str)?;
+    stack_knowledge_from_body(knowledge, stack_manifest_hash)
+}
+
+/// A stack schema response (`body`, parsed as `schema`) with its catalog
+/// knowledge attached. Without knowledge the registry's bytes pass through
+/// unchanged.
+fn described_schema_result(
+    body: String,
+    mut schema: serde_json::Value,
+    knowledge: Option<&StackKnowledge>,
+) -> Result<CallToolResult, McpError> {
+    let Some(knowledge) = knowledge else {
+        return registry_result(Ok(body));
+    };
+    stack_knowledge::describe_schema(&mut schema, knowledge);
+    shaped_result(&schema)
+}
+
 impl Default for AreteMcp {
     fn default() -> Self {
         Self::new()
@@ -1441,6 +1569,157 @@ mod explore_args_tests {
         ] {
             let err = server.explore_program(Parameters(args)).await.unwrap_err();
             assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "{}", err.message);
+        }
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        serde_json::to_value(result).unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// A registry `GET /api/registry/ore/schema` response.
+    fn ore_schema() -> String {
+        serde_json::json!({
+            "name": "ore",
+            "subdomain": "ore-abc123",
+            "websocket_url": "wss://ore-abc123.stack.arete.run",
+            "schema": {"stack_name": "OreStream", "entities": [{
+                "name": "OreRound",
+                "primary_keys": ["id.round_id"],
+                "fields": [
+                    {"path": "results.pre_reveal_winning_square", "rust_type": "Option<u8>", "nullable": true, "section": "results"},
+                    {"path": "results.winning_square", "rust_type": "Option<u8>", "nullable": true, "section": "results"},
+                    {"path": "results.rng", "rust_type": "Option<u64>", "nullable": true, "section": "results"}
+                ],
+                "views": [{"id": "OreRound/latest", "mode": "single", "pipeline": []}]
+            }]}
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn stack_schema_gains_catalog_field_descriptions_only_when_served() {
+        let body = ore_schema();
+        let schema: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        // No knowledge (no catalog entry, or a registry without the route):
+        // the registry's bytes pass through unchanged.
+        let result = described_schema_result(body.clone(), schema.clone(), None).unwrap();
+        assert_eq!(result_text(&result), body);
+
+        let knowledge = crate::stack_knowledge::tests::ore_knowledge().to_string();
+        let descriptor = serde_json::json!({"name": "ore", "stackManifestHash": "manifest-exact"});
+        let knowledge = schema_knowledge_from_bodies(&knowledge, &descriptor.to_string()).unwrap();
+        let result = described_schema_result(body, schema, Some(&knowledge)).unwrap();
+        let described: serde_json::Value = serde_json::from_str(&result_text(&result)).unwrap();
+        let round = &described["schema"]["entities"][0];
+        assert_eq!(round["summary"], "One mining round.");
+        assert_eq!(
+            round["fields"][0],
+            serde_json::json!({
+                "path": "results.pre_reveal_winning_square",
+                "rust_type": "Option<u8>",
+                "nullable": true,
+                "section": "results",
+                "description": "The winning square before reveal; show this in a live UI."
+            })
+        );
+        assert_eq!(
+            round["fields"][1]["description"],
+            "Only set once the next round opens."
+        );
+        assert!(round["fields"][2].get("description").is_none());
+        assert_eq!(round["views"][0]["summary"], "The current round.");
+        assert_eq!(described["knowledge"]["slug"], "ore-stream");
+        assert_eq!(
+            described["websocket_url"],
+            "wss://ore-abc123.stack.arete.run"
+        );
+    }
+
+    #[test]
+    fn unusable_knowledge_responses_mean_no_knowledge() {
+        let knowledge = crate::stack_knowledge::tests::ore_knowledge().to_string();
+        assert!(stack_knowledge_from_body(&knowledge, "manifest-exact").is_some());
+        assert!(
+            stack_knowledge_from_body(&knowledge, "another-manifest").is_none(),
+            "knowledge published for another StackManifest is not attached"
+        );
+        let mut unpinned = crate::stack_knowledge::tests::ore_knowledge();
+        unpinned
+            .as_object_mut()
+            .unwrap()
+            .remove("stackManifestHash");
+        assert!(
+            stack_knowledge_from_body(&unpinned.to_string(), "manifest-exact").is_none(),
+            "knowledge that names no StackManifest cannot be checked"
+        );
+        assert!(stack_knowledge_from_body("<html>not json</html>", "manifest-exact").is_none());
+        assert!(stack_knowledge_from_body(r#"{"error":"not found"}"#, "manifest-exact").is_none());
+    }
+
+    /// A registry address that records whether anything connected.
+    fn watched_registry() -> (std::net::TcpListener, AreteMcp) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = AreteMcp {
+            registry: RegistryClient::with_base_url(&format!(
+                "http://{}",
+                listener.local_addr().unwrap()
+            )),
+            ..AreteMcp::new()
+        };
+        (listener, server)
+    }
+
+    #[tokio::test]
+    async fn stacks_that_cannot_have_catalog_knowledge_are_not_looked_up() {
+        let (listener, server) = watched_registry();
+        assert!(server
+            .stack_knowledge("vault", Some("private"), "manifest-exact")
+            .await
+            .is_none());
+        assert!(server
+            .stack_knowledge("Vault Stack", Some("global"), "manifest-exact")
+            .await
+            .is_none());
+        assert!(server
+            .schema_knowledge("vault", "Vault Stack")
+            .await
+            .is_none());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "no request was made"
+        );
+    }
+
+    #[test]
+    fn schema_guidance_is_pinned_to_the_served_stack_manifest() {
+        let knowledge = crate::stack_knowledge::tests::ore_knowledge().to_string();
+        let descriptor = |manifest: serde_json::Value| {
+            serde_json::json!({"name": "ore", "stackManifestHash": manifest}).to_string()
+        };
+        // The descriptor serves the StackManifest the knowledge was
+        // published for.
+        assert!(
+            schema_knowledge_from_bodies(&knowledge, &descriptor("manifest-exact".into()))
+                .is_some()
+        );
+        // Another StackManifest, or one that cannot be read, gets no
+        // guidance.
+        for unproven in [
+            descriptor("another-manifest".into()),
+            descriptor(serde_json::Value::Null),
+            serde_json::json!({"name": "ore"}).to_string(),
+            "<html>not json</html>".to_string(),
+        ] {
+            assert!(
+                schema_knowledge_from_bodies(&knowledge, &unproven).is_none(),
+                "{unproven}"
+            );
         }
     }
 

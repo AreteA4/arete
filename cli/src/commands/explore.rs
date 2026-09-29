@@ -6,6 +6,7 @@ use arete_mcp::descriptor::{
     self as shape, AccountSummary, EntityField, ErrorSummary, EventSummary, InstructionSummary,
     ProgramSurface, TypeSummary,
 };
+use arete_mcp::stack_knowledge::{KeyCase, StackKnowledge};
 use colored::Colorize;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -74,6 +75,9 @@ struct SelectedViewSummary {
     live_alias: String,
     view_id: String,
     entity: String,
+    /// The view's summary from the stack's catalog knowledge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
     source: Value,
     output: Value,
     pipeline_steps: usize,
@@ -190,6 +194,10 @@ struct StackExploreOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     account: Option<Value>,
     install_command: String,
+    /// The stack's catalog knowledge: its document, and each described
+    /// entity's summary and field descriptions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    knowledge: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -228,10 +236,16 @@ struct StackEntityExploreOutput {
     identity: StackIdentitySummary,
     live_alias: String,
     name: String,
+    /// The entity's summary from the stack's catalog knowledge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
     program_id: Option<String>,
     primary_keys: Vec<String>,
     fields: Vec<EntityField>,
     views: Vec<SelectedViewSummary>,
+    /// The catalog knowledge document the descriptions come from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    knowledge: Option<Value>,
 }
 
 /// Options for `a4 explore stack <ref>`.
@@ -421,7 +435,8 @@ pub fn show_stack(reference: &str, options: StackOptions<'_>, json: bool) -> Res
 
     if let Some(entity) = options.entity {
         let (_, typescript, _) = resolve_stack_descriptors(&client, lookup)?;
-        let output = build_entity_output(&typescript, entity)?;
+        let knowledge = stack_knowledge(&client, &typescript);
+        let output = build_entity_output(&typescript, entity, knowledge.as_ref())?;
         if json {
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
@@ -433,7 +448,8 @@ pub fn show_stack(reference: &str, options: StackOptions<'_>, json: bool) -> Res
     let compact = options.summary || !options.views.is_empty() || options.operation.is_some();
     if !compact {
         let (install_ref, typescript, rust) = resolve_stack_descriptors(&client, lookup)?;
-        let mut output = build_stack_output(&install_ref, &typescript, &rust)?;
+        let knowledge = stack_knowledge(&client, &typescript);
+        let mut output = build_stack_output(&install_ref, &typescript, &rust, knowledge.as_ref())?;
         output.sdk_endpoints = sdk_endpoints(&typescript, project.as_ref());
         output.account = account_readiness(&client, &output.auth_requirements);
         if json {
@@ -450,15 +466,16 @@ pub fn show_stack(reference: &str, options: StackOptions<'_>, json: bool) -> Res
     if let Some(operation) = options.operation {
         return show_stack_operation(&client, &install_ref, &stack, operation, json);
     }
+    let knowledge = stack_knowledge(&client, &typescript);
     let mut output = if options.views.is_empty() {
-        let mut summary = shape::stack_summary(&stack);
+        let mut summary = shape::stack_summary(&stack, knowledge.as_ref());
         if let Some(account) = account_readiness(&client, &summary["auth"]) {
             summary["account"] = account;
         }
         summary["installCommand"] = json!(format!("a4 install stack {install_ref} --ts"));
         summary
     } else {
-        shape::stack_views(&stack, &options.views)?
+        shape::stack_views(&stack, &options.views, knowledge.as_ref())?
     };
     output["schemaVersion"] = json!(EXPLORE_SCHEMA_VERSION);
     output["installRef"] = json!(install_ref);
@@ -653,6 +670,66 @@ fn account_readiness(client: &ApiClient, requirements: &Value) -> Option<Value> 
         }
     };
     Some(json!({ "transactions": transactions }))
+}
+
+/// The curated knowledge of a stack published in the catalog: entity and
+/// view summaries and field descriptions. A catalog stack's descriptor is
+/// named after its package slug, which is what the knowledge route takes;
+/// the knowledge document's own slug may differ. `None`, silently, for a
+/// stack without a catalog entry or document, a registry that does not
+/// serve the route, knowledge published for another StackManifest, or any
+/// failure: it only ever adds to the output. A stack that cannot have
+/// catalog knowledge (a private stack, or one not named by a package slug)
+/// is not looked up, and the lookup is abandoned after
+/// [`arete_mcp::stack_knowledge::LOOKUP_TIMEOUT`].
+fn stack_knowledge(
+    client: &ApiClient,
+    descriptor: &RegistryStackInstallResponse,
+) -> Option<StackKnowledge> {
+    if !arete_mcp::stack_knowledge::may_have_catalog_knowledge(
+        &descriptor.name,
+        Some(&descriptor.visibility),
+    ) {
+        return None;
+    }
+    let slug = catalog_slug(&descriptor.name).ok()?;
+    let response = client.catalog_entry_knowledge("stack", &slug)?;
+    StackKnowledge::from_response(&response)
+        .filter(|knowledge| knowledge.belongs_to(&descriptor.stack_manifest_hash))
+}
+
+/// The full output's `knowledge`: the document, and every LiveSpec entity it
+/// describes with its summary and described fields (view summaries are on
+/// `selectedViews`).
+fn full_stack_knowledge(
+    descriptor: &RegistryStackInstallResponse,
+    knowledge: &StackKnowledge,
+) -> Value {
+    let mut entities = Vec::new();
+    for live in &descriptor.live_specs {
+        for entity in shape::live_entities(&live.artifact) {
+            let Some(name) = shape::entity_name(entity) else {
+                continue;
+            };
+            let Some(entity_knowledge) = knowledge.entity(name) else {
+                continue;
+            };
+            let fields = shape::entity_fields(entity);
+            let mut item = json!({ "liveAlias": live.alias, "name": name });
+            if let Some(summary) = &entity_knowledge.summary {
+                item["summary"] = json!(summary);
+            }
+            let described =
+                entity_knowledge.field_descriptions(fields.iter().map(|field| field.path.as_str()));
+            if !described.is_empty() {
+                item["fieldDescriptions"] = Value::Array(described);
+            }
+            entities.push(item);
+        }
+    }
+    let mut out = knowledge.source(KeyCase::Camel);
+    out["entities"] = Value::Array(entities);
+    out
 }
 
 /// The stack dependency in arete.toml that `reference` names, by alias or by
@@ -909,8 +986,9 @@ fn build_stack_output(
     install_ref: &str,
     typescript: &RegistryStackInstallResponse,
     rust: &RegistryStackInstallResponse,
+    knowledge: Option<&StackKnowledge>,
 ) -> Result<StackExploreOutput> {
-    let selected_views = selected_views(typescript)?;
+    let selected_views = selected_views(typescript, knowledge)?;
     let rust_programs = rust
         .programs
         .iter()
@@ -1003,6 +1081,7 @@ fn build_stack_output(
         sdk_endpoints: sdk_endpoints(typescript, None),
         account: None,
         install_command: format!("a4 install stack {install_ref} --ts"),
+        knowledge: knowledge.map(|knowledge| full_stack_knowledge(typescript, knowledge)),
     })
 }
 
@@ -1087,7 +1166,10 @@ fn program_read_summary(program: &RegistryProgramInstallResponse) -> Result<Prog
     })
 }
 
-fn selected_views(descriptor: &RegistryStackInstallResponse) -> Result<Vec<SelectedViewSummary>> {
+fn selected_views(
+    descriptor: &RegistryStackInstallResponse,
+    knowledge: Option<&StackKnowledge>,
+) -> Result<Vec<SelectedViewSummary>> {
     let entries = descriptor
         .stack_manifest
         .pointer("/payload/selectedViews")
@@ -1132,10 +1214,15 @@ fn selected_views(descriptor: &RegistryStackInstallResponse) -> Result<Vec<Selec
                     view_id
                 )
             })?;
+            let entity_name = shape::entity_name(entity).unwrap_or("unknown");
             Ok(SelectedViewSummary {
                 live_alias,
                 view_id: view_id.into(),
-                entity: shape::entity_name(entity).unwrap_or("unknown").into(),
+                entity: entity_name.into(),
+                summary: knowledge
+                    .and_then(|knowledge| knowledge.entity(entity_name))
+                    .and_then(|entity| entity.view_summary(view_id))
+                    .map(str::to_string),
                 source: view.get("source").cloned().unwrap_or(Value::Null),
                 output: view.get("output").cloned().unwrap_or(Value::Null),
                 pipeline_steps: view
@@ -1187,8 +1274,9 @@ fn value_array<'a>(value: &'a Value, key: &str) -> &'a [Value] {
 fn build_entity_output(
     descriptor: &RegistryStackInstallResponse,
     query: &str,
+    knowledge: Option<&StackKnowledge>,
 ) -> Result<StackEntityExploreOutput> {
-    let selected = selected_views(descriptor)?;
+    let selected = selected_views(descriptor, knowledge)?;
     let (requested_alias, requested_name) = query
         .split_once(':')
         .map_or((None, query), |(alias, name)| (Some(alias), name));
@@ -1251,10 +1339,14 @@ fn build_entity_output(
         },
         live_alias: live_alias.into(),
         name: name.into(),
+        summary: knowledge
+            .and_then(|knowledge| knowledge.entity(name))
+            .and_then(|entity| entity.summary.clone()),
         program_id: shape::entity_program_id(entity).map(str::to_string),
         primary_keys: shape::entity_primary_keys(entity),
-        fields: shape::entity_fields(entity),
+        fields: shape::described_entity_fields(entity, knowledge),
         views,
+        knowledge: knowledge.map(|knowledge| knowledge.source(KeyCase::Camel)),
     })
 }
 
@@ -1291,7 +1383,13 @@ fn render_stack(output: &StackExploreOutput) -> String {
                 "  {}:{}  (entity {}, {} pipeline step(s))\n",
                 view.live_alias, view.view_id, view.entity, view.pipeline_steps
             ));
+            if let Some(summary) = &view.summary {
+                text.push_str(&format!("    {summary}\n"));
+            }
         }
+    }
+    if let Some(knowledge) = &output.knowledge {
+        text.push_str(&render_knowledge_entities(knowledge));
     }
     text.push_str("\nPrograms\n");
     if output.programs.is_empty() {
@@ -1450,13 +1548,22 @@ fn render_stack_summary(output: &Value) -> String {
         output["stackManifestHash"].as_str().unwrap_or("-")
     ));
     for entity in value_array(output, "entities") {
+        let described = value_array(entity, "fieldDescriptions").len();
         text.push_str(&format!(
-            "  {}:{}  key {}  {} field(s)\n",
+            "  {}:{}  key {}  {} field(s){}\n",
             entity["liveAlias"].as_str().unwrap_or("-"),
             entity["name"].as_str().unwrap_or("-"),
             string_list(entity, "primaryKeys"),
-            entity["fieldCount"].as_u64().unwrap_or(0)
+            entity["fieldCount"].as_u64().unwrap_or(0),
+            if described > 0 {
+                format!(", {described} described")
+            } else {
+                String::new()
+            }
         ));
+        if let Some(summary) = entity["summary"].as_str() {
+            text.push_str(&format!("    {summary}\n"));
+        }
         let views = value_array(entity, "views")
             .iter()
             .map(|view| {
@@ -1518,8 +1625,13 @@ fn render_stack_summary(output: &Value) -> String {
     }
     text.push_str(&render_auth_notes(auth, output.get("account")));
     text.push_str(&format!(
-        "\nInstall\n  {}\n\nMore: --views <Entity/view,...> for view schemas, --operation <id> for one program operation\n",
-        output["installCommand"].as_str().unwrap_or("-")
+        "\nInstall\n  {}\n\nMore: --views <Entity/view,...> for view schemas{}, --operation <id> for one program operation\n",
+        output["installCommand"].as_str().unwrap_or("-"),
+        if output.get("knowledge").is_some() {
+            " and field descriptions"
+        } else {
+            ""
+        }
     ));
     text
 }
@@ -1538,6 +1650,9 @@ fn render_stack_views(output: &Value) -> String {
             view["id"].as_str().unwrap_or("-"),
             view["entity"].as_str().unwrap_or("-")
         ));
+        if let Some(summary) = view["summary"].as_str() {
+            text.push_str(&format!("  {summary}\n"));
+        }
         if let Some(reason) = view["schemaUnavailable"].as_str() {
             text.push_str(&format!("  Schema unavailable: {reason}\n"));
             continue;
@@ -1554,13 +1669,8 @@ fn render_stack_views(output: &Value) -> String {
         text.push_str("  Fields\n");
         let fields: Vec<EntityField> =
             serde_json::from_value(view["fields"].clone()).unwrap_or_default();
-        for field in fields {
-            text.push_str(&format!(
-                "    {}  {}{}\n",
-                field.path,
-                field.rust_type,
-                if field.nullable { "?" } else { "" }
-            ));
+        for field in &fields {
+            text.push_str(&render_field(field, "    "));
         }
     }
     text.push_str(&render_sdk_endpoints(&output["sdkEndpoints"]));
@@ -1923,23 +2033,70 @@ fn render_entity(output: &StackEntityExploreOutput) -> String {
         output.live_alias,
         output.primary_keys.join(", ")
     );
+    if let Some(summary) = &output.summary {
+        text.push_str(&format!("  {summary}\n"));
+    }
     text.push_str("\nFields\n");
     for field in &output.fields {
-        text.push_str(&format!(
-            "  {}  {}{}\n",
-            field.path,
-            field.rust_type,
-            if field.nullable { "?" } else { "" }
-        ));
+        text.push_str(&render_field(field, "  "));
     }
     text.push_str("\nSelected views\n");
     if output.views.is_empty() {
         text.push_str("  none\n");
     } else {
         for view in &output.views {
-            text.push_str(&format!("  {}:{}\n", view.live_alias, view.view_id));
+            text.push_str(&format!(
+                "  {}:{}{}\n",
+                view.live_alias,
+                view.view_id,
+                view.summary
+                    .as_deref()
+                    .map(|summary| format!("  {summary}"))
+                    .unwrap_or_default()
+            ));
         }
     }
+    text
+}
+
+/// One schema field, with its curated description on the next line.
+fn render_field(field: &EntityField, indent: &str) -> String {
+    let mut text = format!(
+        "{indent}{}  {}{}\n",
+        field.path,
+        field.rust_type,
+        if field.nullable { "?" } else { "" }
+    );
+    if let Some(description) = &field.description {
+        text.push_str(&format!("{indent}    {description}\n"));
+    }
+    text
+}
+
+/// The described entities of a full stack exploration.
+fn render_knowledge_entities(knowledge: &Value) -> String {
+    let entities = value_array(knowledge, "entities");
+    if entities.is_empty() {
+        return String::new();
+    }
+    let mut text = String::from("\nEntities\n");
+    for entity in entities {
+        let described = value_array(entity, "fieldDescriptions").len();
+        text.push_str(&format!(
+            "  {}:{}{}\n",
+            entity["liveAlias"].as_str().unwrap_or("-"),
+            entity["name"].as_str().unwrap_or("-"),
+            if described > 0 {
+                format!("  {described} described field(s)")
+            } else {
+                String::new()
+            }
+        ));
+        if let Some(summary) = entity["summary"].as_str() {
+            text.push_str(&format!("    {summary}\n"));
+        }
+    }
+    text.push_str("  Field descriptions: a4 explore stack <ref> <Entity>\n");
     text
 }
 
@@ -2489,7 +2646,7 @@ mod tests {
     fn stack_explore_preserves_descriptor_identities_aliases_and_selected_views() {
         let typescript = stack_descriptor();
         let rust = stack_descriptor();
-        let output = build_stack_output("multi-stack", &typescript, &rust).unwrap();
+        let output = build_stack_output("multi-stack", &typescript, &rust, None).unwrap();
         assert_eq!(output.schema_version, 1);
         assert_eq!(output.identity.stack_manifest_hash, "manifest-exact");
         assert_eq!(
@@ -2529,7 +2686,7 @@ mod tests {
             {"liveAlias": "primary", "viewId": "Position/state"}
         ]);
         let rust = typescript.clone();
-        let output = build_stack_output("multi-stack", &typescript, &rust).unwrap();
+        let output = build_stack_output("multi-stack", &typescript, &rust, None).unwrap();
         assert_eq!(output.identity.stack_manifest_hash, "manifest-exact");
         assert_eq!(output.live_specs.len(), 1);
         assert_eq!(output.live_specs[0].live_spec_hash, "live-primary");
@@ -2539,8 +2696,8 @@ mod tests {
     #[test]
     fn legacy_entity_drilldown_uses_exact_live_spec_and_selected_views() {
         let descriptor = stack_descriptor();
-        assert!(build_entity_output(&descriptor, "Position").is_err());
-        let output = build_entity_output(&descriptor, "primary:Position").unwrap();
+        assert!(build_entity_output(&descriptor, "Position", None).is_err());
+        let output = build_entity_output(&descriptor, "primary:Position", None).unwrap();
         assert_eq!(output.identity.stack_manifest_hash, "manifest-exact");
         assert_eq!(output.primary_keys, vec!["id.address"]);
         assert_eq!(output.views.len(), 1);
@@ -2678,7 +2835,7 @@ mod tests {
         assert_eq!(typescript.stack, "ore-abc123");
         assert_eq!(registry.next_target(), install_target("ore", None));
         assert_eq!(registry.next_target(), install_target("ore", Some("rust")));
-        let output = build_stack_output(&install_ref, &typescript, &rust).unwrap();
+        let output = build_stack_output(&install_ref, &typescript, &rust, None).unwrap();
         assert_eq!(output.install_ref, "ore");
         assert_eq!(output.install_command, "a4 install stack ore --ts");
     }
@@ -2966,7 +3123,8 @@ mod tests {
             "required": true,
             "accepted_key_classes": ["publishable", "secret"]
         }));
-        let output = build_stack_output("multi-stack", &typescript, &stack_descriptor()).unwrap();
+        let output =
+            build_stack_output("multi-stack", &typescript, &stack_descriptor(), None).unwrap();
         assert_eq!(
             output.auth_requirements["stream"]["acceptedKeyClasses"],
             json!(["publishable", "secret"])
@@ -2991,7 +3149,7 @@ mod tests {
             ]}],
             "views": [{"id": "Position/state", "output": "Collection", "pipeline": []}]
         }]}});
-        let output = build_entity_output(&descriptor, "primary:Position").unwrap();
+        let output = build_entity_output(&descriptor, "primary:Position", None).unwrap();
         assert_eq!(output.name, "Position");
         assert_eq!(output.program_id.as_deref(), Some("Program111"));
         assert_eq!(output.primary_keys, vec!["id.address"]);
@@ -3086,10 +3244,350 @@ mod tests {
         assert!(error.contains("`--section` must be one of"), "{error}");
     }
 
+    /// A catalog stack `ore` whose primary LiveSpec reports snake_case field
+    /// names, as published LiveSpecs do.
+    fn catalog_descriptor() -> RegistryStackInstallResponse {
+        let mut descriptor = stack_descriptor();
+        descriptor.name = "ore".into();
+        descriptor.stack = "ore-abc123".into();
+        descriptor.live_specs[0].artifact["payload"]["entities"][0]["sections"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "results", "fields": [
+                {"fieldName": "winning_square", "rustTypeName": "Option<u8>", "isOptional": true},
+                {"fieldName": "pre_reveal_winning_square", "rustTypeName": "Option<u8>", "isOptional": true},
+                {"fieldName": "rng", "rustTypeName": "Option<u64>", "isOptional": true}
+            ]}));
+        descriptor
+    }
+
+    /// The registry's catalog knowledge for [`catalog_descriptor`]: camelCase
+    /// field paths, a document slug of its own, and keys this CLI does not
+    /// know yet.
+    fn catalog_knowledge() -> Value {
+        json!({
+            "kind": "stack",
+            "package": "ore",
+            "version": "1.0.0",
+            "stackManifestHash": "manifest-exact",
+            "schemaVersion": "arete.knowledge-stack/v1",
+            "documentHash": "arete:h1:knowledge-document:sha256:aa",
+            "slug": "ore-stream",
+            "provenance": {"source": "manual", "reviewed": true},
+            "stackName": "OreStream",
+            "summary": "Live positions.",
+            "entities": {"Position": {
+                "summary": "One position.",
+                "concepts": ["mining"],
+                "views": {"state": {"summary": "One position by address."}},
+                "fields": {
+                    "results.preRevealWinningSquare": "The winning square before reveal; show this in a live UI.",
+                    "results.winningSquare": "Only set once the next round opens.",
+                    "results.retired": "A field this LiveSpec no longer emits."
+                },
+                "futureEntityKey": 1
+            }},
+            "futureKey": true
+        })
+    }
+
+    #[test]
+    fn stack_knowledge_is_read_by_catalog_slug_and_pinned_to_the_stack_manifest() {
+        let registry = MockRegistry::new(vec![(200, catalog_knowledge().to_string())]);
+        let client = ApiClient::new().unwrap();
+        let knowledge = stack_knowledge(&client, &catalog_descriptor()).unwrap();
+        assert_eq!(
+            registry.next_target(),
+            "/api/registry/v1/catalog/entries/stack/ore/knowledge",
+            "the descriptor's package slug, never the document slug or subdomain"
+        );
+        assert_eq!(knowledge.slug, "ore-stream");
+        drop(registry);
+
+        let mut other_manifest = catalog_knowledge();
+        other_manifest["stackManifestHash"] = json!("another-manifest");
+        let mut unpinned = catalog_knowledge();
+        unpinned
+            .as_object_mut()
+            .unwrap()
+            .remove("stackManifestHash");
+        for response in [
+            (404, json!({"error": "Stack 'ore' not found in registry"}).to_string()),
+            (
+                404,
+                json!({"error": "stack 'ore' has no published knowledge document", "code": "catalog-knowledge-missing"}).to_string(),
+            ),
+            (500, "upstream failure".to_string()),
+            (200, "<html>not json</html>".to_string()),
+            (200, other_manifest.to_string()),
+            (200, unpinned.to_string()),
+        ] {
+            let _registry = MockRegistry::new(vec![response.clone()]);
+            let client = ApiClient::new().unwrap();
+            assert!(
+                stack_knowledge(&client, &catalog_descriptor()).is_none(),
+                "{response:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stacks_that_cannot_have_catalog_knowledge_are_not_looked_up() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let client =
+            ApiClient::with_base_url(&format!("http://{}", listener.local_addr().unwrap()));
+        let mut private = catalog_descriptor();
+        private.visibility = "private".into();
+        let mut display_name = catalog_descriptor();
+        display_name.name = "Ore Mining".into();
+        for descriptor in [private, display_name] {
+            assert!(stack_knowledge(&client, &descriptor).is_none());
+        }
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "no request was made"
+        );
+    }
+
+    #[test]
+    fn a_slow_knowledge_route_costs_at_most_the_lookup_timeout() {
+        let server = crate::api_client::test_support::MockServer::json_delayed(
+            200,
+            &catalog_knowledge().to_string(),
+            std::time::Duration::from_secs(8),
+        );
+        let client = ApiClient::with_base_url(server.base_url());
+        let started = std::time::Instant::now();
+        assert!(stack_knowledge(&client, &catalog_descriptor()).is_none());
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed
+                < arete_mcp::stack_knowledge::LOOKUP_TIMEOUT + std::time::Duration::from_secs(2),
+            "{elapsed:?}"
+        );
+        assert_eq!(
+            server.request().request_line,
+            "GET /api/registry/v1/catalog/entries/stack/ore/knowledge HTTP/1.1"
+        );
+    }
+
+    #[test]
+    fn entity_drilldown_attaches_field_descriptions_and_summaries() {
+        let descriptor = catalog_descriptor();
+        let knowledge = StackKnowledge::from_response(&catalog_knowledge()).unwrap();
+        let output =
+            build_entity_output(&descriptor, "primary:Position", Some(&knowledge)).unwrap();
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["summary"], "One position.");
+        assert_eq!(
+            json["fields"],
+            json!([
+                {"section": "id", "path": "id.address", "rustType": "Pubkey", "nullable": false},
+                {"section": "results", "path": "results.winning_square", "rustType": "Option<u8>", "nullable": true,
+                 "description": "Only set once the next round opens."},
+                {"section": "results", "path": "results.pre_reveal_winning_square", "rustType": "Option<u8>", "nullable": true,
+                 "description": "The winning square before reveal; show this in a live UI."},
+                {"section": "results", "path": "results.rng", "rustType": "Option<u64>", "nullable": true}
+            ])
+        );
+        assert_eq!(json["views"][0]["summary"], "One position by address.");
+        assert_eq!(
+            json["knowledge"],
+            json!({"slug": "ore-stream", "documentHash": "arete:h1:knowledge-document:sha256:aa"})
+        );
+        let rendered = render_entity(&output);
+        assert!(rendered.contains("  One position.\n"), "{rendered}");
+        assert!(
+            rendered.contains(
+                "  results.pre_reveal_winning_square  Option<u8>?\n      The winning square before reveal; show this in a live UI.\n"
+            ),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("  results.rng  Option<u64>?\n\nSelected views"),
+            "an undescribed field prints as before: {rendered}"
+        );
+        assert!(rendered.contains("  primary:Position/state  One position by address.\n"));
+
+        // Without knowledge the output keeps exactly its previous keys.
+        let plain = serde_json::to_value(
+            build_entity_output(&descriptor, "primary:Position", None).unwrap(),
+        )
+        .unwrap();
+        let mut keys = plain
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "fields",
+                "identity",
+                "kind",
+                "liveAlias",
+                "name",
+                "primaryKeys",
+                "programId",
+                "schemaVersion",
+                "stack",
+                "views"
+            ]
+        );
+        assert!(plain["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|field| field.get("description").is_none()));
+        assert!(plain["views"][0].get("summary").is_none());
+        assert!(!render_entity(
+            &build_entity_output(&descriptor, "primary:Position", None).unwrap()
+        )
+        .contains("One position"));
+    }
+
+    #[test]
+    fn summary_views_and_full_outputs_carry_the_knowledge() {
+        let descriptor = catalog_descriptor();
+        let knowledge = StackKnowledge::from_response(&catalog_knowledge()).unwrap();
+        let stack = serde_json::to_value(&descriptor).unwrap();
+
+        let mut summary = shape::stack_summary(&stack, Some(&knowledge));
+        let entity = &summary["entities"][0];
+        assert_eq!(entity["summary"], "One position.");
+        assert_eq!(entity["views"][0]["summary"], "One position by address.");
+        assert_eq!(
+            entity["fieldDescriptions"],
+            json!([
+                {"path": "results.winning_square", "description": "Only set once the next round opens."},
+                {"path": "results.pre_reveal_winning_square", "description": "The winning square before reveal; show this in a live UI."}
+            ])
+        );
+        let described = entity["fieldDescriptions"].clone();
+        summary["installRef"] = json!("ore");
+        summary["installCommand"] = json!("a4 install stack ore --ts");
+        summary["sdkEndpoints"] = sdk_endpoints(&descriptor, None);
+        let rendered = render_stack_summary(&summary);
+        assert!(
+            rendered.contains(
+                "primary:Position  key id.address  4 field(s), 2 described\n    One position.\n"
+            ),
+            "{rendered}"
+        );
+
+        let mut views =
+            shape::stack_views(&stack, &["primary:Position/state"], Some(&knowledge)).unwrap();
+        assert_eq!(views["views"][0]["summary"], "One position by address.");
+        assert_eq!(
+            views["views"][0]["fields"][2]["description"],
+            "The winning square before reveal; show this in a live UI."
+        );
+        views["installRef"] = json!("ore");
+        views["sdkEndpoints"] = sdk_endpoints(&descriptor, None);
+        let rendered = render_stack_views(&views);
+        assert!(
+            rendered.contains("  One position by address.\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("    results.winning_square  Option<u8>?\n        Only set once the next round opens.\n"),
+            "{rendered}"
+        );
+
+        let output = build_stack_output("ore", &descriptor, &descriptor, Some(&knowledge)).unwrap();
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(
+            json["selectedViews"][0]["summary"],
+            "One position by address."
+        );
+        assert!(json["selectedViews"][1].get("summary").is_none());
+        assert_eq!(json["knowledge"]["slug"], "ore-stream");
+        assert_eq!(
+            json["knowledge"]["entities"][0],
+            json!({
+                "liveAlias": "primary",
+                "name": "Position",
+                "summary": "One position.",
+                "fieldDescriptions": described
+            })
+        );
+        assert_eq!(
+            json["knowledge"]["entities"][1],
+            json!({"liveAlias": "history", "name": "Position", "summary": "One position."})
+        );
+        let rendered = render_stack(&output);
+        assert!(
+            rendered.contains("    One position by address.\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("  primary:Position  2 described field(s)\n"),
+            "{rendered}"
+        );
+
+        let plain = serde_json::to_value(
+            build_stack_output("ore", &descriptor, &descriptor, None).unwrap(),
+        )
+        .unwrap();
+        assert!(plain.get("knowledge").is_none());
+        assert!(plain["selectedViews"][0].get("summary").is_none());
+    }
+
+    #[test]
+    fn explore_prints_the_schema_whether_or_not_knowledge_is_served() {
+        let descriptor = serde_json::to_string(&catalog_descriptor()).unwrap();
+        for (knowledge, label) in [
+            (
+                Some((404, json!({"error": "not found"}).to_string())),
+                "registry without the route",
+            ),
+            (
+                Some((200, catalog_knowledge().to_string())),
+                "published knowledge",
+            ),
+            (None, "knowledge request refused"),
+        ] {
+            let mut responses = vec![(200, descriptor.clone()), (200, descriptor.clone())];
+            responses.extend(knowledge.clone());
+            let registry = MockRegistry::new(responses);
+            show_stack(
+                "ore",
+                StackOptions {
+                    entity: Some("primary:Position"),
+                    config_path: "/definitely/missing/arete.toml",
+                    ..Default::default()
+                },
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{label}: {error:#}"));
+            assert_eq!(
+                registry.next_target(),
+                install_target("ore", None),
+                "{label}"
+            );
+            assert_eq!(
+                registry.next_target(),
+                install_target("ore", Some("rust")),
+                "{label}"
+            );
+            if knowledge.is_some() {
+                assert_eq!(
+                    registry.next_target(),
+                    "/api/registry/v1/catalog/entries/stack/ore/knowledge",
+                    "{label}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn compact_renderers_show_the_essentials() {
         let stack = serde_json::to_value(stack_descriptor()).unwrap();
-        let mut summary = shape::stack_summary(&stack);
+        let mut summary = shape::stack_summary(&stack, None);
         summary["installRef"] = json!("multi-stack");
         summary["installCommand"] = json!("a4 install stack multi-stack --ts");
         summary["sdkEndpoints"] = sdk_endpoints(&stack_descriptor(), None);
@@ -3098,7 +3596,7 @@ mod tests {
         assert!(rendered.contains("views: Position/state (collection)"));
         assert!(rendered.contains("a4 install stack multi-stack --ts"));
 
-        let mut views = shape::stack_views(&stack, &["primary:Position/state"]).unwrap();
+        let mut views = shape::stack_views(&stack, &["primary:Position/state"], None).unwrap();
         views["installRef"] = json!("multi-stack");
         views["sdkEndpoints"] = sdk_endpoints(&stack_descriptor(), None);
         let rendered = render_stack_views(&views);

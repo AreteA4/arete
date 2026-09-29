@@ -1263,6 +1263,34 @@ impl ApiClient {
         Self::handle_response(response)
     }
 
+    /// The knowledge document an active catalog entry publishes: for a
+    /// stack, entity and view summaries and curated field descriptions.
+    ///
+    /// Optional context, so every failure is `None`: no catalog entry, no
+    /// document, a registry that predates the route (404), a non-JSON body
+    /// or a transport error. The body is returned as raw JSON and read
+    /// leniently by the caller, since documents gain keys over time. It is
+    /// abandoned after [`arete_mcp::stack_knowledge::LOOKUP_TIMEOUT`],
+    /// connecting included, so it never holds up the command it accompanies
+    /// for longer.
+    pub fn catalog_entry_knowledge(&self, kind: &str, slug: &str) -> Option<serde_json::Value> {
+        let response = self
+            .with_optional_auth(self.client.get(format!(
+                "{}/api/registry/v1/catalog/entries/{}/{}/knowledge",
+                self.base_url, kind, slug
+            )))
+            .timeout(arete_mcp::stack_knowledge::LOOKUP_TIMEOUT)
+            .send()
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        response
+            .json::<serde_json::Value>()
+            .ok()
+            .filter(serde_json::Value::is_object)
+    }
+
     /// Concept and category vocabularies of the active catalog snapshot.
     pub fn catalog_vocabulary(&self) -> Result<serde_json::Value> {
         let response = self

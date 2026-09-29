@@ -107,6 +107,12 @@ auth requirements. `--operation` shows one operation, and on a stack it
 searches the stack's Program SDKs. See [`a4 explore`](/cli/commands/#a4-explore)
 for every option.
 
+For a stack published in the catalog, entities and views also carry a curated
+`summary`, and fields a `description` (`--summary` lists them as
+`fieldDescriptions`). Read them before choosing fields: they say, for example,
+which of two similar fields a live UI should show. To see every field of one
+entity with its description, run `a4 explore stack <ref> <Entity> --json`.
+
 Prefer `a4 explore catalog` when starting from intent or filtering by capability
 mode. Prefer the explicit `stack` and `program` forms over legacy positional
 stack syntax in new automation.

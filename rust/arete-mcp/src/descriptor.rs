@@ -17,6 +17,8 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::stack_knowledge::{KeyCase, StackKnowledge};
+
 /// Sections accepted by `explore_program { sections }` and
 /// `a4 explore program --section`.
 pub const PROGRAM_SECTIONS: [&str; 5] =
@@ -1347,6 +1349,10 @@ pub struct EntityField {
     pub path: String,
     pub rust_type: String,
     pub nullable: bool,
+    /// The curated description from the stack's catalog knowledge, when it
+    /// describes this field (see [`crate::stack_knowledge`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// An entity's state name (`stateName` or `state_name`).
@@ -1384,6 +1390,7 @@ pub fn entity_fields(entity: &Value) -> Vec<EntityField> {
                     .unwrap_or("unknown")
                     .into(),
                 nullable: first_bool(field, &["isOptional", "is_optional"]),
+                description: None,
             });
         }
     }
@@ -1498,9 +1505,27 @@ fn stack_header(descriptor: &Value, kind: &str) -> Map<String, Value> {
     out
 }
 
+/// An entity's fields, with the curated descriptions `knowledge` has for
+/// them.
+pub fn described_entity_fields(
+    entity: &Value,
+    knowledge: Option<&StackKnowledge>,
+) -> Vec<EntityField> {
+    let mut fields = entity_fields(entity);
+    if let Some(entity_knowledge) = entity_name(entity).and_then(|name| knowledge?.entity(name)) {
+        entity_knowledge.describe_fields(&mut fields);
+    }
+    fields
+}
+
 /// Entities with their selected views, program SDKs, endpoints and auth
 /// requirements. No artifact bodies.
-pub fn stack_summary(descriptor: &Value) -> Value {
+///
+/// With the stack's catalog `knowledge`, each described entity and view
+/// gains its `summary`, an entity lists its described fields as
+/// `fieldDescriptions` (`[{path, description}]`), and a top-level
+/// `knowledge` names the document. Without it the output is unchanged.
+pub fn stack_summary(descriptor: &Value, knowledge: Option<&StackKnowledge>) -> Value {
     let mut out = stack_header(descriptor, "stack-summary");
     let selected = selected_view_refs(descriptor);
 
@@ -1509,6 +1534,7 @@ pub fn stack_summary(descriptor: &Value) -> Value {
         let alias = get_str(live, &["alias"]).unwrap_or("unknown");
         let artifact = live.get("artifact").unwrap_or(&Value::Null);
         for entity in live_entities(artifact) {
+            let entity_knowledge = entity_name(entity).and_then(|name| knowledge?.entity(name));
             let views = get_array(entity, &["views"])
                 .iter()
                 .filter_map(|view| {
@@ -1526,16 +1552,34 @@ pub fn stack_summary(descriptor: &Value) -> Value {
                                 "output",
                                 output_label(view.get("output")).map(Value::String),
                             );
+                            put_str(
+                                &mut entry,
+                                "summary",
+                                entity_knowledge.and_then(|entity| entity.view_summary(id)),
+                            );
                             Value::Object(entry)
                         })
                 })
                 .collect::<Vec<_>>();
+            let fields = entity_fields(entity);
             let mut summary = Map::new();
             summary.insert("liveAlias".into(), json!(alias));
             put_str(&mut summary, "name", entity_name(entity));
+            put_str(
+                &mut summary,
+                "summary",
+                entity_knowledge.and_then(|entity| entity.summary.as_deref()),
+            );
             summary.insert("primaryKeys".into(), json!(entity_primary_keys(entity)));
-            summary.insert("fieldCount".into(), json!(entity_fields(entity).len()));
+            summary.insert("fieldCount".into(), json!(fields.len()));
             summary.insert("views".into(), Value::Array(views));
+            if let Some(entity_knowledge) = entity_knowledge {
+                let described = entity_knowledge
+                    .field_descriptions(fields.iter().map(|field| field.path.as_str()));
+                if !described.is_empty() {
+                    summary.insert("fieldDescriptions".into(), Value::Array(described));
+                }
+            }
             entities.push(Value::Object(summary));
         }
     }
@@ -1596,13 +1640,24 @@ pub fn stack_summary(descriptor: &Value) -> Value {
     }
     out.insert("endpoints".into(), Value::Object(endpoints));
     out.insert("auth".into(), auth_requirements(descriptor));
+    if let Some(knowledge) = knowledge {
+        out.insert("knowledge".into(), knowledge.source(KeyCase::Camel));
+    }
     Value::Object(out)
 }
 
 /// Only the requested selected views, each with its entity schema. A view is
 /// `Entity/view`, or `alias:Entity/view` when several LiveSpecs select the
 /// same id.
-pub fn stack_views<S: AsRef<str>>(descriptor: &Value, views: &[S]) -> Result<Value> {
+///
+/// With the stack's catalog `knowledge`, a described view gains `summary`,
+/// its entity `entitySummary`, each described field `description`, and a
+/// top-level `knowledge` names the document.
+pub fn stack_views<S: AsRef<str>>(
+    descriptor: &Value,
+    views: &[S],
+    knowledge: Option<&StackKnowledge>,
+) -> Result<Value> {
     let requested = split_list(views);
     if requested.is_empty() {
         bail!("`views` must name at least one view, e.g. `OreRound/latest`");
@@ -1664,11 +1719,25 @@ pub fn stack_views<S: AsRef<str>>(descriptor: &Value, views: &[S]) -> Result<Val
         entry.insert("id".into(), json!(view_id));
         match find_view(artifact, view_id) {
             Some((entity, view)) => {
+                let entity_knowledge = entity_name(entity).and_then(|name| knowledge?.entity(name));
                 put_str(&mut entry, "entity", entity_name(entity));
+                put_str(
+                    &mut entry,
+                    "summary",
+                    entity_knowledge.and_then(|entity| entity.view_summary(view_id)),
+                );
+                put_str(
+                    &mut entry,
+                    "entitySummary",
+                    entity_knowledge.and_then(|entity| entity.summary.as_deref()),
+                );
                 put(&mut entry, "output", view.get("output").cloned());
                 put(&mut entry, "pipeline", view.get("pipeline").cloned());
                 entry.insert("primaryKeys".into(), json!(entity_primary_keys(entity)));
-                entry.insert("fields".into(), json!(entity_fields(entity)));
+                entry.insert(
+                    "fields".into(),
+                    json!(described_entity_fields(entity, knowledge)),
+                );
             }
             None => {
                 entry.insert(
@@ -1692,6 +1761,9 @@ pub fn stack_views<S: AsRef<str>>(descriptor: &Value, views: &[S]) -> Result<Val
     }
     let mut out = stack_header(descriptor, "stack-views");
     out.insert("views".into(), Value::Array(out_views));
+    if let Some(knowledge) = knowledge {
+        out.insert("knowledge".into(), knowledge.source(KeyCase::Camel));
+    }
     Ok(Value::Object(out))
 }
 
@@ -1991,7 +2063,7 @@ mod tests {
 
     #[test]
     fn stack_summary_is_compact_and_reads_snake_case_live_specs() {
-        let summary = stack_summary(&stack());
+        let summary = stack_summary(&stack(), None);
         let entity = &summary["entities"][0];
         assert_eq!(entity["name"], "Round");
         assert_eq!(entity["primaryKeys"], json!(["id.round_id"]));
@@ -2020,7 +2092,7 @@ mod tests {
 
     #[test]
     fn stack_views_return_only_the_requested_schemas() {
-        let output = stack_views(&stack(), &["Round/state"]).unwrap();
+        let output = stack_views(&stack(), &["Round/state"], None).unwrap();
         assert_eq!(output["views"].as_array().unwrap().len(), 1);
         let view = &output["views"][0];
         assert_eq!(view["entity"], "Round");
@@ -2029,12 +2101,79 @@ mod tests {
             json!([{"section": "id", "path": "id.round_id", "rustType": "u64", "nullable": false}])
         );
         assert_eq!(view["endpoint"]["websocket"], "wss://demo.test");
-        assert!(stack_views(&stack(), &["live:round/LATEST"]).is_ok());
-        let error = stack_views(&stack(), &["Round/unselected"])
+        assert!(stack_views(&stack(), &["live:round/LATEST"], None).is_ok());
+        let error = stack_views(&stack(), &["Round/unselected"], None)
             .unwrap_err()
             .to_string();
         assert!(error.contains("Round/latest, Round/state"), "{error}");
-        assert!(stack_views(&stack(), &[" , "]).is_err());
+        assert!(stack_views(&stack(), &[" , "], None).is_err());
+    }
+
+    fn round_knowledge() -> StackKnowledge {
+        StackKnowledge::from_response(&json!({
+            "kind": "stack",
+            "documentHash": "doc-hash",
+            "slug": "demo-stream",
+            "stackManifestHash": "manifest-exact",
+            "entities": {"Round": {
+                "summary": "One round.",
+                "views": {"latest": {"summary": "The current round."}},
+                "fields": {"id.roundId": "Round number.", "results.gone": "No longer emitted."}
+            }}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn stack_knowledge_describes_summary_entities_views_and_fields() {
+        let knowledge = round_knowledge();
+        let summary = stack_summary(&stack(), Some(&knowledge));
+        let entity = &summary["entities"][0];
+        assert_eq!(entity["summary"], "One round.");
+        assert_eq!(
+            entity["views"],
+            json!([
+                {"id": "Round/latest", "output": "collection", "summary": "The current round."},
+                {"id": "Round/state", "output": "keyed"}
+            ])
+        );
+        assert_eq!(
+            entity["fieldDescriptions"],
+            json!([{"path": "id.round_id", "description": "Round number."}]),
+            "reported with the schema's own path; undescribed and absent fields are left out"
+        );
+        assert_eq!(
+            summary["knowledge"],
+            json!({"slug": "demo-stream", "documentHash": "doc-hash"})
+        );
+
+        // Without knowledge the summary is exactly what it was.
+        let plain = stack_summary(&stack(), None);
+        assert!(plain.get("knowledge").is_none());
+        let mut described = summary.clone();
+        described.as_object_mut().unwrap().remove("knowledge");
+        let entity = described["entities"][0].as_object_mut().unwrap();
+        entity.remove("summary");
+        entity.remove("fieldDescriptions");
+        entity["views"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("summary");
+        assert_eq!(described, plain);
+
+        let views = stack_views(&stack(), &["Round/latest"], Some(&knowledge)).unwrap();
+        let view = &views["views"][0];
+        assert_eq!(view["summary"], "The current round.");
+        assert_eq!(view["entitySummary"], "One round.");
+        assert_eq!(
+            view["fields"],
+            json!([{"section": "id", "path": "id.round_id", "rustType": "u64", "nullable": false, "description": "Round number."}])
+        );
+        assert_eq!(views["knowledge"]["slug"], "demo-stream");
+        let plain = stack_views(&stack(), &["Round/state"], None).unwrap();
+        assert!(plain["views"][0].get("summary").is_none());
+        assert!(plain["views"][0].get("entitySummary").is_none());
+        assert!(plain.get("knowledge").is_none());
     }
 
     #[test]

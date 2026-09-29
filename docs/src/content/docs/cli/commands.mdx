@@ -641,6 +641,31 @@ transactions need an entitlement, `account.transactions` says whether your
 account has transaction access: `ready`, `not-ready` with the missing
 capabilities, or `unknown` (for example when you are not logged in).
 
+**Field descriptions.** When the stack is published in the catalog, explore
+attaches the curated field descriptions from the stack's catalog knowledge.
+They say how to use a field, for example which of two similar fields a live UI
+should show, so read them before choosing fields. The entity drill-down
+(`a4 explore stack <ref> <Entity>`) and `--views` add `description` to each
+described field and `summary` to the entity and its views. `--summary` adds
+`summary` to entities and views and lists the described fields as
+`fieldDescriptions`. The full output adds `summary` to `selectedViews` and a
+`knowledge` block with each described entity. Human output prints a
+description under its field. `knowledge` names the source document (`slug`,
+`documentHash`). Descriptions are attached only when the knowledge was
+published for the exact StackManifest being explored. Stacks without a catalog
+entry, such as private or local stacks, print as before. Explore skips the
+lookup for private stacks and gives up on it after 2 seconds.
+
+```json
+{
+  "path": "results.pre_reveal_winning_square",
+  "rustType": "Option<u8>",
+  "nullable": true,
+  "section": "results",
+  "description": "preRevealRng modulo 25, the winning square before reveal."
+}
+```
+
 **Endpoints inside a project.** When `arete.toml` declares the stack as a
 dependency, `sdkEndpoints` shows which stream endpoints the generated SDK
 reads. Endpoints that `a4 up` recorded in `arete.toml` take precedence over the

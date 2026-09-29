@@ -159,7 +159,14 @@ error here.
   consumes.
 - `explore_stack_schema({ stack })` — entity and view schema: field paths, types,
   primary keys, and the `<EntityName>/<view>` ids `subscribe` accepts. Use this
-  instead of guessing a view id from the template.
+  instead of guessing a view id from the template. When the stack is published
+  in the catalog, fields carry a curated `description` and entities and views a
+  `summary`, with usage guidance such as which of two similar fields a live UI
+  should show (`explore_stack` summaries list them as `fieldDescriptions`, and
+  its `views` attach them to fields). `knowledge` names the source document.
+  Descriptions are attached only when the knowledge was published for the
+  StackManifest the registry serves for the stack. Stacks without a catalog
+  entry return their schema unchanged.
 - `explore_programs()` — standalone Solana programs installable independent of
   any stack.
 - `explore_program({ program, operationId?, sections?, full? })` — one program
