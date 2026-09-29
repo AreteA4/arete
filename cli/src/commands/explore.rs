@@ -686,7 +686,7 @@ fn stack_knowledge(
     let slug = catalog_slug(&descriptor.name).ok()?;
     let response = client.catalog_entry_knowledge("stack", &slug)?;
     StackKnowledge::from_response(&response)
-        .filter(|knowledge| knowledge.applies_to(Some(&descriptor.stack_manifest_hash)))
+        .filter(|knowledge| knowledge.belongs_to(&descriptor.stack_manifest_hash))
 }
 
 /// The full output's `knowledge`: the document, and every LiveSpec entity it
@@ -3297,6 +3297,11 @@ mod tests {
 
         let mut other_manifest = catalog_knowledge();
         other_manifest["stackManifestHash"] = json!("another-manifest");
+        let mut unpinned = catalog_knowledge();
+        unpinned
+            .as_object_mut()
+            .unwrap()
+            .remove("stackManifestHash");
         for response in [
             (404, json!({"error": "Stack 'ore' not found in registry"}).to_string()),
             (
@@ -3306,6 +3311,7 @@ mod tests {
             (500, "upstream failure".to_string()),
             (200, "<html>not json</html>".to_string()),
             (200, other_manifest.to_string()),
+            (200, unpinned.to_string()),
         ] {
             let _registry = MockRegistry::new(vec![response.clone()]);
             let client = ApiClient::new().unwrap();

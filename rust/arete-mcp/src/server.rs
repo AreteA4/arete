@@ -493,17 +493,21 @@ impl AreteMcp {
             return registry_result(body);
         }
         let stack = parse_descriptor(body)?;
-        let knowledge = self
-            .stack_knowledge(
-                stack
+        // Guidance is pinned to the StackManifest this descriptor serves; a
+        // descriptor that names none gets none.
+        let knowledge = match stack
+            .get("stackManifestHash")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(stack_manifest_hash) => {
+                let slug = stack
                     .get("name")
                     .and_then(serde_json::Value::as_str)
-                    .unwrap_or(&args.stack),
-                stack
-                    .get("stackManifestHash")
-                    .and_then(serde_json::Value::as_str),
-            )
-            .await;
+                    .unwrap_or(&args.stack);
+                self.stack_knowledge(slug, stack_manifest_hash).await
+            }
+            None => None,
+        };
         let shaped = if views.is_empty() {
             let mut summary = descriptor::stack_summary(&stack, knowledge.as_ref());
             summary["next"] = serde_json::json!(
@@ -526,8 +530,10 @@ impl AreteMcp {
                           curated `description` and entities and views a `summary`. \
                           Descriptions carry usage guidance, e.g. which of two similar \
                           fields a live UI should show or when a field fills in; read \
-                          them before choosing fields. `knowledge` names the document \
-                          they come from."
+                          them before choosing fields. They are attached only when the \
+                          knowledge was published for the StackManifest the registry \
+                          serves for this stack. `knowledge` names the document they \
+                          come from."
     )]
     async fn explore_stack_schema(
         &self,
@@ -544,7 +550,7 @@ impl AreteMcp {
             .get("name")
             .and_then(serde_json::Value::as_str)
             .unwrap_or(&args.stack);
-        let knowledge = self.stack_knowledge(slug, None).await;
+        let knowledge = self.schema_knowledge(&args.stack, slug).await;
         described_schema_result(body, schema, knowledge.as_ref())
     }
 
@@ -1331,12 +1337,13 @@ impl AreteMcp {
 
 impl AreteMcp {
     /// The catalog knowledge of the stack published as `slug`, when there is
-    /// one and it belongs to the StackManifest being explored. Any failure,
-    /// including a registry without the route, means no knowledge.
+    /// one and it was published for `stack_manifest_hash`, the StackManifest
+    /// being described. Any failure, including a registry without the route,
+    /// means no knowledge.
     async fn stack_knowledge(
         &self,
         slug: &str,
-        stack_manifest_hash: Option<&str>,
+        stack_manifest_hash: &str,
     ) -> Option<StackKnowledge> {
         let body = self
             .registry
@@ -1345,15 +1352,40 @@ impl AreteMcp {
             .ok()?;
         stack_knowledge_from_body(&body, stack_manifest_hash)
     }
+
+    /// The catalog knowledge for a schema response. The schema names no
+    /// StackManifest, so the guidance is pinned to the StackManifest of the
+    /// install descriptor the registry serves for the same `reference`, the
+    /// stack the schema describes. It is omitted when that descriptor cannot
+    /// be read, names no StackManifest, or names another one. The descriptor
+    /// is only fetched once there is knowledge to check.
+    async fn schema_knowledge(&self, reference: &str, slug: &str) -> Option<StackKnowledge> {
+        let knowledge = self
+            .registry
+            .catalog_entry_knowledge("stack", slug)
+            .await
+            .ok()?;
+        let descriptor = self.registry.stack_install(reference).await.ok()?;
+        schema_knowledge_from_bodies(&knowledge, &descriptor)
+    }
 }
 
-fn stack_knowledge_from_body(
-    body: &str,
-    stack_manifest_hash: Option<&str>,
-) -> Option<StackKnowledge> {
+/// A knowledge response, kept only when it was published for
+/// `stack_manifest_hash`.
+fn stack_knowledge_from_body(body: &str, stack_manifest_hash: &str) -> Option<StackKnowledge> {
     let response = serde_json::from_str::<serde_json::Value>(body).ok()?;
     StackKnowledge::from_response(&response)
-        .filter(|knowledge| knowledge.applies_to(stack_manifest_hash))
+        .filter(|knowledge| knowledge.belongs_to(stack_manifest_hash))
+}
+
+/// A knowledge response, kept only when it was published for the
+/// StackManifest `descriptor` (an install descriptor) serves.
+fn schema_knowledge_from_bodies(knowledge: &str, descriptor: &str) -> Option<StackKnowledge> {
+    let descriptor = serde_json::from_str::<serde_json::Value>(descriptor).ok()?;
+    let stack_manifest_hash = descriptor
+        .get("stackManifestHash")
+        .and_then(serde_json::Value::as_str)?;
+    stack_knowledge_from_body(knowledge, stack_manifest_hash)
 }
 
 /// A stack schema response (`body`, parsed as `schema`) with its catalog
@@ -1558,7 +1590,8 @@ mod explore_args_tests {
         assert_eq!(result_text(&result), body);
 
         let knowledge = crate::stack_knowledge::tests::ore_knowledge().to_string();
-        let knowledge = stack_knowledge_from_body(&knowledge, None).unwrap();
+        let descriptor = serde_json::json!({"name": "ore", "stackManifestHash": "manifest-exact"});
+        let knowledge = schema_knowledge_from_bodies(&knowledge, &descriptor.to_string()).unwrap();
         let result = described_schema_result(body, schema, Some(&knowledge)).unwrap();
         let described: serde_json::Value = serde_json::from_str(&result_text(&result)).unwrap();
         let round = &described["schema"]["entities"][0];
@@ -1589,13 +1622,49 @@ mod explore_args_tests {
     #[test]
     fn unusable_knowledge_responses_mean_no_knowledge() {
         let knowledge = crate::stack_knowledge::tests::ore_knowledge().to_string();
-        assert!(stack_knowledge_from_body(&knowledge, Some("manifest-exact")).is_some());
+        assert!(stack_knowledge_from_body(&knowledge, "manifest-exact").is_some());
         assert!(
-            stack_knowledge_from_body(&knowledge, Some("another-manifest")).is_none(),
+            stack_knowledge_from_body(&knowledge, "another-manifest").is_none(),
             "knowledge published for another StackManifest is not attached"
         );
-        assert!(stack_knowledge_from_body("<html>not json</html>", None).is_none());
-        assert!(stack_knowledge_from_body(r#"{"error":"not found"}"#, None).is_none());
+        let mut unpinned = crate::stack_knowledge::tests::ore_knowledge();
+        unpinned
+            .as_object_mut()
+            .unwrap()
+            .remove("stackManifestHash");
+        assert!(
+            stack_knowledge_from_body(&unpinned.to_string(), "manifest-exact").is_none(),
+            "knowledge that names no StackManifest cannot be checked"
+        );
+        assert!(stack_knowledge_from_body("<html>not json</html>", "manifest-exact").is_none());
+        assert!(stack_knowledge_from_body(r#"{"error":"not found"}"#, "manifest-exact").is_none());
+    }
+
+    #[test]
+    fn schema_guidance_is_pinned_to_the_served_stack_manifest() {
+        let knowledge = crate::stack_knowledge::tests::ore_knowledge().to_string();
+        let descriptor = |manifest: serde_json::Value| {
+            serde_json::json!({"name": "ore", "stackManifestHash": manifest}).to_string()
+        };
+        // The descriptor serves the StackManifest the knowledge was
+        // published for.
+        assert!(
+            schema_knowledge_from_bodies(&knowledge, &descriptor("manifest-exact".into()))
+                .is_some()
+        );
+        // Another StackManifest, or one that cannot be read, gets no
+        // guidance.
+        for unproven in [
+            descriptor("another-manifest".into()),
+            descriptor(serde_json::Value::Null),
+            serde_json::json!({"name": "ore"}).to_string(),
+            "<html>not json</html>".to_string(),
+        ] {
+            assert!(
+                schema_knowledge_from_bodies(&knowledge, &unproven).is_none(),
+                "{unproven}"
+            );
+        }
     }
 
     #[test]

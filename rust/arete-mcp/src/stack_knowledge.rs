@@ -9,6 +9,9 @@
 //! The document is optional context. A stack with no catalog entry (private,
 //! composed or local), a registry that does not serve the route, or any
 //! transport failure means there is simply nothing to attach, never an error.
+//! It is attached only to the exact StackManifest it was published for (see
+//! [`StackKnowledge::belongs_to`]), so guidance for one version of a stack
+//! never describes another.
 //!
 //! Knowledge paths are camelCase (`results.preRevealWinningSquare`) while a
 //! schema may report `results.pre_reveal_winning_square` or the camelCase
@@ -165,13 +168,13 @@ impl StackKnowledge {
         })
     }
 
-    /// Whether this knowledge belongs to the stack whose StackManifest is
-    /// `stack_manifest_hash`. Only a known mismatch refuses it.
-    pub fn applies_to(&self, stack_manifest_hash: Option<&str>) -> bool {
-        match (self.stack_manifest_hash.as_deref(), stack_manifest_hash) {
-            (Some(published), Some(explored)) => published == explored,
-            _ => true,
-        }
+    /// Whether this knowledge was published for the stack whose
+    /// StackManifest is `stack_manifest_hash`. It must say so: knowledge that
+    /// names no StackManifest, or another one, describes a stack whose
+    /// fields this one may not share.
+    pub fn belongs_to(&self, stack_manifest_hash: &str) -> bool {
+        !stack_manifest_hash.is_empty()
+            && self.stack_manifest_hash.as_deref() == Some(stack_manifest_hash)
     }
 
     /// The knowledge of the entity named `name` (either casing).
@@ -395,18 +398,21 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn knowledge_applies_unless_the_stack_manifest_is_known_to_differ() {
+    fn knowledge_belongs_only_to_the_stack_manifest_it_names() {
         let knowledge = StackKnowledge::from_response(&ore_knowledge()).unwrap();
-        assert!(knowledge.applies_to(Some("manifest-exact")));
-        assert!(knowledge.applies_to(None));
-        assert!(!knowledge.applies_to(Some("another-manifest")));
+        assert!(knowledge.belongs_to("manifest-exact"));
+        assert!(!knowledge.belongs_to("another-manifest"));
+        assert!(!knowledge.belongs_to(""));
         let mut unpinned = ore_knowledge();
         unpinned
             .as_object_mut()
             .unwrap()
             .remove("stackManifestHash");
         let unpinned = StackKnowledge::from_response(&unpinned).unwrap();
-        assert!(unpinned.applies_to(Some("another-manifest")));
+        assert!(
+            !unpinned.belongs_to("manifest-exact"),
+            "knowledge that names no StackManifest cannot be checked"
+        );
     }
 
     #[test]
