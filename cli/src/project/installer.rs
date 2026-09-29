@@ -3453,6 +3453,66 @@ fn commit_install(
     removals: Vec<RemovalOutput>,
     staging_root: &Path,
 ) -> Result<()> {
+    let mut journal = match prepare_journal(project_root, lock, staged, removals, staging_root) {
+        Ok(journal) => journal,
+        Err(error) => {
+            // Nothing has moved yet, so the staging tree holds only generated
+            // output and no backups a recovery would need. The journal write is
+            // the last step, so no journal of this install exists either.
+            if let Err(cleanup) = fs::remove_dir_all(staging_root) {
+                return Err(error.context(format!(
+                    "the staging tree {} could not be removed ({cleanup}); delete it by hand",
+                    staging_root.display()
+                )));
+            }
+            return Err(error);
+        }
+    };
+
+    let result = (|| -> Result<()> {
+        for position in 0..journal.entries.len() {
+            let entry = &journal.entries[position];
+            if let Some(parent) = entry.final_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            if entry.had_previous {
+                fs::rename(&entry.final_path, &entry.backup_path)
+                    .with_context(|| format!("Failed to back up {}", entry.final_path.display()))?;
+            }
+            if let Some(staged_path) = &entry.staged_path {
+                fs::rename(staged_path, &entry.final_path).with_context(|| {
+                    format!(
+                        "Failed to commit {} to {} (outputs on another filesystem are unsupported)",
+                        staged_path.display(),
+                        entry.final_path.display()
+                    )
+                })?;
+            }
+            journal.entries[position].committed = true;
+            write_journal(project_root, &journal)?;
+        }
+        lock.write_atomic(lock_path)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        rollback_journal(&journal)?;
+        remove_journal(project_root)?;
+        let _ = fs::remove_dir_all(staging_root);
+        return Err(error);
+    }
+    remove_journal(project_root)?;
+    let _ = fs::remove_dir_all(staging_root);
+    Ok(())
+}
+
+/// Check every output and write the install journal. Nothing is moved yet.
+fn prepare_journal(
+    project_root: &Path,
+    lock: &ProjectLock,
+    staged: Vec<StagedOutput>,
+    removals: Vec<RemovalOutput>,
+    staging_root: &Path,
+) -> Result<InstallJournal> {
     let expected_lock_sha256 = sha256(lock.canonical_toml()?.as_bytes());
     let backup_root = staging_root.join("backups");
     fs::create_dir_all(&backup_root)?;
@@ -3489,41 +3549,7 @@ fn commit_install(
         });
     }
     write_journal(project_root, &journal)?;
-
-    let result = (|| -> Result<()> {
-        for position in 0..journal.entries.len() {
-            let entry = &journal.entries[position];
-            if let Some(parent) = entry.final_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            if entry.had_previous {
-                fs::rename(&entry.final_path, &entry.backup_path)
-                    .with_context(|| format!("Failed to back up {}", entry.final_path.display()))?;
-            }
-            if let Some(staged_path) = &entry.staged_path {
-                fs::rename(staged_path, &entry.final_path).with_context(|| {
-                    format!(
-                        "Failed to commit {} to {} (outputs on another filesystem are unsupported)",
-                        staged_path.display(),
-                        entry.final_path.display()
-                    )
-                })?;
-            }
-            journal.entries[position].committed = true;
-            write_journal(project_root, &journal)?;
-        }
-        lock.write_atomic(lock_path)?;
-        Ok(())
-    })();
-    if let Err(error) = result {
-        rollback_journal(&journal)?;
-        remove_journal(project_root)?;
-        let _ = fs::remove_dir_all(staging_root);
-        return Err(error);
-    }
-    remove_journal(project_root)?;
-    let _ = fs::remove_dir_all(staging_root);
-    Ok(())
+    Ok(journal)
 }
 
 fn validate_project_output_ownership(output: &RemovalOutput) -> Result<()> {
@@ -3633,8 +3659,12 @@ fn write_journal(project_root: &Path, journal: &InstallJournal) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let temporary = path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
-    fs::write(&temporary, serde_json::to_vec_pretty(journal)?)?;
-    fs::rename(&temporary, path)?;
+    let written = fs::write(&temporary, serde_json::to_vec_pretty(journal)?)
+        .and_then(|()| fs::rename(&temporary, &path));
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -3811,6 +3841,47 @@ version = "^1.0.0"
         .unwrap();
 
         assert!(!root.join("generated/typescript/programs/demo").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_refused_commit_leaves_no_staging_tree_or_journal() {
+        let root = std::env::temp_dir().join(format!("arete-commit-{}", uuid::Uuid::new_v4()));
+        let output = root.join("generated/typescript/programs/demo");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(
+            output.join("hand-written.ts"),
+            "export const keep = true;\n",
+        )
+        .unwrap();
+        let staging_root = root
+            .join(".arete")
+            .join(format!("install-staging-{}", uuid::Uuid::new_v4()));
+        let staged_path = staging_root.join("0000");
+        fs::create_dir_all(&staged_path).unwrap();
+        fs::write(staged_path.join("index.ts"), "export const demo = true;\n").unwrap();
+
+        let error = commit_install(
+            &root,
+            &root.join("arete.lock"),
+            &ProjectLock::empty(format!("arete-manifest-v1:{}", "0".repeat(64))),
+            vec![StagedOutput {
+                final_path: output.clone(),
+                staged_path,
+            }],
+            Vec::new(),
+            &staging_root,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("without ownership provenance"),
+            "{error:#}"
+        );
+        assert!(!staging_root.exists(), "the staging tree is removed");
+        assert!(!root.join(INSTALL_JOURNAL).exists());
+        assert!(!root.join("arete.lock").exists());
+        assert!(output.join("hand-written.ts").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
