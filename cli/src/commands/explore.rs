@@ -3236,7 +3236,7 @@ mod tests {
     }
 
     /// A catalog stack `ore` whose primary LiveSpec reports snake_case field
-    /// names, as hosted LiveSpecs do.
+    /// names, as published LiveSpecs do.
     fn catalog_descriptor() -> RegistryStackInstallResponse {
         let mut descriptor = stack_descriptor();
         descriptor.name = "ore".into();
