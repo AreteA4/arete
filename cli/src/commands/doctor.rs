@@ -114,19 +114,25 @@ pub fn aggregate(checks: &[Check]) -> Status {
     }
 }
 
+/// Fix for a project config's portable `a4` that isn't on PATH. It names a
+/// machine setting; the writers leave the shared file alone.
+const NOT_ON_PATH_FIX: &str = "put a4 on PATH (open a new shell after installing), then: a4 doctor";
+
+/// Whether `--fix` re-runs the writers for `check`: a failing agent check,
+/// except one only a PATH change can clear.
+fn is_fixable(check: &Check) -> bool {
+    check.id.starts_with("agents.")
+        && matches!(check.status, Status::Warn | Status::Fail)
+        && check.fix.as_deref() != Some(NOT_ON_PATH_FIX)
+}
+
 pub fn run(args: DoctorArgs, config_path: &str, json: bool) -> Result<()> {
     let env = Env::from_process(init::project_root(config_path));
     let config = Path::new(config_path);
     let mut checks = run_checks(&env, config);
 
     if args.fix {
-        let fixable: Vec<&Check> = checks
-            .iter()
-            .filter(|check| {
-                check.id.starts_with("agents.")
-                    && matches!(check.status, Status::Warn | Status::Fail)
-            })
-            .collect();
+        let fixable: Vec<&Check> = checks.iter().filter(|check| is_fixable(check)).collect();
         if fixable.is_empty() {
             eprintln!("{} Nothing to fix.", "→".blue().bold());
         } else {
@@ -984,14 +990,9 @@ fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
             (Scope::Project, McpState::Missing(detail)) => {
                 Check::warn(&check_id, detail, Some("a4 doctor --fix".to_string()))
             }
-            (_, McpState::NotOnPath(detail)) => Check::warn(
-                &check_id,
-                detail,
-                Some(
-                    "put a4 on PATH (open a new shell after installing), then: a4 doctor"
-                        .to_string(),
-                ),
-            ),
+            (_, McpState::NotOnPath(detail)) => {
+                Check::warn(&check_id, detail, Some(NOT_ON_PATH_FIX.to_string()))
+            }
             (Scope::Global, McpState::Missing(detail)) => Check::info(
                 &check_id,
                 format!("{detail} ({id} reads MCP config from the user scope only)"),
@@ -1127,6 +1128,22 @@ fn root_cause(error: &anyhow::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fix_leaves_a_portable_a4_that_is_not_on_path_alone() {
+        let not_on_path = Check::warn(
+            "agents.claude-code.mcp",
+            ".mcp.json: `arete` server runs `a4`, which is not on PATH",
+            Some(NOT_ON_PATH_FIX.to_string()),
+        );
+        assert!(!is_fixable(&not_on_path));
+        let missing = Check::warn(
+            "agents.claude-code.mcp",
+            ".mcp.json missing",
+            Some("a4 doctor --fix".to_string()),
+        );
+        assert!(is_fixable(&missing));
+    }
 
     #[test]
     fn aggregate_status_prefers_fail_then_warn() {
