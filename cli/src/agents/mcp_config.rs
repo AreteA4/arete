@@ -17,6 +17,9 @@ pub const DOCS_SERVER: &str = "arete-docs";
 pub const CODEX_TRUST_WARNING: &str =
     "Codex only loads .codex/config.toml for trusted projects: run `codex` in this directory once and accept the trust prompt (or add it under [projects] in ~/.codex/config.toml).";
 
+/// The `arete` server command that relies on PATH.
+pub const PORTABLE_COMMAND: &str = "a4";
+
 /// Command used for the `arete` server: the absolute installed binary
 /// when a receipt exists (GUI hosts do not inherit shell PATH), else `a4`.
 pub fn command_from_receipt() -> String {
@@ -24,8 +27,19 @@ pub fn command_from_receipt() -> String {
         Ok(Some(receipt)) if receipt.binary.is_absolute() => {
             receipt.binary.to_string_lossy().into_owned()
         }
-        _ => "a4".to_string(),
+        _ => PORTABLE_COMMAND.to_string(),
     }
+}
+
+/// Commands accepted for an existing `arete` server entry. A project config
+/// is often committed and shared across machines, so the portable `a4` is
+/// accepted there alongside the installed binary's path.
+fn accepted_commands(scope: Scope, command: &str) -> Vec<&str> {
+    let mut commands = vec![command];
+    if scope == Scope::Project && command != PORTABLE_COMMAND {
+        commands.push(PORTABLE_COMMAND);
+    }
+    commands
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -395,7 +409,10 @@ pub fn check(env: &Env, id: &str, scope: Scope, command: &str) -> McpState {
         Ok(None) => return McpState::Missing(format!("{shown} missing")),
         Err(error) => return McpState::Error(format!("{error:#}")),
     };
-    let shapes = acceptable_shapes(id, command, scope, true);
+    let shapes: Vec<Shape> = accepted_commands(scope, command)
+        .into_iter()
+        .flat_map(|command| acceptable_shapes(id, command, scope, true))
+        .collect();
     let top_key = shapes[0].top_key;
     match current_entries(format, &content, top_key) {
         Ok((arete, docs)) => {
@@ -656,6 +673,48 @@ mod tests {
                 .outcome,
             Outcome::Unchanged
         );
+    }
+
+    #[test]
+    fn a_project_config_may_use_the_portable_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = env(dir.path());
+        for id in ["claude-code", "opencode", "codex"] {
+            let (result, _) = write(&env, id, Scope::Project, PORTABLE_COMMAND, false);
+            assert_eq!(result.outcome, Outcome::Created, "{id}");
+        }
+        let before: Vec<String> = [".mcp.json", "opencode.json", ".codex/config.toml"]
+            .iter()
+            .map(|file| fs::read_to_string(env.root.join(file)).unwrap())
+            .collect();
+
+        // With an installed binary, doctor accepts the committed `a4` and init
+        // leaves it alone instead of writing a machine-specific path.
+        for id in ["claude-code", "opencode", "codex"] {
+            assert_eq!(
+                check(&env, id, Scope::Project, "/opt/a4"),
+                McpState::Ok,
+                "{id}"
+            );
+            assert_eq!(
+                write(&env, id, Scope::Project, "/opt/a4", false).0.outcome,
+                Outcome::Unchanged,
+                "{id}"
+            );
+        }
+        let after: Vec<String> = [".mcp.json", "opencode.json", ".codex/config.toml"]
+            .iter()
+            .map(|file| fs::read_to_string(env.root.join(file)).unwrap())
+            .collect();
+        assert_eq!(after, before);
+
+        // A user-scope config is not shared, so it still wants the installed
+        // binary: GUI hosts do not inherit the shell PATH.
+        write(&env, "claude-code", Scope::Global, PORTABLE_COMMAND, false);
+        assert!(matches!(
+            check(&env, "claude-code", Scope::Global, "/opt/a4"),
+            McpState::Missing(_)
+        ));
     }
 
     #[test]
