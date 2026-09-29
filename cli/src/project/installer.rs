@@ -2638,11 +2638,11 @@ fn describe_resolver_batch_error(
         }
         403 => anyhow::anyhow!("This account is not entitled to resolve one or more of {names}"),
         404 => anyhow::anyhow!("One or more of {names} is unavailable to this account or unknown"),
-        409 if http.code.as_deref() == Some(DELIVERY_NOT_READY) => anyhow::anyhow!(
+        409 if http.code == Some(DELIVERY_NOT_READY) => anyhow::anyhow!(
             "A hosted stack among {names} is published but its live delivery is not currently \
              ready; nothing was installed and arete.lock is unchanged. Retry shortly ({error})"
         ),
-        409 if http.code.as_deref() == Some(STACK_VERSION_RETIRED) => anyhow::anyhow!(
+        409 if http.code == Some(STACK_VERSION_RETIRED) => anyhow::anyhow!(
             "A stack version among {names} is no longer served; nothing was installed and \
              arete.lock is unchanged.{} ({error})",
             upgrade_hint(None, http.upgrade_command)
@@ -2682,10 +2682,10 @@ fn describe_resolver_error(
         404 => anyhow::anyhow!(
             "{kind} '{package}' is unavailable to this account or unknown; check the name, or log in as the owner if it is private ({error})"
         ),
-        409 if http.code.as_deref() == Some(DELIVERY_NOT_READY) => anyhow::anyhow!(
+        409 if http.code == Some(DELIVERY_NOT_READY) => anyhow::anyhow!(
             "{kind} '{package}' is published but its live delivery is not currently ready; nothing was installed and arete.lock is unchanged. Retry shortly ({error})"
         ),
-        409 if http.code.as_deref() == Some(STACK_VERSION_RETIRED) => anyhow::anyhow!(
+        409 if http.code == Some(STACK_VERSION_RETIRED) => anyhow::anyhow!(
             "{kind} '{package}': this version is no longer served; nothing was installed and arete.lock is unchanged.{} ({error})",
             upgrade_hint(None, http.upgrade_command)
         ),
