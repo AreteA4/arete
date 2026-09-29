@@ -964,6 +964,27 @@ fn project_agent_ids(detection: &Detection) -> Vec<String> {
         .collect()
 }
 
+/// A context file `agent` reads is missing or lacks AGENTS.md. For an agent
+/// found only in the home directory this is information: `--fix` leaves
+/// such agents alone, so a warning would outlive the fix.
+fn context_check(detection: &Detection, agent: &str, id: &str, detail: &str) -> Check {
+    let home_only = detection
+        .agents
+        .iter()
+        .any(|detected| detected.id == agent && detected.how == How::Home);
+    if home_only {
+        Check::info(
+            id,
+            format!("{detail} ({agent} is installed but not set up in this project)"),
+            Some(format!(
+                "a4 init --agents {agent} --no-manifest --no-skills --no-mcp"
+            )),
+        )
+    } else {
+        Check::warn(id, detail, Some("a4 doctor --fix".to_string()))
+    }
+}
+
 fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
     let mut checks = Vec::new();
     let detected: Vec<String> = detection
@@ -1098,15 +1119,17 @@ fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
             Some(content) if agents_md::claude_md_ok(&content) => {
                 Check::ok("agents.claude-md", "CLAUDE.md imports @AGENTS.md")
             }
-            Some(_) => Check::warn(
+            Some(_) => context_check(
+                detection,
+                "claude-code",
                 "agents.claude-md",
                 "CLAUDE.md does not import @AGENTS.md",
-                Some("a4 doctor --fix".to_string()),
             ),
-            None => Check::warn(
+            None => context_check(
+                detection,
+                "claude-code",
                 "agents.claude-md",
                 "CLAUDE.md missing",
-                Some("a4 doctor --fix".to_string()),
             ),
         });
     }
@@ -1120,10 +1143,11 @@ fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
                 "agents.gemini-context",
                 ".gemini/settings.json context.fileName includes AGENTS.md",
             ),
-            _ => Check::warn(
+            _ => context_check(
+                detection,
+                "gemini-cli",
                 "agents.gemini-context",
                 ".gemini/settings.json context.fileName lacks AGENTS.md",
-                Some("a4 doctor --fix".to_string()),
             ),
         });
     }
@@ -1445,6 +1469,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".cursor")).unwrap();
         std::fs::create_dir_all(home.join(".cursor")).unwrap();
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
         let env = Env::new(&root, Some(home), &[]);
         let detection = detect(&env);
         assert_eq!(project_agent_ids(&detection), vec!["cursor".to_string()]);
@@ -1470,12 +1495,26 @@ mod tests {
             gemini.fix.as_deref(),
             Some("a4 init --agents gemini-cli --no-manifest --no-agents-md --no-skills")
         );
-        if let Some(skills) = checks
+        let skills = checks
             .iter()
             .find(|check| check.id == "agents.gemini-cli.skills")
-        {
-            assert_eq!(skills.status, Status::Info);
+            .expect("Gemini skills check should exist");
+        assert_eq!(skills.status, Status::Info);
+
+        // --fix skips home-only agents, so their context files are not
+        // warnings either: CLAUDE.md and the Gemini context setting.
+        assert_eq!(status("agents.claude-code.mcp"), Status::Info);
+        for id in ["agents.claude-md", "agents.gemini-context"] {
+            assert_eq!(status(id), Status::Info, "{id}");
         }
+        let claude_md = checks
+            .iter()
+            .find(|check| check.id == "agents.claude-md")
+            .unwrap();
+        assert_eq!(
+            claude_md.fix.as_deref(),
+            Some("a4 init --agents claude-code --no-manifest --no-skills --no-mcp")
+        );
     }
 
     #[test]
