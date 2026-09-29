@@ -8,11 +8,12 @@ set -euo pipefail
 ref=${1:-${ARETE_SKILLS_REF:-main}}
 docs="$(cd "$(dirname "$0")/.." && pwd)"
 dest="$docs/public/.well-known/agent-skills"
+staged=
 tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp" ${staged:+"$staged"}' EXIT
 # Staged beside the checkout, not in $tmp: on the same filesystem each
 # replacement below is a rename, never a copy that can fail halfway.
 staged="$(mktemp -d "$docs/.agent-skills-staged.XXXXXX")"
-trap 'rm -rf "$tmp" "$staged"' EXIT
 
 names=(arete arete-streams arete-programs arete-stack-authoring arete-deploy)
 mkdir -p "$tmp/source"
