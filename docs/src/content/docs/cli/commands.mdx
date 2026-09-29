@@ -651,8 +651,10 @@ described field and `summary` to the entity and its views. `--summary` adds
 `fieldDescriptions`. The full output adds `summary` to `selectedViews` and a
 `knowledge` block with each described entity. Human output prints a
 description under its field. `knowledge` names the source document (`slug`,
-`documentHash`). Stacks without a catalog entry, such as private or local
-stacks, print as before.
+`documentHash`). Descriptions are attached only when the knowledge was
+published for the exact StackManifest being explored. Stacks without a catalog
+entry, such as private or local stacks, print as before. Explore skips the
+lookup for private stacks and gives up on it after 2 seconds.
 
 ```json
 {

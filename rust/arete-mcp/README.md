@@ -164,7 +164,9 @@ error here.
   `summary`, with usage guidance such as which of two similar fields a live UI
   should show (`explore_stack` summaries list them as `fieldDescriptions`, and
   its `views` attach them to fields). `knowledge` names the source document.
-  Stacks without a catalog entry return their schema unchanged.
+  Descriptions are attached only when the knowledge was published for the
+  StackManifest the registry serves for the stack. Stacks without a catalog
+  entry return their schema unchanged.
 - `explore_programs()` — standalone Solana programs installable independent of
   any stack.
 - `explore_program({ program, operationId?, sections?, full? })` — one program
