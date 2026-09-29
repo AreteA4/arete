@@ -568,14 +568,18 @@ enum AuthCommands {
         key: Option<String>,
     },
 
-    /// Register this machine as an agent and store the issued API key
+    /// Register this machine as an agent using a locally generated API key
     Signup {
         /// Display name for the agent account (optional)
         name: Option<String>,
 
         /// Replace credentials that already exist for the active API URL
-        #[arg(long)]
+        #[arg(long, conflicts_with = "if_missing")]
         force: bool,
+
+        /// Verify and reuse an active agent credential; sign up only if absent
+        #[arg(long, conflicts_with = "force")]
+        if_missing: bool,
     },
 
     /// Logout (remove stored credentials for current environment)
@@ -1405,8 +1409,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         },
         Commands::Auth(auth_cmd) => match auth_cmd {
             AuthCommands::Login { key } => commands::auth::login(key, cli.profile.as_deref()),
-            AuthCommands::Signup { name, force } => {
-                commands::auth::signup(name, force, cli.json, cli.profile.as_deref())
+            AuthCommands::Signup {
+                name,
+                force,
+                if_missing,
+            } => {
+                commands::auth::signup(name, force, if_missing, cli.json, cli.profile.as_deref())
             }
             AuthCommands::Logout => commands::auth::logout(),
             AuthCommands::LogoutAll => commands::auth::logout_all(),
@@ -1872,12 +1880,31 @@ mod tests {
             .expect("signup should parse");
         assert!(cli.json);
         match cli.command {
-            Some(Commands::Auth(AuthCommands::Signup { name, force })) => {
+            Some(Commands::Auth(AuthCommands::Signup {
+                name,
+                force,
+                if_missing,
+            })) => {
                 assert_eq!(name.as_deref(), Some("bot"));
                 assert!(!force);
+                assert!(!if_missing);
             }
             _ => panic!("expected auth signup"),
         }
+
+        let cli = Cli::try_parse_from(["a4", "auth", "signup", "--if-missing"])
+            .expect("idempotent signup should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Auth(AuthCommands::Signup {
+                if_missing: true,
+                ..
+            }))
+        ));
+        assert!(
+            Cli::try_parse_from(["a4", "auth", "signup", "--if-missing", "--force"]).is_err(),
+            "safe reuse and replacement must be mutually exclusive"
+        );
 
         let cli = Cli::try_parse_from(["a4", "auth", "login", "--profile", "human"])
             .expect("global --profile should parse after nested subcommands");

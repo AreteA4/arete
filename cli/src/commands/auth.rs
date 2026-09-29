@@ -1,9 +1,9 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
-use crate::api_client::{AgentMeResponse, ApiClient};
+use crate::api_client::{api_error_details, AgentMeResponse, ApiClient, PendingAgentSignup};
 use crate::config;
 use crate::ui;
 
@@ -11,6 +11,39 @@ fn credentials_path() -> String {
     ApiClient::credentials_file_path()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "~/.arete/credentials.toml".to_string())
+}
+
+fn trial_remaining_seconds(expires_at: Option<&str>) -> Option<i64> {
+    let expires_at = chrono::DateTime::parse_from_rfc3339(expires_at?).ok()?;
+    Some(
+        expires_at
+            .signed_duration_since(chrono::Utc::now())
+            .num_seconds()
+            .max(0),
+    )
+}
+
+fn format_trial_remaining(expires_at: Option<&str>) -> Option<String> {
+    let seconds = trial_remaining_seconds(expires_at)?;
+    Some(format_remaining_seconds(seconds))
+}
+
+fn format_remaining_seconds(seconds: i64) -> String {
+    if seconds == 0 {
+        return "expired".to_string();
+    }
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 pub fn login(api_key: Option<String>, requested_profile: Option<&str>) -> Result<()> {
@@ -255,6 +288,9 @@ pub fn whoami(json: bool) -> Result<()> {
         }
         if let Some(expires_at) = &identity.entitlement_expires_at {
             println!("  Expires:     {expires_at}");
+            if let Some(remaining) = format_trial_remaining(Some(expires_at)) {
+                println!("  Remaining:   {remaining}");
+            }
         }
         println!("  Target API:  {}", api_url.yellow());
         println!("  Credentials: {}", credentials_path().dimmed());
@@ -320,6 +356,7 @@ fn print_agent_identity_json(identity: &AgentMeResponse) -> Result<()> {
             "claimState": identity.claim_state,
             "plan": identity.plan,
             "entitlementExpiresAt": identity.entitlement_expires_at,
+            "trialRemainingSeconds": trial_remaining_seconds(identity.entitlement_expires_at.as_deref()),
             "trialAccessEnabled": identity.trial_access_enabled,
             "starterGuidance": identity.starter_guidance,
             "credentialSource": "credentials_file",
@@ -921,34 +958,147 @@ pub fn create_publishable_key(
 /// What `a4 auth signup` produced, before any printing.
 #[derive(Debug)]
 struct SignupOutcome {
-    slug: String,
-    display_name: String,
+    identity: AgentMeResponse,
     credentials_path: std::path::PathBuf,
+    created: bool,
+    idempotent: Option<bool>,
 }
 
-/// Register with `POST /api/agents/signup` and store the issued key for
-/// `api_url`. Refuses to overwrite existing credentials unless `force`.
+fn generate_agent_credential() -> String {
+    let random = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    format!("a4_ak_{}", &random[..40])
+}
+
+fn pending_signup() -> PendingAgentSignup {
+    PendingAgentSignup {
+        credential: generate_agent_credential(),
+        idempotency_key: uuid::Uuid::new_v4().to_string(),
+    }
+}
+
+/// Register with `POST /api/agents/signup/v2`. Pending state is persisted
+/// before the network request and reused after timeouts or process restarts.
 fn perform_signup(
     client: &ApiClient,
     api_url: &str,
     name: Option<&str>,
     profile: &str,
     force: bool,
+    if_missing: bool,
 ) -> Result<SignupOutcome> {
-    if !force && ApiClient::load_optional_api_key_for_profile(api_url, Some(profile))?.is_some() {
-        anyhow::bail!(
-            "Credentials already exist for profile `{profile}` at {api_url}. Run: a4 auth status (or pass --force to replace them)"
-        );
+    if force && if_missing {
+        anyhow::bail!("--force and --if-missing cannot be used together");
+    }
+    let _lock = ApiClient::lock_credentials()?;
+    let existing = ApiClient::load_optional_api_key_for_profile(api_url, Some(profile))?;
+    if let Some(existing) = existing {
+        if if_missing {
+            match ApiClient::with_base_url(api_url)
+                .with_api_key(existing)
+                .agent_me()
+            {
+                Ok(identity) => {
+                    ApiClient::clear_pending_agent_signup(api_url, profile)?;
+                    return Ok(SignupOutcome {
+                        identity,
+                        credentials_path: ApiClient::credentials_file_path()?,
+                        created: false,
+                        idempotent: None,
+                    });
+                }
+                Err(error)
+                    if matches!(
+                        api_error_details(&error).map(|details| details.status),
+                        Some(401 | 403)
+                    ) =>
+                {
+                    anyhow::bail!(
+                        "The stored `{profile}` credential for {api_url} is invalid or disabled ({error}). It was left untouched; rerun `a4 auth signup --force` to replace it"
+                    );
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "Could not verify the stored `{profile}` credential for {api_url}; it was left untouched. Retry `a4 auth signup --if-missing`"
+                        )
+                    });
+                }
+            }
+        } else if !force {
+            anyhow::bail!(
+                "Credentials already exist for profile `{profile}` at {api_url}. Run: a4 auth status (or pass --force to replace them)"
+            );
+        }
     }
 
-    let response = client.agent_signup(name)?;
-    ApiClient::save_api_key_for_profile(&response.api_key, Some(api_url), profile)?;
+    let pending = match ApiClient::load_pending_agent_signup(api_url, profile)? {
+        Some(pending) => pending,
+        None => {
+            let pending = pending_signup();
+            ApiClient::save_pending_agent_signup(api_url, profile, &pending)?;
+            pending
+        }
+    };
+    let response = client
+        .agent_signup(name, &pending.credential, &pending.idempotency_key)
+        .with_context(|| {
+            "Agent signup did not complete. Pending state was retained; retry the same command safely"
+        })?;
+    if response.schema_version != 1 {
+        anyhow::bail!(
+            "Agent signup returned unsupported schema version {}; pending state was retained",
+            response.schema_version
+        );
+    }
+    let identity = ApiClient::with_base_url(api_url)
+        .with_api_key(pending.credential.clone())
+        .agent_me()
+        .with_context(|| {
+            "The new agent credential could not be verified. Pending state was retained; retry the same command safely"
+        })?;
+    if identity.slug != response.slug
+        || identity.plan.as_deref() != Some(response.plan.as_str())
+        || identity.entitlement_expires_at.as_deref()
+            != Some(response.entitlement_expires_at.as_str())
+        || identity.claim_state != response.claim_state
+    {
+        anyhow::bail!(
+            "Agent signup verification did not match the signup response; pending state was retained"
+        );
+    }
+    ApiClient::promote_pending_agent_signup(api_url, profile, &pending)?;
     let credentials_path = ApiClient::credentials_file_path()?;
 
     Ok(SignupOutcome {
-        slug: response.slug,
-        display_name: response.display_name,
+        identity,
         credentials_path,
+        created: true,
+        idempotent: Some(response.idempotent),
+    })
+}
+
+fn signup_json_payload(outcome: &SignupOutcome, profile: &str) -> serde_json::Value {
+    serde_json::json!({
+        "schemaVersion": 1,
+        "slug": outcome.identity.slug,
+        "displayName": outcome.identity.display_name,
+        "createdAt": outcome.identity.created_at,
+        "credentialStored": true,
+        "credentialPathKind": if std::env::var_os("ARETE_CREDENTIALS_PATH").is_some() { "override" } else { "default" },
+        "profile": profile,
+        "accountStatus": outcome.identity.status,
+        "plan": outcome.identity.plan,
+        "entitlementExpiresAt": outcome.identity.entitlement_expires_at,
+        "trialRemainingSeconds": trial_remaining_seconds(outcome.identity.entitlement_expires_at.as_deref()),
+        "claimState": outcome.identity.claim_state,
+        "trialAccessEnabled": outcome.identity.trial_access_enabled,
+        "starterGuidance": outcome.identity.starter_guidance,
+        "created": outcome.created,
+        "idempotent": outcome.idempotent,
     })
 }
 
@@ -958,6 +1108,7 @@ fn perform_signup(
 pub fn signup(
     name: Option<String>,
     force: bool,
+    if_missing: bool,
     json: bool,
     requested_profile: Option<&str>,
 ) -> Result<()> {
@@ -971,30 +1122,34 @@ pub fn signup(
     let client = ApiClient::with_base_url(&api_url);
 
     let spinner = (!json).then(|| ui::create_spinner("Registering agent..."));
-    let outcome = perform_signup(&client, &api_url, name.as_deref(), profile, force);
+    let outcome = perform_signup(
+        &client,
+        &api_url,
+        name.as_deref(),
+        profile,
+        force,
+        if_missing,
+    );
     if let Some(spinner) = spinner {
         spinner.finish_and_clear();
     }
     let outcome = outcome?;
 
     if json {
-        let payload = serde_json::json!({
-            "schemaVersion": 1,
-            "slug": outcome.slug,
-            "displayName": outcome.display_name,
-            "credentialStored": true,
-            "credentialPathKind": if std::env::var_os("ARETE_CREDENTIALS_PATH").is_some() { "override" } else { "default" },
-            "profile": profile,
-            "accountStatus": "active",
-        });
+        let payload = signup_json_payload(&outcome, profile);
         println!("{}", serde_json::to_string(&payload)?);
         return Ok(());
     }
 
     ui::print_success(&format!(
-        "Registered agent {} ({})",
-        outcome.slug.bold(),
-        outcome.display_name
+        "{} agent {} ({})",
+        if outcome.created {
+            "Registered"
+        } else {
+            "Verified existing"
+        },
+        outcome.identity.slug.bold(),
+        outcome.identity.display_name
     ));
     println!("  Target API:  {}", api_url.yellow());
     println!("  Profile:     {}", profile);
@@ -1002,6 +1157,15 @@ pub fn signup(
         "  Credentials: {}",
         outcome.credentials_path.display().to_string().dimmed()
     );
+    if let Some(plan) = &outcome.identity.plan {
+        println!("  Plan:        {plan}");
+    }
+    if let Some(expires_at) = &outcome.identity.entitlement_expires_at {
+        println!("  Expires:     {expires_at}");
+        if let Some(remaining) = format_trial_remaining(Some(expires_at)) {
+            println!("  Remaining:   {remaining}");
+        }
+    }
     println!();
     println!("Next: {}", "a4 explore --json".cyan());
     Ok(())
@@ -1316,50 +1480,70 @@ mod signup_tests {
         }
     }
 
-    const OK_BODY: &str =
-        r#"{"slug":"agent-7f3a","display_name":"Robo","api_key":"a4_ak_fresh","message":"hi"}"#;
+    const OK_BODY: &str = r#"{"schemaVersion":1,"slug":"agent-7f3a","displayName":"Robo","createdAt":"2026-09-29T00:00:00Z","plan":"agent_trial","entitlementExpiresAt":"2026-10-06T00:00:00Z","claimState":"unclaimed","idempotent":false}"#;
+    const ME_BODY: &str = r#"{"slug":"agent-7f3a","display_name":"Robo","status":"active","created_at":"2026-09-29T00:00:00Z","last_seen_at":null,"claimState":"unclaimed","plan":"agent_trial","entitlementExpiresAt":"2026-10-06T00:00:00Z","trialAccessEnabled":true,"starterGuidance":"Use starter stacks."}"#;
 
     #[test]
     fn signup_rejects_non_agent_profile_before_registration() {
-        let error = signup(None, false, true, Some("human")).unwrap_err();
+        let error = signup(None, false, false, true, Some("human")).unwrap_err();
         assert!(error.to_string().contains("must use profile `agent`"));
     }
 
     #[test]
     fn signup_stores_key_for_api_url_and_reports_slug() {
         let sandbox = CredentialsSandbox::new();
-        let server = MockServer::json(200, OK_BODY);
+        let server =
+            MockServer::json_sequence(vec![(200, OK_BODY.to_string()), (200, ME_BODY.to_string())]);
         let client = ApiClient::with_base_url(server.base_url());
 
-        let outcome = perform_signup(&client, server.base_url(), Some("Robo"), "agent", false)
-            .expect("signup succeeds");
+        let outcome = perform_signup(
+            &client,
+            server.base_url(),
+            Some("Robo"),
+            "agent",
+            false,
+            false,
+        )
+        .expect("signup succeeds");
 
-        assert_eq!(outcome.slug, "agent-7f3a");
-        assert_eq!(outcome.display_name, "Robo");
+        assert_eq!(outcome.identity.slug, "agent-7f3a");
+        assert_eq!(outcome.identity.display_name, "Robo");
         assert_eq!(outcome.credentials_path, sandbox.credentials_path());
-        assert_eq!(
-            ApiClient::load_optional_api_key_for_url(server.base_url())
-                .expect("credentials readable")
-                .as_deref(),
-            Some("a4_ak_fresh")
-        );
+        let stored_key = ApiClient::load_optional_api_key_for_url(server.base_url())
+            .expect("credentials readable")
+            .expect("key stored");
         let stored = std::fs::read_to_string(sandbox.credentials_path()).unwrap();
         assert!(stored.contains("[profiles.agent.keys]"), "{stored}");
-        assert!(stored.contains("a4_ak_fresh"), "{stored}");
+        assert!(!stored.contains("pendingSignup"), "{stored}");
+        let signup_request = server.request();
         let body: serde_json::Value =
-            serde_json::from_str(&server.request().body).expect("json body");
-        assert_eq!(body, serde_json::json!({"display_name": "Robo"}));
+            serde_json::from_str(&signup_request.body).expect("json body");
+        assert_eq!(body["displayName"], "Robo");
+        assert_eq!(body["credential"], stored_key);
+        assert!(uuid::Uuid::parse_str(body["idempotencyKey"].as_str().unwrap()).is_ok());
+        let me_request = server.request();
+        assert_eq!(me_request.request_line, "GET /api/agents/me HTTP/1.1");
+        assert_eq!(
+            me_request.header("authorization"),
+            Some(format!("Bearer {stored_key}").as_str())
+        );
     }
 
     #[test]
     fn signup_refuses_to_replace_existing_credentials_unless_forced() {
         let _sandbox = CredentialsSandbox::new();
-        let server = MockServer::json(200, OK_BODY);
+        let server =
+            MockServer::json_sequence(vec![(200, OK_BODY.to_string()), (200, ME_BODY.to_string())]);
         let api_url = server.base_url().to_string();
         ApiClient::save_api_key("a4_ak_old", Some(&api_url)).expect("seed credentials");
+        let credentials_path = ApiClient::credentials_file_path().unwrap();
+        let mut duplicate = std::fs::read_to_string(&credentials_path).unwrap();
+        duplicate.push_str(&format!("\"{api_url}/\" = \"a4_ak_stale\"\n"));
+        std::fs::write(&credentials_path, duplicate).unwrap();
         let client = ApiClient::with_base_url(&api_url);
 
-        let err = perform_signup(&client, &api_url, None, "agent", false).expect_err("must refuse");
+        let err = perform_signup(&client, &api_url, None, "agent", false, false)
+            .expect_err("must refuse");
         assert_eq!(
             err.to_string(),
             format!(
@@ -1374,20 +1558,46 @@ mod signup_tests {
             "refusal must not touch the stored key"
         );
 
-        perform_signup(&client, &api_url, None, "agent", true).expect("--force replaces");
+        perform_signup(&client, &api_url, None, "agent", true, false).expect("--force replaces");
+        let replacement = ApiClient::load_optional_api_key_for_url(&api_url)
+            .unwrap()
+            .expect("replacement key");
+        assert_ne!(replacement, "a4_ak_old");
         assert_eq!(
-            ApiClient::load_optional_api_key_for_url(&api_url)
+            ApiClient::load_optional_api_key_for_profile(&format!("{api_url}/"), Some("agent"))
                 .unwrap()
                 .as_deref(),
-            Some("a4_ak_fresh")
+            Some(replacement.as_str()),
+            "equivalent URL spellings must not retain a stale key"
+        );
+        let stored = std::fs::read_to_string(ApiClient::credentials_file_path().unwrap()).unwrap();
+        let credentials = stored.parse::<toml::Value>().unwrap();
+        let profile = credentials["profiles"]["agent"].as_table().unwrap();
+        let active_keys = profile["keys"].as_table().unwrap();
+        assert_eq!(active_keys.len(), 1, "{stored}");
+        assert_eq!(
+            active_keys.get(&api_url).and_then(toml::Value::as_str),
+            Some(replacement.as_str()),
+            "{stored}"
+        );
+        let backup_keys = profile["backupKeys"].as_table().unwrap();
+        assert_eq!(
+            backup_keys.get(&api_url).and_then(toml::Value::as_str),
+            Some("a4_ak_old"),
+            "{stored}"
+        );
+        assert_eq!(
+            backup_keys
+                .get(&format!("{api_url}/"))
+                .and_then(toml::Value::as_str),
+            Some("a4_ak_stale"),
+            "{stored}"
         );
         let body: serde_json::Value =
             serde_json::from_str(&server.request().body).expect("json body");
-        assert_eq!(
-            body,
-            serde_json::json!({}),
-            "display_name omitted when None"
-        );
+        assert!(body.get("displayName").is_none());
+        assert_eq!(body["credential"], replacement);
+        let _ = server.request();
     }
 
     #[test]
@@ -1425,7 +1635,7 @@ mod signup_tests {
     }
 
     #[test]
-    fn signup_preserves_rate_limit_problem_and_stores_nothing() {
+    fn signup_preserves_rate_limit_problem_and_pending_retry_state() {
         let _sandbox = CredentialsSandbox::new();
         let server = MockServer::json(
             429,
@@ -1433,8 +1643,8 @@ mod signup_tests {
         );
         let client = ApiClient::with_base_url(server.base_url());
 
-        let err =
-            perform_signup(&client, server.base_url(), None, "agent", false).expect_err("429");
+        let err = perform_signup(&client, server.base_url(), None, "agent", false, false)
+            .expect_err("429");
         let api_error = err
             .downcast_ref::<ApiClientError>()
             .expect("typed API error");
@@ -1447,5 +1657,194 @@ mod signup_tests {
             ApiClient::load_optional_api_key_for_url(server.base_url()).unwrap(),
             None
         );
+        assert!(
+            ApiClient::load_pending_agent_signup(server.base_url(), "agent")
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn signup_reuses_pending_state_after_a_lost_response() {
+        let _sandbox = CredentialsSandbox::new();
+        let server = MockServer::json_sequence(vec![
+            (
+                500,
+                r#"{"error":"response lost","code":"temporary","retryable":true}"#.to_string(),
+            ),
+            (200, OK_BODY.to_string()),
+            (200, ME_BODY.to_string()),
+        ]);
+        let client = ApiClient::with_base_url(server.base_url());
+
+        perform_signup(
+            &client,
+            server.base_url(),
+            Some("Robo"),
+            "agent",
+            false,
+            false,
+        )
+        .expect_err("first response is lost");
+        let first: serde_json::Value =
+            serde_json::from_str(&server.request().body).expect("first request JSON");
+        let pending = ApiClient::load_pending_agent_signup(server.base_url(), "agent")
+            .unwrap()
+            .expect("pending state retained");
+        assert_eq!(first["credential"], pending.credential);
+        assert_eq!(first["idempotencyKey"], pending.idempotency_key);
+
+        let outcome = perform_signup(
+            &client,
+            server.base_url(),
+            Some("Robo"),
+            "agent",
+            false,
+            false,
+        )
+        .expect("retry succeeds");
+        assert!(outcome.created);
+        let second: serde_json::Value =
+            serde_json::from_str(&server.request().body).expect("second request JSON");
+        assert_eq!(second["credential"], first["credential"]);
+        assert_eq!(second["idempotencyKey"], first["idempotencyKey"]);
+        let _ = server.request();
+        assert!(
+            ApiClient::load_pending_agent_signup(server.base_url(), "agent")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn signup_if_missing_verifies_and_reuses_an_existing_agent() {
+        let _sandbox = CredentialsSandbox::new();
+        let server = MockServer::json(200, ME_BODY);
+        let api_url = server.base_url();
+        ApiClient::save_api_key_for_profile("a4_ak_existing", Some(api_url), "agent").unwrap();
+        ApiClient::save_pending_agent_signup(
+            api_url,
+            "agent",
+            &PendingAgentSignup {
+                credential: "a4_ak_0123456789012345678901234567890123456789".to_string(),
+                idempotency_key: "11111111-1111-4111-8111-111111111111".to_string(),
+            },
+        )
+        .unwrap();
+        let client = ApiClient::with_base_url(api_url);
+
+        let outcome = perform_signup(&client, api_url, None, "agent", false, true)
+            .expect("existing key is reused");
+
+        assert!(!outcome.created);
+        assert_eq!(outcome.identity.slug, "agent-7f3a");
+        assert_eq!(server.request().request_line, "GET /api/agents/me HTTP/1.1");
+        assert!(ApiClient::load_pending_agent_signup(api_url, "agent")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            ApiClient::load_optional_api_key_for_profile(api_url, Some("agent"))
+                .unwrap()
+                .as_deref(),
+            Some("a4_ak_existing")
+        );
+    }
+
+    #[test]
+    fn signup_if_missing_never_replaces_an_invalid_key_implicitly() {
+        let _sandbox = CredentialsSandbox::new();
+        let server = MockServer::json(401, r#"{"error":"disabled","code":"agent-key-disabled"}"#);
+        let api_url = server.base_url();
+        ApiClient::save_api_key_for_profile("a4_ak_disabled", Some(api_url), "agent").unwrap();
+        let client = ApiClient::with_base_url(api_url);
+
+        let error = perform_signup(&client, api_url, None, "agent", false, true)
+            .expect_err("invalid key needs explicit force");
+
+        assert!(error.to_string().contains("--force"));
+        assert!(error.to_string().contains("left untouched"));
+        assert_eq!(
+            ApiClient::load_optional_api_key_for_profile(api_url, Some("agent"))
+                .unwrap()
+                .as_deref(),
+            Some("a4_ak_disabled")
+        );
+    }
+
+    #[test]
+    fn signup_if_missing_keeps_a_key_on_transient_verification_failure() {
+        let _sandbox = CredentialsSandbox::new();
+        let server = MockServer::json(
+            503,
+            r#"{"error":"temporarily unavailable","code":"service-unavailable"}"#,
+        );
+        let api_url = server.base_url();
+        ApiClient::save_api_key_for_profile("a4_ak_existing", Some(api_url), "agent").unwrap();
+        let client = ApiClient::with_base_url(api_url);
+
+        let error = perform_signup(&client, api_url, None, "agent", false, true)
+            .expect_err("transient verification failure is surfaced");
+
+        assert!(error.to_string().contains("Retry"), "{error:#}");
+        assert!(!error.to_string().contains("--force"), "{error:#}");
+        assert_eq!(
+            ApiClient::load_optional_api_key_for_profile(api_url, Some("agent"))
+                .unwrap()
+                .as_deref(),
+            Some("a4_ak_existing")
+        );
+    }
+
+    #[test]
+    fn short_positive_trial_time_is_not_reported_as_zero_minutes() {
+        assert_eq!(format_remaining_seconds(1), "1s");
+        assert_eq!(format_remaining_seconds(59), "59s");
+        assert_eq!(format_remaining_seconds(60), "1m");
+    }
+
+    #[test]
+    fn signup_json_never_contains_secrets_or_an_absolute_credentials_path() {
+        let outcome = SignupOutcome {
+            identity: serde_json::from_str(ME_BODY).unwrap(),
+            credentials_path: std::path::PathBuf::from("/Users/example/.arete/credentials.toml"),
+            created: true,
+            idempotent: Some(false),
+        };
+        let encoded = serde_json::to_string(&signup_json_payload(&outcome, "agent")).unwrap();
+
+        assert!(!encoded.contains("credential\""), "{encoded}");
+        assert!(!encoded.contains("idempotency"), "{encoded}");
+        assert!(!encoded.contains("/Users/example"), "{encoded}");
+        assert!(encoded.contains("starterGuidance"), "{encoded}");
+        assert!(encoded.contains("entitlementExpiresAt"), "{encoded}");
+    }
+
+    #[test]
+    fn credentials_lock_serializes_concurrent_signup_processes() {
+        let _sandbox = CredentialsSandbox::new();
+        let first = ApiClient::lock_credentials().expect("first lock");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let join = std::thread::spawn(move || {
+            let second = ApiClient::lock_credentials().expect("second lock");
+            sender.send(()).unwrap();
+            drop(second);
+        });
+
+        assert!(receiver
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err());
+        drop(first);
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("second process acquires the released lock");
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn generated_agent_credentials_match_the_server_contract() {
+        let credential = generate_agent_credential();
+        let body = credential.strip_prefix("a4_ak_").expect("agent prefix");
+        assert_eq!(body.len(), 40);
+        assert!(body.bytes().all(|byte| byte.is_ascii_alphanumeric()));
     }
 }

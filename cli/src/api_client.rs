@@ -139,6 +139,53 @@ fn write_credentials_atomic(path: &Path, content: &[u8]) -> Result<()> {
     result
 }
 
+fn read_credentials_value(path: &Path) -> Result<toml::Value> {
+    match fs::read_to_string(path) {
+        Ok(content) if content.is_empty() => Ok(toml::Value::Table(toml::map::Map::new())),
+        Ok(content) => toml::from_str(&content)
+            .context("Existing credentials file is malformed; refusing to replace it"),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            Ok(toml::Value::Table(toml::map::Map::new()))
+        }
+        Err(error) => Err(error).context("Failed to read existing credentials file"),
+    }
+}
+
+fn profile_table_mut<'a>(
+    credentials: &'a mut toml::Value,
+    profile: &str,
+) -> Result<&'a mut toml::map::Map<String, toml::Value>> {
+    credentials
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("Invalid credentials format"))?
+        .entry("profiles")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("Invalid profiles format"))?
+        .entry(profile)
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("Invalid profile `{profile}` format"))
+}
+
+fn url_value<'a>(
+    values: &'a toml::map::Map<String, toml::Value>,
+    api_url: &str,
+) -> Option<&'a toml::Value> {
+    if let Some(value) = values.get(api_url) {
+        return Some(value);
+    }
+    let wanted = normalize_api_url(api_url);
+    if let Some(value) = values.get(&wanted) {
+        return Some(value);
+    }
+    values
+        .iter()
+        .filter(|(url, _)| normalize_api_url(url) == wanted)
+        .min_by_key(|(url, _)| *url)
+        .map(|(_, value)| value)
+}
+
 /// Production API URL (used by default in release builds)
 #[cfg(not(feature = "local"))]
 const DEFAULT_API_URL: &str = "https://api.arete.run";
@@ -184,14 +231,23 @@ fn mask_api_key(api_key: &str) -> String {
 }
 
 fn remove_url_key(keys: &mut toml::map::Map<String, toml::Value>, api_url: &str) -> bool {
-    if keys.remove(api_url).is_some() {
-        return true;
+    take_url_value(keys, api_url).is_some()
+}
+
+fn take_url_value(
+    values: &mut toml::map::Map<String, toml::Value>,
+    api_url: &str,
+) -> Option<toml::Value> {
+    if let Some(value) = values.remove(api_url) {
+        return Some(value);
     }
     let wanted = normalize_api_url(api_url);
-    if wanted != api_url && keys.remove(&wanted).is_some() {
-        return true;
+    if wanted != api_url {
+        if let Some(value) = values.remove(&wanted) {
+            return Some(value);
+        }
     }
-    let mut candidates = keys
+    let mut candidates = values
         .keys()
         .filter(|url| normalize_api_url(url) == wanted)
         .cloned()
@@ -199,7 +255,48 @@ fn remove_url_key(keys: &mut toml::map::Map<String, toml::Value>, api_url: &str)
     candidates.sort();
     candidates
         .first()
-        .is_some_and(|candidate| keys.remove(candidate).is_some())
+        .and_then(|candidate| values.remove(candidate))
+}
+
+fn take_equivalent_url_values(
+    values: &mut toml::map::Map<String, toml::Value>,
+    api_url: &str,
+) -> Vec<(String, toml::Value)> {
+    let wanted = normalize_api_url(api_url);
+    let mut urls = values
+        .keys()
+        .filter(|url| normalize_api_url(url) == wanted)
+        .cloned()
+        .collect::<Vec<_>>();
+    urls.sort();
+    urls.into_iter()
+        .filter_map(|url| values.remove(&url).map(|value| (url, value)))
+        .collect()
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct PendingAgentSignup {
+    pub credential: String,
+    pub idempotency_key: String,
+}
+
+impl std::fmt::Debug for PendingAgentSignup {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingAgentSignup")
+            .field("credential", &"[REDACTED]")
+            .field("idempotency_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+fn validate_signup_idempotency_key(value: &str) -> Result<()> {
+    let parsed = uuid::Uuid::parse_str(value)
+        .context("Pending agent signup idempotency key is malformed")?;
+    if parsed.get_version_num() != 4 || parsed.to_string() != value {
+        anyhow::bail!("Pending agent signup idempotency key is malformed");
+    }
+    Ok(())
 }
 
 // DTOs matching backend models
@@ -2424,26 +2521,19 @@ fn registry_install_url(base_url: &str, path: &str, language: Option<&str>) -> S
 // Agent self-registration (WP9: `a4 auth signup`, `a4 doctor`)
 // ============================================================================
 
-/// Response from `POST /api/agents/signup`.
-#[derive(Clone, Serialize, Deserialize)]
+/// Response from `POST /api/agents/signup/v2`. The client-generated secret is
+/// deliberately absent from the response contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSignupResponse {
+    pub schema_version: u8,
     pub slug: String,
     pub display_name: String,
-    pub api_key: String,
-    #[serde(default)]
-    pub message: Option<String>,
-}
-
-impl std::fmt::Debug for AgentSignupResponse {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("AgentSignupResponse")
-            .field("slug", &self.slug)
-            .field("display_name", &self.display_name)
-            .field("api_key", &"[REDACTED]")
-            .field("message", &self.message)
-            .finish()
-    }
+    pub created_at: String,
+    pub plan: String,
+    pub entitlement_expires_at: String,
+    pub claim_state: String,
+    pub idempotent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2467,9 +2557,12 @@ pub struct AgentMeResponse {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AgentSignupRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     display_name: Option<&'a str>,
+    credential: &'a str,
+    idempotency_key: &'a str,
 }
 
 impl ApiClient {
@@ -2535,12 +2628,204 @@ impl ApiClient {
         Ok(CredentialsLock { file })
     }
 
-    /// Register this machine as an agent (unauthenticated).
-    pub fn agent_signup(&self, display_name: Option<&str>) -> Result<AgentSignupResponse> {
+    pub fn load_pending_agent_signup(
+        api_url: &str,
+        profile: &str,
+    ) -> Result<Option<PendingAgentSignup>> {
+        let profile = validate_profile_name(profile)?;
+        let path = Self::credentials_path()?;
+        ensure_safe_credentials_path(&path)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let credentials = read_credentials_value(&path)?;
+        let Some(entry) = credentials
+            .get("profiles")
+            .and_then(toml::Value::as_table)
+            .and_then(|profiles| profiles.get(profile))
+            .and_then(toml::Value::as_table)
+            .and_then(|profile| profile.get("pendingSignup"))
+            .and_then(toml::Value::as_table)
+            .and_then(|pending| url_value(pending, api_url))
+            .and_then(toml::Value::as_table)
+        else {
+            return Ok(None);
+        };
+        let credential = entry
+            .get("credential")
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Pending agent signup credential is malformed"))?;
+        let idempotency_key = entry
+            .get("idempotencyKey")
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Pending agent signup idempotency key is malformed"))?;
+        validate_key_for_profile(profile, credential)?;
+        validate_signup_idempotency_key(idempotency_key)?;
+        Ok(Some(PendingAgentSignup {
+            credential: credential.to_string(),
+            idempotency_key: idempotency_key.to_string(),
+        }))
+    }
+
+    pub fn save_pending_agent_signup(
+        api_url: &str,
+        profile: &str,
+        pending: &PendingAgentSignup,
+    ) -> Result<()> {
+        let profile = validate_profile_name(profile)?;
+        validate_key_for_profile(profile, &pending.credential)?;
+        validate_signup_idempotency_key(&pending.idempotency_key)?;
+        let path = Self::credentials_path()?;
+        ensure_safe_credentials_path(&path)?;
+        let mut credentials = read_credentials_value(&path)?;
+        let profile_table = profile_table_mut(&mut credentials, profile)?;
+        let pending_table = profile_table
+            .entry("pendingSignup")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("Invalid profile `{profile}` pending signup format"))?;
+        let mut entry = toml::map::Map::new();
+        entry.insert(
+            "credential".to_string(),
+            toml::Value::String(pending.credential.clone()),
+        );
+        entry.insert(
+            "idempotencyKey".to_string(),
+            toml::Value::String(pending.idempotency_key.clone()),
+        );
+        pending_table.insert(normalize_api_url(api_url), toml::Value::Table(entry));
+        let content = toml::to_string_pretty(&credentials)?;
+        write_credentials_atomic(&path, content.as_bytes())
+            .context("Failed to save pending agent signup")
+    }
+
+    pub fn clear_pending_agent_signup(api_url: &str, profile: &str) -> Result<()> {
+        let profile = validate_profile_name(profile)?;
+        let path = Self::credentials_path()?;
+        ensure_safe_credentials_path(&path)?;
+        if !path.exists() {
+            return Ok(());
+        }
+        let mut credentials = read_credentials_value(&path)?;
+        let removed = credentials
+            .get_mut("profiles")
+            .and_then(toml::Value::as_table_mut)
+            .and_then(|profiles| profiles.get_mut(profile))
+            .and_then(toml::Value::as_table_mut)
+            .and_then(|profile| profile.get_mut("pendingSignup"))
+            .and_then(toml::Value::as_table_mut)
+            .is_some_and(|pending| take_url_value(pending, api_url).is_some());
+        if removed {
+            if let Some(profile_table) = credentials
+                .get_mut("profiles")
+                .and_then(toml::Value::as_table_mut)
+                .and_then(|profiles| profiles.get_mut(profile))
+                .and_then(toml::Value::as_table_mut)
+            {
+                let pending_is_empty = profile_table
+                    .get("pendingSignup")
+                    .and_then(toml::Value::as_table)
+                    .is_some_and(toml::map::Map::is_empty);
+                if pending_is_empty {
+                    profile_table.remove("pendingSignup");
+                }
+            }
+            let content = toml::to_string_pretty(&credentials)?;
+            write_credentials_atomic(&path, content.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    /// Promote a verified pending credential in one atomic file replacement.
+    /// If active keys are replaced, retain local recovery copies under their
+    /// original URL spellings.
+    pub fn promote_pending_agent_signup(
+        api_url: &str,
+        profile: &str,
+        expected: &PendingAgentSignup,
+    ) -> Result<()> {
+        let profile = validate_profile_name(profile)?;
+        let path = Self::credentials_path()?;
+        ensure_safe_credentials_path(&path)?;
+        let mut credentials = read_credentials_value(&path)?;
+        let profile_table = profile_table_mut(&mut credentials, profile)?;
+        let pending_table = profile_table
+            .get_mut("pendingSignup")
+            .and_then(toml::Value::as_table_mut)
+            .ok_or_else(|| anyhow::anyhow!("Pending agent signup state is missing"))?;
+        let stored = take_url_value(pending_table, api_url)
+            .and_then(|value| value.as_table().cloned())
+            .ok_or_else(|| anyhow::anyhow!("Pending agent signup state is missing"))?;
+        if pending_table.is_empty() {
+            profile_table.remove("pendingSignup");
+        }
+        let stored_credential = stored
+            .get("credential")
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Pending agent signup credential is malformed"))?;
+        let stored_idempotency_key = stored
+            .get("idempotencyKey")
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Pending agent signup idempotency key is malformed"))?;
+        if stored_credential != expected.credential
+            || stored_idempotency_key != expected.idempotency_key
+        {
+            anyhow::bail!("Pending agent signup changed while it was being verified");
+        }
+
+        let target_url = normalize_api_url(api_url);
+        let old_keys = profile_table
+            .entry("keys")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("Invalid profile `{profile}` keys format"))
+            .map(|keys| {
+                let old = take_equivalent_url_values(keys, api_url);
+                keys.insert(
+                    target_url.clone(),
+                    toml::Value::String(expected.credential.clone()),
+                );
+                old
+            })?;
+        let old_keys = old_keys
+            .into_iter()
+            .filter(|(_, value)| {
+                value
+                    .as_str()
+                    .is_some_and(|value| value != expected.credential)
+            })
+            .collect::<Vec<_>>();
+        if !old_keys.is_empty() {
+            let backup_keys = profile_table
+                .entry("backupKeys")
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+                .as_table_mut()
+                .ok_or_else(|| anyhow::anyhow!("Invalid profile `{profile}` backup keys format"))?;
+            for (url, old_key) in old_keys {
+                backup_keys.insert(url, old_key);
+            }
+        }
+        let content = toml::to_string_pretty(&credentials)?;
+        write_credentials_atomic(&path, content.as_bytes())
+            .context("Failed to activate the verified agent credential")
+    }
+
+    /// Register this machine as an agent trial (unauthenticated).
+    pub fn agent_signup(
+        &self,
+        display_name: Option<&str>,
+        credential: &str,
+        idempotency_key: &str,
+    ) -> Result<AgentSignupResponse> {
         let response = self
             .client
-            .post(format!("{}/api/agents/signup", self.base_url))
-            .json(&AgentSignupRequest { display_name })
+            .post(format!("{}/api/agents/signup/v2", self.base_url))
+            .timeout(Duration::from_secs(30))
+            .json(&AgentSignupRequest {
+                display_name,
+                credential,
+                idempotency_key,
+            })
             .send()
             .context("Failed to reach the signup endpoint")?;
         Self::handle_response(response)
@@ -2552,6 +2837,7 @@ impl ApiClient {
         let response = self
             .client
             .get(format!("{}/api/agents/me", self.base_url))
+            .timeout(Duration::from_secs(30))
             .bearer_auth(api_key)
             .send()
             .context("Failed to fetch agent identity")?;
@@ -2832,41 +3118,55 @@ mod agent_tests {
     use super::test_support::MockServer;
     use super::*;
 
+    const CREDENTIAL: &str = "a4_ak_0123456789012345678901234567890123456789";
+    const IDEMPOTENCY_KEY: &str = "11111111-1111-4111-8111-111111111111";
+    const SIGNUP_RESPONSE: &str = r#"{"schemaVersion":1,"slug":"agent-7f3a","displayName":"Robo","createdAt":"2026-09-29T00:00:00Z","plan":"agent_trial","entitlementExpiresAt":"2026-10-06T00:00:00Z","claimState":"unclaimed","idempotent":false}"#;
+
     #[test]
     fn agent_signup_posts_display_name_without_auth_and_parses_response() {
-        let server = MockServer::json(
-            200,
-            r#"{"slug":"agent-7f3a","display_name":"Robo","api_key":"a4_ak_test","message":"welcome"}"#,
-        );
+        let server = MockServer::json(200, SIGNUP_RESPONSE);
         let client = ApiClient::with_base_url(server.base_url());
-        let resp = client.agent_signup(Some("Robo")).expect("signup succeeds");
+        let resp = client
+            .agent_signup(Some("Robo"), CREDENTIAL, IDEMPOTENCY_KEY)
+            .expect("signup succeeds");
         assert_eq!(resp.slug, "agent-7f3a");
         assert_eq!(resp.display_name, "Robo");
-        assert_eq!(resp.api_key, "a4_ak_test");
-        assert_eq!(resp.message.as_deref(), Some("welcome"));
+        assert_eq!(resp.plan, "agent_trial");
+        assert!(!resp.idempotent);
 
         let req = server.request();
-        assert_eq!(req.request_line, "POST /api/agents/signup HTTP/1.1");
+        assert_eq!(req.request_line, "POST /api/agents/signup/v2 HTTP/1.1");
         assert!(
             req.header("authorization").is_none(),
             "signup is unauthenticated"
         );
         let body: serde_json::Value = serde_json::from_str(&req.body).expect("json body");
-        assert_eq!(body, serde_json::json!({"display_name": "Robo"}));
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "displayName": "Robo",
+                "credential": CREDENTIAL,
+                "idempotencyKey": IDEMPOTENCY_KEY,
+            })
+        );
     }
 
     #[test]
-    fn agent_signup_omits_display_name_and_tolerates_missing_message() {
-        let server = MockServer::json(
-            201,
-            r#"{"slug":"agent-1","display_name":"agent-1","api_key":"a4_ak_x"}"#,
-        );
+    fn agent_signup_omits_display_name() {
+        let server = MockServer::json(201, SIGNUP_RESPONSE);
         let client = ApiClient::with_base_url(server.base_url());
-        let resp = client.agent_signup(None).expect("signup succeeds");
-        assert_eq!(resp.message, None);
+        client
+            .agent_signup(None, CREDENTIAL, IDEMPOTENCY_KEY)
+            .expect("signup succeeds");
         let req = server.request();
         let body: serde_json::Value = serde_json::from_str(&req.body).expect("json body");
-        assert_eq!(body, serde_json::json!({}));
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "credential": CREDENTIAL,
+                "idempotencyKey": IDEMPOTENCY_KEY,
+            })
+        );
     }
 
     #[test]
@@ -2876,7 +3176,9 @@ mod agent_tests {
             r#"{"schemaVersion":1,"error":"rate limited","code":"rate_limit_exceeded","retryable":true,"retryAfterSeconds":60}"#,
         );
         let client = ApiClient::with_base_url(server.base_url());
-        let err = client.agent_signup(None).expect_err("429 is an error");
+        let err = client
+            .agent_signup(None, CREDENTIAL, IDEMPOTENCY_KEY)
+            .expect_err("429 is an error");
         let api_error = err
             .downcast_ref::<ApiClientError>()
             .expect("typed API error");
@@ -2933,7 +3235,9 @@ mod agent_tests {
     fn agent_signup_other_errors_use_api_error_format() {
         let server = MockServer::json(500, r#"{"error":"boom"}"#);
         let client = ApiClient::with_base_url(server.base_url());
-        let err = client.agent_signup(None).expect_err("500 is an error");
+        let err = client
+            .agent_signup(None, CREDENTIAL, IDEMPOTENCY_KEY)
+            .expect_err("500 is an error");
         assert_eq!(
             err.to_string(),
             "API error (500 Internal Server Error): boom"
