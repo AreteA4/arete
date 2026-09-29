@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+## [0.26.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.25.1...a4-cli-v0.26.0) (2026-09-29)
+
+
+### Features
+
+* **explore:** attach curated field descriptions from catalog knowledge ([eaf6313](https://github.com/AreteA4/arete/commit/eaf63137cd5019f777900956df671e520c5ac567))
+* **explore:** attach curated field descriptions from catalog knowledge ([9c38a3a](https://github.com/AreteA4/arete/commit/9c38a3a6a4c6af7bc64b2170d09149fa2c5d7dd9))
+
+
+### Bug Fixes
+
+* **cli:** accept a portable `a4` in project MCP configs ([58e92df](https://github.com/AreteA4/arete/commit/58e92df3ef0f1a3954d338ba989768d935f77f5c))
+* **cli:** accept a portable `a4` in project MCP configs ([4b8eadf](https://github.com/AreteA4/arete/commit/4b8eadf187c5a46f38ac93f67cef21ecf168f106))
+* **cli:** accept the portable a4 only when it resolves on PATH ([bf1a3b7](https://github.com/AreteA4/arete/commit/bf1a3b7574bbf112f0664bc245f45062dd78718f))
+* **cli:** don't select the a4-not-on-PATH warning for --fix ([d4f1619](https://github.com/AreteA4/arete/commit/d4f1619a2034f59b15a9aa4222a71c727786c648))
+* **cli:** don't warn about agents that are only installed on the machine ([4f3e546](https://github.com/AreteA4/arete/commit/4f3e546810bd8fcc64ebff3866c9a2fbaeece22e))
+* **cli:** don't warn about agents that are only installed on the machine ([3050c25](https://github.com/AreteA4/arete/commit/3050c2534881d11b6c01d232788117e81d9ea319))
+* **cli:** keep a portable a4 in project configs when it is not on PATH ([34eeff7](https://github.com/AreteA4/arete/commit/34eeff7c697ee0e1bd1b7c688991b8741eac8e91))
+* **cli:** keep other installs' journals and report a failed staging cleanup ([5fba943](https://github.com/AreteA4/arete/commit/5fba94344b6ffcc406883f55e60a0614e8524770))
+* **cli:** remove the install staging tree when a commit is refused ([10ddb01](https://github.com/AreteA4/arete/commit/10ddb01af4fa9a7bd367ef74f6fb43388f23b7a7))
+* **cli:** remove the install staging tree when a commit is refused ([8f6b6ac](https://github.com/AreteA4/arete/commit/8f6b6ac0a29942c163976adc18bb88c22eedf7a8))
+* **cli:** report home-only agents' context files as information ([2932473](https://github.com/AreteA4/arete/commit/2932473dd5c6e5b82e073123c848a6a41ed1bc0f))
+* **explore:** skip the knowledge lookup where it cannot apply and bound it ([b2666d0](https://github.com/AreteA4/arete/commit/b2666d0f51dc039daef203d281dc67106acd373b))
+* **mcp:** attach schema guidance only for the StackManifest it describes ([cd6e011](https://github.com/AreteA4/arete/commit/cd6e0115add59e92f58acd981673b0f888054e5d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.25.1 to 0.26.0
+    * arete-mcp bumped from 0.25.1 to 0.26.0
+
 ## [0.25.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.25.0...a4-cli-v0.25.1) (2026-09-29)
 
 

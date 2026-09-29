@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.26.0](https://github.com/AreteA4/arete/compare/arete-python-v0.25.1...arete-python-v0.26.0) (2026-09-29)
+
+
+### Bug Fixes
+
+* **python:** keep a server's connection error message as sent ([1b1a37e](https://github.com/AreteA4/arete/commit/1b1a37edf8b4b53a62da50e321b38420f1a8abfe))
+* **python:** make get and get_one fail fast when the connection fails ([09a67d6](https://github.com/AreteA4/arete/commit/09a67d6a056543938aea800555417b4f0f7c4ef1))
+* **python:** make get and get_one fail fast when the connection fails ([e98a863](https://github.com/AreteA4/arete/commit/e98a86354d3973619edcad4ed3158d51dd63a2b6))
+
 ## [0.25.1](https://github.com/AreteA4/arete/compare/arete-python-v0.25.0...arete-python-v0.25.1) (2026-09-29)
 
 
