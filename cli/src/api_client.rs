@@ -258,9 +258,20 @@ fn take_url_value(
         .and_then(|candidate| values.remove(candidate))
 }
 
-fn remove_equivalent_url_values(values: &mut toml::map::Map<String, toml::Value>, api_url: &str) {
+fn take_equivalent_url_values(
+    values: &mut toml::map::Map<String, toml::Value>,
+    api_url: &str,
+) -> Vec<(String, toml::Value)> {
     let wanted = normalize_api_url(api_url);
-    values.retain(|url, _| normalize_api_url(url) != wanted);
+    let mut urls = values
+        .keys()
+        .filter(|url| normalize_api_url(url) == wanted)
+        .cloned()
+        .collect::<Vec<_>>();
+    urls.sort();
+    urls.into_iter()
+        .filter_map(|url| values.remove(&url).map(|value| (url, value)))
+        .collect()
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -2726,7 +2737,8 @@ impl ApiClient {
     }
 
     /// Promote a verified pending credential in one atomic file replacement.
-    /// If an active key is replaced, retain one local recovery copy.
+    /// If active keys are replaced, retain local recovery copies under their
+    /// original URL spellings.
     pub fn promote_pending_agent_signup(
         api_url: &str,
         profile: &str,
@@ -2762,31 +2774,36 @@ impl ApiClient {
         }
 
         let target_url = normalize_api_url(api_url);
-        let old_key = profile_table
+        let old_keys = profile_table
             .entry("keys")
             .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("Invalid profile `{profile}` keys format"))
             .map(|keys| {
-                let old = take_url_value(keys, api_url);
-                remove_equivalent_url_values(keys, api_url);
+                let old = take_equivalent_url_values(keys, api_url);
                 keys.insert(
                     target_url.clone(),
                     toml::Value::String(expected.credential.clone()),
                 );
                 old
             })?;
-        if let Some(old_key) = old_key.filter(|value| {
-            value
-                .as_str()
-                .is_some_and(|value| value != expected.credential)
-        }) {
-            profile_table
+        let old_keys = old_keys
+            .into_iter()
+            .filter(|(_, value)| {
+                value
+                    .as_str()
+                    .is_some_and(|value| value != expected.credential)
+            })
+            .collect::<Vec<_>>();
+        if !old_keys.is_empty() {
+            let backup_keys = profile_table
                 .entry("backupKeys")
                 .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
                 .as_table_mut()
-                .ok_or_else(|| anyhow::anyhow!("Invalid profile `{profile}` backup keys format"))?
-                .insert(target_url, old_key);
+                .ok_or_else(|| anyhow::anyhow!("Invalid profile `{profile}` backup keys format"))?;
+            for (url, old_key) in old_keys {
+                backup_keys.insert(url, old_key);
+            }
         }
         let content = toml::to_string_pretty(&credentials)?;
         write_credentials_atomic(&path, content.as_bytes())

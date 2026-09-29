@@ -1571,9 +1571,28 @@ mod signup_tests {
             "equivalent URL spellings must not retain a stale key"
         );
         let stored = std::fs::read_to_string(ApiClient::credentials_file_path().unwrap()).unwrap();
-        assert!(stored.contains("backupKeys"), "{stored}");
-        assert!(stored.contains("a4_ak_old"), "{stored}");
-        assert!(!stored.contains("a4_ak_stale"), "{stored}");
+        let credentials = stored.parse::<toml::Value>().unwrap();
+        let profile = credentials["profiles"]["agent"].as_table().unwrap();
+        let active_keys = profile["keys"].as_table().unwrap();
+        assert_eq!(active_keys.len(), 1, "{stored}");
+        assert_eq!(
+            active_keys.get(&api_url).and_then(toml::Value::as_str),
+            Some(replacement.as_str()),
+            "{stored}"
+        );
+        let backup_keys = profile["backupKeys"].as_table().unwrap();
+        assert_eq!(
+            backup_keys.get(&api_url).and_then(toml::Value::as_str),
+            Some("a4_ak_old"),
+            "{stored}"
+        );
+        assert_eq!(
+            backup_keys
+                .get(&format!("{api_url}/"))
+                .and_then(toml::Value::as_str),
+            Some("a4_ak_stale"),
+            "{stored}"
+        );
         let body: serde_json::Value =
             serde_json::from_str(&server.request().body).expect("json body");
         assert!(body.get("displayName").is_none());
