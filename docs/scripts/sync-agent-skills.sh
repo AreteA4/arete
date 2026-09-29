@@ -11,16 +11,23 @@ dest="$docs/public/.well-known/agent-skills"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+names=(arete arete-streams arete-programs arete-stack-authoring arete-deploy)
+mkdir -p "$tmp/source" "$tmp/staged"
 curl -fsSL "https://codeload.github.com/AreteA4/skills/tar.gz/$ref" |
-  tar -xz -C "$tmp" --strip-components=1
+  tar -xz -C "$tmp/source" --strip-components=1
 
-for name in arete arete-streams arete-programs arete-stack-authoring arete-deploy; do
-  [ -f "$tmp/skills/$name/SKILL.md" ] || {
+# Stage every skill before touching the published copies, so a missing
+# skill or a failed copy leaves them as they were.
+for name in "${names[@]}"; do
+  [ -f "$tmp/source/skills/$name/SKILL.md" ] || {
     echo "AreteA4/skills@$ref has no skills/$name/SKILL.md" >&2
     exit 1
   }
+  cp -R "$tmp/source/skills/$name" "$tmp/staged/$name"
+done
+for name in "${names[@]}"; do
   rm -rf "${dest:?}/$name"
-  cp -R "$tmp/skills/$name" "$dest/$name"
+  mv "$tmp/staged/$name" "$dest/$name"
 done
 
 node "$docs/scripts/pack-agent-skills.mjs"

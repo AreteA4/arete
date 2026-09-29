@@ -74,3 +74,26 @@ test("packAgentSkills writes a v0.2 index with digest-verified archives", async 
     );
   }
 });
+
+test("the published archives and index.json match the published skill trees", async () => {
+  const published = JSON.parse(
+    await readFile(join(PUBLIC_SKILLS, "index.json"), "utf8"),
+  );
+  const tmp = await mkdtemp(join(tmpdir(), "arete-skills-"));
+  await cp(PUBLIC_SKILLS, tmp, { recursive: true });
+  const repacked = await packAgentSkills(tmp);
+
+  assert.deepEqual(
+    published,
+    repacked,
+    "index.json is stale: run `npm run sync-skills` or `node scripts/pack-agent-skills.mjs`",
+  );
+  for (const entry of published.skills) {
+    const archive = await readFile(join(PUBLIC_SKILLS, `${entry.name}.tar.gz`));
+    assert.equal(
+      sha256Digest(archive),
+      entry.digest,
+      `${entry.name}.tar.gz does not match its index.json digest`,
+    );
+  }
+});
