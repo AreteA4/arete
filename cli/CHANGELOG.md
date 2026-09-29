@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## [0.25.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.25.0...a4-cli-v0.25.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* **cli:** let a4 stack compose --install choose the SDK target ([88949db](https://github.com/AreteA4/arete/commit/88949db9f2720bac0798275bb15e7502fc5bdf26))
+* **cli:** let a4 stack compose --install choose the SDK target ([53d7253](https://github.com/AreteA4/arete/commit/53d72537d7a2c1f08842a8146ea2285df38036e7))
+* **cli:** name extension types through their modules in TypeScript entries ([ddfcc54](https://github.com/AreteA4/arete/commit/ddfcc549175506dc021b6f422039e35297b75ba5))
+* **cli:** remove the SDK output a dependency no longer generates ([9e73c41](https://github.com/AreteA4/arete/commit/9e73c411d01937d039e386cdded06d79ed76f2e5))
+* **cli:** suggest an SDK target in the a4 up hint for an uninstalled composed stack ([7aaee28](https://github.com/AreteA4/arete/commit/7aaee28e422c8081a9f7e2449475daa0b95dda7f))
+* **cli:** suggest ES modules only where package.json decides, including inherited tsconfig settings ([ededabe](https://github.com/AreteA4/arete/commit/ededabe9395125695f5fd768897914d03ce6d427))
+* **cli:** tell TypeScript installs into CommonJS packages to use ES modules ([fb7781c](https://github.com/AreteA4/arete/commit/fb7781c7755664f405ece60ce0e379152876c3be))
+* generated TypeScript compiles under tsc --init defaults ([b8aba03](https://github.com/AreteA4/arete/commit/b8aba03d1436be844697ac3d016cdf1e5d894f2d))
+* **interpreter:** let semantic decimals overrides be passed on as undefined ([5976ec2](https://github.com/AreteA4/arete/commit/5976ec232c887c058b677c942d02ce448191a45a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.25.0 to 0.25.1
+    * arete-mcp bumped from 0.25.0 to 0.25.1
+
 ## [0.25.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.24.0...a4-cli-v0.25.0) (2026-09-28)
 
 

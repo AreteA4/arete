@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.25.1](https://github.com/AreteA4/arete/compare/arete-react-v0.25.0...arete-react-v0.25.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* **react:** resolve attached programs before connecting as the client does ([2a454a2](https://github.com/AreteA4/arete/commit/2a454a2391d133ec545f5bf95238433e1d7fbd04))
+* **react:** serve program addresses and PDAs before the client connects ([2a825f0](https://github.com/AreteA4/arete/commit/2a825f0877f544a5e90a39c7ef5e62c17431107a))
+* **react:** serve program addresses and PDAs before the client connects ([2a46db0](https://github.com/AreteA4/arete/commit/2a46db09c3d18eaea6f2d8fa206b376104d2c4ca))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.25.0 to ^0.25.1
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.25.0 to ^0.25.1
+
 ## [0.25.0](https://github.com/AreteA4/arete/compare/arete-react-v0.24.0...arete-react-v0.25.0) (2026-09-28)
 
 

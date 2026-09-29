@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.25.1](https://github.com/AreteA4/arete/compare/a4-npm-v0.25.0...a4-npm-v0.25.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* **npm:** run project installs through the installed binary ([121b753](https://github.com/AreteA4/arete/commit/121b753bf2923ec86a32823e55fd1a0bc81e12c9))
+* **npm:** run project installs through the installed binary ([7469180](https://github.com/AreteA4/arete/commit/7469180361016ec5593a86016de5a9a30403d588))
+
 ## [0.25.0](https://github.com/AreteA4/arete/compare/a4-npm-v0.24.0...a4-npm-v0.25.0) (2026-09-28)
 
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.25.1](https://github.com/AreteA4/arete/compare/arete-typescript-v0.25.0...arete-typescript-v0.25.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* generated TypeScript compiles under tsc --init defaults ([b8aba03](https://github.com/AreteA4/arete/commit/b8aba03d1436be844697ac3d016cdf1e5d894f2d))
+* **sdk:** accept explicit undefined in extension results and inputs ([70dbc9d](https://github.com/AreteA4/arete/commit/70dbc9df78902f0587119dc82e44cd19e2bd2a53))
+* **sdk:** fail a waiting view get() when the connection fails ([cc5480e](https://github.com/AreteA4/arete/commit/cc5480e742f73bb6b9743b5cfcc762f0862eb08a))
+* **sdk:** wait for the snapshot in view get() and add getOne ([4fe5c3c](https://github.com/AreteA4/arete/commit/4fe5c3ca60cf2381aef2abfc99e89befe64e35ee))
+* **sdk:** wait for the snapshot in view get() and add getOne ([23a40cd](https://github.com/AreteA4/arete/commit/23a40cd8e7f81cdd02722924397e41ef554fea75))
+
 ## [0.25.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.24.0...arete-typescript-v0.25.0) (2026-09-28)
 
 
