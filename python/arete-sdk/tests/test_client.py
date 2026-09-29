@@ -11,7 +11,7 @@ import pytest
 
 from arete.chain import HttpChainClient
 from arete.client import Arete, validate_program_reads
-from arete.errors import AreteError
+from arete.errors import AreteConnectionError, AreteError
 from arete.gateway import (
     HostedSolanaGatewayBindings,
     HostedSolanaGatewayCapabilityBinding,
@@ -210,6 +210,53 @@ class TestConnectLifecycle:
         async with await Arete.connect(make_stack(), connect_factory=factory) as a4:
             assert a4.is_connected()
         assert not a4.is_connected()
+
+    async def test_get_raises_the_socket_failure_instead_of_timing_out(self):
+        async def refuse(url, headers):
+            raise OSError("connection refused")
+
+        a4 = await Arete.connect(
+            make_stack(), auto_connect=False, connect_factory=refuse
+        )
+        pending = asyncio.create_task(a4.views.ore_round.latest.get(timeout=None))
+        await asyncio.sleep(0)
+        with pytest.raises(AreteError):
+            await a4.connect_socket()
+
+        with pytest.raises(AreteConnectionError) as excinfo:
+            await asyncio.wait_for(pending, TIMEOUT)
+        assert excinfo.value.code == "CONNECTION_ERROR"
+        assert excinfo.value.message == "Failed to create WebSocket connection"
+        await a4.disconnect()
+
+    async def test_get_keeps_a_fatal_server_message_as_sent(self):
+        factory = FakeConnectFactory()
+        a4 = await Arete.connect(make_stack(), connect_factory=factory)
+        pending = asyncio.create_task(a4.views.ore_round.latest.get(timeout=None))
+        await asyncio.sleep(0)
+        factory.sockets[0].push({
+            "type": "error",
+            "code": "internal-error",
+            "message": "[CONNECTION_ERROR] upstream unavailable",
+            "fatal": True,
+        })
+
+        with pytest.raises(AreteConnectionError) as excinfo:
+            await asyncio.wait_for(pending, TIMEOUT)
+        assert excinfo.value.code == "CONNECTION_ERROR"
+        assert excinfo.value.message == "[CONNECTION_ERROR] upstream unavailable"
+        await a4.disconnect()
+
+    async def test_disconnect_cancels_a_pending_get(self):
+        factory = FakeConnectFactory()
+        a4 = await Arete.connect(make_stack(), connect_factory=factory)
+        pending = asyncio.create_task(a4.views.ore_round.latest.get(timeout=None))
+        await asyncio.sleep(0)
+        await a4.disconnect()
+
+        with pytest.raises(AreteConnectionError) as excinfo:
+            await asyncio.wait_for(pending, TIMEOUT)
+        assert excinfo.value.code == "CONNECTION_CANCELLED"
 
     async def test_connection_state_hook(self):
         factory = FakeConnectFactory()
