@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.26.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.25.1...arete-mcp-v0.26.0) (2026-09-29)
+
+
+### Features
+
+* **explore:** attach curated field descriptions from catalog knowledge ([eaf6313](https://github.com/AreteA4/arete/commit/eaf63137cd5019f777900956df671e520c5ac567))
+* **explore:** attach curated field descriptions from catalog knowledge ([9c38a3a](https://github.com/AreteA4/arete/commit/9c38a3a6a4c6af7bc64b2170d09149fa2c5d7dd9))
+
+
+### Bug Fixes
+
+* **explore:** skip the knowledge lookup where it cannot apply and bound it ([b2666d0](https://github.com/AreteA4/arete/commit/b2666d0f51dc039daef203d281dc67106acd373b))
+* **mcp:** attach schema guidance only for the StackManifest it describes ([cd6e011](https://github.com/AreteA4/arete/commit/cd6e0115add59e92f58acd981673b0f888054e5d))
+
 ## [0.25.1](https://github.com/AreteA4/arete/compare/arete-mcp-v0.25.0...arete-mcp-v0.25.1) (2026-09-29)
 
 
