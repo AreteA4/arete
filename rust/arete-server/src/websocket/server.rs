@@ -58,6 +58,10 @@ struct WsMetrics {
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct DeliveryProbe {
+    /// `arete.ws.connections.active`, by metering key
+    pub(crate) active_connections: std::sync::Mutex<std::collections::BTreeMap<String, i64>>,
+    /// `arete.ws.subscriptions.active`, by view and metering key
+    pub(crate) active_subscriptions: std::sync::Mutex<std::collections::BTreeMap<String, i64>>,
     /// `arete.ws.messages.sent`
     pub(crate) messages_sent: std::sync::atomic::AtomicU64,
     /// `arete.ws.subscription.lagged`
@@ -79,6 +83,18 @@ impl DeliveryProbe {
     fn add(counter: &std::sync::atomic::AtomicU64, value: u64) {
         counter.fetch_add(value, std::sync::atomic::Ordering::Relaxed);
     }
+
+    fn add_active(
+        counts: &std::sync::Mutex<std::collections::BTreeMap<String, i64>>,
+        key: String,
+        delta: i64,
+    ) {
+        *counts
+            .lock()
+            .expect("delivery probe lock poisoned")
+            .entry(key)
+            .or_default() += delta;
+    }
 }
 
 impl WsMetrics {
@@ -99,6 +115,14 @@ impl WsMetrics {
     }
 
     fn connection_opened(&self, metering_key: Option<&str>) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add_active(
+                &probe.active_connections,
+                metering_key.unwrap_or("<none>").to_string(),
+                1,
+            )
+        });
         #[cfg(not(feature = "otel"))]
         let _ = metering_key;
         #[cfg(feature = "otel")]
@@ -112,6 +136,14 @@ impl WsMetrics {
     }
 
     fn connection_closed(&self, duration_secs: f64, metering_key: Option<&str>) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add_active(
+                &probe.active_connections,
+                metering_key.unwrap_or("<none>").to_string(),
+                -1,
+            )
+        });
         #[cfg(not(feature = "otel"))]
         let _ = (duration_secs, metering_key);
         #[cfg(feature = "otel")]
@@ -147,6 +179,14 @@ impl WsMetrics {
     }
 
     fn subscription_created(&self, view: &str, metering_key: Option<&str>) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add_active(
+                &probe.active_subscriptions,
+                format!("{view}|{}", metering_key.unwrap_or("<none>")),
+                1,
+            )
+        });
         #[cfg(not(feature = "otel"))]
         let _ = (view, metering_key);
         #[cfg(feature = "otel")]
@@ -160,6 +200,14 @@ impl WsMetrics {
     }
 
     fn subscription_removed(&self, view: &str, metering_key: Option<&str>) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add_active(
+                &probe.active_subscriptions,
+                format!("{view}|{}", metering_key.unwrap_or("<none>")),
+                -1,
+            )
+        });
         #[cfg(not(feature = "otel"))]
         let _ = (view, metering_key);
         #[cfg(feature = "otel")]
@@ -798,7 +846,15 @@ async fn handle_connection(
     let connection_start = Instant::now();
     let (mut usage_identity, mut deployment_id) = usage_identity_from_context(Some(&auth_context));
     let mut metering_key = usage_identity.metering_key.clone();
-    context.metrics.connection_opened(metering_key.as_deref());
+    // Active gauges must be decremented with the same attributes used for
+    // their increment. The signed usage identity may legitimately move to a
+    // claimed owner's account during an in-band refresh, but that must not
+    // leave the original account's active count stuck or make the new one
+    // negative when this connection closes.
+    let connection_metrics_metering_key = metering_key.clone();
+    context
+        .metrics
+        .connection_opened(connection_metrics_metering_key.as_deref());
 
     let (ws_sender, mut ws_receiver) = ws_stream.split();
     context
@@ -814,7 +870,7 @@ async fn handle_connection(
         },
     );
 
-    let mut active_subscriptions: HashMap<String, String> = HashMap::new();
+    let mut active_subscriptions: HashMap<String, ActiveSubscription> = HashMap::new();
     loop {
         let message = tokio::select! {
             _ = context.shutdown.cancelled() => break,
@@ -955,7 +1011,13 @@ async fn handle_connection(
                     continue;
                 }
 
-                active_subscriptions.insert(subscription_id, view.clone());
+                active_subscriptions.insert(
+                    subscription_id,
+                    ActiveSubscription {
+                        view: view.clone(),
+                        metrics_metering_key: metering_key.clone(),
+                    },
+                );
                 context
                     .metrics
                     .subscription_created(&view, metering_key.as_deref());
@@ -974,7 +1036,6 @@ async fn handle_connection(
                     &context,
                     unsubscription,
                     &mut active_subscriptions,
-                    metering_key.as_deref(),
                     &deployment_id,
                     &usage_identity,
                 )
@@ -1005,24 +1066,25 @@ async fn handle_connection(
     if let Some(rate_limiter) = context.client_manager.rate_limiter().cloned() {
         rate_limiter.remove_client_buckets(client_id).await;
     }
-    for view in active_subscriptions.values() {
-        context
-            .metrics
-            .subscription_removed(view, metering_key.as_deref());
+    for subscription in active_subscriptions.values() {
+        context.metrics.subscription_removed(
+            &subscription.view,
+            subscription.metrics_metering_key.as_deref(),
+        );
         emit_usage_event(
             &context.usage_emitter,
             WebSocketUsageEvent::SubscriptionRemoved {
                 client_id: client_id.to_string(),
                 deployment_id: deployment_id.clone(),
                 identity: usage_identity.clone(),
-                view_id: view.clone(),
+                view_id: subscription.view.clone(),
             },
         );
     }
     let duration = connection_start.elapsed().as_secs_f64();
     context
         .metrics
-        .connection_closed(duration, metering_key.as_deref());
+        .connection_closed(duration, connection_metrics_metering_key.as_deref());
     emit_usage_event(
         &context.usage_emitter,
         WebSocketUsageEvent::ConnectionClosed {
@@ -1036,12 +1098,17 @@ async fn handle_connection(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+struct ActiveSubscription {
+    view: String,
+    /// Attribute set used for the active-gauge increment. It is immutable
+    /// even if a later token refresh moves usage to another billing account.
+    metrics_metering_key: Option<String>,
+}
+
 async fn handle_unsubscribe(
     context: &SubscriptionContext,
     unsubscription: Unsubscription,
-    active_subscriptions: &mut HashMap<String, String>,
-    metrics_metering_key: Option<&str>,
+    active_subscriptions: &mut HashMap<String, ActiveSubscription>,
     deployment_id: &Option<String>,
     usage_identity: &UsageIdentity,
 ) {
@@ -1076,20 +1143,25 @@ async fn handle_unsubscribe(
         return;
     }
 
-    let Some(view) = active_subscriptions.remove(&subscription_id) else {
+    let Some(subscription) = active_subscriptions.remove(&subscription_id) else {
         return;
     };
-    let _ = send_control_frame(context, &UnsubscribedFrame::new(subscription_id), &view);
-    context
-        .metrics
-        .subscription_removed(&view, metrics_metering_key);
+    let _ = send_control_frame(
+        context,
+        &UnsubscribedFrame::new(subscription_id),
+        &subscription.view,
+    );
+    context.metrics.subscription_removed(
+        &subscription.view,
+        subscription.metrics_metering_key.as_deref(),
+    );
     emit_usage_event(
         &context.usage_emitter,
         WebSocketUsageEvent::SubscriptionRemoved {
             client_id: context.client_id.to_string(),
             deployment_id: deployment_id.clone(),
             identity: usage_identity.clone(),
-            view_id: view,
+            view_id: subscription.view,
         },
     );
 }
@@ -4951,6 +5023,7 @@ mod tests {
             addr: SocketAddr,
             signer: TokenSigner,
             usage: Arc<RecordingUsageEmitter>,
+            metrics: Arc<DeliveryProbe>,
         }
 
         impl Server {
@@ -4971,12 +5044,15 @@ mod tests {
                 )
                 .with_auth_plugin(Arc::new(SignedSessionAuthPlugin::new(verifier)))
                 .with_usage_emitter(usage.clone());
+                let metrics = Arc::new(DeliveryProbe::default());
                 let (acceptor, _cleanup) = server.into_acceptor();
+                let acceptor = acceptor.with_delivery_probe(metrics.clone());
                 tokio::spawn(async move { acceptor.serve_listener(listener).await });
                 Self {
                     addr,
                     signer: TokenSigner::new(signing_key, "test-issuer"),
                     usage,
+                    metrics,
                 }
             }
 
@@ -5138,6 +5214,13 @@ mod tests {
             .await
             .expect("connection close usage event");
             assert_eq!(account, "account:2");
+            let active = server
+                .metrics
+                .active_connections
+                .lock()
+                .expect("delivery probe lock poisoned");
+            assert_eq!(active.get("account:1"), Some(&0));
+            assert_eq!(active.get("account:2"), None);
         }
     }
 }
