@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, Instant, MissedTickBehavior};
 use tracing::{debug, error, warn};
 use uuid::Uuid;
@@ -102,6 +102,9 @@ pub struct WebSocketUsageBatch {
 #[async_trait]
 pub trait WebSocketUsageEmitter: Send + Sync {
     async fn emit(&self, event: WebSocketUsageEvent);
+
+    /// Finish or durably preserve every event accepted before this call.
+    async fn shutdown(&self) {}
 }
 
 #[derive(Clone)]
@@ -123,7 +126,12 @@ impl WebSocketUsageEmitter for ChannelUsageEmitter {
 }
 
 pub struct HttpUsageEmitter {
-    sender: mpsc::UnboundedSender<WebSocketUsageEvent>,
+    sender: mpsc::UnboundedSender<UsageEmitterCommand>,
+}
+
+enum UsageEmitterCommand {
+    Event(WebSocketUsageEvent),
+    Shutdown(oneshot::Sender<()>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -207,7 +215,7 @@ impl HttpUsageEmitter {
         spool_dir: Option<PathBuf>,
         build_id: Option<String>,
     ) -> Self {
-        let (sender, mut receiver) = mpsc::unbounded_channel::<WebSocketUsageEvent>();
+        let (sender, mut receiver) = mpsc::unbounded_channel::<UsageEmitterCommand>();
         let client = reqwest::Client::new();
 
         tokio::spawn(async move {
@@ -224,9 +232,9 @@ impl HttpUsageEmitter {
 
             loop {
                 tokio::select! {
-                    maybe_event = receiver.recv() => {
-                        match maybe_event {
-                            Some(event) => {
+                    maybe_command = receiver.recv() => {
+                        match maybe_command {
+                            Some(UsageEmitterCommand::Event(event)) => {
                                 pending.push(WebSocketUsageEnvelope {
                                     event_id: Uuid::new_v4().to_string(),
                                     occurred_at_ms: current_time_ms(),
@@ -245,6 +253,19 @@ impl HttpUsageEmitter {
                                         batch_size,
                                     ).await;
                                 }
+                            }
+                            Some(UsageEmitterCommand::Shutdown(done)) => {
+                                flush_on_shutdown(
+                                    &client,
+                                    &endpoint,
+                                    auth_token.as_deref(),
+                                    &mut pending,
+                                    &mut retry_state,
+                                    spool_dir.as_deref(),
+                                    batch_size,
+                                ).await;
+                                let _ = done.send(());
+                                break;
                             }
                             None => {
                                 flush_on_shutdown(
@@ -344,8 +365,19 @@ fn validate_build_id(value: String) -> Result<String, InvalidUsageBuildId> {
 #[async_trait]
 impl WebSocketUsageEmitter for HttpUsageEmitter {
     async fn emit(&self, event: WebSocketUsageEvent) {
-        if let Err(error) = self.sender.send(event) {
+        if let Err(error) = self.sender.send(UsageEmitterCommand::Event(event)) {
             warn!(error = %error, "failed to queue websocket usage event");
+        }
+    }
+
+    async fn shutdown(&self) {
+        let (done, completed) = oneshot::channel();
+        if self
+            .sender
+            .send(UsageEmitterCommand::Shutdown(done))
+            .is_ok()
+        {
+            let _ = completed.await;
         }
     }
 }
@@ -433,22 +465,34 @@ async fn flush_on_shutdown(
     spool_dir: Option<&Path>,
     batch_size: usize,
 ) {
+    if let Some(dir) = spool_dir {
+        // The runtime explicitly awaits this shutdown path, but process-level
+        // termination still has a bounded grace period. Persist first so no
+        // accepted event depends on completing a sequence of HTTP requests.
+        if let Some(state) = retry_state.take() {
+            if let Err(error) = spool_retry_state(dir, &state) {
+                warn!(error = %error, count = state.batch.events.len(), "failed to spool websocket usage retry during shutdown");
+            }
+        }
+        while !pending.is_empty() {
+            let batch = take_pending_batch(pending, batch_size);
+            if let Err(error) = spool_batch(dir, &batch) {
+                warn!(error = %error, count = batch.events.len(), "failed to spool pending websocket usage batch during shutdown");
+            }
+        }
+        return;
+    }
+
     loop {
         if let Some(state) = retry_state.take() {
             if let Err(retry_state_failed) =
                 flush_existing_batch(client, endpoint, auth_token, state).await
             {
-                if let Some(dir) = spool_dir {
-                    if let Err(error) = spool_retry_state(dir, &retry_state_failed) {
-                        warn!(error = %error, count = retry_state_failed.batch.events.len(), "failed to spool websocket usage batch during shutdown");
-                    }
-                } else {
-                    warn!(
-                        count = retry_state_failed.batch.events.len(),
-                        attempts = retry_state_failed.attempts,
-                        "dropping websocket usage batch during shutdown after failed retry"
-                    );
-                }
+                warn!(
+                    count = retry_state_failed.batch.events.len(),
+                    attempts = retry_state_failed.attempts,
+                    "dropping websocket usage batch during shutdown after failed retry"
+                );
                 break;
             }
             continue;
@@ -464,26 +508,17 @@ async fn flush_on_shutdown(
             auth_token,
             pending,
             retry_state,
-            spool_dir,
+            None,
             batch_size,
         )
         .await;
     }
 
     if !pending.is_empty() {
-        if let Some(dir) = spool_dir {
-            while !pending.is_empty() {
-                let batch = take_pending_batch(pending, batch_size);
-                if let Err(error) = spool_batch(dir, &batch) {
-                    warn!(error = %error, count = batch.events.len(), "failed to spool pending websocket usage batch during shutdown");
-                }
-            }
-        } else {
-            warn!(
-                count = pending.len(),
-                "dropping pending websocket usage events during shutdown without spool directory"
-            );
-        }
+        warn!(
+            count = pending.len(),
+            "dropping pending websocket usage events during shutdown without spool directory"
+        );
     }
 }
 
@@ -853,6 +888,52 @@ mod tests {
                 vec!["evt-5".to_string()],
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_persists_every_chunk_before_network_drain_when_spooling() {
+        let dir = temp_spool_dir();
+        let client = reqwest::Client::new();
+        let mut pending = (1..=5).map(usage_envelope).collect::<Vec<_>>();
+        let mut retry_state = Some(RetryState {
+            batch: WebSocketUsageBatch {
+                events: vec![usage_envelope(0)],
+            },
+            attempts: 1,
+            next_retry_at: Instant::now(),
+        });
+
+        flush_on_shutdown(
+            &client,
+            "http://127.0.0.1:1/unreachable",
+            None,
+            &mut pending,
+            &mut retry_state,
+            Some(&dir),
+            2,
+        )
+        .await;
+
+        assert!(pending.is_empty());
+        assert!(retry_state.is_none());
+        let mut event_ids = Vec::new();
+        let mut batch_sizes = Vec::new();
+        for entry in fs::read_dir(&dir).expect("spool directory should be readable") {
+            let batch = load_batch_from_file(&entry.unwrap().path()).expect("spool should load");
+            batch_sizes.push(batch.events.len());
+            event_ids.extend(batch.events.into_iter().map(|event| event.event_id));
+        }
+        batch_sizes.sort_unstable();
+        event_ids.sort();
+        assert_eq!(batch_sizes, vec![1, 1, 2, 2]);
+        assert_eq!(
+            event_ids,
+            (0..=5)
+                .map(|index| format!("evt-{index}"))
+                .collect::<Vec<_>>()
+        );
+
+        fs::remove_dir_all(dir).expect("temp dir should be removed");
     }
 
     #[test]

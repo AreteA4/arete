@@ -568,6 +568,7 @@ impl Runtime {
             background,
             acceptor,
             entity_cache: entity_cache_handle,
+            websocket_usage_emitter: self.websocket_usage_emitter,
             http_shutdown,
             http_health_thread,
         })
@@ -594,6 +595,7 @@ pub struct RuntimeHandle {
     background: Vec<JoinHandle<()>>,
     acceptor: Option<ConnectionAcceptor>,
     entity_cache: Option<EntityCache>,
+    websocket_usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
     http_shutdown: CancellationToken,
     http_health_thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -624,6 +626,10 @@ const SESSION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long `shutdown` lets the projector drain queued batches after the
 /// producers have stopped.
 const PROJECTOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long `shutdown` waits for accepted usage events to reach the API or
+/// durable spool storage.
+const USAGE_EMITTER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Bound on the final snapshot, chosen to fit inside the platform's
 /// termination grace period.
@@ -769,6 +775,18 @@ impl RuntimeHandle {
                 warn!(
                     "Sessions did not finish within {:?} of shutdown",
                     SESSION_DRAIN_TIMEOUT
+                );
+            }
+        }
+
+        if let Some(emitter) = self.websocket_usage_emitter.take() {
+            if tokio::time::timeout(USAGE_EMITTER_SHUTDOWN_TIMEOUT, emitter.shutdown())
+                .await
+                .is_err()
+            {
+                warn!(
+                    "WebSocket usage emitter did not shut down within {:?}",
+                    USAGE_EMITTER_SHUTDOWN_TIMEOUT
                 );
             }
         }
