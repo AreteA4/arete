@@ -268,8 +268,11 @@ impl HttpUsageEmitter {
                                     auth_token.as_deref(),
                                     &mut pending,
                                     &mut retry_state,
-                                    spool_dir.as_deref(),
-                                    batch_size,
+                                    LifecycleFlushOptions {
+                                        spool_dir: spool_dir.as_deref(),
+                                        batch_size,
+                                        preserve_failed_for_retry: true,
+                                    },
                                 ).await;
                                 let _ = done.send(());
                             }
@@ -280,8 +283,11 @@ impl HttpUsageEmitter {
                                     auth_token.as_deref(),
                                     &mut pending,
                                     &mut retry_state,
-                                    spool_dir.as_deref(),
-                                    batch_size,
+                                    LifecycleFlushOptions {
+                                        spool_dir: spool_dir.as_deref(),
+                                        batch_size,
+                                        preserve_failed_for_retry: false,
+                                    },
                                 ).await;
                                 let _ = done.send(());
                                 break;
@@ -293,8 +299,11 @@ impl HttpUsageEmitter {
                                     auth_token.as_deref(),
                                     &mut pending,
                                     &mut retry_state,
-                                    spool_dir.as_deref(),
-                                    batch_size,
+                                    LifecycleFlushOptions {
+                                        spool_dir: spool_dir.as_deref(),
+                                        batch_size,
+                                        preserve_failed_for_retry: false,
+                                    },
                                 ).await;
                                 break;
                             }
@@ -478,23 +487,29 @@ async fn flush_pending_batch(
     }
 }
 
-/// Exhaust every bounded in-memory batch before the emitter exits.
+/// Exhaust every bounded in-memory batch for a flush barrier or shutdown.
 ///
 /// A recovered retry can leave several batches queued behind it. Shutdown must
 /// continue after that retry succeeds instead of sending only one more chunk
 /// and dropping the rest when no spool directory is configured. On the first
 /// failed shutdown retry, preserve the failed and not-yet-attempted batches on
-/// disk when possible.
+/// disk when possible. A flush barrier that cannot persist its events keeps
+/// the failed batch in memory because the worker remains alive to retry it.
+struct LifecycleFlushOptions<'a> {
+    spool_dir: Option<&'a Path>,
+    batch_size: usize,
+    preserve_failed_for_retry: bool,
+}
+
 async fn flush_on_shutdown(
     client: &reqwest::Client,
     endpoint: &str,
     auth_token: Option<&str>,
     pending: &mut Vec<WebSocketUsageEnvelope>,
     retry_state: &mut Option<RetryState>,
-    spool_dir: Option<&Path>,
-    batch_size: usize,
+    options: LifecycleFlushOptions<'_>,
 ) {
-    if let Some(dir) = spool_dir {
+    if let Some(dir) = options.spool_dir {
         // The runtime explicitly awaits this shutdown path, but process-level
         // termination still has a bounded grace period. Persist first so no
         // accepted event depends on completing a sequence of HTTP requests.
@@ -502,6 +517,15 @@ async fn flush_on_shutdown(
             if let Err(error) = spool_retry_state(dir, &state) {
                 warn!(error = %error, count = state.batch.events.len(), "failed to spool websocket usage retry during shutdown");
                 if !flush_batch(client, endpoint, auth_token, &state.batch).await {
+                    if options.preserve_failed_for_retry {
+                        warn!(
+                            count = state.batch.events.len(),
+                            attempts = state.attempts,
+                            "websocket usage flush failed; retaining batch for retry"
+                        );
+                        *retry_state = Some(state);
+                        return;
+                    }
                     error!(
                         count = state.batch.events.len(),
                         "failed to deliver websocket usage retry after shutdown spool failure"
@@ -510,10 +534,23 @@ async fn flush_on_shutdown(
             }
         }
         while !pending.is_empty() {
-            let batch = take_pending_batch(pending, batch_size);
+            let batch = take_pending_batch(pending, options.batch_size);
             if let Err(error) = spool_batch(dir, &batch) {
                 warn!(error = %error, count = batch.events.len(), "failed to spool pending websocket usage batch during shutdown");
                 if !flush_batch(client, endpoint, auth_token, &batch).await {
+                    if options.preserve_failed_for_retry {
+                        let state = RetryState {
+                            batch,
+                            attempts: 1,
+                            next_retry_at: Instant::now() + retry_delay(1),
+                        };
+                        warn!(
+                            count = state.batch.events.len(),
+                            "websocket usage flush failed; retaining batch for retry"
+                        );
+                        *retry_state = Some(state);
+                        return;
+                    }
                     error!(
                         count = batch.events.len(),
                         "failed to deliver pending websocket usage after shutdown spool failure"
@@ -529,6 +566,15 @@ async fn flush_on_shutdown(
             if let Err(retry_state_failed) =
                 flush_existing_batch(client, endpoint, auth_token, state).await
             {
+                if options.preserve_failed_for_retry {
+                    warn!(
+                        count = retry_state_failed.batch.events.len(),
+                        attempts = retry_state_failed.attempts,
+                        "websocket usage flush failed; retaining batch for retry"
+                    );
+                    *retry_state = Some(retry_state_failed);
+                    return;
+                }
                 warn!(
                     count = retry_state_failed.batch.events.len(),
                     attempts = retry_state_failed.attempts,
@@ -550,7 +596,7 @@ async fn flush_on_shutdown(
             pending,
             retry_state,
             None,
-            batch_size,
+            options.batch_size,
         )
         .await;
     }
@@ -937,8 +983,11 @@ mod tests {
             None,
             &mut pending,
             &mut retry_state,
-            None,
-            2,
+            LifecycleFlushOptions {
+                spool_dir: None,
+                batch_size: 2,
+                preserve_failed_for_retry: false,
+            },
         )
         .await;
 
@@ -954,6 +1003,96 @@ mod tests {
                 vec!["evt-5".to_string()],
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn flush_barrier_retains_failed_batch_for_later_retry() {
+        let client = reqwest::Client::new();
+        let mut pending = vec![usage_envelope(0)];
+        let mut retry_state = None;
+
+        flush_on_shutdown(
+            &client,
+            "http://127.0.0.1:1/unreachable",
+            None,
+            &mut pending,
+            &mut retry_state,
+            LifecycleFlushOptions {
+                spool_dir: None,
+                batch_size: 2,
+                preserve_failed_for_retry: true,
+            },
+        )
+        .await;
+
+        assert!(pending.is_empty());
+        assert_eq!(
+            retry_state
+                .as_ref()
+                .expect("failed flush should retain its retry")
+                .batch
+                .events[0]
+                .event_id,
+            "evt-0"
+        );
+
+        let (endpoint, server) = successful_batch_server(1).await;
+        flush_on_shutdown(
+            &client,
+            &endpoint,
+            None,
+            &mut pending,
+            &mut retry_state,
+            LifecycleFlushOptions {
+                spool_dir: None,
+                batch_size: 2,
+                preserve_failed_for_retry: true,
+            },
+        )
+        .await;
+
+        assert!(retry_state.is_none());
+        assert_eq!(
+            server.await.expect("test server should finish"),
+            vec![vec!["evt-0".to_string()]]
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_barrier_retains_failed_batch_when_spool_is_unwritable() {
+        let dir = temp_spool_dir();
+        let invalid_spool_dir = dir.join("not-a-directory");
+        fs::write(&invalid_spool_dir, b"occupied").expect("spool blocker should write");
+        let client = reqwest::Client::new();
+        let mut pending = vec![usage_envelope(0)];
+        let mut retry_state = None;
+
+        flush_on_shutdown(
+            &client,
+            "http://127.0.0.1:1/unreachable",
+            None,
+            &mut pending,
+            &mut retry_state,
+            LifecycleFlushOptions {
+                spool_dir: Some(&invalid_spool_dir),
+                batch_size: 2,
+                preserve_failed_for_retry: true,
+            },
+        )
+        .await;
+
+        assert!(pending.is_empty());
+        assert_eq!(
+            retry_state
+                .as_ref()
+                .expect("failed flush should retain its retry")
+                .batch
+                .events[0]
+                .event_id,
+            "evt-0"
+        );
+
+        fs::remove_dir_all(dir).expect("temp dir should be removed");
     }
 
     #[tokio::test]
@@ -975,8 +1114,11 @@ mod tests {
             None,
             &mut pending,
             &mut retry_state,
-            Some(&dir),
-            2,
+            LifecycleFlushOptions {
+                spool_dir: Some(&dir),
+                batch_size: 2,
+                preserve_failed_for_retry: false,
+            },
         )
         .await;
 
@@ -1024,8 +1166,11 @@ mod tests {
             None,
             &mut pending,
             &mut retry_state,
-            Some(&invalid_spool_dir),
-            2,
+            LifecycleFlushOptions {
+                spool_dir: Some(&invalid_spool_dir),
+                batch_size: 2,
+                preserve_failed_for_retry: false,
+            },
         )
         .await;
 
