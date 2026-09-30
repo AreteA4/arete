@@ -767,7 +767,7 @@ impl RuntimeHandle {
         if let Some(ws) = self.ws_handle.take() {
             let _ = ws.await;
         }
-        if let Some(acceptor) = &self.acceptor {
+        let sessions_drained = if let Some(acceptor) = &self.acceptor {
             if tokio::time::timeout(SESSION_DRAIN_TIMEOUT, acceptor.wait_for_sessions())
                 .await
                 .is_err()
@@ -776,18 +776,47 @@ impl RuntimeHandle {
                     "Sessions did not finish within {:?} of shutdown",
                     SESSION_DRAIN_TIMEOUT
                 );
+                false
+            } else {
+                true
             }
-        }
+        } else {
+            true
+        };
 
-        if let Some(emitter) = self.websocket_usage_emitter.take() {
-            if tokio::time::timeout(USAGE_EMITTER_SHUTDOWN_TIMEOUT, emitter.shutdown())
-                .await
-                .is_err()
+        let usage_events_drained = if !sessions_drained {
+            false
+        } else if let Some(acceptor) = &self.acceptor {
+            if tokio::time::timeout(
+                USAGE_EMITTER_SHUTDOWN_TIMEOUT,
+                acceptor.wait_for_usage_events(),
+            )
+            .await
+            .is_err()
             {
                 warn!(
-                    "WebSocket usage emitter did not shut down within {:?}",
+                    "WebSocket usage event tasks did not finish within {:?}",
                     USAGE_EMITTER_SHUTDOWN_TIMEOUT
                 );
+                false
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+
+        if usage_events_drained {
+            if let Some(emitter) = self.websocket_usage_emitter.take() {
+                if tokio::time::timeout(USAGE_EMITTER_SHUTDOWN_TIMEOUT, emitter.shutdown())
+                    .await
+                    .is_err()
+                {
+                    warn!(
+                        "WebSocket usage emitter did not shut down within {:?}",
+                        USAGE_EMITTER_SHUTDOWN_TIMEOUT
+                    );
+                }
             }
         }
 

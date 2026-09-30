@@ -475,12 +475,24 @@ async fn flush_on_shutdown(
         if let Some(state) = retry_state.take() {
             if let Err(error) = spool_retry_state(dir, &state) {
                 warn!(error = %error, count = state.batch.events.len(), "failed to spool websocket usage retry during shutdown");
+                if !flush_batch(client, endpoint, auth_token, &state.batch).await {
+                    error!(
+                        count = state.batch.events.len(),
+                        "failed to deliver websocket usage retry after shutdown spool failure"
+                    );
+                }
             }
         }
         while !pending.is_empty() {
             let batch = take_pending_batch(pending, batch_size);
             if let Err(error) = spool_batch(dir, &batch) {
                 warn!(error = %error, count = batch.events.len(), "failed to spool pending websocket usage batch during shutdown");
+                if !flush_batch(client, endpoint, auth_token, &batch).await {
+                    error!(
+                        count = batch.events.len(),
+                        "failed to deliver pending websocket usage after shutdown spool failure"
+                    );
+                }
             }
         }
         return;
@@ -934,6 +946,47 @@ mod tests {
             (0..=5)
                 .map(|index| format!("evt-{index}"))
                 .collect::<Vec<_>>()
+        );
+
+        fs::remove_dir_all(dir).expect("temp dir should be removed");
+    }
+
+    #[tokio::test]
+    async fn shutdown_uses_http_when_spool_storage_is_unwritable() {
+        let dir = temp_spool_dir();
+        let invalid_spool_dir = dir.join("not-a-directory");
+        fs::write(&invalid_spool_dir, b"occupied").expect("spool blocker should write");
+        let (endpoint, server) = successful_batch_server(4).await;
+        let client = reqwest::Client::new();
+        let mut pending = (1..=5).map(usage_envelope).collect::<Vec<_>>();
+        let mut retry_state = Some(RetryState {
+            batch: WebSocketUsageBatch {
+                events: vec![usage_envelope(0)],
+            },
+            attempts: 1,
+            next_retry_at: Instant::now(),
+        });
+
+        flush_on_shutdown(
+            &client,
+            &endpoint,
+            None,
+            &mut pending,
+            &mut retry_state,
+            Some(&invalid_spool_dir),
+            2,
+        )
+        .await;
+
+        let received = server.await.expect("test server should finish");
+        assert_eq!(
+            received,
+            vec![
+                vec!["evt-0".to_string()],
+                vec!["evt-1".to_string(), "evt-2".to_string()],
+                vec!["evt-3".to_string(), "evt-4".to_string()],
+                vec!["evt-5".to_string()],
+            ]
         );
 
         fs::remove_dir_all(dir).expect("temp dir should be removed");
