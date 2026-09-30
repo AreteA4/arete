@@ -2554,6 +2554,29 @@ pub struct AgentMeResponse {
     pub trial_access_enabled: Option<bool>,
     #[serde(rename = "starterGuidance", default)]
     pub starter_guidance: Option<String>,
+    #[serde(default)]
+    pub usage: Option<AgentUsageSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUsageSummary {
+    pub window: String,
+    pub window_start: String,
+    #[serde(default)]
+    pub window_end: Option<String>,
+    pub meters: Vec<AgentUsageMeterSummary>,
+    pub exhausted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUsageMeterSummary {
+    pub meter: String,
+    pub consumed: u64,
+    pub allowance: u64,
+    pub remaining: u64,
+    pub exhausted: bool,
 }
 
 #[derive(Serialize)]

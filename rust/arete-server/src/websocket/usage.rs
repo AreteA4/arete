@@ -9,6 +9,29 @@ use uuid::Uuid;
 
 const MAX_IN_MEMORY_RETRIES: u32 = 3;
 
+/// Billing and policy identity copied from one verified session token. The
+/// legacy fields remain present during the compatibility window; V2 fields
+/// are emitted only as a complete signed tuple.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UsageIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metering_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consumer_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WebSocketUsageEvent {
@@ -16,37 +39,36 @@ pub enum WebSocketUsageEvent {
         client_id: String,
         remote_addr: String,
         deployment_id: Option<String>,
-        metering_key: Option<String>,
-        subject: Option<String>,
-        key_class: Option<String>,
+        #[serde(flatten)]
+        identity: UsageIdentity,
     },
     ConnectionClosed {
         client_id: String,
         deployment_id: Option<String>,
-        metering_key: Option<String>,
-        subject: Option<String>,
+        #[serde(flatten)]
+        identity: UsageIdentity,
         duration_secs: Option<f64>,
         subscription_count: u32,
     },
     SubscriptionCreated {
         client_id: String,
         deployment_id: Option<String>,
-        metering_key: Option<String>,
-        subject: Option<String>,
+        #[serde(flatten)]
+        identity: UsageIdentity,
         view_id: String,
     },
     SubscriptionRemoved {
         client_id: String,
         deployment_id: Option<String>,
-        metering_key: Option<String>,
-        subject: Option<String>,
+        #[serde(flatten)]
+        identity: UsageIdentity,
         view_id: String,
     },
     SnapshotSent {
         client_id: String,
         deployment_id: Option<String>,
-        metering_key: Option<String>,
-        subject: Option<String>,
+        #[serde(flatten)]
+        identity: UsageIdentity,
         view_id: String,
         rows: u32,
         messages: u32,
@@ -55,8 +77,8 @@ pub enum WebSocketUsageEvent {
     UpdateSent {
         client_id: String,
         deployment_id: Option<String>,
-        metering_key: Option<String>,
-        subject: Option<String>,
+        #[serde(flatten)]
+        identity: UsageIdentity,
         view_id: String,
         messages: u32,
         bytes: u64,
@@ -520,8 +542,11 @@ mod tests {
             .emit(WebSocketUsageEvent::SubscriptionCreated {
                 client_id: "client-1".to_string(),
                 deployment_id: Some("deployment-1".to_string()),
-                metering_key: Some("meter-1".to_string()),
-                subject: Some("subject-1".to_string()),
+                identity: UsageIdentity {
+                    metering_key: Some("meter-1".to_string()),
+                    subject: Some("subject-1".to_string()),
+                    ..Default::default()
+                },
                 view_id: "OreRound/latest".to_string(),
             })
             .await;
@@ -554,8 +579,11 @@ mod tests {
                 event: WebSocketUsageEvent::UpdateSent {
                     client_id: "client-1".to_string(),
                     deployment_id: Some("1".to_string()),
-                    metering_key: Some("api_key:1".to_string()),
-                    subject: Some("user:1".to_string()),
+                    identity: UsageIdentity {
+                        metering_key: Some("api_key:1".to_string()),
+                        subject: Some("user:1".to_string()),
+                        ..Default::default()
+                    },
                     view_id: "OreRound/latest".to_string(),
                     messages: 1,
                     bytes: 42,
@@ -569,6 +597,52 @@ mod tests {
         assert_eq!(loaded.events[0].build_id.as_deref(), Some("7"));
 
         fs::remove_dir_all(dir).expect("temp dir should be removed");
+    }
+
+    #[test]
+    fn usage_identity_is_flattened_and_old_spool_json_remains_readable() {
+        let legacy: WebSocketUsageBatch = serde_json::from_value(serde_json::json!({
+            "events": [{
+                "event_id": "evt-old",
+                "occurred_at_ms": 123,
+                "event": {
+                    "type": "update_sent",
+                    "client_id": "client-1",
+                    "deployment_id": "1",
+                    "metering_key": "api_key:1",
+                    "subject": "user:1",
+                    "view_id": "Round/latest",
+                    "messages": 1,
+                    "bytes": 42
+                }
+            }]
+        }))
+        .expect("old-format spool remains readable");
+        let value = serde_json::to_value(&legacy).unwrap();
+        assert_eq!(value["events"][0]["event"]["metering_key"], "api_key:1");
+        assert!(value["events"][0]["event"].get("actor_key").is_none());
+
+        let event = WebSocketUsageEvent::UpdateSent {
+            client_id: "client-2".to_string(),
+            deployment_id: Some("2".to_string()),
+            identity: UsageIdentity {
+                metering_key: Some("account:42".to_string()),
+                subject: Some("user:7".to_string()),
+                key_class: Some("secret".to_string()),
+                actor_key: Some("user:7".to_string()),
+                account_key: Some("account:42".to_string()),
+                consumer_key: Some("consumer:key-9".to_string()),
+                plan_code: Some("agent_trial".to_string()),
+                policy_version: Some(3),
+            },
+            view_id: "Round/latest".to_string(),
+            messages: 1,
+            bytes: 42,
+        };
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["account_key"], "account:42");
+        assert_eq!(value["plan_code"], "agent_trial");
+        assert_eq!(value["policy_version"], 3);
     }
 
     #[test]

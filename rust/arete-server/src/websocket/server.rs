@@ -14,7 +14,7 @@ use crate::websocket::subscription::{
     ClientMessage, RefreshAuthRequest, RefreshAuthResponse, SocketIssueMessage, Subscription,
     SubscriptionQuery, Unsubscription, PROTOCOL_VERSION,
 };
-use crate::websocket::usage::{WebSocketUsageEmitter, WebSocketUsageEvent};
+use crate::websocket::usage::{UsageIdentity, WebSocketUsageEmitter, WebSocketUsageEvent};
 use crate::WebSocketDeliveryConfig;
 use anyhow::Result;
 use bytes::Bytes;
@@ -58,6 +58,10 @@ struct WsMetrics {
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct DeliveryProbe {
+    /// `arete.ws.connections.active`, by metering key
+    pub(crate) active_connections: std::sync::Mutex<std::collections::BTreeMap<String, i64>>,
+    /// `arete.ws.subscriptions.active`, by view and metering key
+    pub(crate) active_subscriptions: std::sync::Mutex<std::collections::BTreeMap<String, i64>>,
     /// `arete.ws.messages.sent`
     pub(crate) messages_sent: std::sync::atomic::AtomicU64,
     /// `arete.ws.subscription.lagged`
@@ -79,6 +83,18 @@ impl DeliveryProbe {
     fn add(counter: &std::sync::atomic::AtomicU64, value: u64) {
         counter.fetch_add(value, std::sync::atomic::Ordering::Relaxed);
     }
+
+    fn add_active(
+        counts: &std::sync::Mutex<std::collections::BTreeMap<String, i64>>,
+        key: String,
+        delta: i64,
+    ) {
+        *counts
+            .lock()
+            .expect("delivery probe lock poisoned")
+            .entry(key)
+            .or_default() += delta;
+    }
 }
 
 impl WsMetrics {
@@ -99,6 +115,14 @@ impl WsMetrics {
     }
 
     fn connection_opened(&self, metering_key: Option<&str>) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add_active(
+                &probe.active_connections,
+                metering_key.unwrap_or("<none>").to_string(),
+                1,
+            )
+        });
         #[cfg(not(feature = "otel"))]
         let _ = metering_key;
         #[cfg(feature = "otel")]
@@ -112,6 +136,14 @@ impl WsMetrics {
     }
 
     fn connection_closed(&self, duration_secs: f64, metering_key: Option<&str>) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add_active(
+                &probe.active_connections,
+                metering_key.unwrap_or("<none>").to_string(),
+                -1,
+            )
+        });
         #[cfg(not(feature = "otel"))]
         let _ = (duration_secs, metering_key);
         #[cfg(feature = "otel")]
@@ -147,6 +179,14 @@ impl WsMetrics {
     }
 
     fn subscription_created(&self, view: &str, metering_key: Option<&str>) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add_active(
+                &probe.active_subscriptions,
+                format!("{view}|{}", metering_key.unwrap_or("<none>")),
+                1,
+            )
+        });
         #[cfg(not(feature = "otel"))]
         let _ = (view, metering_key);
         #[cfg(feature = "otel")]
@@ -160,6 +200,14 @@ impl WsMetrics {
     }
 
     fn subscription_removed(&self, view: &str, metering_key: Option<&str>) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add_active(
+                &probe.active_subscriptions,
+                format!("{view}|{}", metering_key.unwrap_or("<none>")),
+                -1,
+            )
+        });
         #[cfg(not(feature = "otel"))]
         let _ = (view, metering_key);
         #[cfg(feature = "otel")]
@@ -358,22 +406,27 @@ fn emit_usage_event(
     }
 }
 
-fn usage_identity(
+fn usage_identity_from_context(
     auth_context: Option<&AuthContext>,
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
+) -> (UsageIdentity, Option<String>) {
     match auth_context {
-        Some(context) => (
-            Some(context.metering_key.clone()),
-            Some(context.subject.clone()),
-            Some(key_class_label(context.key_class).to_string()),
-            context.deployment_id.clone(),
-        ),
-        None => (None, None, None, None),
+        Some(context) => {
+            let v2 = !context.is_legacy_policy();
+            (
+                UsageIdentity {
+                    metering_key: Some(context.metering_key.clone()),
+                    subject: Some(context.subject.clone()),
+                    key_class: Some(key_class_label(context.key_class).to_string()),
+                    actor_key: v2.then(|| context.actor_key.clone()).flatten(),
+                    account_key: v2.then(|| context.account_key.clone()).flatten(),
+                    consumer_key: v2.then(|| context.consumer_key.clone()).flatten(),
+                    plan_code: v2.then(|| context.plan.clone()).flatten(),
+                    policy_version: v2.then_some(context.policy_version).flatten(),
+                },
+                context.deployment_id.clone(),
+            )
+        }
+        None => (UsageIdentity::default(), None),
     }
 }
 
@@ -385,14 +438,13 @@ fn emit_update_sent_for_client(
     bytes: usize,
 ) {
     let auth_context = client_manager.get_auth_context(client_id);
-    let (metering_key, subject, _, deployment_id) = usage_identity(auth_context.as_ref());
+    let (identity, deployment_id) = usage_identity_from_context(auth_context.as_ref());
     emit_usage_event(
         usage_emitter,
         WebSocketUsageEvent::UpdateSent {
             client_id: client_id.to_string(),
             deployment_id,
-            metering_key,
-            subject,
+            identity,
             view_id: view_id.to_string(),
             messages: 1,
             bytes: bytes as u64,
@@ -792,8 +844,17 @@ async fn handle_connection(
     let client_id = Uuid::new_v4();
     context.client_id = client_id;
     let connection_start = Instant::now();
-    let (metering_key, subject, key_class, deployment_id) = usage_identity(Some(&auth_context));
-    context.metrics.connection_opened(metering_key.as_deref());
+    let (mut usage_identity, mut deployment_id) = usage_identity_from_context(Some(&auth_context));
+    let mut metering_key = usage_identity.metering_key.clone();
+    // Active gauges must be decremented with the same attributes used for
+    // their increment. The signed usage identity may legitimately move to a
+    // claimed owner's account during an in-band refresh, but that must not
+    // leave the original account's active count stuck or make the new one
+    // negative when this connection closes.
+    let connection_metrics_metering_key = metering_key.clone();
+    context
+        .metrics
+        .connection_opened(connection_metrics_metering_key.as_deref());
 
     let (ws_sender, mut ws_receiver) = ws_stream.split();
     context
@@ -805,13 +866,11 @@ async fn handle_connection(
             client_id: client_id.to_string(),
             remote_addr: remote_addr.to_string(),
             deployment_id: deployment_id.clone(),
-            metering_key: metering_key.clone(),
-            subject: subject.clone(),
-            key_class,
+            identity: usage_identity.clone(),
         },
     );
 
-    let mut active_subscriptions: HashMap<String, String> = HashMap::new();
+    let mut active_subscriptions: HashMap<String, ActiveSubscription> = HashMap::new();
     loop {
         let message = tokio::select! {
             _ = context.shutdown.cancelled() => break,
@@ -952,7 +1011,13 @@ async fn handle_connection(
                     continue;
                 }
 
-                active_subscriptions.insert(subscription_id, view.clone());
+                active_subscriptions.insert(
+                    subscription_id,
+                    ActiveSubscription {
+                        view: view.clone(),
+                        metrics_metering_key: metering_key.clone(),
+                    },
+                );
                 context
                     .metrics
                     .subscription_created(&view, metering_key.as_deref());
@@ -961,8 +1026,7 @@ async fn handle_connection(
                     WebSocketUsageEvent::SubscriptionCreated {
                         client_id: client_id.to_string(),
                         deployment_id: deployment_id.clone(),
-                        metering_key: metering_key.clone(),
-                        subject: subject.clone(),
+                        identity: usage_identity.clone(),
                         view_id: view,
                     },
                 );
@@ -972,10 +1036,8 @@ async fn handle_connection(
                     &context,
                     unsubscription,
                     &mut active_subscriptions,
-                    metering_key.as_deref(),
                     &deployment_id,
-                    &metering_key,
-                    &subject,
+                    &usage_identity,
                 )
                 .await;
             }
@@ -983,6 +1045,15 @@ async fn handle_connection(
             ClientMessage::RefreshAuth(request) => {
                 handle_refresh_auth(client_id, &request, &context.client_manager, &auth_plugin)
                     .await;
+                // A successful refresh replaces the verified context. Keep
+                // every later usage event on the same current identity used
+                // by snapshots and updates; on failure the manager still
+                // returns the previous context.
+                if let Some(current_auth) = context.client_manager.get_auth_context(client_id) {
+                    (usage_identity, deployment_id) =
+                        usage_identity_from_context(Some(&current_auth));
+                    metering_key = usage_identity.metering_key.clone();
+                }
             }
         }
     }
@@ -995,32 +1066,31 @@ async fn handle_connection(
     if let Some(rate_limiter) = context.client_manager.rate_limiter().cloned() {
         rate_limiter.remove_client_buckets(client_id).await;
     }
-    for view in active_subscriptions.values() {
-        context
-            .metrics
-            .subscription_removed(view, metering_key.as_deref());
+    for subscription in active_subscriptions.values() {
+        context.metrics.subscription_removed(
+            &subscription.view,
+            subscription.metrics_metering_key.as_deref(),
+        );
         emit_usage_event(
             &context.usage_emitter,
             WebSocketUsageEvent::SubscriptionRemoved {
                 client_id: client_id.to_string(),
                 deployment_id: deployment_id.clone(),
-                metering_key: metering_key.clone(),
-                subject: subject.clone(),
-                view_id: view.clone(),
+                identity: usage_identity.clone(),
+                view_id: subscription.view.clone(),
             },
         );
     }
     let duration = connection_start.elapsed().as_secs_f64();
     context
         .metrics
-        .connection_closed(duration, metering_key.as_deref());
+        .connection_closed(duration, connection_metrics_metering_key.as_deref());
     emit_usage_event(
         &context.usage_emitter,
         WebSocketUsageEvent::ConnectionClosed {
             client_id: client_id.to_string(),
             deployment_id,
-            metering_key,
-            subject,
+            identity: usage_identity,
             duration_secs: Some(duration),
             subscription_count: u32::try_from(active_subscriptions.len()).unwrap_or(u32::MAX),
         },
@@ -1028,15 +1098,19 @@ async fn handle_connection(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+struct ActiveSubscription {
+    view: String,
+    /// Attribute set used for the active-gauge increment. It is immutable
+    /// even if a later token refresh moves usage to another billing account.
+    metrics_metering_key: Option<String>,
+}
+
 async fn handle_unsubscribe(
     context: &SubscriptionContext,
     unsubscription: Unsubscription,
-    active_subscriptions: &mut HashMap<String, String>,
-    metrics_metering_key: Option<&str>,
+    active_subscriptions: &mut HashMap<String, ActiveSubscription>,
     deployment_id: &Option<String>,
-    usage_metering_key: &Option<String>,
-    subject: &Option<String>,
+    usage_identity: &UsageIdentity,
 ) {
     let subscription_id = unsubscription.subscription_id.clone();
     if let Err(message) = unsubscription.validate() {
@@ -1069,21 +1143,25 @@ async fn handle_unsubscribe(
         return;
     }
 
-    let Some(view) = active_subscriptions.remove(&subscription_id) else {
+    let Some(subscription) = active_subscriptions.remove(&subscription_id) else {
         return;
     };
-    let _ = send_control_frame(context, &UnsubscribedFrame::new(subscription_id), &view);
-    context
-        .metrics
-        .subscription_removed(&view, metrics_metering_key);
+    let _ = send_control_frame(
+        context,
+        &UnsubscribedFrame::new(subscription_id),
+        &subscription.view,
+    );
+    context.metrics.subscription_removed(
+        &subscription.view,
+        subscription.metrics_metering_key.as_deref(),
+    );
     emit_usage_event(
         &context.usage_emitter,
         WebSocketUsageEvent::SubscriptionRemoved {
             client_id: context.client_id.to_string(),
             deployment_id: deployment_id.clone(),
-            metering_key: usage_metering_key.clone(),
-            subject: subject.clone(),
-            view_id: view,
+            identity: usage_identity.clone(),
+            view_id: subscription.view,
         },
     );
 }
@@ -1205,14 +1283,13 @@ async fn send_snapshot_batches(
         context.metrics.message_sent();
 
         let auth_context = context.client_manager.get_auth_context(context.client_id);
-        let (metering_key, subject, _, deployment_id) = usage_identity(auth_context.as_ref());
+        let (identity, deployment_id) = usage_identity_from_context(auth_context.as_ref());
         emit_usage_event(
             &context.usage_emitter,
             WebSocketUsageEvent::SnapshotSent {
                 client_id: context.client_id.to_string(),
                 deployment_id,
-                metering_key,
-                subject,
+                identity,
                 view_id: subscription.query.view.clone(),
                 rows,
                 messages: 1,
@@ -4930,9 +5007,23 @@ mod tests {
         use tokio_tungstenite::tungstenite::Message;
         use tokio_tungstenite::{client_async, WebSocketStream};
 
+        #[derive(Default)]
+        struct RecordingUsageEmitter {
+            events: tokio::sync::Mutex<Vec<WebSocketUsageEvent>>,
+        }
+
+        #[async_trait::async_trait]
+        impl WebSocketUsageEmitter for RecordingUsageEmitter {
+            async fn emit(&self, event: WebSocketUsageEvent) {
+                self.events.lock().await.push(event);
+            }
+        }
+
         struct Server {
             addr: SocketAddr,
             signer: TokenSigner,
+            usage: Arc<RecordingUsageEmitter>,
+            metrics: Arc<DeliveryProbe>,
         }
 
         impl Server {
@@ -4942,6 +5033,7 @@ mod tests {
                     TokenVerifier::new(signing_key.verifying_key(), "test-issuer", "test-audience");
                 let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let addr = listener.local_addr().unwrap();
+                let usage = Arc::new(RecordingUsageEmitter::default());
                 let server = WebSocketServer::new(
                     addr,
                     BusManager::new(),
@@ -4950,12 +5042,17 @@ mod tests {
                     #[cfg(feature = "otel")]
                     None,
                 )
-                .with_auth_plugin(Arc::new(SignedSessionAuthPlugin::new(verifier)));
+                .with_auth_plugin(Arc::new(SignedSessionAuthPlugin::new(verifier)))
+                .with_usage_emitter(usage.clone());
+                let metrics = Arc::new(DeliveryProbe::default());
                 let (acceptor, _cleanup) = server.into_acceptor();
+                let acceptor = acceptor.with_delivery_probe(metrics.clone());
                 tokio::spawn(async move { acceptor.serve_listener(listener).await });
                 Self {
                     addr,
                     signer: TokenSigner::new(signing_key, "test-issuer"),
+                    usage,
+                    metrics,
                 }
             }
 
@@ -4963,6 +5060,22 @@ mod tests {
                 let claims = SessionClaims::builder("test-issuer", "test-subject", "test-audience")
                     .with_scope("read")
                     .with_key_class(KeyClass::Secret)
+                    .with_ttl(ttl_seconds)
+                    .build();
+                self.signer.sign(claims).unwrap()
+            }
+
+            fn account_token(&self, ttl_seconds: u64, account: &str) -> String {
+                let claims = SessionClaims::builder("test-issuer", account, "test-audience")
+                    .with_scope("read")
+                    .with_key_class(KeyClass::Secret)
+                    .with_metering_key(account)
+                    .with_plan("agent_trial")
+                    .with_actor_key(account)
+                    .with_account_key(account)
+                    .with_consumer_key(format!("consumer:{account}"))
+                    .with_policy_version(3)
+                    .with_account_limits(Default::default())
                     .with_ttl(ttl_seconds)
                     .build();
                 self.signer.sign(claims).unwrap()
@@ -5052,6 +5165,62 @@ mod tests {
                     .is_none(),
                 "the socket stays open on the refreshed token"
             );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn usage_after_auth_refresh_uses_the_refreshed_account() {
+            let server = Server::start().await;
+            let mut socket = server
+                .connect(&server.account_token(3_600, "account:1"))
+                .await;
+
+            send_json(
+                &mut socket,
+                json!({
+                    "type": "refresh_auth",
+                    "token": server.account_token(3_600, "account:2")
+                }),
+            )
+            .await;
+            let reply = tokio::time::timeout(Duration::from_secs(5), async {
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Message::Text(text) = message {
+                        return serde_json::from_str::<Value>(text.as_str()).ok();
+                    }
+                }
+                None
+            })
+            .await
+            .expect("the server answers the refresh")
+            .expect("the answer is JSON");
+            assert_eq!(reply["success"], true, "refresh accepted: {reply}");
+            socket.close(None).await.unwrap();
+
+            let account = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let events = server.usage.events.lock().await;
+                    if let Some(account) = events.iter().find_map(|event| match event {
+                        WebSocketUsageEvent::ConnectionClosed { identity, .. } => {
+                            identity.account_key.clone()
+                        }
+                        _ => None,
+                    }) {
+                        return account;
+                    }
+                    drop(events);
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("connection close usage event");
+            assert_eq!(account, "account:2");
+            let active = server
+                .metrics
+                .active_connections
+                .lock()
+                .expect("delivery probe lock poisoned");
+            assert_eq!(active.get("account:1"), Some(&0));
+            assert_eq!(active.get("account:2"), None);
         }
     }
 }
