@@ -358,7 +358,9 @@ fn emit_usage_event(
     }
 }
 
-fn usage_identity(auth_context: Option<&AuthContext>) -> (UsageIdentity, Option<String>) {
+fn usage_identity_from_context(
+    auth_context: Option<&AuthContext>,
+) -> (UsageIdentity, Option<String>) {
     match auth_context {
         Some(context) => {
             let v2 = !context.is_legacy_policy();
@@ -388,7 +390,7 @@ fn emit_update_sent_for_client(
     bytes: usize,
 ) {
     let auth_context = client_manager.get_auth_context(client_id);
-    let (identity, deployment_id) = usage_identity(auth_context.as_ref());
+    let (identity, deployment_id) = usage_identity_from_context(auth_context.as_ref());
     emit_usage_event(
         usage_emitter,
         WebSocketUsageEvent::UpdateSent {
@@ -794,8 +796,8 @@ async fn handle_connection(
     let client_id = Uuid::new_v4();
     context.client_id = client_id;
     let connection_start = Instant::now();
-    let (usage_identity, deployment_id) = usage_identity(Some(&auth_context));
-    let metering_key = usage_identity.metering_key.clone();
+    let (mut usage_identity, mut deployment_id) = usage_identity_from_context(Some(&auth_context));
+    let mut metering_key = usage_identity.metering_key.clone();
     context.metrics.connection_opened(metering_key.as_deref());
 
     let (ws_sender, mut ws_receiver) = ws_stream.split();
@@ -982,6 +984,15 @@ async fn handle_connection(
             ClientMessage::RefreshAuth(request) => {
                 handle_refresh_auth(client_id, &request, &context.client_manager, &auth_plugin)
                     .await;
+                // A successful refresh replaces the verified context. Keep
+                // every later usage event on the same current identity used
+                // by snapshots and updates; on failure the manager still
+                // returns the previous context.
+                if let Some(current_auth) = context.client_manager.get_auth_context(client_id) {
+                    (usage_identity, deployment_id) =
+                        usage_identity_from_context(Some(&current_auth));
+                    metering_key = usage_identity.metering_key.clone();
+                }
             }
         }
     }
@@ -1200,7 +1211,7 @@ async fn send_snapshot_batches(
         context.metrics.message_sent();
 
         let auth_context = context.client_manager.get_auth_context(context.client_id);
-        let (identity, deployment_id) = usage_identity(auth_context.as_ref());
+        let (identity, deployment_id) = usage_identity_from_context(auth_context.as_ref());
         emit_usage_event(
             &context.usage_emitter,
             WebSocketUsageEvent::SnapshotSent {
@@ -4924,9 +4935,22 @@ mod tests {
         use tokio_tungstenite::tungstenite::Message;
         use tokio_tungstenite::{client_async, WebSocketStream};
 
+        #[derive(Default)]
+        struct RecordingUsageEmitter {
+            events: tokio::sync::Mutex<Vec<WebSocketUsageEvent>>,
+        }
+
+        #[async_trait::async_trait]
+        impl WebSocketUsageEmitter for RecordingUsageEmitter {
+            async fn emit(&self, event: WebSocketUsageEvent) {
+                self.events.lock().await.push(event);
+            }
+        }
+
         struct Server {
             addr: SocketAddr,
             signer: TokenSigner,
+            usage: Arc<RecordingUsageEmitter>,
         }
 
         impl Server {
@@ -4936,6 +4960,7 @@ mod tests {
                     TokenVerifier::new(signing_key.verifying_key(), "test-issuer", "test-audience");
                 let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let addr = listener.local_addr().unwrap();
+                let usage = Arc::new(RecordingUsageEmitter::default());
                 let server = WebSocketServer::new(
                     addr,
                     BusManager::new(),
@@ -4944,12 +4969,14 @@ mod tests {
                     #[cfg(feature = "otel")]
                     None,
                 )
-                .with_auth_plugin(Arc::new(SignedSessionAuthPlugin::new(verifier)));
+                .with_auth_plugin(Arc::new(SignedSessionAuthPlugin::new(verifier)))
+                .with_usage_emitter(usage.clone());
                 let (acceptor, _cleanup) = server.into_acceptor();
                 tokio::spawn(async move { acceptor.serve_listener(listener).await });
                 Self {
                     addr,
                     signer: TokenSigner::new(signing_key, "test-issuer"),
+                    usage,
                 }
             }
 
@@ -4957,6 +4984,22 @@ mod tests {
                 let claims = SessionClaims::builder("test-issuer", "test-subject", "test-audience")
                     .with_scope("read")
                     .with_key_class(KeyClass::Secret)
+                    .with_ttl(ttl_seconds)
+                    .build();
+                self.signer.sign(claims).unwrap()
+            }
+
+            fn account_token(&self, ttl_seconds: u64, account: &str) -> String {
+                let claims = SessionClaims::builder("test-issuer", account, "test-audience")
+                    .with_scope("read")
+                    .with_key_class(KeyClass::Secret)
+                    .with_metering_key(account)
+                    .with_plan("agent_trial")
+                    .with_actor_key(account)
+                    .with_account_key(account)
+                    .with_consumer_key(format!("consumer:{account}"))
+                    .with_policy_version(3)
+                    .with_account_limits(Default::default())
                     .with_ttl(ttl_seconds)
                     .build();
                 self.signer.sign(claims).unwrap()
@@ -5046,6 +5089,55 @@ mod tests {
                     .is_none(),
                 "the socket stays open on the refreshed token"
             );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn usage_after_auth_refresh_uses_the_refreshed_account() {
+            let server = Server::start().await;
+            let mut socket = server
+                .connect(&server.account_token(3_600, "account:1"))
+                .await;
+
+            send_json(
+                &mut socket,
+                json!({
+                    "type": "refresh_auth",
+                    "token": server.account_token(3_600, "account:2")
+                }),
+            )
+            .await;
+            let reply = tokio::time::timeout(Duration::from_secs(5), async {
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Message::Text(text) = message {
+                        return serde_json::from_str::<Value>(text.as_str()).ok();
+                    }
+                }
+                None
+            })
+            .await
+            .expect("the server answers the refresh")
+            .expect("the answer is JSON");
+            assert_eq!(reply["success"], true, "refresh accepted: {reply}");
+            socket.close(None).await.unwrap();
+
+            let account = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let events = server.usage.events.lock().await;
+                    if let Some(account) = events.iter().find_map(|event| match event {
+                        WebSocketUsageEvent::ConnectionClosed { identity, .. } => {
+                            identity.account_key.clone()
+                        }
+                        _ => None,
+                    }) {
+                        return account;
+                    }
+                    drop(events);
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("connection close usage event");
+            assert_eq!(account, "account:2");
         }
     }
 }
