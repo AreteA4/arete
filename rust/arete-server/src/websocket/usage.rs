@@ -103,8 +103,14 @@ pub struct WebSocketUsageBatch {
 pub trait WebSocketUsageEmitter: Send + Sync {
     async fn emit(&self, event: WebSocketUsageEvent);
 
+    /// Finish or durably preserve every event accepted before this call while
+    /// leaving the emitter available for later events.
+    async fn flush(&self) {}
+
     /// Finish or durably preserve every event accepted before this call.
-    async fn shutdown(&self) {}
+    async fn shutdown(&self) {
+        self.flush().await;
+    }
 }
 
 #[derive(Clone)]
@@ -131,6 +137,7 @@ pub struct HttpUsageEmitter {
 
 enum UsageEmitterCommand {
     Event(Box<WebSocketUsageEvent>),
+    Flush(oneshot::Sender<()>),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -254,6 +261,18 @@ impl HttpUsageEmitter {
                                     ).await;
                                 }
                             }
+                            Some(UsageEmitterCommand::Flush(done)) => {
+                                flush_on_shutdown(
+                                    &client,
+                                    &endpoint,
+                                    auth_token.as_deref(),
+                                    &mut pending,
+                                    &mut retry_state,
+                                    spool_dir.as_deref(),
+                                    batch_size,
+                                ).await;
+                                let _ = done.send(());
+                            }
                             Some(UsageEmitterCommand::Shutdown(done)) => {
                                 flush_on_shutdown(
                                     &client,
@@ -370,6 +389,13 @@ impl WebSocketUsageEmitter for HttpUsageEmitter {
             .send(UsageEmitterCommand::Event(Box::new(event)))
         {
             warn!(error = %error, "failed to queue websocket usage event");
+        }
+    }
+
+    async fn flush(&self) {
+        let (done, completed) = oneshot::channel();
+        if self.sender.send(UsageEmitterCommand::Flush(done)).is_ok() {
+            let _ = completed.await;
         }
     }
 
@@ -684,6 +710,15 @@ mod tests {
         }
     }
 
+    fn usage_event(index: u64) -> WebSocketUsageEvent {
+        WebSocketUsageEvent::ConnectionEstablished {
+            client_id: format!("client-{index}"),
+            remote_addr: "127.0.0.1:1234".to_string(),
+            deployment_id: Some("1".to_string()),
+            identity: UsageIdentity::default(),
+        }
+    }
+
     async fn successful_batch_server(
         request_count: usize,
     ) -> (String, tokio::task::JoinHandle<Vec<Vec<String>>>) {
@@ -772,6 +807,22 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn flush_is_an_ordered_barrier_and_keeps_the_emitter_open() {
+        let (endpoint, server) = successful_batch_server(2).await;
+        let emitter = HttpUsageEmitter::with_config(endpoint, None, 50, Duration::from_secs(3_600));
+
+        emitter.emit(usage_event(1)).await;
+        emitter.flush().await;
+        emitter.emit(usage_event(2)).await;
+        emitter.shutdown().await;
+
+        let received = server.await.expect("test server should finish");
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[0].len(), 1);
+        assert_eq!(received[1].len(), 1);
     }
 
     #[test]

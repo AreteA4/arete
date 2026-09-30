@@ -806,17 +806,29 @@ impl RuntimeHandle {
             true
         };
 
-        if usage_events_drained {
-            if let Some(emitter) = self.websocket_usage_emitter.take() {
-                if tokio::time::timeout(USAGE_EMITTER_SHUTDOWN_TIMEOUT, emitter.shutdown())
-                    .await
-                    .is_err()
-                {
-                    warn!(
-                        "WebSocket usage emitter did not shut down within {:?}",
-                        USAGE_EMITTER_SHUTDOWN_TIMEOUT
-                    );
-                }
+        if let Some(emitter) = self.websocket_usage_emitter.take() {
+            let operation = if usage_events_drained {
+                emitter.shutdown()
+            } else {
+                // A timed-out session can still enqueue its final usage event.
+                // Keep the receiver alive for that late producer, but put an
+                // ordered persistence barrier behind everything already in its
+                // queue so shutdown cannot strand the accepted backlog.
+                emitter.flush()
+            };
+            if tokio::time::timeout(USAGE_EMITTER_SHUTDOWN_TIMEOUT, operation)
+                .await
+                .is_err()
+            {
+                warn!(
+                    operation = if usage_events_drained {
+                        "shutdown"
+                    } else {
+                        "flush"
+                    },
+                    "WebSocket usage emitter operation did not finish within {:?}",
+                    USAGE_EMITTER_SHUTDOWN_TIMEOUT
+                );
             }
         }
 
