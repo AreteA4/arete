@@ -21,6 +21,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 use crate::config::TransactionConfig;
+use crate::{SolanaGatewayUsageObservation, SolanaGatewayUsageObserver, SolanaGatewayUsageSurface};
 
 const MAX_UPSTREAM_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
@@ -34,6 +35,8 @@ pub(crate) struct TransactionState {
     inflight: Arc<DashMap<String, u32>>,
     account_policies: Arc<AccountPolicyRegistry>,
     usage_tx: Option<tokio::sync::mpsc::Sender<TransactionUsageEvent>>,
+    solana_gateway_usage_observer: Option<Arc<dyn SolanaGatewayUsageObserver>>,
+    solana_gateway_target_id: Option<String>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<crate::metrics::Metrics>>,
 }
@@ -68,6 +71,8 @@ impl TransactionState {
             inflight: Arc::new(DashMap::new()),
             account_policies: Arc::new(AccountPolicyRegistry::default()),
             usage_tx,
+            solana_gateway_usage_observer: None,
+            solana_gateway_target_id: None,
             #[cfg(feature = "otel")]
             metrics: None,
         };
@@ -94,6 +99,16 @@ impl TransactionState {
             trusted_client_ip(remote_addr, headers, &self.config),
             remote_addr.port(),
         )
+    }
+
+    pub(crate) fn with_solana_gateway_usage_observer(
+        mut self,
+        observer: Arc<dyn SolanaGatewayUsageObserver>,
+        target_id: String,
+    ) -> Self {
+        self.solana_gateway_usage_observer = Some(observer);
+        self.solana_gateway_target_id = Some(target_id);
+        self
     }
 
     #[cfg(feature = "otel")]
@@ -520,7 +535,8 @@ pub(crate) async fn handle(
         &result,
         body.len(),
         start.elapsed(),
-    );
+    )
+    .await;
     tracing::info!(
         operation = operation.name(),
         result = result_name,
@@ -543,7 +559,7 @@ pub(crate) async fn handle(
     }
 }
 
-fn emit_usage(
+async fn emit_usage(
     state: &TransactionState,
     auth: Option<&AuthContext>,
     operation: Operation,
@@ -551,16 +567,6 @@ fn emit_usage(
     request_bytes: usize,
     latency: Duration,
 ) {
-    let Some(sender) = &state.usage_tx else {
-        return;
-    };
-    let Some(deployment_id) = auth.and_then(|context| context.deployment_id.clone()) else {
-        tracing::warn!(
-            operation = operation.name(),
-            "transaction usage event omitted because deployment ID is unavailable"
-        );
-        return;
-    };
     let response_bytes = result
         .as_ref()
         .map(|value| value.to_string().len())
@@ -572,48 +578,75 @@ fn emit_usage(
         (_, Ok(_)) => "ok",
         (_, Err(_)) => "error",
     };
-    let event = TransactionUsageEvent {
-        event_id: Uuid::new_v4().to_string(),
-        occurred_at_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .try_into()
-            .unwrap_or(u64::MAX),
-        deployment_id,
-        subject: auth.map(|context| context.subject.clone()),
-        metering_key: auth.map(|context| context.metering_key.clone()),
-        key_class: auth.map(|context| match context.key_class {
-            arete_auth::KeyClass::Secret => "secret",
-            arete_auth::KeyClass::Publishable => "publishable",
-        }),
-        plan: auth.and_then(|context| context.plan.clone()),
-        actor_key: auth
-            .filter(|context| !context.is_legacy_policy())
-            .and_then(|context| context.actor_key.clone()),
-        account_key: auth
-            .filter(|context| !context.is_legacy_policy())
-            .and_then(|context| context.account_key.clone()),
-        consumer_key: auth
-            .filter(|context| !context.is_legacy_policy())
-            .and_then(|context| context.consumer_key.clone()),
-        plan_code: auth
-            .filter(|context| !context.is_legacy_policy())
-            .and_then(|context| context.plan.clone()),
-        policy_version: auth
-            .filter(|context| !context.is_legacy_policy())
-            .and_then(|context| context.policy_version),
-        operation: operation.name(),
-        result: outcome,
-        request_bytes: request_bytes.try_into().unwrap_or(u64::MAX),
-        response_bytes: response_bytes.try_into().unwrap_or(u64::MAX),
-        latency_ms: latency.as_millis().try_into().unwrap_or(u64::MAX),
-    };
-    if sender.try_send(event).is_err() {
-        tracing::warn!(
-            operation = operation.name(),
-            "transaction usage queue is full"
-        );
+
+    if let Some(sender) = &state.usage_tx {
+        if let Some(deployment_id) = auth.and_then(|context| context.deployment_id.clone()) {
+            let event = TransactionUsageEvent {
+                event_id: Uuid::new_v4().to_string(),
+                occurred_at_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+                deployment_id,
+                subject: auth.map(|context| context.subject.clone()),
+                metering_key: auth.map(|context| context.metering_key.clone()),
+                key_class: auth.map(|context| match context.key_class {
+                    arete_auth::KeyClass::Secret => "secret",
+                    arete_auth::KeyClass::Publishable => "publishable",
+                }),
+                plan: auth.and_then(|context| context.plan.clone()),
+                actor_key: auth
+                    .filter(|context| !context.is_legacy_policy())
+                    .and_then(|context| context.actor_key.clone()),
+                account_key: auth
+                    .filter(|context| !context.is_legacy_policy())
+                    .and_then(|context| context.account_key.clone()),
+                consumer_key: auth
+                    .filter(|context| !context.is_legacy_policy())
+                    .and_then(|context| context.consumer_key.clone()),
+                plan_code: auth
+                    .filter(|context| !context.is_legacy_policy())
+                    .and_then(|context| context.plan.clone()),
+                policy_version: auth
+                    .filter(|context| !context.is_legacy_policy())
+                    .and_then(|context| context.policy_version),
+                operation: operation.name(),
+                result: outcome,
+                request_bytes: request_bytes.try_into().unwrap_or(u64::MAX),
+                response_bytes: response_bytes.try_into().unwrap_or(u64::MAX),
+                latency_ms: latency.as_millis().try_into().unwrap_or(u64::MAX),
+            };
+            if sender.try_send(event).is_err() {
+                tracing::warn!(
+                    operation = operation.name(),
+                    "transaction usage queue is full"
+                );
+            }
+        } else {
+            tracing::warn!(
+                operation = operation.name(),
+                "deployment transaction usage omitted because deployment ID is unavailable"
+            );
+        }
+    }
+
+    if let (Some(observer), Some(target_id)) = (
+        state.solana_gateway_usage_observer.as_ref(),
+        state.solana_gateway_target_id.as_deref(),
+    ) {
+        observer
+            .observe(SolanaGatewayUsageObservation {
+                target_id: target_id.to_string(),
+                auth_context: auth.cloned(),
+                surface: SolanaGatewayUsageSurface::Transaction,
+                operation: operation.name(),
+                result: outcome,
+                address_count: 0,
+                response_bytes: response_bytes.try_into().unwrap_or(u64::MAX),
+            })
+            .await;
     }
 }
 
@@ -1716,6 +1749,19 @@ fn transaction_response(
 mod tests {
     use super::*;
     use std::convert::Infallible;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingUsageObserver {
+        observations: Mutex<Vec<SolanaGatewayUsageObservation>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SolanaGatewayUsageObserver for RecordingUsageObserver {
+        async fn observe(&self, observation: SolanaGatewayUsageObservation) {
+            self.observations.lock().unwrap().push(observation);
+        }
+    }
 
     async fn mock_rpc(
         result: Value,
@@ -1767,6 +1813,50 @@ mod tests {
             ..TransactionConfig::default()
         };
         TransactionState::new(config).unwrap()
+    }
+
+    #[tokio::test]
+    async fn gateway_observer_receives_neutral_transaction_facts_and_auth_context() {
+        let observer = Arc::new(RecordingUsageObserver::default());
+        let state = TransactionState::new(TransactionConfig {
+            enabled: true,
+            rpc_url: Some("http://127.0.0.1:8899".to_string()),
+            ..TransactionConfig::default()
+        })
+        .unwrap()
+        .with_solana_gateway_usage_observer(observer.clone(), "gateway-test".to_string());
+        let auth = v2_context(
+            "consumer:agent-key",
+            "account:42",
+            arete_auth::Limits::default(),
+            arete_auth::Limits::default(),
+        );
+
+        emit_usage(
+            &state,
+            Some(&auth),
+            Operation::Send,
+            &Ok(json!({ "signature": "test" })),
+            123,
+            Duration::from_millis(5),
+        )
+        .await;
+
+        let observations = observer.observations.lock().unwrap();
+        assert_eq!(observations.len(), 1);
+        let observation = &observations[0];
+        assert_eq!(observation.target_id, "gateway-test");
+        assert_eq!(observation.surface, SolanaGatewayUsageSurface::Transaction);
+        assert_eq!(observation.operation, "send");
+        assert_eq!(observation.result, "accepted");
+        assert_eq!(observation.address_count, 0);
+        assert!(observation.response_bytes > 0);
+        let observed_auth = observation.auth_context.as_ref().unwrap();
+        assert_eq!(observed_auth.account_key.as_deref(), Some("account:42"));
+        assert_eq!(
+            observed_auth.consumer_key.as_deref(),
+            Some("consumer:agent-key")
+        );
     }
 
     #[test]

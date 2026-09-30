@@ -2,7 +2,8 @@ use crate::http::transactions::{self, TransactionState};
 use crate::{
     config::{RuntimePlan, TransactionConfig},
     health::HealthMonitor,
-    ProgramRuntimeCatalog, ProgramRuntimeDefinition,
+    ProgramRuntimeCatalog, ProgramRuntimeDefinition, SolanaGatewayUsageObservation,
+    SolanaGatewayUsageObserver, SolanaGatewayUsageSurface,
 };
 use anyhow::Result;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -28,11 +29,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::websocket::auth::{AuthDecision, AuthDeny, ConnectionAuthRequest, WebSocketAuthPlugin};
 use arete_auth::SCOPE_READ;
+
+const HTTP_CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Configuration for the HTTP health server
 #[derive(Clone, Debug)]
@@ -67,6 +71,7 @@ struct HttpRequestState {
     auth_plugin: Arc<Option<Arc<dyn WebSocketAuthPlugin>>>,
     limit_state: Arc<HttpLimitState>,
     transaction_state: Arc<Option<TransactionState>>,
+    solana_gateway_usage_observer: Option<Arc<dyn SolanaGatewayUsageObserver>>,
     solana_gateway_target_id: Arc<Option<String>>,
     program_read_binding_target_id: Arc<Option<String>>,
 }
@@ -82,6 +87,7 @@ pub struct HttpHealthServer {
     program_runtime_catalog: ProgramRuntimeCatalog,
     auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     transaction_config: Option<TransactionConfig>,
+    solana_gateway_usage_observer: Option<Arc<dyn SolanaGatewayUsageObserver>>,
     solana_gateway_target_id: Option<String>,
     program_read_binding_target_id: Option<String>,
     #[cfg(feature = "otel")]
@@ -99,6 +105,7 @@ impl HttpHealthServer {
             program_runtime_catalog: ProgramRuntimeCatalog::default(),
             auth_plugin: None,
             transaction_config: None,
+            solana_gateway_usage_observer: None,
             solana_gateway_target_id: None,
             program_read_binding_target_id: None,
             #[cfg(feature = "otel")]
@@ -140,6 +147,14 @@ impl HttpHealthServer {
         self
     }
 
+    pub fn with_solana_gateway_usage_observer(
+        mut self,
+        observer: Arc<dyn SolanaGatewayUsageObserver>,
+    ) -> Self {
+        self.solana_gateway_usage_observer = Some(observer);
+        self
+    }
+
     pub fn with_solana_gateway_target(mut self, target_id: impl Into<String>) -> Self {
         self.solana_gateway_target_id = Some(target_id.into());
         self
@@ -174,6 +189,16 @@ impl HttpHealthServer {
             .filter(|config| config.enabled)
             .map(TransactionState::new)
             .transpose()?;
+        let transaction_state = match (
+            transaction_state,
+            self.solana_gateway_usage_observer.as_ref(),
+            self.solana_gateway_target_id.as_ref(),
+        ) {
+            (Some(state), Some(observer), Some(target_id)) => {
+                Some(state.with_solana_gateway_usage_observer(observer.clone(), target_id.clone()))
+            }
+            (state, _, _) => state,
+        };
         #[cfg(feature = "otel")]
         let transaction_state = transaction_state.map(|state| state.with_metrics(self.metrics));
         let request_state = HttpRequestState {
@@ -186,16 +211,18 @@ impl HttpHealthServer {
             auth_plugin: Arc::new(self.auth_plugin),
             limit_state: Arc::new(HttpLimitState::default()),
             transaction_state: Arc::new(transaction_state),
+            solana_gateway_usage_observer: self.solana_gateway_usage_observer,
             solana_gateway_target_id: Arc::new(self.solana_gateway_target_id),
             program_read_binding_target_id: Arc::new(self.program_read_binding_target_id),
         };
 
         let shutdown = self.shutdown.unwrap_or_default();
+        let mut connections = JoinSet::new();
         loop {
             let accepted = tokio::select! {
                 _ = shutdown.cancelled() => {
                     info!("HTTP health server on {} stopping", self.bind_addr);
-                    return Ok(());
+                    break;
                 }
                 accepted = listener.accept() => accepted,
             };
@@ -203,14 +230,23 @@ impl HttpHealthServer {
                 Ok((stream, remote_addr)) => {
                     let io = TokioIo::new(stream);
                     let request_state = request_state.clone();
+                    let connection_shutdown = shutdown.clone();
 
-                    tokio::spawn(async move {
+                    connections.spawn(async move {
                         let service = service_fn(move |req| {
                             let request_state = request_state.clone();
                             async move { handle_request(remote_addr, req, request_state).await }
                         });
-
-                        if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
+                        let connection = http1::Builder::new().serve_connection(io, service);
+                        tokio::pin!(connection);
+                        let result = tokio::select! {
+                            result = &mut connection => result,
+                            _ = connection_shutdown.cancelled() => {
+                                connection.as_mut().graceful_shutdown();
+                                connection.await
+                            }
+                        };
+                        if let Err(e) = result {
                             error!("HTTP connection error: {}", e);
                         }
                     });
@@ -220,6 +256,22 @@ impl HttpHealthServer {
                 }
             }
         }
+
+        if tokio::time::timeout(HTTP_CONNECTION_DRAIN_TIMEOUT, async {
+            while connections.join_next().await.is_some() {}
+        })
+        .await
+        .is_err()
+        {
+            warn!(
+                "HTTP connections did not drain within {:?}; aborting them",
+                HTTP_CONNECTION_DRAIN_TIMEOUT
+            );
+            connections.abort_all();
+            while connections.join_next().await.is_some() {}
+        }
+
+        Ok(())
     }
 }
 
@@ -277,6 +329,7 @@ async fn handle_request_inner(
         auth_plugin,
         limit_state,
         transaction_state,
+        solana_gateway_usage_observer,
         solana_gateway_target_id,
         program_read_binding_target_id,
     } = state;
@@ -394,7 +447,16 @@ async fn handle_request_inner(
                 Ok(context) => context,
                 Err(response) => return Ok(response),
             };
-            Ok(handle_chain_request(req, path.as_str(), rpc_url, rpc_client, auth_context).await)
+            Ok(handle_chain_request(
+                req,
+                path.as_str(),
+                rpc_url,
+                rpc_client,
+                auth_context,
+                solana_gateway_usage_observer.as_ref(),
+                solana_gateway_target_id.as_deref(),
+            )
+            .await)
         }
         _ if path.starts_with("/v1/releases/") => {
             if !runtime_plan.program_reads {
@@ -659,7 +721,109 @@ async fn read_json_body<T: for<'de> Deserialize<'de>>(
         .map_err(|err| error_response(StatusCode::BAD_REQUEST, err.to_string()))
 }
 
+#[derive(Clone, Copy)]
+enum ChainUsageOperation {
+    Exists,
+    Lamports,
+    NativeBalance,
+    RentExemption,
+    Clock,
+    Account,
+    Mint,
+    TokenAccount,
+    Accounts,
+    Balances,
+}
+
+impl ChainUsageOperation {
+    fn from_request(method: &Method, path: &str) -> Option<Self> {
+        match (method.as_str(), path) {
+            ("GET", path) if path.starts_with("/chain/exists/") => Some(Self::Exists),
+            ("GET", path) if path.starts_with("/chain/lamports/") => Some(Self::Lamports),
+            ("POST", "/chain/native-balance") => Some(Self::NativeBalance),
+            ("GET", path) if path.starts_with("/chain/rent-exemption/") => {
+                Some(Self::RentExemption)
+            }
+            ("GET", "/chain/clock") => Some(Self::Clock),
+            ("GET", path) if path.starts_with("/chain/accounts/") => Some(Self::Account),
+            ("GET", path) if path.starts_with("/chain/mints/") => Some(Self::Mint),
+            ("GET", path) if path.starts_with("/chain/token-accounts/") => Some(Self::TokenAccount),
+            ("POST", "/chain/accounts") => Some(Self::Accounts),
+            ("POST", "/chain/balances") => Some(Self::Balances),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Exists => "exists",
+            Self::Lamports => "lamports",
+            Self::NativeBalance => "native_balance",
+            Self::RentExemption => "rent_exemption",
+            Self::Clock => "clock",
+            Self::Account => "account",
+            Self::Mint => "mint",
+            Self::TokenAccount => "token_account",
+            Self::Accounts => "accounts",
+            Self::Balances => "balances",
+        }
+    }
+
+    fn address_count(self, status: StatusCode, body: &[u8]) -> u64 {
+        if !status.is_success() {
+            return 0;
+        }
+        match self {
+            Self::RentExemption | Self::Clock => 0,
+            Self::Balances => 2,
+            Self::Accounts => serde_json::from_slice::<Value>(body)
+                .ok()
+                .and_then(|value| value.get("items")?.as_array().map(|items| items.len()))
+                .and_then(|count| count.try_into().ok())
+                .unwrap_or_default(),
+            _ => 1,
+        }
+    }
+}
+
 async fn handle_chain_request(
+    req: Request<hyper::body::Incoming>,
+    path: &str,
+    rpc_url: Arc<Option<String>>,
+    rpc_client: Client,
+    auth_context: Option<crate::websocket::auth::AuthContext>,
+    usage_observer: Option<&Arc<dyn SolanaGatewayUsageObserver>>,
+    solana_gateway_target_id: Option<&str>,
+) -> Response<Full<Bytes>> {
+    let operation = ChainUsageOperation::from_request(req.method(), path);
+    let response =
+        handle_chain_request_inner(req, path, rpc_url, rpc_client, auth_context.clone()).await;
+    let status = response.status();
+    let (parts, body) = response.into_parts();
+    let collected = match body.collect().await {
+        Ok(collected) => collected,
+        Err(error) => match error {},
+    };
+    let bytes = collected.to_bytes();
+    if let (Some(operation), Some(observer), Some(target_id)) =
+        (operation, usage_observer, solana_gateway_target_id)
+    {
+        observer
+            .observe(SolanaGatewayUsageObservation {
+                target_id: target_id.to_string(),
+                auth_context,
+                surface: SolanaGatewayUsageSurface::ChainRead,
+                operation: operation.name(),
+                result: if status.is_success() { "ok" } else { "error" },
+                address_count: operation.address_count(status, &bytes),
+                response_bytes: bytes.len().try_into().unwrap_or(u64::MAX),
+            })
+            .await;
+    }
+    Response::from_parts(parts, Full::new(bytes))
+}
+
+async fn handle_chain_request_inner(
     req: Request<hyper::body::Incoming>,
     path: &str,
     rpc_url: Arc<Option<String>>,
