@@ -568,6 +568,7 @@ impl Runtime {
             background,
             acceptor,
             entity_cache: entity_cache_handle,
+            websocket_usage_emitter: self.websocket_usage_emitter,
             http_shutdown,
             http_health_thread,
         })
@@ -594,6 +595,7 @@ pub struct RuntimeHandle {
     background: Vec<JoinHandle<()>>,
     acceptor: Option<ConnectionAcceptor>,
     entity_cache: Option<EntityCache>,
+    websocket_usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
     http_shutdown: CancellationToken,
     http_health_thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -624,6 +626,10 @@ const SESSION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long `shutdown` lets the projector drain queued batches after the
 /// producers have stopped.
 const PROJECTOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long `shutdown` waits for accepted usage events to reach the API or
+/// durable spool storage.
+const USAGE_EMITTER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Bound on the final snapshot, chosen to fit inside the platform's
 /// termination grace period.
@@ -761,7 +767,7 @@ impl RuntimeHandle {
         if let Some(ws) = self.ws_handle.take() {
             let _ = ws.await;
         }
-        if let Some(acceptor) = &self.acceptor {
+        let sessions_drained = if let Some(acceptor) = &self.acceptor {
             if tokio::time::timeout(SESSION_DRAIN_TIMEOUT, acceptor.wait_for_sessions())
                 .await
                 .is_err()
@@ -769,6 +775,59 @@ impl RuntimeHandle {
                 warn!(
                     "Sessions did not finish within {:?} of shutdown",
                     SESSION_DRAIN_TIMEOUT
+                );
+                false
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+
+        let usage_events_drained = if !sessions_drained {
+            false
+        } else if let Some(acceptor) = &self.acceptor {
+            if tokio::time::timeout(
+                USAGE_EMITTER_SHUTDOWN_TIMEOUT,
+                acceptor.wait_for_usage_events(),
+            )
+            .await
+            .is_err()
+            {
+                warn!(
+                    "WebSocket usage event tasks did not finish within {:?}",
+                    USAGE_EMITTER_SHUTDOWN_TIMEOUT
+                );
+                false
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+
+        if let Some(emitter) = self.websocket_usage_emitter.take() {
+            let operation = if usage_events_drained {
+                emitter.shutdown()
+            } else {
+                // A timed-out session can still enqueue its final usage event.
+                // Keep the receiver alive for that late producer, but put an
+                // ordered persistence barrier behind everything already in its
+                // queue so shutdown cannot strand the accepted backlog.
+                emitter.flush()
+            };
+            if tokio::time::timeout(USAGE_EMITTER_SHUTDOWN_TIMEOUT, operation)
+                .await
+                .is_err()
+            {
+                warn!(
+                    operation = if usage_events_drained {
+                        "shutdown"
+                    } else {
+                        "flush"
+                    },
+                    "WebSocket usage emitter operation did not finish within {:?}",
+                    USAGE_EMITTER_SHUTDOWN_TIMEOUT
                 );
             }
         }

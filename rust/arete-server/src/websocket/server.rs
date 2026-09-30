@@ -395,14 +395,36 @@ fn key_class_label(key_class: arete_auth::KeyClass) -> &'static str {
     }
 }
 
-fn emit_usage_event(
-    usage_emitter: &Option<Arc<dyn WebSocketUsageEmitter>>,
-    event: WebSocketUsageEvent,
-) {
-    if let Some(emitter) = usage_emitter.clone() {
-        tokio::spawn(async move {
+#[derive(Clone)]
+struct UsageEmitterHandle {
+    emitter: Arc<dyn WebSocketUsageEmitter>,
+    tasks: TaskTracker,
+}
+
+impl UsageEmitterHandle {
+    fn new(emitter: Arc<dyn WebSocketUsageEmitter>) -> Self {
+        Self {
+            emitter,
+            tasks: TaskTracker::new(),
+        }
+    }
+
+    fn emit(&self, event: WebSocketUsageEvent) {
+        let emitter = self.emitter.clone();
+        self.tasks.spawn(async move {
             emitter.emit(event).await;
         });
+    }
+
+    async fn close_and_wait(&self) {
+        self.tasks.close();
+        self.tasks.wait().await;
+    }
+}
+
+fn emit_usage_event(usage_emitter: &Option<UsageEmitterHandle>, event: WebSocketUsageEvent) {
+    if let Some(emitter) = usage_emitter {
+        emitter.emit(event);
     }
 }
 
@@ -431,7 +453,7 @@ fn usage_identity_from_context(
 }
 
 fn emit_update_sent_for_client(
-    usage_emitter: &Option<Arc<dyn WebSocketUsageEmitter>>,
+    usage_emitter: &Option<UsageEmitterHandle>,
     client_manager: &ClientManager,
     client_id: Uuid,
     view_id: &str,
@@ -459,7 +481,7 @@ struct SubscriptionContext {
     bus_manager: BusManager,
     entity_cache: EntityCache,
     view_index: Arc<ViewIndex>,
-    usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    usage_emitter: Option<UsageEmitterHandle>,
     journal: Option<Arc<crate::journal::EventJournal>>,
     metrics: WsMetrics,
     delivery: WebSocketDeliveryConfig,
@@ -476,7 +498,7 @@ pub struct WebSocketServer {
     view_index: Arc<ViewIndex>,
     max_clients: usize,
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
-    usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    usage_emitter: Option<UsageEmitterHandle>,
     rate_limit_config: Option<RateLimitConfig>,
     journal: Option<Arc<crate::journal::EventJournal>>,
     delivery: WebSocketDeliveryConfig,
@@ -542,7 +564,7 @@ impl WebSocketServer {
     }
 
     pub fn with_usage_emitter(mut self, usage_emitter: Arc<dyn WebSocketUsageEmitter>) -> Self {
-        self.usage_emitter = Some(usage_emitter);
+        self.usage_emitter = Some(UsageEmitterHandle::new(usage_emitter));
         self
     }
 
@@ -625,7 +647,7 @@ pub(crate) struct ConnectionAcceptor {
     view_index: Arc<ViewIndex>,
     max_clients: usize,
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
-    usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    usage_emitter: Option<UsageEmitterHandle>,
     journal: Option<Arc<crate::journal::EventJournal>>,
     delivery: WebSocketDeliveryConfig,
     metrics: WsMetrics,
@@ -664,6 +686,14 @@ impl ConnectionAcceptor {
     /// up. Call after [`shutdown`](Self::shutdown).
     pub(crate) async fn wait_for_sessions(&self) {
         self.sessions.wait().await;
+    }
+
+    /// Stop accepting usage emissions and wait for every event spawned by a
+    /// completed session to enter the emitter queue.
+    pub(crate) async fn wait_for_usage_events(&self) {
+        if let Some(emitter) = &self.usage_emitter {
+            emitter.close_and_wait().await;
+        }
     }
 
     /// Serve one accepted connection: WebSocket handshake, authentication,
@@ -2959,6 +2989,46 @@ mod tests {
     use crate::view::{Delivery, Filters, Projection};
     use serde_json::json;
     use tokio::sync::oneshot;
+
+    #[derive(Default)]
+    struct DelayedUsageEmitter {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        events: tokio::sync::Mutex<Vec<WebSocketUsageEvent>>,
+    }
+
+    #[async_trait::async_trait]
+    impl WebSocketUsageEmitter for DelayedUsageEmitter {
+        async fn emit(&self, event: WebSocketUsageEvent) {
+            self.started.notify_one();
+            self.release.notified().await;
+            self.events.lock().await.push(event);
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_emitter_handle_waits_for_spawned_emissions() {
+        let emitter = Arc::new(DelayedUsageEmitter::default());
+        let handle = UsageEmitterHandle::new(emitter.clone());
+        handle.emit(WebSocketUsageEvent::ConnectionEstablished {
+            client_id: "client-1".to_string(),
+            remote_addr: "127.0.0.1:1234".to_string(),
+            deployment_id: Some("1".to_string()),
+            identity: UsageIdentity::default(),
+        });
+        emitter.started.notified().await;
+
+        let closing_handle = handle.clone();
+        let closing = tokio::spawn(async move {
+            closing_handle.close_and_wait().await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!closing.is_finished());
+
+        emitter.release.notify_one();
+        closing.await.expect("usage task wait should finish");
+        assert_eq!(emitter.events.lock().await.len(), 1);
+    }
 
     #[test]
     fn a_catch_up_carries_only_the_fields_that_changed() {
