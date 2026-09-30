@@ -14,7 +14,7 @@ use crate::websocket::subscription::{
     ClientMessage, RefreshAuthRequest, RefreshAuthResponse, SocketIssueMessage, Subscription,
     SubscriptionQuery, Unsubscription, PROTOCOL_VERSION,
 };
-use crate::websocket::usage::{WebSocketUsageEmitter, WebSocketUsageEvent};
+use crate::websocket::usage::{UsageIdentity, WebSocketUsageEmitter, WebSocketUsageEvent};
 use crate::WebSocketDeliveryConfig;
 use anyhow::Result;
 use bytes::Bytes;
@@ -358,22 +358,25 @@ fn emit_usage_event(
     }
 }
 
-fn usage_identity(
-    auth_context: Option<&AuthContext>,
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
+fn usage_identity(auth_context: Option<&AuthContext>) -> (UsageIdentity, Option<String>) {
     match auth_context {
-        Some(context) => (
-            Some(context.metering_key.clone()),
-            Some(context.subject.clone()),
-            Some(key_class_label(context.key_class).to_string()),
-            context.deployment_id.clone(),
-        ),
-        None => (None, None, None, None),
+        Some(context) => {
+            let v2 = !context.is_legacy_policy();
+            (
+                UsageIdentity {
+                    metering_key: Some(context.metering_key.clone()),
+                    subject: Some(context.subject.clone()),
+                    key_class: Some(key_class_label(context.key_class).to_string()),
+                    actor_key: v2.then(|| context.actor_key.clone()).flatten(),
+                    account_key: v2.then(|| context.account_key.clone()).flatten(),
+                    consumer_key: v2.then(|| context.consumer_key.clone()).flatten(),
+                    plan_code: v2.then(|| context.plan.clone()).flatten(),
+                    policy_version: v2.then_some(context.policy_version).flatten(),
+                },
+                context.deployment_id.clone(),
+            )
+        }
+        None => (UsageIdentity::default(), None),
     }
 }
 
@@ -385,14 +388,13 @@ fn emit_update_sent_for_client(
     bytes: usize,
 ) {
     let auth_context = client_manager.get_auth_context(client_id);
-    let (metering_key, subject, _, deployment_id) = usage_identity(auth_context.as_ref());
+    let (identity, deployment_id) = usage_identity(auth_context.as_ref());
     emit_usage_event(
         usage_emitter,
         WebSocketUsageEvent::UpdateSent {
             client_id: client_id.to_string(),
             deployment_id,
-            metering_key,
-            subject,
+            identity,
             view_id: view_id.to_string(),
             messages: 1,
             bytes: bytes as u64,
@@ -792,7 +794,8 @@ async fn handle_connection(
     let client_id = Uuid::new_v4();
     context.client_id = client_id;
     let connection_start = Instant::now();
-    let (metering_key, subject, key_class, deployment_id) = usage_identity(Some(&auth_context));
+    let (usage_identity, deployment_id) = usage_identity(Some(&auth_context));
+    let metering_key = usage_identity.metering_key.clone();
     context.metrics.connection_opened(metering_key.as_deref());
 
     let (ws_sender, mut ws_receiver) = ws_stream.split();
@@ -805,9 +808,7 @@ async fn handle_connection(
             client_id: client_id.to_string(),
             remote_addr: remote_addr.to_string(),
             deployment_id: deployment_id.clone(),
-            metering_key: metering_key.clone(),
-            subject: subject.clone(),
-            key_class,
+            identity: usage_identity.clone(),
         },
     );
 
@@ -961,8 +962,7 @@ async fn handle_connection(
                     WebSocketUsageEvent::SubscriptionCreated {
                         client_id: client_id.to_string(),
                         deployment_id: deployment_id.clone(),
-                        metering_key: metering_key.clone(),
-                        subject: subject.clone(),
+                        identity: usage_identity.clone(),
                         view_id: view,
                     },
                 );
@@ -974,8 +974,7 @@ async fn handle_connection(
                     &mut active_subscriptions,
                     metering_key.as_deref(),
                     &deployment_id,
-                    &metering_key,
-                    &subject,
+                    &usage_identity,
                 )
                 .await;
             }
@@ -1004,8 +1003,7 @@ async fn handle_connection(
             WebSocketUsageEvent::SubscriptionRemoved {
                 client_id: client_id.to_string(),
                 deployment_id: deployment_id.clone(),
-                metering_key: metering_key.clone(),
-                subject: subject.clone(),
+                identity: usage_identity.clone(),
                 view_id: view.clone(),
             },
         );
@@ -1019,8 +1017,7 @@ async fn handle_connection(
         WebSocketUsageEvent::ConnectionClosed {
             client_id: client_id.to_string(),
             deployment_id,
-            metering_key,
-            subject,
+            identity: usage_identity,
             duration_secs: Some(duration),
             subscription_count: u32::try_from(active_subscriptions.len()).unwrap_or(u32::MAX),
         },
@@ -1035,8 +1032,7 @@ async fn handle_unsubscribe(
     active_subscriptions: &mut HashMap<String, String>,
     metrics_metering_key: Option<&str>,
     deployment_id: &Option<String>,
-    usage_metering_key: &Option<String>,
-    subject: &Option<String>,
+    usage_identity: &UsageIdentity,
 ) {
     let subscription_id = unsubscription.subscription_id.clone();
     if let Err(message) = unsubscription.validate() {
@@ -1081,8 +1077,7 @@ async fn handle_unsubscribe(
         WebSocketUsageEvent::SubscriptionRemoved {
             client_id: context.client_id.to_string(),
             deployment_id: deployment_id.clone(),
-            metering_key: usage_metering_key.clone(),
-            subject: subject.clone(),
+            identity: usage_identity.clone(),
             view_id: view,
         },
     );
@@ -1205,14 +1200,13 @@ async fn send_snapshot_batches(
         context.metrics.message_sent();
 
         let auth_context = context.client_manager.get_auth_context(context.client_id);
-        let (metering_key, subject, _, deployment_id) = usage_identity(auth_context.as_ref());
+        let (identity, deployment_id) = usage_identity(auth_context.as_ref());
         emit_usage_event(
             &context.usage_emitter,
             WebSocketUsageEvent::SnapshotSent {
                 client_id: context.client_id.to_string(),
                 deployment_id,
-                metering_key,
-                subject,
+                identity,
                 view_id: subscription.query.view.clone(),
                 rows,
                 messages: 1,

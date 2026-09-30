@@ -129,6 +129,16 @@ struct TransactionUsageEvent {
     key_class: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actor_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    consumer_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plan_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy_version: Option<u32>,
     operation: &'static str,
     result: &'static str,
     request_bytes: u64,
@@ -578,6 +588,21 @@ fn emit_usage(
             arete_auth::KeyClass::Publishable => "publishable",
         }),
         plan: auth.and_then(|context| context.plan.clone()),
+        actor_key: auth
+            .filter(|context| !context.is_legacy_policy())
+            .and_then(|context| context.actor_key.clone()),
+        account_key: auth
+            .filter(|context| !context.is_legacy_policy())
+            .and_then(|context| context.account_key.clone()),
+        consumer_key: auth
+            .filter(|context| !context.is_legacy_policy())
+            .and_then(|context| context.consumer_key.clone()),
+        plan_code: auth
+            .filter(|context| !context.is_legacy_policy())
+            .and_then(|context| context.plan.clone()),
+        policy_version: auth
+            .filter(|context| !context.is_legacy_policy())
+            .and_then(|context| context.policy_version),
         operation: operation.name(),
         result: outcome,
         request_bytes: request_bytes.try_into().unwrap_or(u64::MAX),
@@ -2572,6 +2597,11 @@ mod tests {
             metering_key: Some("meter".into()),
             key_class: Some("secret"),
             plan: Some("plan".into()),
+            actor_key: Some("user:7".into()),
+            account_key: Some("account:42".into()),
+            consumer_key: Some("consumer:key-9".into()),
+            plan_code: Some("agent_trial".into()),
+            policy_version: Some(3),
             operation: "send",
             result: "accepted",
             request_bytes: 123,
@@ -2585,6 +2615,7 @@ mod tests {
         assert_eq!(value["subject"], "subject");
         assert_eq!(value["request_bytes"], 123);
         assert_eq!(value["response_bytes"], 0);
+        assert_eq!(value["account_key"], "account:42");
 
         for sensitive in [
             "transaction",
