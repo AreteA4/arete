@@ -13,6 +13,7 @@ use crate::view::ViewIndex;
 use crate::websocket::client_manager::RateLimitConfig;
 use crate::websocket::server::ConnectionAcceptor;
 use crate::websocket::WebSocketServer;
+use crate::SolanaGatewayUsageObserver;
 use crate::Spec;
 use crate::WebSocketAuthPlugin;
 use crate::WebSocketUsageEmitter;
@@ -67,6 +68,7 @@ pub struct Runtime {
     websocket_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     http_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     websocket_usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    solana_gateway_usage_observer: Option<Arc<dyn SolanaGatewayUsageObserver>>,
     websocket_max_clients: Option<usize>,
     websocket_rate_limit_config: Option<RateLimitConfig>,
     #[cfg(feature = "otel")]
@@ -85,6 +87,7 @@ impl Runtime {
             websocket_auth_plugin: None,
             http_auth_plugin: None,
             websocket_usage_emitter: None,
+            solana_gateway_usage_observer: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
             metrics,
@@ -102,6 +105,7 @@ impl Runtime {
             websocket_auth_plugin: None,
             http_auth_plugin: None,
             websocket_usage_emitter: None,
+            solana_gateway_usage_observer: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
         }
@@ -137,6 +141,14 @@ impl Runtime {
         websocket_usage_emitter: Arc<dyn WebSocketUsageEmitter>,
     ) -> Self {
         self.websocket_usage_emitter = Some(websocket_usage_emitter);
+        self
+    }
+
+    pub fn with_solana_gateway_usage_observer(
+        mut self,
+        observer: Arc<dyn SolanaGatewayUsageObserver>,
+    ) -> Self {
+        self.solana_gateway_usage_observer = Some(observer);
         self
     }
 
@@ -524,6 +536,9 @@ impl Runtime {
             }
             if plan.transactions && transaction_config.enabled {
                 http_server = http_server.with_transaction_config(transaction_config.clone());
+            }
+            if let Some(observer) = self.solana_gateway_usage_observer.clone() {
+                http_server = http_server.with_solana_gateway_usage_observer(observer);
             }
             #[cfg(feature = "otel")]
             {
