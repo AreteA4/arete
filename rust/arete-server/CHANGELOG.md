@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.28.0](https://github.com/AreteA4/arete/compare/arete-server-v0.27.0...arete-server-v0.28.0) (2026-09-30)
+
+
+### Features
+
+* emit and display account usage identity ([d1ce5ff](https://github.com/AreteA4/arete/commit/d1ce5ffc5e420c990619bb356f3e17e7d2a23e56))
+* **server:** emit account policy usage identity ([db83f8b](https://github.com/AreteA4/arete/commit/db83f8b9f80a7a221a366aa44cc0a441b45eedde))
+* **server:** expose Solana Gateway usage observer (A4-283) ([791c7b3](https://github.com/AreteA4/arete/commit/791c7b391a534073f3b57a7a1cb4ac51b0a2d8b7))
+* **server:** expose Solana Gateway usage observer (A4-283) ([f0d293f](https://github.com/AreteA4/arete/commit/f0d293f441063816f88a504d6ca521866d2082f1))
+
+
+### Bug Fixes
+
+* **server:** await durable usage shutdown (A4-188) ([7505a5b](https://github.com/AreteA4/arete/commit/7505a5bd2e2afb7f1d8af1a68e7a98bff70e49a0))
+* **server:** balance active metrics across auth refresh ([3852b74](https://github.com/AreteA4/arete/commit/3852b74fe937ce0e2de3c6690124ddb8b232caab))
+* **server:** bound recovered usage batches (A4-188) ([4c3633e](https://github.com/AreteA4/arete/commit/4c3633ea88b1068a07da5410b1308a031b35e7d7))
+* **server:** bound recovered websocket usage batches ([e1021a7](https://github.com/AreteA4/arete/commit/e1021a794651ed610bff9a491551fefc8972c37e))
+* **server:** box usage emitter commands (A4-188) ([ea74fe2](https://github.com/AreteA4/arete/commit/ea74fe2e35991c15b08372264921ef87c9362d63))
+* **server:** drain usage backlog on shutdown (A4-188) ([ac82c15](https://github.com/AreteA4/arete/commit/ac82c158e58c1d565b352eabfd4a6feddedd78fd))
+* **server:** flush accepted usage on slow shutdown (A4-188) ([fffaee8](https://github.com/AreteA4/arete/commit/fffaee8e405fa0bce20da9b94099ed1790008884))
+* **server:** preserve late shutdown usage (A4-188) ([3a37462](https://github.com/AreteA4/arete/commit/3a37462498911fa5a950eb51b45ee078646a33b9))
+* **server:** refresh websocket usage identity ([5f49ac0](https://github.com/AreteA4/arete/commit/5f49ac03a40903cf5b69a2275cb4fba96dceb4d7))
+* **server:** retain failed usage across flush barriers (A4-188) ([bc6962c](https://github.com/AreteA4/arete/commit/bc6962c37432b1045b2302fe359d54310f9244bf))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.27.0 to 0.28.0
+
 ## [0.27.0](https://github.com/AreteA4/arete/compare/arete-server-v0.26.0...arete-server-v0.27.0) (2026-09-29)
 
 
