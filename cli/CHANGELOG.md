@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## [0.28.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.27.0...a4-cli-v0.28.0) (2026-09-30)
+
+
+### Features
+
+* **cli:** show agent trial usage ([edc2c12](https://github.com/AreteA4/arete/commit/edc2c1280a2a86a34e1dedc1bd9fc2fc52488705))
+* emit and display account usage identity ([d1ce5ff](https://github.com/AreteA4/arete/commit/d1ce5ffc5e420c990619bb356f3e17e7d2a23e56))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.27.0 to 0.28.0
+    * arete-mcp bumped from 0.27.0 to 0.28.0
+
 ## [0.27.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.26.0...a4-cli-v0.27.0) (2026-09-29)
 
 
