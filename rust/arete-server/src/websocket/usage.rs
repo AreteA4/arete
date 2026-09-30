@@ -242,6 +242,7 @@ impl HttpUsageEmitter {
                                         &mut pending,
                                         &mut retry_state,
                                         spool_dir.as_deref(),
+                                        batch_size,
                                     ).await;
                                 }
                             }
@@ -254,6 +255,7 @@ impl HttpUsageEmitter {
                                         &mut pending,
                                         &mut retry_state,
                                         spool_dir.as_deref(),
+                                        batch_size,
                                     ).await;
                                 }
 
@@ -280,9 +282,11 @@ impl HttpUsageEmitter {
 
                                 if !pending.is_empty() {
                                     if let Some(dir) = spool_dir.as_deref() {
-                                        let batch = WebSocketUsageBatch { events: std::mem::take(&mut pending) };
-                                        if let Err(error) = spool_batch(dir, &batch) {
-                                            warn!(error = %error, count = batch.events.len(), "failed to spool pending websocket usage batch during shutdown");
+                                        while !pending.is_empty() {
+                                            let batch = take_pending_batch(&mut pending, batch_size);
+                                            if let Err(error) = spool_batch(dir, &batch) {
+                                                warn!(error = %error, count = batch.events.len(), "failed to spool pending websocket usage batch during shutdown");
+                                            }
                                         }
                                     } else {
                                         warn!(count = pending.len(), "dropping pending websocket usage events during shutdown without spool directory");
@@ -295,7 +299,13 @@ impl HttpUsageEmitter {
                     _ = ticker.tick() => {
                         if let Some(dir) = spool_dir.as_deref() {
                             if retry_state.is_none() {
-                                if let Err(error) = flush_one_spooled_batch(&client, &endpoint, auth_token.as_deref(), dir).await {
+                                if let Err(error) = flush_one_spooled_batch(
+                                    &client,
+                                    &endpoint,
+                                    auth_token.as_deref(),
+                                    dir,
+                                    batch_size,
+                                ).await {
                                     warn!(error = %error, path = %dir.display(), "failed to process spooled websocket usage batch");
                                 }
                             }
@@ -318,6 +328,7 @@ impl HttpUsageEmitter {
                                                 &mut pending,
                                                 &mut retry_state,
                                                 spool_dir.as_deref(),
+                                                batch_size,
                                             ).await;
                                         }
                                     }
@@ -347,6 +358,7 @@ impl HttpUsageEmitter {
                                 &mut pending,
                                 &mut retry_state,
                                 spool_dir.as_deref(),
+                                batch_size,
                             ).await;
                         }
                     }
@@ -419,10 +431,9 @@ async fn flush_pending_batch(
     pending: &mut Vec<WebSocketUsageEnvelope>,
     retry_state: &mut Option<RetryState>,
     spool_dir: Option<&Path>,
+    batch_size: usize,
 ) {
-    let batch = WebSocketUsageBatch {
-        events: std::mem::take(pending),
-    };
+    let batch = take_pending_batch(pending, batch_size);
 
     if !flush_batch(client, endpoint, auth_token, &batch).await {
         let state = RetryState {
@@ -440,6 +451,27 @@ async fn flush_pending_batch(
             *retry_state = Some(state);
         }
     }
+}
+
+/// Remove at most one configured HTTP batch from the pending queue.
+///
+/// A failed request can leave the emitter retrying while new events continue
+/// to arrive. Draining the entire pending queue after recovery would turn that
+/// backlog into one unbounded request and can permanently wedge delivery on a
+/// `413 Payload Too Large`. Keep the wire-size invariant at every flush, not
+/// only on the fast path that first reaches `batch_size`.
+fn take_pending_batch(
+    pending: &mut Vec<WebSocketUsageEnvelope>,
+    batch_size: usize,
+) -> WebSocketUsageBatch {
+    let batch_size = batch_size.max(1);
+    let remainder = if pending.len() > batch_size {
+        pending.split_off(batch_size)
+    } else {
+        Vec::new()
+    };
+    let events = std::mem::replace(pending, remainder);
+    WebSocketUsageBatch { events }
 }
 
 async fn flush_existing_batch(
@@ -509,17 +541,42 @@ async fn flush_one_spooled_batch(
     endpoint: &str,
     auth_token: Option<&str>,
     spool_dir: &Path,
+    batch_size: usize,
 ) -> std::io::Result<()> {
     let Some(path) = oldest_spooled_batch(spool_dir)? else {
         return Ok(());
     };
 
-    let batch = load_batch_from_file(&path)?;
+    let mut batch = load_batch_from_file(&path)?;
+    let batch_size = batch_size.max(1);
+    let remainder = if batch.events.len() > batch_size {
+        Some(WebSocketUsageBatch {
+            events: batch.events.split_off(batch_size),
+        })
+    } else {
+        None
+    };
+
     if flush_batch(client, endpoint, auth_token, &batch).await {
-        std::fs::remove_file(path)?;
+        if let Some(remainder) = remainder {
+            // Replacing the file after the successful request can repeat the
+            // first chunk after a crash, but every envelope keeps its event ID
+            // and ingestion is idempotent. Rewriting before the request could
+            // lose billable usage instead.
+            replace_spooled_batch(&path, &remainder)?;
+        } else {
+            std::fs::remove_file(path)?;
+        }
     }
 
     Ok(())
+}
+
+fn replace_spooled_batch(path: &Path, batch: &WebSocketUsageBatch) -> std::io::Result<()> {
+    let temp_path = path.with_extension("tmp");
+    let data = serde_json::to_vec(batch).map_err(std::io::Error::other)?;
+    std::fs::write(&temp_path, data)?;
+    std::fs::rename(temp_path, path)
 }
 
 #[cfg(test)]
@@ -595,6 +652,57 @@ mod tests {
         let loaded = load_batch_from_file(&path).expect("batch should load");
         assert_eq!(loaded.events.len(), 1);
         assert_eq!(loaded.events[0].build_id.as_deref(), Some("7"));
+
+        fs::remove_dir_all(dir).expect("temp dir should be removed");
+    }
+
+    #[test]
+    fn pending_backlog_is_drained_in_bounded_batches() {
+        let mut pending = (0..1250)
+            .map(|index| WebSocketUsageEnvelope {
+                event_id: format!("evt-{index}"),
+                occurred_at_ms: index,
+                build_id: None,
+                event: WebSocketUsageEvent::ConnectionEstablished {
+                    client_id: format!("client-{index}"),
+                    remote_addr: "127.0.0.1:1234".to_string(),
+                    deployment_id: Some("1".to_string()),
+                    identity: UsageIdentity::default(),
+                },
+            })
+            .collect::<Vec<_>>();
+
+        let first = take_pending_batch(&mut pending, 50);
+        assert_eq!(first.events.len(), 50);
+        assert_eq!(pending.len(), 1200);
+        assert_eq!(first.events[0].event_id, "evt-0");
+        assert_eq!(pending[0].event_id, "evt-50");
+    }
+
+    #[test]
+    fn replacing_spooled_batch_preserves_only_the_remainder() {
+        let dir = temp_spool_dir();
+        let path = dir.join("ws-usage-100-a.json");
+        let batch = WebSocketUsageBatch {
+            events: (0..3)
+                .map(|index| WebSocketUsageEnvelope {
+                    event_id: format!("evt-{index}"),
+                    occurred_at_ms: index,
+                    build_id: None,
+                    event: WebSocketUsageEvent::ConnectionEstablished {
+                        client_id: format!("client-{index}"),
+                        remote_addr: "127.0.0.1:1234".to_string(),
+                        deployment_id: Some("1".to_string()),
+                        identity: UsageIdentity::default(),
+                    },
+                })
+                .collect(),
+        };
+
+        replace_spooled_batch(&path, &batch).expect("remainder should replace spool file");
+        let loaded = load_batch_from_file(&path).expect("replacement should be readable");
+        assert_eq!(loaded.events.len(), 3);
+        assert_eq!(loaded.events[0].event_id, "evt-0");
 
         fs::remove_dir_all(dir).expect("temp dir should be removed");
     }
