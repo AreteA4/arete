@@ -130,7 +130,7 @@ pub struct HttpUsageEmitter {
 }
 
 enum UsageEmitterCommand {
-    Event(WebSocketUsageEvent),
+    Event(Box<WebSocketUsageEvent>),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -239,7 +239,7 @@ impl HttpUsageEmitter {
                                     event_id: Uuid::new_v4().to_string(),
                                     occurred_at_ms: current_time_ms(),
                                     build_id: build_id.clone(),
-                                    event,
+                                    event: *event,
                                 });
 
                                 if retry_state.is_none() && pending.len() >= batch_size {
@@ -365,7 +365,10 @@ fn validate_build_id(value: String) -> Result<String, InvalidUsageBuildId> {
 #[async_trait]
 impl WebSocketUsageEmitter for HttpUsageEmitter {
     async fn emit(&self, event: WebSocketUsageEvent) {
-        if let Err(error) = self.sender.send(UsageEmitterCommand::Event(event)) {
+        if let Err(error) = self
+            .sender
+            .send(UsageEmitterCommand::Event(Box::new(event)))
+        {
             warn!(error = %error, "failed to queue websocket usage event");
         }
     }
