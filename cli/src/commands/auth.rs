@@ -292,6 +292,25 @@ pub fn whoami(json: bool) -> Result<()> {
                 println!("  Remaining:   {remaining}");
             }
         }
+        if let Some(usage) = &identity.usage {
+            println!(
+                "  Usage:       {}",
+                if usage.exhausted {
+                    "exhausted".red().bold()
+                } else {
+                    "active".green().normal()
+                }
+            );
+            for meter in &usage.meters {
+                println!(
+                    "    {:<25} {:>12} / {}{}",
+                    meter.meter,
+                    meter.consumed,
+                    meter.allowance,
+                    if meter.exhausted { " (exhausted)" } else { "" }
+                );
+            }
+        }
         println!("  Target API:  {}", api_url.yellow());
         println!("  Credentials: {}", credentials_path().dimmed());
         return Ok(());
@@ -359,6 +378,7 @@ fn print_agent_identity_json(identity: &AgentMeResponse) -> Result<()> {
             "trialRemainingSeconds": trial_remaining_seconds(identity.entitlement_expires_at.as_deref()),
             "trialAccessEnabled": identity.trial_access_enabled,
             "starterGuidance": identity.starter_guidance,
+            "usage": identity.usage,
             "credentialSource": "credentials_file",
         }))?
     );
@@ -1097,6 +1117,7 @@ fn signup_json_payload(outcome: &SignupOutcome, profile: &str) -> serde_json::Va
         "claimState": outcome.identity.claim_state,
         "trialAccessEnabled": outcome.identity.trial_access_enabled,
         "starterGuidance": outcome.identity.starter_guidance,
+        "usage": outcome.identity.usage,
         "created": outcome.created,
         "idempotent": outcome.idempotent,
     })
@@ -1481,7 +1502,7 @@ mod signup_tests {
     }
 
     const OK_BODY: &str = r#"{"schemaVersion":1,"slug":"agent-7f3a","displayName":"Robo","createdAt":"2026-09-29T00:00:00Z","plan":"agent_trial","entitlementExpiresAt":"2026-10-06T00:00:00Z","claimState":"unclaimed","idempotent":false}"#;
-    const ME_BODY: &str = r#"{"slug":"agent-7f3a","display_name":"Robo","status":"active","created_at":"2026-09-29T00:00:00Z","last_seen_at":null,"claimState":"unclaimed","plan":"agent_trial","entitlementExpiresAt":"2026-10-06T00:00:00Z","trialAccessEnabled":true,"starterGuidance":"Use starter stacks."}"#;
+    const ME_BODY: &str = r#"{"slug":"agent-7f3a","display_name":"Robo","status":"active","created_at":"2026-09-29T00:00:00Z","last_seen_at":null,"claimState":"unclaimed","plan":"agent_trial","entitlementExpiresAt":"2026-10-06T00:00:00Z","trialAccessEnabled":true,"starterGuidance":"Use starter stacks.","usage":{"window":"entitlement","windowStart":"2026-09-29T00:00:00Z","windowEnd":"2026-10-06T00:00:00Z","meters":[{"meter":"messages","consumed":7,"allowance":25,"remaining":18,"exhausted":false}],"exhausted":false}}"#;
 
     #[test]
     fn signup_rejects_non_agent_profile_before_registration() {
@@ -1508,6 +1529,9 @@ mod signup_tests {
 
         assert_eq!(outcome.identity.slug, "agent-7f3a");
         assert_eq!(outcome.identity.display_name, "Robo");
+        let usage = outcome.identity.usage.as_ref().expect("usage summary");
+        assert!(!usage.exhausted);
+        assert_eq!(usage.meters[0].remaining, 18);
         assert_eq!(outcome.credentials_path, sandbox.credentials_path());
         let stored_key = ApiClient::load_optional_api_key_for_url(server.base_url())
             .expect("credentials readable")
@@ -1817,6 +1841,7 @@ mod signup_tests {
         assert!(!encoded.contains("/Users/example"), "{encoded}");
         assert!(encoded.contains("starterGuidance"), "{encoded}");
         assert!(encoded.contains("entitlementExpiresAt"), "{encoded}");
+        assert!(encoded.contains("\"usage\""), "{encoded}");
     }
 
     #[test]
