@@ -775,6 +775,29 @@ fn generate_account_type(
     let discriminator = account.get_discriminator();
     let disc_array = quote! { [#(#discriminator),*] };
 
+    // Strict decoding is opt-in so existing padded account consumers remain compatible.
+    // Use this when a release declares a fixed layout and extended accounts are unsupported.
+    let exact_method = if use_bytemuck {
+        quote! {
+            pub fn try_from_bytes_exact(data: &[u8]) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+                let decoded = Self::try_from_bytes(data)?;
+                let body = #body_expr;
+                if body.len() != std::mem::size_of::<Self>() { return Err("unsupported_layout: trailing account bytes".into()); }
+                Ok(decoded)
+            }
+        }
+    } else {
+        quote! {
+            pub fn try_from_bytes_exact(data: &[u8]) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+                if data.len() < Self::DISCRIMINATOR.len() || &data[..Self::DISCRIMINATOR.len()] != Self::DISCRIMINATOR { return Err("Discriminator mismatch".into()); }
+                let mut reader = #body_expr;
+                let decoded = <Self as borsh::BorshDeserialize>::deserialize_reader(&mut reader)?;
+                if !reader.is_empty() { return Err("unsupported_layout: trailing account bytes".into()); }
+                Ok(decoded)
+            }
+        }
+    };
+
     if use_bytemuck {
         let bytemuck_try_from = quote! {
             impl #name {
@@ -795,6 +818,7 @@ fn generate_account_type(
                     Ok(arete::runtime::bytemuck::pod_read_unaligned::<Self>(&body[..struct_size]))
                 }
 
+                #exact_method
                 #to_json_method
             }
         };
@@ -863,6 +887,7 @@ fn generate_account_type(
                         .map_err(|e| e.into())
                 }
 
+                #exact_method
                 #to_json_method
             }
         }
@@ -1135,36 +1160,82 @@ fn generate_custom_type(type_def: &IdlTypeDef, account_names: &HashSet<String>) 
             }
         }
         IdlTypeDefKind::Enum { kind: _, variants } => {
-            let enum_variants = variants.iter().enumerate().map(|(i, variant)| {
+            // Borsh's ordinal tag is unchanged; only the selected variant's payload follows it.
+            let default_variant = variants
+                .iter()
+                .position(|variant| variant.fields.is_empty());
+            let enum_variants = variants.iter().enumerate().map(|(index, variant)| {
                 let variant_name = format_ident!("{}", variant.name);
-                if i == 0 {
-                    quote! { #[default] #variant_name }
-                } else {
-                    quote! { #variant_name }
-                }
+                let default_attr = (Some(index) == default_variant).then(|| quote! { #[default] });
+                let fields = &variant.fields;
+                if fields.is_empty() { return quote! { #default_attr #variant_name }; }
+                if fields.iter().all(|field| matches!(field, IdlEnumVariantField::Named(_))) {
+                    let named = fields.iter().map(|field| {
+                        let IdlEnumVariantField::Named(field) = field else { unreachable!() };
+                        let name = format_ident!("{}", to_snake_case(&field.name));
+                        let ty = type_to_token_stream_in_module(&field.type_, account_names, false);
+                        let serde_attr = is_large_array(&field.type_).then(|| quote! { #[serde(with = "arete::runtime::serde_helpers::big_array")] });
+                        quote! { #serde_attr #name: #ty }
+                    });
+                    quote! { #variant_name { #(#named),* } }
+                } else if fields.iter().all(|field| matches!(field, IdlEnumVariantField::Tuple(_))) {
+                    let tuple = fields.iter().map(|field| {
+                        let IdlEnumVariantField::Tuple(ty) = field else { unreachable!() };
+                        let serde_attr = is_large_array(ty).then(|| quote! { #[serde(with = "arete::runtime::serde_helpers::big_array")] });
+                        let ty = type_to_token_stream_in_module(ty, account_names, false);
+                        quote! { #serde_attr #ty }
+                    });
+                    quote! { #variant_name(#(#tuple),*) }
+                } else { quote! { compile_error!("Mixed named and tuple enum payloads are unsupported"); } }
             });
-
             let enum_to_json_arms = variants.iter().map(|variant| {
                 let variant_name = format_ident!("{}", variant.name);
-                let variant_value = variant.name.clone();
-
-                quote! {
-                    Self::#variant_name => arete::runtime::serde_json::Value::String(#variant_value.to_string())
+                let label = &variant.name;
+                if variant.fields.is_empty() {
+                    return quote! { Self::#variant_name => arete::runtime::serde_json::Value::String(#label.to_string()) };
                 }
+                if variant.fields.iter().all(|field| matches!(field, IdlEnumVariantField::Named(_))) {
+                    let bindings: Vec<_> = variant.fields.iter().map(|field| {
+                        let IdlEnumVariantField::Named(field) = field else { unreachable!() };
+                        format_ident!("{}", to_snake_case(&field.name))
+                    }).collect();
+                    let inserts = variant.fields.iter().zip(&bindings).map(|(field, binding)| {
+                        let IdlEnumVariantField::Named(field) = field else { unreachable!() };
+                        let key = binding.to_string();
+                        let value = generate_json_value_for_type(&field.type_, quote! { *#binding }, false);
+                        quote! { payload.insert(#key.to_string(), #value); }
+                    });
+                    quote! { Self::#variant_name { #(#bindings),* } => {
+                        let mut payload = arete::runtime::serde_json::Map::new();
+                        #(#inserts)*
+                        let mut tagged = arete::runtime::serde_json::Map::new();
+                        tagged.insert(#label.to_string(), arete::runtime::serde_json::Value::Object(payload));
+                        arete::runtime::serde_json::Value::Object(tagged)
+                    } }
+                } else if variant.fields.iter().all(|field| matches!(field, IdlEnumVariantField::Tuple(_))) {
+                    let bindings: Vec<_> = (0..variant.fields.len()).map(|index| format_ident!("field_{}", index)).collect();
+                    let values: Vec<_> = variant.fields.iter().zip(&bindings).map(|(field, binding)| {
+                        let IdlEnumVariantField::Tuple(ty) = field else { unreachable!() };
+                        generate_json_value_for_type(ty, quote! { *#binding }, false)
+                    }).collect();
+                    // Serde's externally tagged newtype representation for a single tuple field.
+                    let payload = if values.len() == 1 { let value = &values[0]; quote! { #value } } else { quote! { arete::runtime::serde_json::Value::Array(vec![#(#values),*]) } };
+                    quote! { Self::#variant_name(#(#bindings),*) => {
+                        let mut tagged = arete::runtime::serde_json::Map::new();
+                        tagged.insert(#label.to_string(), #payload);
+                        arete::runtime::serde_json::Value::Object(tagged)
+                    } }
+                } else { quote! { _ => unreachable!("mixed enum payloads rejected at generation") } }
             });
-
+            let default_derive = default_variant.map(|_| quote! { #[derive(Default)] });
             quote! {
-                #[derive(Debug, Clone, Default, BorshSerialize, BorshDeserialize, arete::runtime::serde::Serialize, arete::runtime::serde::Deserialize)]
+                #[derive(Debug, Clone, BorshSerialize, BorshDeserialize, arete::runtime::serde::Serialize, arete::runtime::serde::Deserialize)]
+                #default_derive
                 #[serde(crate = "arete::runtime::serde")]
-                pub enum #name {
-                    #(#enum_variants),*
-                }
-
+                pub enum #name { #(#enum_variants),* }
                 impl #name {
                     pub fn to_json_value(&self) -> arete::runtime::serde_json::Value {
-                        match self {
-                            #(#enum_to_json_arms),*
-                        }
+                        match self { #(#enum_to_json_arms),* }
                     }
                 }
             }
