@@ -81,6 +81,11 @@ let mut miner = a4.views.ore_miner.state()
 
 // Rich diffs with before/after values
 let mut diffs = a4.views.ore_round.state().watch_rich("42");
+
+// One-shot reads take the same options as a `GetOptions` value
+let open_orders = a4.views.order.list()
+    .get_with(GetOptions::new().filter("state.status", "open").take(10))
+    .await;
 ```
 
 `listen` yields `T`, `watch` yields `Update<T>`, `watch_rich` yields

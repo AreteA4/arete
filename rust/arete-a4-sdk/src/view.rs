@@ -20,6 +20,12 @@
 //! // List all rounds
 //! let rounds = views.list().get().await;
 //!
+//! // One-shot read with query options (TypeScript `list.get({ filters })`)
+//! let open = views
+//!     .list()
+//!     .get_with(GetOptions::new().filter("state.status", "open").take(10))
+//!     .await;
+//!
 //! // Get specific round by key
 //! let round = views.state().get("round_key").await;
 //!
@@ -30,7 +36,7 @@
 //! }
 //! ```
 
-use crate::connection::ConnectionManager;
+use crate::connection::{ConnectionManager, SubscriptionOptions};
 use crate::store::SharedStore;
 use crate::stream::{EntityStream, KeyFilter, RichEntityStream, Update, UseStream};
 use futures_util::Stream;
@@ -42,6 +48,110 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+
+/// Query options for the one-shot reads [`ViewHandle::get_with`] and
+/// [`StateView::get_with`]: the Rust form of TypeScript's `GetOptions`
+/// (`list.get(options)`, `state.get(key, options)`).
+///
+/// Every field except `timeout` is sent on the read's subscription exactly as
+/// the stream builders (`listen`, `watch`, `watch_rich`) send it: `filters`,
+/// `take`, `skip`, `partition`, `after` and `snapshot_limit` in the protocol v2
+/// query, `with_snapshot` as the subscription's `snapshot.enabled` (default
+/// `true`). An empty `filters` map sends no filters. `timeout` bounds the wait
+/// for the initial snapshot instead of the client's `initial_data_timeout`
+/// (TypeScript `timeoutMs`). The default sends what [`ViewHandle::get`] sends.
+///
+/// ```ignore
+/// let rows = a4
+///     .views
+///     .lookup_table
+///     .list()
+///     .get_with(GetOptions::new().filter("state.authority", authority))
+///     .await;
+/// ```
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GetOptions {
+    pub partition: Option<String>,
+    pub filters: BTreeMap<String, Value>,
+    pub take: Option<usize>,
+    pub skip: Option<usize>,
+    pub with_snapshot: Option<bool>,
+    pub after: Option<String>,
+    pub snapshot_limit: Option<usize>,
+    pub timeout: Option<Duration>,
+}
+
+impl GetOptions {
+    /// No options: the query [`ViewHandle::get`] sends.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a server-side filter (`filters[path] = value`).
+    pub fn filter(mut self, path: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.filters.insert(path.into(), value.into());
+        self
+    }
+
+    /// Limit the read to the top N items.
+    pub fn take(mut self, n: usize) -> Self {
+        self.take = Some(n);
+        self
+    }
+
+    /// Skip the first N items.
+    pub fn skip(mut self, n: usize) -> Self {
+        self.skip = Some(n);
+        self
+    }
+
+    pub fn partition(mut self, partition: impl Into<String>) -> Self {
+        self.partition = Some(partition.into());
+        self
+    }
+
+    /// Set whether to include the initial snapshot (defaults to true).
+    pub fn with_snapshot(mut self, with_snapshot: bool) -> Self {
+        self.with_snapshot = Some(with_snapshot);
+        self
+    }
+
+    /// Resume after this `{epoch}:{offset}` cursor, exclusive.
+    pub fn after(mut self, cursor: impl Into<String>) -> Self {
+        self.after = Some(cursor.into());
+        self
+    }
+
+    /// Set the maximum number of entities to include in the snapshot.
+    pub fn with_snapshot_limit(mut self, limit: usize) -> Self {
+        self.snapshot_limit = Some(limit);
+        self
+    }
+
+    /// Wait at most `timeout` for the initial snapshot (instead of the
+    /// client's `initial_data_timeout`).
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// The subscription options and the snapshot wait of this read.
+    fn into_parts(self, default_timeout: Duration) -> (SubscriptionOptions, Duration) {
+        let timeout = self.timeout.unwrap_or(default_timeout);
+        (
+            SubscriptionOptions {
+                partition: self.partition,
+                filters: self.filters,
+                take: self.take,
+                skip: self.skip,
+                with_snapshot: self.with_snapshot,
+                after: self.after,
+                snapshot_limit: self.snapshot_limit,
+            },
+            timeout,
+        )
+    }
+}
 
 /// A handle to a view that provides get/watch operations.
 ///
@@ -65,15 +175,37 @@ where
     /// up to that many items. Use `.first()` on the result if you need
     /// a single item.
     pub async fn get(&self) -> Vec<T> {
+        self.get_with(GetOptions::default()).await
+    }
+
+    /// Get the items of this view that match `options` (TypeScript
+    /// `list.get(options)`): subscribes with the options' query, waits for
+    /// its initial snapshot and releases the subscription. Returns the rows
+    /// the host sent for that query, in the view's order.
+    ///
+    /// ```ignore
+    /// let pools = a4
+    ///     .views
+    ///     .pool
+    ///     .list()
+    ///     .get_with(
+    ///         GetOptions::new()
+    ///             .filter("tokens.base_mint", base_mint)
+    ///             .filter("tokens.quote_mint", quote_mint),
+    ///     )
+    ///     .await;
+    /// ```
+    pub async fn get_with(&self, options: GetOptions) -> Vec<T> {
+        let (subscription, timeout) = options.into_parts(self.initial_data_timeout);
         let Ok(lease) = self
             .connection
-            .ensure_subscription(&self.view_path, None)
+            .ensure_subscription_with_opts(&self.view_path, None, subscription)
             .await
         else {
             return Vec::new();
         };
         self.store
-            .wait_for_subscription_ready(lease.subscription_id(), self.initial_data_timeout)
+            .wait_for_subscription_ready(lease.subscription_id(), timeout)
             .await;
         self.store
             .list_for_subscription::<T>(lease.subscription_id())
@@ -656,13 +788,20 @@ where
 
     /// Get an entity by key.
     pub async fn get(&self, key: &str) -> Option<T> {
+        self.get_with(key, GetOptions::default()).await
+    }
+
+    /// Get an entity by key with query options (TypeScript
+    /// `state.get(key, options)`); see [`GetOptions`].
+    pub async fn get_with(&self, key: &str, options: GetOptions) -> Option<T> {
+        let (subscription, timeout) = options.into_parts(self.initial_data_timeout);
         let lease = self
             .connection
-            .ensure_subscription(&self.view_path, Some(key))
+            .ensure_subscription_with_opts(&self.view_path, Some(key), subscription)
             .await
             .ok()?;
         self.store
-            .wait_for_subscription_ready(lease.subscription_id(), self.initial_data_timeout)
+            .wait_for_subscription_ready(lease.subscription_id(), timeout)
             .await;
         self.store
             .get_for_subscription::<T>(lease.subscription_id(), key)

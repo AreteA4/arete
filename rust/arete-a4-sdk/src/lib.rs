@@ -160,7 +160,8 @@ pub use subscription::{
     MAX_SUBSCRIPTION_ID_BYTES, PROTOCOL_VERSION,
 };
 pub use view::{
-    RichWatchBuilder, StateView, UseBuilder, ViewBuilder, ViewHandle, Views, WatchBuilder,
+    GetOptions, RichWatchBuilder, StateView, UseBuilder, ViewBuilder, ViewHandle, Views,
+    WatchBuilder,
 };
 
 #[cfg(test)]

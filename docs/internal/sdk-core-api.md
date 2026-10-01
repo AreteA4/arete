@@ -107,6 +107,17 @@ optional schema/parser override):
 State views take a **typed key** (generated from the entity's key fields) plus the same
 options. Dropping/breaking the stream releases the refcounted lease.
 
+`get` and `get_one` send their options on the read's subscription exactly as the
+streaming verbs do, then release it after the snapshot: a list
+`get({ filters: { 'state.authority': a } })` subscribes with
+`query: {view, filters: {"state.authority": a}}` and `snapshot: {enabled: true}`, and a
+`get` without options sends the bare `{view}` query (state: `{view, key}`). They also
+take a per-read bound on the snapshot wait that is not sent (TS `timeoutMs`, Python
+`timeout`, Rust `GetOptions::timeout`; default the client's initial-data timeout). Rust's
+`get()` takes no options, so the options are a `GetOptions` value with the stream
+builders' method names: `list().get_with(GetOptions::new().filter(path, value).take(10))`
+and `state().get_with(key, options)`.
+
 **Update taxonomy** (identical everywhere): `upsert` (the whole entity — sent whenever a
 key becomes a member of the subscription as far as the server knows: entering the
 window, its first change after a truncated or disabled snapshot, every change on a
@@ -475,6 +486,13 @@ auth tokens per binding.
     value; a negative raw `int` decodes, as a TypeScript bigint does) and returns
     `{"raw": int}` or `{"ui": str}`; `arete.AmountInput` is the type alias. Resolve
     either with the amount helpers (`to_raw_amount`, `resolve_amount`, …).
+  - **Filtered view reads.** A stack extension's TypeScript
+    `client.views.<Entity>.list.get({ filters: { '<path>': value } })` is Rust
+    `a4.views.<entity>.list().get_with(GetOptions::new().filter("<path>", value)).await`
+    and Python `await client.views.<Entity>.list.get(filters={"<path>": value})`: the
+    same paths and values, so the host query, and the view fixture it replays
+    (`args: [{"filters": {…}}]`), is the TypeScript one. Keep the TypeScript
+    extension's client-side check of the returned rows as well.
   - **Chain clock.** Rust `arete_sdk::ChainClock` implements `Serialize` as the
     TypeScript `ChainClock` (`slot`, `epoch`, `leaderScheduleEpoch`,
     `unixTimestamp`; an absent optional field omitted), so a result carries it as is.
@@ -519,7 +537,7 @@ standard style (casing, error, async, and options conventions).
 | view access | `a4.views.OreRound.latest` | `arete.views.OreRound.latest` | `a4.views.ore_round.latest()` | `a4.views.ore_round.latest` |
 | `use` | `.use(opts)` → `AsyncIterable<T>` | `.use(opts)` → status-discriminated hook result | `.listen()` + builder methods → `impl Stream<Item=T>` | `.use(**opts)` → `AsyncIterator[T]` |
 | `watch` / `watch_rich` | `.watch(opts)` / `.watchRich(opts)` | *(covered by hook statuses)* | `.watch()` / `.watch_rich()` + builders | `.watch(**opts)` / `.watch_rich(**opts)` |
-| `get` / `get_sync` / `get_one` | `await .get(opts)` / `.getSync(opts)` / list-first | `.useOne(...)` | `.get().await` / `.get_sync()` / `.get_one().await` | `await .get(**opts)` / `.get_sync(**opts)` / `await .get_one(**opts)` |
+| `get` / `get_sync` / `get_one` | `await .get(opts)` / `.getSync(opts)` / list-first | `.useOne(...)` | `.get().await` or `.get_with(GetOptions::new()…).await` / `.get_sync()` / `.get_one().await` | `await .get(**opts)` / `.get_sync(**opts)` / `await .get_one(**opts)` |
 | state key | `.state.use({roundId: 42n}, opts)` | same | `.state().listen(key)` + builders | `.state.use(round_id=42, **opts)` |
 | query options | options object | options object | builder chain (`.take(10).filter(…)`) | keyword arguments |
 | raw build | `ore.raw.deploy.build(params)` | same (via `useMutation` for execution) | `a4.programs.ore.deploy(DeployParams{…})` (typed struct, `deny_unknown_fields`) | `ore.raw.deploy.build(**params)` (kwargs, fail-closed) |
