@@ -1,5 +1,9 @@
 //! Instruction account resolution.
 //!
+//! An explicit address (a params override or `BuildOptions::accounts`) wins
+//! for every account, whatever its resolution, as in the TypeScript
+//! `resolveAccounts`: a named PDA or known account is not re-derived.
+//!
 //! Resolution order:
 //! 1. Non-PDA accounts (signer, known, user-provided) resolve first.
 //! 2. PDA accounts resolve in dependency order (accounts they reference via
@@ -40,9 +44,11 @@ pub struct AccountResolutionResult {
 
 /// Resolves instruction accounts against args, overrides, and a fallback payer.
 ///
-/// `overrides` are explicit account-address overrides (including signer slots);
-/// `resolve` carries helper-only PDA seed inputs that are not serialized
-/// on-chain; `program_id` is the fallback program for PDA derivation and the
+/// `overrides` are explicit account addresses. One wins over the account's
+/// own resolution for every kind of account (signer, known, PDA or
+/// user-provided), and must be a base58 32-byte public key. `resolve`
+/// carries helper-only PDA seed inputs that are not serialized on-chain;
+/// `program_id` is the fallback program for PDA derivation and the
 /// placeholder for omitted non-trailing optional accounts.
 pub fn resolve_accounts(
     metas: &[AccountMeta],
@@ -160,34 +166,53 @@ fn resolve_single(
     program_id: Option<&str>,
     resolved: &BTreeMap<String, ResolvedAccount>,
 ) -> Result<Option<ResolvedAccount>, InstructionError> {
+    if let Some(address) = overrides.get(&meta.name) {
+        validate_account_override(&meta.name, address)?;
+        return Ok(Some(ResolvedAccount {
+            name: meta.name.clone(),
+            address: address.clone(),
+            is_signer: meta.is_signer,
+            is_writable: meta.is_writable,
+        }));
+    }
     match &meta.resolution {
-        AccountResolution::Signer => {
-            let address = overrides.get(&meta.name).map(String::as_str).or(payer);
-            Ok(address.map(|address| ResolvedAccount {
-                name: meta.name.clone(),
-                address: address.to_string(),
-                is_signer: true,
-                is_writable: meta.is_writable,
-            }))
-        }
+        AccountResolution::Signer => Ok(payer.map(|address| ResolvedAccount {
+            name: meta.name.clone(),
+            address: address.to_string(),
+            is_signer: true,
+            is_writable: meta.is_writable,
+        })),
         AccountResolution::Known(address) => Ok(Some(ResolvedAccount {
             name: meta.name.clone(),
             address: address.clone(),
             is_signer: meta.is_signer,
             is_writable: meta.is_writable,
         })),
-        AccountResolution::UserProvided => {
-            Ok(overrides.get(&meta.name).map(|address| ResolvedAccount {
-                name: meta.name.clone(),
-                address: address.clone(),
-                is_signer: meta.is_signer,
-                is_writable: meta.is_writable,
-            }))
-        }
+        // Only an explicit address resolves a user-provided account.
+        AccountResolution::UserProvided => Ok(None),
         AccountResolution::Pda(config) => {
             resolve_pda(meta, config, args, resolve, resolved, program_id).map(Some)
         }
     }
+}
+
+/// An explicit account address must be a base58 32-byte public key (the
+/// TypeScript `validateAccountAddress`).
+fn validate_account_override(name: &str, address: &str) -> Result<(), InstructionError> {
+    let invalid = |message: String| InstructionError::InvalidAccountOverride {
+        name: name.to_string(),
+        message,
+    };
+    let decoded = bs58::decode(address)
+        .into_vec()
+        .map_err(|_| invalid("expected a base58 public key".to_string()))?;
+    if decoded.len() != 32 {
+        return Err(invalid(format!(
+            "expected a 32-byte public key, got {} bytes",
+            decoded.len()
+        )));
+    }
+    Ok(())
 }
 
 fn resolve_pda(
@@ -361,6 +386,82 @@ mod tests {
         );
         let addresses: Vec<&str> = result.accounts.iter().map(|a| a.address.as_str()).collect();
         assert_eq!(addresses, [TOKEN_PROGRAM, WSOL_MINT]);
+    }
+
+    #[test]
+    fn an_explicit_address_wins_for_known_and_pda_accounts() {
+        // The PDA's seed argument is absent: an explicit address is used as
+        // given, never derived (TypeScript `resolveSingleAccount`).
+        let metas = [
+            AccountMeta {
+                is_writable: true,
+                ..meta(
+                    "systemProgram",
+                    AccountResolution::Known(SYSTEM_PROGRAM.to_string()),
+                )
+            },
+            meta(
+                "state",
+                AccountResolution::Pda(PdaConfig {
+                    program_id: Some(TOKEN_PROGRAM.to_string()),
+                    seeds: vec![PdaSeed::ArgRef {
+                        arg: "index".to_string(),
+                        arg_type: Some("u64".to_string()),
+                    }],
+                }),
+            ),
+            meta(
+                "child",
+                AccountResolution::Pda(PdaConfig {
+                    program_id: Some(TOKEN_PROGRAM.to_string()),
+                    seeds: vec![PdaSeed::AccountRef("state".to_string())],
+                }),
+            ),
+        ];
+        let result = resolve_ok(
+            &metas,
+            json!({}),
+            &overrides(&[("systemProgram", TOKEN_PROGRAM), ("state", WSOL_MINT)]),
+            None,
+            None,
+        );
+        let addresses: Vec<&str> = result.accounts.iter().map(|a| a.address.as_str()).collect();
+        // A PDA seeded by an explicit account derives from the given address.
+        let child = expected_pda(
+            &[bs58::decode(WSOL_MINT).into_vec().unwrap()],
+            TOKEN_PROGRAM,
+        );
+        assert_eq!(addresses, [TOKEN_PROGRAM, WSOL_MINT, child.as_str()]);
+        assert!(result.accounts[0].is_writable);
+        assert!(!result.accounts[0].is_signer);
+    }
+
+    #[test]
+    fn rejects_an_explicit_address_that_is_not_a_public_key() {
+        let metas = [meta(
+            "systemProgram",
+            AccountResolution::Known(SYSTEM_PROGRAM.to_string()),
+        )];
+        let resolve = |address: &str| {
+            resolve_accounts(
+                &metas,
+                &Map::new(),
+                &overrides(&[("systemProgram", address)]),
+                None,
+                None,
+                None,
+            )
+            .unwrap_err()
+            .to_string()
+        };
+        assert_eq!(
+            resolve("not-base58!"),
+            "Invalid account override for \"systemProgram\": expected a base58 public key"
+        );
+        assert_eq!(
+            resolve("1111"),
+            "Invalid account override for \"systemProgram\": expected a 32-byte public key, got 4 bytes"
+        );
     }
 
     #[test]

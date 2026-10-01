@@ -47,12 +47,13 @@ impl InstructionHandler {
     ///
     /// Params keys matching a declared argument name are serialized args; keys
     /// matching a declared account name (with a string value) are account
-    /// address overrides — including signer slots, allowing explicit signer
-    /// addresses to override the payer fallback. A `resolve` key carries
-    /// helper-only PDA seed inputs. Anything else errors — a typo'd key
-    /// silently dropped here would otherwise change the built instruction.
-    /// `options.accounts` remains an unvalidated escape hatch that wins over
-    /// param-derived overrides.
+    /// addresses. An explicit address wins for every account, as in the
+    /// TypeScript `buildInstruction`: a signer over the payer fallback, and a
+    /// PDA or known account over its derivation or fixed address. A
+    /// `resolve` key carries helper-only PDA seed inputs. Anything else
+    /// errors — a typo'd key silently dropped here would otherwise change the
+    /// built instruction. `options.accounts` wins over param-derived
+    /// addresses; every explicit address must be a base58 32-byte public key.
     pub fn build_with(
         &self,
         params: Value,
@@ -306,6 +307,46 @@ mod tests {
         assert_eq!(
             built.accounts[1].pubkey,
             Pubkey::from_str(TOKEN_PROGRAM).unwrap()
+        );
+    }
+
+    #[test]
+    fn an_explicit_pda_address_wins_over_its_derivation() {
+        // `state` is a PDA of `authority`; named in the params or in
+        // `options.accounts`, it is used as given (TypeScript parity).
+        let built = make_handler()
+            .build_with(
+                json!({ "amount": 1, "mint": SYSTEM_PROGRAM, "state": WSOL_MINT }),
+                &payer_options(),
+            )
+            .unwrap();
+        assert_eq!(
+            built.accounts[2].pubkey,
+            Pubkey::from_str(WSOL_MINT).unwrap()
+        );
+        assert!(built.accounts[2].is_writable);
+
+        let options = BuildOptions {
+            accounts: [("state".to_string(), TOKEN_PROGRAM.to_string())].into(),
+            ..payer_options()
+        };
+        let built = make_handler()
+            .build_with(json!({ "amount": 1, "mint": SYSTEM_PROGRAM }), &options)
+            .unwrap();
+        assert_eq!(
+            built.accounts[2].pubkey,
+            Pubkey::from_str(TOKEN_PROGRAM).unwrap()
+        );
+
+        let err = make_handler()
+            .build_with(
+                json!({ "amount": 1, "mint": SYSTEM_PROGRAM, "state": "short" }),
+                &payer_options(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Invalid account override for \"state\": expected a 32-byte public key, got 4 bytes"
         );
     }
 

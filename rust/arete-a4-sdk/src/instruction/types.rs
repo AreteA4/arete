@@ -183,7 +183,9 @@ pub struct ErrorMetadata {
 pub struct BuildOptions {
     /// Fallback signer address (mirror of the TS `wallet.publicKey` fallback).
     pub payer: Option<String>,
-    /// Unvalidated account-address overrides (win over param-derived overrides).
+    /// Account-address overrides; they win over param-derived overrides.
+    /// Like those, each wins over its account's own resolution and must be a
+    /// base58 32-byte public key.
     pub accounts: BTreeMap<String, String>,
     /// Extra account metas appended after declared accounts (Anchor `remainingAccounts`).
     pub remaining_accounts: Vec<BuiltAccountMeta>,
@@ -225,6 +227,15 @@ pub enum InstructionError {
     /// An address failed to parse as a base58 32-byte public key.
     #[error("Invalid pubkey: {0}")]
     InvalidPubkey(String),
+    /// An explicit account address is not a base58 32-byte public key (the
+    /// TypeScript resolver's message).
+    #[error("Invalid account override for \"{name}\": {message}")]
+    InvalidAccountOverride {
+        /// Account name.
+        name: String,
+        /// What is wrong with the address.
+        message: String,
+    },
     /// PDA `accountRef` seeds form a cycle.
     #[error("Circular dependency in PDA accounts: {0}")]
     CircularPdaDependency(String),
