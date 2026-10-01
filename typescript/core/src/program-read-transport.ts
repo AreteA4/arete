@@ -1,3 +1,4 @@
+import { managedAddress, managedPage, managedReadOptions, type ManagedReadOptions, type NativePositionQuery } from './managed-solana';
 import { ConnectionManager } from './connection';
 import {
   AreteError,
@@ -11,6 +12,9 @@ import {
 import { ReadRequestError } from './read';
 
 export type ProgramReadRequest =
+  | { readonly operation: 'fetchWithContext'; readonly account: string; readonly address: string; readonly options?: ManagedReadOptions }
+  | { readonly operation: 'fetchManyWithContext'; readonly account: string; readonly addresses: readonly string[]; readonly options?: ManagedReadOptions }
+  | { readonly operation: 'nativeQuery'; readonly account: string; readonly query: NativePositionQuery }
   | {
       readonly operation: 'fetch';
       readonly account: string;
@@ -142,8 +146,10 @@ function requestPath(
   const root = `/v1/releases/${releaseHash}`
     + `/accounts/${encodeURIComponent(request.account)}`;
   if (request.operation === 'fetchMany') return root;
+  if (request.operation === 'fetchManyWithContext') return `${root}/context`;
+  if (request.operation === 'nativeQuery') return `${root}/query`;
   const addressPath = `${root.replace(/\/+$/, '')}/${encodeURIComponent(request.address)}`;
-  return request.operation === 'exists' ? `${addressPath}/exists` : addressPath;
+  return request.operation === 'exists' ? `${addressPath}/exists` : request.operation === 'fetchWithContext' ? `${addressPath}/context` : addressPath;
 }
 
 export function createProgramReadTransport(
@@ -164,6 +170,17 @@ export function createProgramReadTransport(
 
   return {
     async read<T>(request: ProgramReadRequest): Promise<T> {
+      if ((request.operation === 'fetchMany' || request.operation === 'fetchManyWithContext') && request.addresses.length > 100) throw new RangeError('addresses exceeds the 100-address limit');
+      if (request.operation === 'nativeQuery') {
+        if (!request.query.owner && !request.query.pool) throw new TypeError('owner or pool is required');
+        if (request.query.owner !== undefined) managedAddress(request.query.owner);
+        if (request.query.pool !== undefined) managedAddress(request.query.pool);
+        managedPage(request.query.limit, request.query.cursor);
+      }
+      const payload = request.operation === 'fetchMany' ? { addresses: [...request.addresses] }
+        : request.operation === 'fetchWithContext' ? { options: managedReadOptions(request.options) }
+        : request.operation === 'fetchManyWithContext' ? { addresses: [...request.addresses], options: managedReadOptions(request.options) }
+        : request.operation === 'nativeQuery' ? { ...request.query, limit: request.query.limit ?? 100 } : undefined;
       const path = requestPath(config.release, request);
       const input = appendUrl(endpoint, path);
       const attempt = async (forceRefresh: boolean): Promise<Response> => {
@@ -172,17 +189,15 @@ export function createProgramReadTransport(
             ? await auth.manager.getHttpAuthToken(auth.target, ['read'], forceRefresh)
             : undefined);
         const headers = new Headers(
-          request.operation === 'fetchMany'
+          payload !== undefined
             ? { 'content-type': 'application/json' }
             : undefined
         );
         if (token) headers.set('authorization', `Bearer ${token}`);
         return config.fetch(input, {
-          method: request.operation === 'fetchMany' ? 'POST' : 'GET',
+          method: payload !== undefined ? 'POST' : 'GET',
           headers,
-          body: request.operation === 'fetchMany'
-            ? JSON.stringify({ addresses: request.addresses })
-            : undefined,
+          body: payload === undefined ? undefined : JSON.stringify(payload),
         });
       };
 

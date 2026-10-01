@@ -1,3 +1,4 @@
+import { managedAddress, managedContext, managedDiscovery, managedPage, managedReadOptions, managedU64, type Contextual, type ManagedReadOptions, type OwnerTokenAccountsRequest, type OwnerTokenAccountsPage, type OwnerTokenAccount } from './managed-solana';
 export interface ChainClock {
   slot: number;
   epoch?: number;
@@ -59,6 +60,9 @@ export interface RawAccountInfo {
 }
 
 export interface ChainClient {
+  ownerTokenAccounts(request: OwnerTokenAccountsRequest): Promise<OwnerTokenAccountsPage>;
+  accountWithContext(address: string, options?: ManagedReadOptions): Promise<Contextual<RawAccountInfo | null>>;
+  accountsWithContext(addresses: readonly string[], options?: ManagedReadOptions): Promise<Contextual<(RawAccountInfo | null)[]>>;
   exists(address: string): Promise<boolean>;
   lamports(address: string): Promise<number>;
   nativeBalance(address: string, options?: ContextSlotOptions): Promise<NativeBalanceInfo>;
@@ -68,6 +72,7 @@ export interface ChainClient {
   accounts(addresses: readonly string[]): Promise<(RawAccountInfo | null)[]>;
   mint(address: string): Promise<MintAccountInfo | null>;
   tokenAccount(address: string): Promise<TokenAccountInfo | null>;
+  /** Selects one matching token account; use enumeration and verified reads for total inventory. */
   balance(input: TokenBalanceInput, options?: ContextSlotOptions): Promise<TokenBalanceInfo>;
 }
 
@@ -169,6 +174,46 @@ export function deriveHttpEndpoint(wsUrl: string): string {
 
 export function createChainClient(httpBaseUrl: string, fetchImpl: FetchLike): ChainClient {
   return {
+    async ownerTokenAccounts(request) {
+      const input = { ...request, limit: request.limit ?? 100 };
+      managedAddress(input.owner);
+      if (input.mint !== undefined) managedAddress(input.mint);
+      if (input.tokenProgram !== undefined) managedAddress(input.tokenProgram);
+      managedPage(input.limit, input.cursor);
+      const path = '/chain/v1/owner-token-accounts';
+      const response = await fetchImpl(joinUrl(httpBaseUrl, path), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
+      const body = await parseReadResponse<{ items: Record<string, unknown>[]; nextCursor: string | null; discovery: Record<string, unknown> }>(response, path);
+      managedPage(input.limit, body.nextCursor);
+      if (!Array.isArray(body.items) || body.items.length > input.limit || body.nextCursor === undefined) throw new TypeError('Invalid discovery page');
+      const items = body.items.map((item): OwnerTokenAccount => {
+        for (const field of ['address', 'owner', 'mint', 'tokenProgram']) managedAddress(item[field] as string);
+        for (const field of ['delegate', 'closeAuthority']) if (item[field] != null) managedAddress(item[field] as string);
+        if (item.owner !== input.owner || (input.mint !== undefined && item.mint !== input.mint) || (input.tokenProgram !== undefined && item.tokenProgram !== input.tokenProgram)) throw new TypeError('Discovery account is outside the requested filters');
+        if (!['initialized', 'frozen', 'uninitialized'].includes(item.state as string) || !Number.isInteger(item.decimals) || (item.decimals as number) < 0 || (item.decimals as number) > 255) throw new TypeError('Invalid token state or decimals');
+        return { ...item, amount: managedU64(item.amount, 'amount'), ...(item.delegatedAmount == null ? {} : { delegatedAmount: managedU64(item.delegatedAmount, 'delegatedAmount') }) } as unknown as OwnerTokenAccount;
+      });
+      return { items, nextCursor: body.nextCursor, discovery: managedDiscovery(body.discovery) };
+    },
+    async accountWithContext(address, options = {}) {
+      managedAddress(address);
+      const path = '/chain/v1/account';
+      const response = await fetchImpl(joinUrl(httpBaseUrl, path), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ address, options: managedReadOptions(options) }) });
+      const body = await parseReadResponse<{ context: unknown; value: RawAccountBody | null }>(response, path);
+      if (body.value === undefined || (body.value !== null && body.value.address !== address)) throw new TypeError('Invalid contextual account response');
+      return { context: managedContext(body.context, options, true), value: toRawAccount(body.value) };
+    },
+    async accountsWithContext(addresses, options = {}) {
+      const requested = [...addresses];
+      if (requested.length > MAX_BATCH_ADDRESSES) throw new RangeError('addresses exceeds the 100-address limit');
+      for (const address of requested) managedAddress(address);
+      const wireOptions = managedReadOptions(options);
+      if (requested.length === 0) return { context: null, value: [] };
+      const path = '/chain/v1/accounts';
+      const response = await fetchImpl(joinUrl(httpBaseUrl, path), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ addresses: requested, options: wireOptions }) });
+      const body = await parseReadResponse<{ context: unknown; value: (RawAccountBody | null)[] }>(response, path);
+      if (!Array.isArray(body.value) || body.value.length !== requested.length || body.value.some((item, i) => item !== null && item.address !== requested[i])) throw new TypeError('Contextual account results are not aligned');
+      return { context: managedContext(body.context, options, true), value: body.value.map(toRawAccount) };
+    },
     async exists(address: string): Promise<boolean> {
       const path = `/chain/exists/${encodeURIComponent(address)}`;
       const response = await fetchImpl(joinUrl(httpBaseUrl, path));
