@@ -47,6 +47,12 @@ fn format_remaining_seconds(seconds: i64) -> String {
 }
 
 fn signup_expiry_matches(identity: Option<&str>, signup: &str) -> bool {
+    // PostgreSQL stores timestamps at microsecond precision and rounds the
+    // signup response's nanoseconds in either direction. Allow one complete
+    // microsecond instead of truncating both values, which fails when the
+    // database rounds across a microsecond boundary.
+    const DATABASE_TIMESTAMP_TOLERANCE_NANOS: i64 = 1_000;
+
     let Some(identity) = identity else {
         return false;
     };
@@ -56,7 +62,13 @@ fn signup_expiry_matches(identity: Option<&str>, signup: &str) -> bool {
     let Ok(signup) = chrono::DateTime::parse_from_rfc3339(signup) else {
         return false;
     };
-    identity.timestamp_micros() == signup.timestamp_micros()
+    identity
+        .signed_duration_since(signup)
+        .num_nanoseconds()
+        .is_some_and(|delta| {
+            (-DATABASE_TIMESTAMP_TOLERANCE_NANOS..=DATABASE_TIMESTAMP_TOLERANCE_NANOS)
+                .contains(&delta)
+        })
 }
 
 pub fn login(api_key: Option<String>, requested_profile: Option<&str>) -> Result<()> {
@@ -1584,6 +1596,28 @@ mod signup_tests {
             false,
         )
         .expect("PostgreSQL microsecond precision verifies");
+
+        assert!(outcome.created);
+        assert_eq!(outcome.identity.slug, "agent-7f3a");
+    }
+
+    #[test]
+    fn signup_accepts_database_precision_when_expiry_rounds_up() {
+        let _sandbox = CredentialsSandbox::new();
+        let signup = OK_BODY.replace("2026-10-06T00:00:00Z", "2026-10-06T00:00:00.000000501Z");
+        let identity = ME_BODY.replace("2026-10-06T00:00:00Z", "2026-10-06T00:00:00.000001Z");
+        let server = MockServer::json_sequence(vec![(200, signup), (200, identity)]);
+        let client = ApiClient::with_base_url(server.base_url());
+
+        let outcome = perform_signup(
+            &client,
+            server.base_url(),
+            Some("Robo"),
+            "agent",
+            false,
+            false,
+        )
+        .expect("PostgreSQL upward microsecond rounding verifies");
 
         assert!(outcome.created);
         assert_eq!(outcome.identity.slug, "agent-7f3a");
