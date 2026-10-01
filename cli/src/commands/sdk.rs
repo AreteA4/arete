@@ -3623,41 +3623,101 @@ fn ensure_python_entry_export(artifact: &ResolvedExtensionsArtifact, export: &st
     Ok(())
 }
 
-/// Whether Python `source` assigns `name` with a module-level statement that
-/// starts at column 0: `NAME = …` or `NAME: T = …`, outside comments, strings
-/// and lines that continue a bracketed or backslash-continued line. A bare
-/// annotation (`NAME: T`), an augmented assignment, a comparison, an
-/// attribute or item assignment, and a `def` or `class` of that name do not
-/// assign it.
+/// Whether Python `source` assigns `name` with a module-level statement:
+/// `NAME = …` or `NAME: T = …` as any of the `;`-separated statements of a
+/// logical line that starts at column 0. Comments, strings, indented lines,
+/// lines that continue a bracketed or backslash-continued line, and the body
+/// of a one-line compound statement (`if x: NAME = …`) are not module-level
+/// statements. A bare annotation (`NAME: T`), an augmented assignment, a
+/// comparison, an attribute or item assignment, an import of the name, and a
+/// `def` or `class` of that name do not assign it.
 fn python_assigns_at_module_level(source: &str, name: &str) -> bool {
-    let code = python_code_only(source.strip_prefix('\u{feff}').unwrap_or(source));
-    let mut depth = 0usize;
-    let mut continued = false;
-    let mut start = 0;
-    for line in code.split_inclusive('\n') {
-        if depth == 0
-            && !continued
-            && line.starts_with(name)
-            && python_assigns_after_name(&code[start + name.len()..])
-        {
-            return true;
-        }
-        for byte in line.bytes() {
-            match byte {
-                b'(' | b'[' | b'{' => depth += 1,
-                b')' | b']' | b'}' => depth = depth.saturating_sub(1),
-                _ => {}
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+    let code = python_code_only(source);
+    python_logical_lines(&code)
+        .into_iter()
+        .any(|(start, statements)| {
+            // Indented code is in a block. Checked in `source`: a line that
+            // starts with a string starts at column 0, though blanked in `code`.
+            if matches!(source.as_bytes().get(start), Some(b' ' | b'\t' | b'\x0c')) {
+                return false;
             }
-        }
-        continued = line.trim_end().ends_with('\\');
-        start += line.len();
-    }
-    false
+            // The rest of a compound statement's line is its body.
+            if python_starts_compound_statement(statements[0]) {
+                return false;
+            }
+            statements.iter().any(|statement| {
+                statement
+                    .trim_start_matches([' ', '\t', '\x0c', '\\', '\r', '\n'])
+                    .strip_prefix(name)
+                    .is_some_and(python_assigns_after_name)
+            })
+        })
 }
 
-/// Whether the code after a name that starts a statement assigns that name:
-/// `=` (not `==`), or `:`, an annotation and an `=` outside its brackets
-/// before the statement's line ends.
+/// The logical lines of `code` (Python with comments and strings blanked, see
+/// [`python_code_only`]), each as its byte offset and its statements: the
+/// code between the `;`s outside brackets. A line break inside brackets or
+/// after a backslash continues the logical line.
+fn python_logical_lines(code: &str) -> Vec<(usize, Vec<&str>)> {
+    let bytes = code.as_bytes();
+    let mut lines = Vec::new();
+    let mut statements = Vec::new();
+    let mut line_start = 0;
+    let mut statement_start = 0;
+    let mut depth = 0usize;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'\\' => {
+                // A backslash continuation joins the next line.
+                index += 1;
+                while bytes.get(index) == Some(&b'\r') {
+                    index += 1;
+                }
+            }
+            b';' if depth == 0 => {
+                statements.push(&code[statement_start..index]);
+                statement_start = index + 1;
+            }
+            b'\n' if depth == 0 => {
+                statements.push(&code[statement_start..index]);
+                lines.push((line_start, std::mem::take(&mut statements)));
+                line_start = index + 1;
+                statement_start = index + 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    statements.push(&code[statement_start..]);
+    lines.push((line_start, statements));
+    lines
+}
+
+/// Whether a statement that starts a logical line is the header of a compound
+/// statement (`if x:`, `def f():`, `else:` …), whose line goes on with its
+/// body. `match` and `case` never have their body on their line.
+fn python_starts_compound_statement(statement: &str) -> bool {
+    const KEYWORDS: [&str; 12] = [
+        "async", "class", "def", "elif", "else", "except", "finally", "for", "if", "try", "while",
+        "with",
+    ];
+    KEYWORDS.iter().any(|keyword| {
+        statement.strip_prefix(keyword).is_some_and(|rest| {
+            !rest
+                .chars()
+                .next()
+                .is_some_and(|next| next == '_' || next.is_alphanumeric())
+        })
+    })
+}
+
+/// Whether the rest of a statement that starts with a name assigns that
+/// name: `=` (not `==`), or `:`, an annotation and an `=` outside its
+/// brackets.
 fn python_assigns_after_name(rest: &str) -> bool {
     if rest
         .chars()
@@ -3688,7 +3748,6 @@ fn python_assigns_after_name(rest: &str) -> bool {
                     index += 1;
                 }
             }
-            b'\n' if depth == 0 => return false,
             b'=' if depth == 0 => {
                 if bytes.get(index + 1) == Some(&b'=') {
                     index += 2;
@@ -3706,20 +3765,16 @@ fn python_assigns_after_name(rest: &str) -> bool {
     false
 }
 
-/// Python `source` with every comment and string literal blanked to spaces
-/// (line breaks kept), so that what is left is code. A string's prefix
-/// letters stay; inside every string, raw or not, a backslash escapes the
-/// next character, which is how Python finds where a string ends.
+/// Python `source` with every comment and string literal blanked to spaces,
+/// byte for byte, so that what is left is code. The line breaks inside a
+/// string are blanked too, as they do not end a line of code; the others are
+/// kept. A string's prefix letters stay; inside every string, raw or not, a
+/// backslash escapes the next character, which is how Python finds where a
+/// string ends.
 fn python_code_only(source: &str) -> String {
     let bytes = source.as_bytes();
     let mut code = bytes.to_vec();
-    let mut blank = |range: std::ops::Range<usize>| {
-        for byte in &mut code[range] {
-            if *byte != b'\n' {
-                *byte = b' ';
-            }
-        }
-    };
+    let mut blank = |range: std::ops::Range<usize>| code[range].fill(b' ');
     let mut index = 0;
     while index < bytes.len() {
         match bytes[index] {
@@ -10031,6 +10086,71 @@ mod tests {
         );
         set_entry(&mut artifact, "STACK_EXTENSIONS: dict = {}\n");
         ensure_python_entry_export(&artifact, "STACK_EXTENSIONS").expect("an annotated export");
+    }
+
+    /// A column-0 logical line holds `;`-separated statements, and an export
+    /// is any one of them. The statements after a one-line compound
+    /// statement's header are its body, and a `;` in a comment, a string or
+    /// an indented line separates no module-level statement.
+    #[test]
+    fn python_entry_export_accepts_any_statement_of_a_module_level_line() {
+        for source in [
+            "from .helpers import mappings; STACK_EXTENSIONS = mappings\n",
+            "import math;STACK_EXTENSIONS = {\"math\": math}\n",
+            "STACK_EXTENSIONS = {}; OTHER = 1\n",
+            "X = 1; Y = 2; STACK_EXTENSIONS: dict[str, object] = {}\n",
+            "X = 1; \\\n    STACK_EXTENSIONS = {}\n",
+            "X = 1; \\\r\n    STACK_EXTENSIONS = {}\r\n",
+            "X = {\n    \"a\": 1,\n}; STACK_EXTENSIONS = X\n",
+            "\"\"\"Exports STACK_EXTENSIONS.\"\"\"; STACK_EXTENSIONS = {}\n",
+            "TEXT = '''\n'''; STACK_EXTENSIONS = {}\n",
+            "iffy = 1; STACK_EXTENSIONS = {}\n",
+        ] {
+            assert!(
+                python_assigns_at_module_level(source, "STACK_EXTENSIONS"),
+                "{source:?} assigns STACK_EXTENSIONS"
+            );
+        }
+        for source in [
+            "from .helpers import STACK_EXTENSIONS; X = 1\n",
+            "import os; from .helpers import STACK_EXTENSIONS\n",
+            "X = 1; STACK_EXTENSIONS += {}\n",
+            "X = 1; STACK_EXTENSIONS == {}\n",
+            "X = 1; STACK_EXTENSIONS: dict\n",
+            "STACK_EXTENSIONS: dict; OTHER = {}\n",
+            "X = 1; STACK_EXTENSIONS_V2 = {}\n",
+            "X = 1; STACK_EXTENSIONS[\"math\"] = None\n",
+            "X = 1; def STACK_EXTENSIONS(): pass\n",
+            "    X = 1; STACK_EXTENSIONS = {}\n",
+            "if True:\n    X = 1; STACK_EXTENSIONS = {}\n",
+            "if True:\n    TEXT = '''\n'''; STACK_EXTENSIONS = {}\n",
+            "if True: X = 1; STACK_EXTENSIONS = {}\n",
+            "if True: STACK_EXTENSIONS = {}\n",
+            "while False: pass; STACK_EXTENSIONS = {}\n",
+            "try: import extras; STACK_EXTENSIONS = {}\nexcept ImportError: pass\n",
+            "def build(): X = 1; STACK_EXTENSIONS = {}\n",
+            "class Holder: X = 1; STACK_EXTENSIONS = {}\n",
+            "X = 1  # ; STACK_EXTENSIONS = {}\n",
+            "X = '; STACK_EXTENSIONS = {}'\n",
+            "X = '''\n; STACK_EXTENSIONS = {}\n'''\n",
+            "build(\n    1); STACK_EXTENSIONS\n",
+        ] {
+            assert!(
+                !python_assigns_at_module_level(source, "STACK_EXTENSIONS"),
+                "{source:?} does not assign STACK_EXTENSIONS"
+            );
+        }
+
+        let mut artifact = python_test_artifact("hash-1");
+        artifact
+            .files
+            .iter_mut()
+            .find(|file| file.path == "extensions.py")
+            .unwrap()
+            .contents =
+            "from .helpers import mappings; PROGRAM_EXTENSIONS = mappings\n".to_string();
+        ensure_python_entry_export(&artifact, "PROGRAM_EXTENSIONS")
+            .expect("an export after an import on its line");
     }
 
     #[test]
