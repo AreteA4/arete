@@ -118,6 +118,21 @@ take a per-read bound on the snapshot wait that is not sent (TS `timeoutMs`, Pyt
 builders' method names: `list().get_with(GetOptions::new().filter(path, value).take(10))`
 and `state().get_with(key, options)`.
 
+When the snapshot does not arrive within that bound, the read fails and releases its
+subscription: TS rejects with `InitialDataTimeoutError` (code `INITIAL_DATA_TIMEOUT`,
+`Timed out after <ms>ms waiting for the initial snapshot of view '<view>'`), Python
+raises `InitialDataTimeoutError`, and Rust's `get_with` returns
+`Err(ViewError::InitialDataTimeout { view, timeout })` with the TS message. A read that
+cannot subscribe fails with the subscription's error (TS: the connection or query
+error; Rust: `Err(ViewError::Subscription { view, source })`, `source` the
+`AreteError`). So Rust's `list().get_with(options)` returns `Result<Vec<T>, ViewError>`
+and `state().get_with(key, options)` returns `Result<Option<T>, ViewError>`.
+`ViewError` converts to `AreteError` (a subscription failure is its `source`, a timeout
+`AreteError::ConnectionFailed` with the TS message). Rust's released `get()`,
+`get_one()` and `state().get(key)` keep their infallible signatures: they return what
+the read holds when the snapshot is late (no rows, `None`) and nothing when the read
+cannot subscribe, so use `get_with` to tell those cases from an empty view.
+
 **Update taxonomy** (identical everywhere): `upsert` (the whole entity — sent whenever a
 key becomes a member of the subscription as far as the server knows: entering the
 window, its first change after a truncated or disabled snapshot, every change on a
@@ -492,7 +507,12 @@ auth tokens per binding.
     and Python `await client.views.<Entity>.list.get(filters={"<path>": value})`: the
     same paths and values, so the host query, and the view fixture it replays
     (`args: [{"filters": {…}}]`), is the TypeScript one. Keep the TypeScript
-    extension's client-side check of the returned rows as well.
+    extension's client-side check of the returned rows as well. A failed read fails
+    the bundle's read as the TypeScript one rejects (§4): a Rust bundle propagates
+    the `ViewError` with `get_with(…).await?`, which converts it to the bundle's
+    `AreteError` (a `ViewError::Subscription` is its `source`, a timeout an
+    `AreteError::ConnectionFailed` with the TypeScript message, as bundles report a
+    failed program read); a Python bundle lets `InitialDataTimeoutError` propagate.
   - **Chain clock.** Rust `arete_sdk::ChainClock` implements `Serialize` as the
     TypeScript `ChainClock` (`slot`, `epoch`, `leaderScheduleEpoch`,
     `unixTimestamp`; an absent optional field omitted), so a result carries it as is.
@@ -537,7 +557,7 @@ standard style (casing, error, async, and options conventions).
 | view access | `a4.views.OreRound.latest` | `arete.views.OreRound.latest` | `a4.views.ore_round.latest()` | `a4.views.ore_round.latest` |
 | `use` | `.use(opts)` → `AsyncIterable<T>` | `.use(opts)` → status-discriminated hook result | `.listen()` + builder methods → `impl Stream<Item=T>` | `.use(**opts)` → `AsyncIterator[T]` |
 | `watch` / `watch_rich` | `.watch(opts)` / `.watchRich(opts)` | *(covered by hook statuses)* | `.watch()` / `.watch_rich()` + builders | `.watch(**opts)` / `.watch_rich(**opts)` |
-| `get` / `get_sync` / `get_one` | `await .get(opts)` / `.getSync(opts)` / list-first | `.useOne(...)` | `.get().await` or `.get_with(GetOptions::new()…).await` / `.get_sync()` / `.get_one().await` | `await .get(**opts)` / `.get_sync(**opts)` / `await .get_one(**opts)` |
+| `get` / `get_sync` / `get_one` | `await .get(opts)` / `.getSync(opts)` / list-first | `.useOne(...)` | `.get().await` or `.get_with(GetOptions::new()…).await?` / `.get_sync()` / `.get_one().await` | `await .get(**opts)` / `.get_sync(**opts)` / `await .get_one(**opts)` |
 | state key | `.state.use({roundId: 42n}, opts)` | same | `.state().listen(key)` + builders | `.state.use(round_id=42, **opts)` |
 | query options | options object | options object | builder chain (`.take(10).filter(…)`) | keyword arguments |
 | raw build | `ore.raw.deploy.build(params)` | same (via `useMutation` for execution) | `a4.programs.ore.deploy(DeployParams{…})` (typed struct, `deny_unknown_fields`) | `ore.raw.deploy.build(**params)` (kwargs, fail-closed) |
