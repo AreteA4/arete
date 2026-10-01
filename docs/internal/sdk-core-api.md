@@ -442,6 +442,43 @@ auth tokens per binding.
     aliases each account and IDL type model the stack renamed (with its converters,
     and an enum's variant dataclasses) back to its stable name, so
     `from .models import Vault` names the account model in both.
+- **Extension runtime helpers**: the SDK functions and types every Rust and Python
+  extension port uses, so the ports match the TypeScript extension they mirror.
+  **Porting rule: use the SDK helpers, never reimplement them** in a bundle (no
+  bundle-local amount decoder, clock struct, hash, base58 codec or error type that
+  only exists to change an error's text).
+  - **Amount inputs** (TypeScript `AmountInput`, `bigint | { ui } | { raw }`). Rust
+    `arete_sdk::AmountInput` implements `Deserialize`, so an input field is typed
+    `AmountInput`: a bare integer is raw, `{ "raw": … }` takes an integer, an
+    integral number or a string as JavaScript `BigInt(…)` reads it, and `{ "ui": … }`
+    takes a string, or a number kept as JavaScript's `String(number)` text; an object
+    carries exactly one key, and raw values are unsigned (`u128`). It serializes as
+    `{ "raw": "<decimal>" }` / `{ "ui": "<text>" }`. Python
+    `arete.decode_amount_input(value)` applies the same rules (raising `TypeError`
+    for a wrong shape, `ValueError` with the `BigInt` message for an unconvertible raw
+    value; a negative raw `int` decodes, as a TypeScript bigint does) and returns
+    `{"raw": int}` or `{"ui": str}`; `arete.AmountInput` is the type alias. Resolve
+    either with the amount helpers (`to_raw_amount`, `resolve_amount`, …).
+  - **Chain clock.** Rust `arete_sdk::ChainClock` implements `Serialize` as the
+    TypeScript `ChainClock` (`slot`, `epoch`, `leaderScheduleEpoch`,
+    `unixTimestamp`; an absent optional field omitted), so a result carries it as is.
+  - **Errors.** Rust bundles return `AreteError::InvalidInput(message)` (or
+    `AreteError::invalid_input(message)`) for input and validation errors: its
+    `Display` is the message alone, so it carries the TypeScript text exactly.
+    `AmountError` (except a failed chain read), `InstructionError` and `Base58Error`
+    convert to it with `?`. `AreteError::InvalidConfig` prefixes
+    `Invalid configuration:` and is for client configuration only. Python bundles
+    raise `ValueError`, or `TypeError` for a wrong type, with the TypeScript text.
+  - **Hashing and base58.** Rust `arete_sdk::{keccak256, sha256}(&[&[u8]]) -> [u8; 32]`
+    and Python `arete.keccak256(*parts) -> bytes` / `arete.sha256(*parts) -> bytes`
+    hash the concatenation of their parts (Solana's `keccak::hashv` / `hash::hashv`;
+    Keccak-256 is the original Keccak padding, not `hashlib.sha3_256`). Base58 is
+    TypeScript `encodeBase58` / `decodeBase58`: Rust
+    `arete_sdk::encode_base58(&[u8]) -> String` and
+    `decode_base58(&str) -> Result<Vec<u8>, Base58Error>`, Python
+    `arete.encode_base58(bytes) -> str` and `arete.decode_base58(str) -> bytes`
+    (`ValueError`); both fail with the TypeScript text
+    `Invalid base58 character: <c>`.
 
 ## 10. Idiom matrix
 
