@@ -107,7 +107,7 @@ def vault_deposit(
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    `accounts` (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return vault_deposit_handler().build(

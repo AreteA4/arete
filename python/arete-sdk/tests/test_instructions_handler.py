@@ -189,11 +189,41 @@ class TestBuild:
         built = handler.build({}, payer=WSOL_MINT)
         assert list(built.data) == [3, 0]
 
-    def test_validates_resolved_addresses_as_pubkeys(self):
-        with pytest.raises(InstructionError, match="Invalid pubkey"):
+    def test_validates_explicit_addresses_as_pubkeys(self):
+        # The TypeScript resolver's messages.
+        with pytest.raises(InstructionError) as excinfo:
             make_handler().build(
                 {"amount": 1, "mint": "not-a-pubkey"}, payer=WSOL_MINT
             )
+        assert str(excinfo.value) == (
+            'Invalid account override for "mint": expected a base58 public key'
+        )
+        with pytest.raises(InstructionError) as excinfo:
+            make_handler().build(
+                {"amount": 1, "mint": SYSTEM_PROGRAM},
+                payer=WSOL_MINT,
+                accounts={"state": "short"},
+            )
+        assert str(excinfo.value) == (
+            'Invalid account override for "state": expected a 32-byte public '
+            "key, got 4 bytes"
+        )
+
+    def test_an_explicit_pda_address_wins_over_its_derivation(self):
+        # `state` is a PDA of `authority`; named in the params or in
+        # `accounts`, it is used as given (TypeScript parity).
+        built = make_handler().build(
+            {"amount": 1, "mint": SYSTEM_PROGRAM, "state": WSOL_MINT},
+            payer=WSOL_MINT,
+        )
+        assert built.accounts[2].pubkey == WSOL_MINT
+        assert built.accounts[2].is_writable is True
+        built = make_handler().build(
+            {"amount": 1, "mint": SYSTEM_PROGRAM},
+            payer=WSOL_MINT,
+            accounts={"state": TOKEN_PROGRAM},
+        )
+        assert built.accounts[2].pubkey == TOKEN_PROGRAM
 
 
 class TestErrorMetadata:

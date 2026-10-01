@@ -3565,7 +3565,8 @@ fn generate_py_instruction_block(
     doc_lines
         .push("Reserved keyword-only options: `wallet` (signer fallback address),".to_string());
     doc_lines.push(
-        "`accounts` (unvalidated overrides), `remaining_accounts`. Account names".to_string(),
+        "`accounts` (addresses that override the params), `remaining_accounts`. Account names"
+            .to_string(),
     );
     doc_lines.push("(including `payer`) stay available as params.".to_string());
     if !notes.is_empty() {

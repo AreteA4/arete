@@ -82,12 +82,14 @@ class InstructionHandler:
 
         Params are IDL wire shape: keys matching a declared argument name are
         serialized args; keys matching a declared account name (with a string
-        value) are account-address overrides — including signer slots, which
-        win over the ``payer`` fallback. A ``resolve`` key carries helper-only
-        PDA seed inputs. Anything else raises — a typo'd key silently dropped
-        here would otherwise change the built instruction. The ``accounts``
-        option remains an unvalidated escape hatch that wins over
-        param-derived overrides; ``remaining_accounts`` are appended after the
+        value) are account addresses. An explicit address wins for every
+        account, as in the TypeScript ``buildInstruction``: a signer over the
+        ``payer`` fallback, and a PDA or known account over its derivation or
+        fixed address. A ``resolve`` key carries helper-only PDA seed inputs.
+        Anything else raises — a typo'd key silently dropped here would
+        otherwise change the built instruction. The ``accounts`` option wins
+        over param-derived addresses; every explicit address must be a base58
+        32-byte public key. ``remaining_accounts`` are appended after the
         declared accounts (Anchor's ``remainingAccounts``).
         """
         if params is None:

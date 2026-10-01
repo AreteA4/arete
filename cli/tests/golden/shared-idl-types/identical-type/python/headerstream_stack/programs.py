@@ -113,7 +113,7 @@ def alpha_configure(
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    `accounts` (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return alpha_configure_handler().build(
@@ -224,7 +224,7 @@ def beta_configure(
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    `accounts` (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return beta_configure_handler().build(
