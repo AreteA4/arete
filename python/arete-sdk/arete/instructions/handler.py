@@ -85,7 +85,8 @@ class InstructionHandler:
         value) are account addresses. An explicit address wins for every
         account, as in the TypeScript ``buildInstruction``: a signer over the
         ``payer`` fallback, and a PDA or known account over its derivation or
-        fixed address. A ``resolve`` key carries helper-only PDA seed inputs.
+        fixed address. ``payer`` fills only ``signer_kind="wallet"`` signers;
+        any other signer must be given. A ``resolve`` key carries helper-only PDA seed inputs.
         Anything else raises — a typo'd key silently dropped here would
         otherwise change the built instruction. The ``accounts`` option wins
         over param-derived addresses; every explicit address must be a base58

@@ -465,9 +465,11 @@ class RawInstruction:
 
     Params are IDL wire shape: arg-name keys serialize, account-name keys
     override addresses, ``resolve`` feeds PDA-only seeds; unknown params fail
-    closed. Reserved keyword-only options: ``wallet`` (signer fallback address;
-    defaults to the client wallet's public key), ``accounts`` (addresses
-    that override the params), ``remaining_accounts``.
+    closed. Reserved keyword-only options: ``wallet`` (the address of
+    ``signer_kind="wallet"`` signers, defaulting to the client wallet's public
+    key; generated signers are caller-provided, as in TypeScript),
+    ``accounts`` (addresses that override the params),
+    ``remaining_accounts``.
 
     The fallback option is named ``wallet`` and not ``payer`` (matching the
     TypeScript ``BuildOptions.wallet``) because ``payer`` is a real IDL account

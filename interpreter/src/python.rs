@@ -3122,7 +3122,8 @@ impl<'a> PythonDefinedTypes<'a> {
 /// How a mapped account surfaces in the typed params TypedDict.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum PyAccountFieldKind {
-    /// Signer slot: optional address override (payer fallback applies).
+    /// Signer slot: the caller provides the signer's address (TypeScript
+    /// `signerKind: 'provided'`).
     Signer,
     /// Required user-provided account address.
     Required,
@@ -3152,8 +3153,15 @@ fn py_account_meta_literal(
     if let Some(comment) = comment {
         out.push_str(&format!("            # [arete codegen] {}\n", comment));
     }
+    // A signer is caller-provided, as the TypeScript generator marks it
+    // (`signerKind: 'provided'`): the wallet fills only `"wallet"` signers.
+    let signer_kind = if resolution == "Signer()" {
+        "\n                signer_kind=\"provided\","
+    } else {
+        ""
+    };
     out.push_str(&format!(
-        "            AccountMeta(\n                name={name},\n                is_signer={is_signer},\n                is_writable={is_writable},\n                resolution={resolution},\n                is_optional={is_optional},\n            ),",
+        "            AccountMeta(\n                name={name},\n                is_signer={is_signer},\n                is_writable={is_writable},\n                resolution={resolution},\n                is_optional={is_optional},{signer_kind}\n            ),",
         name = py_string_literal(emitted_name),
         is_signer = py_bool(acc.is_signer),
         is_writable = py_bool(acc.is_writable),
@@ -3516,10 +3524,7 @@ fn generate_py_instruction_block(
             continue;
         }
         let comment = match kind {
-            PyAccountFieldKind::Signer => format!(
-                "Optional address override for the `{}` signer (defaults to the payer).",
-                name
-            ),
+            PyAccountFieldKind::Signer => format!("Address of the `{}` signer.", name),
             PyAccountFieldKind::Required => format!("Address of the `{}` account.", name),
             PyAccountFieldKind::Optional => {
                 format!("Optional address of the `{}` account.", name)
@@ -3562,11 +3567,16 @@ fn generate_py_instruction_block(
     ));
     doc_lines.push("unknown params fail closed.".to_string());
     doc_lines.push(String::new());
-    doc_lines
-        .push("Reserved keyword-only options: `wallet` (signer fallback address),".to_string());
     doc_lines.push(
-        "`accounts` (addresses that override the params), `remaining_accounts`. Account names"
+        "Reserved keyword-only options: `wallet` (the address of `signer_kind=\"wallet\"`"
             .to_string(),
+    );
+    doc_lines.push(
+        "signers; the generated signers are caller-provided, as in TypeScript), `accounts`"
+            .to_string(),
+    );
+    doc_lines.push(
+        "(addresses that override the params), `remaining_accounts`. Account names".to_string(),
     );
     doc_lines.push("(including `payer`) stay available as params.".to_string());
     if !notes.is_empty() {
@@ -5237,9 +5247,8 @@ mod tests {
         assert!(programs.contains("        # arg `roundId` (`u64`)\n        \"roundId\": int,"));
         assert!(programs.contains("\"admin\": str,"));
         assert!(programs.contains("\"tip\": Optional[int],"));
-        assert!(programs.contains(
-            "        # Optional address override for the `signer` signer (defaults to the payer).\n        \"signer\": str,"
-        ));
+        assert!(programs
+            .contains("        # Address of the `signer` signer.\n        \"signer\": str,"));
         assert!(programs.contains(
             "        # Address of the `authority` account.\n        \"authority\": str,"
         ));
@@ -5247,7 +5256,9 @@ mod tests {
 
         // Handler literal fragments.
         assert!(programs.contains("discriminator=bytes([12, 34])"));
-        assert!(programs.contains("resolution=Signer(),"));
+        assert!(programs.contains(
+            "resolution=Signer(),\n                is_optional=False,\n                signer_kind=\"provided\",\n            ),"
+        ));
         assert!(programs.contains("resolution=Known(\"11111111111111111111111111111111\"),"));
         assert!(programs.contains(
             "resolution=Pda(PdaConfig(seeds=(LiteralSeed(\"counter\"), AccountRefSeed(\"authority\")))),"

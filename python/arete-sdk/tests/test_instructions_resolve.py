@@ -50,8 +50,14 @@ def meta(name, resolution, *, signer=False, writable=False, optional=False):
     )
 
 
-def signer_meta(name):
-    return meta(name, Signer(), signer=True, writable=True)
+def signer_meta(name, signer_kind="wallet"):
+    return AccountMeta(
+        name=name,
+        is_signer=True,
+        is_writable=True,
+        resolution=Signer(),
+        signer_kind=signer_kind,
+    )
 
 
 class TestResolveAccounts:
@@ -70,6 +76,25 @@ class TestResolveAccounts:
         assert result.accounts[0].is_signer is True
         assert result.accounts[1].address == SYSTEM_PROGRAM
         assert result.accounts[2].address == TOKEN_PROGRAM
+
+    def test_fills_only_wallet_signers_from_the_payer(self):
+        # TypeScript `resolveSignerAccount`: an IDL says an account signs, not
+        # that the wallet is that account, so the payer fills only signers
+        # marked as the wallet's. The generator marks its signers "provided".
+        for kind in ("provided", None):
+            result = resolve_accounts(
+                [signer_meta("authority", kind)], {}, payer=WSOL_MINT
+            )
+            assert result.missing == ["authority"]
+            assert result.accounts == []
+        result = resolve_accounts(
+            [signer_meta("authority", "provided")],
+            {},
+            overrides={"authority": TOKEN_PROGRAM},
+            payer=WSOL_MINT,
+        )
+        assert [a.address for a in result.accounts] == [TOKEN_PROGRAM]
+        assert result.accounts[0].is_signer is True
 
     def test_prefers_explicit_signer_overrides_over_the_payer(self):
         metas = [signer_meta("authority"), meta("mint", UserProvided())]

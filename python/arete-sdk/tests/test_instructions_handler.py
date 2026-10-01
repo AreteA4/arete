@@ -43,7 +43,7 @@ def make_handler():
         program_id=TOKEN_PROGRAM,
         discriminator=bytes([1]),
         accounts=[
-            AccountMeta("authority", True, True, Signer()),
+            AccountMeta("authority", True, True, Signer(), signer_kind="wallet"),
             AccountMeta("mint", False, False, UserProvided()),
             AccountMeta(
                 "state",
@@ -102,7 +102,7 @@ class TestBuild:
             program_id=TOKEN_PROGRAM,
             discriminator=bytes([2]),
             accounts=[
-                AccountMeta("authority", True, True, Signer()),
+                AccountMeta("authority", True, True, Signer(), signer_kind="wallet"),
                 AccountMeta(
                     "proposal",
                     False,
@@ -183,7 +183,7 @@ class TestBuild:
         handler = InstructionHandler(
             program_id=TOKEN_PROGRAM,
             discriminator=bytes([3]),
-            accounts=[AccountMeta("authority", True, True, Signer())],
+            accounts=[AccountMeta("authority", True, True, Signer(), signer_kind="wallet")],
             args=[ArgSchema("maybe", {"option": "u8"})],
         )
         built = handler.build({}, payer=WSOL_MINT)

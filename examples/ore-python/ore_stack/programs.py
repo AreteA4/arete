@@ -180,7 +180,7 @@ OreAutomateParams = TypedDict(
         "strategy": int,
         # arg `reload` (`u64`)
         "reload": int,
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
         # Address of the `automation` account.
         "automation": str,
@@ -207,8 +207,9 @@ def ore_automate(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `OreAutomateParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
 
     Codegen notes:
@@ -235,6 +236,7 @@ def ore_automate_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             # [arete codegen] account `automation` degraded to user-provided (PDA 'automation': seed references account 'authority' not present in this instruction)
             AccountMeta(
@@ -283,7 +285,7 @@ def ore_automate_handler() -> InstructionHandler:
 OreCheckpointParams = TypedDict(
     "OreCheckpointParams",
     {
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
         # Address of the `authority` account.
         "authority": str,
@@ -307,8 +309,9 @@ def ore_checkpoint(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `OreCheckpointParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return ore_checkpoint_handler().build(
@@ -331,6 +334,7 @@ def ore_checkpoint_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="authority",
@@ -391,7 +395,7 @@ def ore_checkpoint_handler() -> InstructionHandler:
 OreClaimSolParams = TypedDict(
     "OreClaimSolParams",
     {
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
         # Address of the `miner` account.
         "miner": str,
@@ -412,8 +416,9 @@ def ore_claim_sol(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `OreClaimSolParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
 
     Codegen notes:
@@ -439,6 +444,7 @@ def ore_claim_sol_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="board",
@@ -479,7 +485,7 @@ def ore_claim_sol_handler() -> InstructionHandler:
 OreClaimOreParams = TypedDict(
     "OreClaimOreParams",
     {
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
         # Address of the `miner` account.
         "miner": str,
@@ -504,8 +510,9 @@ def ore_claim_ore(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `OreClaimOreParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
 
     Codegen notes:
@@ -531,6 +538,7 @@ def ore_claim_ore_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="board",
@@ -613,7 +621,7 @@ def ore_claim_ore_handler() -> InstructionHandler:
 OreCloseParams = TypedDict(
     "OreCloseParams",
     {
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
         # Address of the `rentPayer` account.
         "rentPayer": str,
@@ -638,8 +646,9 @@ def ore_close(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `OreCloseParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return ore_close_handler().build(
@@ -662,6 +671,7 @@ def ore_close_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="board",
@@ -712,7 +722,7 @@ OreDeployParams = TypedDict(
         "amount": int,
         # arg `squares` (`u32`)
         "squares": int,
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
         # Address of the `authority` account.
         "authority": str,
@@ -743,8 +753,9 @@ def ore_deploy(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `OreDeployParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return ore_deploy_handler().build(
@@ -767,6 +778,7 @@ def ore_deploy_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="authority",
@@ -858,7 +870,7 @@ def ore_deploy_handler() -> InstructionHandler:
 OreLogParams = TypedDict(
     "OreLogParams",
     {
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
     },
     total=False,
@@ -878,8 +890,9 @@ def ore_log(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `OreLogParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return ore_log_handler().build(
@@ -902,6 +915,7 @@ def ore_log_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
         ],
         args=[],
@@ -913,7 +927,7 @@ def ore_log_handler() -> InstructionHandler:
 OreResetParams = TypedDict(
     "OreResetParams",
     {
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
         # Address of the `feeCollector` account.
         "feeCollector": str,
@@ -949,8 +963,9 @@ def ore_reset(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `OreResetParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return ore_reset_handler().build(
@@ -973,6 +988,7 @@ def ore_reset_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="board",
@@ -1105,7 +1121,7 @@ OreBuryParams = TypedDict(
     {
         # arg `amount` (`u64`)
         "amount": int,
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
         # Address of the `sender` account.
         "sender": str,
@@ -1137,8 +1153,9 @@ def ore_bury(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `OreBuryParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return ore_bury_handler().build(
@@ -1161,6 +1178,7 @@ def ore_bury_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="sender",
@@ -1281,8 +1299,9 @@ def ore_buyback(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `OreBuybackParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return ore_buyback_handler().build(
@@ -1422,8 +1441,9 @@ def ore_wrap(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `OreWrapParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return ore_wrap_handler().build(
@@ -1489,7 +1509,7 @@ OreSetAdminParams = TypedDict(
     {
         # arg `admin` (`solana_pubkey::Pubkey`)
         "admin": str,
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
     },
     total=False,
@@ -1508,8 +1528,9 @@ def ore_set_admin(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `OreSetAdminParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return ore_set_admin_handler().build(
@@ -1532,6 +1553,7 @@ def ore_set_admin_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="config",
@@ -1565,7 +1587,7 @@ OreNewVarParams = TypedDict(
         "commit": Sequence[int],
         # arg `samples` (`u64`)
         "samples": int,
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
         # Address of the `provider` account.
         "provider": str,
@@ -1588,8 +1610,9 @@ def ore_new_var(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `OreNewVarParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return ore_new_var_handler().build(
@@ -1612,6 +1635,7 @@ def ore_new_var_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="board",
@@ -1743,9 +1767,9 @@ EntropyOpenParams = TypedDict(
         "samples": int,
         # arg `endAt` (`u64`)
         "endAt": int,
-        # Optional address override for the `authority` signer (defaults to the payer).
+        # Address of the `authority` signer.
         "authority": str,
-        # Optional address override for the `payer` signer (defaults to the payer).
+        # Address of the `payer` signer.
         "payer": str,
         # Address of the `provider` account.
         "provider": str,
@@ -1769,8 +1793,9 @@ def entropy_open(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `EntropyOpenParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return entropy_open_handler().build(
@@ -1793,6 +1818,7 @@ def entropy_open_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="payer",
@@ -1800,6 +1826,7 @@ def entropy_open_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="provider",
@@ -1838,7 +1865,7 @@ def entropy_open_handler() -> InstructionHandler:
 EntropyCloseParams = TypedDict(
     "EntropyCloseParams",
     {
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
         # Address of the `var` account.
         "var": str,
@@ -1859,8 +1886,9 @@ def entropy_close(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `EntropyCloseParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return entropy_close_handler().build(
@@ -1883,6 +1911,7 @@ def entropy_close_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="var",
@@ -1910,7 +1939,7 @@ EntropyNextParams = TypedDict(
     {
         # arg `endAt` (`u64`)
         "endAt": int,
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
         # Address of the `var` account.
         "var": str,
@@ -1932,8 +1961,9 @@ def entropy_next(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `EntropyNextParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return entropy_next_handler().build(
@@ -1956,6 +1986,7 @@ def entropy_next_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="var",
@@ -1978,7 +2009,7 @@ EntropyRevealParams = TypedDict(
     {
         # arg `seed` (`[u8; 32]`)
         "seed": Sequence[int],
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
         # Address of the `var` account.
         "var": str,
@@ -2000,8 +2031,9 @@ def entropy_reveal(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `EntropyRevealParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return entropy_reveal_handler().build(
@@ -2024,6 +2056,7 @@ def entropy_reveal_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="var",
@@ -2044,7 +2077,7 @@ def entropy_reveal_handler() -> InstructionHandler:
 EntropySampleParams = TypedDict(
     "EntropySampleParams",
     {
-        # Optional address override for the `signer` signer (defaults to the payer).
+        # Address of the `signer` signer.
         "signer": str,
         # Address of the `var` account.
         "var": str,
@@ -2066,8 +2099,9 @@ def entropy_sample(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `EntropySampleParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return entropy_sample_handler().build(
@@ -2090,6 +2124,7 @@ def entropy_sample_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="var",

@@ -91,7 +91,7 @@ AlphaConfigureParams = TypedDict(
     {
         # arg `header` (`Header`)
         "header": Any,
-        # Optional address override for the `authority` signer (defaults to the payer).
+        # Address of the `authority` signer.
         "authority": str,
         # Address of the `vault` account.
         "vault": str,
@@ -112,8 +112,9 @@ def alpha_configure(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `AlphaConfigureParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (addresses that override the params), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return alpha_configure_handler().build(
@@ -136,6 +137,7 @@ def alpha_configure_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="vault",
@@ -202,7 +204,7 @@ BetaConfigureParams = TypedDict(
     {
         # arg `header` (`Header`)
         "header": Any,
-        # Optional address override for the `authority` signer (defaults to the payer).
+        # Address of the `authority` signer.
         "authority": str,
         # Address of the `vault` account.
         "vault": str,
@@ -223,8 +225,9 @@ def beta_configure(
     Pure (no network). Params use IDL wire names plus documented account aliases (see `BetaConfigureParams`);
     unknown params fail closed.
 
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (addresses that override the params), `remaining_accounts`. Account names
+    Reserved keyword-only options: `wallet` (the address of `signer_kind="wallet"`
+    signers; the generated signers are caller-provided, as in TypeScript), `accounts`
+    (addresses that override the params), `remaining_accounts`. Account names
     (including `payer`) stay available as params.
     """
     return beta_configure_handler().build(
@@ -247,6 +250,7 @@ def beta_configure_handler() -> InstructionHandler:
                 is_writable=True,
                 resolution=Signer(),
                 is_optional=False,
+                signer_kind="provided",
             ),
             AccountMeta(
                 name="vault",

@@ -182,7 +182,10 @@ semantics):
   never downgraded to a synthetic `CustomError<code>` when `errors` is empty.
 - **`wallet=` is the reserved signer-fallback option** on raw builders
   (`RawInstruction.build` and generated builders), matching TS `BuildOptions.wallet`.
-  Spelling it `payer=` would shadow the IDL account name `payer`, which must stay
+  Like it, it fills only signers whose `AccountMeta.signer_kind` is `"wallet"` (TS
+  `signerKind: 'wallet'`); generated handlers mark every signer `"provided"`, so the
+  caller passes the signer's address. Spelling it `payer=` would shadow the IDL account
+  name `payer`, which must stay
   reachable as an account override. Reserved set: `wallet`, `accounts`,
   `remaining_accounts`; audited against every IDL in `stacks/**` — `payer` was the only
   collision, and none of the reserved names appear as account or arg names.

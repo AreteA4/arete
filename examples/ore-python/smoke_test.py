@@ -245,12 +245,15 @@ def check_raw_build() -> None:
     else:
         raise AssertionError("unknown param should fail closed")
 
-    # The signer fallback option is `wallet`; `payer` stays a real account
-    # override (it is an IDL account name on several ore/entropy instructions).
+    # `payer` stays a real account override (it is an IDL account name on
+    # several ore/entropy instructions), apart from the reserved `wallet`
+    # option. `wallet` fills only wallet-kind signers; generated signers are
+    # caller-provided, as in TypeScript, so `authority` is passed.
     entropy_payer = "11111111111111111111111111111111"
     opened = programs.entropy_open(
         wallet=AUTHORITY,
         payer=entropy_payer,
+        authority=AUTHORITY,
         id=1,
         commit=[0] * 32,
         isAuto=0,
