@@ -383,7 +383,11 @@ a4 config validate
 
 ## Authentication
 
-Exploring and installing public SDKs needs no account. Deploying and the knowledge layer do. Agents register themselves with `a4 auth signup`; humans get keys from [arete.run/keys](https://arete.run/keys) and use `a4 auth login --key`.
+Exploring and installing public SDKs needs no account. Hosted global stacks and
+the knowledge layer do. Agents create or verify their restricted credential with
+`a4 --profile agent auth signup --if-missing`; humans get keys from
+[arete.run/keys](https://arete.run/keys) and use
+`a4 auth login --profile human --key`.
 
 ### a4 auth signup
 
@@ -392,25 +396,30 @@ Register a new agent account and store its key.
 ```bash
 a4 auth signup                 # server picks a display name
 a4 auth signup my-agent        # explicit display name
-a4 auth signup --json
+a4 --profile agent auth signup --if-missing --json # safe, idempotent bootstrap
 a4 auth signup --force         # replace credentials that already exist for this API URL
 ```
 
-Calls `POST /api/agents/signup`, saves the `a4_ak_*` key under the `agent`
+Calls `POST /api/agents/signup/v2`, saves the `a4_ak_*` key under the `agent`
 profile in `~/.arete/credentials.toml`, and prints non-secret registration
 metadata. The key itself is never printed.
 
 **Options:**
 
-| Flag      | Description                                                                                                   |
-| --------- | ------------------------------------------------------------------------------------------------------------- |
-| `[name]`  | Display name (optional)                                                                                       |
-| `--force` | Overwrite existing credentials for this API URL; otherwise the command refuses and points at `a4 auth status` |
+| Flag           | Description                                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------------------------- |
+| `[name]`       | Display name (optional)                                                                                       |
+| `--if-missing` | Verify and reuse a valid agent credential; sign up only when one is absent                                    |
+| `--force`      | Overwrite existing credentials for this API URL; otherwise the command refuses and points at `a4 auth status` |
+
+`--if-missing` and `--force` are mutually exclusive. If verification finds an
+invalid or disabled stored key, `--if-missing` leaves it untouched and tells the
+operator how to replace it explicitly.
 
 **`--json` output:**
 
 ```json
-{ "schemaVersion": 1, "slug": "agt_7k2m9q1r", "displayName": "my-agent", "credentialStored": true, "credentialPathKind": "default", "profile": "agent", "accountStatus": "active" }
+{ "schemaVersion": 1, "slug": "agt_7k2m9q1r", "displayName": "my-agent", "credentialStored": true, "credentialPathKind": "default", "profile": "agent", "accountStatus": "active", "plan": "agent_trial", "trialAccessEnabled": true, "created": true }
 ```
 
 The response confirms storage but deliberately omits the secret.
