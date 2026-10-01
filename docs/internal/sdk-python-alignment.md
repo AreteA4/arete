@@ -109,8 +109,16 @@ CLI (`cli/src/commands/sdk.rs`): `--python` on `a4 sdk create` / `a4 install` /
 `a4 sdk sync`, resolving language the same way `--rust` does. Extensions manifest
 `language: "python"`: flat `.py` bundles, entry `extensions.py` by convention,
 pin-validate → stage verbatim → wire via explicit imports in the generated package
-`__init__.py` (manifest-driven, no source regex) → `sdk-provenance.json`. Same
-registry gap as Rust: hosted bundles need the backend language dimension.
+`__init__.py` (manifest-driven, no source regex) → `sdk-provenance.json`. Since
+2026-09-30 the entry exports `PROGRAM_EXTENSIONS` or `STACK_EXTENSIONS` (canonical §9)
+and the generated `__init__.py` applies it with `extend_program` / `extend_stack`
+(then stamps program identity) instead of star-importing the entry; program extensions
+gain `create_read(ctx)`, surfaced as the connected program's `read`. A stack package
+embeds each program package's own bundle in a `program_sdks/<program>/` subpackage
+(re-export `programs.py` / `models.py` shims, so the bundle's relative imports resolve
+as in the standalone package) and binds the extended program. Hosted bundles resolve
+by target from the backend language dimension; a language mismatch or a content-hash
+mismatch is a hard error.
 
 Example: `examples/ore-python` — generated package + `main.py` demoing views
 streaming, offline instruction build, PDA derivation, and (connectivity-guarded)
@@ -246,6 +254,5 @@ semantics):
    template, provenance (15 new CLI tests; suite 126) + regenerated
    `examples/ore-python` with an offline smoke test.
 7. ✅ Package: pyproject deps/extras (0.4.0), README rewrite, `__init__.py` exports.
-   ☐ Follow-up: `docs/src/content/docs/sdks/python.mdx` public page (docs team);
-   hosted registry `sdk_extension_contents` language dimension (backend — same gap
-   as Rust).
+   ☐ Follow-up: `docs/src/content/docs/sdks/python.mdx` public page (docs team).
+   (The hosted registry `sdk_extension_contents` language dimension has landed.)

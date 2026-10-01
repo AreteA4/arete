@@ -93,6 +93,8 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 stack compose`                    | Compose live views and program SDKs            |
 | `a4 sdk create --manifest ... --ts`   | Generate a TypeScript SDK from a StackManifest |
 | `a4 sdk create --manifest ... --rust` | Generate a Rust SDK from a StackManifest       |
+| `a4 sdk create --program-spec ... --rust` | Generate a Rust (or `--python`) program SDK from a ProgramSpec |
+| `a4 sdk create --manifest ... --rust --program-extensions <program>=<bundle>` | Embed a program's own bundle in a Rust (or `--python`) stack SDK |
 | `a4 up <manifest>`                    | Deploy one exact StackManifest                 |
 | `a4 up <alias>`                       | Deploy an installed stack                      |
 | `a4 status`                           | Show project overview                          |
@@ -1039,6 +1041,52 @@ Low-level `a4 sdk create` accepts explicit `--manifest` or
 compatibility/direct-descriptor tool: it never writes `arete.toml` or
 `arete.lock`, and `a4 install` never falls back to it.
 
+`a4 sdk create --program-spec <file>` generates a standalone program SDK
+offline for any target: a TypeScript module (`--ts`), a Rust crate
+(`--rust`, named `<program>-program` unless `--crate-name` is given) or a
+Python package (`--python`, `--package-name`). `--extensions <dir>` applies the
+program package's own extension bundle for that language, exactly as
+`a4 install program <package> --rust` (or `--python`) applies the published
+one; `--module` writes a Rust `mod.rs` module or a plain Python package
+directory. `--program-only --idl <file>` does the same from a raw IDL.
+
+```bash
+a4 sdk create --rust --program-spec ./.arete/ore.program-spec.json \
+  --extensions ./sdks/programs/ore/rust --output ./generated/ore-program
+a4 sdk create --python --program-spec ./.arete/ore.program-spec.json \
+  --extensions ./sdks/programs/ore/python --output ./generated/ore-program-py
+```
+
+A standalone program SDK reads every account its ProgramSpec declares: Rust
+`<account>_accounts()` on the program accessor and Python
+`accounts.<account>` return a typed reader (`fetch`, `fetch_many`, `exists`)
+over the account's generated model, and `pdas` derives every ProgramSpec PDA.
+Every IDL struct and enum an account's fields use gets a generated model too
+(for ORE, `Config.admin` reads as an `AdminConfig` whose `fee_rate` is an
+integer), so nested values are typed like the account's own fields.
+A stack SDK's program module (Rust `programs::<program>`, Python
+`programs.<program>`) exposes the same, so a program package's extension bundle
+works unchanged in both.
+
+`a4 sdk create --rust|--python --manifest <file>` generates a stack SDK
+offline. `--extensions <dir>` applies the stack's own bundle, and
+`--program-extensions <program>=<bundle>` embeds a stack program's own
+package bundle (a directory holding `extensions.json`, or that file), staged
+exactly as `a4 install stack <package> --rust` (or `--python`) stages the
+published one. `<program>` is the program's key in the stack SDK
+(`programs.<program>`), its IDL name, or its program ID. Repeat the flag per
+program; a program without one gets no extension. Each bundle's
+`extensions.json` must declare `"language": "rust"` (or `"python"`) and pin
+`"inputKind": "program-spec"` with the `inputHash` of that program's
+ProgramSpec in the StackManifest; anything else stops generation.
+
+```bash
+a4 sdk create --rust --manifest ./.arete/OreStream.stack-manifest.json \
+  --extensions ./sdks/ore/rust \
+  --program-extensions ore=./sdks/programs/ore/rust \
+  --output ./generated/ore-stack
+```
+
 Every install regenerates the whole project, and its summary says why each
 dependency was generated:
 
@@ -1141,10 +1189,25 @@ releases, still installs with `--locked` if it records exactly the program SDK
 extensions generated for the project's targets; otherwise run `a4 install`
 once to record the program SDK pins.
 
-Rust and Python stack SDKs cannot include per-program SDK extensions yet:
-installing such a stack for Rust or Python fails with a message rather than
-generating a smaller surface, and `a4 install program <package> --rust` (or
-`--python`) generates the program with its extension.
+Rust and Python stack SDKs include each program's SDK extension for their
+language, so a stack installs the same program surface as the program installed
+on its own:
+
+- **Rust**: the program's bundle is staged under `src/programs/<program>/`
+  (`programs/<program>/` in `--module` output) and wired into that program's
+  module in `programs.rs`. Its bindings resolve under `programs::<program>`,
+  where a standalone program crate has them at the crate root.
+- **Python**: the program's bundle is staged in a `program_sdks/<program>/`
+  subpackage laid out like the standalone program package, and the stack's
+  `PROGRAMS` (and its `StackDef`) carry the extended program.
+
+A stack with several live views cannot include Rust or Python program SDK
+extensions yet: installing one for Rust or Python fails with a message rather
+than generating a smaller surface.
+
+A hosted Rust or Python SDK extension must declare the language it is served
+for, and its files must hash to the content hash the registry resolved;
+otherwise the install fails and nothing is generated or locked.
 
 A stack with several live views applies a stack extension by name, because it
 has no single stack for a default export to extend. Export

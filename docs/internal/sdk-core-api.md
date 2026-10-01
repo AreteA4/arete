@@ -196,10 +196,55 @@ Layered, lowest to highest; every layer is present in every SDK:
    (programId + discriminator + account metas + arg schemas + error metadata) is
    reachable and buildable directly.
 2. **`pdas.<name>.derive(seeds…)`** — typed PDA factories over
-   `find_program_address`.
+   `find_program_address`: every PDA the ProgramSpec declares, plus, in a stack's
+   program module, the stack's own (which win on a shared name). Python omits PDAs
+   whose program is itself a seed reference.
 3. **`accounts.<Account>.fetch / fetch_many / exists`** — HTTP program reads (§8)
    returning typed decoded accounts (`null`/absent for missing; batch preserves
-   per-item status).
+   per-item status). Every account of the ProgramSpec has one, in a standalone
+   program SDK and in a stack's program module. Rust and Python decode into models
+   derived from the IDL, typed the way the Program Read API encodes each value:
+   - **Integers** decode from JSON numbers or decimal strings (`u64` above 2^53 and
+     every `u128`/`i128` travel as strings) at any depth — inside options, vectors,
+     fixed arrays, tuples and maps (Rust `serde_utils::deserialize_wire_option` with
+     the `serde_utils::wire` shape markers where the flat helpers do not reach).
+     Integer kinds follow the flat convention (`u8`/`u16` widen to `u64`), and byte
+     arrays decode as integer lists.
+   - **Defined types.** Every IDL struct, tuple struct and enum an account reaches
+     gets a model of its own, named after the IDL type (`AdminConfig`; in Python a
+     dataclass with strict `admin_config_from_wire` and `admin_config_patch_from_wire`
+     converters). A struct is an object keyed by its field names (snake_case fields;
+     Rust models also accept the IDL's own camelCase key), a tuple struct an object
+     keyed `field_0`, `field_1`, …; an inline tuple is an array (a Rust tuple, a
+     Python `tuple`), a map a string-keyed object (`BTreeMap<String, T>`,
+     `Dict[str, T]`). A recursive reference (and a tuple of more than eight
+     elements) reads as raw JSON.
+   - **Enums.** A unit variant is its name (`"Full"`), a data variant a one-key object
+     from its name to its fields, tuple fields keyed `field_<index>`
+     (`{"Partial": {"num_signatures": 5}}`, `{"Address": {"field_0": "…"}}`). Rust
+     declares an externally tagged serde `enum` (`VerificationLevel::Partial {
+     num_signatures }`, tuple variants as `Address { field_0 }`); Python keeps the
+     value's wire shape — a `str`, or a one-key `dict` whose value is the variant's
+     dataclass (`{"Partial": VerificationLevelPartial(num_signatures=5)}`, typed
+     `VerificationLevel = Union[str, Dict[str, VerificationLevelPartial]]`, a
+     unit-only enum `str`), and `verification_level_from_wire` rejects any other
+     value. TypeScript types an enum as the union of its variant names, and its
+     schema accepts unit variants only.
+   - **Naming.** A standalone program SDK declares each model under its *stable
+     name*: the account's or type's name in PascalCase (an account's with an
+     `Account` suffix, a type's with a `Type` suffix, where that is taken). A stack
+     shares a model an identical declaration already has (across programs too) and
+     renames a different one the way TypeScript does: prefixed with the program name
+     (`BetaFee`), then also with the `Account`/`Type` role (`OreTreasuryAccount`,
+     where the ORE entity takes `OreTreasury`). A field the flat convention of the
+     stack SDKs' captured-account types already expresses (a scalar, or an option or
+     array of scalars) renders exactly as there, so a stack whose entity maps an
+     account with the same fields reads into that same type. Entity types are
+     unchanged: they keep nested defined types, tuples and maps as JSON values, so an
+     account that has them reads into a model of its own beside the entity's type
+     (the ORE stack's captured `Treasury` and its `OreTreasuryAccount` reader model).
+   An account whose layout is an enum reads as raw JSON. No SDK generates program
+   queries (`queries` stays empty; the runtimes execute hand-written ones).
 4. **`instructions.<name>.prepare(input)`** — semantic single-instruction operations →
    `PreparedInstruction`.
 5. **`transactions.<path>.prepare(input)`** — semantic multi-instruction operations →
@@ -208,7 +253,8 @@ Layered, lowest to highest; every layer is present in every SDK:
 7. **Error metadata** — generated `ErrorMetadata { code, name, msg }` +
    `parse_program_error(code)`.
 8. **Extension namespaces** — `addresses`, `constants`, `defaults`, `math`, plus
-   program `operations` created with access to the fully connected program.
+   program `read` and `operations` created with access to the fully connected
+   program (§9, Rust and Python extension bundles).
 
 Prepared values carry `name`, `artifacts`, `required_signer_addresses`, `errors`, and
 compose (prepend/append; `create_prepared_transaction({operations})`).
@@ -256,8 +302,9 @@ auth tokens per binding.
   builds). It describes exactly the generated SDK, so it is set last: generated entries
   apply the package's own extension (and TS read descriptor) first, then stamp the
   identity (`withProgramIdentity` / `with_program_identity`; Python stamps it in the
-  package `__init__.py` after the extension import, or in the `ProgramDef` when the
-  package has no extension). Applying an extension outside generated code
+  package `__init__.py` after applying the bundle's `PROGRAM_EXTENSIONS`, or in the
+  `ProgramDef` when the package has no extension; inside a stack package, in the
+  program's `program_sdks/<program>` subpackage). Applying an extension outside generated code
   (`extendProgram`, `extendPrograms`, TS `withProgramRead`; Python `extend_program`,
   `extend_programs`) drops it. Programs are matched by identity, never by name
   (`compareProgramIdentity` / `compare_program_identity` → `same | unproven |
@@ -293,8 +340,9 @@ auth tokens per binding.
   the version of the extension-authoring surface that generated code and published
   extensions import: stack/program extension definition and composition helpers (TS
   `defineStackExtensions`, `defineProgramExtensions`, `extendProgram`, `extendPrograms`,
-  `extendStack`; Python `extend_program`, `extend_programs`, `extend_stack`; Rust the
-  `Programs` / `ProgramSdk` / `StackWithPrograms` binding traits), program read attachment
+  `extendStack`; Python `extend_program`, `extend_programs`, `extend_stack`,
+  `program_extensions_of`, `stack_extensions_of`; Rust the `Programs` / `ProgramSdk` /
+  `StackWithPrograms` binding traits and `ProgramContext` / `ProgramAccessor`), program read attachment
   (TS `withProgramRead` and its equivalents), and the instruction helpers generated code
   imports (instruction handlers, PDA derivation, the borsh layout, prepared-operation
   constructors). It bumps **only on a breaking change** to that surface; additive changes
@@ -314,7 +362,86 @@ auth tokens per binding.
   `contentSha256` only when declared, so existing bundle identities are unchanged.
   CLI (`a4 sdk create/install/sync`) resolves → pin-validates against stack-manifest / program-spec hashes (hard errors on
   mismatch) → stages files verbatim → wires them into the generated module using the
-  language's explicit wiring convention → records `sdk-provenance.json`.
+  language's explicit wiring convention → records `sdk-provenance.json`. A hosted
+  bundle's manifest `language` must be the target it was served for (absent =
+  TypeScript): anything else is a hard error, never a silent drop, and its hash is
+  never written to `arete.lock`. A hosted Rust or Python bundle's staged bytes must
+  re-hash to the resolved `contentHash` (the registry's rule: lowercase hex SHA-256 of
+  the compact JSON `{"files": {path: source}, "manifest": {"entry", "files",
+  "inputHash", "inputKind", "language", "sdkRange"}}`, keys sorted, absent values
+  `null`, `language` present only for Rust and Python, `extensionApi` never hashed).
+- **Stack SDKs embed program extensions**: every language generates each stack
+  program whose program package release carries its own extension for that target
+  with that extension, so `a4 install stack <s> --<lang>` and
+  `a4 install program <p> --<lang>` expose the same program surface: TypeScript as a
+  program SDK module (`programs/<program>/`), Rust in the program's module of
+  `programs.rs` (bundle files under `programs/<program>/`), Python as a
+  `program_sdks/<program>/` subpackage. Multi-live Rust and Python compositions refuse a
+  program extension rather than drop it.
+- **Rust and Python extension bundles**: flat files beside the TypeScript bundle they
+  mirror; entry `extensions.rs` / `extensions.py`; `extensions.json` carries
+  `"language": "rust" | "python"`. Module names reserved for generated code: `entity`,
+  `types`, `mod`, `lib`, `programs`, `models`, `views`, `generated` (Rust program
+  bundles also `pdas`; Python also `__init__`, and stack bundles `program_sdks`).
+  Bindings follow the TypeScript surface path, converted per segment
+  (`math.formatAmount` → Rust `math::format_amount`, Python `math.format_amount`;
+  `constants.X` → Rust `constants::UPPER_SNAKE`); the **SDK root** is a standalone
+  program crate's root, a stack crate's `programs::<program>` module, or the stack
+  crate's root for a stack bundle.
+  - **Rust.** Pure namespaces (`addresses`, `constants`, `defaults`, `math`) are
+    modules of free functions, constants and statics. Context namespaces (`read`,
+    `instructions`, `transactions`, `flows`) are modules of `async` free functions that
+    take their context first: program bundles
+    `&arete_sdk::ProgramContext<'_, <Name>Program>`, stack bundles' `read`
+    `&Arete<<Stack>>`. Inputs derive `serde::Deserialize`; results are
+    `arete_sdk::operations::Prepared*` or `serde::Serialize` values. No traits, macros
+    or `async-trait`; dependencies are `std`, `arete_sdk`, `serde`, `serde_json`.
+    `ProgramContext` exposes `chain()` (the client's `ChainClient`), `wallet()` (its
+    current wallet, read at call time) and `program()` (the generated accessor: typed
+    instruction builders and an `<account>_accounts()` reader for every account of the
+    program's ProgramSpec, in a standalone program crate and inside a stack alike).
+    Every generated accessor implements
+    `ProgramAccessor` and has `context()`: `client.programs.<p>.context()` for a
+    standalone crate connected as `Arete::<ProgramStack<…>>` or through a `Session`,
+    `a4.programs.<p>.context()` inside a stack client; `ProgramContext::new(&accessor)`
+    when an instruction named `context` takes the method name, and
+    `ProgramContext::from_parts` / `ProgramBuilder::with_chain` / `with_wallet` for
+    fixtures. Generated items are imported through `super::generated`, a re-export
+    module the generator emits beside the bundle: at a standalone program crate's root
+    it re-exports the program module's items (`PROGRAM_ID`, `*Params`, builders,
+    `pdas`, `<Name>Program`, read descriptors) and the generated types; inside a stack
+    it is `programs::<program>::generated`, re-exporting the program module and the
+    stack's types; at a stack crate's root it re-exports the stack binding, the types
+    and `programs`. A program module's `generated` also re-exports each account model,
+    and each model of the IDL types they reach (§6), explicitly under its *stable
+    name*, the one the standalone program crate declares it under
+    (`generated::Vault`, `generated::AdminConfig`), even where the stack's `types.rs`
+    renamed it around an entity or another program's type (`VaultVault`). Other bundle files are imported as `super::<module>`. The generator
+    declares `pub mod <file>;` per staged file and re-exports the entry
+    (`pub use extensions::*`); the entry declares no file modules, and a namespace is a
+    bundle file named after it or an inline module (`pub mod math { … }` or
+    `pub use super::ore_math as math;`).
+  - **Python.** A program bundle's entry exports `PROGRAM_EXTENSIONS = {…}` with any of
+    `addresses`, `constants`, `defaults`, `math`, `pdas`, `create_operations(ctx)`,
+    `create_read(ctx)`; a stack bundle's entry exports `STACK_EXTENSIONS = {…}` with
+    any of `addresses`, `constants`, `defaults`, `math`, `read_arg_counts`,
+    `create_read(client)`, `create_flows(client)`. The generated `__init__.py` imports
+    the bundle files as submodules (nothing is star-imported, so entries never patch
+    generated names) and applies the mapping —
+    `extend_program(programs.<P>_PROGRAM, **program_extensions_of(entry))` then the
+    identity stamp, or `extend_stack(<STACK>, **stack_extensions_of(entry))`. The CLI
+    refuses an entry that never names its export; `program_extensions_of` /
+    `stack_extensions_of` raise `ImportError` for a missing export and `TypeError` for
+    unknown keys. `ctx` is `ProgramOperationContext` (`chain`, `wallet`, `program`).
+    `create_read` returns a mapping of async callables, composed base-first like
+    `create_operations` and surfaced as the connected program's `read` namespace
+    before `create_operations` runs (TS `createRead`). Bundles import generated items
+    from `.programs` and `.models` and sibling files relatively; inside a stack the
+    bundle sits in `program_sdks/<program>/`, whose `programs.py` / `models.py`
+    re-export the stack's, so the same relative imports resolve. That `models.py` also
+    aliases each account and IDL type model the stack renamed (with its converters,
+    and an enum's variant dataclasses) back to its stable name, so
+    `from .models import Vault` names the account model in both.
 
 ## 10. Idiom matrix
 
@@ -340,8 +467,11 @@ standard style (casing, error, async, and options conventions).
 | session | `createSession({stacks, programs})` → `session.stacks.<k>` | provider-level | `session.stack::<OreStack>("ore")` (runtime-keyed) | `create_session(stacks={…})` → `session.stacks.<k>` |
 | program identity | `ProgramSdkDefinition.packageReleaseHash`; `PROGRAM_KEY_CONFLICT` error code | same | `ProgramSdk::package_release_hash()`; `same_program::<A, B>()` (typed paths make key conflicts unrepresentable — see the Rust doc) | `ProgramDef.package_release_hash`; `ProgramKeyConflictError` (`code="PROGRAM_KEY_CONFLICT"`) |
 | extension API | `EXTENSION_API_VERSION`; `package.json` `arete.extensionApi` | — | `arete_sdk::EXTENSION_API_VERSION`; `[package.metadata.arete] extension-api` | `arete.EXTENSION_API_VERSION`; `[tool.arete] extension-api` |
+| program extension context | `ProgramOperationContext` (`chain`, `wallet`, `program`) passed to `createOperations` / `createRead` | same | `ProgramContext<'_, P>` (`chain()`, `wallet()`, `program()`) from `a4.programs.ore.context()`, first argument of extension functions | `ProgramOperationContext` passed to `create_operations` / `create_read` |
+| extension bundle | default export of `defineProgramExtensions` / `defineStackExtensions` | same | namespace modules of free functions, `super::generated` imports | `PROGRAM_EXTENSIONS` / `STACK_EXTENSIONS` mapping |
 | wire payload casing | snake_case → camelCase transform (zod) | same | snake_case → snake_case (serde) | snake_case natively — no transform |
 | u64 | `bigint` | `bigint` | `u64`/`u128` | `int` |
+| IDL enum (account reads) | variant-name union (unit variants) | same | externally tagged `enum` (`Level::Partial { num_signatures }`) | `str` or `{"Partial": LevelPartial(...)}` |
 | validation | zod schemas + patch schemas | zod | serde typed structs | generated converters (typed dataclasses; u64-string → int) |
 
 Documented per-language divergences live in the language alignment docs. Divergences
