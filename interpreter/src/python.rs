@@ -19,9 +19,13 @@
 
 use crate::ast::*;
 use crate::identifiers::python as python_ident;
+use crate::idl_models::{
+    bind_idl_models, DeclaredModel, IdlModel, IdlModelKind, ModelField, ModelLanguage,
+    ModelVariant, WireType,
+};
 use crate::stack_types::{
-    entity_program_name, resolved_type_namespaces, AccountModels, ProgramTypeDefs,
-    StackResolvedTypes,
+    account_reader_programs, entity_program_name, resolved_type_namespaces, AccountModels,
+    ProgramTypeDefs, StackResolvedTypes,
 };
 use crate::typescript_instructions::{
     dedupe_errors_by_code, disambiguate_instruction_account_names, normalize_seed_arg_type,
@@ -44,6 +48,32 @@ pub struct PythonOutput {
     /// Generated program SDK module (`programs.py`). `None` when the stack
     /// spec declares no instructions.
     pub programs_py: Option<String>,
+    /// One subpackage per program package extension configured in
+    /// [`PythonStackConfig::program_extensions`], written under
+    /// [`PROGRAM_SDKS_PACKAGE`]`/<module_name>/`. The CLI stages the bundle
+    /// files beside it.
+    pub program_packages: Vec<PythonProgramPackage>,
+}
+
+/// The subpackage of a stack package holding the program SDKs that carry
+/// their package's own extension.
+pub const PROGRAM_SDKS_PACKAGE: &str = "program_sdks";
+
+/// A program SDK inside a stack package that carries its package's own
+/// extension: laid out like the standalone program package (`__init__.py`,
+/// `programs.py`, `models.py` and the bundle files), so the bundle's relative
+/// imports resolve unchanged.
+#[derive(Debug, Clone)]
+pub struct PythonProgramPackage {
+    pub program_id: String,
+    /// Directory name under [`PROGRAM_SDKS_PACKAGE`], the program's key in
+    /// `PROGRAMS`.
+    pub module_name: String,
+    pub init_py: String,
+    /// Re-exports the stack's `programs.py`.
+    pub programs_py: String,
+    /// Re-exports the stack's `models.py`.
+    pub models_py: String,
 }
 
 /// Python output for a standalone program SDK. It intentionally omits the
@@ -77,9 +107,14 @@ pub struct PythonStackConfig {
     /// [`python_module_name`].
     pub extension_modules: Vec<String>,
     /// Module stem of the extension entry file. When set, the generated
-    /// `__init__.py` star-imports the entry (`from .<entry> import *`) so
-    /// extension helpers come into scope with the stack's own import.
+    /// `__init__.py` imports the entry and applies the mapping it exports
+    /// (`PROGRAM_EXTENSIONS` for a program package, `STACK_EXTENSIONS` for a
+    /// stack) with `extend_program` / `extend_stack`.
     pub extension_entry: Option<String>,
+    /// Program package extensions embedded in a stack package: each program
+    /// gets a subpackage under [`PROGRAM_SDKS_PACKAGE`] that applies its
+    /// extension, and the stack binds the extended program.
+    pub program_extensions: Vec<PythonProgramExtensionConfig>,
     /// Published-platform program read overrides keyed by program ID. Mirrors
     /// [`RustStackConfig::program_reads`](crate::rust::RustStackConfig): when
     /// a matching entry exists, its exact `program_spec_hash` /
@@ -92,6 +127,17 @@ pub struct PythonStackConfig {
     /// generation for a hosted endpoint sets it; without it the generated
     /// definition is unchanged.
     pub release: Option<crate::public_artifacts::StackRelease>,
+}
+
+/// One program package's own extension bundle, embedded in a stack package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PythonProgramExtensionConfig {
+    /// The program the bundle extends.
+    pub program_id: String,
+    /// Module stems of the staged files, helpers first and the entry last.
+    pub modules: Vec<String>,
+    /// Module stem of the entry, which exports `PROGRAM_EXTENSIONS`.
+    pub entry: String,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +170,7 @@ impl Default for PythonStackConfig {
             http_url: None,
             extension_modules: Vec::new(),
             extension_entry: None,
+            program_extensions: Vec::new(),
             program_reads: Vec::new(),
             gateway: None,
             release: None,
@@ -201,12 +248,27 @@ pub fn compile_program_modules(
         .map(|entity| entity.state_name.clone())
         .collect::<Vec<_>>();
     validate_entity_identifiers(&entity_names)?;
+    let reader_programs = python_reader_programs(
+        &stack_spec.idls,
+        &stack_spec.program_ids,
+        &stack_spec.instructions,
+        &stack_spec.program_specs,
+        &config.program_reads,
+        true,
+    );
     let (models_py, _model_exports, account_structs) = generate_stack_models_py(
         &stack_spec.stack_name,
         &stack_spec.entities,
         &entity_names,
         &stack_spec.idls,
+        &reader_programs,
     );
+    if !config.program_extensions.is_empty() {
+        return Err(
+            "a standalone program SDK carries its package extension at the package root (extension_modules/extension_entry), not as an embedded program extension".to_string(),
+        );
+    }
+    let extended = config.extension_entry.is_some();
     let programs = generate_stack_programs_py(
         &stack_spec.stack_name,
         &stack_spec.instructions,
@@ -218,7 +280,7 @@ pub fn compile_program_modules(
         &config.program_reads,
         config.gateway.as_ref(),
         true,
-        config.extension_entry.is_some(),
+        &|_| extended,
     )
     .ok_or_else(|| {
         format!(
@@ -226,7 +288,18 @@ pub fn compile_program_modules(
             stack_spec.stack_name
         )
     })?;
-    validate_extension_modules(&config, true)?;
+    validate_extension_modules(&config, &[])?;
+    let extended_program = match (extended, programs.modules.as_slice()) {
+        (false, _) => None,
+        (true, [program]) => Some(program),
+        (true, _) => {
+            return Err(format!(
+                "a program package extension extends exactly one program, but '{}' generates {}",
+                stack_spec.stack_name,
+                programs.modules.len()
+            ))
+        }
+    };
 
     Ok(PythonProgramOutput {
         module_name: python_module_name(&config.package_name),
@@ -234,6 +307,7 @@ pub fn compile_program_modules(
         init_py: generate_program_init_py(
             &stack_spec.stack_name,
             &config,
+            extended_program,
             &programs.identity_stamps,
         ),
         models_py,
@@ -291,9 +365,12 @@ pub fn compile_composed_public_artifacts_v2(
         );
     }
     let config = config.unwrap_or_default();
-    if !config.stack.extension_modules.is_empty() || config.stack.extension_entry.is_some() {
+    if !config.stack.extension_modules.is_empty()
+        || config.stack.extension_entry.is_some()
+        || !config.stack.program_extensions.is_empty()
+    {
         return Err(
-            "Python composition SDKs do not support stack extensions; extensions attach to a single-live stack module".to_string(),
+            "Python composition SDKs do not support stack or program package extensions; extensions attach to a single-live stack module".to_string(),
         );
     }
     let mut live_stacks = Vec::with_capacity(composed.live_specs.len());
@@ -360,7 +437,49 @@ pub fn write_python_module(
     if let Some(programs) = &output.programs_py {
         std::fs::write(module_dir.join("programs.py"), programs)?;
     }
+    if !output.program_packages.is_empty() {
+        let root = module_dir.join(PROGRAM_SDKS_PACKAGE);
+        std::fs::create_dir_all(&root)?;
+        std::fs::write(root.join("__init__.py"), PROGRAM_SDKS_INIT_PY)?;
+        for package in &output.program_packages {
+            let directory = root.join(&package.module_name);
+            std::fs::create_dir_all(&directory)?;
+            std::fs::write(directory.join("__init__.py"), &package.init_py)?;
+            std::fs::write(directory.join("programs.py"), &package.programs_py)?;
+            std::fs::write(directory.join("models.py"), &package.models_py)?;
+        }
+    }
     Ok(())
+}
+
+/// `program_sdks/__init__.py`.
+pub const PROGRAM_SDKS_INIT_PY: &str = "\"\"\"Program SDKs of this stack that carry their program package's own extension.\n\nGenerated by the Arete interpreter; do not edit.\n\"\"\"\n";
+
+impl PythonOutput {
+    /// The files [`write_python_module`] writes, relative to the module
+    /// directory.
+    pub fn module_files(&self) -> Vec<String> {
+        let mut files = vec![
+            "__init__.py".to_string(),
+            "models.py".to_string(),
+            "views.py".to_string(),
+        ];
+        if self.programs_py.is_some() {
+            files.push("programs.py".to_string());
+        }
+        if !self.program_packages.is_empty() {
+            files.push(format!("{PROGRAM_SDKS_PACKAGE}/__init__.py"));
+            for package in &self.program_packages {
+                for file in ["__init__.py", "programs.py", "models.py"] {
+                    files.push(format!(
+                        "{PROGRAM_SDKS_PACKAGE}/{}/{file}",
+                        package.module_name
+                    ));
+                }
+            }
+        }
+        files
+    }
 }
 
 /// Write a pip-installable layout: `pyproject.toml` plus the import package
@@ -432,9 +551,31 @@ fn compile_stack_spec_with_view_selection(
     }
     validate_entity_identifiers(&entity_names)?;
 
-    let (models_py, model_exports, account_structs) =
-        generate_stack_models_py(&stack_name, &entity_specs, &entity_names, &stack_spec.idls);
+    let reader_programs = python_reader_programs(
+        &stack_spec.idls,
+        &stack_spec.program_ids,
+        &stack_spec.instructions,
+        &stack_spec.program_specs,
+        &config.program_reads,
+        false,
+    );
+    let (models_py, model_exports, account_structs) = generate_stack_models_py(
+        &stack_name,
+        &entity_specs,
+        &entity_names,
+        &stack_spec.idls,
+        &reader_programs,
+    );
 
+    validate_program_extensions(&config.program_extensions)?;
+    // A program that carries its package's own extension gets its identity
+    // stamped after that extension, in its `program_sdks` subpackage; every
+    // other program's definition is exactly the generated program SDK.
+    let extended_programs = config
+        .program_extensions
+        .iter()
+        .map(|extension| extension.program_id.as_str())
+        .collect::<HashSet<_>>();
     let programs = generate_stack_programs_py(
         &stack_name,
         &stack_spec.instructions,
@@ -446,15 +587,41 @@ fn compile_stack_spec_with_view_selection(
         &config.program_reads,
         config.gateway.as_ref(),
         false,
-        // A stack never carries a program package's own extension (stack
-        // generation refuses one), so its programs are exactly the generated
-        // program SDKs and their definitions carry identity.
-        false,
+        &|program_id| extended_programs.contains(program_id),
     );
 
     let views_py = generate_stack_views_py(&stack_name, &entity_specs, &entity_names, exact_views);
 
-    validate_extension_modules(&config, programs.is_some())?;
+    validate_extension_modules(&config, &[PROGRAM_SDKS_PACKAGE])?;
+
+    let mut program_packages = Vec::new();
+    for extension in &config.program_extensions {
+        let program = programs
+            .as_ref()
+            .and_then(|programs| {
+                programs
+                    .modules
+                    .iter()
+                    .find(|module| module.program_id == extension.program_id)
+            })
+            .ok_or_else(|| {
+                format!(
+                    "program package extension for {} names a program this stack does not generate",
+                    extension.program_id
+                )
+            })?;
+        let stamps = programs
+            .as_ref()
+            .map(|programs| programs.identity_stamps.as_slice())
+            .unwrap_or_default();
+        program_packages.push(generate_program_package(
+            &stack_name,
+            &config,
+            extension,
+            program,
+            stamps,
+        ));
+    }
 
     let init_py = generate_stack_init_py(
         &stack_name,
@@ -462,6 +629,7 @@ fn compile_stack_spec_with_view_selection(
         &config,
         programs.is_some(),
         &model_exports,
+        &program_packages,
     );
     let pyproject_toml = generate_stack_pyproject(&config);
 
@@ -472,7 +640,31 @@ fn compile_stack_spec_with_view_selection(
         models_py,
         views_py,
         programs_py: programs.map(|codegen| codegen.code),
+        program_packages,
     })
+}
+
+/// The programs whose section in `programs.py` gets typed account readers.
+fn python_reader_programs(
+    idls: &[IdlSnapshot],
+    program_ids: &[String],
+    instructions: &[InstructionDef],
+    program_specs: &[arete_hash::ProgramSpecV1],
+    reads: &[PythonProgramReadConfig],
+    include_idl_only_programs: bool,
+) -> HashSet<String> {
+    account_reader_programs(
+        idls,
+        program_ids,
+        instructions,
+        include_idl_only_programs,
+        |program_id| {
+            reads.iter().any(|read| read.program_id == program_id)
+                || program_specs
+                    .iter()
+                    .any(|spec| spec.program_id == program_id)
+        },
+    )
 }
 
 // ============================================================================
@@ -500,24 +692,47 @@ include = ["{module}*"]
     )
 }
 
+/// Module names reserved for generated code in every extension bundle
+/// (`docs/internal/sdk-core-api.md` §9, shared with the Rust generator), plus
+/// the package initializer.
+pub const RESERVED_EXTENSION_MODULES: &[&str] = &[
+    "entity",
+    "types",
+    "mod",
+    "lib",
+    "programs",
+    "models",
+    "views",
+    "generated",
+    "__init__",
+];
+
 /// Validate hand-authored extension module stems against the generated
 /// module names. Entry-stem collisions are a hard error because the staged
 /// file would shadow (or be shadowed by) a generated file.
 fn validate_extension_modules(
     config: &PythonStackConfig,
-    has_programs: bool,
+    extra_reserved: &[&str],
 ) -> Result<(), String> {
     if config.extension_modules.is_empty() && config.extension_entry.is_none() {
         return Ok(());
     }
-    if config.extension_entry.is_none() {
+    let Some(entry) = config.extension_entry.as_deref() else {
         return Err("extension modules were configured without an extension entry".to_string());
-    }
+    };
+    validate_extension_stems(&config.extension_modules, entry, extra_reserved)
+}
+
+fn validate_extension_stems(
+    modules: &[String],
+    entry: &str,
+    extra_reserved: &[&str],
+) -> Result<(), String> {
     let mut seen = HashSet::new();
-    for stem in &config.extension_modules {
-        let reserved = matches!(stem.as_str(), "models" | "views" | "__init__")
-            || (stem == "programs" && has_programs);
-        if reserved {
+    for stem in modules {
+        if RESERVED_EXTENSION_MODULES.contains(&stem.as_str())
+            || extra_reserved.contains(&stem.as_str())
+        {
             return Err(format!(
                 "extension file '{stem}.py' collides with the generated '{stem}' module; rename the extension file"
             ));
@@ -528,13 +743,27 @@ fn validate_extension_modules(
             ));
         }
     }
-    match &config.extension_entry {
-        Some(entry) if config.extension_modules.last() == Some(entry) => Ok(()),
-        Some(entry) => Err(format!(
+    if modules.last().map(String::as_str) != Some(entry) {
+        return Err(format!(
             "extension entry module '{entry}' must be the last configured extension module"
-        )),
-        None => unreachable!("checked above"),
+        ));
     }
+    Ok(())
+}
+
+fn validate_program_extensions(extensions: &[PythonProgramExtensionConfig]) -> Result<(), String> {
+    let mut programs = HashSet::new();
+    for extension in extensions {
+        if !programs.insert(extension.program_id.as_str()) {
+            return Err(format!(
+                "program {} has more than one package extension",
+                extension.program_id
+            ));
+        }
+        validate_extension_stems(&extension.modules, &extension.entry, &[])
+            .map_err(|error| format!("program {}: {error}", extension.program_id))?;
+    }
+    Ok(())
 }
 
 /// Entity names become Python class names verbatim (and stay verbatim in view
@@ -563,6 +792,7 @@ fn generate_stack_init_py(
     config: &PythonStackConfig,
     has_programs: bool,
     model_exports: &[String],
+    program_packages: &[PythonProgramPackage],
 ) -> String {
     let _ = model_exports;
     let stack_const = format!("{}_STACK", to_screaming_snake(stack_name));
@@ -590,11 +820,46 @@ fn generate_stack_init_py(
         _ => String::new(),
     };
 
-    let programs_kwargs = if has_programs {
-        "\n    programs=programs.PROGRAMS,\n    program_reads=programs.PROGRAM_READS,"
-    } else {
-        ""
+    let programs_kwargs = match (has_programs, program_packages.is_empty()) {
+        (false, _) => "",
+        (true, true) => {
+            "\n    programs=programs.PROGRAMS,\n    program_reads=programs.PROGRAM_READS,"
+        }
+        (true, false) => "\n    programs=PROGRAMS,\n    program_reads=programs.PROGRAM_READS,",
     };
+    // Programs that carry their package's own extension come from their
+    // `program_sdks` subpackage, which applies it.
+    let mut program_sdks = String::new();
+    if !program_packages.is_empty() {
+        program_sdks.push_str(
+            "# Program SDKs that carry their program package's own extension (staged under\n# program_sdks/; the extensions are not generated).\n",
+        );
+        for package in program_packages {
+            program_sdks.push_str(&format!(
+                "from .{PROGRAM_SDKS_PACKAGE} import {module} as _{module}_program_sdk\n",
+                module = package.module_name
+            ));
+        }
+        program_sdks.push('\n');
+        for package in program_packages {
+            program_sdks.push_str(&format!(
+                "{const_prefix}_PROGRAM = _{module}_program_sdk.{const_prefix}_PROGRAM\n",
+                module = package.module_name,
+                const_prefix = package.module_name.to_uppercase(),
+            ));
+        }
+        program_sdks.push_str(&format!(
+            "PROGRAMS = {{\n    **programs.PROGRAMS,\n{}}}\n\n",
+            program_packages
+                .iter()
+                .map(|package| format!(
+                    "    {}: {}_PROGRAM,\n",
+                    py_string_literal(&package.module_name),
+                    package.module_name.to_uppercase()
+                ))
+                .collect::<String>()
+        ));
+    }
     let (gateway_imports, gateway_kwarg) = match config.gateway.as_ref() {
         Some(gateway) => {
             let json = serde_json::to_string(gateway).expect("gateway descriptor must serialize");
@@ -640,7 +905,7 @@ from arete.stack import {stack_imports}
 
 from . import {submodules}
 {star_imports}
-{stack_const}: StackDef = StackDef(
+{program_sdks}{stack_const}: StackDef = StackDef(
     name={kebab},
     endpoints=StackEndpoints(
 {ws_line}{http_line}
@@ -666,9 +931,18 @@ __all__ = [
         stack_imports = stack_imports,
         release_kwarg = release_kwarg,
         all_items = all_items.join(",\n    "),
+        program_sdks = program_sdks,
     );
 
-    append_python_extension_imports(&mut output, config);
+    if let Some(entry) = config.extension_entry.as_deref() {
+        output.push_str(
+            "\n# Hand-authored stack extension (staged from extensions.json; not generated).\n# Its entry exports STACK_EXTENSIONS, applied to the generated stack definition.\n",
+        );
+        append_python_extension_imports(&mut output, &config.extension_modules, entry);
+        output.push_str(&format!(
+            "from arete import extend_stack as _extend_stack  # noqa: E402\nfrom arete import stack_extensions_of as _stack_extensions_of  # noqa: E402\n\n{stack_const} = _extend_stack({stack_const}, **_stack_extensions_of({entry}))\n"
+        ));
+    }
 
     output
 }
@@ -676,6 +950,7 @@ __all__ = [
 fn generate_program_init_py(
     stack_name: &str,
     config: &PythonStackConfig,
+    extended_program: Option<&PythonProgramModule>,
     identity_stamps: &[(String, String)],
 ) -> String {
     let stack_name = python_ident::docstring_text(stack_name);
@@ -697,34 +972,160 @@ __all__ = [
 "#,
         sdk = config.sdk_version,
     );
-    append_python_extension_imports(&mut output, config);
-    if !identity_stamps.is_empty() {
-        output.push_str(
-            "\n# Program SDK identity: the package release each program SDK was generated\n# from, stamped after the package's own extensions (extending a program drops\n# it: the result is no longer provably the generated SDK).\nfrom arete import with_program_identity as _with_program_identity  # noqa: E402\n\n",
-        );
-        for (key, const_prefix) in identity_stamps {
-            output.push_str(&format!(
-                "{const_prefix}_PROGRAM = _with_program_identity(\n    {const_prefix}_PROGRAM, package_release_hash={const_prefix}_PACKAGE_RELEASE_HASH\n)\nPROGRAMS = {{**PROGRAMS, {}: {const_prefix}_PROGRAM}}\n",
-                py_string_literal(key)
+    match (config.extension_entry.as_deref(), extended_program) {
+        (Some(entry), Some(program)) => {
+            output.push_str(
+                "\n# Hand-authored program package extension (staged from extensions.json; not\n# generated). Its entry exports PROGRAM_EXTENSIONS, applied to the generated\n# program definition; the package release identity is stamped after it.\n",
+            );
+            append_python_extension_imports(&mut output, &config.extension_modules, entry);
+            output.push_str(&render_program_extension_application(
+                program,
+                entry,
+                "programs",
+                identity_stamps,
             ));
+            output.push_str(&format!(
+                "PROGRAMS = {{**PROGRAMS, {}: {}_PROGRAM}}\n",
+                py_string_literal(&program.module_name),
+                program.const_prefix
+            ));
+        }
+        _ => {
+            if !identity_stamps.is_empty() {
+                output.push_str(
+                    "\n# Program SDK identity: the package release each program SDK was generated\n# from.\nfrom arete import with_program_identity as _with_program_identity  # noqa: E402\n\n",
+                );
+                for (key, const_prefix) in identity_stamps {
+                    output.push_str(&format!(
+                        "{const_prefix}_PROGRAM = _with_program_identity(\n    {const_prefix}_PROGRAM, package_release_hash={const_prefix}_PACKAGE_RELEASE_HASH\n)\nPROGRAMS = {{**PROGRAMS, {}: {const_prefix}_PROGRAM}}\n",
+                        py_string_literal(key)
+                    ));
+                }
+            }
         }
     }
     output
 }
 
-fn append_python_extension_imports(output: &mut String, config: &PythonStackConfig) {
-    if let Some(entry) = &config.extension_entry {
+/// `<PROG>_PROGRAM = extend_program(<programs>.<PROG>_PROGRAM, **PROGRAM_EXTENSIONS)`
+/// and, for a program with a package release, the identity stamp after it.
+fn render_program_extension_application(
+    program: &PythonProgramModule,
+    entry: &str,
+    programs_module: &str,
+    identity_stamps: &[(String, String)],
+) -> String {
+    let const_prefix = &program.const_prefix;
+    let stamped = identity_stamps
+        .iter()
+        .any(|(key, _)| key == &program.module_name);
+    let mut output = String::from(
+        "from arete import extend_program as _extend_program  # noqa: E402\nfrom arete import program_extensions_of as _program_extensions_of  # noqa: E402\n",
+    );
+    if stamped {
         output.push_str(
-            "\n# Hand-authored devex extensions (staged from extensions.json; not generated).\n",
+            "from arete import with_program_identity as _with_program_identity  # noqa: E402\n",
         );
-        for stem in &config.extension_modules {
-            if stem == entry {
-                continue;
-            }
-            output.push_str(&format!("from . import {stem}  # noqa: F401\n"));
-        }
-        output.push_str(&format!("from .{entry} import *  # noqa: F401,F403\n"));
     }
+    output.push_str(&format!(
+        "\n{const_prefix}_PROGRAM = _extend_program(\n    {programs_module}.{const_prefix}_PROGRAM, **_program_extensions_of({entry})\n)\n"
+    ));
+    if stamped {
+        output.push_str(&format!(
+            "{const_prefix}_PROGRAM = _with_program_identity(\n    {const_prefix}_PROGRAM,\n    package_release_hash={programs_module}.{const_prefix}_PACKAGE_RELEASE_HASH,\n)\n"
+        ));
+    }
+    output
+}
+
+/// The `program_sdks/<module>/` subpackage of a stack package for one
+/// program that carries its package's own extension.
+fn generate_program_package(
+    stack_name: &str,
+    config: &PythonStackConfig,
+    extension: &PythonProgramExtensionConfig,
+    program: &PythonProgramModule,
+    identity_stamps: &[(String, String)],
+) -> PythonProgramPackage {
+    let stack_name = python_ident::docstring_text(stack_name);
+    let module = &program.module_name;
+    let mut init_py = format!(
+        r#""""Program SDK `{module}` of the `{stack_name}` stack.
+
+The generated program with its program package's own extension applied, laid
+out like the standalone `{module}` program package so the extension's relative
+imports (`.programs`, `.models`, sibling files) resolve unchanged.
+
+Generated by the Arete interpreter (arete-sdk {sdk}); do not edit.
+"""
+
+from . import models, programs  # noqa: F401
+
+# Hand-authored program package extension (staged from extensions.json; not
+# generated). Its entry exports PROGRAM_EXTENSIONS, applied to the generated
+# program definition; the package release identity is stamped after it.
+"#,
+        sdk = config.sdk_version,
+    );
+    append_python_extension_imports(&mut init_py, &extension.modules, &extension.entry);
+    init_py.push_str(&render_program_extension_application(
+        program,
+        &extension.entry,
+        "programs",
+        identity_stamps,
+    ));
+    let shim = |generated: &str| {
+        format!(
+            "\"\"\"The stack's generated `{generated}` module, where the `{module}` program package\nextension imports it (`.{generated}`).\n\nGenerated by the Arete interpreter; do not edit.\n\"\"\"\n\nfrom ...{generated} import *  # noqa: F401,F403\nfrom ...{generated} import __all__  # noqa: F401\n"
+        )
+    };
+    // The program's account models (and the models of the IDL types they
+    // reach) under the names the standalone program package declares them
+    // under, where the stack's `models.py` renamed them (around an entity,
+    // say).
+    let mut models_py = shim("models");
+    if !program.renamed_models.is_empty() {
+        models_py.push_str(
+            "\n# The program's account models, under the names the standalone program package\n# gives them.\n",
+        );
+        for (declared, stable) in &program.renamed_models {
+            if declared.ends_with("_patch_from_wire") {
+                models_py.push_str(&format!(
+                    "from ...models import (  # noqa: F401,E402\n    {declared} as {stable},\n)\n"
+                ));
+            } else {
+                models_py.push_str(&format!(
+                    "from ...models import {declared} as {stable}  # noqa: F401,E402\n"
+                ));
+            }
+        }
+        models_py.push_str(&format!(
+            "\n__all__ = [\n    *__all__,\n{}]\n",
+            program
+                .renamed_models
+                .iter()
+                .map(|(_, stable)| format!("    {},\n", py_string_literal(stable)))
+                .collect::<String>()
+        ));
+    }
+    PythonProgramPackage {
+        program_id: extension.program_id.clone(),
+        module_name: module.clone(),
+        init_py,
+        programs_py: shim("programs"),
+        models_py,
+    }
+}
+
+/// `from . import <helper>` for each staged file, then the entry.
+fn append_python_extension_imports(output: &mut String, modules: &[String], entry: &str) {
+    for stem in modules {
+        if stem == entry {
+            continue;
+        }
+        output.push_str(&format!("from . import {stem}  # noqa: F401,E402\n"));
+    }
+    output.push_str(&format!("from . import {entry}  # noqa: F401,E402\n"));
 }
 
 // ============================================================================
@@ -745,6 +1146,9 @@ enum WireConversion {
     /// `EventWrapper` envelope around a nested struct converter.
     EventWrapped(String),
     EventWrappedList(String),
+    /// A (None-safe) converter applied to the value: an IDL model field's
+    /// nested shape (`_list_of(_tuple_of(_to_int, _identity))`).
+    Call(String),
 }
 
 impl WireConversion {
@@ -769,6 +1173,7 @@ impl WireConversion {
             WireConversion::EventWrappedList(converter) => {
                 format!("_convert_event_list({accessor}, {converter})")
             }
+            WireConversion::Call(converter) => format!("{converter}({accessor})"),
         }
     }
 }
@@ -1385,6 +1790,402 @@ def capture_wrapper_from_wire(value: Any, converter: Any = None) -> CaptureWrapp
     )
 "#;
 
+/// Names a program's account and IDL type models never take in any Python
+/// SDK: the runtime envelopes every `models.py` declares, and the `typing`
+/// and `dataclasses` names it imports.
+const PYTHON_STABLE_RESERVED_NAMES: &[&str] = &[
+    "EventWrapper",
+    "CaptureWrapper",
+    "Any",
+    "Dict",
+    "Generic",
+    "List",
+    "Mapping",
+    "Optional",
+    "Tuple",
+    "TypeVar",
+    "Union",
+];
+
+/// The dataclass and strict/patch converters `models.py` declares for one
+/// resolved IDL struct, the same for an entity-mapped type and an account
+/// model.
+fn render_py_model(resolved: &ResolvedStructType, name: &str, doc: &str) -> String {
+    let fields: Vec<PyField> = resolved
+        .fields
+        .iter()
+        .zip(canonical_resolved_field_names(&resolved.fields))
+        .map(|(field, field_name)| py_field_for_resolved(field, field_name))
+        .collect();
+    let snake = to_snake_case(name);
+    [
+        render_dataclass(name, doc, &fields),
+        render_from_wire(name, &format!("{snake}_from_wire"), &fields, true),
+        render_patch_from_wire(name, &format!("{snake}_patch_from_wire"), &fields),
+    ]
+    .join("\n\n")
+}
+
+/// A declared model under `name`: an entity's resolved type, or an
+/// IDL-derived model.
+fn render_py_declared_model(model: &DeclaredModel, name: &str) -> String {
+    match model {
+        DeclaredModel::Resolved(resolved) => render_py_model(resolved, name, ""),
+        DeclaredModel::Idl(model) => render_py_idl_model(model, name, ""),
+    }
+}
+
+/// The class names besides its own a model declared as `name` occupies: a
+/// data-carrying enum's variant classes.
+fn py_extra_model_names(model: &DeclaredModel, name: &str) -> Vec<String> {
+    match model {
+        DeclaredModel::Idl(IdlModel {
+            kind: IdlModelKind::Enum(variants),
+            ..
+        }) => py_variant_classes(name, variants)
+            .into_iter()
+            .map(|(_, class)| class)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The class of each data-carrying variant of the enum model `enum_name`:
+/// `<Enum><Variant>` (numbered where two variants would share one).
+fn py_variant_classes<'v>(
+    enum_name: &str,
+    variants: &'v [ModelVariant],
+) -> Vec<(&'v ModelVariant, String)> {
+    let mut used = HashSet::new();
+    variants
+        .iter()
+        .filter(|variant| !variant.fields.is_empty())
+        .map(|variant| {
+            let base = format!("{enum_name}{}", to_pascal_case(&variant.name));
+            let class = std::iter::once(base.clone())
+                .chain((2usize..).map(|index| format!("{base}{index}")))
+                .find(|candidate| used.insert(candidate.clone()))
+                .expect("the numbered candidates are unbounded");
+            (variant, class)
+        })
+        .collect()
+}
+
+/// The names `models.py` exports for a model declared as `name`.
+fn py_declared_model_exports(model: &DeclaredModel, name: &str) -> Vec<String> {
+    let snake = to_snake_case(name);
+    match model {
+        DeclaredModel::Idl(IdlModel {
+            kind: IdlModelKind::Enum(variants),
+            ..
+        }) => {
+            let mut exports = vec![name.to_string(), format!("{snake}_from_wire")];
+            for (_, class) in py_variant_classes(name, variants) {
+                let converter = format!("{}_from_wire", to_snake_case(&class));
+                exports.extend([class, converter]);
+            }
+            exports
+        }
+        _ => vec![
+            name.to_string(),
+            format!("{snake}_from_wire"),
+            format!("{snake}_patch_from_wire"),
+        ],
+    }
+}
+
+/// The fields of an IDL-derived struct or enum variant. A field keeps its
+/// flat rendering when the flat projection types it (so a struct of flat
+/// fields renders exactly as [`render_py_model`] renders it); otherwise it
+/// is typed from its wire shape.
+fn py_idl_fields(fields: &[ModelField]) -> Vec<PyField> {
+    let flats = fields
+        .iter()
+        .map(|field| field.flat.clone())
+        .collect::<Vec<_>>();
+    fields
+        .iter()
+        .zip(canonical_resolved_field_names(&flats))
+        .map(|(field, name)| {
+            let (annotation, conversion, required) = match &field.typed {
+                None => {
+                    let (annotation, conversion) = py_scalar_field_shape(
+                        &field.flat.base_type,
+                        field.flat.effective_integer_kind(),
+                        field.flat.is_array,
+                        Some(field.flat.field_type.as_str()),
+                    );
+                    (annotation, conversion, !field.flat.is_optional)
+                }
+                Some(typed) => {
+                    let inner = match typed {
+                        WireType::Option(inner) => inner.as_ref(),
+                        other => other,
+                    };
+                    (
+                        wrap_optional(&py_wire_annotation(inner)),
+                        py_wire_conversion(inner),
+                        !matches!(typed, WireType::Option(_)),
+                    )
+                }
+            };
+            PyField {
+                name,
+                wire: field.wire_name(),
+                annotation,
+                conversion,
+                required,
+            }
+        })
+        .collect()
+}
+
+/// The annotation of a wire shape.
+fn py_wire_annotation(wire: &WireType) -> String {
+    match wire {
+        WireType::Scalar { base_type, .. } => py_base_annotation(base_type).to_string(),
+        WireType::Option(inner) => wrap_optional(&py_wire_annotation(inner)),
+        WireType::List(inner) => format!("List[{}]", py_wire_annotation(inner)),
+        WireType::Map(inner) => format!("Dict[str, {}]", py_wire_annotation(inner)),
+        WireType::Tuple(elements) => format!(
+            "Tuple[{}]",
+            elements
+                .iter()
+                .map(py_wire_annotation)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        WireType::Model(name) => name.clone(),
+        WireType::Json => "Any".to_string(),
+    }
+}
+
+/// Whether a wire value needs converting: it holds an integer (maybe a
+/// decimal string), a model, or a tuple.
+fn py_wire_needs_conversion(wire: &WireType) -> bool {
+    match wire {
+        WireType::Scalar { base_type, .. } => matches!(base_type, BaseType::Integer),
+        WireType::Option(inner) | WireType::List(inner) | WireType::Map(inner) => {
+            py_wire_needs_conversion(inner)
+        }
+        WireType::Tuple(_) | WireType::Model(_) => true,
+        WireType::Json => false,
+    }
+}
+
+/// How a field's value converts, the flat helpers where they apply.
+fn py_wire_conversion(wire: &WireType) -> WireConversion {
+    if !py_wire_needs_conversion(wire) {
+        return WireConversion::PassThrough;
+    }
+    match wire {
+        WireType::Scalar { .. } => WireConversion::Int,
+        WireType::Model(name) => {
+            WireConversion::Nested(format!("{}_from_wire", to_snake_case(name)))
+        }
+        WireType::Option(inner) => py_wire_conversion(inner),
+        WireType::List(inner) => match inner.as_ref() {
+            WireType::Scalar { .. } => WireConversion::IntList,
+            WireType::Model(name) => {
+                WireConversion::NestedList(format!("{}_from_wire", to_snake_case(name)))
+            }
+            _ => WireConversion::Call(py_wire_converter(wire)),
+        },
+        other => WireConversion::Call(py_wire_converter(other)),
+    }
+}
+
+/// A None-safe converter for a wire value, composed from the `models.py`
+/// helpers.
+fn py_wire_converter(wire: &WireType) -> String {
+    if !py_wire_needs_conversion(wire) {
+        return "_identity".to_string();
+    }
+    match wire {
+        WireType::Scalar { .. } => "_to_int".to_string(),
+        WireType::Model(name) => format!("_optional_of({}_from_wire)", to_snake_case(name)),
+        WireType::Option(inner) => py_wire_converter(inner),
+        WireType::List(inner) => match inner.as_ref() {
+            WireType::Scalar { .. } => "_to_int_list".to_string(),
+            inner => format!("_list_of({})", py_wire_converter(inner)),
+        },
+        WireType::Map(inner) => format!("_map_of({})", py_wire_converter(inner)),
+        WireType::Tuple(elements) => format!(
+            "_tuple_of({})",
+            elements
+                .iter()
+                .map(py_wire_converter)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        WireType::Json => "_identity".to_string(),
+    }
+}
+
+/// A Python literal of strings, one per line when long: a tuple (`("A",)`)
+/// or a mapping to raw expressions.
+fn py_multiline(open: &str, close: &str, items: &[String], indent: &str) -> String {
+    let inline = items.join(", ");
+    if inline.len() <= 60 {
+        let trailing = if open == "(" && items.len() == 1 {
+            ","
+        } else {
+            ""
+        };
+        return format!("{open}{inline}{trailing}{close}");
+    }
+    let mut out = format!("{open}\n");
+    for item in items {
+        out.push_str(&format!("{indent}    {item},\n"));
+    }
+    out.push_str(&format!("{indent}{close}"));
+    out
+}
+
+/// The Python declaration of an IDL-derived model (see
+/// [`crate::idl_models`]).
+///
+/// A struct is a dataclass with strict and patch converters, as
+/// [`render_py_model`] renders one. An enum value is what the wire carries:
+/// a unit variant's name (`str`), or a one-key mapping from a data variant's
+/// name to its fields, typed by a dataclass per data variant
+/// (`{"Stable": CurveTypeStable(...)}`).
+fn render_py_idl_model(model: &IdlModel, name: &str, doc: &str) -> String {
+    let snake = to_snake_case(name);
+    match &model.kind {
+        IdlModelKind::Struct(fields) => {
+            let fields = py_idl_fields(fields);
+            [
+                render_dataclass(name, doc, &fields),
+                render_from_wire(name, &format!("{snake}_from_wire"), &fields, true),
+                render_patch_from_wire(name, &format!("{snake}_patch_from_wire"), &fields),
+            ]
+            .join("\n\n")
+        }
+        IdlModelKind::Enum(variants) => {
+            let classes = py_variant_classes(name, variants);
+            let mut blocks = Vec::new();
+            for (variant, class) in &classes {
+                let fields = py_idl_fields(&variant.fields);
+                blocks.push(render_dataclass(
+                    class,
+                    &format!("Variant `{}` of `{name}`.", variant.name),
+                    &fields,
+                ));
+                blocks.push(render_from_wire(
+                    class,
+                    &format!("{}_from_wire", to_snake_case(class)),
+                    &fields,
+                    true,
+                ));
+            }
+            let alias = match classes.as_slice() {
+                [] => "str".to_string(),
+                [(_, class)] => format!("Union[str, Dict[str, {class}]]"),
+                classes => format!(
+                    "Union[str, Dict[str, Union[{}]]]",
+                    classes
+                        .iter()
+                        .map(|(_, class)| class.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+            let mut declaration = String::new();
+            if !doc.is_empty() {
+                declaration.push_str(&format!("# {doc}\n"));
+            }
+            declaration.push_str(&format!("{name} = {alias}\n"));
+            blocks.push(declaration);
+            let units = variants
+                .iter()
+                .filter(|variant| variant.fields.is_empty())
+                .map(|variant| py_string_literal(&variant.name))
+                .collect::<Vec<_>>();
+            let converters = classes
+                .iter()
+                .map(|(variant, class)| {
+                    format!(
+                        "{}: {}_from_wire",
+                        py_string_literal(&variant.name),
+                        to_snake_case(class)
+                    )
+                })
+                .collect::<Vec<_>>();
+            blocks.push(format!(
+                "def {snake}_from_wire(value: Any) -> {name}:\n    \"\"\"Converts a wire `{name}` value: a unit variant's name, or a one-key\n    mapping from a data variant's name to its fields.\n\n    Raises ``ValueError`` for any other value.\"\"\"\n    return _enum_from_wire(\n        value,\n        {context},\n        {units},\n        {converters},\n    )\n",
+                context = py_string_literal(name),
+                units = py_multiline("(", ")", &units, "        "),
+                converters = py_multiline("{", "}", &converters, "        "),
+            ));
+            blocks.join("\n\n")
+        }
+    }
+}
+
+/// Helpers the IDL models' nested conversions compose, emitted into
+/// `models.py` when its models use them.
+const MODELS_NESTED_HELPERS: &[(&str, &str)] = &[
+    (
+        "_identity",
+        r#"def _identity(value: Any) -> Any:
+    return value
+"#,
+    ),
+    (
+        "_optional_of(",
+        r#"def _optional_of(converter: Any) -> Any:
+    return lambda value: None if value is None else converter(value)
+"#,
+    ),
+    (
+        "_list_of(",
+        r#"def _list_of(converter: Any) -> Any:
+    return lambda value: None if value is None else [converter(item) for item in value]
+"#,
+    ),
+    (
+        "_tuple_of(",
+        r#"def _tuple_of(*converters: Any) -> Any:
+    def convert(value: Any) -> Any:
+        if value is None:
+            return None
+        items = list(value)
+        if len(items) != len(converters):
+            raise ValueError(
+                f"expected {len(converters)} tuple elements, got {len(items)}"
+            )
+        return tuple(converter(item) for converter, item in zip(converters, items))
+
+    return convert
+"#,
+    ),
+    (
+        "_map_of(",
+        r#"def _map_of(converter: Any) -> Any:
+    return lambda value: (
+        None if value is None else {key: converter(item) for key, item in value.items()}
+    )
+"#,
+    ),
+    (
+        "_enum_from_wire(",
+        r#"def _enum_from_wire(value: Any, context: str, units: Any, variants: Any) -> Any:
+    if isinstance(value, str) and value in units:
+        return value
+    if isinstance(value, Mapping) and len(value) == 1:
+        ((key, payload),) = value.items()
+        name = key if key in variants else None
+        if name is None:
+            # Keys the account-read retry normalized to snake_case.
+            name = next((variant for variant in variants if _snake_key(variant) == key), None)
+        if name is not None:
+            return {name: variants[name](payload)}
+    raise ValueError(f"{context} payload is not one of its variants: {value!r}")
+"#,
+    ),
+];
+
 /// Generate `models.py` for all entities. Also returns the export list and
 /// the map of emitted raw account dataclasses (IDL account type name →
 /// emitted Python class name) so the program SDK generator can attach typed
@@ -1394,6 +2195,7 @@ fn generate_stack_models_py(
     entity_specs: &[SerializableStreamSpec],
     entity_names: &[String],
     idls: &[IdlSnapshot],
+    reader_programs: &HashSet<String>,
 ) -> (String, Vec<String>, AccountModels) {
     let mut exports: Vec<String> = Vec::new();
     let mut blocks: Vec<String> = Vec::new();
@@ -1442,6 +2244,7 @@ fn generate_stack_models_py(
                 .cloned()
                 .unwrap_or_else(|| to_pascal_case(&resolved.type_name));
             stack_types.declare(&name, resolved);
+            account_structs.declare_model(&name, resolved);
             if resolved.is_account && !resolved.is_enum {
                 account_structs.record(program_name, &resolved.type_name, &name);
             }
@@ -1464,12 +2267,6 @@ fn generate_stack_models_py(
                 if !generated.insert(emitted_name.clone()) {
                     continue;
                 }
-                if resolved.is_account && !resolved.is_enum {
-                    account_structs
-                        .first_mut()
-                        .entry(resolved.type_name.clone())
-                        .or_insert_with(|| emitted_name.clone());
-                }
                 if resolved.is_enum {
                     let variants = resolved.enum_variants.join(", ");
                     blocks.push(format!(
@@ -1479,23 +2276,17 @@ fn generate_stack_models_py(
                     exports.push(emitted_name);
                     continue;
                 }
-                let fields: Vec<PyField> = resolved
-                    .fields
-                    .iter()
-                    .zip(canonical_resolved_field_names(&resolved.fields))
-                    .map(|(field, name)| py_field_for_resolved(field, name))
-                    .collect();
-                let snake = to_snake_case(&emitted_name);
-                let from_wire = format!("{snake}_from_wire");
-                let patch = format!("{snake}_patch_from_wire");
-                blocks.push(render_dataclass(
+                blocks.push(render_py_model(
+                    resolved,
                     &emitted_name,
                     &format!("Resolved type `{}`.", resolved.type_name),
-                    &fields,
                 ));
-                blocks.push(render_from_wire(&emitted_name, &from_wire, &fields, true));
-                blocks.push(render_patch_from_wire(&emitted_name, &patch, &fields));
-                exports.extend([emitted_name.clone(), from_wire, patch]);
+                let snake = to_snake_case(&emitted_name);
+                exports.extend([
+                    emitted_name.clone(),
+                    format!("{snake}_from_wire"),
+                    format!("{snake}_patch_from_wire"),
+                ]);
             }
         }
 
@@ -1633,6 +2424,52 @@ fn generate_stack_models_py(
         }
     }
 
+    // Account models for the accounts no entity maps (or maps differently),
+    // and the IDL types they reach: every account a program reads gets one.
+    let language = ModelLanguage {
+        pascal: &to_pascal_case,
+        render: &render_py_declared_model,
+        extra_names: &py_extra_model_names,
+        reserved: PYTHON_STABLE_RESERVED_NAMES,
+    };
+    let idl_models = bind_idl_models(
+        idls,
+        reader_programs,
+        &mut account_structs,
+        &language,
+        &|name| stack_types.is_taken(name),
+    );
+    for (name, model) in &idl_models {
+        let role = if model.is_account {
+            "Account"
+        } else {
+            "IDL type"
+        };
+        blocks.push(render_py_idl_model(
+            model,
+            name,
+            &format!("{role} `{}` as program reads decode it.", model.type_name),
+        ));
+        exports.extend(py_declared_model_exports(
+            &DeclaredModel::Idl(model.clone()),
+            name,
+        ));
+    }
+    let body = blocks.join("\n\n");
+    let nested_helpers = MODELS_NESTED_HELPERS
+        .iter()
+        .filter(|(usage, _)| body.contains(usage))
+        .map(|(_, helper)| format!("\n\n{helper}"))
+        .collect::<String>();
+    let mut typing = vec!["Any", "Dict", "Generic", "List", "Mapping", "Optional"];
+    if body.contains("Tuple[") {
+        typing.push("Tuple");
+    }
+    typing.push("TypeVar");
+    if body.contains("Union[") {
+        typing.push("Union");
+    }
+
     let all_list = exports
         .iter()
         .map(|name| format!("    {},", py_string_literal(name)))
@@ -1653,7 +2490,7 @@ patch. Fields fed by `#[capture]` mappings or event handlers arrive inside a
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, List, Mapping, Optional, TypeVar
+from typing import {typing}
 
 _T = TypeVar("_T")
 
@@ -1661,14 +2498,16 @@ __all__ = [
 {all_list}
 ]
 
-{helpers}
+{helpers}{nested_helpers}
 
 "#,
         stack_name = python_ident::docstring_text(stack_name),
+        typing = typing.join(", "),
         all_list = all_list,
         helpers = MODELS_HELPERS.trim_start_matches('\n'),
+        nested_helpers = nested_helpers,
     );
-    output.push_str(&blocks.join("\n\n"));
+    output.push_str(&body);
     (output, exports, account_structs)
 }
 
@@ -1906,6 +2745,22 @@ pub(crate) struct PythonProgramsCodegen {
     /// package `__init__.py` stamps after the package's own extensions,
     /// instead of its `ProgramDef` carrying it.
     identity_stamps: Vec<(String, String)>,
+    /// The programs `programs.py` defines, in order.
+    modules: Vec<PythonProgramModule>,
+}
+
+/// One program section of a generated `programs.py`.
+#[derive(Debug, Clone)]
+pub(crate) struct PythonProgramModule {
+    program_id: String,
+    /// The program's `PROGRAMS` key and name stem (`ore`).
+    module_name: String,
+    /// Constant prefix (`ORE`): `ORE_PROGRAM`, `ORE_PACKAGE_RELEASE_HASH`.
+    const_prefix: String,
+    /// The names `models.py` exports for the program's models (its
+    /// accounts' and the IDL types' they reach), declared name -> the name
+    /// its standalone program package exports, where the two differ.
+    renamed_models: Vec<(String, String)>,
 }
 
 /// Which runtime names a generated `programs.py` references.
@@ -2875,10 +3730,11 @@ fn generate_stack_programs_py(
     reads: &[PythonProgramReadConfig],
     gateway: Option<&serde_json::Value>,
     include_idl_only_programs: bool,
-    // Identity describes the finished program SDK. A package with its own
-    // extension stamps it in `__init__.py` after that extension, so the
-    // `ProgramDef` here, which lacks the extension, carries none.
-    identity_after_extensions: bool,
+    // Identity describes the finished program SDK. A program whose package
+    // extension is applied after this module (by program ID) has identity
+    // stamped after that extension, so the `ProgramDef` here, which lacks
+    // the extension, carries none.
+    identity_after_extensions: &dyn Fn(&str) -> bool,
 ) -> Option<PythonProgramsCodegen> {
     if instructions.is_empty() && !include_idl_only_programs {
         return None;
@@ -2918,6 +3774,7 @@ fn generate_stack_programs_py(
     let mut exports: Vec<String> = Vec::new();
     let mut program_entries: Vec<String> = Vec::new();
     let mut identity_stamps: Vec<(String, String)> = Vec::new();
+    let mut modules: Vec<PythonProgramModule> = Vec::new();
     let mut read_entries: Vec<(String, String)> = Vec::new(); // (key, descriptor fn)
     let mut omitted_reads: Vec<(String, String)> = Vec::new(); // (key, reason)
 
@@ -3023,19 +3880,20 @@ fn generate_stack_programs_py(
         let mut account_read_entries: Vec<String> = Vec::new();
         if read_layer.is_ok() {
             needs.reads = true;
-            let accounts = idl.map(|idl| idl.accounts.as_slice()).unwrap_or_default();
+            // Every IDL account has a bound model (`models.py`), or reads as
+            // raw JSON when its layout is an enum.
+            let accounts = idl
+                .map(|idl| account_structs.program_accounts(&idl.name))
+                .unwrap_or_default();
             for account in accounts {
-                let Some(struct_name) =
-                    account_structs.get(idl.map(|idl| idl.name.as_str()), &account.name)
-                else {
-                    // No generated dataclass for this account type; no reader.
-                    continue;
+                let parser = match &account.model {
+                    Some(model) => format!("models.{}_from_wire", to_snake_case(model)),
+                    None => "None".to_string(),
                 };
                 account_read_entries.push(format!(
-                    "    {}: ProgramAccountReadDef(account={}, parser=models.{}_from_wire),",
-                    py_string_literal(&to_snake_case(&account.name)),
-                    py_string_literal(&account.name),
-                    to_snake_case(struct_name),
+                    "    {}: ProgramAccountReadDef(account={}, parser={parser}),",
+                    py_string_literal(&to_snake_case(&account.account)),
+                    py_string_literal(&account.account),
                 ));
             }
         }
@@ -3100,7 +3958,7 @@ fn generate_stack_programs_py(
                     py_string_literal(package_release_hash)
                 ));
                 exports.push(format!("{const_prefix}_PACKAGE_RELEASE_HASH"));
-                if identity_after_extensions {
+                if identity_after_extensions(program_id) {
                     identity_stamps.push((module_name.clone(), const_prefix.clone()));
                 } else {
                     package_release_kwarg =
@@ -3132,12 +3990,20 @@ fn generate_stack_programs_py(
         ));
         exports.push(errors_const.clone());
 
-        let pdas_generated = generate_py_pdas(
-            own_pdas.unwrap_or(&BTreeMap::new()),
-            &module_name,
-            &pascal_prefix,
-            &mut needs,
-        );
+        // `pdas` carries every PDA the program's ProgramSpec declares, as the
+        // standalone program SDK does, plus the stack's own (which win on a
+        // name both declare).
+        let mut module_pdas = own_pdas.cloned().unwrap_or_default();
+        if let Some(spec) = program_specs
+            .iter()
+            .find(|spec| spec.program_id == *program_id)
+        {
+            for (name, pda) in crate::program_sdk::program_spec_pdas(spec) {
+                module_pdas.entry(name).or_insert(pda);
+            }
+        }
+        let pdas_generated =
+            generate_py_pdas(&module_pdas, &module_name, &pascal_prefix, &mut needs);
         let pdas_dict_expr = match &pdas_generated {
             Some((code, dict_name, class_name)) => {
                 section.push('\n');
@@ -3211,6 +4077,24 @@ fn generate_stack_programs_py(
             py_string_literal(&module_name),
             program_const
         ));
+        modules.push(PythonProgramModule {
+            program_id: program_id.clone(),
+            module_name: module_name.clone(),
+            const_prefix: const_prefix.clone(),
+            renamed_models: idl
+                .map(|idl| account_structs.program_model_names(&idl.name))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(stable, model)| stable != model)
+                .flat_map(|(stable, model)| {
+                    let exports = |name: &str| match account_structs.model(&model) {
+                        Some(declared) => py_declared_model_exports(declared, name),
+                        None => vec![name.to_string()],
+                    };
+                    exports(&model).into_iter().zip(exports(&stable))
+                })
+                .collect(),
+        });
         match &read_layer {
             Ok(_) => read_entries.push((
                 module_name.clone(),
@@ -3382,6 +4266,7 @@ __all__ = [
     Some(PythonProgramsCodegen {
         code,
         identity_stamps,
+        modules,
     })
 }
 
@@ -4502,6 +5387,184 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// A program-only spec for the Meteora DLMM fixture: twelve Anchor
+    /// accounts declared through `types`, `u128` fields and arrays, PDAs.
+    fn dlmm_program_spec() -> SerializableStackSpec {
+        crate::program_sdk::build_program_only_stack_spec_from_idl_bytes(
+            include_bytes!("../../arete-idl/tests/fixtures/meteora_dlmm.json"),
+            None,
+            "MeteoraDlmm",
+        )
+        .expect("the DLMM fixture builds a program-only stack spec")
+    }
+
+    /// Every account of the ProgramSpec resolves at `accounts.<account>` on
+    /// the connected standalone program, and decodes its wire payload; every
+    /// ProgramSpec PDA resolves at `pdas.<pda>`.
+    #[test]
+    fn python_program_sdk_reads_every_program_spec_account() {
+        let spec = dlmm_program_spec();
+        let idl = spec.idls[0].clone();
+        let spec_pdas = crate::program_sdk::program_spec_pdas(&spec.program_specs[0]);
+        let output = compile_program_modules(
+            spec,
+            Some(PythonStackConfig {
+                package_name: "dlmm-program".to_string(),
+                ..Default::default()
+            }),
+        )
+        .expect("standalone program SDK");
+        for account in &idl.accounts {
+            let key = to_snake_case(&account.name);
+            let model = to_pascal_case(&account.name);
+            assert!(
+                output.programs_py.contains(&format!(
+                    "    {}: ProgramAccountReadDef(account={}, parser=models.{}_from_wire),",
+                    py_string_literal(&key),
+                    py_string_literal(&account.name),
+                    to_snake_case(&model)
+                )),
+                "no typed reader for {}",
+                account.name
+            );
+            assert!(output.models_py.contains(&format!("class {model}:")));
+        }
+
+        let base = std::env::temp_dir().join(format!(
+            "arete-python-account-bindings-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        write_python_program_package(&output, &base).expect("program package should write");
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("interpreter crate lives in the repo root");
+        let stubs = base.join("consumer-stubs");
+        std::fs::create_dir_all(&stubs).expect("consumer stub directory");
+        std::fs::write(stubs.join("httpx.py"), "# Import-only consumer stub.\n")
+            .expect("httpx import stub");
+        let python_path =
+            std::env::join_paths([base.clone(), stubs, repo_root.join("python/arete-sdk")])
+                .expect("valid Python import paths");
+        let accounts = idl
+            .accounts
+            .iter()
+            .map(|account| {
+                format!(
+                    "({}, {})",
+                    py_string_literal(&to_snake_case(&account.name)),
+                    py_string_literal(&account.name)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let pdas = spec_pdas
+            .values()
+            .map(|pda| py_string_literal(&to_snake_case(&pda.name)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let script = format!(
+            r#"
+import dataclasses
+
+from dlmm_program import PROGRAMS, models
+from arete.stack import ConnectedProgram
+
+
+class Client:
+    wallet = None
+    chain = None
+
+
+(key,) = PROGRAMS
+program = ConnectedProgram(key, PROGRAMS[key], Client(), None)
+for binding, account in [{accounts}]:
+    assert getattr(program.accounts, binding).account == account, binding
+for pda in [{pdas}]:
+    assert callable(getattr(program.pdas, pda).derive), pda
+# Strict converters need every field; `u128` arrives as a decimal string.
+payload = {{field.name: None for field in dataclasses.fields(models.Operator)}}
+payload["permission"] = "340282366920938463463374607431768211455"
+assert models.operator_from_wire(payload).permission == 2**128 - 1
+"#
+        );
+        let python = std::env::var_os("PYTHON").unwrap_or_else(|| "python3".into());
+        let checked = Command::new(python)
+            .args(["-c", &script])
+            .env("PYTHONPATH", python_path)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+            .expect("Python must be available for generated binding checks");
+        assert!(
+            checked.status.success(),
+            "generated account bindings did not resolve:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&checked.stdout),
+            String::from_utf8_lossy(&checked.stderr),
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn python_stack_program_is_a_superset_of_the_standalone_program_sdk() {
+        let standalone = compile_program_modules(dlmm_program_spec(), None).unwrap();
+
+        // The stack's entity `LbPair` takes the account's own name, and an
+        // entity captures `Oracle` exactly as the IDL lays it out. The stack
+        // declares no PDAs of its own.
+        let mut spec = dlmm_program_spec();
+        let idl = spec.idls[0].clone();
+        let program_id = spec.program_ids[0].clone();
+        spec.pdas.clear();
+        let oracle = idl
+            .accounts
+            .iter()
+            .find(|account| account.name == "Oracle")
+            .unwrap();
+        let mut entity = minimal_entity("LbPair");
+        entity.program_id = Some(program_id.clone());
+        entity.sections.push(EntitySection {
+            name: "state".to_string(),
+            fields: vec![FieldTypeInfo {
+                resolved_type: crate::stack_types::idl_account_model(&idl, oracle),
+                ..FieldTypeInfo::new("oracle".to_string(), "Oracle".to_string())
+            }],
+            is_nested_struct: false,
+            parent_field: None,
+        });
+        spec.entities.push(entity);
+        let config = PythonStackConfig {
+            program_extensions: vec![PythonProgramExtensionConfig {
+                program_id,
+                modules: vec!["extensions".to_string()],
+                entry: "extensions".to_string(),
+            }],
+            ..Default::default()
+        };
+        let output = compile_stack_spec(spec, Some(config)).expect("stack SDK");
+        let programs = output.programs_py.unwrap();
+
+        // Every reader and PDA of the standalone SDK.
+        for line in standalone.programs_py.lines().filter(|line| {
+            line.contains("ProgramAccountReadDef(account=") || line.contains(": PdaConfig(")
+        }) {
+            let entry = line.split("parser=").next().unwrap();
+            assert!(programs.contains(entry), "stack lacks `{entry}`");
+        }
+        // `Oracle` shares the entity's dataclass; `LbPair` is renamed around
+        // the entity, and the program subpackage aliases it back.
+        assert!(programs.contains("parser=models.oracle_from_wire),"));
+        assert_eq!(output.models_py.matches("class Oracle:").count(), 1);
+        assert!(programs.contains("parser=models.lb_clmm_lb_pair_from_wire),"));
+        let package = &output.program_packages[0];
+        assert!(package
+            .models_py
+            .contains("from ...models import LbClmmLbPair as LbPair  # noqa: F401,E402\n"));
+        assert!(package.models_py.contains(
+            "from ...models import lb_clmm_lb_pair_from_wire as lb_pair_from_wire  # noqa: F401,E402\n"
+        ));
+    }
+
     #[test]
     fn python_program_compiler_keeps_idl_only_programs() {
         let mut spec = programs_stack_spec();
@@ -4616,7 +5679,17 @@ mod tests {
                 source_path: None,
                 resolved_type: Some(ResolvedStructType {
                     type_name: "Counter".to_string(),
-                    fields: vec![],
+                    // The IDL layout of `Counter`, as the entity maps it.
+                    fields: vec![ResolvedField {
+                        field_name: "count".to_string(),
+                        raw_name: Some("count".to_string()),
+                        canonical_name: None,
+                        field_type: "u64".to_string(),
+                        base_type: BaseType::Integer,
+                        integer_kind: Some(IntegerKind::U64),
+                        is_optional: false,
+                        is_array: false,
+                    }],
                     is_instruction: false,
                     is_account: true,
                     is_event: false,
@@ -4850,18 +5923,24 @@ mod tests {
         let init = &output.init_py;
 
         assert!(init.contains(
-            "# Hand-authored devex extensions (staged from extensions.json; not generated)."
+            "# Hand-authored stack extension (staged from extensions.json; not generated).\n# Its entry exports STACK_EXTENSIONS, applied to the generated stack definition."
         ));
         let stack_def = init.find("DEMO_STACK: StackDef").expect("stack def");
         let devex = init
-            .find("from . import devex  # noqa: F401")
+            .find("from . import devex  # noqa: F401,E402")
             .expect("devex import");
         let entry = init
-            .find("from .extensions import *  # noqa: F401,F403")
-            .expect("entry star import");
+            .find("from . import extensions  # noqa: F401,E402")
+            .expect("entry import");
+        let applied = init
+            .find("DEMO_STACK = _extend_stack(DEMO_STACK, **_stack_extensions_of(extensions))")
+            .expect("STACK_EXTENSIONS applied");
         assert!(stack_def < devex);
         assert!(devex < entry);
+        assert!(entry < applied);
+        // Entries do not patch generated names: nothing is star-imported.
         assert!(!init.contains("from .devex import *"));
+        assert!(!init.contains("from .extensions import *"));
     }
 
     #[test]
@@ -4903,15 +5982,363 @@ mod tests {
         assert!(!extended.programs_py.contains("package_release_hash="));
         let init = &extended.init_py;
         let extension = init
-            .find("from .extensions import *  # noqa: F401,F403")
+            .find("from . import extensions  # noqa: F401,E402")
             .expect("extension import");
+        let applied = init
+            .find("DEMO_PROGRAM = _extend_program(\n    programs.DEMO_PROGRAM, **_program_extensions_of(extensions)\n)\n")
+            .expect("PROGRAM_EXTENSIONS applied to the generated definition");
         let stamp = init
-            .find("DEMO_PROGRAM = _with_program_identity(\n    DEMO_PROGRAM, package_release_hash=DEMO_PACKAGE_RELEASE_HASH\n)\nPROGRAMS = {**PROGRAMS, \"demo\": DEMO_PROGRAM}\n")
+            .find("DEMO_PROGRAM = _with_program_identity(\n    DEMO_PROGRAM,\n    package_release_hash=programs.DEMO_PACKAGE_RELEASE_HASH,\n)\nPROGRAMS = {**PROGRAMS, \"demo\": DEMO_PROGRAM}\n")
             .expect("identity stamp");
-        assert!(extension < stamp, "{init}");
+        assert!(extension < applied, "{init}");
+        assert!(applied < stamp, "{init}");
         assert!(init.contains(
             "from arete import with_program_identity as _with_program_identity  # noqa: E402"
         ));
+        assert!(!init.contains("from .extensions import *"));
+
+        // A local build has no package release: the extension is applied and
+        // nothing is stamped.
+        let local = compile_program_modules(
+            programs_stack_spec(),
+            Some(PythonStackConfig {
+                program_reads: Vec::new(),
+                ..config(true)
+            }),
+        )
+        .expect("standalone program generation should succeed");
+        assert!(local.init_py.contains("_extend_program("));
+        assert!(!local.init_py.contains("_with_program_identity"));
+    }
+
+    /// A standalone program package declares every model (its accounts' and
+    /// the IDL types they reach) under its stable name.
+    #[test]
+    fn python_standalone_models_are_declared_under_their_stable_names() {
+        use crate::idl_models::tests::{mpl_core_stack, ore_stack, pyth_rec_stack};
+        for spec in [
+            dlmm_program_spec(),
+            ore_stack(),
+            pyth_rec_stack(),
+            mpl_core_stack(),
+        ] {
+            let programs = spec.idls.iter().map(|idl| idl.name.clone()).collect();
+            let (_, _, models) =
+                generate_stack_models_py(&spec.stack_name, &[], &[], &spec.idls, &programs);
+            let names = models.program_model_names(&spec.idls[0].name);
+            assert!(names.len() > spec.idls[0].accounts.len() / 2);
+            for (stable, declared) in names {
+                assert_eq!(stable, declared, "{}", spec.stack_name);
+            }
+        }
+    }
+
+    #[test]
+    fn python_program_sdk_types_nested_defined_types_and_enums() {
+        use crate::idl_models::tests::{mpl_core_stack, ore_stack, pyth_rec_stack};
+        let config = || {
+            Some(PythonStackConfig {
+                package_name: "fixture-program".to_string(),
+                ..Default::default()
+            })
+        };
+        let ore = compile_program_modules(ore_stack(), config()).unwrap();
+        for expected in [
+            "@dataclass\nclass Config:\n    \"\"\"Account `Config` as program reads decode it.\"\"\"\n\n    admin: Optional[AdminConfig] = None\n    protocol: Optional[ProtocolConfig] = None\n",
+            "        admin=_convert(_require(data, \"admin\", \"Config\"), admin_config_from_wire),\n",
+            "@dataclass\nclass AdminConfig:\n    \"\"\"IDL type `AdminConfig` as program reads decode it.\"\"\"\n",
+            "        fee_rate=_to_int(_require(data, \"fee_rate\", \"AdminConfig\")),\n",
+            "        rewards_factor=_convert(_require(data, \"rewards_factor\", \"Miner\"), numeric_from_wire),\n",
+        ] {
+            assert!(ore.models_py.contains(expected), "missing:\n{expected}\nin:\n{}", ore.models_py);
+        }
+
+        let pyth = compile_program_modules(pyth_rec_stack(), config()).unwrap();
+        for expected in [
+            "@dataclass\nclass VerificationLevelPartial:\n    \"\"\"Variant `Partial` of `VerificationLevel`.\"\"\"\n\n    num_signatures: Optional[int] = None\n",
+            "# IDL type `VerificationLevel` as program reads decode it.\nVerificationLevel = Union[str, Dict[str, VerificationLevelPartial]]\n\n\ndef verification_level_from_wire(value: Any) -> VerificationLevel:\n",
+            "    return _enum_from_wire(\n        value,\n        \"VerificationLevel\",\n        (\"Full\",),\n        {\"Partial\": verification_level_partial_from_wire},\n    )\n",
+            "        verification_level=_convert(_require(data, \"verification_level\", \"PriceUpdateV2\"), verification_level_from_wire),\n",
+            "from typing import Any, Dict, Generic, List, Mapping, Optional, TypeVar, Union\n",
+        ] {
+            assert!(pyth.models_py.contains(expected), "missing:\n{expected}\nin:\n{}", pyth.models_py);
+        }
+
+        let core = compile_program_modules(mpl_core_stack(), config()).unwrap();
+        for expected in [
+            "UpdateAuthority = Union[str, Dict[str, Union[UpdateAuthorityAddress, UpdateAuthorityCollection]]]\n",
+            "@dataclass\nclass UpdateAuthorityAddress:\n    \"\"\"Variant `Address` of `UpdateAuthority`.\"\"\"\n\n    field_0: Optional[str] = None\n",
+            "    lifecycle_checks: Optional[List[Tuple[HookableLifecycleEvent, ExternalCheckResult]]] = None\n",
+            "        lifecycle_checks=_list_of(_tuple_of(_optional_of(hookable_lifecycle_event_from_wire), _optional_of(external_check_result_from_wire)))(data.get(\"lifecycle_checks\")),\n",
+            "        registry=_convert_list(_require(data, \"registry\", \"PluginRegistryV1\"), registry_record_from_wire),\n",
+            "# IDL type `HookableLifecycleEvent` as program reads decode it.\nHookableLifecycleEvent = str\n",
+        ] {
+            assert!(core.models_py.contains(expected), "missing:\n{expected}\nin:\n{}", core.models_py);
+        }
+    }
+
+    /// The generated converters decode Program Read payloads: integers from
+    /// decimal strings at any depth, nested structs, enums (unit names and
+    /// one-key data variants, tuple fields keyed `field_<index>`), tuples and
+    /// maps; camelCase keys normalize to the snake_case fields.
+    #[test]
+    fn python_models_decode_program_read_payloads() {
+        use crate::idl_models::tests::{mpl_core_stack, ore_stack, pyth_rec_stack};
+        let nested: IdlSnapshot = serde_json::from_value(serde_json::json!({
+            "name": "nested",
+            "version": "0.1.0",
+            "accounts": [{
+                "name": "Holder",
+                "discriminator": [1, 0, 0, 0, 0, 0, 0, 0],
+                "fields": [
+                    { "name": "amounts", "type": { "vec": { "option": "u64" } } },
+                    { "name": "pair", "type": { "tuple": ["u64", "publicKey"] } },
+                    { "name": "balances", "type": { "hashMap": ["string", "u128"] } },
+                    { "name": "grid", "type": { "array": [{ "vec": "i64" }, 2] } }
+                ]
+            }],
+            "instructions": [],
+            "types": [],
+            "discriminant_size": 8
+        }))
+        .unwrap();
+        let base = std::env::temp_dir().join(format!(
+            "arete-python-idl-models-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        for (module, idls) in [
+            ("ore_models", ore_stack().idls),
+            ("pyth_models", pyth_rec_stack().idls),
+            ("core_models", mpl_core_stack().idls),
+            ("nested_models", vec![nested]),
+        ] {
+            let programs = idls.iter().map(|idl| idl.name.clone()).collect();
+            let (models_py, _, _) = generate_stack_models_py(module, &[], &[], &idls, &programs);
+            std::fs::write(base.join(format!("{module}.py")), models_py).unwrap();
+        }
+        let script = r#"
+import core_models as core
+import nested_models as nested
+import ore_models as ore
+import pyth_models as pyth
+
+config = ore.config_from_wire({
+    "admin": {"authority": "A", "fee_collector": "B", "fee_rate": "100"},
+    "protocol": {"authority": "A", "fee_collector": "B", "fee_rate": "18446744073709551615",
+                 "intermission_slots": 35, "round_slots": "150",
+                 "entropy_var_address": "C", "entropy_program_id": "D"},
+})
+assert isinstance(config.admin, ore.AdminConfig) and config.admin.fee_rate == 100
+assert config.protocol.fee_rate == 2**64 - 1 and config.protocol.round_slots == 150
+
+update = pyth.price_update_v2_from_wire({
+    "writeAuthority": "W",
+    "verificationLevel": {"Partial": {"numSignatures": 5}},
+    "priceMessage": {"feedId": [1] * 32, "price": -7, "conf": "9", "exponent": -8,
+                     "publishTime": 1, "prevPublishTime": 0, "emaPrice": "3", "emaConf": 4},
+    "postedSlot": "12",
+    "reserved": 0,
+})
+level = update.verification_level
+assert isinstance(level["Partial"], pyth.VerificationLevelPartial), level
+assert level["Partial"].num_signatures == 5
+assert update.price_message.conf == 9 and update.price_message.price == -7
+assert update.posted_slot == 12
+assert pyth.verification_level_from_wire("Full") == "Full"
+for bad in ("Partial", {"Full": {}}, {"Nope": {}}, 1):
+    try:
+        pyth.verification_level_from_wire(bad)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"accepted {bad!r}")
+
+asset = core.asset_v1_from_wire({
+    "key": "AssetV1", "owner": "O",
+    "updateAuthority": {"Collection": {"field_0": "C"}},
+    "name": "n", "uri": "u", "seq": "7",
+})
+assert asset.update_authority["Collection"].field_0 == "C" and asset.seq == 7
+assert core.asset_v1_from_wire({
+    "key": "AssetV1", "owner": "O", "updateAuthority": "None",
+    "name": "n", "uri": "u", "seq": None,
+}).update_authority == "None"
+record = core.external_registry_record_from_wire({
+    "pluginType": "Oracle",
+    "authority": {"Address": {"address": "X"}},
+    "lifecycleChecks": [["Transfer", {"flags": 3}]],
+    "offset": "10", "dataOffset": None, "dataLen": "4",
+})
+assert record.authority["Address"].address == "X"
+assert record.lifecycle_checks == [("Transfer", core.ExternalCheckResult(flags=3))]
+assert record.offset == 10 and record.data_offset is None and record.data_len == 4
+
+holder = nested.holder_from_wire({
+    "amounts": ["1", None, 3],
+    "pair": ["18446744073709551615", "K"],
+    "balances": {"a": "340282366920938463463374607431768211455"},
+    "grid": [["-1", 2], []],
+})
+assert holder.amounts == [1, None, 3]
+assert holder.pair == (2**64 - 1, "K")
+assert holder.balances == {"a": 2**128 - 1}
+assert holder.grid == [[-1, 2], []]
+print("ok")
+"#;
+        let python = std::env::var_os("PYTHON").unwrap_or_else(|| "python3".into());
+        let ran = Command::new(python)
+            .args(["-c", script])
+            .env("PYTHONPATH", &base)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+            .expect("Python must be available for generated model tests");
+        assert!(
+            ran.status.success(),
+            "generated models failed to decode:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&ran.stdout),
+            String::from_utf8_lossy(&ran.stderr),
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Inside a stack, the program package's `models.py` aliases every model
+    /// the stack renamed (the readers' own models beside the entity types
+    /// they differ from) back to its standalone name.
+    #[test]
+    fn python_stack_program_package_aliases_renamed_models() {
+        let spec = crate::public_artifacts::ore_stack_spec_from_exact_artifacts();
+        let config = PythonStackConfig {
+            package_name: "ore-stack".to_string(),
+            program_extensions: vec![PythonProgramExtensionConfig {
+                program_id: "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string(),
+                modules: vec!["extensions".to_string()],
+                entry: "extensions".to_string(),
+            }],
+            ..Default::default()
+        };
+        let output = compile_stack_spec(spec, Some(config)).unwrap();
+        // The entity's captured `Treasury` keeps its nested type as JSON.
+        assert!(output.models_py.contains(
+            "@dataclass\nclass Treasury:\n    \"\"\"Resolved type `Treasury`.\"\"\"\n\n    motherlode: Optional[int] = None\n    miner_rewards_factor: Any = None\n"
+        ), "{}", output.models_py);
+        assert!(output
+            .models_py
+            .contains("    miner_rewards_factor: Optional[Numeric] = None\n"));
+        let programs = output.programs_py.as_deref().unwrap();
+        assert!(programs.contains(
+            "    \"treasury\": ProgramAccountReadDef(account=\"Treasury\", parser=models.ore_treasury_account_from_wire),"
+        ));
+        let package = output
+            .program_packages
+            .iter()
+            .find(|package| package.module_name == "ore")
+            .unwrap();
+        for expected in [
+            "from ...models import OreTreasuryAccount as Treasury  # noqa: F401,E402\n",
+            "from ...models import ore_treasury_account_from_wire as treasury_from_wire  # noqa: F401,E402\n",
+            "from ...models import (  # noqa: F401,E402\n    ore_treasury_account_patch_from_wire as treasury_patch_from_wire,\n)\n",
+            "    \"Treasury\",\n    \"treasury_from_wire\",\n    \"treasury_patch_from_wire\",\n",
+        ] {
+            assert!(package.models_py.contains(expected), "missing:\n{expected}\nin:\n{}", package.models_py);
+        }
+        // Models the stack declares under their own names need no alias.
+        assert!(!package.models_py.contains("as Config "));
+        assert!(!package.models_py.contains("as AdminConfig "));
+    }
+
+    #[test]
+    fn python_stack_embeds_a_program_package_extension_subpackage() {
+        let release = "arete:registry-package-release:v2:sha256:7";
+        let config = PythonStackConfig {
+            package_name: "demo-stack".to_string(),
+            program_extensions: vec![PythonProgramExtensionConfig {
+                program_id: TEST_PROGRAM_ID.to_string(),
+                modules: vec!["demo_math".to_string(), "extensions".to_string()],
+                entry: "extensions".to_string(),
+            }],
+            program_reads: vec![PythonProgramReadConfig {
+                program_id: TEST_PROGRAM_ID.to_string(),
+                program_spec_hash: "arete:h1:program-spec:sha256:test".to_string(),
+                program_release_hash: "arete:h1:program-release:sha256:test".to_string(),
+                descriptor: None,
+                package_release_hash: Some(release.to_string()),
+            }],
+            ..Default::default()
+        };
+        let output = compile_stack_spec(programs_stack_spec(), Some(config))
+            .expect("python stack generation should succeed");
+
+        // The generated definition lacks the extension, so it carries no
+        // identity; the subpackage stamps it after applying the extension.
+        let programs = output.programs_py.as_deref().unwrap();
+        assert!(
+            !programs.contains("package_release_hash=DEMO_PACKAGE_RELEASE_HASH"),
+            "{programs}"
+        );
+
+        let [package] = output.program_packages.as_slice() else {
+            panic!("one program package: {:?}", output.program_packages);
+        };
+        assert_eq!(package.module_name, "demo");
+        let init = &package.init_py;
+        let helper = init
+            .find("from . import demo_math  # noqa: F401,E402")
+            .unwrap();
+        let entry = init
+            .find("from . import extensions  # noqa: F401,E402")
+            .unwrap();
+        let applied = init
+            .find("DEMO_PROGRAM = _extend_program(\n    programs.DEMO_PROGRAM, **_program_extensions_of(extensions)\n)\n")
+            .unwrap();
+        let stamp = init
+            .find("DEMO_PROGRAM = _with_program_identity(\n    DEMO_PROGRAM,\n    package_release_hash=programs.DEMO_PACKAGE_RELEASE_HASH,\n)\n")
+            .unwrap();
+        assert!(
+            helper < entry && entry < applied && applied < stamp,
+            "{init}"
+        );
+        assert!(package.programs_py.contains("from ...programs import *  # noqa: F401,F403\nfrom ...programs import __all__  # noqa: F401\n"));
+        assert!(package.models_py.contains("from ...models import *  # noqa: F401,F403\nfrom ...models import __all__  # noqa: F401\n"));
+
+        // The stack binds the extended program.
+        let stack_init = &output.init_py;
+        let import = stack_init
+            .find("from .program_sdks import demo as _demo_program_sdk\n")
+            .unwrap();
+        let bound = stack_init
+            .find("DEMO_PROGRAM = _demo_program_sdk.DEMO_PROGRAM\nPROGRAMS = {\n    **programs.PROGRAMS,\n    \"demo\": DEMO_PROGRAM,\n}\n")
+            .unwrap();
+        let stack_def = stack_init.find("DEMO_STACK: StackDef = StackDef(").unwrap();
+        assert!(import < bound && bound < stack_def, "{stack_init}");
+        assert!(stack_init
+            .contains("    programs=PROGRAMS,\n    program_reads=programs.PROGRAM_READS,"));
+
+        let files = output.module_files();
+        for file in [
+            "program_sdks/__init__.py",
+            "program_sdks/demo/__init__.py",
+            "program_sdks/demo/programs.py",
+            "program_sdks/demo/models.py",
+        ] {
+            assert!(files.contains(&file.to_string()), "{files:?}");
+        }
+
+        let unknown = PythonStackConfig {
+            program_extensions: vec![PythonProgramExtensionConfig {
+                program_id: "Other11111111111111111111111111111111111111".to_string(),
+                modules: vec!["extensions".to_string()],
+                entry: "extensions".to_string(),
+            }],
+            ..Default::default()
+        };
+        let error = compile_stack_spec(programs_stack_spec(), Some(unknown)).unwrap_err();
+        assert!(
+            error.contains("names a program this stack does not generate"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -4939,15 +6366,21 @@ mod tests {
             );
         }
 
-        // `programs.py` is only reserved when the stack generates programs.
+        // Every name the contract reserves is refused, whether or not this
+        // SDK generates that module, so a bundle is portable between SDKs.
         let mut no_instructions = programs_stack_spec();
         no_instructions.instructions.clear();
-        let config = PythonStackConfig {
-            extension_modules: vec!["programs".to_string(), "extensions".to_string()],
-            extension_entry: Some("extensions".to_string()),
-            ..Default::default()
-        };
-        assert!(compile_stack_spec(no_instructions, Some(config)).is_ok());
+        for reserved in ["programs", "generated", "entity", "types", "program_sdks"] {
+            let config = PythonStackConfig {
+                extension_modules: vec![reserved.to_string(), "extensions".to_string()],
+                extension_entry: Some("extensions".to_string()),
+                ..Default::default()
+            };
+            assert!(
+                compile_stack_spec(no_instructions.clone(), Some(config)).is_err(),
+                "{reserved}"
+            );
+        }
 
         let duplicate = PythonStackConfig {
             extension_modules: vec![
@@ -5086,6 +6519,7 @@ mod tests {
             http_url: Some("https://ore.stack.arete.run".to_string()),
             extension_modules,
             extension_entry,
+            program_extensions: Vec::new(),
             program_reads: Vec::new(),
             gateway: None,
             release: None,
