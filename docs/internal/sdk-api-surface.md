@@ -249,7 +249,9 @@ are real; phantom generic `ViewDef`s become generated typed structs.
 - `instruction/` — runtime the generated code targets:
   - `BuiltAccountMeta { pubkey, is_signer, is_writable }`, `BuiltInstruction`.
   - `AccountMeta { name, is_signer, is_writable, resolution, is_optional }` with
-    `AccountResolution::{Signer, Known(address), Pda(PdaConfig), UserProvided}`.
+    `AccountResolution::{Signer, WalletSigner, Known(address), Pda(PdaConfig), UserProvided}`
+    (`Signer` is caller-provided, TS `signerKind: 'provided'`; only `WalletSigner` falls
+    back to the build's payer, TS `signerKind: 'wallet'`).
   - `PdaConfig { program_id: Option<String>, seeds: Vec<PdaSeed> }`,
     `PdaSeed::{Literal(String), Bytes(Vec<u8>), ArgRef{arg, arg_type}, AccountRef(name)}`.
   - `ArgType` schema enum mirroring the TS borsh serializer, plus

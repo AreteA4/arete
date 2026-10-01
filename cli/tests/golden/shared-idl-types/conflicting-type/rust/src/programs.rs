@@ -36,7 +36,7 @@ pub mod alpha {
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct ConfigureParams {
         pub header: serde_json::Value,
-        /// Optional address override for the `authority` signer (defaults to the payer).
+        /// Address of the `authority` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub authority: Option<String>,
         /// Address of the `vault` account.
@@ -145,7 +145,7 @@ pub mod beta {
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct ConfigureParams {
         pub header: serde_json::Value,
-        /// Optional address override for the `authority` signer (defaults to the payer).
+        /// Address of the `authority` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub authority: Option<String>,
         /// Address of the `vault` account.

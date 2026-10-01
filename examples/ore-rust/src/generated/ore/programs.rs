@@ -41,7 +41,7 @@ pub mod ore {
         pub mask: u64,
         pub strategy: u8,
         pub reload: u64,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `automation` account.
@@ -130,7 +130,7 @@ pub mod ore {
     /// Typed params for `checkpoint`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct CheckpointParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `authority` account.
@@ -224,7 +224,7 @@ pub mod ore {
     /// Typed params for `claimSol`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct ClaimSolParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `miner` account.
@@ -298,7 +298,7 @@ pub mod ore {
     /// Typed params for `claimOre`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct ClaimOreParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `miner` account.
@@ -419,7 +419,7 @@ pub mod ore {
     /// Typed params for `close`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct CloseParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `rentPayer` account.
@@ -503,7 +503,7 @@ pub mod ore {
     pub struct DeployParams {
         pub amount: u64,
         pub squares: u32,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `authority` account.
@@ -639,7 +639,7 @@ pub mod ore {
     /// Typed params for `log`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct LogParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
     }
@@ -680,7 +680,7 @@ pub mod ore {
     /// Typed params for `reset`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct ResetParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `feeCollector` account.
@@ -863,7 +863,7 @@ pub mod ore {
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct BuryParams {
         pub amount: u64,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `sender` account.
@@ -1213,7 +1213,7 @@ pub mod ore {
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct SetAdminParams {
         pub admin: String,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
     }
@@ -1272,7 +1272,7 @@ pub mod ore {
         pub id: u64,
         pub commit: Vec<u8>,
         pub samples: u64,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `provider` account.
@@ -1567,10 +1567,10 @@ pub mod entropy {
         pub samples: u64,
         #[serde(rename = "endAt")]
         pub end_at: u64,
-        /// Optional address override for the `authority` signer (defaults to the payer).
+        /// Address of the `authority` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub authority: Option<String>,
-        /// Optional address override for the `payer` signer (defaults to the payer).
+        /// Address of the `payer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub payer: Option<String>,
         /// Address of the `provider` account.
@@ -1648,7 +1648,7 @@ pub mod entropy {
     /// Typed params for `close`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct CloseParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `var` account.
@@ -1705,7 +1705,7 @@ pub mod entropy {
     pub struct NextParams {
         #[serde(rename = "endAt")]
         pub end_at: u64,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `var` account.
@@ -1757,7 +1757,7 @@ pub mod entropy {
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct RevealParams {
         pub seed: Vec<u8>,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `var` account.
@@ -1808,7 +1808,7 @@ pub mod entropy {
     /// Typed params for `sample`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct SampleParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `var` account.

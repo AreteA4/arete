@@ -198,7 +198,7 @@ mod tests {
                     name: "authority".to_string(),
                     is_signer: true,
                     is_writable: true,
-                    resolution: AccountResolution::Signer,
+                    resolution: AccountResolution::WalletSigner,
                     is_optional: false,
                 },
                 AccountMeta {
@@ -295,6 +295,36 @@ mod tests {
     }
 
     #[test]
+    fn the_payer_never_fills_a_provided_signer() {
+        // Generated handlers declare `Signer` (TypeScript
+        // `signerKind: 'provided'`): the payer fills only wallet signers.
+        // `state` is named so its derivation does not need `authority`.
+        let mut handler = make_handler();
+        handler.accounts[0].resolution = AccountResolution::Signer;
+        let err = handler
+            .build_with(
+                json!({ "amount": 1, "mint": SYSTEM_PROGRAM, "state": WSOL_MINT }),
+                &payer_options(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            InstructionError::MissingAccounts(vec!["authority".to_string()])
+        );
+        let built = handler
+            .build_with(
+                json!({ "amount": 1, "mint": SYSTEM_PROGRAM, "authority": TOKEN_PROGRAM }),
+                &payer_options(),
+            )
+            .unwrap();
+        assert_eq!(
+            built.accounts[0].pubkey,
+            Pubkey::from_str(TOKEN_PROGRAM).unwrap()
+        );
+        assert!(built.accounts[0].is_signer);
+    }
+
+    #[test]
     fn options_account_overrides_win_over_params() {
         let options = BuildOptions {
             payer: Some(WSOL_MINT.to_string()),
@@ -371,7 +401,7 @@ mod tests {
                     name: "authority".to_string(),
                     is_signer: true,
                     is_writable: true,
-                    resolution: AccountResolution::Signer,
+                    resolution: AccountResolution::WalletSigner,
                     is_optional: false,
                 },
                 AccountMeta {

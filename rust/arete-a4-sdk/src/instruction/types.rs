@@ -142,8 +142,14 @@ pub struct PdaConfig {
 /// How an account's address is determined during resolution.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AccountResolution {
-    /// Must sign; resolved from an override or the fallback payer.
+    /// Must sign; the caller provides the address (TypeScript
+    /// `signerKind: 'provided'`, what generated handlers declare). An IDL
+    /// says that an account signs, not that the wallet is that account, so
+    /// the build's payer never fills it.
     Signer,
+    /// Must sign; resolved from an explicit address, else the build's
+    /// [`BuildOptions::payer`], the wallet (TypeScript `signerKind: 'wallet'`).
+    WalletSigner,
     /// Fixed, well-known address (e.g. the System Program).
     Known(String),
     /// Derived from seeds via [`PdaConfig`].
@@ -181,7 +187,10 @@ pub struct ErrorMetadata {
 /// Options for building an instruction (no network access).
 #[derive(Debug, Clone, Default)]
 pub struct BuildOptions {
-    /// Fallback signer address (mirror of the TS `wallet.publicKey` fallback).
+    /// Address of [`AccountResolution::WalletSigner`] accounts the build does
+    /// not name (mirror of the TS `wallet.publicKey` fallback, which fills
+    /// only `signerKind: 'wallet'` signers). It never fills a
+    /// [`AccountResolution::Signer`].
     pub payer: Option<String>,
     /// Account-address overrides; they win over param-derived overrides.
     /// Like those, each wins over its account's own resolution and must be a

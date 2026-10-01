@@ -36,7 +36,7 @@ pub mod vault {
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct DepositParams {
         pub amount: u64,
-        /// Optional address override for the `authority` signer (defaults to the payer).
+        /// Address of the `authority` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub authority: Option<String>,
         /// Address of the `vault` account.

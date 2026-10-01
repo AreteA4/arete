@@ -5410,7 +5410,8 @@ fn note_schema_imports(schema: &str, needs: &mut ProgramImports) {
 /// How a mapped account surfaces in the typed params struct.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum RustAccountFieldKind {
-    /// Signer slot: optional address override (payer fallback applies).
+    /// Signer slot: the caller provides the address (`AccountResolution::Signer`,
+    /// which the build's payer never fills).
     Signer,
     /// Required user-provided account address.
     Required,
@@ -5867,10 +5868,9 @@ fn generate_rust_instruction_block(
         }
         let mut lines = Vec::new();
         match kind {
-            RustAccountFieldKind::Signer => lines.push(format!(
-                "        /// Optional address override for the `{}` signer (defaults to the payer).",
-                name
-            )),
+            RustAccountFieldKind::Signer => {
+                lines.push(format!("        /// Address of the `{}` signer.", name))
+            }
             RustAccountFieldKind::Required => {
                 lines.push(format!("        /// Address of the `{}` account.", name))
             }

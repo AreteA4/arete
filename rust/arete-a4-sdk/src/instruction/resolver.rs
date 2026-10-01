@@ -44,6 +44,9 @@ pub struct AccountResolutionResult {
 
 /// Resolves instruction accounts against args, overrides, and a fallback payer.
 ///
+/// `payer` fills only [`AccountResolution::WalletSigner`] accounts, as the
+/// TypeScript wallet fills only `signerKind: 'wallet'` signers.
+///
 /// `overrides` are explicit account addresses. One wins over the account's
 /// own resolution for every kind of account (signer, known, PDA or
 /// user-provided), and must be a base58 32-byte public key. `resolve`
@@ -176,7 +179,9 @@ fn resolve_single(
         }));
     }
     match &meta.resolution {
-        AccountResolution::Signer => Ok(payer.map(|address| ResolvedAccount {
+        // A provided signer resolves only from an explicit address.
+        AccountResolution::Signer => Ok(None),
+        AccountResolution::WalletSigner => Ok(payer.map(|address| ResolvedAccount {
             name: meta.name.clone(),
             address: address.to_string(),
             is_signer: true,
@@ -307,11 +312,12 @@ mod tests {
         }
     }
 
+    /// A wallet signer: the payer fills it.
     fn signer(name: &str) -> AccountMeta {
         AccountMeta {
             is_signer: true,
             is_writable: true,
-            ..meta(name, AccountResolution::Signer)
+            ..meta(name, AccountResolution::WalletSigner)
         }
     }
 
@@ -369,6 +375,39 @@ mod tests {
         assert!(result.accounts[0].is_signer);
         assert_eq!(result.accounts[1].address, SYSTEM_PROGRAM);
         assert_eq!(result.accounts[2].address, TOKEN_PROGRAM);
+    }
+
+    #[test]
+    fn fills_only_wallet_signers_from_the_payer() {
+        // TypeScript `resolveSignerAccount`: an IDL says an account signs, not
+        // that the wallet is that account. Generated handlers declare
+        // `Signer`, the caller-provided kind.
+        let provided = AccountMeta {
+            is_signer: true,
+            is_writable: true,
+            ..meta("authority", AccountResolution::Signer)
+        };
+        let result = resolve_accounts(
+            std::slice::from_ref(&provided),
+            &Map::new(),
+            &BTreeMap::new(),
+            None,
+            Some(WSOL_MINT),
+            None,
+        )
+        .unwrap();
+        assert_eq!(result.missing, ["authority"]);
+        assert!(result.accounts.is_empty());
+
+        let result = resolve_ok(
+            &[provided],
+            json!({}),
+            &overrides(&[("authority", TOKEN_PROGRAM)]),
+            Some(WSOL_MINT),
+            None,
+        );
+        assert_eq!(result.accounts[0].address, TOKEN_PROGRAM);
+        assert!(result.accounts[0].is_signer);
     }
 
     #[test]
