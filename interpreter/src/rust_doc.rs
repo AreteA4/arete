@@ -14,9 +14,9 @@
 /// comment that rustdoc renders as the IDL wrote it and clippy accepts.
 ///
 /// - A docs entry may hold several lines: it is split at its line breaks
-///   (`\n`, `\r\n`, `\r`). Every line is trimmed, as the TypeScript generator
-///   trims its JSDoc lines, and tabs become spaces
-///   (`clippy::tabs_in_doc_comments`).
+///   (`\n`, `\r\n`, `\r`), and tabs become spaces
+///   (`clippy::tabs_in_doc_comments`). Every line outside a fenced code block
+///   is trimmed, as the TypeScript generator trims its JSDoc lines.
 /// - Leading and trailing blank lines are dropped, so blank-only docs come
 ///   back empty and callers can fall back to their own text instead of
 ///   writing an empty doc comment (`clippy::empty_docs`).
@@ -26,42 +26,40 @@
 ///   forms the same; clippy rejects the lazy one
 ///   (`clippy::doc_lazy_continuation`) and indentation past the item's
 ///   content (`clippy::doc_overindented_list_items`).
-/// - A fenced code block passes through as written, except that a fence with
-///   no language, or `rust`, is marked `text`: rustdoc would otherwise compile
-///   the IDL's snippet as a doctest of the generated crate.
+/// - A fenced code block passes through as written, keeping its lines'
+///   indentation relative to one another: only the indentation they share is
+///   removed (with trailing whitespace), and the fences are trimmed. A fence
+///   with no language, or `rust`, is marked `text`: rustdoc would otherwise
+///   compile the IDL's snippet as a doctest of the generated crate.
 pub(crate) fn normalize_doc_lines(docs: &[String]) -> Vec<String> {
-    let lines: Vec<String> = docs
+    // Lines as written, but for tabs and trailing whitespace: a fenced code
+    // block keeps its indentation, every other line is trimmed below.
+    let raw: Vec<String> = docs
         .iter()
         .flat_map(|doc| {
             doc.replace("\r\n", "\n")
                 .split(['\n', '\r'])
-                .map(|line| line.trim().replace('\t', "    "))
+                .map(|line| line.replace('\t', "    ").trim_end().to_string())
                 .collect::<Vec<_>>()
         })
         .collect();
-    let Some(first) = lines.iter().position(|line| !line.is_empty()) else {
+    let Some(first) = raw.iter().position(|line| !line.trim().is_empty()) else {
         return Vec::new();
     };
-    let last = lines
+    let last = raw
         .iter()
-        .rposition(|line| !line.is_empty())
+        .rposition(|line| !line.trim().is_empty())
         .unwrap_or(first);
+    let raw = &raw[first..=last];
 
-    let mut out = Vec::with_capacity(last + 1 - first);
-    // The closing fence (character, minimum length) of the open fenced code
-    // block.
-    let mut fence: Option<(char, usize)> = None;
+    let mut out = Vec::with_capacity(raw.len());
     // The open paragraph: its block-quote depth and, when it is a list item's,
     // the item's content column within the quote.
     let mut paragraph: Option<(usize, Option<usize>)> = None;
-    for line in lines[first..=last].iter() {
-        if let Some((fence_char, fence_len)) = fence {
-            if closes_fence(line, fence_char, fence_len) {
-                fence = None;
-            }
-            out.push(line.clone());
-            continue;
-        }
+    let mut next = 0;
+    while next < raw.len() {
+        let line = raw[next].trim();
+        next += 1;
         if line.is_empty() {
             paragraph = None;
             out.push(String::new());
@@ -90,13 +88,22 @@ pub(crate) fn normalize_doc_lines(docs: &[String]) -> Vec<String> {
             },
         ) = (depth, &start)
         {
-            fence = Some((*fence_char, *fence_len));
             paragraph = None;
             out.push(if info.is_empty() || *info == "rust" {
                 format!("{}text", fence_char.to_string().repeat(*fence_len))
             } else {
-                line.clone()
+                line.to_string()
             });
+            // The block runs to its closing fence, or to the end of the docs.
+            let close = raw[next..]
+                .iter()
+                .position(|line| closes_fence(line.trim(), *fence_char, *fence_len))
+                .map_or(raw.len(), |offset| next + offset);
+            out.extend(fenced_code_lines(&raw[next..close]));
+            if let Some(fence) = raw.get(close) {
+                out.push(fence.trim().to_string());
+            }
+            next = close + 1;
             continue;
         }
         paragraph = match start {
@@ -107,9 +114,29 @@ pub(crate) fn normalize_doc_lines(docs: &[String]) -> Vec<String> {
             BlockStart::Text => Some((depth, None)),
             _ => None,
         };
-        out.push(line.clone());
+        out.push(line.to_string());
     }
     out
+}
+
+/// The lines of a fenced code block without the indentation they all share,
+/// so an example keeps its own indentation however the docs indented the
+/// block. Blank lines stay blank and do not count.
+fn fenced_code_lines(lines: &[String]) -> impl Iterator<Item = String> + '_ {
+    let indent = |line: &str| line.len() - line.trim_start_matches(' ').len();
+    let shared = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| indent(line))
+        .min()
+        .unwrap_or(0);
+    lines.iter().map(move |line| {
+        if line.trim().is_empty() {
+            String::new()
+        } else {
+            line[shared..].to_string()
+        }
+    })
 }
 
 /// `lines` as a `///` doc comment at `indent`, one comment line per line
@@ -555,6 +582,64 @@ mod tests {
     }
 
     #[test]
+    fn keeps_relative_indentation_inside_fences() {
+        // An indented example: the block's own indentation goes, the code's
+        // stays.
+        assert_eq!(
+            markdown(&[
+                "Example:",
+                "",
+                "    ```",
+                "    let pool = load(address)?;",
+                "    if pool.open {",
+                "        swap(&pool)?;",
+                "",
+                "        // settled",
+                "    }",
+                "    ```",
+                "Done.",
+            ]),
+            lines(&[
+                "Example:",
+                "",
+                "```text",
+                "let pool = load(address)?;",
+                "if pool.open {",
+                "    swap(&pool)?;",
+                "",
+                "    // settled",
+                "}",
+                "```",
+                "Done.",
+            ])
+        );
+        // One docs entry holding the block, tab-indented, with trailing
+        // whitespace.
+        assert_eq!(
+            markdown(&["```json\n{\n\t\"a\": [  \n\t\t1\n\t]\n}\n```"]),
+            lines(&[
+                "```json",
+                "{",
+                "    \"a\": [",
+                "        1",
+                "    ]",
+                "}",
+                "```"
+            ])
+        );
+        // A first line indented past the others, and a block left open.
+        assert_eq!(
+            markdown(&["~~~", "      deeper", "  shallow", "    middle"]),
+            lines(&["~~~text", "    deeper", "shallow", "  middle"])
+        );
+        // Outside the block, lines are trimmed as before.
+        assert_eq!(
+            markdown(&["  Text", "```", "  a", "```", "  after"]),
+            lines(&["Text", "```text", "a", "```", "after"])
+        );
+    }
+
+    #[test]
     fn rendering_is_idempotent() {
         let docs = lines(&[
             "- item",
@@ -565,7 +650,12 @@ mod tests {
             "lazy",
             "```",
             "code",
+            "    indented",
             "```",
+            "   ```",
+            "   shared",
+            "     more",
+            "   ```",
         ]);
         let once = normalize_doc_lines(&docs);
         assert_eq!(normalize_doc_lines(&once), once);
@@ -627,6 +717,18 @@ mod tests {
                 "> runs on",
             ],
             vec!["- item", "```", "not rust", "```", "after"],
+            vec![
+                "Example:",
+                "",
+                "  ```",
+                "  fn main() {",
+                "  \tif ready() {",
+                "          run();",
+                "      }",
+                "  }",
+                "  ```",
+                "after",
+            ],
             vec!["tab\tinside", "- item", "\ttabbed continuation"],
             vec!["Text", "2. continues", "the paragraph", "-", "Text"],
         ];
