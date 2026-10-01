@@ -502,6 +502,16 @@ pub enum AreteError {
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
 
+    /// An extension's input or validation error. `Display` is the message
+    /// alone, with no prefix, so it can carry the exact text the TypeScript
+    /// extension throws for the same condition (the conformance vectors
+    /// compare it). This is the variant extension bundles use for input
+    /// errors (`docs/internal/sdk-core-api.md` §9); build one with
+    /// [`AreteError::invalid_input`].
+    /// [`InstructionError`](crate::InstructionError) converts to it.
+    #[error("{0}")]
+    InvalidInput(String),
+
     /// View subscriptions require the streaming WebSocket, but this client
     /// was connected with `Transport::Http` (mirror of the TS
     /// `WEBSOCKET_DISABLED` error).
@@ -555,6 +565,12 @@ fn parse_stack_version_refusal(body: Option<&[u8]>) -> StackVersionRefusal {
 }
 
 impl AreteError {
+    /// An extension input error ([`AreteError::InvalidInput`]) whose text is
+    /// `message` alone.
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        Self::InvalidInput(message.into())
+    }
+
     pub fn auth_code(&self) -> Option<AuthErrorCode> {
         match self {
             Self::WebSocket { code, .. }
@@ -644,6 +660,7 @@ impl AreteError {
             | Self::Protocol { .. }
             | Self::ChannelError(_)
             | Self::InvalidConfig(_)
+            | Self::InvalidInput(_)
             | Self::WebSocketDisabled
             | Self::TransactionFailed(_) => false,
         }
@@ -763,6 +780,14 @@ impl From<tungstenite::Error> for AreteError {
     }
 }
 
+/// An instruction that cannot be built from an extension's input is an
+/// extension input error ([`AreteError::InvalidInput`]).
+impl From<crate::instruction::InstructionError> for AreteError {
+    fn from(value: crate::instruction::InstructionError) -> Self {
+        Self::InvalidInput(value.to_string())
+    }
+}
+
 fn parse_error_payload(
     body: Option<&[u8]>,
 ) -> (Option<String>, Option<AuthErrorCode>, Option<ApiProblemV1>) {
@@ -813,6 +838,34 @@ fn parse_close_reason(reason: &str) -> (Option<AuthErrorCode>, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_input_displays_the_message_alone() {
+        let error = AreteError::invalid_input("amountPerSquare must be greater than zero");
+        assert!(matches!(error, AreteError::InvalidInput(_)));
+        assert_eq!(
+            error.to_string(),
+            "amountPerSquare must be greater than zero"
+        );
+        assert!(!error.should_retry());
+        assert_eq!(error.auth_code(), None);
+
+        // Unlike the configuration variant, which prefixes its text.
+        assert_eq!(
+            AreteError::InvalidConfig("x".to_string()).to_string(),
+            "Invalid configuration: x"
+        );
+    }
+
+    #[test]
+    fn instruction_errors_convert_to_invalid_input() {
+        let error: AreteError = crate::instruction::InstructionError::MissingArgument {
+            name: "amount".to_string(),
+        }
+        .into();
+        assert!(matches!(error, AreteError::InvalidInput(_)));
+        assert_eq!(error.to_string(), "Missing required argument \"amount\"");
+    }
 
     #[test]
     fn parses_platform_handshake_rejection() {
