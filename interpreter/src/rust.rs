@@ -3280,6 +3280,19 @@ mod tests {
             "{programs}"
         );
         assert!(programs.contains(", Oracle, "), "{programs}");
+
+        // The IDL declares `InitializeLbPair2Params` (the type of
+        // `initialize_lb_pair2`'s `params` argument), so that instruction's
+        // typed params take the TypeScript fallback name in both contexts,
+        // and the name stays free for the IDL type.
+        for module in [&standalone.programs_rs, &programs] {
+            assert!(module.contains("pub struct InitializeLbPair2InstructionParams {"));
+            assert!(module.contains(
+                "pub fn initialize_lb_pair2(params: InitializeLbPair2InstructionParams)"
+            ));
+            assert!(!module.contains("pub struct InitializeLbPair2Params {"));
+            assert!(module.contains("pub struct InitializeLbPairParams {"));
+        }
     }
 
     /// A standalone program SDK declares every model (its accounts' and the
@@ -5670,6 +5683,70 @@ fn build_rust_pda_config(
 struct RustInstructionBlock {
     code: String,
     method: String,
+    /// The typed params struct's name, claimed once the block is emitted.
+    params_name: String,
+}
+
+/// Names a program module's typed params structs: `<Ix>Params`, unless the
+/// program's IDL declares a type or account of that name (meteora-dlmm's
+/// `InitializeLbPair2Params` is the type of `initialize_lb_pair2`'s `params`
+/// argument) or another instruction's params took it. Then the struct is
+/// `<Ix>InstructionParams`, numbered from 2 if that is taken too, as the
+/// TypeScript generator names it. Only the program's own IDL decides, so a
+/// standalone program crate and a stack's program module name every params
+/// struct alike, and an extension bundle that declares the IDL type under its
+/// own name compiles in both.
+struct RustParamsNames {
+    /// Pascal-case names of the program's IDL types and accounts.
+    declared: HashSet<String>,
+    /// Params struct names already emitted in the module.
+    taken: HashSet<String>,
+}
+
+impl RustParamsNames {
+    fn new(idl: Option<&IdlSnapshot>) -> Self {
+        let declared = idl
+            .map(|idl| {
+                idl.types
+                    .iter()
+                    .map(|def| to_pascal_case(&def.name))
+                    .chain(
+                        idl.accounts
+                            .iter()
+                            .map(|account| to_pascal_case(&account.name)),
+                    )
+                    .collect()
+            })
+            .unwrap_or_default();
+        RustParamsNames {
+            declared,
+            taken: HashSet::new(),
+        }
+    }
+
+    fn available(&self, name: &str) -> bool {
+        !self.declared.contains(name) && !self.taken.contains(name)
+    }
+
+    /// The name the params struct of instruction `pascal` takes.
+    fn candidate(&self, pascal: &str) -> String {
+        let preferred = format!("{pascal}Params");
+        if self.available(&preferred) {
+            return preferred;
+        }
+        let fallback = format!("{pascal}InstructionParams");
+        let mut candidate = fallback.clone();
+        let mut counter = 2;
+        while !self.available(&candidate) {
+            candidate = format!("{fallback}{counter}");
+            counter += 1;
+        }
+        candidate
+    }
+
+    fn claim(&mut self, name: String) {
+        self.taken.insert(name);
+    }
 }
 
 fn generate_rust_instruction_block(
@@ -5678,6 +5755,7 @@ fn generate_rust_instruction_block(
     errors: &[IdlErrorSnapshot],
     pda_lookup: &BTreeMap<&str, &PdaDefinition>,
     parser: &mut RustDefinedTypes<'_>,
+    params_names: &RustParamsNames,
     needs: &mut ProgramImports,
 ) -> Result<RustInstructionBlock, String> {
     // --- Parse args; skip the whole instruction on unsupported types. ---
@@ -5748,7 +5826,12 @@ fn generate_rust_instruction_block(
     // handler is `use_handler`.
     let handler_name = format!("{}_handler", to_snake_stem(&instr.name));
     let pascal = to_pascal_case(&instr.name);
-    let params_name = format!("{}Params", pascal);
+    let params_name = params_names.candidate(&pascal);
+    if params_name != format!("{pascal}Params") {
+        notes.push(format!(
+            "params are `{params_name}`: the program declares `{pascal}Params`, or another instruction's params use the name"
+        ));
+    }
 
     // --- Typed params struct: args first, then caller-supplied accounts.
     // Account collisions have already been assigned explicit aliases above;
@@ -5930,6 +6013,7 @@ fn generate_rust_instruction_block(
     Ok(RustInstructionBlock {
         code: format!("{}\n\n{}\n\n{}", params_struct, typed_fn, handler_fn),
         method,
+        params_name,
     })
 }
 
@@ -6192,6 +6276,7 @@ fn generate_stack_programs_rs(
         let mut blocks: Vec<String> = Vec::new();
         let mut methods: Vec<String> = Vec::new();
         let mut skipped: Vec<(String, String)> = Vec::new();
+        let mut params_names = RustParamsNames::new(idl);
         for instr in group {
             let errors = if instr.errors.is_empty() {
                 program_errors.clone()
@@ -6204,9 +6289,11 @@ fn generate_stack_programs_rs(
                 &errors,
                 &pda_lookup,
                 &mut parser,
+                &params_names,
                 &mut needs,
             ) {
                 Ok(block) => {
+                    params_names.claim(block.params_name);
                     blocks.push(block.code);
                     methods.push(block.method);
                 }
