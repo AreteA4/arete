@@ -1045,31 +1045,46 @@ impl SharedStore {
         }
     }
 
+    /// Wait until `subscription_id` is ready (its snapshot arrived, or it was
+    /// acknowledged without one), for at most `timeout`. `false` when it is
+    /// still not ready at the deadline.
     pub async fn wait_for_subscription_ready(
         &self,
         subscription_id: &str,
         timeout: std::time::Duration,
     ) -> bool {
-        if self.state.read().await.ready.contains(subscription_id) {
-            return true;
-        }
-        let mut receiver = self.ready_rx.clone();
+        self.wait_for_ready(subscription_id, timeout, async {})
+            .await
+    }
+
+    /// [`Self::wait_for_subscription_ready`], running `before_wait` once,
+    /// after the first readiness check and before the first wait: the window
+    /// in which a snapshot that lands must still wake the wait.
+    async fn wait_for_ready(
+        &self,
+        subscription_id: &str,
+        timeout: std::time::Duration,
+        before_wait: impl std::future::Future<Output = ()>,
+    ) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
+        // Subscribe before checking: a subscription marked ready after the
+        // check is marked with a send after this point, which `changed()`
+        // then reports, so the wait cannot miss it.
+        let mut ready = self.ready_rx.clone();
+        ready.borrow_and_update();
+        let mut before_wait = Some(before_wait);
         loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return false;
+            if self.state.read().await.ready.contains(subscription_id) {
+                return true;
             }
-            tokio::select! {
-                changed = receiver.changed() => {
-                    if changed.is_err() {
-                        return false;
-                    }
-                    if receiver.borrow().contains(subscription_id) {
-                        return true;
-                    }
-                }
-                _ = tokio::time::sleep(remaining) => return false,
+            if let Some(before_wait) = before_wait.take() {
+                before_wait.await;
+            }
+            let woke = tokio::time::timeout_at(deadline, ready.changed()).await;
+            if !matches!(woke, Ok(Ok(()))) {
+                // At the deadline, check a last time rather than report a
+                // subscription that became ready meanwhile as timed out.
+                return self.state.read().await.ready.contains(subscription_id);
             }
         }
     }
@@ -2133,6 +2148,76 @@ mod tests {
                 &["label".to_string()],
             ),
             Ordering::Less,
+        );
+    }
+
+    /// A view read's wait sees a snapshot that lands after its readiness
+    /// check and before it waits: the snapshot wakes the wait, so the read
+    /// resolves at once instead of waiting out its timeout and reporting an
+    /// initial-data timeout. For a list read and a keyed read; the released
+    /// `get()` shares the wait.
+    #[tokio::test]
+    async fn view_read_sees_a_snapshot_landing_between_its_ready_check_and_its_wait() {
+        let store = SharedStore::new();
+        for (subscription_id, query, mode) in [
+            ("list", SubscriptionQuery::new("Thing/list"), Mode::List),
+            (
+                "keyed",
+                SubscriptionQuery::new("Thing/state").with_key("7"),
+                Mode::State,
+            ),
+        ] {
+            register(&store, subscription_id, query.clone()).await;
+            store
+                .apply_frame(ServerFrame::Subscribed {
+                    protocol_version: PROTOCOL_VERSION,
+                    subscription_id: subscription_id.to_string(),
+                    query: query.clone(),
+                    mode,
+                    sort: None,
+                    replay_window: None,
+                    whole_entities: true,
+                })
+                .await
+                .unwrap();
+            let snapshot = ServerFrame::Snapshot {
+                protocol_version: PROTOCOL_VERSION,
+                subscription_id: subscription_id.to_string(),
+                snapshot_id: "snap-1".to_string(),
+                authoritative: true,
+                mode,
+                entity: query.view.clone(),
+                key: query.key.clone(),
+                data: vec![SnapshotEntity {
+                    key: "7".to_string(),
+                    data: json!({"id": "7"}),
+                }],
+                complete: true,
+            };
+
+            let ready = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                store.wait_for_ready(
+                    subscription_id,
+                    std::time::Duration::from_secs(3600),
+                    async {
+                        store.apply_frame(snapshot).await.unwrap();
+                    },
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                panic!("{subscription_id}: the snapshot did not wake the wait, which ran out its timeout")
+            });
+            assert!(ready, "{subscription_id}: ready");
+        }
+        assert_eq!(
+            store.list_for_subscription::<Value>("list").await,
+            [json!({"id": "7"})]
+        );
+        assert_eq!(
+            store.get_for_subscription::<Value>("keyed", "7").await,
+            Some(json!({"id": "7"}))
         );
     }
 }
