@@ -933,3 +933,302 @@ fn offline_program_extensions_fail_closed() {
     .unwrap();
     assert!(output.join("src/programs/vault/extensions.rs").is_file());
 }
+
+/// `extension` pinned to `input_hash` under its new content hash: a bundle
+/// the registry could serve, for another input.
+fn repinned(extension: &Value, input_hash: &str) -> Value {
+    let files = extension["artifact"]["files"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(path, contents)| (path.clone(), contents.as_str().unwrap().to_string()))
+        .collect::<Vec<_>>();
+    sdk_extension(
+        extension["target"].as_str().unwrap(),
+        (
+            extension["artifact"]["manifest"]["inputKind"]
+                .as_str()
+                .unwrap(),
+            input_hash,
+        ),
+        &files
+            .iter()
+            .map(|(path, contents)| (path.as_str(), contents.as_str()))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// `extension` with its entry changed after the registry hashed it.
+fn tampered(extension: &Value) -> Value {
+    let mut extension = extension.clone();
+    let entry = extension["artifact"]["manifest"]["entry"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let contents = &mut extension["artifact"]["files"][&entry];
+    *contents = json!(format!("{}\n", contents.as_str().unwrap()));
+    extension
+}
+
+/// `dependency` with the `target` entry of its `sdkExtensions` array at
+/// `pointer` replaced.
+fn with_extension(dependency: &Value, pointer: &str, target: &str, replacement: Value) -> Value {
+    let mut dependency = dependency.clone();
+    let slot = dependency
+        .pointer_mut(pointer)
+        .and_then(Value::as_array_mut)
+        .unwrap()
+        .iter_mut()
+        .find(|extension| extension["target"] == target)
+        .unwrap();
+    *slot = replacement;
+    dependency
+}
+
+/// Every file under `root`, provenance included; empty when `root` is absent.
+fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn walk(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    std::fs::read(&path).unwrap(),
+                );
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    if root.exists() {
+        walk(root, root, &mut files);
+    }
+    files
+}
+
+/// A generation run with an accepted bundle and with a refused one.
+enum Generation {
+    /// `a4 install` of a registry dependency.
+    Hosted { accepted: Value, refused: Value },
+    /// `a4 sdk create --manifest` of the vault stack with a stack bundle.
+    OfflineStack { accepted: PathBuf, refused: PathBuf },
+    /// `a4 sdk create --program-spec` of the vault program with a bundle.
+    OfflineProgram { accepted: PathBuf, refused: PathBuf },
+}
+
+/// A Rust or Python generation checks every bundle before it writes anything:
+/// a refused bundle (pinned to another input, tampered with after the
+/// registry hashed it, or built for another extension API) leaves no output
+/// where there was none, and an earlier SDK at the output exactly as it was.
+/// For stack and standalone program SDKs, from registry installs and offline.
+#[test]
+fn a_refused_bundle_leaves_the_output_untouched() {
+    let program = vault_program();
+    let temp = tempfile::tempdir().unwrap();
+    let stack = stack_dependency(&program);
+    let standalone = program_dependency(&program);
+    let manifest_path = write_local_artifacts(&program, &temp.path().join("artifacts"));
+    let local_program = load_local_program_source(
+        Some(
+            temp.path()
+                .join("artifacts/vault.program-spec.json")
+                .to_str()
+                .unwrap(),
+        ),
+        None,
+    )
+    .unwrap()
+    .expect("a ProgramSpec source");
+    let other_program = format!("arete:h1:program-spec:sha256:{}", hash('0'));
+    let other_stack = format!("arete:h1:stack-manifest:sha256:{}", hash('0'));
+    // A path `arete-a4-sdk` that provides extension API 1, around the outputs
+    // of the extension API case.
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(workspace.join("sdk")).unwrap();
+    std::fs::write(
+        workspace.join("sdk/Cargo.toml"),
+        "[package]\nname = \"arete-a4-sdk\"\nversion = \"0.23.0\"\n\n[package.metadata.arete]\nextension-api = 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\narete-sdk = { package = \"arete-a4-sdk\", path = \"sdk\" }\n",
+    )
+    .unwrap();
+
+    for (target, language) in [
+        (InstallTarget::Rust, "rust"),
+        (InstallTarget::Python, "python"),
+    ] {
+        let program_extension = extension_for(&stack["programs"][0]["sdkExtensions"], language);
+        let stack_extension = extension_for(&stack["sdkExtensions"], language);
+        let standalone_extension = extension_for(&standalone["sdkExtensions"], language);
+        let bundles = temp.path().join("bundles").join(language);
+        let bundle = |name: &str, extension: &Value| {
+            let directory = bundles.join(name);
+            write_local_bundle(extension, &directory);
+            directory
+        };
+        let program_bundle = bundle("program", program_extension);
+        let stack_bundle = bundle("stack", stack_extension);
+
+        let mut cases = vec![
+            (
+                "hosted stack, program extension pinned to another program",
+                Generation::Hosted {
+                    accepted: stack.clone(),
+                    refused: with_extension(
+                        &stack,
+                        "/programs/0/sdkExtensions",
+                        language,
+                        repinned(program_extension, &other_program),
+                    ),
+                },
+                "extensions input hash mismatch",
+            ),
+            (
+                "hosted stack, program extension tampered with",
+                Generation::Hosted {
+                    accepted: stack.clone(),
+                    refused: with_extension(
+                        &stack,
+                        "/programs/0/sdkExtensions",
+                        language,
+                        tampered(program_extension),
+                    ),
+                },
+                "does not hash to its content hash",
+            ),
+            (
+                "hosted stack, stack extension pinned to another stack",
+                Generation::Hosted {
+                    accepted: stack.clone(),
+                    refused: with_extension(
+                        &stack,
+                        "/sdkExtensions",
+                        language,
+                        repinned(stack_extension, &other_stack),
+                    ),
+                },
+                "extensions input hash mismatch",
+            ),
+            (
+                "hosted program, extension pinned to another program",
+                Generation::Hosted {
+                    accepted: standalone.clone(),
+                    refused: with_extension(
+                        &standalone,
+                        "/sdkExtensions",
+                        language,
+                        repinned(standalone_extension, &other_program),
+                    ),
+                },
+                "extensions input hash mismatch",
+            ),
+            (
+                "offline stack, --extensions bundle pinned to another stack",
+                Generation::OfflineStack {
+                    accepted: stack_bundle.clone(),
+                    refused: bundle("stack-repinned", &repinned(stack_extension, &other_stack)),
+                },
+                "extensions input hash mismatch",
+            ),
+            (
+                "offline program, --extensions bundle pinned to another program",
+                Generation::OfflineProgram {
+                    accepted: program_bundle.clone(),
+                    refused: bundle(
+                        "program-repinned",
+                        &repinned(program_extension, &other_program),
+                    ),
+                },
+                "extensions input hash mismatch",
+            ),
+        ];
+        if target == InstallTarget::Rust {
+            let mut newer = standalone_extension.clone();
+            newer["artifact"]["manifest"]["extensionApi"] = json!(2);
+            cases.push((
+                "hosted program, extension built for another extension API",
+                Generation::Hosted {
+                    accepted: standalone.clone(),
+                    refused: with_extension(&standalone, "/sdkExtensions", language, newer),
+                },
+                "provides extension API 1",
+            ));
+        }
+
+        let generate = |generation: &Generation, output: &Path, refuse: bool| -> Result<()> {
+            match generation {
+                Generation::Hosted { accepted, refused } => {
+                    let dependency: ResolvedRegistryDependency =
+                        serde_json::from_value(if refuse { refused } else { accepted }.clone())
+                            .unwrap();
+                    generate_project_registry_dependency(
+                        &dependency,
+                        ProjectGenerationOptions {
+                            alias: "vault",
+                            target,
+                            output,
+                            typescript_package: "@usearete/sdk",
+                            rust_module: false,
+                            python_module: false,
+                            stack_endpoints: None,
+                        },
+                    )
+                }
+                Generation::OfflineStack { accepted, refused } => create_offline_stack(
+                    target,
+                    &manifest_path,
+                    output,
+                    Some(if refuse { refused } else { accepted }.as_path()),
+                    vec![format!("vault={}", program_bundle.display())],
+                ),
+                Generation::OfflineProgram { accepted, refused } => create_local_program_sdk(
+                    &local_program,
+                    target,
+                    Some(output.display().to_string()),
+                    Some("vault-program".to_string()),
+                    false,
+                    Some(
+                        if refuse { refused } else { accepted }
+                            .display()
+                            .to_string(),
+                    ),
+                ),
+            }
+        };
+        for (index, (case, generation, refusal)) in cases.iter().enumerate() {
+            let root = if case.contains("extension API") {
+                &workspace
+            } else {
+                temp.path()
+            }
+            .join(format!("{language}-{index}"));
+            let absent = root.join("absent");
+            let error = generate(generation, &absent, true)
+                .expect_err(&format!("{language}: {case}: refused"));
+            let error = format!("{error:#}");
+            assert!(error.contains(refusal), "{language}: {case}: {error}");
+            assert!(
+                !absent.exists(),
+                "{language}: {case}: a refused bundle left {}",
+                absent.display()
+            );
+
+            let existing = root.join("existing");
+            generate(generation, &existing, false)
+                .unwrap_or_else(|error| panic!("{language}: {case}: accepted: {error:#}"));
+            let before = snapshot(&existing);
+            assert!(!before.is_empty());
+            generate(generation, &existing, true)
+                .expect_err(&format!("{language}: {case}: refused"));
+            assert!(
+                snapshot(&existing) == before,
+                "{language}: {case}: a refused bundle changed {}",
+                existing.display()
+            );
+        }
+    }
+}

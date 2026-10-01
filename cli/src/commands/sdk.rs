@@ -1851,9 +1851,20 @@ fn bundle_has_manifest(path: &Path) -> bool {
 /// the program key its provenance is recorded under.
 struct StagedProgramExtension<'a> {
     program_key: String,
+    /// Directory the files are staged into.
+    directory: PathBuf,
     /// Directory of the staged files, relative to the SDK output directory.
     relative_dir: String,
     extension: &'a EmbeddedProgramExtension,
+}
+
+/// Context of a program package extension a Rust or Python stack SDK
+/// refuses, before anything is written.
+fn program_extension_refused(language: &str, extension: &EmbeddedProgramExtension) -> String {
+    format!(
+        "Failed to stage the {language} SDK extension of program '{}'",
+        extension.install_name
+    )
 }
 
 fn project_sdk_extension(
@@ -2135,6 +2146,7 @@ fn generate_rust_program_sdk(
     )?;
     let (extension_modules, extension_entry) = match artifact.as_ref() {
         Some(artifact) => {
+            verify_language_extensions_artifact(artifact, ExtensionRuntime::Rust, &input_pin)?;
             let (modules, entry) = rust_extension_wiring(artifact)?;
             (modules, Some(entry))
         }
@@ -2172,14 +2184,12 @@ fn generate_rust_program_sdk(
     let output = arete_interpreter::rust::compile_program_modules(stack_spec, Some(rust_config))
         .map_err(|error| anyhow::anyhow!("Failed to compile Rust program SDK: {error}"))?;
     let generated = if options.rust_module {
-        arete_interpreter::rust::write_rust_program_module(&output, options.output)?;
         BTreeSet::from([
             "mod.rs".to_string(),
             "types.rs".to_string(),
             "programs.rs".to_string(),
         ])
     } else {
-        arete_interpreter::rust::write_rust_program_crate(&output, options.output)?;
         BTreeSet::from([
             "Cargo.toml".to_string(),
             "src/lib.rs".to_string(),
@@ -2187,16 +2197,30 @@ fn generate_rust_program_sdk(
             "src/programs.rs".to_string(),
         ])
     };
+    let cargo_manifest = options.output.join("Cargo.toml");
+    let pending = (!options.rust_module).then_some(runtime::PendingManifest {
+        path: &cargo_manifest,
+        contents: &output.cargo_toml,
+    });
+    let mut bundles = Vec::new();
     if let Some(artifact) = artifact.as_ref() {
-        stage_rust_extensions_artifact(artifact, &module_dir, &input_pin)?;
+        check_staged_extension_runtime(artifact, ExtensionRuntime::Rust, &module_dir, pending)?;
+        bundles.push((artifact, module_dir.clone()));
     }
-    write_language_sdk_provenance_manifest(
-        options.output,
+    let provenance = build_sdk_provenance_manifest_from_artifacts(
         generated,
         if options.rust_module { "" } else { "src/" },
         &input_pin,
         artifact.as_ref(),
-    )
+    )?;
+    write_checked_language_sdk(options.output, &provenance, &bundles, || {
+        if options.rust_module {
+            arete_interpreter::rust::write_rust_program_module(&output, options.output)?;
+        } else {
+            arete_interpreter::rust::write_rust_program_crate(&output, options.output)?;
+        }
+        Ok(())
+    })
 }
 
 fn generate_python_program_sdk(
@@ -2241,6 +2265,7 @@ fn generate_python_program_sdk(
     )?;
     let (extension_modules, extension_entry) = match artifact.as_ref() {
         Some(artifact) => {
+            verify_language_extensions_artifact(artifact, ExtensionRuntime::Python, &input_pin)?;
             ensure_python_entry_export(artifact, "PROGRAM_EXTENSIONS")?;
             let (modules, entry) = python_extension_wiring(artifact)?;
             (modules, Some(entry))
@@ -2285,14 +2310,12 @@ fn generate_python_program_sdk(
         arete_interpreter::python::compile_program_modules(stack_spec, Some(python_config))
             .map_err(|error| anyhow::anyhow!("Failed to compile Python program SDK: {error}"))?;
     let generated = if options.python_module {
-        arete_interpreter::python::write_python_program_module(&output, options.output)?;
         BTreeSet::from([
             "__init__.py".to_string(),
             "models.py".to_string(),
             "programs.py".to_string(),
         ])
     } else {
-        arete_interpreter::python::write_python_program_package(&output, options.output)?;
         BTreeSet::from([
             "pyproject.toml".to_string(),
             format!("{}/__init__.py", output.module_name),
@@ -2300,11 +2323,17 @@ fn generate_python_program_sdk(
             format!("{}/programs.py", output.module_name),
         ])
     };
+    let pyproject = options.output.join("pyproject.toml");
+    let pending = (!options.python_module).then_some(runtime::PendingManifest {
+        path: &pyproject,
+        contents: &output.pyproject_toml,
+    });
+    let mut bundles = Vec::new();
     if let Some(artifact) = artifact.as_ref() {
-        stage_python_extensions_artifact(artifact, &module_dir, &input_pin)?;
+        check_staged_extension_runtime(artifact, ExtensionRuntime::Python, &module_dir, pending)?;
+        bundles.push((artifact, module_dir.clone()));
     }
-    write_language_sdk_provenance_manifest(
-        options.output,
+    let provenance = build_sdk_provenance_manifest_from_artifacts(
         generated,
         if options.python_module {
             "".to_string()
@@ -2314,7 +2343,15 @@ fn generate_python_program_sdk(
         .as_str(),
         &input_pin,
         artifact.as_ref(),
-    )
+    )?;
+    write_checked_language_sdk(options.output, &provenance, &bundles, || {
+        if options.python_module {
+            arete_interpreter::python::write_python_program_module(&output, options.output)?;
+        } else {
+            arete_interpreter::python::write_python_program_package(&output, options.output)?;
+        }
+        Ok(())
+    })
 }
 
 fn write_composition_provenance(
@@ -3034,16 +3071,19 @@ fn discover_usearete_sdk_version(start_dir: &Path) -> Option<String> {
 /// Best-effort discovery of the `arete-a4-sdk` dependency version declared by
 /// a `Cargo.toml` at or above `start_dir`. Only an exact `major.minor.patch`
 /// version is returned (dependency *requirements* like `"0"` or `"0.4"` are
-/// not comparable against an extensions `sdkRange` and are skipped).
-fn discover_arete_sdk_crate_version(start_dir: &Path) -> Option<String> {
+/// not comparable against an extensions `sdkRange` and are skipped). A
+/// `pending` manifest is read in place of the `Cargo.toml` at its path.
+fn discover_arete_sdk_crate_version(
+    start_dir: &Path,
+    pending: Option<runtime::PendingManifest<'_>>,
+) -> Option<String> {
     let version_regex = Regex::new(
         r#"(?m)^\s*(?:arete-a4-sdk|arete-sdk)\s*=\s*(?:"([^"]+)"|\{[^}]*version\s*=\s*"([^"]+)"[^}]*\})"#,
     )
     .expect("arete sdk version regex should compile");
 
     for ancestor in start_dir.ancestors() {
-        let manifest_path = ancestor.join("Cargo.toml");
-        let Ok(manifest) = fs::read_to_string(&manifest_path) else {
+        let Some(manifest) = runtime::read_manifest(&ancestor.join("Cargo.toml"), pending) else {
             continue;
         };
         for captures in version_regex.captures_iter(&manifest) {
@@ -3067,13 +3107,16 @@ fn discover_arete_sdk_crate_version(start_dir: &Path) -> Option<String> {
 /// pin is returned (requirement *ranges* like `>=0.4` are not comparable
 /// against an extensions `sdkRange` and are skipped). Mirror of
 /// [`discover_arete_sdk_crate_version`].
-fn discover_arete_sdk_python_version(start_dir: &Path) -> Option<String> {
+fn discover_arete_sdk_python_version(
+    start_dir: &Path,
+    pending: Option<runtime::PendingManifest<'_>>,
+) -> Option<String> {
     let version_regex = Regex::new(r#"["']arete-sdk\s*==\s*([0-9]+\.[0-9]+\.[0-9]+)["']"#)
         .expect("arete python sdk version regex should compile");
 
     for ancestor in start_dir.ancestors() {
-        let manifest_path = ancestor.join("pyproject.toml");
-        let Ok(manifest) = fs::read_to_string(&manifest_path) else {
+        let Some(manifest) = runtime::read_manifest(&ancestor.join("pyproject.toml"), pending)
+        else {
             continue;
         };
         for captures in version_regex.captures_iter(&manifest) {
@@ -3461,18 +3504,17 @@ fn write_language_sdk_provenance_manifest(
     write_sdk_provenance_manifest_file(output_dir, &manifest)
 }
 
-/// [`write_language_sdk_provenance_manifest`] for a Rust or Python stack
-/// that embeds program package extensions: each program's staged files and
-/// its extension identity are recorded like a TypeScript stack's program
-/// SDK modules.
-fn write_language_sdk_provenance_manifest_with_programs(
-    output_dir: &Path,
+/// The provenance of a Rust or Python stack SDK, built before it is written:
+/// [`build_sdk_provenance_manifest_from_artifacts`], plus each embedded
+/// program package extension's staged files and identity, recorded like a
+/// TypeScript stack's program SDK modules.
+fn build_language_sdk_provenance_manifest(
     generated: BTreeSet<String>,
     extension_file_prefix: &str,
     input_pin: &ResolvedExtensionsInputPin,
     extensions: Option<&ResolvedExtensionsArtifact>,
     programs: &[StagedProgramExtension<'_>],
-) -> Result<()> {
+) -> Result<SdkProvenanceManifestV2> {
     let mut manifest = build_sdk_provenance_manifest_from_artifacts(
         generated,
         extension_file_prefix,
@@ -3504,7 +3546,56 @@ fn write_language_sdk_provenance_manifest_with_programs(
     }
     manifest.artifacts.sort();
     manifest.artifacts.dedup();
-    write_sdk_provenance_manifest_file(output_dir, &manifest)
+    Ok(manifest)
+}
+
+/// Write a Rust or Python SDK whose every check has passed: `write` writes
+/// the generated sources, each bundle is staged into its directory, and the
+/// provenance is recorded. Every payload path is checked first, so a path
+/// through a symlink in the output is refused before anything is written,
+/// not when the provenance hashes the written files; what is left to fail is
+/// I/O.
+fn write_checked_language_sdk(
+    output_dir: &Path,
+    provenance: &SdkProvenanceManifestV2,
+    bundles: &[(&ResolvedExtensionsArtifact, PathBuf)],
+    write: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    check_sdk_payload_paths(output_dir, &provenance.artifacts)?;
+    write()?;
+    for (artifact, directory) in bundles {
+        write_extensions_artifact_files(artifact, directory, "extensions.json")?;
+    }
+    write_sdk_provenance_manifest_file(output_dir, provenance)
+}
+
+/// The checks [`sdk_payload_identity`] runs on the payload paths of an SDK
+/// output, before the output is written: every path is a valid relative
+/// artifact path, none is SDK metadata, and none runs through a symlink
+/// already in `output_dir`.
+fn check_sdk_payload_paths(output_dir: &Path, artifacts: &[String]) -> Result<()> {
+    for name in artifacts {
+        arete_hash::validate_artifact_path(name)?;
+        if matches!(name.as_str(), SDK_PROVENANCE_FILE | SDK_MANIFEST_FILE) {
+            anyhow::bail!("Reserved SDK metadata path in generated payload: {name}");
+        }
+        let mut path = output_dir.to_path_buf();
+        for component in Path::new(name).components() {
+            path.push(component);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    anyhow::bail!("Symlinks are not allowed in SDK payload: {name}")
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("Failed to inspect {}", path.display()))
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A Python bundle's entry must export the mapping its generated package
@@ -4469,30 +4560,22 @@ fn stage_extensions_artifact_with_manifest(
         ));
     }
 
-    check_extension_runtime(
-        artifact,
-        ExtensionRuntime::TypeScript,
-        || runtime::installed_typescript_sdk(output_dir),
-        || discover_usearete_sdk_version(output_dir),
-    )?;
+    check_staged_extension_runtime(artifact, ExtensionRuntime::TypeScript, output_dir, None)?;
 
     write_extensions_artifact_files(artifact, output_dir, manifest_name)
 }
 
-/// Stage a Rust devex extensions bundle into the generated module directory.
-///
-/// Runs the same input-pin validation as the TypeScript pipeline, then
-/// requires a flat all-`.rs` file layout (module wiring emits one
-/// `pub mod <stem>;` per file, so nested paths cannot be wired). A declared
-/// `extensionApi` is checked against the `arete-a4-sdk` crate the package
-/// builds against (see [`check_extension_runtime`]). Without one, the
-/// `sdkRange` check is warning-only best-effort: it compares against the
-/// `arete-a4-sdk` dependency version when one is trivially discoverable from
-/// a `Cargo.toml` at or above the output directory, and skips silently
-/// otherwise.
-fn stage_rust_extensions_artifact(
+/// Check a Rust or Python extensions bundle before anything is generated:
+/// its input pin matches the generated input (the TypeScript pipeline's
+/// validation), a hosted bundle's files re-hash to the content hash the
+/// registry served, and every file is a flat module of the language (module
+/// wiring emits one `pub mod <stem>;` or `from . import <stem>` per file, so
+/// nested paths cannot be wired). With [`check_staged_extension_runtime`],
+/// this is every check staging a bundle needs, so SDK generation runs both on
+/// every bundle first and a refused bundle leaves the output untouched.
+fn verify_language_extensions_artifact(
     artifact: &ResolvedExtensionsArtifact,
-    output_dir: &Path,
+    target: ExtensionRuntime,
     input_pin: &ResolvedExtensionsInputPin,
 ) -> Result<()> {
     let input_pin_errors = validate_extensions_input_pin(artifact, input_pin);
@@ -4504,68 +4587,61 @@ fn stage_rust_extensions_artifact(
     }
 
     verify_hosted_extension_content(artifact)?;
+    let (language, suffix) = match target {
+        ExtensionRuntime::Rust => ("Rust", ".rs"),
+        ExtensionRuntime::Python => ("Python", ".py"),
+        ExtensionRuntime::TypeScript => return Ok(()),
+    };
     for file in &artifact.files {
         let normalized = normalize_extension_relative_path(&file.path)?;
-        if !normalized.ends_with(".rs") || normalized.contains('/') {
+        if !normalized.ends_with(suffix) || normalized.contains('/') {
             return Err(anyhow::anyhow!(
-                "Rust extensions bundles require flat .rs files; '{}' is not supported",
+                "{language} extensions bundles require flat {suffix} files; '{}' is not supported",
                 file.path
             ));
         }
     }
-
-    check_extension_runtime(
-        artifact,
-        ExtensionRuntime::Rust,
-        || runtime::installed_rust_sdk(output_dir),
-        || discover_arete_sdk_crate_version(output_dir),
-    )?;
-
-    write_extensions_artifact_files(artifact, output_dir, "extensions.json")
+    Ok(())
 }
 
-/// Stage a Python devex extensions bundle into the generated module
-/// directory.
-///
-/// Mirror of [`stage_rust_extensions_artifact`]: same input-pin validation,
-/// then a flat all-`.py` file layout requirement (module wiring emits one
-/// `from . import <stem>` per file, so nested paths cannot be wired). A
-/// declared `extensionApi` is checked against the `arete-sdk` installed in the
-/// project's virtual environment; without one, the `sdkRange` check is
-/// warning-only best-effort against an exact `arete-sdk` pin in a
-/// `pyproject.toml` at or above the output directory.
-fn stage_python_extensions_artifact(
+/// [`check_extension_runtime`] for a bundle to be staged into `module_dir`.
+/// Rust and Python generation runs it before the SDK is written, with
+/// `pending` the root manifest the generation writes (`Cargo.toml` of a
+/// crate, `pyproject.toml` of a package) read in place of the one on disk, so
+/// the check sees the SDK as it will be written. A declared `extensionApi` is
+/// checked against the runtime the module resolves: `@usearete/sdk`, the
+/// `arete-a4-sdk` crate the package builds against, or the `arete-sdk`
+/// installed in the project's virtual environment. Without one, the
+/// `sdkRange` check only warns, against the SDK version discoverable at or
+/// above the module (for Rust and Python, an exact `arete-a4-sdk` version in
+/// a `Cargo.toml` or `arete-sdk` pin in a `pyproject.toml`), and is skipped
+/// when there is none.
+fn check_staged_extension_runtime(
     artifact: &ResolvedExtensionsArtifact,
-    output_dir: &Path,
-    input_pin: &ResolvedExtensionsInputPin,
+    target: ExtensionRuntime,
+    module_dir: &Path,
+    pending: Option<runtime::PendingManifest<'_>>,
 ) -> Result<()> {
-    let input_pin_errors = validate_extensions_input_pin(artifact, input_pin);
-    if !input_pin_errors.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Extensions artifact is incompatible with generated input: {}",
-            input_pin_errors.join("; ")
-        ));
+    match target {
+        ExtensionRuntime::Rust => check_extension_runtime(
+            artifact,
+            target,
+            || runtime::installed_rust_sdk(module_dir, pending),
+            || discover_arete_sdk_crate_version(module_dir, pending),
+        ),
+        ExtensionRuntime::Python => check_extension_runtime(
+            artifact,
+            target,
+            || runtime::installed_python_sdk(module_dir),
+            || discover_arete_sdk_python_version(module_dir, pending),
+        ),
+        ExtensionRuntime::TypeScript => check_extension_runtime(
+            artifact,
+            target,
+            || runtime::installed_typescript_sdk(module_dir),
+            || discover_usearete_sdk_version(module_dir),
+        ),
     }
-
-    verify_hosted_extension_content(artifact)?;
-    for file in &artifact.files {
-        let normalized = normalize_extension_relative_path(&file.path)?;
-        if !normalized.ends_with(".py") || normalized.contains('/') {
-            return Err(anyhow::anyhow!(
-                "Python extensions bundles require flat .py files; '{}' is not supported",
-                file.path
-            ));
-        }
-    }
-
-    check_extension_runtime(
-        artifact,
-        ExtensionRuntime::Python,
-        || runtime::installed_python_sdk(output_dir),
-        || discover_arete_sdk_python_version(output_dir),
-    )?;
-
-    write_extensions_artifact_files(artifact, output_dir, "extensions.json")
 }
 
 /// The SDK runtime an extensions bundle runs on.
@@ -6229,6 +6305,7 @@ fn generate_rust_stack_sdk(
     )?;
     let (extension_modules, extension_entry) = match artifact.as_ref() {
         Some(artifact) => {
+            verify_language_extensions_artifact(artifact, ExtensionRuntime::Rust, &input_pin)?;
             let (modules, entry) = rust_extension_wiring(artifact)?;
             (modules, Some(entry))
         }
@@ -6242,6 +6319,12 @@ fn generate_rust_stack_sdk(
     let program_extension_configs = program_extensions
         .iter()
         .map(|extension| {
+            verify_language_extensions_artifact(
+                &extension.artifact,
+                ExtensionRuntime::Rust,
+                &extension.input_pin,
+            )
+            .with_context(|| program_extension_refused("Rust", extension))?;
             let (modules, entry) = rust_extension_wiring(&extension.artifact)?;
             Ok(arete_interpreter::rust::RustProgramExtensionConfig {
                 program_id: extension.program_id.clone(),
@@ -6285,8 +6368,6 @@ fn generate_rust_stack_sdk(
 
     let mut generated = BTreeSet::new();
     if as_module {
-        arete_interpreter::rust::write_rust_module(&output, output_dir)
-            .with_context(|| format!("Failed to write Rust module to {}", output_dir.display()))?;
         generated.extend([
             "mod.rs".to_string(),
             "types.rs".to_string(),
@@ -6296,8 +6377,6 @@ fn generate_rust_stack_sdk(
             generated.insert("programs.rs".to_string());
         }
     } else {
-        arete_interpreter::rust::write_rust_crate(&output, output_dir)
-            .with_context(|| format!("Failed to write Rust crate to {}", output_dir.display()))?;
         generated.extend([
             "Cargo.toml".to_string(),
             "src/lib.rs".to_string(),
@@ -6309,48 +6388,65 @@ fn generate_rust_stack_sdk(
         }
     }
 
-    if let Some(ref artifact) = artifact {
-        stage_rust_extensions_artifact(artifact, &module_dir, &input_pin)?;
-    }
     let extension_file_prefix = if as_module { "" } else { "src/" };
-    let mut staged_programs = Vec::with_capacity(program_extensions.len());
-    for extension in &program_extensions {
-        let module = output
-            .program_modules
-            .iter()
-            .find(|module| module.program_id == extension.program_id)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Generated Rust stack has no module for program '{}'",
-                    extension.install_name
-                )
-            })?;
-        let relative_dir = format!("programs/{}", module.module_name);
-        stage_rust_extensions_artifact(
-            &extension.artifact,
-            &module_dir.join(&relative_dir),
-            &extension.input_pin,
-        )
-        .with_context(|| {
-            format!(
-                "Failed to stage the Rust SDK extension of program '{}'",
-                extension.install_name
-            )
-        })?;
-        staged_programs.push(StagedProgramExtension {
-            program_key: module.module_name.clone(),
-            relative_dir: format!("{extension_file_prefix}{relative_dir}"),
-            extension,
-        });
+    let staged_programs = program_extensions
+        .iter()
+        .map(|extension| {
+            let module = output
+                .program_modules
+                .iter()
+                .find(|module| module.program_id == extension.program_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Generated Rust stack has no module for program '{}'",
+                        extension.install_name
+                    )
+                })?;
+            let relative_dir = format!("programs/{}", module.module_name);
+            Ok(StagedProgramExtension {
+                program_key: module.module_name.clone(),
+                directory: module_dir.join(&relative_dir),
+                relative_dir: format!("{extension_file_prefix}{relative_dir}"),
+                extension,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let cargo_manifest = output_dir.join("Cargo.toml");
+    let pending = (!as_module).then_some(runtime::PendingManifest {
+        path: &cargo_manifest,
+        contents: &output.cargo_toml,
+    });
+    let mut bundles = Vec::with_capacity(staged_programs.len() + 1);
+    if let Some(ref artifact) = artifact {
+        check_staged_extension_runtime(artifact, ExtensionRuntime::Rust, &module_dir, pending)?;
+        bundles.push((artifact, module_dir.clone()));
     }
-    write_language_sdk_provenance_manifest_with_programs(
-        output_dir,
+    for staged in &staged_programs {
+        check_staged_extension_runtime(
+            &staged.extension.artifact,
+            ExtensionRuntime::Rust,
+            &staged.directory,
+            pending,
+        )
+        .with_context(|| program_extension_refused("Rust", staged.extension))?;
+        bundles.push((&staged.extension.artifact, staged.directory.clone()));
+    }
+    let provenance = build_language_sdk_provenance_manifest(
         generated,
         extension_file_prefix,
         &input_pin,
         artifact.as_ref(),
         &staged_programs,
     )?;
+    write_checked_language_sdk(output_dir, &provenance, &bundles, || {
+        if as_module {
+            arete_interpreter::rust::write_rust_module(&output, output_dir)
+                .with_context(|| format!("Failed to write Rust module to {}", output_dir.display()))
+        } else {
+            arete_interpreter::rust::write_rust_crate(&output, output_dir)
+                .with_context(|| format!("Failed to write Rust crate to {}", output_dir.display()))
+        }
+    })?;
 
     for staged in &staged_programs {
         println!(
@@ -6588,6 +6684,7 @@ fn generate_python_stack_sdk(
     )?;
     let (extension_modules, extension_entry) = match artifact.as_ref() {
         Some(artifact) => {
+            verify_language_extensions_artifact(artifact, ExtensionRuntime::Python, &input_pin)?;
             ensure_python_entry_export(artifact, "STACK_EXTENSIONS")?;
             let (modules, entry) = python_extension_wiring(artifact)?;
             (modules, Some(entry))
@@ -6602,7 +6699,13 @@ fn generate_python_stack_sdk(
     let program_extension_configs = program_extensions
         .iter()
         .map(|extension| {
-            ensure_python_entry_export(&extension.artifact, "PROGRAM_EXTENSIONS")?;
+            verify_language_extensions_artifact(
+                &extension.artifact,
+                ExtensionRuntime::Python,
+                &extension.input_pin,
+            )
+            .and_then(|()| ensure_python_entry_export(&extension.artifact, "PROGRAM_EXTENSIONS"))
+            .with_context(|| program_extension_refused("Python", extension))?;
             let (modules, entry) = python_extension_wiring(&extension.artifact)?;
             Ok(arete_interpreter::python::PythonProgramExtensionConfig {
                 program_id: extension.program_id.clone(),
@@ -6646,14 +6749,8 @@ fn generate_python_stack_sdk(
 
     let mut generated = BTreeSet::new();
     if as_module {
-        arete_interpreter::python::write_python_module(&output, output_dir).with_context(|| {
-            format!("Failed to write Python module to {}", output_dir.display())
-        })?;
         generated.extend(output.module_files());
     } else {
-        arete_interpreter::python::write_python_package(&output, output_dir).with_context(
-            || format!("Failed to write Python package to {}", output_dir.display()),
-        )?;
         generated.insert("pyproject.toml".to_string());
         generated.extend(
             output
@@ -6663,56 +6760,75 @@ fn generate_python_stack_sdk(
         );
     }
 
-    if let Some(ref artifact) = artifact {
-        stage_python_extensions_artifact(artifact, &module_dir, &input_pin)?;
-    }
     let extension_file_prefix = if as_module {
         String::new()
     } else {
         format!("{}/", output.module_name)
     };
-    let mut staged_programs = Vec::with_capacity(program_extensions.len());
-    for extension in &program_extensions {
-        let package = output
-            .program_packages
-            .iter()
-            .find(|package| package.program_id == extension.program_id)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Generated Python stack has no program package for program '{}'",
-                    extension.install_name
-                )
-            })?;
-        let relative_dir = format!(
-            "{}/{}",
-            arete_interpreter::python::PROGRAM_SDKS_PACKAGE,
-            package.module_name
-        );
-        stage_python_extensions_artifact(
-            &extension.artifact,
-            &module_dir.join(&relative_dir),
-            &extension.input_pin,
-        )
-        .with_context(|| {
-            format!(
-                "Failed to stage the Python SDK extension of program '{}'",
-                extension.install_name
-            )
-        })?;
-        staged_programs.push(StagedProgramExtension {
-            program_key: package.module_name.clone(),
-            relative_dir: format!("{extension_file_prefix}{relative_dir}"),
-            extension,
-        });
+    let staged_programs = program_extensions
+        .iter()
+        .map(|extension| {
+            let package = output
+                .program_packages
+                .iter()
+                .find(|package| package.program_id == extension.program_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Generated Python stack has no program package for program '{}'",
+                        extension.install_name
+                    )
+                })?;
+            let relative_dir = format!(
+                "{}/{}",
+                arete_interpreter::python::PROGRAM_SDKS_PACKAGE,
+                package.module_name
+            );
+            Ok(StagedProgramExtension {
+                program_key: package.module_name.clone(),
+                directory: module_dir.join(&relative_dir),
+                relative_dir: format!("{extension_file_prefix}{relative_dir}"),
+                extension,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let pyproject = output_dir.join("pyproject.toml");
+    let pending = (!as_module).then_some(runtime::PendingManifest {
+        path: &pyproject,
+        contents: &output.pyproject_toml,
+    });
+    let mut bundles = Vec::with_capacity(staged_programs.len() + 1);
+    if let Some(ref artifact) = artifact {
+        check_staged_extension_runtime(artifact, ExtensionRuntime::Python, &module_dir, pending)?;
+        bundles.push((artifact, module_dir.clone()));
     }
-    write_language_sdk_provenance_manifest_with_programs(
-        output_dir,
+    for staged in &staged_programs {
+        check_staged_extension_runtime(
+            &staged.extension.artifact,
+            ExtensionRuntime::Python,
+            &staged.directory,
+            pending,
+        )
+        .with_context(|| program_extension_refused("Python", staged.extension))?;
+        bundles.push((&staged.extension.artifact, staged.directory.clone()));
+    }
+    let provenance = build_language_sdk_provenance_manifest(
         generated,
         &extension_file_prefix,
         &input_pin,
         artifact.as_ref(),
         &staged_programs,
     )?;
+    write_checked_language_sdk(output_dir, &provenance, &bundles, || {
+        if as_module {
+            arete_interpreter::python::write_python_module(&output, output_dir).with_context(|| {
+                format!("Failed to write Python module to {}", output_dir.display())
+            })
+        } else {
+            arete_interpreter::python::write_python_package(&output, output_dir).with_context(
+                || format!("Failed to write Python package to {}", output_dir.display()),
+            )
+        }
+    })?;
     for staged in &staged_programs {
         println!(
             "  Program extension: {} ({} file(s), entry {})",
@@ -8597,12 +8713,13 @@ mod tests {
         };
         let mut artifact = rust_test_artifact("hash-1");
         artifact.extension_api = std::num::NonZeroU32::new(1);
-        stage_rust_extensions_artifact(&artifact, &output_dir, &input_pin)
+        stage_language_bundle(&artifact, &output_dir, &input_pin, ExtensionRuntime::Rust)
             .expect("matching Rust extension API");
         artifact.extension_api = std::num::NonZeroU32::new(2);
-        let message = stage_rust_extensions_artifact(&artifact, &output_dir, &input_pin)
-            .expect_err("mismatched Rust extension API")
-            .to_string();
+        let message =
+            stage_language_bundle(&artifact, &output_dir, &input_pin, ExtensionRuntime::Rust)
+                .expect_err("mismatched Rust extension API")
+                .to_string();
         assert!(
             message.contains("the installed arete-a4-sdk 0.23.0 provides extension API 1"),
             "{message}"
@@ -8687,6 +8804,19 @@ mod tests {
             "live=./second.js".to_string(),
         ])
         .is_err());
+    }
+
+    /// Stage a Rust or Python bundle as SDK generation does: every check
+    /// first, then the files.
+    fn stage_language_bundle(
+        artifact: &ResolvedExtensionsArtifact,
+        output_dir: &Path,
+        input_pin: &ResolvedExtensionsInputPin,
+        target: ExtensionRuntime,
+    ) -> Result<()> {
+        verify_language_extensions_artifact(artifact, target, input_pin)?;
+        check_staged_extension_runtime(artifact, target, output_dir, None)?;
+        write_extensions_artifact_files(artifact, output_dir, "extensions.json")
     }
 
     fn rust_test_artifact(hash: &str) -> ResolvedExtensionsArtifact {
@@ -9213,7 +9343,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_rust_extensions_artifact_writes_bundle_and_rejects_pin_mismatch() {
+    fn staging_a_rust_bundle_writes_it_and_rejects_pin_mismatch() {
         let output_dir =
             std::env::temp_dir().join(format!("a4-rust-ext-stage-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output_dir);
@@ -9225,7 +9355,7 @@ mod tests {
             hash: hash.clone(),
         };
 
-        stage_rust_extensions_artifact(&artifact, &output_dir, &input_pin)
+        stage_language_bundle(&artifact, &output_dir, &input_pin, ExtensionRuntime::Rust)
             .expect("matching pin should stage");
         let manifest_json =
             fs::read_to_string(output_dir.join("extensions.json")).expect("staged manifest");
@@ -9237,13 +9367,21 @@ mod tests {
             kind: ExtensionsInputKind::StackManifest,
             hash: format!("arete:h1:stack-manifest:sha256:{}", "55".repeat(32)),
         };
-        let error = stage_rust_extensions_artifact(&artifact, &output_dir, &mismatched_pin)
-            .expect_err("pin mismatch must be a hard error");
+        let error = stage_language_bundle(
+            &artifact,
+            &output_dir,
+            &mismatched_pin,
+            ExtensionRuntime::Rust,
+        )
+        .expect_err("pin mismatch must be a hard error");
         assert!(error.to_string().contains("extensions input hash mismatch"));
 
         let mut non_rs = artifact.clone();
         non_rs.files[0].path = "devex.ts".to_string();
-        assert!(stage_rust_extensions_artifact(&non_rs, &output_dir, &input_pin).is_err());
+        assert!(
+            stage_language_bundle(&non_rs, &output_dir, &input_pin, ExtensionRuntime::Rust)
+                .is_err()
+        );
 
         let _ = fs::remove_dir_all(&output_dir);
     }
@@ -9302,7 +9440,7 @@ mod tests {
             "[dependencies]\narete-sdk = { package = \"arete-a4-sdk\", version = \"0\" }\n",
         )
         .unwrap();
-        assert_eq!(discover_arete_sdk_crate_version(&nested), None);
+        assert_eq!(discover_arete_sdk_crate_version(&nested, None), None);
 
         fs::write(
             root.join("Cargo.toml"),
@@ -9310,7 +9448,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            discover_arete_sdk_crate_version(&nested).as_deref(),
+            discover_arete_sdk_crate_version(&nested, None).as_deref(),
             Some("0.4.1")
         );
         let _ = fs::remove_dir_all(&root);
@@ -9707,7 +9845,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_python_extensions_artifact_writes_bundle_and_rejects_pin_mismatch() {
+    fn staging_a_python_bundle_writes_it_and_rejects_pin_mismatch() {
         let output_dir =
             std::env::temp_dir().join(format!("a4-python-ext-stage-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output_dir);
@@ -9719,7 +9857,7 @@ mod tests {
             hash: hash.clone(),
         };
 
-        stage_python_extensions_artifact(&artifact, &output_dir, &input_pin)
+        stage_language_bundle(&artifact, &output_dir, &input_pin, ExtensionRuntime::Python)
             .expect("matching pin should stage");
         let manifest_json =
             fs::read_to_string(output_dir.join("extensions.json")).expect("staged manifest");
@@ -9731,13 +9869,21 @@ mod tests {
             kind: ExtensionsInputKind::StackManifest,
             hash: format!("arete:h1:stack-manifest:sha256:{}", "55".repeat(32)),
         };
-        let error = stage_python_extensions_artifact(&artifact, &output_dir, &mismatched_pin)
-            .expect_err("pin mismatch must be a hard error");
+        let error = stage_language_bundle(
+            &artifact,
+            &output_dir,
+            &mismatched_pin,
+            ExtensionRuntime::Python,
+        )
+        .expect_err("pin mismatch must be a hard error");
         assert!(error.to_string().contains("extensions input hash mismatch"));
 
         let mut non_py = artifact.clone();
         non_py.files[0].path = "devex.rs".to_string();
-        assert!(stage_python_extensions_artifact(&non_py, &output_dir, &input_pin).is_err());
+        assert!(
+            stage_language_bundle(&non_py, &output_dir, &input_pin, ExtensionRuntime::Python)
+                .is_err()
+        );
 
         let _ = fs::remove_dir_all(&output_dir);
     }
@@ -9913,7 +10059,7 @@ mod tests {
             "[project]\ndependencies = [\"arete-sdk>=0.4\"]\n",
         )
         .unwrap();
-        assert_eq!(discover_arete_sdk_python_version(&nested), None);
+        assert_eq!(discover_arete_sdk_python_version(&nested, None), None);
 
         fs::write(
             root.join("pyproject.toml"),
@@ -9921,7 +10067,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            discover_arete_sdk_python_version(&nested).as_deref(),
+            discover_arete_sdk_python_version(&nested, None).as_deref(),
             Some("0.4.1")
         );
         let _ = fs::remove_dir_all(&root);
