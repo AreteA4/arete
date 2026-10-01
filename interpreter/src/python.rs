@@ -28,8 +28,8 @@ use crate::stack_types::{
     ProgramTypeDefs, StackResolvedTypes,
 };
 use crate::typescript_instructions::{
-    dedupe_errors_by_code, disambiguate_instruction_account_names, normalize_seed_arg_type,
-    split_generic,
+    dedupe_errors_by_code, disambiguate_instruction_account_names, error_metadata_msg,
+    normalize_seed_arg_type, split_generic,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -3853,7 +3853,7 @@ fn generate_stack_programs_py(
                             "            ErrorMetadata(code={}, name={}, msg={}),",
                             error.code,
                             py_string_literal(&error.name),
-                            py_string_literal(error.msg.as_deref().unwrap_or(""))
+                            py_string_literal(&error_metadata_msg(error))
                         ))
                         .collect::<Vec<_>>()
                         .join("\n")
@@ -3990,7 +3990,7 @@ fn generate_stack_programs_py(
                         "    ErrorMetadata(code={}, name={}, msg={}),",
                         error.code,
                         py_string_literal(&error.name),
-                        py_string_literal(error.msg.as_deref().unwrap_or(""))
+                        py_string_literal(&error_metadata_msg(error))
                     ))
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -5307,6 +5307,69 @@ mod tests {
             .contains("program_reads=programs.PROGRAM_READS,"));
         assert!(output.init_py.contains("DEMO_STACK: StackDef = StackDef("));
         assert!(output.init_py.contains("name=\"demo\","));
+    }
+
+    /// The `msg` text the TypeScript generator emits for error `code` in
+    /// `spec`'s program error metadata (the reference SDK).
+    fn typescript_error_msg(spec: &SerializableStackSpec, code: u32) -> String {
+        let typescript = crate::typescript_instructions::generate_instructions_code(
+            &spec.stack_name,
+            &spec.instructions,
+            &spec.idls,
+            &spec.pdas,
+            &spec.program_ids,
+            &HashSet::new(),
+        );
+        let marker = format!("{{ code: {code}, name: '");
+        let line = typescript
+            .code
+            .lines()
+            .find(|line| line.contains(&marker))
+            .unwrap_or_else(|| panic!("TypeScript emits error {code}:\n{}", typescript.code));
+        let start = line.find("msg: '").expect("TypeScript error has a msg") + "msg: '".len();
+        let end = line.rfind("' }").expect("TypeScript error msg is closed");
+        line[start..end].to_string()
+    }
+
+    #[test]
+    fn python_error_metadata_carries_typescripts_single_line_messages() {
+        // An IDL message wrapped across source lines, as token-2022's error 39
+        // (`MaximumPendingBalanceCreditCounterExceeded`) is.
+        let wrapped = IdlErrorSnapshot {
+            code: 6001,
+            name: "CounterExceeded".to_string(),
+            msg: Some("Deposits cannot exceed\n            the counter\r\nset at init".to_string()),
+        };
+        let mut spec = programs_stack_spec();
+        spec.idls[0].errors.push(wrapped.clone());
+        let typescript_msg = typescript_error_msg(&spec, 6001);
+        assert_eq!(
+            typescript_msg,
+            "Deposits cannot exceed             the counter  set at init"
+        );
+        let expected = format!(
+            "ErrorMetadata(code=6001, name=\"CounterExceeded\", msg=\"{typescript_msg}\"),"
+        );
+
+        // Program-wide metadata, which instructions without their own errors share.
+        let programs = compile_stack_spec(spec.clone(), None)
+            .expect("python stack generation should succeed")
+            .programs_py
+            .expect("programs.py is generated");
+        assert_eq!(programs.matches(&expected).count(), 1, "{programs}");
+
+        // Instruction-scoped metadata.
+        spec.instructions[0].errors = vec![wrapped];
+        let programs = compile_stack_spec(spec, None)
+            .expect("python stack generation should succeed")
+            .programs_py
+            .expect("programs.py is generated");
+        assert_eq!(programs.matches(&expected).count(), 2, "{programs}");
+        assert!(!programs.contains("exceed\\n"), "{programs}");
+
+        // The normalization is the metadata's own: other strings keep their
+        // escapes.
+        assert_eq!(py_string_literal("a\nb"), "\"a\\nb\"");
     }
 
     #[test]
