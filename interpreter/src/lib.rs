@@ -40,6 +40,7 @@ pub mod resolvers;
 pub mod runtime_resolvers;
 pub mod runtime_resolvers_factory;
 pub mod rust;
+mod rust_doc;
 pub mod scheduler;
 pub mod slot_hash_cache;
 pub mod snapshot;

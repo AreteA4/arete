@@ -3,6 +3,7 @@ use crate::identifiers::{rust as rust_ident, IdentifierCase, IdentifierScope};
 use crate::idl_models::{
     bind_idl_models, DeclaredModel, IdlModel, IdlModelKind, ModelField, ModelLanguage, WireType,
 };
+use crate::rust_doc;
 use crate::stack_types::{
     account_reader_programs, entity_program_name, resolved_type_namespaces, AccountModels,
     ProgramTypeDefs, StackResolvedTypes,
@@ -2611,6 +2612,43 @@ mod tests {
         // The normalization is the metadata's own: other strings keep their
         // escapes.
         assert_eq!(rust_string_literal("a\nb"), "\"a\\nb\"");
+    }
+
+    #[test]
+    fn rust_instruction_docs_render_markdown_clippy_accepts() {
+        // pancakeswap amm_v3 `create_pool`: a list item running on into an
+        // unindented line (`clippy::doc_lazy_continuation`), here also split
+        // inside one docs entry.
+        let mut spec = programs_stack_spec();
+        spec.instructions[0].docs = vec![
+            "Does the thing.".to_string(),
+            "".to_string(),
+            "* `ctx` - the accounts".to_string(),
+            "Note: runs on\n            across lines".to_string(),
+            "".to_string(),
+        ];
+        let programs = compile_stack_spec(spec.clone(), None)
+            .expect("rust stack generation should succeed")
+            .programs_rs
+            .expect("programs.rs is generated");
+        assert!(
+            programs.contains(
+                "    /// Does the thing.\n    ///\n    /// * `ctx` - the accounts\n    ///   Note: runs on\n    ///   across lines\n    pub fn do_thing("
+            ),
+            "{programs}"
+        );
+
+        // Blank docs take the generated summary rather than an empty doc
+        // comment (`clippy::empty_docs`).
+        spec.instructions[0].docs = vec!["".to_string(), "  ".to_string()];
+        let programs = compile_stack_spec(spec, None)
+            .expect("rust stack generation should succeed")
+            .programs_rs
+            .expect("programs.rs is generated");
+        assert!(
+            programs.contains("    /// Builds the `doThing` instruction.\n    pub fn do_thing("),
+            "{programs}"
+        );
     }
 
     #[test]
@@ -5978,11 +6016,7 @@ fn generate_rust_instruction_block(
     };
 
     // --- Typed builder fn. ---
-    let mut doc_lines: Vec<String> = instr
-        .docs
-        .iter()
-        .map(|line| line.trim().to_string())
-        .collect();
+    let mut doc_lines = rust_doc::normalize_doc_lines(&instr.docs);
     if doc_lines.is_empty() {
         doc_lines.push(format!("Builds the `{}` instruction.", instr.name));
     }
@@ -5993,17 +6027,7 @@ fn generate_rust_instruction_block(
             doc_lines.push(format!("- {}", note));
         }
     }
-    let docs = doc_lines
-        .iter()
-        .map(|line| {
-            if line.is_empty() {
-                "    ///".to_string()
-            } else {
-                format!("    /// {}", line)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let docs = rust_doc::render_doc_comment(&doc_lines, "    ");
 
     let typed_fn = format!(
         "{docs}\n    pub fn {fn_name}(params: {params_name}) -> Result<BuiltInstruction, InstructionError> {{\n        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {{\n            context: \"params\".to_string(),\n            message: error.to_string(),\n        }})?;\n        {handler_name}().build(params)\n    }}",
@@ -6550,28 +6574,27 @@ fn generate_stack_programs_rs(
             sections.push(wiring);
         }
 
-        let mut doc = format!(
-            "/// Program SDK for `{}` (program ID `{}`).\n",
+        let mut doc_lines = vec![format!(
+            "Program SDK for `{}` (program ID `{}`).",
             raw_name, program_id
-        );
+        )];
         if let Err(reason) = &read_layer {
-            doc.push_str(&format!(
-                "///\n/// Program read layer omitted: {}.\n",
-                reason
-            ));
+            doc_lines.push(String::new());
+            doc_lines.push(format!("Program read layer omitted: {}.", reason));
         }
         if !reader_notes.is_empty() {
-            doc.push_str("///\n");
-            for note in &reader_notes {
-                doc.push_str(&format!("/// {}\n", note));
-            }
+            doc_lines.push(String::new());
+            doc_lines.extend(reader_notes.iter().cloned());
         }
         if !skipped.is_empty() {
-            doc.push_str("///\n/// Skipped instructions (unsupported by instruction codegen):\n");
+            doc_lines.push(String::new());
+            doc_lines
+                .push("Skipped instructions (unsupported by instruction codegen):".to_string());
             for (name, reason) in &skipped {
-                doc.push_str(&format!("/// - `{}`: {}\n", name, reason));
+                doc_lines.push(format!("- `{}`: {}", name, reason));
             }
         }
+        let doc = format!("{}\n", rust_doc::render_doc_comment(&doc_lines, ""));
         module_blocks.push(format!(
             "{doc}pub mod {module_name} {{\n{body}\n}}",
             doc = doc,
