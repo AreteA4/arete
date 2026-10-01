@@ -2,7 +2,7 @@ mod support;
 use support::{arete_dir, cargo_toml, escape_path, macro_manifest_dir, TempCrate};
 
 #[test]
-fn managed_liquidity_decodes_dynamic_tick_payload_and_rejects_extended_layout() {
+fn managed_solana_decodes_dynamic_tick_payload_and_rejects_extended_layout() {
     let root = macro_manifest_dir()
         .parent()
         .unwrap()
@@ -58,7 +58,7 @@ fn main() {{
         "solana-pubkey = { version = \"2.3\", features = [\"serde\", \"borsh\"] }".into(),
     ];
     let temp = TempCrate::new(
-        "managed-liquidity",
+        "managed-solana",
         "managed-decode",
         cargo_toml("managed-decode", &dependencies),
         &source,

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::{fs, path::PathBuf, process::Command};
 
 #[test]
-fn managed_liquidity_generated_program_models_compile_and_preserve_payloads() {
+fn managed_solana_generated_program_models_compile_and_preserve_payloads() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -21,7 +21,7 @@ fn managed_liquidity_generated_program_models_compile_and_preserve_payloads() {
     let parsed = arete_idl::parse::parse_idl_content(&idl.to_string()).unwrap();
     let spec = arete_interpreter::program_sdk::build_program_only_stack_spec_from_idl(
         &parsed,
-        "ManagedLiquidity",
+        "ManagedSolana",
     );
     let config = rust::RustStackConfig::default();
     let output = rust::compile_program_modules(spec.clone(), Some(config.clone())).unwrap();
@@ -34,7 +34,7 @@ fn managed_liquidity_generated_program_models_compile_and_preserve_payloads() {
     let mut stack_spec = spec.clone();
     stack_spec.entities.push(SerializableStreamSpec {
         ast_version: arete_interpreter::ast::CURRENT_AST_VERSION.to_string(),
-        state_name: "ManagedPosition".into(),
+        state_name: "ManagedAccount".into(),
         program_id: None,
         idl: None,
         identity: IdentitySpec {
@@ -59,12 +59,9 @@ fn managed_liquidity_generated_program_models_compile_and_preserve_payloads() {
     });
     let mut legacy_entity = stack_spec.entities[0].clone();
     legacy_entity.idl = Some(spec.idls[0].clone());
-    let legacy_ts = typescript::compile_serializable_spec(
-        legacy_entity.clone(),
-        "ManagedPosition".into(),
-        None,
-    )
-    .unwrap();
+    let legacy_ts =
+        typescript::compile_serializable_spec(legacy_entity.clone(), "ManagedAccount".into(), None)
+            .unwrap();
     let mut legacy_stack_spec = stack_spec.clone();
     let mut other_entity = legacy_entity.clone();
     other_entity.state_name = "OtherPosition".into();
@@ -85,7 +82,7 @@ fn managed_liquidity_generated_program_models_compile_and_preserve_payloads() {
         .contains("AccountReader<super::super::types::SecondPosition>"));
     let stack = rust::compile_stack_spec(stack_spec, Some(config)).unwrap();
     assert!(stack.types_rs.contains("pub struct TickFixture"));
-    assert!(stack.entity_rs.contains("ManagedPositionEntityViews"));
+    assert!(stack.entity_rs.contains("ManagedAccountEntityViews"));
     let ts = typescript::compile_stack_spec(spec, None).unwrap();
     let full_ts = ts.full_file();
     assert!(full_ts.contains("Initialized"));
@@ -95,7 +92,7 @@ fn managed_liquidity_generated_program_models_compile_and_preserve_payloads() {
         "enum payload dependencies must not initialize before their schemas"
     );
 
-    let dir = root.join("target/managed-liquidity-generated");
+    let dir = root.join("target/managed-solana-generated");
     fs::create_dir_all(dir.join("src")).unwrap();
     fs::write(dir.join("generated.ts"), full_ts).unwrap();
     fs::write(dir.join("legacy-stack.ts"), legacy_stack_ts.full_file()).unwrap();
@@ -115,7 +112,7 @@ fn managed_liquidity_generated_program_models_compile_and_preserve_payloads() {
         dir.join("Cargo.toml"),
         format!(
             r#"[package]
-name = "managed-liquidity-generated"
+name = "managed-solana-generated"
 version = "0.0.0"
 edition = "2021"
 [workspace]
@@ -172,9 +169,9 @@ async fn main() {{
             types::PayloadFixture::Large(amounts) => assert_eq!(amounts, vec![(1u64 << 53) + 1; 40]),
         }}
     }}
-    fn managed_subscription_surface(client: &arete_sdk::Arete<entity::ManagedLiquidityStack>) {{
-        let _updates = client.views.managed_position.list().watch().filter("owner", "fixture");
-        let _state_updates = client.views.managed_position.state().watch("fixture");
+    fn managed_subscription_surface(client: &arete_sdk::Arete<entity::ManagedSolanaStack>) {{
+        let _updates = client.views.managed_account.list().watch().filter("owner", "fixture");
+        let _state_updates = client.views.managed_account.state().watch("fixture");
     }}
     fn native_query_surface(reader: arete_sdk::AccountReader<types::TickFixture>) {{
         let query = arete_sdk::managed_solana::NativePositionQuery::default();
@@ -214,7 +211,7 @@ async fn main() {{
         assert!(request.contains("\"minContextSlot\":\"40\""));
         write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {{}}\r\nConnection: close\r\n\r\n{{}}", response.len(), response).unwrap();
     }});
-    let client = arete_sdk::Arete::<entity::ManagedLiquidityStack>::builder()
+    let client = arete_sdk::Arete::<entity::ManagedSolanaStack>::builder()
         .transport(arete_sdk::Transport::Http).http_url(endpoint).connect().await.unwrap();
     managed_subscription_surface(&client);
     let reader = client.programs.tick_fixture.tick_fixture_accounts().unwrap();

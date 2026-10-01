@@ -1,8 +1,14 @@
 # Managed Solana capabilities v1
 
-This implements the OSS portion of the liquidity-management plan against the
-0.28.0 source baseline. Ship these changes in the next compatible linked
-SDK/server/compiler release; installed 0.28.0 packages do not contain these new
+These contracts give Gateway and SDK consumers paginated token-account discovery,
+account reads with their actual chain context, and complete available transaction
+execution data. Wallet services, portfolio tools, indexers and transaction
+workflows can use the same contracts across Rust, TypeScript and Python.
+Generated account models and decoders preserve enum payloads and exact integers
+so applications can read program state without losing layout or value information.
+
+The changes target the 0.28.0 source baseline. Ship them in the next compatible
+linked SDK/server/compiler release; installed 0.28.0 packages do not contain these new
 APIs. The contract identifier is `managed-solana/v1`, independently versioned
 from SDK package versions. The existing `program-read-http/v1` transport remains
 available; the new contextual/query operations are additive.
@@ -42,8 +48,9 @@ fail. Native queries require at least owner or pool and an exact release/type.
 Discovery records include provider source, actual RFC3339 `observedAt` and an
 optional real index watermark. An absent watermark is unknown. Discovery does
 not assert a chain commitment. Discover addresses, then use contextual verified
-reads to budget inventory. The existing `balance(owner, mint)` selects one
-matching token account; it does not aggregate a wallet's accounts.
+reads to verify account state at the required minimum slot. The existing
+`balance(owner, mint)` selects one matching token account; it does not aggregate
+a wallet's accounts.
 
 All u64 quantities use decimal strings on the wire. Rust exposes u64, TypeScript
 bigint and Python int. Transaction meta's fee, pre/post lamports and resource
@@ -109,7 +116,7 @@ unsupported until stack definitions and platform decoder policy declare support.
 
 ## Validation and release assembly
 
-`scripts/check-managed-liquidity.sh` validates contracts against fake HTTP servers
+`scripts/check-managed-solana.sh` validates contracts against fake HTTP servers
 and an injected index, schema/fixture parity in all languages, actual fees/token
 balances for legacy/v0/v1 successful/failed transactions, and absent metadata.
 It also compiles generated Rust program/stack subscription interfaces and runs
@@ -121,6 +128,6 @@ live chain, hosted service, provider credentials or protocol stack deployment.
 The fixture bundle, integration harness and migration notes are ready for
 platform and stack consumers. Publish the linked release group after CI; both
 release and recovery upload the reproducible fixture asset before publishing
-dependent packages. Real hosted
-conformance, curated protocol regeneration and binding availability checks remain
-release-assembly work before bot implementation.
+dependent packages. Integrations that depend on hosted discovery or native
+queries must verify provider conformance, supported account layouts and binding
+availability before enabling those capabilities.

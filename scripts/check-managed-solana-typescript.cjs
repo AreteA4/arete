@@ -7,7 +7,7 @@ const { createRequire } = require('node:module');
 const root = path.resolve(__dirname, '..');
 const sdkRequire = createRequire(path.join(root, 'typescript/core/package.json'));
 const ts = sdkRequire('typescript');
-const filename = path.join(root, 'target/managed-liquidity-generated/generated.ts');
+const filename = path.join(root, 'target/managed-solana-generated/generated.ts');
 const options = {
   noEmit: true, strict: true, skipLibCheck: true, target: ts.ScriptTarget.ES2022,
   module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler,
