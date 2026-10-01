@@ -507,8 +507,8 @@ pub enum AreteError {
     /// extension throws for the same condition (the conformance vectors
     /// compare it). This is the variant extension bundles use for input
     /// errors (`docs/internal/sdk-core-api.md` §9); build one with
-    /// [`AreteError::invalid_input`].
-    /// [`InstructionError`](crate::InstructionError) converts to it.
+    /// [`AreteError::invalid_input`]. [`AmountError`](crate::AmountError) and
+    /// [`InstructionError`](crate::InstructionError) convert to it.
     #[error("{0}")]
     InvalidInput(String),
 
