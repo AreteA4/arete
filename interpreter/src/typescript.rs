@@ -1020,51 +1020,59 @@ impl<S> TypeScriptCompiler<S> {
         Some(render_schema_from_ts_fields(interface_name, &fields, true))
     }
 
-    fn generate_idl_enum_schemas(&self) -> Vec<(String, String)> {
-        let mut schemas = Vec::new();
-        let mut generated_types = self.already_emitted_types.clone();
-
-        let idl_value = match &self.idl {
-            Some(idl) => idl,
-            None => return schemas,
-        };
-
-        let types_array = match idl_value.get("types").and_then(|v| v.as_array()) {
-            Some(types) => types,
-            None => return schemas,
-        };
-
-        for type_def in types_array {
-            if let (Some(type_name), Some(type_obj)) = (
-                type_def.get("name").and_then(|v| v.as_str()),
-                type_def.get("type").and_then(|v| v.as_object()),
-            ) {
-                if type_obj.get("kind").and_then(|v| v.as_str()) == Some("enum") {
-                    let interface_name = to_pascal_case(type_name);
-                    if !generated_types.insert(interface_name.clone()) {
-                        continue;
-                    }
-                    if let Ok(mut snapshot) =
-                        serde_json::from_value::<IdlTypeDefSnapshot>(type_def.clone())
-                    {
-                        if let IdlTypeDefKindSnapshot::Enum { variants, .. } =
-                            &mut snapshot.type_def
-                        {
-                            for variant in variants {
-                                variant.name = to_pascal_case(&variant.name);
-                            }
-                        }
-                        if let Some((_, name, schema)) =
-                            generate_type_defs_from_idl_type(&snapshot, &BTreeMap::new())
-                        {
-                            schemas.push((name, schema));
-                        }
-                    }
-                }
+    /// Enums emitted by the legacy raw-IDL compiler also need every type
+    /// reachable through their payloads, even without an account reference.
+    fn generate_idl_enum_artifacts(&self) -> Vec<(String, String, String)> {
+        let definitions: Vec<IdlTypeDefSnapshot> = self
+            .idl
+            .as_ref()
+            .and_then(|idl| idl.get("types"))
+            .and_then(|types| types.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|def| serde_json::from_value(def.clone()).ok())
+            .collect();
+        let type_defs = definitions
+            .iter()
+            .map(|def| (def.name.clone(), def))
+            .collect();
+        let mut required = BTreeSet::new();
+        for def in &definitions {
+            if matches!(def.type_def, IdlTypeDefKindSnapshot::Enum { .. }) {
+                collect_required_defined_types(
+                    &IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                        defined: IdlDefinedInnerSnapshot::Simple(def.name.clone()),
+                    }),
+                    &type_defs,
+                    &HashSet::new(),
+                    &mut required,
+                );
             }
         }
+        let name_map: BTreeMap<_, _> = required
+            .iter()
+            .map(|name| (name.clone(), to_pascal_case(name)))
+            .collect();
+        required
+            .into_iter()
+            .filter(|name| !self.already_emitted_types.contains(&name_map[name]))
+            .filter_map(|name| {
+                let mut def = (*type_defs.get(&name)?).clone();
+                if let IdlTypeDefKindSnapshot::Enum { variants, .. } = &mut def.type_def {
+                    for variant in variants {
+                        variant.name = to_pascal_case(&variant.name);
+                    }
+                }
+                generate_type_defs_from_idl_type(&def, &name_map)
+            })
+            .collect()
+    }
 
-        schemas
+    fn generate_idl_enum_schemas(&self) -> Vec<(String, String)> {
+        self.generate_idl_enum_artifacts()
+            .into_iter()
+            .map(|(_, name, schema)| (name, schema))
+            .collect()
     }
 
     fn typescript_type_to_zod_for_schema(
@@ -1421,41 +1429,10 @@ export default {};"#,
         // Generate event interfaces from instruction handlers
         interfaces.extend(self.generate_event_interfaces(&mut generated_types));
 
-        // Also generate all enum types from the IDL (even if not directly referenced)
-        if let Some(idl_value) = &self.idl {
-            if let Some(types_array) = idl_value.get("types").and_then(|v| v.as_array()) {
-                for type_def in types_array {
-                    if let (Some(type_name), Some(type_obj)) = (
-                        type_def.get("name").and_then(|v| v.as_str()),
-                        type_def.get("type").and_then(|v| v.as_object()),
-                    ) {
-                        if type_obj.get("kind").and_then(|v| v.as_str()) == Some("enum") {
-                            // Only generate if not already generated
-                            let interface_name = to_pascal_case(type_name);
-                            if generated_types.insert(interface_name.clone()) {
-                                if let Ok(mut snapshot) =
-                                    serde_json::from_value::<IdlTypeDefSnapshot>(type_def.clone())
-                                {
-                                    if let IdlTypeDefKindSnapshot::Enum { variants, .. } =
-                                        &mut snapshot.type_def
-                                    {
-                                        for variant in variants {
-                                            variant.name = to_pascal_case(&variant.name);
-                                        }
-                                    }
-                                    if let Some((interface, _, _)) =
-                                        generate_type_defs_from_idl_type(
-                                            &snapshot,
-                                            &BTreeMap::new(),
-                                        )
-                                    {
-                                        interfaces.push(interface);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        for (interface, schema_name, _) in self.generate_idl_enum_artifacts() {
+            let type_name = schema_name.trim_end_matches("Schema");
+            if generated_types.insert(type_name.to_string()) {
+                interfaces.push(interface);
             }
         }
 
@@ -3940,6 +3917,14 @@ fn compile_stack_spec_with_view_selection(
         let emitted_enum_names =
             extract_emitted_enum_type_names(&output.interfaces, idl_for_check.as_ref());
         emitted_types.extend(emitted_enum_names);
+        // Supporting structs emitted for enum payloads are shared by later
+        // entities too, just like the enum declaration itself.
+        emitted_types.extend(
+            compiler
+                .generate_idl_enum_artifacts()
+                .into_iter()
+                .map(|(_, schema_name, _)| schema_name.strip_suffix("Schema").unwrap().to_string()),
+        );
         emitted_types.extend(builtin_type_names);
         if output
             .interfaces

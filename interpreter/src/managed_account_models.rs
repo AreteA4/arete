@@ -182,7 +182,7 @@ pub(crate) fn append_models(
         let mut names = BTreeMap::new();
         for def in &idl.types {
             let name = accounts
-                .get(Some(&idl.name), &def.name)
+                .get_for_program(&idl.name, &def.name)
                 .cloned()
                 .unwrap_or_else(|| claim_name(&def.name, &idl.name, &mut reserved));
             reserved.insert(name.clone());
@@ -193,7 +193,7 @@ pub(crate) fn append_models(
                 .entry(account.name.clone())
                 .or_insert_with(|| {
                     accounts
-                        .get(Some(&idl.name), &account.name)
+                        .get_for_program(&idl.name, &account.name)
                         .cloned()
                         .unwrap_or_else(|| claim_name(&account.name, &idl.name, &mut reserved))
                 })

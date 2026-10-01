@@ -16,7 +16,9 @@ const options = {
     zod: [path.join(root, 'typescript/core/node_modules/zod/index.d.ts')],
   },
 };
-const program = ts.createProgram([filename], options);
+const legacyFilename = path.join(path.dirname(filename), 'legacy.ts');
+const legacyStackFilename = path.join(path.dirname(filename), 'legacy-stack.ts');
+const program = ts.createProgram([filename, legacyFilename, legacyStackFilename], options);
 const diagnostics = ts.getPreEmitDiagnostics(program);
 assert.equal(diagnostics.length, 0, ts.formatDiagnosticsWithColorAndContext(diagnostics, {
   getCanonicalFileName: name => name, getCurrentDirectory: () => root, getNewLine: () => '\n',
@@ -43,3 +45,13 @@ assert.deepEqual(Array.from(payloads[2].Tuple), [(1n << 53n) + 1n, -((1n << 53n)
 assert.equal(payloads[3].Large.length, 40);
 assert.equal(payloads[3].Large[39], (1n << 53n) + 1n);
 console.log('Generated TypeScript account models compile and preserve exact dynamic enum payloads.');
+
+const legacy = {};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(legacyFilename, 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText, { exports: legacy, module: { exports: legacy }, require: sdkRequire }, { filename: legacyFilename, timeout: 10000 });
+const legacyTick = legacy.DynamicTickSchema.parse(fixture.expected.tick);
+assert.equal(legacyTick.Initialized.liquidityGross, 1n << 100n);
+assert.equal(legacyTick.Initialized.liquidityNet, -(1n << 80n));
+assert.equal(legacy.DynamicTickSchema.safeParse('Initialized').success, false);
+console.log('Legacy raw-IDL TypeScript enums compile with their payload-only supporting types.');

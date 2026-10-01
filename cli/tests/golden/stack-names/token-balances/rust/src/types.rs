@@ -21,6 +21,13 @@ pub struct Vault {
     pub balance: VaultBalance,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VaultVault {
+pub authority: String,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub balance: u64,
+}
+
 
 /// Wrapper for event data that includes context metadata.
 /// Events are automatically wrapped in this structure at runtime.

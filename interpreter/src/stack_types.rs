@@ -217,24 +217,28 @@ impl AccountModels {
     /// The model `program`'s `account` accounts are read into (account
     /// names match case-insensitively when no model has the exact name).
     pub(crate) fn get(&self, program: Option<&str>, account: &str) -> Option<&String> {
-        let own = program.and_then(|program| {
-            self.by_program
-                .get(&(program.to_string(), account.to_string()))
-                .or_else(|| {
-                    self.by_program
-                        .iter()
-                        .find(|((owner, name), _)| {
-                            owner == program && name.eq_ignore_ascii_case(account)
-                        })
-                        .map(|(_, model)| model)
-                })
-        });
+        let own = program.and_then(|program| self.get_for_program(program, account));
         own.or_else(|| self.first.get(account)).or_else(|| {
             self.first
                 .iter()
                 .find(|(name, _)| name.eq_ignore_ascii_case(account))
                 .map(|(_, model)| model)
         })
+    }
+
+    /// Resolve only models belonging to this program. Model generation must
+    /// never reuse another program's layout just because its account name matches.
+    pub(crate) fn get_for_program(&self, program: &str, account: &str) -> Option<&String> {
+        self.by_program
+            .get(&(program.to_string(), account.to_string()))
+            .or_else(|| {
+                self.by_program
+                    .iter()
+                    .find(|((owner, name), _)| {
+                        owner == program && name.eq_ignore_ascii_case(account)
+                    })
+                    .map(|(_, model)| model)
+            })
     }
 }
 

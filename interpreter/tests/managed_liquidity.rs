@@ -1,4 +1,4 @@
-use arete_interpreter::ast::{EntitySection, FieldTypeInfo, IdentitySpec, SerializableStreamSpec};
+use arete_interpreter::ast::*;
 use arete_interpreter::{rust, typescript};
 use std::collections::BTreeMap;
 use std::{fs, path::PathBuf, process::Command};
@@ -57,6 +57,32 @@ fn managed_liquidity_generated_program_models_compile_and_preserve_payloads() {
         content_hash: None,
         views: vec![],
     });
+    let mut legacy_entity = stack_spec.entities[0].clone();
+    legacy_entity.idl = Some(spec.idls[0].clone());
+    let legacy_ts = typescript::compile_serializable_spec(
+        legacy_entity.clone(),
+        "ManagedPosition".into(),
+        None,
+    )
+    .unwrap();
+    let mut legacy_stack_spec = stack_spec.clone();
+    let mut other_entity = legacy_entity.clone();
+    other_entity.state_name = "OtherPosition".into();
+    legacy_stack_spec.entities = vec![legacy_entity, other_entity];
+    let legacy_stack_ts = typescript::compile_stack_spec(legacy_stack_spec, None).unwrap();
+    let collision = rust::compile_stack_spec(
+        collision_spec(stack_spec.entities[0].clone()),
+        Some(rust::RustStackConfig {
+            module_mode: true,
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    assert!(collision
+        .programs_rs
+        .as_ref()
+        .unwrap()
+        .contains("AccountReader<super::super::types::SecondPosition>"));
     let stack = rust::compile_stack_spec(stack_spec, Some(config)).unwrap();
     assert!(stack.types_rs.contains("pub struct TickFixture"));
     assert!(stack.entity_rs.contains("ManagedPositionEntityViews"));
@@ -72,6 +98,19 @@ fn managed_liquidity_generated_program_models_compile_and_preserve_payloads() {
     let dir = root.join("target/managed-liquidity-generated");
     fs::create_dir_all(dir.join("src")).unwrap();
     fs::write(dir.join("generated.ts"), full_ts).unwrap();
+    fs::write(dir.join("legacy-stack.ts"), legacy_stack_ts.full_file()).unwrap();
+    fs::write(
+        dir.join("legacy.ts"),
+        format!("import {{ z }} from 'zod';\n{}", legacy_ts.interfaces),
+    )
+    .unwrap();
+    fs::create_dir_all(dir.join("src/collision")).unwrap();
+    fs::write(dir.join("src/collision/types.rs"), collision.types_rs).unwrap();
+    fs::write(
+        dir.join("src/collision/programs.rs"),
+        collision.programs_rs.unwrap(),
+    )
+    .unwrap();
     fs::write(
         dir.join("Cargo.toml"),
         format!(
@@ -99,8 +138,18 @@ mod types;
 pub mod programs;
 pub mod standalone;
 pub mod entity;
+mod collision {{ pub mod types; pub mod programs; }}
 #[tokio::main]
 async fn main() {{
+    let first: collision::types::Position = serde_json::from_value(serde_json::json!({{"amount": "9"}})).unwrap();
+    let second: collision::types::SecondPosition = serde_json::from_value(serde_json::json!({{"mint": "second-mint"}})).unwrap();
+    assert_eq!(first.amount, Some(9));
+    assert_eq!(second.mint, "second-mint");
+    fn distinct_readers(first: collision::programs::first::FirstProgram, second: collision::programs::second::SecondProgram) {{
+        let _: arete_sdk::AccountReader<collision::types::Position> = first.position_accounts().unwrap();
+        let _: arete_sdk::AccountReader<collision::types::SecondPosition> = second.position_accounts().unwrap();
+    }}
+    let _ = distinct_readers;
     let fixture: serde_json::Value = serde_json::from_str(include_str!({:?})).unwrap();
     let value: types::TickFixture = serde_json::from_value(fixture["expected"].clone()).unwrap();
     match value.tick {{
@@ -190,4 +239,50 @@ async fn main() {{
         "generated Rust program failed: {}",
         String::from_utf8_lossy(&result.stderr)
     );
+}
+
+// Only the first program has an entity mapping Position. The second program's
+// account reader must still get its own incompatible IDL-only account model.
+fn collision_spec(mut entity: SerializableStreamSpec) -> SerializableStackSpec {
+    let make_program = |name: &str, address: &str, field: &str, ty: &str| {
+        let idl = serde_json::json!({
+            "name": name, "version": "0.1.0", "address": address,
+            "instructions": [{"name": "noop", "discriminator": [0,0,0,0,0,0,0,0], "accounts": [], "args": [{"name":"amount", "type":"u64"}]}],
+            "accounts": [{"name":"Position", "discriminator":[1,0,0,0,0,0,0,0]}],
+            "types": [{"name":"Position", "type":{"kind":"struct", "fields":[{"name":field, "type":ty}]}}]
+        });
+        arete_interpreter::program_sdk::build_program_only_stack_spec_from_idl_bytes(
+            idl.to_string().as_bytes(),
+            Some(address),
+            "Collisions",
+        )
+        .unwrap()
+    };
+    let mut first = make_program("first", "11111111111111111111111111111111", "amount", "u64");
+    let second = make_program(
+        "second",
+        "So11111111111111111111111111111111111111112",
+        "mint",
+        "pubkey",
+    );
+    entity.program_id = Some(first.program_ids[0].clone());
+    entity.idl = Some(first.idls[0].clone());
+    let mut field = FieldTypeInfo::new("position".into(), "Position".into());
+    field.base_type = BaseType::Object;
+    field.resolved_type = Some(serde_json::from_value(serde_json::json!({
+        "type_name":"Position", "is_account":true, "is_instruction":false, "is_event":false,
+        "fields":[{"field_name":"amount", "field_type":"u64", "base_type":"Integer", "is_optional":false, "is_array":false}]
+    })).unwrap());
+    entity.sections.push(EntitySection {
+        name: "position".into(),
+        fields: vec![field],
+        is_nested_struct: false,
+        parent_field: None,
+    });
+    first.entities.push(entity);
+    first.idls.extend(second.idls);
+    first.program_ids.extend(second.program_ids);
+    first.program_specs.extend(second.program_specs);
+    first.instructions.extend(second.instructions);
+    first.with_content_hash()
 }
