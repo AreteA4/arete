@@ -2812,6 +2812,61 @@ mod tests {
         assert!(programs.contains("arete_sdk::AccountReader::new(\n                \"Counter\","));
     }
 
+    /// A keyword name is escaped where it is the whole identifier (`use_`),
+    /// and a suffixed name is built from the unescaped stem (`use_handler`,
+    /// `type_accounts`): `use__handler` trips `non_snake_case`.
+    #[test]
+    fn rust_generator_suffixes_keyword_names_from_their_unescaped_stem() {
+        let idl_json = format!(
+            r#"{{
+              "address": "{TEST_PROGRAM_ID}",
+              "version": "0.1.0",
+              "name": "demo",
+              "instructions": [
+                {{
+                  "name": "use",
+                  "accounts": [{{ "name": "authority", "isMut": true, "isSigner": true }}],
+                  "args": [{{ "name": "numberOfUses", "type": "u64" }}],
+                  "discriminant": {{ "type": "u8", "value": 1 }}
+                }}
+              ],
+              "accounts": [
+                {{
+                  "name": "Type",
+                  "type": {{
+                    "kind": "struct",
+                    "fields": [{{ "name": "count", "type": "u64" }}]
+                  }}
+                }}
+              ],
+              "types": [],
+              "events": [],
+              "errors": []
+            }}"#
+        );
+        let spec = crate::program_sdk::build_program_only_stack_spec_from_idl_bytes(
+            idl_json.as_bytes(),
+            None,
+            "Demo",
+        )
+        .expect("program-only stack spec should build");
+        let output = compile_program_modules(spec, None).expect("program SDK");
+        let programs = output.programs_rs;
+
+        assert!(
+            programs.contains("pub fn use_(params: UseParams)"),
+            "{programs}"
+        );
+        assert!(programs.contains("pub fn use_handler() -> InstructionHandler"));
+        assert!(programs.contains("use_handler().build(params)"));
+        assert!(
+            programs.contains("pub fn type_accounts(&self)"),
+            "{programs}"
+        );
+        assert!(!programs.contains("__handler"));
+        assert!(!programs.contains("__accounts"));
+    }
+
     #[test]
     fn rust_generator_emits_platform_release_override() {
         let idl_json = format!(
@@ -5689,6 +5744,9 @@ fn generate_rust_instruction_block(
     }
 
     let fn_name = to_snake_case(&instr.name);
+    // Suffixed from the unescaped stem: `use` builds with `use_` and its
+    // handler is `use_handler`.
+    let handler_name = format!("{}_handler", to_snake_stem(&instr.name));
     let pascal = to_pascal_case(&instr.name);
     let params_name = format!("{}Params", pascal);
 
@@ -5802,9 +5860,10 @@ fn generate_rust_instruction_block(
         .join("\n");
 
     let typed_fn = format!(
-        "{docs}\n    pub fn {fn_name}(params: {params_name}) -> Result<BuiltInstruction, InstructionError> {{\n        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {{\n            context: \"params\".to_string(),\n            message: error.to_string(),\n        }})?;\n        {fn_name}_handler().build(params)\n    }}",
+        "{docs}\n    pub fn {fn_name}(params: {params_name}) -> Result<BuiltInstruction, InstructionError> {{\n        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {{\n            context: \"params\".to_string(),\n            message: error.to_string(),\n        }})?;\n        {handler_name}().build(params)\n    }}",
         docs = docs,
         fn_name = fn_name,
+        handler_name = handler_name,
         params_name = params_name
     );
 
@@ -5853,9 +5912,9 @@ fn generate_rust_instruction_block(
     };
 
     let handler_fn = format!(
-        "    /// Raw instruction handler for `{name}`.\n    pub fn {fn_name}_handler() -> InstructionHandler {{\n        InstructionHandler {{\n            program_id: PROGRAM_ID.to_string(),\n            discriminator: vec![{discriminator}],\n            accounts: {accounts},\n            args: {args},\n            errors: {errors},\n        }}\n    }}",
+        "    /// Raw instruction handler for `{name}`.\n    pub fn {handler_name}() -> InstructionHandler {{\n        InstructionHandler {{\n            program_id: PROGRAM_ID.to_string(),\n            discriminator: vec![{discriminator}],\n            accounts: {accounts},\n            args: {args},\n            errors: {errors},\n        }}\n    }}",
         name = instr.name,
-        fn_name = fn_name,
+        handler_name = handler_name,
         discriminator = discriminator,
         accounts = accounts_literal,
         args = args_literal,
@@ -6178,7 +6237,7 @@ fn generate_stack_programs_rs(
                 .map(|idl| account_structs.program_accounts(&idl.name))
                 .unwrap_or_default();
             for account in accounts {
-                let method_name = format!("{}_accounts", to_snake_case(&account.account));
+                let method_name = format!("{}_accounts", to_snake_stem(&account.account));
                 if !used_method_names.insert(method_name.clone()) {
                     reader_notes.push(format!(
                         "account reader for `{}` skipped: method name `{}` collides with an instruction builder",
@@ -6412,6 +6471,17 @@ fn to_pascal_case(s: &str) -> String {
 }
 
 fn to_snake_case(s: &str) -> String {
+    let mut result = to_snake_stem(s);
+    if is_rust_keyword(&result) {
+        result.push('_');
+    }
+    result
+}
+
+/// `to_snake_case` without the keyword escape: the stem a suffixed name is
+/// built from. `use` is the instruction `use_`, but its handler is
+/// `use_handler`, not `use__handler` (which `non_snake_case` rejects).
+fn to_snake_stem(s: &str) -> String {
     let mut result = String::new();
     let mut separator = false;
     for ch in s.chars() {
@@ -6438,9 +6508,6 @@ fn to_snake_case(s: &str) -> String {
         .is_some_and(|character| character.is_ascii_digit())
     {
         result.insert_str(0, "value_");
-    }
-    if is_rust_keyword(&result) {
-        result.push('_');
     }
     result
 }
