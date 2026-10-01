@@ -24,6 +24,7 @@ from typing import (
     Union,
 )
 
+from arete.managed_solana import (Contextual, ReadOptions, NativePositionQuery, NativePositionPage, parse_context, parse_discovery, validate_address, validate_page)
 from arete.errors import AreteError
 
 T = TypeVar("T")
@@ -67,6 +68,8 @@ class ProgramReadRequest:
     account: str
     address: Optional[str] = None
     addresses: Optional[Tuple[str, ...]] = None
+    options: Optional[ReadOptions] = None
+    query: Optional[NativePositionQuery] = None
 
     @classmethod
     def fetch(cls, account: str, address: str) -> "ProgramReadRequest":
@@ -293,6 +296,32 @@ class AccountReader(Generic[T]):
     def account(self) -> str:
         return self._account
 
+    async def fetch_with_context(self, address: str, options: ReadOptions = ReadOptions()) -> Contextual[Optional[T]]:
+        value = await self._transport.read(ProgramReadRequest("fetch_with_context", self._account, address=address, options=options))
+        context = parse_context(value.get("context"), options)
+        account = None if value["value"] is None else _parse_account_value(self._account, self._parser, value["value"])
+        return Contextual(context, account)
+
+    async def fetch_many_with_context(self, addresses: Sequence[str], options: ReadOptions = ReadOptions()) -> Contextual[AccountBatchResult[T]]:
+        addresses = tuple(addresses)
+        if len(addresses) > 100:
+            raise ValueError("addresses exceeds the 100-address limit")
+        if not addresses:
+            return Contextual(None, AccountBatchResult(items=()))
+        value = await self._transport.read(ProgramReadRequest("fetch_many_with_context", self._account, addresses=addresses, options=options))
+        context = parse_context(value.get("context"), options)
+        return Contextual(context, self._parse_batch(value["value"], addresses))
+
+    async def query_positions(self, query: NativePositionQuery) -> NativePositionPage:
+        query.to_wire()
+        value = await self._transport.read(ProgramReadRequest("native_query", self._account, query=query))
+        validate_page(query.limit, value["nextCursor"])
+        if not isinstance(value.get("addresses"), list) or len(value["addresses"]) > query.limit:
+            raise self._invalid_response("native query")
+        for address in value["addresses"]:
+            validate_address(address)
+        return NativePositionPage(tuple(value["addresses"]), value["nextCursor"], parse_discovery(value["discovery"]))
+
     async def fetch(self, address: str) -> Optional[T]:
         """Fetch one decoded account; a ``null`` wire body means missing → ``None``."""
         value = await self._transport.read(ProgramReadRequest.fetch(self._account, address))
@@ -302,9 +331,13 @@ class AccountReader(Generic[T]):
 
     async def fetch_many(self, addresses: Sequence[str]) -> AccountBatchResult[T]:
         """Fetch a mixed batch; per-address ``ok``/``missing``/``error`` statuses and order are preserved."""
-        value = await self._transport.read(
-            ProgramReadRequest.fetch_many(self._account, addresses)
-        )
+        addresses = tuple(addresses)
+        if len(addresses) > 100:
+            raise ValueError("addresses exceeds the 100-address limit")
+        value = await self._transport.read(ProgramReadRequest.fetch_many(self._account, addresses))
+        return self._parse_batch(value, addresses)
+
+    def _parse_batch(self, value: Any, addresses: Sequence[str]) -> AccountBatchResult[T]:
         raw_items = value.get("items") if isinstance(value, Mapping) else None
         if not isinstance(raw_items, list):
             raise self._invalid_response("batch")
@@ -334,6 +367,8 @@ class AccountReader(Generic[T]):
                 )
             else:
                 raise self._invalid_response("batch")
+        if len(items) != len(addresses) or any(item.address != address for item, address in zip(items, addresses)):
+            raise self._invalid_response("batch alignment")
         return AccountBatchResult(items=tuple(items))
 
     async def exists(self, address: str) -> bool:

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Protocol
 from urllib.parse import quote
 
+from arete.managed_solana import (Contextual, ReadOptions, OwnerTokenAccountsRequest, OwnerTokenAccount, OwnerTokenAccountsPage, parse_context, parse_discovery, validate_address, validate_page, decimal_u64)
 from arete.errors import AreteError
 from arete.http import AuthTokenTarget, HttpAuthClient, HttpRequestError
 
@@ -107,6 +108,9 @@ class RawAccountInfo:
 class ChainClient(Protocol):
     """Read access to Solana chain state through the stack's ``/chain/*`` routes."""
 
+    async def owner_token_accounts(self, request: OwnerTokenAccountsRequest) -> OwnerTokenAccountsPage: ...
+    async def account_with_context(self, address: str, options: ReadOptions = ReadOptions()) -> Contextual[Optional[RawAccountInfo]]: ...
+    async def accounts_with_context(self, addresses: list[str], options: ReadOptions = ReadOptions()) -> Contextual[list[Optional[RawAccountInfo]]]: ...
     async def exists(self, address: str) -> bool: ...
 
     async def lamports(self, address: str) -> int: ...
@@ -227,6 +231,55 @@ class HttpChainClient:
                 body=getattr(e, "body", None),
                 code=getattr(e, "code", None),
             ) from e
+
+    async def owner_token_accounts(self, request: OwnerTokenAccountsRequest) -> OwnerTokenAccountsPage:
+        path = "/chain/v1/owner-token-accounts"
+        body = await self._request("POST", path, request.to_wire())
+        validate_page(request.limit, body["nextCursor"])
+        if not isinstance(body.get("items"), list) or len(body["items"]) > request.limit:
+            raise ChainError("Invalid discovery page", path=path)
+        items = []
+        for item in body["items"]:
+            for field in ("address", "mint", "owner", "tokenProgram"):
+                validate_address(item[field])
+            for field in ("delegate", "closeAuthority"):
+                if item.get(field) is not None:
+                    validate_address(item[field])
+            if item["owner"] != request.owner or (request.mint is not None and item["mint"] != request.mint) or (request.token_program is not None and item["tokenProgram"] != request.token_program):
+                raise ChainError("Discovery account is outside the requested filters", path=path)
+            if item["state"] not in ("initialized", "frozen", "uninitialized") or isinstance(item["decimals"], bool) or not isinstance(item["decimals"], int) or not 0 <= item["decimals"] <= 255:
+                raise ChainError("Invalid token state or decimals", path=path)
+            items.append(OwnerTokenAccount(address=item["address"], mint=item["mint"], owner=item["owner"], token_program=item["tokenProgram"], amount=decimal_u64(item["amount"], "amount"), decimals=item["decimals"], state=item["state"], delegate=item.get("delegate"), delegated_amount=None if item.get("delegatedAmount") is None else decimal_u64(item["delegatedAmount"], "delegatedAmount"), close_authority=item.get("closeAuthority")))
+        return OwnerTokenAccountsPage(tuple(items), body["nextCursor"], parse_discovery(body["discovery"]))
+
+    async def account_with_context(self, address: str, options: ReadOptions = ReadOptions()) -> Contextual[Optional[RawAccountInfo]]:
+        validate_address(address)
+        path = "/chain/v1/account"
+        body = await self._request("POST", path, {"address": address, "options": options.to_wire()})
+        context = parse_context(body.get("context"), options)
+        value = None if body["value"] is None else _parse_raw_account(body["value"], path)
+        if value is not None and value.address != address:
+            raise ChainError("Account address does not match request", path=path)
+        return Contextual(context, value)
+
+    async def accounts_with_context(self, addresses: list[str], options: ReadOptions = ReadOptions()) -> Contextual[list[Optional[RawAccountInfo]]]:
+        addresses = list(addresses)
+        if len(addresses) > MAX_CHAIN_BATCH_ADDRESSES:
+            raise ValueError("addresses exceeds the 100-address limit")
+        for address in addresses:
+            validate_address(address)
+        wire_options = options.to_wire()
+        if not addresses:
+            return Contextual(None, [])
+        path = "/chain/v1/accounts"
+        body = await self._request("POST", path, {"addresses": addresses, "options": wire_options})
+        context = parse_context(body.get("context"), options)
+        if not isinstance(body.get("value"), list) or len(body["value"]) != len(addresses):
+            raise ChainError("Account result count does not match addresses", path=path)
+        values = [None if item is None else _parse_raw_account(item, path) for item in body["value"]]
+        if any(item is not None and item.address != address for item, address in zip(values, addresses)):
+            raise ChainError("Account results are not aligned", path=path)
+        return Contextual(context, values)
 
     async def exists(self, address: str) -> bool:
         body = await self._request("GET", f"/chain/exists/{_encode_component(address)}")
