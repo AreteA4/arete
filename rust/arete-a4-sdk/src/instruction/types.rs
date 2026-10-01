@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use solana_pubkey::Pubkey;
 use thiserror::Error;
 
@@ -26,6 +26,36 @@ pub struct BuiltInstruction {
     pub accounts: Vec<BuiltAccountMeta>,
     /// Discriminator followed by Borsh-encoded arguments.
     pub data: Vec<u8>,
+}
+
+impl BuiltInstruction {
+    /// The instruction in the shape TypeScript gives it in a semantic
+    /// instruction's `artifacts.instruction`, a TypeScript `BuiltInstruction`:
+    /// `{ "programId", "keys": [{ "pubkey", "isSigner", "isWritable" }],
+    /// "data" }`, addresses in base58. Prepared-operation artifacts are JSON,
+    /// so `data` is an array of byte values, as TypeScript's `toJsonValue`
+    /// (`describePreparedOperation`) encodes the instruction's bytes.
+    ///
+    /// A port mirroring `artifacts: { instruction }` passes
+    /// `json!({ "instruction": instruction.to_artifact() })`.
+    pub fn to_artifact(&self) -> Value {
+        let keys: Vec<Value> = self
+            .accounts
+            .iter()
+            .map(|meta| {
+                json!({
+                    "pubkey": meta.pubkey.to_string(),
+                    "isSigner": meta.is_signer,
+                    "isWritable": meta.is_writable,
+                })
+            })
+            .collect();
+        json!({
+            "programId": self.program_id.to_string(),
+            "keys": keys,
+            "data": self.data,
+        })
+    }
 }
 
 /// Supported argument types for Borsh serialization.
@@ -262,5 +292,45 @@ pub(crate) fn json_kind(value: &Value) -> &'static str {
         Value::String(_) => "string",
         Value::Array(_) => "array",
         Value::Object(_) => "object",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    #[test]
+    fn to_artifact_is_the_typescript_built_instruction() {
+        let program = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+        let owner = "So11111111111111111111111111111111111111112";
+        let instruction = BuiltInstruction {
+            program_id: Pubkey::from_str(program).unwrap(),
+            accounts: vec![
+                BuiltAccountMeta {
+                    pubkey: Pubkey::from_str(owner).unwrap(),
+                    is_signer: true,
+                    is_writable: false,
+                },
+                BuiltAccountMeta {
+                    pubkey: Pubkey::from_str(program).unwrap(),
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ],
+            data: vec![3, 0, 255],
+        };
+        assert_eq!(
+            instruction.to_artifact(),
+            json!({
+                "programId": program,
+                "keys": [
+                    { "pubkey": owner, "isSigner": true, "isWritable": false },
+                    { "pubkey": program, "isSigner": false, "isWritable": true },
+                ],
+                "data": [3, 0, 255],
+            })
+        );
     }
 }
