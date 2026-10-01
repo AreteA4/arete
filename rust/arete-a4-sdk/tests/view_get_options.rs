@@ -1,9 +1,12 @@
 //! One-shot reads with query options (`ViewHandle::get_with`,
 //! `StateView::get_with`): the subscription they send is the one TypeScript's
-//! `list.get(options)` / `state.get(key, options)` sends, and they release it
-//! after the snapshot.
+//! `list.get(options)` / `state.get(key, options)` sends, they release it
+//! after the snapshot, and they fail where TypeScript's read rejects.
 
-use arete_a4_sdk::{Arete, GetOptions, Stack, StateView, ViewBuilder, ViewHandle, Views};
+use arete_a4_sdk::{
+    Arete, AreteError, GetOptions, Stack, StateView, Transport, ViewBuilder, ViewError, ViewHandle,
+    Views,
+};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -172,7 +175,8 @@ async fn list_get_with_sends_every_query_option_and_releases_the_read() {
                 .after("3:4")
                 .with_snapshot_limit(2),
         )
-        .await;
+        .await
+        .expect("the snapshot arrives");
     assert_eq!(rows, vec![json!({"id": 1}), json!({"id": 2})]);
 
     let (subscribe, id) = subscription_of(next_message(&mut messages).await);
@@ -218,7 +222,8 @@ async fn list_get_with_filters_only_sends_only_the_filters() {
                     "Base111111111111111111111111111111111111111",
                 ),
         )
-        .await;
+        .await
+        .expect("the snapshot arrives");
     assert_eq!(rows.len(), 2);
 
     let (subscribe, id) = subscription_of(next_message(&mut messages).await);
@@ -252,6 +257,7 @@ async fn get_and_default_get_with_send_the_bare_query() {
             .things
             .get_with(GetOptions::default())
             .await
+            .expect("the snapshot arrives")
             .len(),
         2
     );
@@ -283,7 +289,8 @@ async fn state_get_with_sends_the_key_and_the_options() {
                 .partition("solana-mainnet")
                 .filter("state.open", true),
         )
-        .await;
+        .await
+        .expect("the snapshot arrives");
     assert_eq!(entity, Some(json!({"id": "7"})));
 
     let (subscribe, id) = subscription_of(next_message(&mut messages).await);
@@ -317,7 +324,8 @@ async fn get_with_snapshot_disabled_resolves_on_the_acknowledgement() {
         .views
         .things
         .get_with(GetOptions::new().with_snapshot(false))
-        .await;
+        .await
+        .expect("a read without a snapshot resolves on the acknowledgement");
     assert!(rows.is_empty());
 
     let (subscribe, id) = subscription_of(next_message(&mut messages).await);
@@ -327,8 +335,11 @@ async fn get_with_snapshot_disabled_resolves_on_the_acknowledgement() {
     client.disconnect().await;
 }
 
+/// TypeScript `list.get({ timeoutMs: 50 })` rejects with
+/// `InitialDataTimeoutError` (`INITIAL_DATA_TIMEOUT`) naming the view and the
+/// timeout, and releases the read.
 #[tokio::test]
-async fn get_with_timeout_bounds_the_snapshot_wait() {
+async fn get_with_timeout_fails_when_no_snapshot_arrives() {
     let (url, mut messages) = serve(false).await;
     let client = Arete::<TestStack>::builder()
         .url(&url)
@@ -338,7 +349,7 @@ async fn get_with_timeout_bounds_the_snapshot_wait() {
         .unwrap();
 
     let started = Instant::now();
-    let rows = timeout(
+    let error = timeout(
         Duration::from_secs(5),
         client
             .views
@@ -346,12 +357,119 @@ async fn get_with_timeout_bounds_the_snapshot_wait() {
             .get_with(GetOptions::new().timeout(Duration::from_millis(50))),
     )
     .await
-    .expect("the per-read timeout replaces initial_data_timeout");
-    assert!(rows.is_empty());
+    .expect("the per-read timeout replaces initial_data_timeout")
+    .expect_err("no snapshot arrives");
     assert!(started.elapsed() < Duration::from_secs(5));
-
+    assert!(
+        matches!(
+            &error,
+            ViewError::InitialDataTimeout { view, timeout }
+                if view == "Thing/list" && *timeout == Duration::from_millis(50)
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "Timed out after 50ms waiting for the initial snapshot of view 'Thing/list'"
+    );
+    // What an extension's read returns with `?`.
+    assert!(matches!(
+        AreteError::from(error),
+        AreteError::ConnectionFailed(message)
+            if message == "Timed out after 50ms waiting for the initial snapshot of view 'Thing/list'"
+    ),);
     let (subscribe, id) = subscription_of(next_message(&mut messages).await);
     assert_eq!(subscribe["query"], json!({"view": "Thing/list"}));
     expect_unsubscribe(&mut messages, &id).await;
+
+    let error = client
+        .views
+        .thing_state
+        .get_with("7", GetOptions::new().timeout(Duration::from_millis(50)))
+        .await
+        .expect_err("no snapshot arrives");
+    assert_eq!(
+        error.to_string(),
+        "Timed out after 50ms waiting for the initial snapshot of view 'Thing/state'"
+    );
+    let (subscribe, id) = subscription_of(next_message(&mut messages).await);
+    assert_eq!(
+        subscribe["query"],
+        json!({"view": "Thing/state", "key": "7"})
+    );
+    expect_unsubscribe(&mut messages, &id).await;
     client.disconnect().await;
+}
+
+/// The released `get()`, `get_one()` and state `get(key)` keep returning what
+/// the read holds when the snapshot does not arrive in time: no rows.
+#[tokio::test]
+async fn get_without_options_returns_what_the_read_holds_on_timeout() {
+    let (url, mut messages) = serve(false).await;
+    let client = Arete::<TestStack>::builder()
+        .url(&url)
+        .initial_data_timeout(Duration::from_millis(50))
+        .connect()
+        .await
+        .unwrap();
+
+    assert!(client.views.things.get().await.is_empty());
+    let (_, id) = subscription_of(next_message(&mut messages).await);
+    expect_unsubscribe(&mut messages, &id).await;
+    assert_eq!(client.views.things.get_one().await, None);
+    let (_, id) = subscription_of(next_message(&mut messages).await);
+    expect_unsubscribe(&mut messages, &id).await;
+    assert_eq!(client.views.thing_state.get("7").await, None);
+    let (_, id) = subscription_of(next_message(&mut messages).await);
+    expect_unsubscribe(&mut messages, &id).await;
+    client.disconnect().await;
+}
+
+/// A read that cannot subscribe fails with the subscription's error
+/// (TypeScript rejects with the connection error); `get()` returns no rows.
+#[tokio::test]
+async fn get_with_fails_with_the_subscription_error() {
+    let client = Arete::<TestStack>::builder()
+        .transport(Transport::Http)
+        .http_url("http://127.0.0.1:9")
+        .connect()
+        .await
+        .unwrap();
+
+    let error = client
+        .views
+        .things
+        .get_with(GetOptions::new())
+        .await
+        .expect_err("an HTTP-only client cannot subscribe");
+    assert!(
+        matches!(
+            &error,
+            ViewError::Subscription { view, source: AreteError::WebSocketDisabled }
+                if view == "Thing/list"
+        ),
+        "{error:?}"
+    );
+    let error = client
+        .views
+        .thing_state
+        .get_with("7", GetOptions::new())
+        .await
+        .expect_err("an HTTP-only client cannot subscribe");
+    assert!(
+        matches!(
+            &error,
+            ViewError::Subscription { view, source: AreteError::WebSocketDisabled }
+                if view == "Thing/state"
+        ),
+        "{error:?}"
+    );
+    assert!(std::error::Error::source(&error).is_some());
+    assert!(matches!(
+        AreteError::from(error),
+        AreteError::WebSocketDisabled
+    ));
+
+    assert!(client.views.things.get().await.is_empty());
+    assert_eq!(client.views.thing_state.get("7").await, None);
 }

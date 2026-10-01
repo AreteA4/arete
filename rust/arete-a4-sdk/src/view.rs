@@ -20,11 +20,12 @@
 //! // List all rounds
 //! let rounds = views.list().get().await;
 //!
-//! // One-shot read with query options (TypeScript `list.get({ filters })`)
+//! // One-shot read with query options (TypeScript `list.get({ filters })`),
+//! // failing as TypeScript rejects when the initial snapshot never arrives
 //! let open = views
 //!     .list()
 //!     .get_with(GetOptions::new().filter("state.status", "open").take(10))
-//!     .await;
+//!     .await?;
 //!
 //! // Get specific round by key
 //! let round = views.state().get("round_key").await;
@@ -36,7 +37,8 @@
 //! }
 //! ```
 
-use crate::connection::{ConnectionManager, SubscriptionOptions};
+use crate::connection::{ConnectionManager, SubscriptionLease, SubscriptionOptions};
+use crate::error::AreteError;
 use crate::store::SharedStore;
 use crate::stream::{EntityStream, KeyFilter, RichEntityStream, Update, UseStream};
 use futures_util::Stream;
@@ -48,6 +50,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use thiserror::Error;
 
 /// Query options for the one-shot reads [`ViewHandle::get_with`] and
 /// [`StateView::get_with`]: the Rust form of TypeScript's `GetOptions`
@@ -67,7 +70,7 @@ use std::time::Duration;
 ///     .lookup_table
 ///     .list()
 ///     .get_with(GetOptions::new().filter("state.authority", authority))
-///     .await;
+///     .await?;
 /// ```
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GetOptions {
@@ -153,6 +156,75 @@ impl GetOptions {
     }
 }
 
+/// Why a one-shot read with [`ViewHandle::get_with`] or
+/// [`StateView::get_with`] has no result: what TypeScript's
+/// `list.get(options)` and `state.get(key, options)` reject with. The read's
+/// subscription is released either way.
+///
+/// [`ViewHandle::get`], [`ViewHandle::get_one`] and [`StateView::get`] never
+/// fail: they return what the read holds (no rows, or `None`) instead.
+#[derive(Debug, Clone, Error)]
+#[non_exhaustive]
+pub enum ViewError {
+    /// The read could not subscribe to the view: the client was connected
+    /// with `Transport::Http`, its connection is closed, or the query is
+    /// invalid. `source` is the subscription's error, as TypeScript rejects
+    /// with the connection or query error.
+    #[error("Could not subscribe to view '{view}': {source}")]
+    Subscription {
+        view: String,
+        #[source]
+        source: AreteError,
+    },
+
+    /// The view's initial snapshot did not arrive within the read's timeout
+    /// ([`GetOptions::timeout`], by default the client's
+    /// `initial_data_timeout`): TypeScript's `InitialDataTimeoutError`, code
+    /// `INITIAL_DATA_TIMEOUT`, with the same message.
+    #[error(
+        "Timed out after {}ms waiting for the initial snapshot of view '{view}'",
+        .timeout.as_millis()
+    )]
+    InitialDataTimeout { view: String, timeout: Duration },
+}
+
+/// A failed view read as the [`AreteError`] an extension's read returns, so
+/// a bundle propagates it with `?` as the TypeScript read's rejection
+/// propagates: a [`ViewError::Subscription`] is its `source`, and a
+/// [`ViewError::InitialDataTimeout`] an [`AreteError::ConnectionFailed`]
+/// carrying the TypeScript message.
+impl From<ViewError> for AreteError {
+    fn from(error: ViewError) -> Self {
+        match error {
+            ViewError::Subscription { source, .. } => source,
+            timeout @ ViewError::InitialDataTimeout { .. } => {
+                AreteError::ConnectionFailed(timeout.to_string())
+            }
+        }
+    }
+}
+
+/// Subscribe to `view_path` (at `key`) with `options` and wait for the initial
+/// snapshot. Returns the read's lease, which releases the subscription when
+/// dropped, and the timeout when the snapshot did not arrive within it.
+async fn subscribe_for_read(
+    connection: &ConnectionManager,
+    store: &SharedStore,
+    view_path: &str,
+    key: Option<&str>,
+    options: GetOptions,
+    default_timeout: Duration,
+) -> Result<(SubscriptionLease, Option<Duration>), AreteError> {
+    let (subscription, timeout) = options.into_parts(default_timeout);
+    let lease = connection
+        .ensure_subscription_with_opts(view_path, key, subscription)
+        .await?;
+    let ready = store
+        .wait_for_subscription_ready(lease.subscription_id(), timeout)
+        .await;
+    Ok((lease, (!ready).then_some(timeout)))
+}
+
 /// A handle to a view that provides get/watch operations.
 ///
 /// All views return collections (Vec<T>). Use `.first()` on the result
@@ -174,14 +246,31 @@ where
     /// For views with a `take` limit defined in the stack, this returns
     /// up to that many items. Use `.first()` on the result if you need
     /// a single item.
+    ///
+    /// Never fails: when the read cannot subscribe it returns no rows, and
+    /// when the initial snapshot does not arrive within the client's
+    /// `initial_data_timeout` it returns the rows the read holds by then.
+    /// [`ViewHandle::get_with`] reports both as a [`ViewError`] instead, as
+    /// TypeScript's `list.get()` rejects.
     pub async fn get(&self) -> Vec<T> {
-        self.get_with(GetOptions::default()).await
+        let Ok((lease, _)) = self.subscribe(GetOptions::default()).await else {
+            return Vec::new();
+        };
+        self.store
+            .list_for_subscription::<T>(lease.subscription_id())
+            .await
     }
 
     /// Get the items of this view that match `options` (TypeScript
     /// `list.get(options)`): subscribes with the options' query, waits for
     /// its initial snapshot and releases the subscription. Returns the rows
     /// the host sent for that query, in the view's order.
+    ///
+    /// Fails as TypeScript's read rejects: with
+    /// [`ViewError::InitialDataTimeout`] when the snapshot does not arrive
+    /// within [`GetOptions::timeout`] (by default the client's
+    /// `initial_data_timeout`), and with [`ViewError::Subscription`] when the
+    /// read cannot subscribe.
     ///
     /// ```ignore
     /// let pools = a4
@@ -193,23 +282,41 @@ where
     ///             .filter("tokens.base_mint", base_mint)
     ///             .filter("tokens.quote_mint", quote_mint),
     ///     )
-    ///     .await;
+    ///     .await?;
     /// ```
-    pub async fn get_with(&self, options: GetOptions) -> Vec<T> {
-        let (subscription, timeout) = options.into_parts(self.initial_data_timeout);
-        let Ok(lease) = self
-            .connection
-            .ensure_subscription_with_opts(&self.view_path, None, subscription)
-            .await
-        else {
-            return Vec::new();
-        };
-        self.store
-            .wait_for_subscription_ready(lease.subscription_id(), timeout)
-            .await;
-        self.store
+    pub async fn get_with(&self, options: GetOptions) -> Result<Vec<T>, ViewError> {
+        let (lease, timed_out) =
+            self.subscribe(options)
+                .await
+                .map_err(|source| ViewError::Subscription {
+                    view: self.view_path.clone(),
+                    source,
+                })?;
+        if let Some(timeout) = timed_out {
+            return Err(ViewError::InitialDataTimeout {
+                view: self.view_path.clone(),
+                timeout,
+            });
+        }
+        Ok(self
+            .store
             .list_for_subscription::<T>(lease.subscription_id())
-            .await
+            .await)
+    }
+
+    async fn subscribe(
+        &self,
+        options: GetOptions,
+    ) -> Result<(SubscriptionLease, Option<Duration>), AreteError> {
+        subscribe_for_read(
+            &self.connection,
+            &self.store,
+            &self.view_path,
+            None,
+            options,
+            self.initial_data_timeout,
+        )
+        .await
     }
 
     /// Synchronously get all items from cached data.
@@ -222,7 +329,8 @@ where
     }
 
     /// Get the first item from this view, mirroring the TypeScript `useOne`
-    /// convenience for single-row derived views like `latest`.
+    /// convenience for single-row derived views like `latest`. Never fails,
+    /// like [`ViewHandle::get`].
     pub async fn get_one(&self) -> Option<T> {
         self.get().await.into_iter().next()
     }
@@ -787,25 +895,56 @@ where
     }
 
     /// Get an entity by key.
+    ///
+    /// Never fails: `None` also when the read cannot subscribe, and when the
+    /// initial snapshot does not arrive within the client's
+    /// `initial_data_timeout` it returns what the read holds by then.
+    /// [`StateView::get_with`] reports both as a [`ViewError`] instead, as
+    /// TypeScript's `state.get(key)` rejects.
     pub async fn get(&self, key: &str) -> Option<T> {
-        self.get_with(key, GetOptions::default()).await
-    }
-
-    /// Get an entity by key with query options (TypeScript
-    /// `state.get(key, options)`); see [`GetOptions`].
-    pub async fn get_with(&self, key: &str, options: GetOptions) -> Option<T> {
-        let (subscription, timeout) = options.into_parts(self.initial_data_timeout);
-        let lease = self
-            .connection
-            .ensure_subscription_with_opts(&self.view_path, Some(key), subscription)
-            .await
-            .ok()?;
-        self.store
-            .wait_for_subscription_ready(lease.subscription_id(), timeout)
-            .await;
+        let (lease, _) = self.subscribe(key, GetOptions::default()).await.ok()?;
         self.store
             .get_for_subscription::<T>(lease.subscription_id(), key)
             .await
+    }
+
+    /// Get an entity by key with query options (TypeScript
+    /// `state.get(key, options)`); see [`GetOptions`]. `Ok(None)` when the
+    /// view holds no entity at `key`; fails like [`ViewHandle::get_with`].
+    pub async fn get_with(&self, key: &str, options: GetOptions) -> Result<Option<T>, ViewError> {
+        let (lease, timed_out) =
+            self.subscribe(key, options)
+                .await
+                .map_err(|source| ViewError::Subscription {
+                    view: self.view_path.clone(),
+                    source,
+                })?;
+        if let Some(timeout) = timed_out {
+            return Err(ViewError::InitialDataTimeout {
+                view: self.view_path.clone(),
+                timeout,
+            });
+        }
+        Ok(self
+            .store
+            .get_for_subscription::<T>(lease.subscription_id(), key)
+            .await)
+    }
+
+    async fn subscribe(
+        &self,
+        key: &str,
+        options: GetOptions,
+    ) -> Result<(SubscriptionLease, Option<Duration>), AreteError> {
+        subscribe_for_read(
+            &self.connection,
+            &self.store,
+            &self.view_path,
+            Some(key),
+            options,
+            self.initial_data_timeout,
+        )
+        .await
     }
 
     /// Synchronously get an entity from cached data.

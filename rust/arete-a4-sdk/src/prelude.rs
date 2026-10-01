@@ -8,7 +8,7 @@ pub use crate::{
     TokenTransport, TransactionCapabilityError, TransactionInspectionOptions,
     TransactionInspectionResult, TransactionOptions, TransactionResourceOptions,
     TransactionTransport, TransactionVersion, Transport, Update, UseBuilder, UseStream,
-    ViewBuilder, ViewHandle, Views, WalletAdapter, WatchBuilder,
+    ViewBuilder, ViewError, ViewHandle, Views, WalletAdapter, WatchBuilder,
 };
 
 #[cfg(feature = "solana-adapter")]
