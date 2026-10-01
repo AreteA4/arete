@@ -6,8 +6,8 @@ builders returning `BuiltInstruction`, raw `<prog>_<ix>_handler()` escape
 hatches, and a `<Prog>Pdas` namespace of PDA factories. Programs with a
 recorded program spec additionally expose `<PROG>_PROGRAM_SPEC_HASH` /
 `<PROG>_PROGRAM_RELEASE_HASH` plus `<prog>_read_descriptor()` for
-release-addressed HTTP reads. `PROGRAMS` / `PROGRAM_READS` feed the stack
-binding in `__init__.py`.
+release-addressed HTTP reads. `PROGRAMS` / `PROGRAM_READS` compose with stack
+bindings and standalone session members.
 """
 
 from __future__ import annotations
@@ -66,12 +66,12 @@ __all__ = [
     "OreResetParams",
     "ore_reset",
     "ore_reset_handler",
-    "OreBuybackParams",
-    "ore_buyback",
-    "ore_buyback_handler",
     "OreBuryParams",
     "ore_bury",
     "ore_bury_handler",
+    "OreBuybackParams",
+    "ore_buyback",
+    "ore_buyback_handler",
     "OreWrapParams",
     "ore_wrap",
     "ore_wrap_handler",
@@ -81,9 +81,6 @@ __all__ = [
     "OreNewVarParams",
     "ore_new_var",
     "ore_new_var_handler",
-    "OreReloadSolParams",
-    "ore_reload_sol",
-    "ore_reload_sol_handler",
     "ORE_PROGRAM_ID",
     "ORE_PROGRAM_SPEC_HASH",
     "ORE_PROGRAM_RELEASE_HASH",
@@ -124,15 +121,14 @@ __all__ = [
 ORE_PROGRAM_ID = "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
 
 #: Content hash of the exact program specification captured at generation time.
-ORE_PROGRAM_SPEC_HASH = "arete:h1:program-spec:sha256:fe539d6dbef9a3df17c40c97090ce8bd4608e90ef65bb665f8f72e693aa8fd0e"
+ORE_PROGRAM_SPEC_HASH = "arete:h1:program-spec:sha256:41a3e99a926050fd86b09761b829570a0a2086c10766e1b6e328b901dd856f72"
 
 #: Release identity addressing hosted account reads for this program.
-ORE_PROGRAM_RELEASE_HASH = "arete:h1:program-release:sha256:27a3c47c61e0a916eb3e2dba100fbe3cc09679c4ab6e78d5997692c9f818cf49"
+ORE_PROGRAM_RELEASE_HASH = "arete:h1:program-release:sha256:4742d9f7be960b2c35571cdaae6fb5de9874836037e13c9f13697800c18d39b5"
 
 
 def ore_read_descriptor() -> ProgramReadDescriptor:
-    """Release-addressed read descriptor for program `ore` (HTTP reads
-    over the client's HTTP base URL)."""
+    """Exact release-addressed read descriptor for program `ore`."""
     return ProgramReadDescriptor(
         release=ProgramReleaseReference(
             program_release_hash=ORE_PROGRAM_RELEASE_HASH,
@@ -208,7 +204,7 @@ def ore_automate(
     Automation PDA seeds: ["automation", signer].
     Miner PDA seeds: ["miner", signer].
 
-    Pure (no network). Params are IDL wire shape (see `OreAutomateParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `OreAutomateParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -308,7 +304,7 @@ def ore_checkpoint(
     """Settles miner rewards for a completed round.
     Treasury PDA seeds: ["treasury"].
 
-    Pure (no network). Params are IDL wire shape (see `OreCheckpointParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `OreCheckpointParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -413,7 +409,7 @@ def ore_claim_sol(
 ) -> BuiltInstruction:
     """Claims SOL rewards from the miner account.
 
-    Pure (no network). Params are IDL wire shape (see `OreClaimSolParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `OreClaimSolParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -483,8 +479,6 @@ def ore_claim_sol_handler() -> InstructionHandler:
 OreClaimOreParams = TypedDict(
     "OreClaimOreParams",
     {
-        # arg `bps` (`u64`)
-        "bps": int,
         # Optional address override for the `signer` signer (defaults to the payer).
         "signer": str,
         # Address of the `miner` account.
@@ -505,10 +499,9 @@ def ore_claim_ore(
     remaining_accounts: Optional[Sequence[BuiltAccountMeta]] = None,
     **params: Any,
 ) -> BuiltInstruction:
-    """Claims a percentage of ORE token rewards from the treasury vault.
-    The current instruction encodes bps as u64. Legacy empty payloads are accepted by the program as 10000 bps.
+    """Claims ORE token rewards from the treasury vault.
 
-    Pure (no network). Params are IDL wire shape (see `OreClaimOreParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `OreClaimOreParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -611,9 +604,7 @@ def ore_claim_ore_handler() -> InstructionHandler:
                 is_optional=False,
             ),
         ],
-        args=[
-            ArgSchema(name="bps", type="u64"),
-        ],
+        args=[],
         errors=list(ORE_ERRORS),
     )
 
@@ -644,7 +635,7 @@ def ore_close(
     Round PDA seeds: ["round", round_id].
     Treasury PDA seeds: ["treasury"].
 
-    Pure (no network). Params are IDL wire shape (see `OreCloseParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `OreCloseParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -749,7 +740,7 @@ def ore_deploy(
     Miner PDA seeds: ["miner", authority].
     Round PDA seeds: ["round", board.round_id].
 
-    Pure (no network). Params are IDL wire shape (see `OreDeployParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `OreDeployParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -884,7 +875,7 @@ def ore_log(
     """Emits an arbitrary log message from the board PDA.
     Bytes following the discriminator are logged verbatim.
 
-    Pure (no network). Params are IDL wire shape (see `OreLogParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `OreLogParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -955,7 +946,7 @@ def ore_reset(
     Treasury PDA seeds: ["treasury"].
     Round PDA seeds: ["round", board.round_id] and ["round", board.round_id + 1].
 
-    Pure (no network). Params are IDL wire shape (see `OreResetParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `OreResetParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -1107,171 +1098,6 @@ def ore_reset_handler() -> InstructionHandler:
         errors=list(ORE_ERRORS),
     )
 
-# Typed params for `buyback`: instruction args plus overridable accounts
-# (wire-name keys; required/optional noted per key).
-OreBuybackParams = TypedDict(
-    "OreBuybackParams",
-    {
-        # Address of the `managerSol` account.
-        "managerSol": str,
-        # Address of the `treasuryOre` account.
-        "treasuryOre": str,
-        # Address of the `treasurySol` account.
-        "treasurySol": str,
-        # Address of the `stakeTreasury` account.
-        "stakeTreasury": str,
-        # Address of the `stakeTreasuryOre` account.
-        "stakeTreasuryOre": str,
-        # Address of the `stakeVesting` account.
-        "stakeVesting": str,
-        # Address of the `oreStakeProgram` account.
-        "oreStakeProgram": str,
-    },
-    total=False,
-)
-
-
-def ore_buyback(
-    *,
-    wallet: Optional[str] = None,
-    accounts: Optional[Mapping[str, str]] = None,
-    remaining_accounts: Optional[Sequence[BuiltAccountMeta]] = None,
-    **params: Any,
-) -> BuiltInstruction:
-    """Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.
-    The 15 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator.
-
-    Pure (no network). Params are IDL wire shape (see `OreBuybackParams`);
-    unknown params fail closed.
-
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
-    (including `payer`) stay available as params.
-    """
-    return ore_buyback_handler().build(
-        dict(params),
-        payer=wallet,
-        accounts=accounts,
-        remaining_accounts=remaining_accounts,
-    )
-
-
-def ore_buyback_handler() -> InstructionHandler:
-    """Raw instruction handler for `buyback` (escape hatch)."""
-    return InstructionHandler(
-        program_id=ORE_PROGRAM_ID,
-        discriminator=bytes([13]),
-        accounts=[
-            AccountMeta(
-                name="signer",
-                is_signer=True,
-                is_writable=True,
-                resolution=Known("HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T"),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="board",
-                is_signer=False,
-                is_writable=True,
-                resolution=Pda(PdaConfig(seeds=(LiteralSeed("board"),))),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="config",
-                is_signer=False,
-                is_writable=False,
-                resolution=Pda(PdaConfig(seeds=(LiteralSeed("config"),))),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="manager",
-                is_signer=False,
-                is_writable=True,
-                resolution=Known("DJqfQWB8tZE6fzqWa8okncDh7ciTuD8QQKp1ssNETWee"),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="managerSol",
-                is_signer=False,
-                is_writable=True,
-                resolution=UserProvided(),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="mint",
-                is_signer=False,
-                is_writable=True,
-                resolution=Known("oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="treasury",
-                is_signer=False,
-                is_writable=True,
-                resolution=Pda(PdaConfig(seeds=(LiteralSeed("treasury"),))),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="treasuryOre",
-                is_signer=False,
-                is_writable=True,
-                resolution=UserProvided(),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="treasurySol",
-                is_signer=False,
-                is_writable=True,
-                resolution=UserProvided(),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="stakeTreasury",
-                is_signer=False,
-                is_writable=True,
-                resolution=UserProvided(),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="stakeTreasuryOre",
-                is_signer=False,
-                is_writable=True,
-                resolution=UserProvided(),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="stakeVesting",
-                is_signer=False,
-                is_writable=True,
-                resolution=UserProvided(),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="tokenProgram",
-                is_signer=False,
-                is_writable=False,
-                resolution=Known("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="oreProgram",
-                is_signer=False,
-                is_writable=False,
-                resolution=Known("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="oreStakeProgram",
-                is_signer=False,
-                is_writable=False,
-                resolution=UserProvided(),
-                is_optional=False,
-            ),
-        ],
-        args=[],
-        errors=list(ORE_ERRORS),
-    )
-
 # Typed params for `bury`: instruction args plus overridable accounts
 # (wire-name keys; required/optional noted per key).
 OreBuryParams = TypedDict(
@@ -1308,7 +1134,7 @@ def ore_bury(
     """Burns ORE and distributes yield to stakers.
     Treasury PDA seeds: ["treasury"].
 
-    Pure (no network). Params are IDL wire shape (see `OreBuryParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `OreBuryParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -1420,6 +1246,155 @@ def ore_bury_handler() -> InstructionHandler:
         errors=list(ORE_ERRORS),
     )
 
+# Typed params for `buyback`: instruction args plus overridable accounts
+# (wire-name keys; required/optional noted per key).
+OreBuybackParams = TypedDict(
+    "OreBuybackParams",
+    {
+        # Address of the `treasuryOre` account.
+        "treasuryOre": str,
+        # Address of the `treasurySol` account.
+        "treasurySol": str,
+        # Address of the `stakeTreasury` account.
+        "stakeTreasury": str,
+        # Address of the `stakeTreasuryOre` account.
+        "stakeTreasuryOre": str,
+        # Address of the `stakeVesting` account.
+        "stakeVesting": str,
+        # Address of the `oreStakeProgram` account.
+        "oreStakeProgram": str,
+    },
+    total=False,
+)
+
+
+def ore_buyback(
+    *,
+    wallet: Optional[str] = None,
+    accounts: Optional[Mapping[str, str]] = None,
+    remaining_accounts: Optional[Sequence[BuiltAccountMeta]] = None,
+    **params: Any,
+) -> BuiltInstruction:
+    """Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.
+    The 13 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator.
+
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `OreBuybackParams`);
+    unknown params fail closed.
+
+    Reserved keyword-only options: `wallet` (signer fallback address),
+    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
+    (including `payer`) stay available as params.
+    """
+    return ore_buyback_handler().build(
+        dict(params),
+        payer=wallet,
+        accounts=accounts,
+        remaining_accounts=remaining_accounts,
+    )
+
+
+def ore_buyback_handler() -> InstructionHandler:
+    """Raw instruction handler for `buyback` (escape hatch)."""
+    return InstructionHandler(
+        program_id=ORE_PROGRAM_ID,
+        discriminator=bytes([13]),
+        accounts=[
+            AccountMeta(
+                name="signer",
+                is_signer=True,
+                is_writable=True,
+                resolution=Known("HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T"),
+                is_optional=False,
+            ),
+            AccountMeta(
+                name="board",
+                is_signer=False,
+                is_writable=True,
+                resolution=Pda(PdaConfig(seeds=(LiteralSeed("board"),))),
+                is_optional=False,
+            ),
+            AccountMeta(
+                name="config",
+                is_signer=False,
+                is_writable=False,
+                resolution=Pda(PdaConfig(seeds=(LiteralSeed("config"),))),
+                is_optional=False,
+            ),
+            AccountMeta(
+                name="mint",
+                is_signer=False,
+                is_writable=True,
+                resolution=Known("oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"),
+                is_optional=False,
+            ),
+            AccountMeta(
+                name="treasury",
+                is_signer=False,
+                is_writable=True,
+                resolution=Pda(PdaConfig(seeds=(LiteralSeed("treasury"),))),
+                is_optional=False,
+            ),
+            AccountMeta(
+                name="treasuryOre",
+                is_signer=False,
+                is_writable=True,
+                resolution=UserProvided(),
+                is_optional=False,
+            ),
+            AccountMeta(
+                name="treasurySol",
+                is_signer=False,
+                is_writable=True,
+                resolution=UserProvided(),
+                is_optional=False,
+            ),
+            AccountMeta(
+                name="stakeTreasury",
+                is_signer=False,
+                is_writable=True,
+                resolution=UserProvided(),
+                is_optional=False,
+            ),
+            AccountMeta(
+                name="stakeTreasuryOre",
+                is_signer=False,
+                is_writable=True,
+                resolution=UserProvided(),
+                is_optional=False,
+            ),
+            AccountMeta(
+                name="stakeVesting",
+                is_signer=False,
+                is_writable=True,
+                resolution=UserProvided(),
+                is_optional=False,
+            ),
+            AccountMeta(
+                name="tokenProgram",
+                is_signer=False,
+                is_writable=False,
+                resolution=Known("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+                is_optional=False,
+            ),
+            AccountMeta(
+                name="oreProgram",
+                is_signer=False,
+                is_writable=False,
+                resolution=Known("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"),
+                is_optional=False,
+            ),
+            AccountMeta(
+                name="oreStakeProgram",
+                is_signer=False,
+                is_writable=False,
+                resolution=UserProvided(),
+                is_optional=False,
+            ),
+        ],
+        args=[],
+        errors=list(ORE_ERRORS),
+    )
+
 # Typed params for `wrap`: instruction args plus overridable accounts
 # (wire-name keys; required/optional noted per key).
 OreWrapParams = TypedDict(
@@ -1444,7 +1419,7 @@ def ore_wrap(
     """Wraps SOL held by the treasury into WSOL for swapping.
     Treasury PDA seeds: ["treasury"].
 
-    Pure (no network). Params are IDL wire shape (see `OreWrapParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `OreWrapParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -1530,7 +1505,7 @@ def ore_set_admin(
 ) -> BuiltInstruction:
     """Updates the program admin address.
 
-    Pure (no network). Params are IDL wire shape (see `OreSetAdminParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `OreSetAdminParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -1610,7 +1585,7 @@ def ore_new_var(
 ) -> BuiltInstruction:
     """Creates a new entropy var account through the entropy program.
 
-    Pure (no network). Params are IDL wire shape (see `OreNewVarParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `OreNewVarParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -1629,7 +1604,7 @@ def ore_new_var_handler() -> InstructionHandler:
     """Raw instruction handler for `newVar` (escape hatch)."""
     return InstructionHandler(
         program_id=ORE_PROGRAM_ID,
-        discriminator=bytes([19]),
+        discriminator=bytes([17]),
         accounts=[
             AccountMeta(
                 name="signer",
@@ -1689,96 +1664,13 @@ def ore_new_var_handler() -> InstructionHandler:
         errors=list(ORE_ERRORS),
     )
 
-# Typed params for `reloadSol`: instruction args plus overridable accounts
-# (wire-name keys; required/optional noted per key).
-OreReloadSolParams = TypedDict(
-    "OreReloadSolParams",
-    {
-        # Optional address override for the `signer` signer (defaults to the payer).
-        "signer": str,
-        # Address of the `automation` account.
-        "automation": str,
-        # Address of the `miner` account.
-        "miner": str,
-    },
-    total=False,
-)
-
-
-def ore_reload_sol(
-    *,
-    wallet: Optional[str] = None,
-    accounts: Optional[Mapping[str, str]] = None,
-    remaining_accounts: Optional[Sequence[BuiltAccountMeta]] = None,
-    **params: Any,
-) -> BuiltInstruction:
-    """Deprecated since 3.8.15; this behavior is now included in checkpoint.
-
-    Pure (no network). Params are IDL wire shape (see `OreReloadSolParams`);
-    unknown params fail closed.
-
-    Reserved keyword-only options: `wallet` (signer fallback address),
-    `accounts` (unvalidated overrides), `remaining_accounts`. Account names
-    (including `payer`) stay available as params.
-
-    Codegen notes:
-    - account `automation` degraded to user-provided (PDA 'automation': seed references account 'authority' not present in this instruction)
-    - account `miner` degraded to user-provided (PDA 'miner': seed references account 'authority' not present in this instruction)
-    """
-    return ore_reload_sol_handler().build(
-        dict(params),
-        payer=wallet,
-        accounts=accounts,
-        remaining_accounts=remaining_accounts,
-    )
-
-
-def ore_reload_sol_handler() -> InstructionHandler:
-    """Raw instruction handler for `reloadSol` (escape hatch)."""
-    return InstructionHandler(
-        program_id=ORE_PROGRAM_ID,
-        discriminator=bytes([21]),
-        accounts=[
-            AccountMeta(
-                name="signer",
-                is_signer=True,
-                is_writable=True,
-                resolution=Signer(),
-                is_optional=False,
-            ),
-            # [arete codegen] account `automation` degraded to user-provided (PDA 'automation': seed references account 'authority' not present in this instruction)
-            AccountMeta(
-                name="automation",
-                is_signer=False,
-                is_writable=True,
-                resolution=UserProvided(),
-                is_optional=False,
-            ),
-            # [arete codegen] account `miner` degraded to user-provided (PDA 'miner': seed references account 'authority' not present in this instruction)
-            AccountMeta(
-                name="miner",
-                is_signer=False,
-                is_writable=True,
-                resolution=UserProvided(),
-                is_optional=False,
-            ),
-            AccountMeta(
-                name="systemProgram",
-                is_signer=False,
-                is_writable=False,
-                resolution=Known("11111111111111111111111111111111"),
-                is_optional=False,
-            ),
-        ],
-        args=[],
-        errors=list(ORE_ERRORS),
-    )
-
 _ORE_ACCOUNTS: Dict[str, ProgramAccountReadDef] = {
-    "automation": ProgramAccountReadDef(account="Automation", parser=models.automation_from_wire),
+    "automation": ProgramAccountReadDef(account="Automation", parser=models.ore_automation_from_wire),
     "board": ProgramAccountReadDef(account="Board", parser=models.board_from_wire),
-    "miner": ProgramAccountReadDef(account="Miner", parser=models.miner_from_wire),
-    "treasury": ProgramAccountReadDef(account="Treasury", parser=models.treasury_from_wire),
+    "config": ProgramAccountReadDef(account="Config", parser=models.config_from_wire),
+    "miner": ProgramAccountReadDef(account="Miner", parser=models.ore_miner_account_from_wire),
+    "round": ProgramAccountReadDef(account="Round", parser=models.round_from_wire),
+    "treasury": ProgramAccountReadDef(account="Treasury", parser=models.ore_treasury_account_from_wire),
 }
 
 #: Portable program SDK definition consumed by `arete.stack`.
@@ -1794,12 +1686,11 @@ ORE_PROGRAM = ProgramDef(
         "deploy": ore_deploy_handler(),
         "log": ore_log_handler(),
         "reset": ore_reset_handler(),
-        "buyback": ore_buyback_handler(),
         "bury": ore_bury_handler(),
+        "buyback": ore_buyback_handler(),
         "wrap": ore_wrap_handler(),
         "set_admin": ore_set_admin_handler(),
         "new_var": ore_new_var_handler(),
-        "reload_sol": ore_reload_sol_handler(),
     },
     pdas=dict(_ORE_PDAS),
     accounts=dict(_ORE_ACCOUNTS),
@@ -1822,8 +1713,7 @@ ENTROPY_PROGRAM_RELEASE_HASH = "arete:h1:program-release:sha256:9e7d6811735b35f9
 
 
 def entropy_read_descriptor() -> ProgramReadDescriptor:
-    """Release-addressed read descriptor for program `entropy` (HTTP reads
-    over the client's HTTP base URL)."""
+    """Exact release-addressed read descriptor for program `entropy`."""
     return ProgramReadDescriptor(
         release=ProgramReleaseReference(
             program_release_hash=ENTROPY_PROGRAM_RELEASE_HASH,
@@ -1876,7 +1766,7 @@ def entropy_open(
     """Creates a new entropy var account.
     Var PDA seeds: ["var", authority, id].
 
-    Pure (no network). Params are IDL wire shape (see `EntropyOpenParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `EntropyOpenParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -1966,7 +1856,7 @@ def entropy_close(
 ) -> BuiltInstruction:
     """Closes an entropy var account and returns rent to the authority.
 
-    Pure (no network). Params are IDL wire shape (see `EntropyCloseParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `EntropyCloseParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -2039,7 +1929,7 @@ def entropy_next(
     """Updates the var for the next random value sample.
     Resets the commit to the previous seed and clears slot_hash, seed, and value.
 
-    Pure (no network). Params are IDL wire shape (see `EntropyNextParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `EntropyNextParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -2107,7 +1997,7 @@ def entropy_reveal(
     """Reveals the seed and finalizes the random value.
     The seed must hash to the commit stored in the var account.
 
-    Pure (no network). Params are IDL wire shape (see `EntropyRevealParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `EntropyRevealParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -2173,7 +2063,7 @@ def entropy_sample(
     """Samples the slot hash at the end_at slot.
     Must be called after the end_at slot has passed.
 
-    Pure (no network). Params are IDL wire shape (see `EntropySampleParams`);
+    Pure (no network). Params use IDL wire names plus documented account aliases (see `EntropySampleParams`);
     unknown params fail closed.
 
     Reserved keyword-only options: `wallet` (signer fallback address),
@@ -2220,6 +2110,10 @@ def entropy_sample_handler() -> InstructionHandler:
         errors=list(ENTROPY_ERRORS),
     )
 
+_ENTROPY_ACCOUNTS: Dict[str, ProgramAccountReadDef] = {
+    "var": ProgramAccountReadDef(account="Var", parser=models.var_from_wire),
+}
+
 #: Portable program SDK definition consumed by `arete.stack`.
 ENTROPY_PROGRAM = ProgramDef(
     name="entropy",
@@ -2232,7 +2126,7 @@ ENTROPY_PROGRAM = ProgramDef(
         "sample": entropy_sample_handler(),
     },
     pdas={},
-    accounts={},
+    accounts=dict(_ENTROPY_ACCOUNTS),
     errors=ENTROPY_ERRORS,
     program_spec_hash=ENTROPY_PROGRAM_SPEC_HASH,
 )

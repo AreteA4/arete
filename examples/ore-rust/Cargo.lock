@@ -694,7 +694,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
- "async-trait",
  "serde",
  "serde_json",
  "tokio",

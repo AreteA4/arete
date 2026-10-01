@@ -2,13 +2,15 @@
 //! `ore` stack module.
 //!
 //! Staged verbatim from `extensions.json` by `a4 sdk create --rust
-//! --extensions`; not generated. Helpers stay reachable as
-//! `generated::ore::devex::…` and are re-exported at the stack module root by
-//! the `extensions.rs` entry.
+//! --extensions`; not generated. Generated items come through
+//! `super::generated`, the re-export module the generator emits beside the
+//! bundle. The `extensions.rs` entry binds these helpers into its namespace
+//! modules.
 
 use arete_sdk::instruction::{derive_program_address, serialize_seed_value, InstructionError};
+use serde::Deserialize;
 
-use super::programs::{entropy, ore};
+use super::generated::programs::{entropy, ore};
 
 /// Base-58 address of the ORE board PDA (seeds `["board"]`).
 pub fn board_address() -> Result<String, InstructionError> {
@@ -50,23 +52,28 @@ pub fn entropy_var_address() -> Result<String, InstructionError> {
     derive_program_address(&seeds, entropy::PROGRAM_ID).map(|(address, _)| address.to_string())
 }
 
-/// Input for [`super::extensions::OreDevex::deploy_with_checkpoint`]: a
+/// Input for
+/// [`super::extensions::transactions::mining::deploy_with_checkpoint`]: a
 /// deploy against the board's current round, prefixed by a checkpoint of the
 /// miner's previously recorded round when the Miner account exists.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeployWithCheckpointInput {
     /// Miner authority (also the default transaction signer).
     pub authority: String,
     /// Lamports to deploy.
     pub amount: u64,
     /// Encoded square selection (same encoding as
-    /// [`super::programs::ore::DeployParams::squares`]).
+    /// [`super::generated::programs::ore::DeployParams::squares`]).
     pub squares: u32,
     /// Optional signer override applied to both instructions.
+    #[serde(default)]
     pub signer: Option<String>,
     /// Deploy round override; defaults to the board's current round and is
     /// rejected when stale.
+    #[serde(default)]
     pub round_id: Option<u64>,
     /// Checkpoint round override; defaults to the miner's recorded round.
+    #[serde(default)]
     pub checkpoint_round_id: Option<u64>,
 }

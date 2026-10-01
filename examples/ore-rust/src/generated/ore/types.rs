@@ -341,6 +341,200 @@ pub struct Automation {
     pub conditions: Option<serde_json::Value>,
 }
 
+/// IDL type `AutomationConditions` as program reads decode it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AutomationConditions {
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub max_production_cost: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub min_motherlode: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub max_motherlode: Option<u64>,
+}
+
+/// Account `Automation` as program reads decode it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OreAutomation {
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub amount: Option<u64>,
+    #[serde(default)]
+    pub authority: Option<String>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub balance: Option<u64>,
+    #[serde(default)]
+    pub executor: Option<String>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub fee: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub strategy: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub mask: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub reload: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub total_sol_spent: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub total_ore_earned: Option<u64>,
+    #[serde(default)]
+    pub conditions: Option<AutomationConditions>,
+}
+
+/// IDL type `AdminConfig` as program reads decode it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AdminConfig {
+    #[serde(default)]
+    pub authority: Option<String>,
+    #[serde(default)]
+    pub fee_collector: Option<String>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub fee_rate: Option<u64>,
+}
+
+/// IDL type `ProtocolConfig` as program reads decode it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProtocolConfig {
+    #[serde(default)]
+    pub authority: Option<String>,
+    #[serde(default)]
+    pub fee_collector: Option<String>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub fee_rate: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub intermission_slots: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub round_slots: Option<u64>,
+    #[serde(default)]
+    pub entropy_var_address: Option<String>,
+    #[serde(default)]
+    pub entropy_program_id: Option<String>,
+}
+
+/// Account `Config` as program reads decode it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Config {
+    #[serde(default)]
+    pub admin: Option<AdminConfig>,
+    #[serde(default)]
+    pub protocol: Option<ProtocolConfig>,
+}
+
+/// IDL type `Numeric` as program reads decode it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Numeric {
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub bits: Option<Vec<u64>>,
+}
+
+/// Account `Miner` as program reads decode it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OreMinerAccount {
+    #[serde(default)]
+    pub authority: Option<String>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub auto_return: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub checkpoint_id: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub checkpoint_fee: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub deployed: Option<Vec<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub mass: Option<Vec<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub cumulative: Option<Vec<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub round_id: Option<u64>,
+    #[serde(default)]
+    pub rewards_factor: Option<Numeric>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub rewards_sol: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub refined_ore: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub rewards_ore: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_i64")]
+    pub last_claim_ore_at: Option<i64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_i64")]
+    pub last_claim_sol_at: Option<i64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub lifetime_rewards_ore: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub lifetime_deployed: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub lifetime_rewards_sol: Option<u64>,
+}
+
+/// Account `Round` as program reads decode it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Round {
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub id: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub deployed: Option<Vec<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub mass: Option<Vec<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub count: Option<Vec<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub slot_hash: Option<Vec<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub expires_at: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub motherlode: Option<u64>,
+    #[serde(default)]
+    pub rent_payer: Option<String>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub rewards: Option<Vec<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub total_vaulted: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub total_returned_sol: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub total_miners: Option<u64>,
+    #[serde(default)]
+    pub top_miner: Option<String>,
+}
+
+/// Account `Treasury` as program reads decode it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OreTreasuryAccount {
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub motherlode: Option<u64>,
+    #[serde(default)]
+    pub miner_rewards_factor: Option<Numeric>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub total_refined: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub total_unclaimed: Option<u64>,
+}
+
+/// Account `Var` as program reads decode it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Var {
+    #[serde(default)]
+    pub authority: Option<String>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub id: Option<u64>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub commit: Option<Vec<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub seed: Option<Vec<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub slot_hash: Option<Vec<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub value: Option<Vec<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub samples: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub is_auto: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub start_at: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub end_at: Option<u64>,
+}
+
 /// Slot hash resolved by the builtin `SlotHash` resolver.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SlotHashBytes {

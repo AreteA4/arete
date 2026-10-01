@@ -308,13 +308,100 @@ def check_errors_and_reads() -> None:
         ORE_STREAM_STACK.programs["ore"].program_spec_hash
         == programs.ORE_PROGRAM_SPEC_HASH
     )
+    # Every account of each ProgramSpec has a typed reader.
     assert set(ORE_STREAM_STACK.programs["ore"].accounts) == {
         "automation",
         "board",
+        "config",
         "miner",
+        "round",
         "treasury",
     }
+    assert set(ORE_STREAM_STACK.programs["entropy"].accounts) == {"var"}
+    round_account = models.round_from_wire(
+        {
+            "id": "7",
+            "deployed": ["1"] * 25,
+            "mass": ["0"] * 25,
+            "count": ["0"] * 25,
+            "slot_hash": [0] * 32,
+            "expires_at": "18446744073709551615",
+            "motherlode": "0",
+            "rent_payer": "11111111111111111111111111111111",
+            "rewards": ["0"] * 25,
+            "total_vaulted": "0",
+            "total_returned_sol": "0",
+            "total_miners": "3",
+            "top_miner": "11111111111111111111111111111111",
+        }
+    )
+    assert round_account.id == 7
+    assert round_account.expires_at == 2**64 - 1
     print("ok: errors + read descriptors")
+
+
+def check_nested_account_models() -> None:
+    # IDL types nested in an account decode into their own dataclasses,
+    # u64 decimal strings included.
+    config = models.config_from_wire(
+        {
+            "admin": {
+                "authority": AUTHORITY,
+                "fee_collector": AUTHORITY,
+                "fee_rate": "100",
+            },
+            "protocol": {
+                "authority": AUTHORITY,
+                "fee_collector": AUTHORITY,
+                "fee_rate": "18446744073709551615",
+                "intermission_slots": 35,
+                "round_slots": "150",
+                "entropy_var_address": AUTHORITY,
+                "entropy_program_id": AUTHORITY,
+            },
+        }
+    )
+    assert isinstance(config.admin, models.AdminConfig)
+    assert config.admin.fee_rate == 100
+    assert config.protocol.fee_rate == 2**64 - 1
+    assert config.protocol.round_slots == 150
+
+    # The treasury reader decodes `Numeric`; the entity's captured
+    # `Treasury` keeps it as JSON, so the reader has its own model.
+    reads = ORE_STREAM_STACK.programs["ore"].accounts
+    assert reads["treasury"].parser is models.ore_treasury_account_from_wire
+    treasury = reads["treasury"].parser(
+        {
+            "motherlode": "1",
+            "miner_rewards_factor": {"bits": [0] * 15 + [1]},
+            "total_refined": 2,
+            "total_unclaimed": "3",
+        }
+    )
+    assert isinstance(treasury.miner_rewards_factor, models.Numeric)
+    assert treasury.miner_rewards_factor.bits[-1] == 1
+    automation = reads["automation"].parser(
+        {
+            "amount": "5",
+            "authority": AUTHORITY,
+            "balance": "6",
+            "executor": AUTHORITY,
+            "fee": 7,
+            "strategy": 0,
+            "mask": "33554431",
+            "reload": 0,
+            "total_sol_spent": "8",
+            "total_ore_earned": "9",
+            "conditions": {
+                "max_production_cost": "10",
+                "min_motherlode": 11,
+                "max_motherlode": "18446744073709551615",
+            },
+        }
+    )
+    assert isinstance(automation.conditions, models.AutomationConditions)
+    assert automation.conditions.max_motherlode == 2**64 - 1
+    print("ok: nested account models")
 
 
 def main() -> None:
@@ -327,6 +414,7 @@ def main() -> None:
     check_raw_build()
     check_pdas()
     check_errors_and_reads()
+    check_nested_account_models()
     print("\nsmoke test passed")
 
 

@@ -1420,6 +1420,12 @@ pub mod ore {
             Self { builder }
         }
 
+        /// The context program extension functions take: the client's chain
+        /// reader, its wallet, and this accessor.
+        pub fn context(&self) -> arete_sdk::ProgramContext<'_, OreProgram> {
+            arete_sdk::ProgramContext::new(self)
+        }
+
         pub fn automate(&self, params: AutomateParams) -> Result<BuiltInstruction, InstructionError> {
             automate(params)
         }
@@ -1473,7 +1479,7 @@ pub mod ore {
         }
 
         /// Typed reader for `Automation` accounts (release-addressed HTTP reads).
-        pub fn automation_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Automation>, arete_sdk::AreteError> {
+        pub fn automation_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::OreAutomation>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Automation",
                 std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
@@ -1488,20 +1494,42 @@ pub mod ore {
             ))
         }
 
+        /// Typed reader for `Config` accounts (release-addressed HTTP reads).
+        pub fn config_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Config>, arete_sdk::AreteError> {
+            Ok(arete_sdk::AccountReader::new(
+                "Config",
+                std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
+            ))
+        }
+
         /// Typed reader for `Miner` accounts (release-addressed HTTP reads).
-        pub fn miner_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Miner>, arete_sdk::AreteError> {
+        pub fn miner_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::OreMinerAccount>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Miner",
                 std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
             ))
         }
 
+        /// Typed reader for `Round` accounts (release-addressed HTTP reads).
+        pub fn round_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Round>, arete_sdk::AreteError> {
+            Ok(arete_sdk::AccountReader::new(
+                "Round",
+                std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
+            ))
+        }
+
         /// Typed reader for `Treasury` accounts (release-addressed HTTP reads).
-        pub fn treasury_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Treasury>, arete_sdk::AreteError> {
+        pub fn treasury_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::OreTreasuryAccount>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Treasury",
                 std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
             ))
+        }
+    }
+
+    impl arete_sdk::ProgramAccessor for OreProgram {
+        fn program_builder(&self) -> &arete_sdk::ProgramBuilder {
+            &self.builder
         }
     }
 }
@@ -1836,7 +1864,6 @@ pub mod entropy {
     /// Program accessor exposed on the stack client's `programs` namespace.
     #[derive(Clone)]
     pub struct EntropyProgram {
-        #[allow(dead_code)]
         builder: arete_sdk::ProgramBuilder,
     }
 
@@ -1844,6 +1871,12 @@ pub mod entropy {
         /// Construct from the connected client's program runtime.
         pub fn from_builder(builder: arete_sdk::ProgramBuilder) -> Self {
             Self { builder }
+        }
+
+        /// The context program extension functions take: the client's chain
+        /// reader, its wallet, and this accessor.
+        pub fn context(&self) -> arete_sdk::ProgramContext<'_, EntropyProgram> {
+            arete_sdk::ProgramContext::new(self)
         }
 
         pub fn open(&self, params: OpenParams) -> Result<BuiltInstruction, InstructionError> {
@@ -1864,6 +1897,20 @@ pub mod entropy {
 
         pub fn sample(&self, params: SampleParams) -> Result<BuiltInstruction, InstructionError> {
             sample(params)
+        }
+
+        /// Typed reader for `Var` accounts (release-addressed HTTP reads).
+        pub fn var_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Var>, arete_sdk::AreteError> {
+            Ok(arete_sdk::AccountReader::new(
+                "Var",
+                std::sync::Arc::new(self.builder.account_transport("entropy", &read_descriptor())?),
+            ))
+        }
+    }
+
+    impl arete_sdk::ProgramAccessor for EntropyProgram {
+        fn program_builder(&self) -> &arete_sdk::ProgramBuilder {
+            &self.builder
         }
     }
 }
