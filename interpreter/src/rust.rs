@@ -2205,6 +2205,89 @@ mod tests {
         assert!(!programs.contains("`submit`: arg 'submission' has unsupported type"));
     }
 
+    /// The `use arete_sdk::instruction::{…}` line of the first program module.
+    fn instruction_imports(programs: &str) -> Vec<String> {
+        let line = programs
+            .lines()
+            .find(|line| {
+                line.trim_start()
+                    .starts_with("use arete_sdk::instruction::{")
+            })
+            .expect("instruction import");
+        line.trim()
+            .trim_start_matches("use arete_sdk::instruction::{")
+            .trim_end_matches("};")
+            .split(", ")
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A program module imports exactly the schema items its instruction
+    /// handlers name, so `-D warnings` builds of generated crates stay clean:
+    /// struct-only defined types import `ArgField` alone, and only an inlined
+    /// enum imports `EnumVariantDef` and `EnumVariantKind`.
+    #[test]
+    fn rust_program_module_imports_only_the_schema_items_it_emits() {
+        let struct_type = |name: &str| IdlTypeDefSnapshot {
+            name: name.to_string(),
+            docs: vec![],
+            serialization: None,
+            type_def: IdlTypeDefKindSnapshot::Struct {
+                kind: "struct".to_string(),
+                fields: vec![IdlFieldSnapshot {
+                    name: "value".to_string(),
+                    type_: IdlTypeSnapshot::Simple("u64".to_string()),
+                    amount_hint: None,
+                }],
+            },
+        };
+        let instruction = |name: &str, arg_type: &str| InstructionDef {
+            name: name.to_string(),
+            discriminator: vec![7],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![instruction_arg("value", arg_type)],
+            errors: vec![],
+            program_id: Some(TEST_PROGRAM_ID.to_string()),
+            docs: vec![],
+        };
+
+        let plain = compile_stack_spec(programs_stack_spec(), None).unwrap();
+        let imports = instruction_imports(&plain.programs_rs.unwrap());
+        assert!(!imports.iter().any(|item| item == "ArgField"));
+        assert!(!imports.iter().any(|item| item.starts_with("EnumVariant")));
+
+        let mut spec = programs_stack_spec();
+        spec.idls[0].types.push(struct_type("FixedPoint"));
+        spec.instructions.push(instruction("swap", "FixedPoint"));
+        let structs = compile_stack_spec(spec.clone(), None).unwrap();
+        let imports = instruction_imports(&structs.programs_rs.unwrap());
+        assert!(imports.iter().any(|item| item == "ArgField"), "{imports:?}");
+        assert!(
+            !imports.iter().any(|item| item.starts_with("EnumVariant")),
+            "{imports:?}"
+        );
+
+        spec.idls[0].types.push(IdlTypeDefSnapshot {
+            name: "Side".to_string(),
+            docs: vec![],
+            serialization: None,
+            type_def: IdlTypeDefKindSnapshot::Enum {
+                kind: "enum".to_string(),
+                variants: vec![IdlEnumVariantSnapshot {
+                    name: "Bid".to_string(),
+                    fields: vec![],
+                }],
+            },
+        });
+        spec.instructions.push(instruction("place", "Side"));
+        let enums = compile_stack_spec(spec, None).unwrap();
+        let imports = instruction_imports(&enums.programs_rs.unwrap());
+        for item in ["ArgField", "EnumVariantDef", "EnumVariantKind"] {
+            assert!(imports.iter().any(|import| import == item), "{imports:?}");
+        }
+    }
+
     #[test]
     fn rust_generator_supports_inline_tuples_from_idl_snapshots() {
         let mut spec = programs_stack_spec();
@@ -4848,6 +4931,10 @@ impl ProgramsCodegen {
 struct ProgramImports {
     account_meta: bool,
     arg_schema: bool,
+    /// An inlined struct schema, or a struct enum variant, emits `ArgField`.
+    arg_field: bool,
+    /// An inlined enum schema emits `EnumVariantDef` and `EnumVariantKind`.
+    enum_variant: bool,
     pda: bool,
     error_metadata: bool,
 }
@@ -5243,10 +5330,13 @@ impl<'a> RustDefinedTypes<'a> {
     }
 }
 
-/// Whether any emitted schema expression references `ArgField` /
-/// `EnumVariantDef` (defined struct/enum types were inlined).
-fn schema_uses_defined_types(schema: &str) -> bool {
-    schema.contains("ArgField") || schema.contains("EnumVariantDef")
+/// Record the schema items an emitted `ArgType` expression names, so the
+/// program module imports exactly those: inlined struct types (and struct
+/// enum variants) name `ArgField`, inlined enum types `EnumVariantDef` and
+/// `EnumVariantKind`.
+fn note_schema_imports(schema: &str, needs: &mut ProgramImports) {
+    needs.arg_field |= schema.contains("ArgField {");
+    needs.enum_variant |= schema.contains("EnumVariantDef {");
 }
 
 /// How a mapped account surfaces in the typed params struct.
@@ -5525,7 +5615,6 @@ fn build_rust_pda_config(
 struct RustInstructionBlock {
     code: String,
     method: String,
-    uses_defined_types: bool,
 }
 
 fn generate_rust_instruction_block(
@@ -5609,11 +5698,10 @@ fn generate_rust_instruction_block(
     // collisions between otherwise-distinct source names. ---
     let mut used_field_names: HashSet<String> = HashSet::new();
     let mut param_fields: Vec<String> = Vec::new();
-    let mut uses_defined_types = false;
     for (arg, parsed) in &parsed_args {
         let field_name = to_snake_case(&arg.name);
         used_field_names.insert(field_name.clone());
-        uses_defined_types |= schema_uses_defined_types(&parsed.schema);
+        note_schema_imports(&parsed.schema, needs);
         let mut lines = Vec::new();
         if field_name != arg.name {
             lines.push(format!(
@@ -5783,7 +5871,6 @@ fn generate_rust_instruction_block(
     Ok(RustInstructionBlock {
         code: format!("{}\n\n{}\n\n{}", params_struct, typed_fn, handler_fn),
         method,
-        uses_defined_types,
     })
 }
 
@@ -6046,7 +6133,6 @@ fn generate_stack_programs_rs(
         let mut blocks: Vec<String> = Vec::new();
         let mut methods: Vec<String> = Vec::new();
         let mut skipped: Vec<(String, String)> = Vec::new();
-        let mut uses_defined_types = false;
         for instr in group {
             let errors = if instr.errors.is_empty() {
                 program_errors.clone()
@@ -6064,7 +6150,6 @@ fn generate_stack_programs_rs(
                 Ok(block) => {
                     blocks.push(block.code);
                     methods.push(block.method);
-                    uses_defined_types |= block.uses_defined_types;
                 }
                 Err(reason) => skipped.push((instr.name.clone(), reason)),
             }
@@ -6134,8 +6219,11 @@ fn generate_stack_programs_rs(
             if needs.arg_schema {
                 imports.extend(["ArgSchema", "ArgType"]);
             }
-            if uses_defined_types {
-                imports.extend(["ArgField", "EnumVariantDef", "EnumVariantKind"]);
+            if needs.arg_field {
+                imports.push("ArgField");
+            }
+            if needs.enum_variant {
+                imports.extend(["EnumVariantDef", "EnumVariantKind"]);
             }
             if needs.error_metadata {
                 imports.push("ErrorMetadata");

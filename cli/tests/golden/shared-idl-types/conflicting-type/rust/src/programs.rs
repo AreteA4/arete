@@ -11,7 +11,7 @@
 
 /// Program SDK for `alpha` (program ID `2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM`).
 pub mod alpha {
-    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgField, ArgSchema, ArgType, BuiltInstruction, EnumVariantDef, EnumVariantKind, InstructionError, InstructionHandler};
+    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgField, ArgSchema, ArgType, BuiltInstruction, InstructionError, InstructionHandler};
     use serde::Serialize;
 
     pub const PROGRAM_ID: &str = "2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM";
@@ -120,7 +120,7 @@ pub mod alpha {
 
 /// Program SDK for `beta` (program ID `Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS`).
 pub mod beta {
-    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgField, ArgSchema, ArgType, BuiltInstruction, EnumVariantDef, EnumVariantKind, InstructionError, InstructionHandler};
+    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgField, ArgSchema, ArgType, BuiltInstruction, InstructionError, InstructionHandler};
     use serde::Serialize;
 
     pub const PROGRAM_ID: &str = "Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS";
