@@ -479,6 +479,18 @@ auth tokens per binding.
     `arete.encode_base58(bytes) -> str` and `arete.decode_base58(str) -> bytes`
     (`ValueError`); both fail with the TypeScript text
     `Invalid base58 character: <c>`.
+  - **Instruction artifacts.** A TypeScript semantic instruction carries its built
+    instruction as `artifacts.instruction`, a TypeScript `BuiltInstruction`:
+    `{ programId, keys: [{ pubkey, isSigner, isWritable }], data }`. The Rust and
+    Python `BuiltInstruction` keep their own field names (`program_id`, `accounts`),
+    so a port builds that shape with `to_artifact()`, never by hand: Rust
+    `instruction.to_artifact()` returns a `serde_json::Value` (artifacts are JSON, so
+    `data` is an array of byte values, as TypeScript's `toJsonValue` encodes it), and
+    Python `instruction.to_artifact()` returns a dict whose `data` is `bytes` (the
+    TypeScript artifact's `Uint8Array`; `to_json_value` lists its byte values, as
+    TypeScript does). Mirror `artifacts: { instruction }` with
+    `json!({ "instruction": instruction.to_artifact() })` /
+    `{"instruction": instruction.to_artifact()}`.
 
 ## 10. Idiom matrix
 
