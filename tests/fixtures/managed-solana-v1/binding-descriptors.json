@@ -1,0 +1,51 @@
+{
+  "chain": {
+    "endpoint": "https://gateway.example",
+    "authPolicy": "publishable-key",
+    "solanaGatewayBindingId": "sgb_0000000000000000000000000000chn1",
+    "cluster": "mainnet-beta",
+    "region": "iad",
+    "auth": {
+      "required": true,
+      "mode": "publishable-key",
+      "sessionEndpoint": "https://auth.example/sessions",
+      "jwksUrl": "https://auth.example/jwks.json",
+      "tokenTransport": "bearer",
+      "audience": "arete:solana-gateway",
+      "targetKind": "solana-gateway-binding",
+      "targetId": "sgb_0000000000000000000000000000chn1",
+      "scopes": [
+        "read"
+      ],
+      "acceptedKeyClasses": [
+        "publishable"
+      ],
+      "transactionEntitlementRequired": false
+    }
+  },
+  "transactions": {
+    "endpoint": "https://gateway.example",
+    "authPolicy": "publishable-key",
+    "solanaGatewayBindingId": "sgb_00000000000000000000000000000tx1",
+    "cluster": "mainnet-beta",
+    "region": "iad",
+    "auth": {
+      "required": true,
+      "mode": "publishable-key",
+      "sessionEndpoint": "https://auth.example/sessions",
+      "jwksUrl": "https://auth.example/jwks.json",
+      "tokenTransport": "bearer",
+      "audience": "arete:solana-gateway",
+      "targetKind": "solana-gateway-binding",
+      "targetId": "sgb_00000000000000000000000000000tx1",
+      "scopes": [
+        "transaction:inspect",
+        "transaction:send"
+      ],
+      "acceptedKeyClasses": [
+        "publishable"
+      ],
+      "transactionEntitlementRequired": false
+    }
+  }
+}

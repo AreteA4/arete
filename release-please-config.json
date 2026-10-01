@@ -111,6 +111,10 @@
       "release-type": "rust",
       "component": "arete-artifacts",
       "initial-version": "0.1.0"
+    },
+    "rust/arete-solana-contracts": {
+      "release-type": "rust",
+      "component": "arete-solana-contracts"
     }
   },
   "plugins": [

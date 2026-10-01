@@ -18,5 +18,6 @@
   "rust/arete-mcp": "0.28.0",
   "rust/arete-auth-server": "0.0.6",
   "arete-artifacts": "0.3.3",
-  "arete-hash": "0.5.0"
+  "arete-hash": "0.5.0",
+  "rust/arete-solana-contracts": "0.1.0"
 }

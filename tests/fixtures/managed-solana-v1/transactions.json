@@ -1,0 +1,808 @@
+{
+  "contract": "managed-solana/v1",
+  "cases": [
+    {
+      "name": "legacy-success",
+      "upstream": {
+        "slot": 9007199254740993,
+        "blockTime": 1700000000,
+        "version": "legacy",
+        "transaction": {
+          "signatures": [
+            "fixture-signature"
+          ],
+          "message": {
+            "accountKeys": [
+              {
+                "pubkey": "11111111111111111111111111111111",
+                "signer": true,
+                "writable": true,
+                "source": "transaction"
+              },
+              {
+                "pubkey": "So11111111111111111111111111111111111111112",
+                "signer": false,
+                "writable": true,
+                "source": "lookupTable"
+              }
+            ],
+            "instructions": [
+              {
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "parsed": {
+                  "type": "transfer",
+                  "info": {
+                    "amount": "9007199254740993"
+                  }
+                }
+              }
+            ],
+            "recentBlockhash": "fixture-blockhash"
+          }
+        },
+        "meta": {
+          "err": null,
+          "fee": 5000,
+          "preBalances": [
+            9007199254745993,
+            0
+          ],
+          "postBalances": [
+            9007199254740993,
+            0
+          ],
+          "preTokenBalances": [
+            {
+              "accountIndex": 1,
+              "mint": "So11111111111111111111111111111111111111112",
+              "owner": "11111111111111111111111111111111",
+              "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "uiTokenAmount": {
+                "amount": "9007199254740993",
+                "decimals": 9,
+                "uiAmount": null,
+                "uiAmountString": "9007199.254740993"
+              }
+            }
+          ],
+          "postTokenBalances": [
+            {
+              "accountIndex": 1,
+              "mint": "So11111111111111111111111111111111111111112",
+              "owner": "11111111111111111111111111111111",
+              "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "uiTokenAmount": {
+                "amount": "9007199254740994",
+                "decimals": 9,
+                "uiAmount": null,
+                "uiAmountString": "9007199.254740994"
+              }
+            }
+          ],
+          "innerInstructions": [
+            {
+              "index": 0,
+              "instructions": [
+                {
+                  "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "data": "3Bxs",
+                  "accounts": [
+                    "11111111111111111111111111111111",
+                    "So11111111111111111111111111111111111111112"
+                  ]
+                }
+              ]
+            }
+          ],
+          "logMessages": [
+            "Program log: fixture"
+          ],
+          "returnData": {
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "data": [
+              "AQ==",
+              "base64"
+            ]
+          },
+          "computeUnitsConsumed": 12345,
+          "costUnits": 23456
+        }
+      },
+      "response": {
+        "transaction": {
+          "signature": "fixture-signature",
+          "slot": "9007199254740993",
+          "blockTime": "1700000000",
+          "err": null,
+          "accounts": [
+            {
+              "pubkey": "11111111111111111111111111111111",
+              "preBalance": "9007199254745993",
+              "postBalance": "9007199254740993"
+            },
+            {
+              "pubkey": "So11111111111111111111111111111111111111112",
+              "preBalance": "0",
+              "postBalance": "0"
+            }
+          ],
+          "version": "legacy",
+          "transaction": {
+            "signatures": [
+              "fixture-signature"
+            ],
+            "message": {
+              "accountKeys": [
+                {
+                  "pubkey": "11111111111111111111111111111111",
+                  "signer": true,
+                  "writable": true,
+                  "source": "transaction"
+                },
+                {
+                  "pubkey": "So11111111111111111111111111111111111111112",
+                  "signer": false,
+                  "writable": true,
+                  "source": "lookupTable"
+                }
+              ],
+              "instructions": [
+                {
+                  "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "parsed": {
+                    "type": "transfer",
+                    "info": {
+                      "amount": "9007199254740993"
+                    }
+                  }
+                }
+              ],
+              "recentBlockhash": "fixture-blockhash"
+            }
+          },
+          "meta": {
+            "err": null,
+            "fee": "5000",
+            "preBalances": [
+              "9007199254745993",
+              "0"
+            ],
+            "postBalances": [
+              "9007199254740993",
+              "0"
+            ],
+            "preTokenBalances": [
+              {
+                "accountIndex": 1,
+                "mint": "So11111111111111111111111111111111111111112",
+                "owner": "11111111111111111111111111111111",
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "uiTokenAmount": {
+                  "amount": "9007199254740993",
+                  "decimals": 9,
+                  "uiAmount": null,
+                  "uiAmountString": "9007199.254740993"
+                }
+              }
+            ],
+            "postTokenBalances": [
+              {
+                "accountIndex": 1,
+                "mint": "So11111111111111111111111111111111111111112",
+                "owner": "11111111111111111111111111111111",
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "uiTokenAmount": {
+                  "amount": "9007199254740994",
+                  "decimals": 9,
+                  "uiAmount": null,
+                  "uiAmountString": "9007199.254740994"
+                }
+              }
+            ],
+            "innerInstructions": [
+              {
+                "index": 0,
+                "instructions": [
+                  {
+                    "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "data": "3Bxs",
+                    "accounts": [
+                      "11111111111111111111111111111111",
+                      "So11111111111111111111111111111111111111112"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "logMessages": [
+              "Program log: fixture"
+            ],
+            "returnData": {
+              "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "data": [
+                "AQ==",
+                "base64"
+              ]
+            },
+            "computeUnitsConsumed": "12345",
+            "costUnits": "23456"
+          },
+          "metadataAvailable": true
+        }
+      }
+    },
+    {
+      "name": "v0-failed",
+      "upstream": {
+        "slot": 9007199254740993,
+        "blockTime": 1700000000,
+        "version": 0,
+        "transaction": {
+          "signatures": [
+            "fixture-signature"
+          ],
+          "message": {
+            "accountKeys": [
+              {
+                "pubkey": "11111111111111111111111111111111",
+                "signer": true,
+                "writable": true,
+                "source": "transaction"
+              },
+              {
+                "pubkey": "So11111111111111111111111111111111111111112",
+                "signer": false,
+                "writable": true,
+                "source": "lookupTable"
+              }
+            ],
+            "instructions": [
+              {
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "parsed": {
+                  "type": "transfer",
+                  "info": {
+                    "amount": "9007199254740993"
+                  }
+                }
+              }
+            ],
+            "recentBlockhash": "fixture-blockhash"
+          }
+        },
+        "meta": {
+          "err": {
+            "InstructionError": [
+              0,
+              {
+                "Custom": 1
+              }
+            ]
+          },
+          "fee": 5000,
+          "preBalances": [
+            9007199254745993,
+            0
+          ],
+          "postBalances": [
+            9007199254740993,
+            0
+          ],
+          "preTokenBalances": [
+            {
+              "accountIndex": 1,
+              "mint": "So11111111111111111111111111111111111111112",
+              "owner": "11111111111111111111111111111111",
+              "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "uiTokenAmount": {
+                "amount": "9007199254740993",
+                "decimals": 9,
+                "uiAmount": null,
+                "uiAmountString": "9007199.254740993"
+              }
+            }
+          ],
+          "postTokenBalances": [
+            {
+              "accountIndex": 1,
+              "mint": "So11111111111111111111111111111111111111112",
+              "owner": "11111111111111111111111111111111",
+              "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "uiTokenAmount": {
+                "amount": "9007199254740994",
+                "decimals": 9,
+                "uiAmount": null,
+                "uiAmountString": "9007199.254740994"
+              }
+            }
+          ],
+          "innerInstructions": [
+            {
+              "index": 0,
+              "instructions": [
+                {
+                  "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "data": "3Bxs",
+                  "accounts": [
+                    "11111111111111111111111111111111",
+                    "So11111111111111111111111111111111111111112"
+                  ]
+                }
+              ]
+            }
+          ],
+          "logMessages": [
+            "Program log: fixture"
+          ],
+          "returnData": {
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "data": [
+              "AQ==",
+              "base64"
+            ]
+          },
+          "computeUnitsConsumed": 12345,
+          "costUnits": 23456
+        }
+      },
+      "response": {
+        "transaction": {
+          "signature": "fixture-signature",
+          "slot": "9007199254740993",
+          "blockTime": "1700000000",
+          "err": {
+            "InstructionError": [
+              0,
+              {
+                "Custom": 1
+              }
+            ]
+          },
+          "accounts": [
+            {
+              "pubkey": "11111111111111111111111111111111",
+              "preBalance": "9007199254745993",
+              "postBalance": "9007199254740993"
+            },
+            {
+              "pubkey": "So11111111111111111111111111111111111111112",
+              "preBalance": "0",
+              "postBalance": "0"
+            }
+          ],
+          "version": 0,
+          "transaction": {
+            "signatures": [
+              "fixture-signature"
+            ],
+            "message": {
+              "accountKeys": [
+                {
+                  "pubkey": "11111111111111111111111111111111",
+                  "signer": true,
+                  "writable": true,
+                  "source": "transaction"
+                },
+                {
+                  "pubkey": "So11111111111111111111111111111111111111112",
+                  "signer": false,
+                  "writable": true,
+                  "source": "lookupTable"
+                }
+              ],
+              "instructions": [
+                {
+                  "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "parsed": {
+                    "type": "transfer",
+                    "info": {
+                      "amount": "9007199254740993"
+                    }
+                  }
+                }
+              ],
+              "recentBlockhash": "fixture-blockhash"
+            }
+          },
+          "meta": {
+            "err": {
+              "InstructionError": [
+                0,
+                {
+                  "Custom": 1
+                }
+              ]
+            },
+            "fee": "5000",
+            "preBalances": [
+              "9007199254745993",
+              "0"
+            ],
+            "postBalances": [
+              "9007199254740993",
+              "0"
+            ],
+            "preTokenBalances": [
+              {
+                "accountIndex": 1,
+                "mint": "So11111111111111111111111111111111111111112",
+                "owner": "11111111111111111111111111111111",
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "uiTokenAmount": {
+                  "amount": "9007199254740993",
+                  "decimals": 9,
+                  "uiAmount": null,
+                  "uiAmountString": "9007199.254740993"
+                }
+              }
+            ],
+            "postTokenBalances": [
+              {
+                "accountIndex": 1,
+                "mint": "So11111111111111111111111111111111111111112",
+                "owner": "11111111111111111111111111111111",
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "uiTokenAmount": {
+                  "amount": "9007199254740994",
+                  "decimals": 9,
+                  "uiAmount": null,
+                  "uiAmountString": "9007199.254740994"
+                }
+              }
+            ],
+            "innerInstructions": [
+              {
+                "index": 0,
+                "instructions": [
+                  {
+                    "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "data": "3Bxs",
+                    "accounts": [
+                      "11111111111111111111111111111111",
+                      "So11111111111111111111111111111111111111112"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "logMessages": [
+              "Program log: fixture"
+            ],
+            "returnData": {
+              "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "data": [
+                "AQ==",
+                "base64"
+              ]
+            },
+            "computeUnitsConsumed": "12345",
+            "costUnits": "23456"
+          },
+          "metadataAvailable": true
+        }
+      }
+    },
+    {
+      "name": "v1-success",
+      "upstream": {
+        "slot": 9007199254740993,
+        "blockTime": 1700000000,
+        "version": 1,
+        "transaction": {
+          "signatures": [
+            "fixture-signature"
+          ],
+          "message": {
+            "accountKeys": [
+              {
+                "pubkey": "11111111111111111111111111111111",
+                "signer": true,
+                "writable": true,
+                "source": "transaction"
+              },
+              {
+                "pubkey": "So11111111111111111111111111111111111111112",
+                "signer": false,
+                "writable": true,
+                "source": "lookupTable"
+              }
+            ],
+            "instructions": [
+              {
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "parsed": {
+                  "type": "transfer",
+                  "info": {
+                    "amount": "9007199254740993"
+                  }
+                }
+              }
+            ],
+            "recentBlockhash": "fixture-blockhash"
+          }
+        },
+        "meta": {
+          "err": null,
+          "fee": 5000,
+          "preBalances": [
+            9007199254745993,
+            0
+          ],
+          "postBalances": [
+            9007199254740993,
+            0
+          ],
+          "preTokenBalances": [
+            {
+              "accountIndex": 1,
+              "mint": "So11111111111111111111111111111111111111112",
+              "owner": "11111111111111111111111111111111",
+              "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "uiTokenAmount": {
+                "amount": "9007199254740993",
+                "decimals": 9,
+                "uiAmount": null,
+                "uiAmountString": "9007199.254740993"
+              }
+            }
+          ],
+          "postTokenBalances": [
+            {
+              "accountIndex": 1,
+              "mint": "So11111111111111111111111111111111111111112",
+              "owner": "11111111111111111111111111111111",
+              "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "uiTokenAmount": {
+                "amount": "9007199254740994",
+                "decimals": 9,
+                "uiAmount": null,
+                "uiAmountString": "9007199.254740994"
+              }
+            }
+          ],
+          "innerInstructions": [
+            {
+              "index": 0,
+              "instructions": [
+                {
+                  "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "data": "3Bxs",
+                  "accounts": [
+                    "11111111111111111111111111111111",
+                    "So11111111111111111111111111111111111111112"
+                  ]
+                }
+              ]
+            }
+          ],
+          "logMessages": [
+            "Program log: fixture"
+          ],
+          "returnData": {
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "data": [
+              "AQ==",
+              "base64"
+            ]
+          },
+          "computeUnitsConsumed": 12345,
+          "costUnits": 23456
+        }
+      },
+      "response": {
+        "transaction": {
+          "signature": "fixture-signature",
+          "slot": "9007199254740993",
+          "blockTime": "1700000000",
+          "err": null,
+          "accounts": [
+            {
+              "pubkey": "11111111111111111111111111111111",
+              "preBalance": "9007199254745993",
+              "postBalance": "9007199254740993"
+            },
+            {
+              "pubkey": "So11111111111111111111111111111111111111112",
+              "preBalance": "0",
+              "postBalance": "0"
+            }
+          ],
+          "version": 1,
+          "transaction": {
+            "signatures": [
+              "fixture-signature"
+            ],
+            "message": {
+              "accountKeys": [
+                {
+                  "pubkey": "11111111111111111111111111111111",
+                  "signer": true,
+                  "writable": true,
+                  "source": "transaction"
+                },
+                {
+                  "pubkey": "So11111111111111111111111111111111111111112",
+                  "signer": false,
+                  "writable": true,
+                  "source": "lookupTable"
+                }
+              ],
+              "instructions": [
+                {
+                  "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "parsed": {
+                    "type": "transfer",
+                    "info": {
+                      "amount": "9007199254740993"
+                    }
+                  }
+                }
+              ],
+              "recentBlockhash": "fixture-blockhash"
+            }
+          },
+          "meta": {
+            "err": null,
+            "fee": "5000",
+            "preBalances": [
+              "9007199254745993",
+              "0"
+            ],
+            "postBalances": [
+              "9007199254740993",
+              "0"
+            ],
+            "preTokenBalances": [
+              {
+                "accountIndex": 1,
+                "mint": "So11111111111111111111111111111111111111112",
+                "owner": "11111111111111111111111111111111",
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "uiTokenAmount": {
+                  "amount": "9007199254740993",
+                  "decimals": 9,
+                  "uiAmount": null,
+                  "uiAmountString": "9007199.254740993"
+                }
+              }
+            ],
+            "postTokenBalances": [
+              {
+                "accountIndex": 1,
+                "mint": "So11111111111111111111111111111111111111112",
+                "owner": "11111111111111111111111111111111",
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "uiTokenAmount": {
+                  "amount": "9007199254740994",
+                  "decimals": 9,
+                  "uiAmount": null,
+                  "uiAmountString": "9007199.254740994"
+                }
+              }
+            ],
+            "innerInstructions": [
+              {
+                "index": 0,
+                "instructions": [
+                  {
+                    "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "data": "3Bxs",
+                    "accounts": [
+                      "11111111111111111111111111111111",
+                      "So11111111111111111111111111111111111111112"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "logMessages": [
+              "Program log: fixture"
+            ],
+            "returnData": {
+              "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "data": [
+                "AQ==",
+                "base64"
+              ]
+            },
+            "computeUnitsConsumed": "12345",
+            "costUnits": "23456"
+          },
+          "metadataAvailable": true
+        }
+      }
+    },
+    {
+      "name": "metadata-unavailable",
+      "upstream": {
+        "slot": 42,
+        "blockTime": null,
+        "transaction": {
+          "signatures": [
+            "fixture-signature"
+          ],
+          "message": {
+            "accountKeys": [
+              {
+                "pubkey": "11111111111111111111111111111111",
+                "signer": true,
+                "writable": true,
+                "source": "transaction"
+              },
+              {
+                "pubkey": "So11111111111111111111111111111111111111112",
+                "signer": false,
+                "writable": true,
+                "source": "lookupTable"
+              }
+            ],
+            "instructions": [
+              {
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "parsed": {
+                  "type": "transfer",
+                  "info": {
+                    "amount": "9007199254740993"
+                  }
+                }
+              }
+            ],
+            "recentBlockhash": "fixture-blockhash"
+          }
+        },
+        "meta": null
+      },
+      "response": {
+        "transaction": {
+          "signature": "fixture-signature",
+          "slot": "42",
+          "blockTime": null,
+          "err": null,
+          "accounts": [],
+          "transaction": {
+            "signatures": [
+              "fixture-signature"
+            ],
+            "message": {
+              "accountKeys": [
+                {
+                  "pubkey": "11111111111111111111111111111111",
+                  "signer": true,
+                  "writable": true,
+                  "source": "transaction"
+                },
+                {
+                  "pubkey": "So11111111111111111111111111111111111111112",
+                  "signer": false,
+                  "writable": true,
+                  "source": "lookupTable"
+                }
+              ],
+              "instructions": [
+                {
+                  "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "parsed": {
+                    "type": "transfer",
+                    "info": {
+                      "amount": "9007199254740993"
+                    }
+                  }
+                }
+              ],
+              "recentBlockhash": "fixture-blockhash"
+            }
+          },
+          "meta": null,
+          "metadataAvailable": false
+        }
+      }
+    },
+    {
+      "name": "missing",
+      "upstream": null,
+      "response": {
+        "transaction": null
+      }
+    }
+  ]
+}

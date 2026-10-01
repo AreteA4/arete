@@ -10,6 +10,7 @@ members = [
     "cli",
     "rust/arete-server",
     "rust/arete-a4-sdk",
+    "rust/arete-solana-contracts",
     "rust/arete-auth",
     "rust/arete-auth-server",
     "rust/arete-mcp",
