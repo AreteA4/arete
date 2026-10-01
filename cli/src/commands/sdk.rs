@@ -204,6 +204,9 @@ struct ResolvedExtensionsArtifact {
     extension_api: Option<std::num::NonZeroU32>,
     sdk_extension_hash: Option<String>,
     sdk_output_tree_hash: Option<String>,
+    /// The registry content hash a hosted bundle was served under; `None`
+    /// for a local bundle.
+    content_hash: Option<String>,
     program_extension_bindings: Vec<ProgramExtensionBinding>,
 }
 
@@ -622,21 +625,46 @@ impl ResolvedStackSource {
         }
     }
 
-    /// Refuse a Rust or Python stack generation that would drop a program
-    /// SDK extension its programs carry for that target.
-    fn reject_program_extensions_for(
+    /// The program package extensions a Rust or Python stack SDK embeds:
+    /// each hosted program's own extension for `target`, staged into the
+    /// stack exactly as a standalone install of that program stages it.
+    fn embedded_program_extensions(
         &self,
         target: crate::project::manifest::InstallTarget,
-    ) -> Result<()> {
+    ) -> Result<Vec<EmbeddedProgramExtension>> {
         let Self::Remote(stack) = self else {
-            return Ok(());
+            return Ok(Vec::new());
         };
+        let language = match target {
+            crate::project::manifest::InstallTarget::TypeScript => return Ok(Vec::new()),
+            crate::project::manifest::InstallTarget::Rust => EXTENSIONS_LANGUAGE_RUST,
+            crate::project::manifest::InstallTarget::Python => EXTENSIONS_LANGUAGE_PYTHON,
+        };
+        let mut embedded = Vec::new();
         for program in &stack.programs {
-            let extension =
-                crate::project::resolver::program_extension_for_target(program, target)?;
-            reject_stack_program_extension(&stack.stack, program, target, extension.is_some())?;
+            let Some(artifact) =
+                crate::project::resolver::program_extension_for_target(program, target)?
+            else {
+                continue;
+            };
+            let artifact = resolved_extensions_artifact_from_registry(&artifact)?;
+            ensure_hosted_extension_language(&artifact, language).with_context(|| {
+                format!(
+                    "Stack '{}' program '{}' carries an invalid {target} SDK extension",
+                    stack.stack, program.install_name
+                )
+            })?;
+            embedded.push(EmbeddedProgramExtension {
+                program_id: program.definition.program_id.clone(),
+                install_name: program.install_name.clone(),
+                input_pin: ResolvedExtensionsInputPin {
+                    kind: ExtensionsInputKind::ProgramSpec,
+                    hash: program.definition.program_spec_hash.clone(),
+                },
+                artifact,
+            });
         }
-        Ok(())
+        Ok(embedded)
     }
 
     fn composition_artifacts(&self) -> Option<CompositionArtifacts<'_>> {
@@ -880,6 +908,7 @@ pub fn create(
     artifact_dirs: Vec<String>,
     live_module_values: Vec<String>,
     program_module_values: Vec<String>,
+    program_extension_values: Vec<String>,
     program_only: bool,
 ) -> Result<()> {
     if idl_override.is_some() && !program_only {
@@ -887,8 +916,22 @@ pub fn create(
             "--idl is only supported together with --program-only"
         ));
     }
+    let program_extensions = parse_program_extension_args(&program_extension_values)?;
 
-    match select_sdk_target(ts, rust, python, "Generate which SDK?")? {
+    let target = select_sdk_target(ts, rust, python, "Generate which SDK?")?;
+    if !program_extensions.is_empty() {
+        if matches!(target, SdkTarget::TypeScript) {
+            anyhow::bail!(
+                "--program-extensions embeds program bundles in Rust and Python stack SDKs; a TypeScript stack SDK imports program SDKs with --program-module"
+            );
+        }
+        if manifest_override.is_none() {
+            anyhow::bail!(
+                "--program-extensions applies to a stack SDK generated offline from --manifest"
+            );
+        }
+    }
+    match target {
         SdkTarget::TypeScript => create_typescript(
             config_path,
             stack_name,
@@ -905,14 +948,27 @@ pub fn create(
             program_only,
         ),
         SdkTarget::Rust => {
-            if program_only {
-                return Err(anyhow::anyhow!(
-                    "--program-only is only supported for TypeScript SDKs (--ts)"
-                ));
-            }
             if !live_module_values.is_empty() || !program_module_values.is_empty() {
                 return Err(anyhow::anyhow!(
                     "--live-module and --program-module are only supported for TypeScript composition SDKs"
+                ));
+            }
+            if let Some(program) = load_local_program_source(
+                program_spec_override.as_deref(),
+                idl_override.as_deref(),
+            )? {
+                return create_local_program_sdk(
+                    &program,
+                    crate::project::manifest::InstallTarget::Rust,
+                    output_override,
+                    crate_name_override,
+                    module_flag,
+                    extensions_override,
+                );
+            }
+            if program_only {
+                return Err(anyhow::anyhow!(
+                    "--program-only Rust SDKs are generated from a program: pass --program-spec <file> or --idl <file>"
                 ));
             }
             create_rust(
@@ -925,17 +981,31 @@ pub fn create(
                 extensions_override,
                 manifest_override,
                 artifact_dirs,
+                &program_extensions,
             )
         }
         SdkTarget::Python => {
-            if program_only {
-                return Err(anyhow::anyhow!(
-                    "--program-only is only supported for TypeScript SDKs (--ts)"
-                ));
-            }
             if !live_module_values.is_empty() || !program_module_values.is_empty() {
                 return Err(anyhow::anyhow!(
                     "--live-module and --program-module are only supported for TypeScript composition SDKs"
+                ));
+            }
+            if let Some(program) = load_local_program_source(
+                program_spec_override.as_deref(),
+                idl_override.as_deref(),
+            )? {
+                return create_local_program_sdk(
+                    &program,
+                    crate::project::manifest::InstallTarget::Python,
+                    output_override,
+                    package_name_override,
+                    module_flag,
+                    extensions_override,
+                );
+            }
+            if program_only {
+                return Err(anyhow::anyhow!(
+                    "--program-only Python SDKs are generated from a program: pass --program-spec <file> or --idl <file>"
                 ));
             }
             create_python(
@@ -948,9 +1018,121 @@ pub fn create(
                 extensions_override,
                 manifest_override,
                 artifact_dirs,
+                &program_extensions,
             )
         }
     }
+}
+
+/// A program to generate a standalone Rust or Python program SDK from
+/// offline: a ProgramSpec file, or a raw IDL turned into one.
+struct LocalProgramSource {
+    program_spec: arete_artifacts::ProgramSpecArtifact,
+    /// kebab-case SDK name: the crate/package is `<name>-program`.
+    sdk_name: String,
+    description: String,
+}
+
+fn load_local_program_source(
+    program_spec_path: Option<&str>,
+    idl_path: Option<&str>,
+) -> Result<Option<LocalProgramSource>> {
+    if let Some(path) = program_spec_path {
+        let path = PathBuf::from(path);
+        let bytes = fs::read(&path)
+            .with_context(|| format!("Failed to read ProgramSpec {}", path.display()))?;
+        let program_spec = arete_artifacts::load_program_spec(&bytes)
+            .with_context(|| format!("Invalid ProgramSpec {}", path.display()))?
+            .artifact;
+        let sdk_name = to_kebab_case(&program_spec.payload.idl_snapshot.snapshot.name);
+        return Ok(Some(LocalProgramSource {
+            program_spec,
+            sdk_name,
+            description: format!("ProgramSpec '{}'", path.display()),
+        }));
+    }
+    if let Some(path) = idl_path {
+        let path = PathBuf::from(path);
+        let bytes =
+            fs::read(&path).with_context(|| format!("Failed to read IDL {}", path.display()))?;
+        let spec =
+            arete_interpreter::program_sdk::build_program_spec_v1_from_idl_bytes(&bytes, None)
+                .map_err(|error| anyhow::anyhow!("Invalid IDL {}: {error}", path.display()))?;
+        let program_spec = arete_artifacts::ProgramSpecArtifact::new(spec)
+            .map_err(|error| anyhow::anyhow!("Invalid IDL {}: {error}", path.display()))?;
+        return Ok(Some(LocalProgramSource {
+            program_spec,
+            sdk_name: idl_sdk_name_from_path(&path)?,
+            description: format!("IDL '{}'", path.display()),
+        }));
+    }
+    Ok(None)
+}
+
+/// `a4 sdk create --rust|--python --program-spec <file>` (or `--idl`): the
+/// standalone program crate or package `a4 install program <p> --rust|
+/// --python` generates, from a local program and optional `--extensions`
+/// bundle.
+fn create_local_program_sdk(
+    program: &LocalProgramSource,
+    target: crate::project::manifest::InstallTarget,
+    output_override: Option<String>,
+    name_override: Option<String>,
+    module: bool,
+    extensions: Option<String>,
+) -> Result<()> {
+    use crate::project::manifest::InstallTarget;
+
+    ensure_file_stem(&program.sdk_name)?;
+    let (language, default_output) = match target {
+        InstallTarget::Rust => ("Rust", format!("./generated/{}-program", program.sdk_name)),
+        InstallTarget::Python => (
+            "Python",
+            format!("./generated/{}-program-py", program.sdk_name),
+        ),
+        InstallTarget::TypeScript => unreachable!("TypeScript program SDKs use create_typescript"),
+    };
+    let output = output_override
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(default_output));
+    println!(
+        "{} Generating {language} program SDK from {}...",
+        "→".blue().bold(),
+        program.description
+    );
+    let options = ProjectGenerationOptions {
+        alias: &program.sdk_name,
+        target,
+        output: &output,
+        typescript_package: "",
+        rust_module: module,
+        python_module: module,
+        stack_endpoints: None,
+    };
+    let local = LocalProgramSdk {
+        extensions: extensions.as_deref().map(Path::new),
+        name: name_override.as_deref(),
+        reuse_staged_extensions: true,
+    };
+    match target {
+        InstallTarget::Rust => {
+            generate_rust_program_sdk(&program.program_spec, None, options, &local)?
+        }
+        InstallTarget::Python => {
+            generate_python_program_sdk(&program.program_spec, None, options, &local)?
+        }
+        InstallTarget::TypeScript => unreachable!(),
+    }
+    println!(
+        "{} Successfully generated {language} program SDK!",
+        "✓".green().bold()
+    );
+    println!("  Output: {}", output.display().to_string().bold());
+    telemetry::record_sdk_generated(match target {
+        InstallTarget::Rust => "rust",
+        _ => "python",
+    });
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1284,7 +1466,7 @@ pub(crate) fn generate_project_registry_dependency(
                 .transpose()?;
             let programs = programs
                 .iter()
-                .map(|program| stack_program_for_target(program, package, options.target))
+                .map(|program| stack_program_for_target(program, options.target))
                 .collect::<Result<Vec<_>>>()?;
             let source = ResolvedStackSource::Remote(Box::new(RemoteStackAst {
                 name: alias.clone(),
@@ -1404,7 +1586,7 @@ pub(crate) fn generate_project_composed_stack(
     let programs = composed
         .programs
         .iter()
-        .map(|program| stack_program_for_target(program, &composed.name, options.target))
+        .map(|program| stack_program_for_target(program, options.target))
         .collect::<Result<Vec<_>>>()?;
     let source = ResolvedStackSource::Remote(Box::new(RemoteStackAst {
         name: options.alias.to_string(),
@@ -1439,59 +1621,239 @@ pub(crate) fn generate_project_composed_stack(
 /// A stack program descriptor with its program SDK extension selected for
 /// one generation target, carried as the descriptor's single extension.
 ///
-/// TypeScript stacks generate each program's SDK module with its extension.
-/// The Rust and Python stack generators have no per-program extension slot
-/// yet, so a program SDK extension for those targets is refused rather than
-/// dropped: the stack would otherwise install with a smaller surface than the
-/// same program installed on its own.
+/// Every stack SDK generates each program with its own package extension for
+/// the target, so a stack installs the same program surface as the program
+/// installed on its own: TypeScript as a program SDK module, Rust as the
+/// program's module in `programs.rs`, Python as a `program_sdks` subpackage.
 fn stack_program_for_target(
     program: &RegistryProgramInstallResponse,
-    stack: &str,
     target: crate::project::manifest::InstallTarget,
 ) -> Result<RegistryProgramInstallResponse> {
-    use crate::project::manifest::InstallTarget;
-
     let extension = crate::project::resolver::program_extension_for_target(program, target)?;
     let mut program = program.clone();
     program.sdk_extensions = None;
-    match target {
-        InstallTarget::TypeScript => program.definition.extensions = extension,
-        InstallTarget::Rust | InstallTarget::Python => {
-            reject_stack_program_extension(stack, &program, target, extension.is_some())?;
-            program.definition.extensions = None;
-        }
-    }
+    program.definition.extensions = extension;
     Ok(program)
 }
 
-fn reject_stack_program_extension(
-    stack: &str,
-    program: &RegistryProgramInstallResponse,
+/// Multi-live Rust and Python compositions have no program extension slot
+/// yet: refuse one rather than generate a smaller surface than the program
+/// installed on its own.
+fn reject_composition_program_extensions(
+    source: &ResolvedStackSource,
     target: crate::project::manifest::InstallTarget,
-    has_extension: bool,
 ) -> Result<()> {
-    if !has_extension {
-        return Ok(());
+    if let Some(extension) = source.embedded_program_extensions(target)?.first() {
+        anyhow::bail!(
+            "Multi-live {target} stack SDKs cannot embed program package extensions yet, and program '{}' carries a {target} SDK extension. Nothing was generated. Install the program on its own for {target}, or generate the stack for TypeScript.",
+            extension.install_name
+        );
     }
-    let release = program
-        .program_package
-        .as_ref()
-        .map(|package| format!(" ({}@{})", package.package, package.version))
-        .unwrap_or_default();
-    anyhow::bail!(
-        "Stack '{stack}' includes program '{}'{release} with a {target} SDK extension, and {target} stack SDKs cannot include per-program extensions yet. Nothing was generated. Install the program on its own for {target} (`a4 install program {} --{}`), or generate the stack for TypeScript.",
-        program.install_name,
-        program
-            .program_package
-            .as_ref()
-            .map(|package| package.package.as_str())
-            .unwrap_or(program.install_name.as_str()),
-        match target {
-            crate::project::manifest::InstallTarget::TypeScript => "ts",
-            crate::project::manifest::InstallTarget::Rust => "rust",
-            crate::project::manifest::InstallTarget::Python => "python",
+    Ok(())
+}
+
+/// A program package's own extension embedded in a Rust or Python stack SDK.
+struct EmbeddedProgramExtension {
+    program_id: String,
+    install_name: String,
+    input_pin: ResolvedExtensionsInputPin,
+    artifact: ResolvedExtensionsArtifact,
+}
+
+/// `--program-extensions <program>=<bundle>`: one stack program's own
+/// extension bundle for a Rust or Python stack SDK generated offline from
+/// `--manifest`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalProgramExtensionArg {
+    /// The program as the stack SDK keys it (`programs.<key>`), or its IDL
+    /// name or program ID.
+    program: String,
+    /// The bundle: a directory holding `extensions.json`, or that manifest.
+    path: PathBuf,
+}
+
+fn parse_program_extension_args(values: &[String]) -> Result<Vec<LocalProgramExtensionArg>> {
+    let mut args: Vec<LocalProgramExtensionArg> = Vec::with_capacity(values.len());
+    for value in values {
+        let Some((program, path)) = value
+            .split_once('=')
+            .filter(|(program, path)| !program.is_empty() && !path.is_empty())
+        else {
+            anyhow::bail!(
+                "--program-extensions must use <program>=<bundle dir or extensions.json> syntax, received '{value}'"
+            );
+        };
+        if args.iter().any(|arg| arg.program == program) {
+            anyhow::bail!("--program-extensions names program '{program}' more than once");
         }
-    )
+        args.push(LocalProgramExtensionArg {
+            program: program.to_string(),
+            path: PathBuf::from(path),
+        });
+    }
+    Ok(args)
+}
+
+fn reject_composition_local_program_extensions(args: &[LocalProgramExtensionArg]) -> Result<()> {
+    if let Some(arg) = args.first() {
+        anyhow::bail!(
+            "Multi-live Rust and Python stack SDKs cannot embed program package extensions yet; --program-extensions names program '{}'. Nothing was generated.",
+            arg.program
+        );
+    }
+    Ok(())
+}
+
+/// Every program package extension a Rust or Python stack SDK embeds: the
+/// published ones of a hosted stack, or the `--program-extensions` bundles
+/// of an offline one, in the stack's program order.
+fn stack_program_extensions(
+    source: &ResolvedStackSource,
+    target: crate::project::manifest::InstallTarget,
+    local: &[LocalProgramExtensionArg],
+) -> Result<Vec<EmbeddedProgramExtension>> {
+    let mut extensions = source.embedded_program_extensions(target)?;
+    if local.is_empty() {
+        return Ok(extensions);
+    }
+    let ResolvedStackSource::LocalArtifacts(stack) = source else {
+        anyhow::bail!(
+            "--program-extensions applies to a stack SDK generated offline from --manifest"
+        );
+    };
+    let (language, program_key): (&str, fn(&str) -> String) = match target {
+        crate::project::manifest::InstallTarget::Rust => (
+            EXTENSIONS_LANGUAGE_RUST,
+            arete_interpreter::rust::rust_module_name,
+        ),
+        crate::project::manifest::InstallTarget::Python => (
+            EXTENSIONS_LANGUAGE_PYTHON,
+            arete_interpreter::python::python_module_name,
+        ),
+        crate::project::manifest::InstallTarget::TypeScript => anyhow::bail!(
+            "--program-extensions embeds program bundles in Rust and Python stack SDKs only"
+        ),
+    };
+    let stack_name = &stack.stack_manifest.payload.name;
+    for arg in local {
+        let matches = stack
+            .program_specs
+            .iter()
+            .filter(|program| {
+                let name = &program.payload.idl_snapshot.snapshot.name;
+                arg.program == program_key(name)
+                    || arg.program == *name
+                    || arg.program == program.payload.program_id
+            })
+            .collect::<Vec<_>>();
+        let program = match matches.as_slice() {
+            [program] => *program,
+            [] => anyhow::bail!(
+                "--program-extensions names program '{}', which stack '{stack_name}' does not contain (its programs: {}). Nothing was generated.",
+                arg.program,
+                stack
+                    .program_specs
+                    .iter()
+                    .map(|program| program_key(&program.payload.idl_snapshot.snapshot.name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            _ => anyhow::bail!(
+                "--program-extensions program '{}' matches more than one program of stack '{stack_name}'; name it by program ID",
+                arg.program
+            ),
+        };
+        let program_id = &program.payload.program_id;
+        if extensions
+            .iter()
+            .any(|extension| extension.program_id == *program_id)
+        {
+            anyhow::bail!(
+                "--program-extensions binds more than one bundle to program '{}'",
+                arg.program
+            );
+        }
+        let artifact = match target {
+            crate::project::manifest::InstallTarget::Rust => {
+                resolve_explicit_rust_extensions_artifact(&arg.path, &arg.program)
+            }
+            _ => resolve_explicit_python_extensions_artifact(&arg.path, &arg.program),
+        }
+        .with_context(|| {
+            format!(
+                "Failed to read the --program-extensions bundle of program '{}'",
+                arg.program
+            )
+        })?;
+        let declared = if bundle_has_manifest(&arg.path) {
+            artifact.language.as_deref()
+        } else {
+            // A bare entry file's language is inferred, never declared.
+            None
+        };
+        if declared != Some(language) {
+            anyhow::bail!(
+                "The --program-extensions bundle of program '{}' ({}) declares {}; a {target} stack SDK embeds only a bundle whose extensions.json declares \"language\": \"{language}\". Nothing was generated.",
+                arg.program,
+                arg.path.display(),
+                declared
+                    .map(|declared| format!("language '{declared}'"))
+                    .unwrap_or_else(|| "no language".to_string()),
+            );
+        }
+        let spec_hash = program.artifact_hash.to_string();
+        let pinned = matches!(
+            (artifact.input_kind, artifact.input_hash.as_deref()),
+            (Some(ExtensionsInputKind::ProgramSpec), Some(hash)) if hash == spec_hash
+        );
+        if !pinned {
+            anyhow::bail!(
+                "The --program-extensions bundle of program '{}' ({}) must pin inputKind \"program-spec\" and inputHash \"{spec_hash}\", the program's ProgramSpec in this StackManifest; it pins {}. Nothing was generated.",
+                arg.program,
+                arg.path.display(),
+                match (artifact.input_kind, artifact.input_hash.as_deref()) {
+                    (Some(kind), Some(hash)) => format!("{} {hash}", kind.as_manifest_value()),
+                    _ => "nothing".to_string(),
+                }
+            );
+        }
+        extensions.push(EmbeddedProgramExtension {
+            program_id: program_id.clone(),
+            install_name: arg.program.clone(),
+            input_pin: ResolvedExtensionsInputPin {
+                kind: ExtensionsInputKind::ProgramSpec,
+                hash: spec_hash,
+            },
+            artifact,
+        });
+    }
+    let order = |program_id: &str| {
+        stack
+            .program_specs
+            .iter()
+            .position(|program| program.payload.program_id == program_id)
+    };
+    extensions.sort_by_key(|extension| order(&extension.program_id));
+    Ok(extensions)
+}
+
+/// Whether a bundle path is, or holds, an `extensions.json` manifest (rather
+/// than a bare entry file).
+fn bundle_has_manifest(path: &Path) -> bool {
+    if path.is_dir() {
+        path.join("extensions.json").is_file()
+    } else {
+        path.extension().and_then(|ext| ext.to_str()) == Some("json")
+    }
+}
+
+/// An embedded program extension after staging: where its files went and
+/// the program key its provenance is recorded under.
+struct StagedProgramExtension<'a> {
+    program_key: String,
+    /// Directory of the staged files, relative to the SDK output directory.
+    relative_dir: String,
+    extension: &'a EmbeddedProgramExtension,
 }
 
 fn project_sdk_extension(
@@ -1561,6 +1923,7 @@ fn generate_project_stack_source(
                         "multi-live Rust package extensions require a composition-wrapper contract"
                     );
                 }
+                reject_composition_program_extensions(source, options.target)?;
                 let output = arete_interpreter::rust::compile_composed_public_artifacts_v2(
                     composition.program_specs,
                     composition.live_specs,
@@ -1575,6 +1938,7 @@ fn generate_project_stack_source(
                             http_url: None,
                             extension_modules: Vec::new(),
                             extension_entry: None,
+                            program_extensions: Vec::new(),
                             program_reads: source.rust_program_reads()?,
                             gateway: source.hosted_gateway()?,
                             release: None,
@@ -1607,6 +1971,7 @@ fn generate_project_stack_source(
                     options.rust_module,
                     source.default_websocket_url(),
                     None,
+                    &[],
                 )
             }
         }
@@ -1617,6 +1982,7 @@ fn generate_project_stack_source(
                         "multi-live Python package extensions require a composition-wrapper contract"
                     );
                 }
+                reject_composition_program_extensions(source, options.target)?;
                 let output = arete_interpreter::python::compile_composed_public_artifacts_v2(
                     composition.program_specs,
                     composition.live_specs,
@@ -1631,6 +1997,7 @@ fn generate_project_stack_source(
                             http_url: None,
                             extension_modules: Vec::new(),
                             extension_entry: None,
+                            program_extensions: Vec::new(),
                             program_reads: source.python_program_reads()?,
                             gateway: source.hosted_gateway()?,
                             release: None,
@@ -1668,6 +2035,7 @@ fn generate_project_stack_source(
                     options.python_module,
                     source.default_websocket_url(),
                     None,
+                    &[],
                 )
             }
         }
@@ -1708,15 +2076,33 @@ fn generate_project_program(
                 )
             }
         }
-        InstallTarget::Rust => generate_project_rust_program(program_spec, install, options),
-        InstallTarget::Python => generate_project_python_program(program_spec, install, options),
+        InstallTarget::Rust => {
+            generate_rust_program_sdk(program_spec, install, options, &LocalProgramSdk::default())
+        }
+        InstallTarget::Python => {
+            generate_python_program_sdk(program_spec, install, options, &LocalProgramSdk::default())
+        }
     }
 }
 
-fn generate_project_rust_program(
+/// Options of an `a4 sdk create --rust|--python --program-spec|--idl`
+/// generation on top of what a project install of the program generates.
+#[derive(Default)]
+struct LocalProgramSdk<'a> {
+    /// `--extensions`: the program package's own bundle.
+    extensions: Option<&'a Path>,
+    /// `--crate-name` / `--package-name`; defaults to `<alias>-program`.
+    name: Option<&'a str>,
+    /// Reuse the bundle already staged in the output, as local stack
+    /// regeneration does.
+    reuse_staged_extensions: bool,
+}
+
+fn generate_rust_program_sdk(
     program_spec: &arete_artifacts::ProgramSpecArtifact,
     install: Option<&RegistryProgramInstallResponse>,
     options: ProjectGenerationOptions<'_>,
+    local: &LocalProgramSdk<'_>,
 ) -> Result<()> {
     let stack_spec = arete_interpreter::public_artifacts::stack_spec_from_program_artifacts(
         options.alias,
@@ -1737,11 +2123,15 @@ fn generate_project_rust_program(
         options.output.join("src")
     };
     let artifact = resolve_rust_extensions_artifact(
-        None,
+        local.extensions,
         hosted_artifact.as_ref(),
         &module_dir,
         options.alias,
-        OutputExtensionsFallback::Ignore,
+        if local.reuse_staged_extensions {
+            OutputExtensionsFallback::Reuse
+        } else {
+            OutputExtensionsFallback::Ignore
+        },
     )?;
     let (extension_modules, extension_entry) = match artifact.as_ref() {
         Some(artifact) => {
@@ -1751,13 +2141,17 @@ fn generate_project_rust_program(
         None => (Vec::new(), None),
     };
     let rust_config = arete_interpreter::rust::RustStackConfig {
-        crate_name: format!("{}-program", options.alias),
+        crate_name: local
+            .name
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{}-program", options.alias)),
         sdk_version: arete_interpreter::rust::GENERATED_RUST_SDK_VERSION.to_string(),
         module_mode: options.rust_module,
         url: None,
         http_url: None,
         extension_modules,
         extension_entry,
+        program_extensions: Vec::new(),
         program_reads: install
             .map(program_read_override)
             .transpose()?
@@ -1805,12 +2199,16 @@ fn generate_project_rust_program(
     )
 }
 
-fn generate_project_python_program(
+fn generate_python_program_sdk(
     program_spec: &arete_artifacts::ProgramSpecArtifact,
     install: Option<&RegistryProgramInstallResponse>,
     options: ProjectGenerationOptions<'_>,
+    local: &LocalProgramSdk<'_>,
 ) -> Result<()> {
-    let package_name = format!("{}-program", options.alias);
+    let package_name = local
+        .name
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{}-program", options.alias));
     let stack_spec = arete_interpreter::public_artifacts::stack_spec_from_program_artifacts(
         options.alias,
         std::slice::from_ref(program_spec),
@@ -1831,14 +2229,19 @@ fn generate_project_python_program(
         options.output.join(&import_module)
     };
     let artifact = resolve_python_extensions_artifact(
-        None,
+        local.extensions,
         hosted_artifact.as_ref(),
         &module_dir,
         options.alias,
-        OutputExtensionsFallback::Ignore,
+        if local.reuse_staged_extensions {
+            OutputExtensionsFallback::Reuse
+        } else {
+            OutputExtensionsFallback::Ignore
+        },
     )?;
     let (extension_modules, extension_entry) = match artifact.as_ref() {
         Some(artifact) => {
+            ensure_python_entry_export(artifact, "PROGRAM_EXTENSIONS")?;
             let (modules, entry) = python_extension_wiring(artifact)?;
             (modules, Some(entry))
         }
@@ -1864,6 +2267,7 @@ fn generate_project_python_program(
         http_url: None,
         extension_modules,
         extension_entry,
+        program_extensions: Vec::new(),
         program_reads,
         gateway: install
             .map(|install| {
@@ -2207,6 +2611,7 @@ fn build_extensions_artifact(
         extension_api: None,
         sdk_extension_hash: None,
         sdk_output_tree_hash: None,
+        content_hash: None,
         program_extension_bindings,
     })
 }
@@ -2378,7 +2783,8 @@ fn resolve_extensions_artifact(
 /// Resolve the devex extensions bundle for a Rust SDK generation.
 ///
 /// Precedence: explicit `--extensions` path, then a hosted registry artifact
-/// (only when its manifest declares `language: "rust"`), then an
+/// (whose manifest must declare `language: "rust"`; anything else is an
+/// error, never a silent drop), then an
 /// `extensions.json` already staged in the output module directory when
 /// `output_fallback` permits it. Registry installs ignore staged bundles so
 /// the hosted response is authoritative. Unlike the TypeScript pipeline
@@ -2392,9 +2798,8 @@ fn resolve_rust_extensions_artifact(
 ) -> Result<Option<ResolvedExtensionsArtifact>> {
     let artifact = if let Some(path) = explicit_path {
         Some(resolve_explicit_rust_extensions_artifact(path, base_stem)?)
-    } else if let Some(artifact) = hosted_artifact
-        .filter(|artifact| artifact.language.as_deref() == Some(EXTENSIONS_LANGUAGE_RUST))
-    {
+    } else if let Some(artifact) = hosted_artifact {
+        ensure_hosted_extension_language(artifact, EXTENSIONS_LANGUAGE_RUST)?;
         Some(artifact.clone())
     } else if matches!(output_fallback, OutputExtensionsFallback::Reuse) {
         let manifest_path = output_module_dir.join("extensions.json");
@@ -2491,7 +2896,7 @@ fn resolve_explicit_rust_extensions_artifact(
 /// Resolve the devex extensions bundle for a Python SDK generation.
 ///
 /// Mirror of [`resolve_rust_extensions_artifact`]: explicit `--extensions`
-/// path, then a hosted registry artifact (only when its manifest declares
+/// path, then a hosted registry artifact (whose manifest must declare
 /// `language: "python"`), then an `extensions.json` already staged in the
 /// output module directory when `output_fallback` permits it. Registry
 /// installs ignore staged bundles so the hosted response is authoritative.
@@ -2507,9 +2912,8 @@ fn resolve_python_extensions_artifact(
         Some(resolve_explicit_python_extensions_artifact(
             path, base_stem,
         )?)
-    } else if let Some(artifact) = hosted_artifact
-        .filter(|artifact| artifact.language.as_deref() == Some(EXTENSIONS_LANGUAGE_PYTHON))
-    {
+    } else if let Some(artifact) = hosted_artifact {
+        ensure_hosted_extension_language(artifact, EXTENSIONS_LANGUAGE_PYTHON)?;
         Some(artifact.clone())
     } else if matches!(output_fallback, OutputExtensionsFallback::Reuse) {
         let manifest_path = output_module_dir.join("extensions.json");
@@ -3057,6 +3461,76 @@ fn write_language_sdk_provenance_manifest(
     write_sdk_provenance_manifest_file(output_dir, &manifest)
 }
 
+/// [`write_language_sdk_provenance_manifest`] for a Rust or Python stack
+/// that embeds program package extensions: each program's staged files and
+/// its extension identity are recorded like a TypeScript stack's program
+/// SDK modules.
+fn write_language_sdk_provenance_manifest_with_programs(
+    output_dir: &Path,
+    generated: BTreeSet<String>,
+    extension_file_prefix: &str,
+    input_pin: &ResolvedExtensionsInputPin,
+    extensions: Option<&ResolvedExtensionsArtifact>,
+    programs: &[StagedProgramExtension<'_>],
+) -> Result<()> {
+    let mut manifest = build_sdk_provenance_manifest_from_artifacts(
+        generated,
+        extension_file_prefix,
+        input_pin,
+        extensions,
+    )?;
+    for staged in programs {
+        let artifact = &staged.extension.artifact;
+        let prefix = format!("{}/", staged.relative_dir);
+        manifest.artifacts.push(format!("{prefix}extensions.json"));
+        for file in &artifact.files {
+            manifest.artifacts.push(format!(
+                "{prefix}{}",
+                normalize_extension_relative_path(&file.path)?
+            ));
+        }
+        manifest.program_extensions.insert(
+            staged.program_key.clone(),
+            SdkProvenanceProgramExtensionV2 {
+                input: SdkProvenanceInputV2 {
+                    kind: staged.extension.input_pin.kind,
+                    hash: staged.extension.input_pin.hash.clone(),
+                },
+                content_sha256: extensions_artifact_hash(artifact),
+                sdk_extension_hash: artifact.sdk_extension_hash.clone(),
+                sdk_output_tree_hash: artifact.sdk_output_tree_hash.clone(),
+            },
+        );
+    }
+    manifest.artifacts.sort();
+    manifest.artifacts.dedup();
+    write_sdk_provenance_manifest_file(output_dir, &manifest)
+}
+
+/// A Python bundle's entry must export the mapping its generated package
+/// applies (`PROGRAM_EXTENSIONS` or `STACK_EXTENSIONS`); refuse one that
+/// never names it rather than generate a package that fails on import.
+fn ensure_python_entry_export(artifact: &ResolvedExtensionsArtifact, export: &str) -> Result<()> {
+    let entry = artifact
+        .files
+        .iter()
+        .find(|file| file.path == artifact.entry)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Extensions entry '{}' is missing from artifact files",
+                artifact.entry
+            )
+        })?;
+    let pattern = Regex::new(&format!(r"\b{export}\b")).expect("export pattern compiles");
+    if !pattern.is_match(&entry.contents) {
+        anyhow::bail!(
+            "Python extensions entry '{}' must export {export} = {{...}} (docs/internal/sdk-core-api.md §9); it never defines it",
+            artifact.entry
+        );
+    }
+    Ok(())
+}
+
 fn write_sdk_provenance_manifest_file(
     output_dir: &Path,
     manifest: &SdkProvenanceManifestV2,
@@ -3303,7 +3777,147 @@ fn resolved_extensions_artifact_from_registry(
     resolved.extension_api = artifact.manifest.extension_api;
     resolved.sdk_extension_hash = artifact.sdk_extension_hash.clone();
     resolved.sdk_output_tree_hash = artifact.sdk_output_tree_hash.clone();
+    resolved.content_hash = Some(artifact.artifact_hash.clone());
     Ok(resolved)
+}
+
+/// The registry content hash of an SDK extension bundle, by the rule
+/// arete-platform stores and serves it under (`contentHash`, also served as
+/// the artifact's `artifactHash`): the lowercase hex SHA-256 of the compact
+/// JSON `{"files": {<path>: <source>}, "manifest": {"entry", "files",
+/// "inputHash", "inputKind", "language"?, "sdkRange"}}`, object keys sorted,
+/// absent optional values `null`. `language` is present only for Rust and
+/// Python bundles (an explicit `"typescript"` is dropped), and the declared
+/// `extensionApi` is never hashed.
+pub(crate) fn sdk_extension_content_hash(
+    entry: &str,
+    manifest_files: &[String],
+    files: &BTreeMap<String, String>,
+    input_kind: Option<&str>,
+    input_hash: Option<&str>,
+    sdk_range: Option<&str>,
+    language: Option<&str>,
+) -> String {
+    // Struct fields serialize in declaration order and `BTreeMap`s in key
+    // order, whatever serde_json's map features are.
+    #[derive(Serialize)]
+    struct Payload<'a> {
+        files: &'a BTreeMap<String, String>,
+        manifest: BTreeMap<&'static str, serde_json::Value>,
+    }
+    let optional = |value: Option<&str>| {
+        value
+            .map(|value| serde_json::Value::String(value.to_string()))
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let mut manifest_files = manifest_files.to_vec();
+    manifest_files.sort();
+    manifest_files.dedup();
+    let mut manifest = BTreeMap::new();
+    manifest.insert("entry", serde_json::Value::String(entry.to_string()));
+    manifest.insert(
+        "files",
+        serde_json::Value::Array(
+            manifest_files
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    );
+    manifest.insert("inputHash", optional(input_hash));
+    manifest.insert("inputKind", optional(input_kind));
+    manifest.insert("sdkRange", optional(sdk_range));
+    if let Some(language) = language.filter(|language| *language != EXTENSIONS_LANGUAGE_TYPESCRIPT)
+    {
+        manifest.insert("language", serde_json::Value::String(language.to_string()));
+    }
+    let json = serde_json::to_string(&Payload { files, manifest })
+        .expect("an SDK extension payload always serializes");
+    Sha256::digest(json.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// [`sdk_extension_content_hash`] of a bundle as the registry served it.
+pub(crate) fn registry_extension_content_hash(artifact: &RegistrySdkExtensionArtifact) -> String {
+    sdk_extension_content_hash(
+        &artifact.manifest.entry,
+        &artifact.manifest.files,
+        &artifact.files,
+        artifact
+            .manifest
+            .input_kind
+            .clone()
+            .map(ExtensionsInputKind::from_registry)
+            .map(ExtensionsInputKind::as_manifest_value),
+        artifact.manifest.input_hash.as_deref(),
+        artifact.manifest.sdk_range.as_deref(),
+        artifact.manifest.language.as_deref(),
+    )
+}
+
+/// [`sdk_extension_content_hash`] of the bundle bytes about to be staged.
+fn staged_extension_content_hash(artifact: &ResolvedExtensionsArtifact) -> String {
+    let files = artifact
+        .files
+        .iter()
+        .map(|file| (file.path.clone(), file.contents.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let manifest_files = files.keys().cloned().collect::<Vec<_>>();
+    sdk_extension_content_hash(
+        &artifact.entry,
+        &manifest_files,
+        &files,
+        artifact
+            .input_kind
+            .map(ExtensionsInputKind::as_manifest_value),
+        artifact.input_hash.as_deref(),
+        artifact.sdk_range.as_deref(),
+        artifact.language.as_deref(),
+    )
+}
+
+/// A hosted Rust or Python bundle must be exactly the content the registry
+/// resolved: its staged bytes re-hash to the served content hash.
+fn verify_hosted_extension_content(artifact: &ResolvedExtensionsArtifact) -> Result<()> {
+    let Some(expected) = artifact.content_hash.as_deref() else {
+        return Ok(());
+    };
+    let actual = staged_extension_content_hash(artifact);
+    if actual != expected {
+        anyhow::bail!(
+            "Registry SDK extension {expected} (entry '{}') does not hash to its content hash: its files and manifest hash to {actual}. Nothing was generated.",
+            artifact.entry
+        );
+    }
+    Ok(())
+}
+
+/// A hosted bundle served for `expected` must declare that language: the
+/// registry stores a bundle's target from its manifest `language`, so any
+/// other value is a registry fault. Generation stops instead of dropping the
+/// extension.
+fn ensure_hosted_extension_language(
+    artifact: &ResolvedExtensionsArtifact,
+    expected: &str,
+) -> Result<()> {
+    let declared = artifact
+        .language
+        .as_deref()
+        .unwrap_or(EXTENSIONS_LANGUAGE_TYPESCRIPT);
+    if declared != expected {
+        anyhow::bail!(
+            "The registry served a {expected} SDK extension (entry '{}'{}) whose manifest declares language '{declared}'. Nothing was generated.",
+            artifact.entry,
+            artifact
+                .content_hash
+                .as_deref()
+                .map(|hash| format!(", content {hash}"))
+                .unwrap_or_default()
+        );
+    }
+    Ok(())
 }
 
 fn typescript_program_config_from_registry(
@@ -3889,6 +4503,7 @@ fn stage_rust_extensions_artifact(
         ));
     }
 
+    verify_hosted_extension_content(artifact)?;
     for file in &artifact.files {
         let normalized = normalize_extension_relative_path(&file.path)?;
         if !normalized.ends_with(".rs") || normalized.contains('/') {
@@ -3932,6 +4547,7 @@ fn stage_python_extensions_artifact(
         ));
     }
 
+    verify_hosted_extension_content(artifact)?;
     for file in &artifact.files {
         let normalized = normalize_extension_relative_path(&file.path)?;
         if !normalized.ends_with(".py") || normalized.contains('/') {
@@ -5438,6 +6054,7 @@ pub fn create_rust(
     extensions_override: Option<String>,
     manifest_override: Option<String>,
     artifact_dirs: Vec<String>,
+    program_extensions: &[LocalProgramExtensionArg],
 ) -> Result<()> {
     let _ = config_path;
     let client = ApiClient::new()?;
@@ -5472,7 +6089,6 @@ pub fn create_rust(
         (source, output, crate_name)
     };
 
-    source.reject_program_extensions_for(crate::project::manifest::InstallTarget::Rust)?;
     let stack_url = url_override.or_else(|| source.default_websocket_url());
     let output_dir = raw_output_dir;
 
@@ -5508,6 +6124,11 @@ pub fn create_rust(
                 "multi-live extensions require a composition-wrapper extension contract; shared stack extensions are not supported"
             );
         }
+        reject_composition_program_extensions(
+            &source,
+            crate::project::manifest::InstallTarget::Rust,
+        )?;
+        reject_composition_local_program_extensions(program_extensions)?;
         let live_urls = source.composition_live_websocket_urls();
         let output = arete_interpreter::rust::compile_composed_public_artifacts_v2(
             composition.program_specs,
@@ -5522,6 +6143,7 @@ pub fn create_rust(
                     http_url: None,
                     extension_modules: Vec::new(),
                     extension_entry: None,
+                    program_extensions: Vec::new(),
                     program_reads: source.rust_program_reads()?,
                     gateway: source.hosted_gateway()?,
                     release: None,
@@ -5574,11 +6196,13 @@ pub fn create_rust(
         as_module,
         stack_url,
         extensions_override.as_deref().map(Path::new),
+        program_extensions,
     )
 }
 
 /// Shared single-live Rust generation: compile the stack, wire and stage the
 /// optional devex extensions bundle, and record provenance.
+#[allow(clippy::too_many_arguments)]
 fn generate_rust_stack_sdk(
     source: &ResolvedStackSource,
     stack_spec: arete_interpreter::ast::SerializableStackSpec,
@@ -5587,6 +6211,7 @@ fn generate_rust_stack_sdk(
     as_module: bool,
     stack_url: Option<String>,
     extensions_path: Option<&Path>,
+    local_program_extensions: &[LocalProgramExtensionArg],
 ) -> Result<()> {
     ensure_file_stem(source.sdk_name())?;
     let input_pin = stack_input_pin(source, &stack_spec)?;
@@ -5609,6 +6234,22 @@ fn generate_rust_stack_sdk(
         }
         None => (Vec::new(), None),
     };
+    let program_extensions = stack_program_extensions(
+        source,
+        crate::project::manifest::InstallTarget::Rust,
+        local_program_extensions,
+    )?;
+    let program_extension_configs = program_extensions
+        .iter()
+        .map(|extension| {
+            let (modules, entry) = rust_extension_wiring(&extension.artifact)?;
+            Ok(arete_interpreter::rust::RustProgramExtensionConfig {
+                program_id: extension.program_id.clone(),
+                modules,
+                entry,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let release = source.served_release(stack_url.as_deref());
     let rust_config = arete_interpreter::rust::RustStackConfig {
@@ -5619,6 +6260,7 @@ fn generate_rust_stack_sdk(
         http_url: source.default_http_url(),
         extension_modules,
         extension_entry,
+        program_extensions: program_extension_configs,
         program_reads: source.rust_program_reads()?,
         gateway: source.hosted_gateway()?,
         release,
@@ -5671,14 +6313,53 @@ fn generate_rust_stack_sdk(
         stage_rust_extensions_artifact(artifact, &module_dir, &input_pin)?;
     }
     let extension_file_prefix = if as_module { "" } else { "src/" };
-    write_language_sdk_provenance_manifest(
+    let mut staged_programs = Vec::with_capacity(program_extensions.len());
+    for extension in &program_extensions {
+        let module = output
+            .program_modules
+            .iter()
+            .find(|module| module.program_id == extension.program_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Generated Rust stack has no module for program '{}'",
+                    extension.install_name
+                )
+            })?;
+        let relative_dir = format!("programs/{}", module.module_name);
+        stage_rust_extensions_artifact(
+            &extension.artifact,
+            &module_dir.join(&relative_dir),
+            &extension.input_pin,
+        )
+        .with_context(|| {
+            format!(
+                "Failed to stage the Rust SDK extension of program '{}'",
+                extension.install_name
+            )
+        })?;
+        staged_programs.push(StagedProgramExtension {
+            program_key: module.module_name.clone(),
+            relative_dir: format!("{extension_file_prefix}{relative_dir}"),
+            extension,
+        });
+    }
+    write_language_sdk_provenance_manifest_with_programs(
         output_dir,
         generated,
         extension_file_prefix,
         &input_pin,
         artifact.as_ref(),
+        &staged_programs,
     )?;
 
+    for staged in &staged_programs {
+        println!(
+            "  Program extension: {} ({} file(s), entry {})",
+            staged.program_key,
+            staged.extension.artifact.files.len(),
+            staged.extension.artifact.entry
+        );
+    }
     if as_module {
         println!("{} Successfully generated Rust module!", "✓".green().bold());
         println!("  Module: {}", output_dir.display().to_string().bold());
@@ -5729,6 +6410,7 @@ pub fn create_python(
     extensions_override: Option<String>,
     manifest_override: Option<String>,
     artifact_dirs: Vec<String>,
+    program_extensions: &[LocalProgramExtensionArg],
 ) -> Result<()> {
     let _ = config_path;
     let client = ApiClient::new()?;
@@ -5763,7 +6445,6 @@ pub fn create_python(
         (source, output, package_name)
     };
 
-    source.reject_program_extensions_for(crate::project::manifest::InstallTarget::Python)?;
     let stack_url = url_override.or_else(|| source.default_websocket_url());
     let output_dir = raw_output_dir;
 
@@ -5799,6 +6480,11 @@ pub fn create_python(
                 "multi-live extensions require a composition-wrapper extension contract; shared stack extensions are not supported"
             );
         }
+        reject_composition_program_extensions(
+            &source,
+            crate::project::manifest::InstallTarget::Python,
+        )?;
+        reject_composition_local_program_extensions(program_extensions)?;
         let live_urls = source.composition_live_websocket_urls();
         let output = arete_interpreter::python::compile_composed_public_artifacts_v2(
             composition.program_specs,
@@ -5814,6 +6500,7 @@ pub fn create_python(
                     http_url: None,
                     extension_modules: Vec::new(),
                     extension_entry: None,
+                    program_extensions: Vec::new(),
                     program_reads: source.python_program_reads()?,
                     gateway: source.hosted_gateway()?,
                     release: None,
@@ -5866,12 +6553,14 @@ pub fn create_python(
         as_module,
         stack_url,
         extensions_override.as_deref().map(Path::new),
+        program_extensions,
     )
 }
 
 /// Shared single-live Python generation: compile the stack, wire and stage
 /// the optional devex extensions bundle, and record provenance. Mirror of
 /// [`generate_rust_stack_sdk`].
+#[allow(clippy::too_many_arguments)]
 fn generate_python_stack_sdk(
     source: &ResolvedStackSource,
     stack_spec: arete_interpreter::ast::SerializableStackSpec,
@@ -5880,6 +6569,7 @@ fn generate_python_stack_sdk(
     as_module: bool,
     stack_url: Option<String>,
     extensions_path: Option<&Path>,
+    local_program_extensions: &[LocalProgramExtensionArg],
 ) -> Result<()> {
     ensure_file_stem(source.sdk_name())?;
     let input_pin = stack_input_pin(source, &stack_spec)?;
@@ -5898,11 +6588,29 @@ fn generate_python_stack_sdk(
     )?;
     let (extension_modules, extension_entry) = match artifact.as_ref() {
         Some(artifact) => {
+            ensure_python_entry_export(artifact, "STACK_EXTENSIONS")?;
             let (modules, entry) = python_extension_wiring(artifact)?;
             (modules, Some(entry))
         }
         None => (Vec::new(), None),
     };
+    let program_extensions = stack_program_extensions(
+        source,
+        crate::project::manifest::InstallTarget::Python,
+        local_program_extensions,
+    )?;
+    let program_extension_configs = program_extensions
+        .iter()
+        .map(|extension| {
+            ensure_python_entry_export(&extension.artifact, "PROGRAM_EXTENSIONS")?;
+            let (modules, entry) = python_extension_wiring(&extension.artifact)?;
+            Ok(arete_interpreter::python::PythonProgramExtensionConfig {
+                program_id: extension.program_id.clone(),
+                modules,
+                entry,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let release = source.served_release(stack_url.as_deref());
     let python_config = arete_interpreter::python::PythonStackConfig {
@@ -5913,6 +6621,7 @@ fn generate_python_stack_sdk(
         http_url: source.default_http_url(),
         extension_modules,
         extension_entry,
+        program_extensions: program_extension_configs,
         program_reads: source.python_program_reads()?,
         gateway: source.hosted_gateway()?,
         release,
@@ -5940,27 +6649,18 @@ fn generate_python_stack_sdk(
         arete_interpreter::python::write_python_module(&output, output_dir).with_context(|| {
             format!("Failed to write Python module to {}", output_dir.display())
         })?;
-        generated.extend([
-            "__init__.py".to_string(),
-            "models.py".to_string(),
-            "views.py".to_string(),
-        ]);
-        if output.programs_py.is_some() {
-            generated.insert("programs.py".to_string());
-        }
+        generated.extend(output.module_files());
     } else {
         arete_interpreter::python::write_python_package(&output, output_dir).with_context(
             || format!("Failed to write Python package to {}", output_dir.display()),
         )?;
-        generated.extend([
-            "pyproject.toml".to_string(),
-            format!("{}/__init__.py", output.module_name),
-            format!("{}/models.py", output.module_name),
-            format!("{}/views.py", output.module_name),
-        ]);
-        if output.programs_py.is_some() {
-            generated.insert(format!("{}/programs.py", output.module_name));
-        }
+        generated.insert("pyproject.toml".to_string());
+        generated.extend(
+            output
+                .module_files()
+                .into_iter()
+                .map(|file| format!("{}/{file}", output.module_name)),
+        );
     }
 
     if let Some(ref artifact) = artifact {
@@ -5971,13 +6671,56 @@ fn generate_python_stack_sdk(
     } else {
         format!("{}/", output.module_name)
     };
-    write_language_sdk_provenance_manifest(
+    let mut staged_programs = Vec::with_capacity(program_extensions.len());
+    for extension in &program_extensions {
+        let package = output
+            .program_packages
+            .iter()
+            .find(|package| package.program_id == extension.program_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Generated Python stack has no program package for program '{}'",
+                    extension.install_name
+                )
+            })?;
+        let relative_dir = format!(
+            "{}/{}",
+            arete_interpreter::python::PROGRAM_SDKS_PACKAGE,
+            package.module_name
+        );
+        stage_python_extensions_artifact(
+            &extension.artifact,
+            &module_dir.join(&relative_dir),
+            &extension.input_pin,
+        )
+        .with_context(|| {
+            format!(
+                "Failed to stage the Python SDK extension of program '{}'",
+                extension.install_name
+            )
+        })?;
+        staged_programs.push(StagedProgramExtension {
+            program_key: package.module_name.clone(),
+            relative_dir: format!("{extension_file_prefix}{relative_dir}"),
+            extension,
+        });
+    }
+    write_language_sdk_provenance_manifest_with_programs(
         output_dir,
         generated,
         &extension_file_prefix,
         &input_pin,
         artifact.as_ref(),
+        &staged_programs,
     )?;
+    for staged in &staged_programs {
+        println!(
+            "  Program extension: {} ({} file(s), entry {})",
+            staged.program_key,
+            staged.extension.artifact.files.len(),
+            staged.extension.artifact.entry
+        );
+    }
 
     if as_module {
         println!(
@@ -6620,6 +7363,7 @@ mod tests {
             extension_api: None,
             sdk_extension_hash: None,
             sdk_output_tree_hash: None,
+            content_hash: None,
             program_extension_bindings: vec![],
         }
     }
@@ -7506,6 +8250,7 @@ mod tests {
                 extension_api: None,
                 sdk_extension_hash: None,
                 sdk_output_tree_hash: None,
+                content_hash: None,
                 program_extension_bindings: vec![],
             }
         };
@@ -7964,6 +8709,7 @@ mod tests {
             extension_api: None,
             sdk_extension_hash: None,
             sdk_output_tree_hash: None,
+            content_hash: None,
             program_extension_bindings: vec![],
         }
     }
@@ -8000,6 +8746,7 @@ mod tests {
             extension_api: None,
             sdk_extension_hash: None,
             sdk_output_tree_hash: None,
+            content_hash: None,
             program_extension_bindings: vec![],
         }
     }
@@ -8409,21 +9156,26 @@ mod tests {
     }
 
     #[test]
-    fn rust_resolution_ignores_hosted_bundles_without_rust_language() {
+    fn rust_resolution_refuses_hosted_bundles_without_rust_language() {
         let output_dir =
             std::env::temp_dir().join(format!("a4-rust-ext-hosted-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output_dir);
         let hosted_typescript = test_artifact(ExtensionsInputKind::StackManifest, "hash-1");
 
-        let resolved = resolve_rust_extensions_artifact(
+        let error = resolve_rust_extensions_artifact(
             None,
             Some(&hosted_typescript),
             &output_dir,
             "ore",
             OutputExtensionsFallback::Ignore,
         )
-        .expect("hosted TypeScript bundle should be skipped, not fatal");
-        assert!(resolved.is_none());
+        .expect_err("a hosted TypeScript bundle served for Rust is an error, not a drop");
+        assert!(
+            error
+                .to_string()
+                .contains("rust SDK extension (entry 'index.ts') whose manifest declares language 'typescript'"),
+            "{error}"
+        );
 
         let hosted_rust = rust_test_artifact("hash-2");
         let resolved = resolve_rust_extensions_artifact(
@@ -8574,7 +9326,7 @@ mod tests {
                 },
                 ResolvedExtensionsFile {
                     path: "extensions.py".to_string(),
-                    contents: "from .devex import *  # noqa: F401,F403\n".to_string(),
+                    contents: "from . import devex\n\nSTACK_EXTENSIONS = {\"math\": {\"helper\": devex.helper}}\n".to_string(),
                 },
             ],
             input_kind: Some(ExtensionsInputKind::StackManifest),
@@ -8584,6 +9336,7 @@ mod tests {
             extension_api: None,
             sdk_extension_hash: None,
             sdk_output_tree_hash: None,
+            content_hash: None,
             program_extension_bindings: vec![],
         }
     }
@@ -8661,17 +9414,20 @@ mod tests {
         .expect("hosted Python bundle should be present");
         assert_eq!(resolved.entry, "extensions.py");
 
-        // ...the Rust rung skips it (hosted wrong-language bundles are
-        // non-fatal there, mirroring the TypeScript-bundle behaviour)...
-        let skipped = resolve_rust_extensions_artifact(
+        // ...the Rust rung refuses it: a hosted bundle served for another
+        // language is a registry fault, never silently dropped...
+        let error = resolve_rust_extensions_artifact(
             None,
             Some(hosted),
             &output_dir,
             "ore",
             OutputExtensionsFallback::Ignore,
         )
-        .expect("hosted Python bundle should be skipped by the Rust rung");
-        assert!(skipped.is_none());
+        .expect_err("a hosted Python bundle is refused by the Rust rung");
+        assert!(
+            error.to_string().contains("declares language 'python'"),
+            "{error}"
+        );
 
         // ...while the TypeScript rung rejects it outright.
         let error = resolve_extensions_artifact(
@@ -8879,32 +9635,31 @@ mod tests {
     }
 
     #[test]
-    fn python_resolution_ignores_hosted_bundles_without_python_language() {
+    fn python_resolution_refuses_hosted_bundles_without_python_language() {
         let output_dir =
             std::env::temp_dir().join(format!("a4-python-ext-hosted-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output_dir);
         let hosted_typescript = test_artifact(ExtensionsInputKind::StackManifest, "hash-1");
 
-        let resolved = resolve_python_extensions_artifact(
-            None,
-            Some(&hosted_typescript),
-            &output_dir,
-            "ore",
-            OutputExtensionsFallback::Ignore,
-        )
-        .expect("hosted TypeScript bundle should be skipped, not fatal");
-        assert!(resolved.is_none());
-
-        let hosted_rust = rust_test_artifact("hash-2");
-        let resolved = resolve_python_extensions_artifact(
-            None,
-            Some(&hosted_rust),
-            &output_dir,
-            "ore",
-            OutputExtensionsFallback::Ignore,
-        )
-        .expect("hosted Rust bundle should be skipped, not fatal");
-        assert!(resolved.is_none());
+        for (hosted, declared) in [
+            (hosted_typescript, "typescript"),
+            (rust_test_artifact("hash-2"), "rust"),
+        ] {
+            let error = resolve_python_extensions_artifact(
+                None,
+                Some(&hosted),
+                &output_dir,
+                "ore",
+                OutputExtensionsFallback::Ignore,
+            )
+            .expect_err("a hosted bundle of another language is an error, not a drop");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("whose manifest declares language '{declared}'")),
+                "{error}"
+            );
+        }
 
         let hosted_python = python_test_artifact("hash-3");
         let resolved = resolve_python_extensions_artifact(
@@ -9094,13 +9849,17 @@ mod tests {
             false,
             Some("wss://ore.example.test/ws".to_string()),
             Some(&bundle_dir),
+            &[],
         )
         .expect("python generation should succeed");
 
         assert!(output_dir.join("pyproject.toml").is_file());
         let init_py = fs::read_to_string(output_dir.join("ore_stack/__init__.py")).unwrap();
         assert!(init_py.contains("from . import devex"));
-        assert!(init_py.contains("from .extensions import *"));
+        assert!(init_py.contains("from . import extensions"));
+        assert!(init_py.contains(
+            "ORE_STREAM_STACK = _extend_stack(ORE_STREAM_STACK, **_stack_extensions_of(extensions))"
+        ));
         assert!(output_dir.join("ore_stack/models.py").is_file());
         assert!(output_dir.join("ore_stack/views.py").is_file());
         assert!(output_dir.join("ore_stack/devex.py").is_file());
@@ -9844,6 +10603,7 @@ mod tests {
                 false,
                 websocket_url.clone(),
                 None,
+                &[],
             )
             .unwrap();
             let python = directory("python");
@@ -9855,6 +10615,7 @@ mod tests {
                 false,
                 websocket_url,
                 None,
+                &[],
             )
             .unwrap();
 
@@ -10134,6 +10895,215 @@ mod tests {
         );
     }
 
+    fn write_local_bundle(dir: &Path, language: &str, input_hash: &str, files: &[(&str, &str)]) {
+        fs::create_dir_all(dir).unwrap();
+        let entry = if language == "rust" {
+            "extensions.rs"
+        } else {
+            "extensions.py"
+        };
+        for (path, contents) in files {
+            fs::write(dir.join(path), contents).unwrap();
+        }
+        fs::write(
+            dir.join("extensions.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "entry": entry,
+                "files": files.iter().map(|(path, _)| *path).collect::<Vec<_>>(),
+                "inputKind": "program-spec",
+                "inputHash": input_hash,
+                "sdkRange": null,
+                "language": language,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn sdk_create_generates_rust_and_python_program_sdks_from_a_program_spec() {
+        let directory = tempfile::tempdir().unwrap();
+        let spec_path = ore_fixture_root().join("ore.program-spec.json");
+        let program = load_local_program_source(Some(spec_path.to_str().unwrap()), None)
+            .unwrap()
+            .expect("a ProgramSpec source");
+        assert_eq!(program.sdk_name, "ore");
+        let spec_hash = program.program_spec.artifact_hash.to_string();
+
+        let rust_bundle = directory.path().join("rust-bundle");
+        write_local_bundle(
+            &rust_bundle,
+            "rust",
+            &spec_hash,
+            &[
+                (
+                    "extensions.rs",
+                    "pub use super::ore_math as math;\npub mod addresses {\n    pub fn program() -> &'static str {\n        super::super::generated::PROGRAM_ID\n    }\n}\n",
+                ),
+                ("ore_math.rs", "pub const ORE_DECIMALS: u8 = 11;\n"),
+            ],
+        );
+        let rust_output = directory.path().join("ore-program");
+        create_local_program_sdk(
+            &program,
+            crate::project::manifest::InstallTarget::Rust,
+            Some(rust_output.to_string_lossy().into_owned()),
+            None,
+            false,
+            Some(rust_bundle.to_string_lossy().into_owned()),
+        )
+        .expect("rust program SDK");
+        let lib_rs = fs::read_to_string(rust_output.join("src/lib.rs")).unwrap();
+        assert!(lib_rs.contains("mod generated {\n    pub use super::programs::ore::*;\n    pub use super::types::*;\n    pub use super::types::{Automation, Board, Config, Miner, Round, Treasury, AutomationConditions, AdminConfig, ProtocolConfig, Numeric};\n}\npub mod ore_math;\npub mod extensions;\npub use extensions::*;"), "{lib_rs}");
+        assert!(rust_output.join("src/ore_math.rs").is_file());
+        let cargo = fs::read_to_string(rust_output.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains("name = \"ore-program\""), "{cargo}");
+        let provenance = fs::read_to_string(rust_output.join(SDK_PROVENANCE_FILE)).unwrap();
+        assert!(provenance.contains("\"src/extensions.rs\""), "{provenance}");
+        assert!(provenance.contains(&spec_hash), "{provenance}");
+
+        let python_bundle = directory.path().join("python-bundle");
+        write_local_bundle(
+            &python_bundle,
+            "python",
+            &spec_hash,
+            &[(
+                "extensions.py",
+                "from .programs import ORE_PROGRAM_ID\n\nPROGRAM_EXTENSIONS = {\"addresses\": {\"program\": lambda: ORE_PROGRAM_ID}}\n",
+            )],
+        );
+        let python_output = directory.path().join("ore-program-py");
+        create_local_program_sdk(
+            &program,
+            crate::project::manifest::InstallTarget::Python,
+            Some(python_output.to_string_lossy().into_owned()),
+            Some("ore-sdk".to_string()),
+            false,
+            Some(python_bundle.to_string_lossy().into_owned()),
+        )
+        .expect("python program SDK");
+        let init = fs::read_to_string(python_output.join("ore_sdk/__init__.py")).unwrap();
+        assert!(init.contains("ORE_PROGRAM = _extend_program(\n    programs.ORE_PROGRAM, **_program_extensions_of(extensions)\n)\n"), "{init}");
+        assert!(python_output.join("ore_sdk/extensions.py").is_file());
+
+        // An entry that never names PROGRAM_EXTENSIONS fails before writing.
+        let broken = directory.path().join("broken-bundle");
+        write_local_bundle(
+            &broken,
+            "python",
+            &spec_hash,
+            &[("extensions.py", "def helper():\n    return None\n")],
+        );
+        let error = create_local_program_sdk(
+            &program,
+            crate::project::manifest::InstallTarget::Python,
+            Some(
+                directory
+                    .path()
+                    .join("broken")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            None,
+            false,
+            Some(broken.to_string_lossy().into_owned()),
+        )
+        .expect_err("a bundle without PROGRAM_EXTENSIONS is refused");
+        assert!(
+            format!("{error:#}").contains("must export PROGRAM_EXTENSIONS"),
+            "{error:#}"
+        );
+
+        // A bundle pinned to another program is refused.
+        let other = directory.path().join("other-bundle");
+        write_local_bundle(
+            &other,
+            "rust",
+            "arete:h1:program-spec:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            &[("extensions.rs", "pub mod constants {}\n")],
+        );
+        let error = create_local_program_sdk(
+            &program,
+            crate::project::manifest::InstallTarget::Rust,
+            Some(
+                directory
+                    .path()
+                    .join("other")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            None,
+            false,
+            Some(other.to_string_lossy().into_owned()),
+        )
+        .expect_err("a bundle pinned to another program is refused");
+        assert!(
+            format!("{error:#}").contains("extensions input hash mismatch"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn a_raw_idl_is_a_local_program_source() {
+        let idl = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("stacks/ore/idl/ore.json");
+        let program = load_local_program_source(None, Some(idl.to_str().unwrap()))
+            .unwrap()
+            .expect("an IDL source");
+        assert_eq!(program.sdk_name, "ore");
+        assert!(load_local_program_source(None, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn hosted_rust_and_python_bundles_rehash_to_their_content_hash() {
+        let mut artifact = rust_test_artifact("hash-1");
+        let hash = staged_extension_content_hash(&artifact);
+        artifact.content_hash = Some(hash.clone());
+        verify_hosted_extension_content(&artifact).expect("untouched bundle");
+        artifact.files[0].contents.push_str("// tampered\n");
+        let error = verify_hosted_extension_content(&artifact).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not hash to its content hash"),
+            "{error}"
+        );
+
+        // The registry rule: sorted keys, `language` hashed for Rust/Python,
+        // an explicit TypeScript language dropped, `extensionApi` never hashed.
+        let files = BTreeMap::from([("extensions.py".to_string(), "X = 1\n".to_string())]);
+        let manifest_files = vec!["extensions.py".to_string()];
+        let python = sdk_extension_content_hash(
+            "extensions.py",
+            &manifest_files,
+            &files,
+            Some("program-spec"),
+            Some("h"),
+            None,
+            Some("python"),
+        );
+        let expected_json = r#"{"files":{"extensions.py":"X = 1\n"},"manifest":{"entry":"extensions.py","files":["extensions.py"],"inputHash":"h","inputKind":"program-spec","language":"python","sdkRange":null}}"#;
+        let expected: String = Sha256::digest(expected_json.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(python, expected);
+        assert_eq!(
+            sdk_extension_content_hash(
+                "e",
+                &[],
+                &BTreeMap::new(),
+                None,
+                None,
+                None,
+                Some("typescript")
+            ),
+            sdk_extension_content_hash("e", &[], &BTreeMap::new(), None, None, None, None),
+        );
+    }
+
     #[test]
     fn generated_rust_program_and_stack_crates_pin_the_linked_sdk_release() {
         let directory = tempfile::tempdir().unwrap();
@@ -10206,3 +11176,6 @@ mod shared_idl_types_golden;
 
 #[cfg(test)]
 mod installed_typescript_golden;
+
+#[cfg(test)]
+mod installed_rust_python_golden;

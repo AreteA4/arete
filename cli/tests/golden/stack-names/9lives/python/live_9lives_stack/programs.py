@@ -145,6 +145,10 @@ def vault_deposit_handler() -> InstructionHandler:
         errors=list(VAULT_ERRORS),
     )
 
+_VAULT_ACCOUNTS: Dict[str, ProgramAccountReadDef] = {
+    "vault": ProgramAccountReadDef(account="Vault", parser=models.vault_vault_from_wire),
+}
+
 #: Portable program SDK definition consumed by `arete.stack`.
 VAULT_PROGRAM = ProgramDef(
     name="vault",
@@ -153,7 +157,7 @@ VAULT_PROGRAM = ProgramDef(
         "deposit": vault_deposit_handler(),
     },
     pdas={},
-    accounts={},
+    accounts=dict(_VAULT_ACCOUNTS),
     errors=VAULT_ERRORS,
     program_spec_hash=VAULT_PROGRAM_SPEC_HASH,
 )

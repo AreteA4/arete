@@ -85,7 +85,6 @@ pub mod vault {
     /// Program accessor exposed on the stack client's `programs` namespace.
     #[derive(Clone)]
     pub struct VaultProgram {
-        #[allow(dead_code)]
         builder: arete_sdk::ProgramBuilder,
     }
 
@@ -95,8 +94,28 @@ pub mod vault {
             Self { builder }
         }
 
+        /// The context program extension functions take: the client's chain
+        /// reader, its wallet, and this accessor.
+        pub fn context(&self) -> arete_sdk::ProgramContext<'_, VaultProgram> {
+            arete_sdk::ProgramContext::new(self)
+        }
+
         pub fn deposit(&self, params: DepositParams) -> Result<BuiltInstruction, InstructionError> {
             deposit(params)
+        }
+
+        /// Typed reader for `Vault` accounts (release-addressed HTTP reads).
+        pub fn vault_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::VaultVault>, arete_sdk::AreteError> {
+            Ok(arete_sdk::AccountReader::new(
+                "Vault",
+                std::sync::Arc::new(self.builder.account_transport("vault", &read_descriptor())?),
+            ))
+        }
+    }
+
+    impl arete_sdk::ProgramAccessor for VaultProgram {
+        fn program_builder(&self) -> &arete_sdk::ProgramBuilder {
+            &self.builder
         }
     }
 }

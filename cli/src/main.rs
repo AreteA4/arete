@@ -450,7 +450,7 @@ struct SdkCreateArgs {
     #[arg(long)]
     extensions: Option<String>,
 
-    /// Raw IDL file to generate a standalone program SDK from (TypeScript + --program-only only)
+    /// Raw IDL file to generate a standalone program SDK from (with --program-only)
     #[arg(
         long,
         requires = "program_only",
@@ -459,11 +459,9 @@ struct SdkCreateArgs {
     idl: Option<String>,
 
     /// Local ProgramSpec artifact to generate a standalone program SDK from
-    #[arg(
-        long,
-        requires = "program_only",
-        conflicts_with_all = ["stack_name", "idl", "manifest"]
-    )]
+    /// (TypeScript module, Rust crate or Python package, with --extensions
+    /// applied)
+    #[arg(long, conflicts_with_all = ["stack_name", "idl", "manifest"])]
     program_spec: Option<String>,
 
     /// Local StackManifest artifact; dependencies default to its directory
@@ -485,9 +483,19 @@ struct SdkCreateArgs {
     #[arg(long, requires = "manifest")]
     program_module: Vec<String>,
 
-    /// Emit a standalone program-SDK module (pdas/accounts/instructions, no
-    /// views or stack const). TypeScript only.
-    #[arg(long, conflicts_with_all = ["rust", "python"])]
+    /// A stack program's own extension bundle (`<program>=<bundle dir or
+    /// extensions.json>`), embedded in a Rust or Python stack SDK as a
+    /// registry install embeds the published one; repeat per program
+    #[arg(
+        long = "program-extensions",
+        value_name = "PROGRAM=BUNDLE",
+        requires = "manifest"
+    )]
+    program_extensions: Vec<String>,
+
+    /// Emit a standalone program SDK (pdas/accounts/instructions, no views or
+    /// stack const). Rust and Python program SDKs need --program-spec or --idl.
+    #[arg(long)]
     program_only: bool,
 }
 
@@ -1404,6 +1412,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 create_args.artifact_dir,
                 create_args.live_module,
                 create_args.program_module,
+                create_args.program_extensions,
                 create_args.program_only,
             ),
             SdkCommands::Sync(sync_args) => commands::sdk::sync(

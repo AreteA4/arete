@@ -195,6 +195,7 @@ fn generate_all(name: &str, output: &Path) -> Result<()> {
         false,
         None,
         None,
+        &[],
     )?;
     generate_python_stack_sdk(
         &source,
@@ -204,6 +205,7 @@ fn generate_all(name: &str, output: &Path) -> Result<()> {
         false,
         None,
         None,
+        &[],
     )?;
 
     let composed = composed_stack(name);
@@ -472,6 +474,7 @@ fn stack_name_collision_after_sanitizing_is_reported() {
         false,
         None,
         None,
+        &[],
     ));
     assert!(error.contains("`MyVaultStack`"), "{error}");
     assert!(error.contains("entity 'MyVaultStack'"), "{error}");
@@ -548,6 +551,7 @@ fn stack_names_that_are_paths_are_rejected() {
             false,
             None,
             None,
+            &[],
         ));
         assert!(
             error.contains("cannot be used as a generated file name"),

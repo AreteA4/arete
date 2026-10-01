@@ -92,6 +92,12 @@ pub mod alpha {
             Self { builder }
         }
 
+        /// The context program extension functions take: the client's chain
+        /// reader, its wallet, and this accessor.
+        pub fn context(&self) -> arete_sdk::ProgramContext<'_, AlphaProgram> {
+            arete_sdk::ProgramContext::new(self)
+        }
+
         pub fn configure(&self, params: ConfigureParams) -> Result<BuiltInstruction, InstructionError> {
             configure(params)
         }
@@ -102,6 +108,12 @@ pub mod alpha {
                 "Header",
                 std::sync::Arc::new(self.builder.account_transport("alpha", &read_descriptor())?),
             ))
+        }
+    }
+
+    impl arete_sdk::ProgramAccessor for AlphaProgram {
+        fn program_builder(&self) -> &arete_sdk::ProgramBuilder {
+            &self.builder
         }
     }
 }
@@ -189,6 +201,12 @@ pub mod beta {
             Self { builder }
         }
 
+        /// The context program extension functions take: the client's chain
+        /// reader, its wallet, and this accessor.
+        pub fn context(&self) -> arete_sdk::ProgramContext<'_, BetaProgram> {
+            arete_sdk::ProgramContext::new(self)
+        }
+
         pub fn configure(&self, params: ConfigureParams) -> Result<BuiltInstruction, InstructionError> {
             configure(params)
         }
@@ -199,6 +217,12 @@ pub mod beta {
                 "Header",
                 std::sync::Arc::new(self.builder.account_transport("beta", &read_descriptor())?),
             ))
+        }
+    }
+
+    impl arete_sdk::ProgramAccessor for BetaProgram {
+        fn program_builder(&self) -> &arete_sdk::ProgramBuilder {
+            &self.builder
         }
     }
 }

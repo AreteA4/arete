@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "stack-manifest",
+    "hash": "arete:h1:stack-manifest:sha256:53809b392576092808edfbf619ec0b9b4174373a84c2dac843af4a71537fbb72"
+  },
+  "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}",
+  "extensions": {
+    "contentSha256": "9738699bedf3c5d15118d85ec5514f6076e45cde6013f9f359640c503b828d33"
+  },
+  "programExtensions": {
+    "vault": {
+      "input": {
+        "kind": "program-spec",
+        "hash": "arete:h1:program-spec:sha256:5469c29441aaeac7da96e8f1ac69a42de33bf7805a76c83c75da9d762213b952"
+      },
+      "contentSha256": "b545d881106105cb4e084effbf075562d3d639868821625d2af46e7a00596f62"
+    }
+  },
+  "artifacts": [
+    "Cargo.toml",
+    "src/entity.rs",
+    "src/extensions.json",
+    "src/extensions.rs",
+    "src/lib.rs",
+    "src/programs.rs",
+    "src/programs/vault/extensions.json",
+    "src/programs/vault/extensions.rs",
+    "src/programs/vault/vault_math.rs",
+    "src/types.rs"
+  ]
+}
