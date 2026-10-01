@@ -43,7 +43,7 @@ pub mod instructions {
             input: DepositInput,
         ) -> Result<PreparedInstruction, AreteError> {
             let authority = input.authority.or_else(|| ctx.public_key()).ok_or_else(|| {
-                AreteError::InvalidConfig("deposit needs an authority or a wallet".to_string())
+                AreteError::invalid_input("deposit needs an authority or a wallet")
             })?;
             let instruction = ctx
                 .program()
@@ -52,8 +52,7 @@ pub mod instructions {
                     vault: super::super::constants::TREASURY.to_string(),
                     mint: input.mint,
                     amount: input.amount,
-                })
-                .map_err(|error| AreteError::InvalidConfig(error.to_string()))?;
+                })?;
             Ok(create_prepared_instruction(
                 "treasury.deposit",
                 instruction,

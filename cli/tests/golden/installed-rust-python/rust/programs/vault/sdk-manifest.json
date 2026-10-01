@@ -6,7 +6,7 @@
   },
   "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}",
   "extensions": {
-    "contentSha256": "b545d881106105cb4e084effbf075562d3d639868821625d2af46e7a00596f62"
+    "contentSha256": "ae966449481c81ea89e6e1ba3999c584c2918480792cb4ad438a762fae21c536"
   },
   "artifacts": [
     "Cargo.toml",
