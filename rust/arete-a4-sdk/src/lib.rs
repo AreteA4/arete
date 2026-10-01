@@ -42,6 +42,7 @@ mod client;
 pub mod collation;
 mod config;
 mod connection;
+pub mod encoding;
 mod entity;
 mod error;
 mod frame;
@@ -87,6 +88,7 @@ pub use client::{
 pub use collation::{collation_key, locale_compare, CollationKey};
 pub use config::{AreteConfig, ConnectionConfig};
 pub use connection::{ConnectionManager, ConnectionState, SubscriptionLease, SubscriptionOptions};
+pub use encoding::{decode_base58, encode_base58, keccak256, sha256, Base58Error};
 pub use entity::Stack;
 pub use error::{
     ApiProblemV1, AreteError, AuthErrorCode, GapCode, ReadyRecoveryAction, ReadyRecoveryActionV1,
