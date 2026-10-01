@@ -440,19 +440,29 @@ impl TransactionTransport for RpcTransactionTransport {
             return Ok(None);
         }
 
-        // `meta` is where every balance lives. A node running without
-        // transaction status storage answers `"meta": null`, and treating
-        // that as "all zeroes" would hand the caller fabricated balances
-        // indistinguishable from measured ones.
-        let meta = result
-            .get("meta")
-            .filter(|meta| meta.is_object())
-            .ok_or_else(|| {
-                invalid(
-                    METHOD,
-                    "'meta' is unavailable: this node did not record the transaction's balances",
-                )
-            })?;
+        let mut confirmed = ConfirmedTransaction {
+            signature: signature.to_string(),
+            slot: result
+                .get("slot")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| invalid(METHOD, "missing 'slot'"))?,
+            block_time: result.get("blockTime").and_then(Value::as_i64),
+            err: None,
+            accounts: Vec::new(),
+            transaction: result
+                .get("transaction")
+                .map(|v| arete_solana_contracts::precision_safe_json(v, "transaction")),
+            meta: None,
+            version: result.get("version").cloned(),
+            metadata_available: Some(false),
+        };
+        // The transaction exists even when the node did not record execution
+        // metadata. Leave its balances and execution error unknown.
+        let meta = match result.get("meta") {
+            None | Some(Value::Null) => return Ok(Some(confirmed)),
+            Some(meta) if meta.is_object() => meta,
+            Some(_) => return Err(invalid(METHOD, "'meta' must be an object or null")),
+        };
         let balances = |key: &str| -> Result<Vec<u64>, TransactionError> {
             meta.get(key)
                 .and_then(Value::as_array)
@@ -520,32 +530,21 @@ impl TransactionTransport for RpcTransactionTransport {
             ));
         }
 
-        Ok(Some(ConfirmedTransaction {
-            signature: signature.to_string(),
-            slot: result
-                .get("slot")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| invalid(METHOD, "missing 'slot'"))?,
-            block_time: result.get("blockTime").and_then(Value::as_i64),
-            err: nullable(meta.get("err")),
-            accounts: accounts
-                .into_iter()
-                .zip(pre.into_iter().zip(post))
-                .map(
-                    |(pubkey, (pre_balance, post_balance))| TransactionAccountBalance {
-                        pubkey,
-                        pre_balance,
-                        post_balance,
-                    },
-                )
-                .collect(),
-            transaction: result
-                .get("transaction")
-                .map(|v| arete_solana_contracts::precision_safe_json(v, "transaction")),
-            meta: Some(arete_solana_contracts::precision_safe_json(meta, "meta")),
-            version: result.get("version").cloned(),
-            metadata_available: Some(true),
-        }))
+        confirmed.err = nullable(meta.get("err"));
+        confirmed.accounts = accounts
+            .into_iter()
+            .zip(pre.into_iter().zip(post))
+            .map(
+                |(pubkey, (pre_balance, post_balance))| TransactionAccountBalance {
+                    pubkey,
+                    pre_balance,
+                    post_balance,
+                },
+            )
+            .collect();
+        confirmed.meta = Some(arete_solana_contracts::precision_safe_json(meta, "meta"));
+        confirmed.metadata_available = Some(true);
+        Ok(Some(confirmed))
     }
 
     async fn signatures(
@@ -1035,10 +1034,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unavailable_metadata_is_refused_rather_than_read_as_zero_balances() {
-        // A node running without transaction status storage. `ConfirmedTransaction`
-        // carries non-optional balances, so "no metadata" cannot be reported
-        // as a real measurement of zero.
+    async fn unavailable_metadata_preserves_the_transaction_without_inventing_balances() {
         let node = Node::spawn(json!({
             "getTransaction": {
                 "slot": 512,
@@ -1048,12 +1044,93 @@ mod tests {
         }))
         .await;
 
-        let error = node
+        let transaction = node
             .transport()
             .transaction("sigA", TransactionInspectOptions::default())
             .await
-            .expect_err("balances cannot be invented");
-        assert!(matches!(error, TransactionError::InvalidResponse(_)));
+            .unwrap()
+            .expect("the node saw this transaction");
+        assert_eq!(transaction.slot, 512);
+        assert_eq!(transaction.metadata_available, Some(false));
+        assert!(transaction.accounts.is_empty());
+        assert!(transaction.err.is_none());
+        assert!(transaction.meta.is_none());
+        assert!(transaction.transaction.is_some());
+    }
+
+    #[tokio::test]
+    async fn managed_transaction_fixtures_round_trip_through_direct_rpc() {
+        let fixtures: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/managed-solana-v1/transactions.json"
+        ))
+        .unwrap();
+        for case in fixtures["cases"].as_array().unwrap() {
+            let mut upstream = case["upstream"].clone();
+            // These shared Gateway fixtures use jsonParsed keys. Direct RPC
+            // requests encoding=json, whose message contains plain key strings.
+            if let Some(keys) = upstream
+                .get_mut("transaction")
+                .and_then(|tx| tx.get_mut("message"))
+                .and_then(|message| message.get_mut("accountKeys"))
+                .and_then(Value::as_array_mut)
+            {
+                for key in keys {
+                    *key = key["pubkey"].clone();
+                }
+            }
+            let node = Node::spawn(json!({ "getTransaction": upstream.clone() })).await;
+            let actual = node
+                .transport()
+                .transaction("fixture-signature", TransactionInspectOptions::default())
+                .await
+                .unwrap();
+            let expected = &case["response"]["transaction"];
+            if expected.is_null() {
+                assert!(actual.is_none());
+                continue;
+            }
+            let actual = actual.unwrap();
+            assert_eq!(
+                actual.metadata_available,
+                expected["metadataAvailable"].as_bool()
+            );
+            assert_eq!(
+                actual.meta.as_ref(),
+                expected.get("meta").filter(|v| !v.is_null())
+            );
+            assert_eq!(actual.version.as_ref(), expected.get("version"));
+            assert_eq!(
+                actual.err.as_ref(),
+                expected.get("err").filter(|v| !v.is_null())
+            );
+            let balances: Vec<_> = expected["accounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|balance| TransactionAccountBalance {
+                    pubkey: balance["pubkey"].as_str().unwrap().to_string(),
+                    pre_balance: balance["preBalance"].as_str().unwrap().parse().unwrap(),
+                    post_balance: balance["postBalance"].as_str().unwrap().parse().unwrap(),
+                })
+                .collect();
+            assert_eq!(actual.accounts, balances);
+            assert_eq!(
+                actual.transaction,
+                upstream
+                    .get("transaction")
+                    .map(|v| arete_solana_contracts::precision_safe_json(v, "transaction"))
+            );
+        }
+        // Missing meta has the same unavailable semantics as explicit null.
+        let node = Node::spawn(json!({"getTransaction": {"slot": 42}})).await;
+        let tx = node
+            .transport()
+            .transaction("sigA", TransactionInspectOptions::default())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(tx.metadata_available, Some(false));
+        assert!(tx.accounts.is_empty());
     }
 
     #[tokio::test]
