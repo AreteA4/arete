@@ -593,6 +593,15 @@ impl WholeEntityRequests {
             .store(keys.len(), std::sync::atomic::Ordering::Release);
     }
 
+    /// Cancel an outstanding resend after source deletion.
+    pub fn cancel(&self, entity: &str, key: &Value) {
+        let mut keys = self.inner.keys.lock().unwrap_or_else(|e| e.into_inner());
+        keys.pop(&(entity.to_string(), key.clone()));
+        self.inner
+            .pending
+            .store(keys.len(), std::sync::atomic::Ordering::Release);
+    }
+
     /// Whether `entity` `key` is waiting for its whole entity.
     pub fn is_requested(&self, entity: &str, key: &Value) -> bool {
         if self.is_empty() {
@@ -642,6 +651,8 @@ pub struct VmContext {
     pub pending_queue_size: u64,
     resolver_requests: VecDeque<ResolverRequest>,
     resolver_pending: HashMap<String, PendingResolverEntry>,
+    // Distinguish requests scheduled after a deletion from in-flight old results.
+    resolver_epoch: u64,
     resolver_cache: LruCache<String, ResolverCacheEntry>,
     pub resolver_cache_hits: u64,
     pub resolver_cache_misses: u64,
@@ -1605,6 +1616,7 @@ impl VmContext {
             pending_queue_size: 0,
             resolver_requests: VecDeque::new(),
             resolver_pending: HashMap::new(),
+            resolver_epoch: 0,
             resolver_cache: LruCache::new(resolver_cache_capacity()),
             resolver_cache_hits: 0,
             resolver_cache_misses: 0,
@@ -1813,6 +1825,7 @@ impl VmContext {
             pending_queue_size: 0,
             resolver_requests: VecDeque::new(),
             resolver_pending: HashMap::new(),
+            resolver_epoch: 0,
             resolver_cache: LruCache::new(resolver_cache_capacity()),
             resolver_cache_hits: 0,
             resolver_cache_misses: 0,
@@ -1845,6 +1858,7 @@ impl VmContext {
             pending_queue_size: 0,
             resolver_requests: VecDeque::new(),
             resolver_pending: HashMap::new(),
+            resolver_epoch: 0,
             resolver_cache: LruCache::new(resolver_cache_capacity()),
             resolver_cache_hits: 0,
             resolver_cache_misses: 0,
@@ -1906,6 +1920,111 @@ impl VmContext {
 
     pub fn get_entity_state(&self, state_id: u32, key: &Value) -> Option<Value> {
         self.states.get(&state_id)?.get_and_touch(key)
+    }
+
+    /// Remove an explicitly mapped entity after source deletion, including its
+    /// indexes and pending resolver targets. Returns a deletion even if absent:
+    /// downstream caches may still hold the row. Unknown exports return None.
+    ///
+    /// The ingestion owner must deduplicate old account updates, discard pending
+    /// account inputs via `discard_account`, and submit this mutation under the
+    /// snapshot processing barrier with the tombstone's slot/write version.
+    pub fn delete_entity(
+        &mut self,
+        bytecode: &MultiEntityBytecode,
+        export: &str,
+        key: &Value,
+    ) -> Option<Mutation> {
+        let state_id = bytecode.entities.get(export)?.state_id;
+        if let Some(state) = self.states.get_mut(&state_id) {
+            state.data.remove(key);
+            state.recency().pop(key);
+            for index in state.lookup_indexes.values() {
+                let mut entries = index.index.lock().unwrap();
+                let stale: Vec<_> = entries
+                    .iter()
+                    .filter(|(_, value)| *value == key)
+                    .map(|(lookup, _)| lookup.clone())
+                    .collect();
+                for lookup in stale {
+                    entries.pop(&lookup);
+                }
+            }
+            for index in state.temporal_indexes.values() {
+                let mut entries = index.index.lock().unwrap();
+                for (_, values) in entries.iter_mut() {
+                    values.retain(|(value, _)| value != key);
+                }
+                let empty: Vec<_> = entries
+                    .iter()
+                    .filter(|(_, values)| values.is_empty())
+                    .map(|(lookup, _)| lookup.clone())
+                    .collect();
+                for lookup in empty {
+                    entries.pop(&lookup);
+                }
+            }
+            let key_string = key
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| key.to_string());
+            for index in state.pda_reverse_lookups.values_mut() {
+                let stale: Vec<_> = index
+                    .index
+                    .iter()
+                    .filter(|(_, seed)| **seed == key_string)
+                    .map(|(address, _)| address.clone())
+                    .collect();
+                for address in stale {
+                    index.index.pop(&address);
+                    state.last_account_data.remove(&address);
+                    state.pending_updates.remove(&address);
+                }
+            }
+            state.deferred_when_ops.retain(|_, operations| {
+                operations.retain(|operation| &operation.primary_key != key);
+                !operations.is_empty()
+            });
+        }
+        if let Some(requests) = &self.whole_entity_requests {
+            requests.cancel(export, key);
+        }
+        // New requests use a fresh identity, so an in-flight response cannot
+        // attach itself to a recreated entity with the same primary key.
+        self.resolver_epoch = self
+            .resolver_epoch
+            .checked_add(1)
+            .expect("resolver epoch overflow");
+        self.resolver_pending.retain(|_, entry| {
+            entry
+                .targets
+                .retain(|target| target.state_id != state_id || &target.primary_key != key);
+            !entry.targets.is_empty()
+        });
+        self.resolver_requests
+            .retain(|request| self.resolver_pending.contains_key(&request.cache_key));
+        self.scheduled_callbacks
+            .retain(|(_, target)| target.state_id != state_id || &target.primary_key != key);
+        Some(Mutation::delete(export, key.clone()))
+    }
+
+    /// Forget buffered input for a deleted account. Does not delete aggregates
+    /// or infer primary keys; the ingestion owner explicitly selects entities.
+    pub fn discard_account(&mut self, address: &str) {
+        for state in self.states.values_mut() {
+            state.pending_updates.remove(address);
+            state.last_account_data.remove(address);
+            if let Some((_, events)) = state.pending_instruction_events.remove(address) {
+                state.pending_instruction_event_count = state
+                    .pending_instruction_event_count
+                    .saturating_sub(events.len());
+            }
+            for lookup in state.pda_reverse_lookups.values_mut() {
+                lookup.index.pop(address);
+            }
+        }
+        self.pending_pda_reprocess_updates
+            .retain(|update| update.pda_address != address);
     }
 
     pub fn snapshot_state_table(&self, state_id: u32) -> Vec<(Value, Value)> {
@@ -2240,7 +2359,12 @@ impl VmContext {
         input: Value,
         target: ResolverTarget,
     ) {
-        let cache_key = resolver_cache_key(&resolver, &input);
+        let base_key = resolver_cache_key(&resolver, &input);
+        let cache_key = if self.resolver_epoch == 0 {
+            base_key
+        } else {
+            format!("{base_key}:entity-epoch:{}", self.resolver_epoch)
+        };
 
         if let Some(entry) = self.resolver_pending.get_mut(&cache_key) {
             entry.add_target(target);

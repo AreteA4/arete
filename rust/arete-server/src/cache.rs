@@ -77,6 +77,9 @@ struct ViewEntries {
     /// Whether a source that marks creations writes to this view. Such a
     /// source never consults `evicted`.
     creations_marked: bool,
+    // Recent deletion barriers survive snapshots. Ingestion must still enforce
+    // its durable replay watermark beyond this bounded cache's retention.
+    tombstones: LruCache<String, Option<String>>,
 }
 
 impl ViewEntries {
@@ -87,6 +90,7 @@ impl ViewEntries {
             entities: LruCache::unbounded(),
             evicted: None,
             creations_marked: false,
+            tombstones: LruCache::unbounded(),
         }
     }
 
@@ -136,7 +140,25 @@ impl ViewEntries {
             .as_mut()
             .is_some_and(|evicted| evicted.get(key).is_some())
     }
+
+    fn accepts(&self, key: &str, entity: &Value, creation: bool) -> bool {
+        let Some(deleted_at) = self.tombstones.peek(key) else {
+            return true;
+        };
+        if let Some(deleted_at) = deleted_at {
+            let Some(seq) = entity.get("_seq").and_then(Value::as_str) else {
+                return false;
+            };
+            if cmp_seq(seq, deleted_at) != std::cmp::Ordering::Greater {
+                return false;
+            }
+        }
+        creation || self.entities.contains(key)
+    }
 }
+
+/// `(view, key, deletion sequence)` in most-recently-deleted order.
+pub type EntityTombstones = Vec<(String, String, Option<String>)>;
 
 /// Compare two `_seq` values numerically.
 /// `_seq` format is "{slot}:{offset}" where slot is not zero-padded.
@@ -261,6 +283,10 @@ impl EntityCache {
 
         let max_array_length = self.config.max_array_length;
 
+        if !view.accepts(key, &patch, origin == PatchOrigin::Creation) {
+            return CacheWrite::Refused { patch };
+        }
+
         if let Some(entity) = view.entities.get_mut(key) {
             deep_merge_with_append(entity, patch, append_paths, max_array_length);
             return CacheWrite::Merged;
@@ -281,13 +307,98 @@ impl EntityCache {
     /// Store `entity` as the whole entity for `key`, replacing anything held
     /// and clearing an eviction: the source vouched for it being complete
     /// (see [`arete_interpreter::Mutation::mark_whole_entity`]).
-    pub async fn store_whole(&self, view_id: &str, key: &str, entity: Value) {
+    pub async fn store_whole(&self, view_id: &str, key: &str, entity: Value) -> bool {
         let mut caches = self.caches.write().await;
         let view = caches
             .entry(view_id.to_string())
             .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
         let entity = truncate_arrays_if_needed(entity, self.config.max_array_length);
+        if !view.accepts(key, &entity, false) {
+            return false;
+        }
         view.store(key.to_string(), entity);
+        true
+    }
+
+    pub async fn accepts_mutation(
+        &self,
+        view_id: &str,
+        key: &str,
+        entity: &Value,
+        creation: bool,
+    ) -> bool {
+        self.caches
+            .read()
+            .await
+            .get(view_id)
+            .is_none_or(|view| view.accepts(key, entity, creation))
+    }
+
+    /// Apply an ordered source deletion. A delayed deletion never removes a
+    /// newer recreation. Only a newer, explicitly marked creation can restart
+    /// a deleted row; sparse patches and resends cannot resurrect it.
+    pub async fn delete(&self, view_id: &str, key: &str, seq: Option<&str>) -> bool {
+        let mut caches = self.caches.write().await;
+        let view = caches
+            .entry(view_id.to_string())
+            .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
+        let current = view
+            .entities
+            .peek(key)
+            .and_then(|entity| entity.get("_seq"))
+            .and_then(Value::as_str);
+        if let (Some(current), Some(seq)) = (current, seq) {
+            if cmp_seq(current, seq) == std::cmp::Ordering::Greater {
+                return false;
+            }
+        }
+        if let (Some(Some(previous)), Some(seq)) = (view.tombstones.peek(key), seq) {
+            if cmp_seq(previous, seq) == std::cmp::Ordering::Greater {
+                return false;
+            }
+        }
+        view.entities.pop(key);
+        view.forget_evicted(key);
+        view.tombstones
+            .put(key.to_string(), seq.map(str::to_string));
+        while view.tombstones.len()
+            > view
+                .max_entities
+                .saturating_mul(EVICTED_KEYS_PER_CACHED_ENTITY)
+        {
+            view.tombstones.pop_lru();
+        }
+        true
+    }
+
+    pub async fn dump_tombstones(&self) -> EntityTombstones {
+        self.caches
+            .read()
+            .await
+            .iter()
+            .flat_map(|(id, view)| {
+                view.tombstones
+                    .iter()
+                    .map(|(key, seq)| (id.clone(), key.clone(), seq.clone()))
+            })
+            .collect()
+    }
+
+    pub async fn hydrate_tombstones(&self, tombstones: EntityTombstones) {
+        let mut caches = self.caches.write().await;
+        for (id, key, seq) in tombstones.into_iter().rev() {
+            let view = caches
+                .entry(id)
+                .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
+            view.tombstones.put(key, seq);
+            while view.tombstones.len()
+                > view
+                    .max_entities
+                    .saturating_mul(EVICTED_KEYS_PER_CACHED_ENTITY)
+            {
+                view.tombstones.pop_lru();
+            }
+        }
     }
 
     /// Merge a source patch into `base` with this cache's append and array
@@ -458,6 +569,7 @@ impl EntityCache {
     /// projected entities, not patches.
     pub async fn hydrate(&self, views: Vec<(String, Vec<(String, Value)>)>) {
         let mut caches = self.caches.write().await;
+        caches.clear();
         for (view_id, entries) in views {
             let view = caches
                 .entry(view_id)
@@ -603,6 +715,66 @@ fn truncate_arrays_if_needed(value: Value, max_array_length: usize) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn deletion_barriers_survive_restore_and_allow_only_fresh_recreation() {
+        let cache = EntityCache::new();
+        cache
+            .upsert("v", "a", json!({"old":true, "_seq":"99:0"}))
+            .await;
+        assert!(cache.delete("v", "a", Some("100:0")).await);
+        let restored = EntityCache::new();
+        restored.upsert("v", "a", json!({"old":true})).await;
+        restored.hydrate(cache.dump().await).await;
+        restored
+            .hydrate_tombstones(cache.dump_tombstones().await)
+            .await;
+        assert!(restored.get("v", "a").await.is_none());
+        assert!(
+            !restored
+                .store_whole("v", "a", json!({"old":true,"_seq":"101:0"}))
+                .await
+        );
+        for (seq, origin) in [
+            ("99:0", PatchOrigin::Creation),
+            ("100:0", PatchOrigin::Creation),
+            ("101:0", PatchOrigin::Unknown),
+            ("101:0", PatchOrigin::Change),
+        ] {
+            assert!(matches!(
+                restored
+                    .upsert_with_append("v", "a", json!({"old":true,"_seq":seq}), &[], origin)
+                    .await,
+                CacheWrite::Refused { .. }
+            ));
+        }
+        assert_eq!(
+            restored
+                .upsert_with_append(
+                    "v",
+                    "a",
+                    json!({"fresh":true,"_seq":"102:0"}),
+                    &[],
+                    PatchOrigin::Creation
+                )
+                .await,
+            CacheWrite::Created
+        );
+        assert!(!restored.delete("v", "a", Some("100:0")).await);
+        assert!(restored.get("v", "a").await.unwrap().get("old").is_none());
+        assert_eq!(
+            restored
+                .upsert_with_append(
+                    "v",
+                    "a",
+                    json!({"n":2,"_seq":"103:0"}),
+                    &[],
+                    PatchOrigin::Change
+                )
+                .await,
+            CacheWrite::Merged
+        );
+    }
 
     #[tokio::test]
     async fn test_basic_upsert_and_get() {

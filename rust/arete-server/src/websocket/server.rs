@@ -1565,7 +1565,14 @@ async fn attach_state_subscription(
                         seen = published;
                         let metadata = source_frame_metadata(&payload);
                         if metadata.op == "delete" {
-                            task_context.entity_cache.remove(&query.view, &key).await;
+                            if !task_context.entity_cache
+                                .delete(&query.view, &key, metadata.seq.as_deref())
+                                .await
+                            {
+                                behind = true;
+                                replaced = true;
+                                continue;
+                            }
                             if member && send_membership_frame(
                                 &task_context,
                                 &subscription_id,
@@ -2014,10 +2021,12 @@ async fn apply_collection_source_event(
     if source_delete_is_stale(current.as_ref(), metadata.seq.as_deref()) {
         return;
     }
-    context
-        .entity_cache
-        .remove(source_view_id, &envelope.key)
-        .await;
+    if !context.entity_cache
+        .delete(source_view_id, &envelope.key, metadata.seq.as_deref())
+        .await
+    {
+        return;
+    }
     if view_spec.is_derived() {
         let caches = context.view_index.sorted_caches();
         let mut guard = caches.write().await;
@@ -4307,6 +4316,15 @@ mod tests {
                 self.publish_frame(key, "patch", patch, seq).await;
             }
 
+            /// A complete new lifetime after an explicit source deletion.
+            async fn create(&self, key: &str, mut entity: Value, seq: &str) {
+                entity["_seq"] = Value::String(seq.to_string());
+                self.entity_cache
+                    .upsert_with_append(ROUND, key, entity.clone(), &[], PatchOrigin::Creation)
+                    .await;
+                self.publish_frame(key, "upsert", entity, seq).await;
+            }
+
             /// Publish a frame to the key's bus without touching the cache.
             async fn publish_frame(&self, key: &str, op: &str, data: Value, seq: &str) {
                 let frame = json!({
@@ -4579,7 +4597,7 @@ mod tests {
 
             // Created again: the client holds nothing, so it arrives whole.
             server
-                .publish("7", json!({"id": 7, "third": true}), "103:000000000001")
+                .create("7", json!({"id": 7, "third": true}), "103:000000000001")
                 .await;
             let frame = next_frame(&mut socket).await;
             assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
@@ -4978,6 +4996,137 @@ mod tests {
                     socket.close(None).await.unwrap();
                 }
             }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn source_delete_and_recreation_clear_all_views_across_reconnect() {
+            let harness = Harness::start_with_index(
+                WebSocketDeliveryConfig::default(),
+                EntityCache::new(),
+                derived_index(),
+            )
+            .await;
+            harness
+                .patch("a", json!({"owner":"alice", "amount":1, "oldField":true}))
+                .await;
+            let mut list = harness
+                .subscribe(json!({"view":"Thing/filtered"}), true)
+                .await;
+            assert_eq!(snapshot_keys(&mut list).await, ["a"]);
+            let mut state = harness
+                .subscribe(json!({"view":"Thing/state", "key":"a"}), true)
+                .await;
+            assert_eq!(snapshot_keys(&mut state).await, ["a"]);
+            // Leaving a predicate is view eviction, not chain deletion.
+            harness.patch("a", json!({"owner":"bob"})).await;
+            assert_eq!(next_frame(&mut list).await["op"], "remove");
+            harness.patch("a", json!({"owner":"alice"})).await;
+            assert_eq!(next_frame(&mut list).await["op"], "upsert");
+            harness.mutate(Mutation::delete("Thing", json!("a"))).await;
+            assert_eq!(next_frame(&mut list).await["op"], "delete");
+            // State patches may precede its deletion on the socket.
+            loop {
+                if next_frame(&mut state).await["op"] == "delete" {
+                    break;
+                }
+            }
+            for view in [
+                "Thing/list",
+                "Thing/empty",
+                "Thing/filtered",
+                "Thing/sorted",
+                "Thing/state",
+            ] {
+                let mut socket = harness
+                    .subscribe(json!({"view":view, "key":"a"}), true)
+                    .await;
+                assert!(snapshot_keys(&mut socket).await.is_empty(), "{view}");
+                socket.close(None).await.unwrap();
+            }
+            // A whole resend or sparse change cannot recreate a deleted row.
+            harness
+                .patch("a", json!({"owner":"alice", "oldField":true}))
+                .await;
+            let mut stale = Mutation {
+                export: "Thing".into(),
+                key: json!("a"),
+                patch: json!({"owner":"alice", "oldField":true}),
+                append: vec![],
+            };
+            stale.mark_whole_entity();
+            harness.mutate(stale).await;
+            let mut socket = harness
+                .subscribe(json!({"view":"Thing/filtered"}), true)
+                .await;
+            assert!(snapshot_keys(&mut socket).await.is_empty());
+            socket.close(None).await.unwrap();
+            let mut recreated = Mutation {
+                export: "Thing".into(),
+                key: json!("a"),
+                patch: json!({"owner":"alice", "amount":9}),
+                append: vec![],
+            };
+            recreated.mark_created();
+            harness.mutate(recreated).await;
+            for view in [
+                "Thing/list",
+                "Thing/empty",
+                "Thing/filtered",
+                "Thing/sorted",
+                "Thing/state",
+            ] {
+                let mut socket = harness
+                    .subscribe(json!({"view":view, "key":"a"}), true)
+                    .await;
+                let frame = next_frame(&mut socket).await;
+                assert_eq!(frame["data"][0]["key"], "a");
+                assert_eq!(frame["data"][0]["data"]["amount"], 9);
+                assert!(
+                    frame["data"][0]["data"].get("oldField").is_none(),
+                    "{frame}"
+                );
+                socket.close(None).await.unwrap();
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn projected_delete_and_recreation_between_reads_replace_state() {
+            let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
+            harness.patch("a", json!({"old":true})).await;
+            let mut socket = harness
+                .subscribe(json!({"view":"Thing/state", "key":"a"}), true)
+                .await;
+            assert_eq!(snapshot_keys(&mut socket).await, ["a"]);
+            let mut creation = Mutation {
+                export: "Thing".into(),
+                key: json!("a"),
+                patch: json!({"fresh":true}),
+                append: vec![],
+            };
+            creation.mark_created();
+            // Both ready batches run before the watch receiver on this worker.
+            for mutation in [Mutation::delete("Thing", json!("a")), creation] {
+                let slot = harness
+                    .slot
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                harness
+                    .tx
+                    .try_send(MutationBatch::with_slot_context(
+                        vec![mutation].into_iter().collect(),
+                        SlotContext::new(slot, 0),
+                    ))
+                    .unwrap();
+            }
+            let (ack, wait) = oneshot::channel();
+            harness
+                .tx
+                .try_send(MutationBatch::flush_marker(ack))
+                .unwrap();
+            wait.await.unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "{frame}");
+            assert_eq!(frame["data"]["fresh"], true);
+            assert!(frame["data"].get("old").is_none(), "{frame}");
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -170,6 +170,11 @@ impl EntityResync {
             );
         }
     }
+
+    fn cancel(&self, export: &str, key: &Value, cache_key: &str) {
+        self.requests.cancel(export, key);
+        self.take_last_change(export, cache_key);
+    }
 }
 
 /// Link `vm` to the projector of the server whose parser is running, if any.
@@ -413,6 +418,57 @@ impl Projector {
             return Ok(0);
         }
 
+        if mutation.is_delete() {
+            let key = Self::extract_key(&mutation.key);
+            let seq = slot_context.map(|ctx| ctx.to_seq_string());
+            self.resync.cancel(&mutation.export, &mutation.key, &key);
+            let mut published = 0;
+            for spec in specs.iter().filter(|spec| spec.filters.matches(&key)) {
+                if !self
+                    .entity_cache
+                    .delete(&spec.id, &key, seq.as_deref())
+                    .await
+                {
+                    continue;
+                }
+                let sorted = self.view_index.sorted_caches();
+                let mut caches = sorted.write().await;
+                for derived in self.view_index.get_derived_views_for_source(&spec.id) {
+                    if let Some(cache) = caches.get_mut(&derived.id) {
+                        cache.remove(&key);
+                    }
+                }
+                drop(caches);
+                // Append tapes are historical events; deletion only clears
+                // their current entity cache, not their retained history.
+                if spec.mode == Mode::Append {
+                    continue;
+                }
+                let frame = SourceFrame {
+                    mode: spec.mode,
+                    export: spec.id.clone(),
+                    op: "delete",
+                    key: key.clone(),
+                    data: Value::Null,
+                    append: Vec::new(),
+                    seq: seq.clone(),
+                    offset: None,
+                };
+                json_buffer.clear();
+                serde_json::to_writer(&mut *json_buffer, &frame)?;
+                self.publish_frame(
+                    spec,
+                    Arc::new(BusMessage {
+                        key: key.clone(),
+                        entity: spec.id.clone(),
+                        payload: Arc::new(Bytes::copy_from_slice(json_buffer)),
+                    }),
+                )
+                .await;
+                published += 1;
+            }
+            return Ok(published);
+        }
         let mark = mutation.take_whole_entity_mark();
         let whole = mark == Some(WholeEntity::Resent);
         let origin = match mark {
@@ -455,6 +511,13 @@ impl Projector {
         let mut refused = false;
 
         for (i, spec) in matching_specs.into_iter().enumerate() {
+            if !self
+                .entity_cache
+                .accepts_mutation(&spec.id, &key, &patch, origin == PatchOrigin::Creation)
+                .await
+            {
+                continue;
+            }
             let is_last = i == match_count - 1;
             let patch_data = if is_last {
                 std::mem::take(&mut patch)
@@ -491,7 +554,11 @@ impl Projector {
             let mut frame = SourceFrame {
                 mode: spec.mode,
                 export: spec.id.clone(),
-                op: "patch",
+                op: if mark == Some(WholeEntity::Created) && spec.mode != Mode::Append {
+                    "upsert"
+                } else {
+                    "patch"
+                },
                 key: key.clone(),
                 data: wire_data,
                 append: append.clone(),
@@ -591,9 +658,9 @@ impl Projector {
         seq: Option<String>,
         json_buffer: &mut Vec<u8>,
     ) -> anyhow::Result<u32> {
-        self.entity_cache
+        if !self.entity_cache
             .store_whole(&spec.id, key, projected)
-            .await;
+            .await { return Ok(0); }
         match spec.mode {
             Mode::Append => return Ok(0),
             Mode::List => self.update_derived_view_caches(&spec.id, key).await,

@@ -62,6 +62,8 @@ pub struct SnapshotPayload {
     pub vm: VmSnapshot,
     /// Per view id: `(entity_key, entity)` pairs, most-recently-used first.
     pub entity_cache: Vec<(String, Vec<(String, Value)>)>,
+    #[serde(default)]
+    pub entity_tombstones: crate::cache::EntityTombstones,
     /// Retained event tape per view. Absent in snapshots written before
     /// replayable subscriptions existed, which restore with an empty tape.
     #[serde(default)]
@@ -144,6 +146,7 @@ mod tests {
         };
         let payload = SnapshotPayload {
             vm: VmSnapshot::default(),
+            entity_tombstones: Default::default(),
             entity_cache: vec![(
                 "tokens/list".to_string(),
                 vec![("key1".to_string(), serde_json::json!({"id": 1}))],

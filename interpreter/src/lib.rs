@@ -100,6 +100,9 @@ pub struct Mutation {
 /// anywhere else; it is never part of an entity.
 pub const WHOLE_ENTITY_MARKER: &str = "__arete_whole_entity";
 
+/// Reserved mutation metadata for an explicit source deletion. Never an entity field.
+pub const ENTITY_DELETE_MARKER: &str = "__arete_entity_delete";
+
 /// [`WHOLE_ENTITY_MARKER`]'s value for [`WholeEntity::Created`]. The value for
 /// [`WholeEntity::Resent`] is `true`.
 const CREATED_MARK: &str = "created";
@@ -117,6 +120,22 @@ pub enum WholeEntity {
 }
 
 impl Mutation {
+    /// End an entity's lifetime. Submit in the same ordered stream as its updates,
+    /// with the deletion's slot/write version. This is distinct from view eviction.
+    /// VM-backed sources must use [`vm::VmContext::delete_entity`] to remove state too.
+    pub fn delete(export: impl Into<String>, key: Value) -> Self {
+        Self {
+            export: export.into(),
+            key,
+            patch: serde_json::json!({ ENTITY_DELETE_MARKER: true }),
+            append: Vec::new(),
+        }
+    }
+
+    pub fn is_delete(&self) -> bool {
+        self.patch.get(ENTITY_DELETE_MARKER) == Some(&Value::Bool(true))
+    }
+
     /// Declare that `patch` holds the whole entity again, after a mutation
     /// that carried the change ([`WholeEntity::Resent`]).
     ///

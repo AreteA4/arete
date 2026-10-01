@@ -2508,6 +2508,73 @@ mod tests {
     }
 
     #[test]
+    fn source_deletion_cancels_resync_and_recreates_a_fresh_vm_row() {
+        let bytecode = pool_bytecode();
+        let (mut vm, requests) = linked_vm(Default::default());
+        let first = process(&mut vm, &bytecode, pool_event(1, 10));
+        let key = &first[0].key;
+        let target = crate::vm::ResolverTarget {
+            state_id: 0,
+            entity_name: "Pool".into(),
+            primary_key: key.clone(),
+            extracts: vec![],
+        };
+        vm.enqueue_resolver_request(
+            "ignored".into(),
+            crate::ast::ResolverType::Token,
+            json!("mint"),
+            target.clone(),
+        );
+        let old_request = vm.take_resolver_requests().pop().unwrap();
+        vm.get_state_table_mut(0).unwrap().deferred_when_ops.insert(
+            ("sig".into(), "instruction".into()),
+            vec![crate::vm::DeferredWhenOperation {
+                entity_name: "Pool".into(),
+                primary_key: key.clone(),
+                field_path: "old".into(),
+                field_value: json!(true),
+                when_instruction: "instruction".into(),
+                signature: "sig".into(),
+                slot: 1,
+                deferred_at: 1,
+                emit: true,
+            }],
+        );
+        requests.request("Pool", key);
+        let deletion = vm.delete_entity(&bytecode, "Pool", key).unwrap();
+        assert!(deletion.is_delete());
+        assert!(
+            serde_json::from_value::<Mutation>(serde_json::to_value(&deletion).unwrap())
+                .unwrap()
+                .is_delete()
+        );
+        assert!(!requests.is_requested("Pool", key));
+        assert!(vm.get_entity_state(0, key).is_none());
+        assert!(vm.snapshot_state_table(0).is_empty());
+        assert!(vm
+            .get_state_table_mut(0)
+            .unwrap()
+            .deferred_when_ops
+            .is_empty());
+        assert!(vm.delete_entity(&bytecode, "Unknown", key).is_none());
+        let mut next = process(&mut vm, &bytecode, pool_event(9, 90));
+        vm.enqueue_resolver_request(
+            "ignored".into(),
+            crate::ast::ResolverType::Token,
+            json!("mint"),
+            target,
+        );
+        let new_request = vm.take_resolver_requests().pop().unwrap();
+        assert_ne!(old_request.cache_key, new_request.cache_key);
+        assert!(vm
+            .apply_resolver_result(&bytecode, &old_request.cache_key, json!({"stale":true}))
+            .unwrap()
+            .is_empty());
+        assert_eq!(next[0].take_whole_entity_mark(), Some(WholeEntity::Created));
+        assert_eq!(next[0].patch["state"]["fills"], json!([90]));
+    }
+
+    #[test]
     fn a_requested_entity_is_emitted_whole_once() {
         let bytecode = pool_bytecode();
         let (mut vm, requests) = linked_vm(Default::default());

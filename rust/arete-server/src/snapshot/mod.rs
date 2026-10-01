@@ -642,6 +642,7 @@ impl SnapshotService {
             // still match the current projections. Preserve only durable VM
             // state and let live input rebuild every projection cache.
             payload.entity_cache.clear();
+            payload.entity_tombstones.clear();
             // Retained frames are published view output, shaped by the same
             // projections, so the same doubt applies — and replaying stale
             // frames is worse than a stale cache, because consumers keep them.
@@ -661,6 +662,9 @@ impl SnapshotService {
             .map(|view| view.records.len())
             .sum();
         self.entity_cache.hydrate(payload.entity_cache).await;
+        self.entity_cache
+            .hydrate_tombstones(payload.entity_tombstones)
+            .await;
         // The VM keeps more entities than the cache does (and after a legacy
         // migration the cache keeps none), so its next patch for one the
         // cache lacks is only the fields that changed. A VM linked to the
@@ -869,6 +873,7 @@ impl SnapshotService {
                 .collect(),
         };
         let payload = SnapshotPayload {
+            entity_tombstones: self.entity_cache.dump_tombstones().await,
             vm: vm_snapshot,
             entity_cache: entity_cache_dump,
             journal: journal_dump,
@@ -937,15 +942,13 @@ async fn rebuild_sorted_caches(view_index: &ViewIndex, entity_cache: &EntityCach
             continue;
         };
         let entities = entity_cache.get_all(source_view).await;
-        if entities.is_empty() {
-            continue;
-        }
         let filter = spec
             .pipeline
             .as_ref()
             .and_then(|pipeline| pipeline.filter.as_ref());
         let mut caches = sorted_caches.write().await;
         if let Some(cache) = caches.get_mut(&spec.id) {
+            cache.clear();
             let count = entities.len();
             for (key, entity) in entities {
                 if filter.is_none_or(|filter| filter.matches(&entity)) {
@@ -980,6 +983,39 @@ mod tests {
             pipeline: None,
             source_view: None,
         }
+    }
+
+    #[tokio::test]
+    async fn rebuilding_sorted_views_from_an_empty_snapshot_clears_previous_rows() {
+        use crate::materialized_view::{SortConfig, SortOrder, ViewPipeline};
+        let mut index = ViewIndex::new();
+        index.add_spec(view("Round/list", Mode::List));
+        let mut derived = view("Round/sorted", Mode::List);
+        derived.source_view = Some("Round/list".into());
+        derived.pipeline = Some(ViewPipeline {
+            sort: Some(SortConfig {
+                field_path: vec!["id".into()],
+                order: SortOrder::Desc,
+            }),
+            ..Default::default()
+        });
+        index.add_spec(derived);
+        index
+            .sorted_caches()
+            .write()
+            .await
+            .get_mut("Round/sorted")
+            .unwrap()
+            .upsert("old".into(), json!({"id":1}));
+        rebuild_sorted_caches(&index, &EntityCache::new()).await;
+        assert!(index
+            .sorted_caches()
+            .write()
+            .await
+            .get_mut("Round/sorted")
+            .unwrap()
+            .get_all_ordered()
+            .is_empty());
     }
 
     /// After a restore the VM holds entities the cache does not; the VM's next
