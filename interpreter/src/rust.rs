@@ -671,6 +671,21 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
         emitted_name: &str,
     ) -> String {
         if resolved.is_enum {
+            if let Some(def) = self
+                .spec
+                .idl
+                .as_ref()
+                .and_then(|idl| idl.types.iter().find(|def| def.name == resolved.type_name))
+            {
+                if matches!(&def.type_def, IdlTypeDefKindSnapshot::Enum { variants, .. } if variants.iter().any(|variant| !variant.fields.is_empty()))
+                {
+                    return crate::managed_account_models::definition(
+                        def,
+                        emitted_name,
+                        &BTreeMap::new(),
+                    );
+                }
+            }
             let variants: Vec<String> = resolved
                 .enum_variants
                 .iter()
@@ -3592,6 +3607,7 @@ fn generate_stack_types_rs(
         }
 
         // Generate main entity struct (e.g., OreRound, OreTreasury)
+        generated.insert(entity_name.clone());
         output.push_str(&compiler.generate_main_entity_struct(&resolved_name_map));
         output.push_str("\n\n");
 
@@ -3605,6 +3621,15 @@ fn generate_stack_types_rs(
             output.push('\n');
         }
     }
+
+    generated.extend(["EventWrapper".into(), "CaptureWrapper".into()]);
+    generated.extend(used_builtins.iter().map(|name| (*name).to_string()));
+    crate::managed_account_models::append_models(
+        &mut output,
+        idls,
+        &mut generated,
+        &mut account_structs,
+    );
 
     // Generate the builtin resolver output structs (SlotHashBytes /
     // TokenMetadata) once, for the whole stack.
@@ -5338,7 +5363,7 @@ fn to_kebab_case(s: &str) -> String {
     result
 }
 
-fn to_pascal_case(s: &str) -> String {
+pub(crate) fn to_pascal_case(s: &str) -> String {
     s.split(['_', '-', '.', ':'])
         .map(|word| {
             let mut chars = word.chars();
@@ -5350,7 +5375,7 @@ fn to_pascal_case(s: &str) -> String {
         .collect()
 }
 
-fn to_snake_case(s: &str) -> String {
+pub(crate) fn to_snake_case(s: &str) -> String {
     let mut result = String::new();
     let mut separator = false;
     for ch in s.chars() {

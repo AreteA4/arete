@@ -1472,9 +1472,19 @@ fn generate_stack_models_py(
                 }
                 if resolved.is_enum {
                     let variants = resolved.enum_variants.join(", ");
+                    let payload = idls.iter().filter(|idl| Some(idl.name.as_str()) == program_name).flat_map(|idl| &idl.types).find(|def| def.name == resolved.type_name)
+                        .is_some_and(|def| matches!(&def.type_def, IdlTypeDefKindSnapshot::Enum { variants, .. } if variants.iter().any(|variant| !variant.fields.is_empty())));
                     blocks.push(format!(
-                        "# Enum `{}` (variants: {}) passed through as strings.\n{} = str\n",
-                        resolved.type_name, variants, emitted_name
+                        "# Enum `{}` (variants: {}): {}.\n{} = {}\n",
+                        resolved.type_name,
+                        variants,
+                        if payload {
+                            "payloads preserved as raw managed JSON"
+                        } else {
+                            "passed through as strings"
+                        },
+                        emitted_name,
+                        if payload { "Any" } else { "str" }
                     ));
                     exports.push(emitted_name);
                     continue;
