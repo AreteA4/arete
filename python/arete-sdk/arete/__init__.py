@@ -82,6 +82,8 @@ from arete.gateway import (  # noqa: E402
     create_hosted_solana_gateway_transports,
 )
 from arete.amounts import (  # noqa: E402
+    AmountInput,
+    decode_amount_input,
     format_raw_to_ui,
     get_mint_decimals,
     parse_ui_amount_to_raw,
@@ -332,6 +334,8 @@ __all__ = [
     "HostedSolanaGatewayBindings",
     "create_hosted_solana_gateway_transports",
     # amounts & SPL
+    "AmountInput",
+    "decode_amount_input",
     "parse_ui_amount_to_raw",
     "format_raw_to_ui",
     "to_raw_amount",
