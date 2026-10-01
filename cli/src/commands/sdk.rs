@@ -3599,8 +3599,10 @@ fn check_sdk_payload_paths(output_dir: &Path, artifacts: &[String]) -> Result<()
 }
 
 /// A Python bundle's entry must export the mapping its generated package
-/// applies (`PROGRAM_EXTENSIONS` or `STACK_EXTENSIONS`); refuse one that
-/// never names it rather than generate a package that fails on import.
+/// applies (`PROGRAM_EXTENSIONS` or `STACK_EXTENSIONS`) by assigning it at
+/// module level (see [`python_assigns_at_module_level`]); refuse one that
+/// does not rather than generate a package that fails on import. A name that
+/// appears only in a comment, a string or a docstring is not an export.
 fn ensure_python_entry_export(artifact: &ResolvedExtensionsArtifact, export: &str) -> Result<()> {
     let entry = artifact
         .files
@@ -3612,14 +3614,153 @@ fn ensure_python_entry_export(artifact: &ResolvedExtensionsArtifact, export: &st
                 artifact.entry
             )
         })?;
-    let pattern = Regex::new(&format!(r"\b{export}\b")).expect("export pattern compiles");
-    if !pattern.is_match(&entry.contents) {
+    if !python_assigns_at_module_level(&entry.contents, export) {
         anyhow::bail!(
-            "Python extensions entry '{}' must export {export} = {{...}} (docs/internal/sdk-core-api.md §9); it never defines it",
+            "Python extensions entry '{}' must export {export} = {{...}} (docs/internal/sdk-core-api.md §9); it never assigns {export} at module level",
             artifact.entry
         );
     }
     Ok(())
+}
+
+/// Whether Python `source` assigns `name` with a module-level statement that
+/// starts at column 0: `NAME = …` or `NAME: T = …`, outside comments, strings
+/// and lines that continue a bracketed or backslash-continued line. A bare
+/// annotation (`NAME: T`), an augmented assignment, a comparison, an
+/// attribute or item assignment, and a `def` or `class` of that name do not
+/// assign it.
+fn python_assigns_at_module_level(source: &str, name: &str) -> bool {
+    let code = python_code_only(source.strip_prefix('\u{feff}').unwrap_or(source));
+    let mut depth = 0usize;
+    let mut continued = false;
+    let mut start = 0;
+    for line in code.split_inclusive('\n') {
+        if depth == 0
+            && !continued
+            && line.starts_with(name)
+            && python_assigns_after_name(&code[start + name.len()..])
+        {
+            return true;
+        }
+        for byte in line.bytes() {
+            match byte {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        continued = line.trim_end().ends_with('\\');
+        start += line.len();
+    }
+    false
+}
+
+/// Whether the code after a name that starts a statement assigns that name:
+/// `=` (not `==`), or `:`, an annotation and an `=` outside its brackets
+/// before the statement's line ends.
+fn python_assigns_after_name(rest: &str) -> bool {
+    if rest
+        .chars()
+        .next()
+        .is_some_and(|next| next == '_' || next.is_alphanumeric())
+    {
+        // A longer name.
+        return false;
+    }
+    let rest = rest.trim_start_matches([' ', '\t']);
+    if let Some(value) = rest.strip_prefix('=') {
+        return !value.starts_with('=');
+    }
+    let Some(annotation) = rest.strip_prefix(':') else {
+        return false;
+    };
+    let bytes = annotation.as_bytes();
+    let mut depth = 0usize;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'\\' => {
+                // A backslash continuation joins the next line.
+                index += 1;
+                while bytes.get(index) == Some(&b'\r') {
+                    index += 1;
+                }
+            }
+            b'\n' if depth == 0 => return false,
+            b'=' if depth == 0 => {
+                if bytes.get(index + 1) == Some(&b'=') {
+                    index += 2;
+                    continue;
+                }
+                let previous = index.checked_sub(1).map(|previous| bytes[previous]);
+                if !matches!(previous, Some(b'!' | b'<' | b'>')) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    false
+}
+
+/// Python `source` with every comment and string literal blanked to spaces
+/// (line breaks kept), so that what is left is code. A string's prefix
+/// letters stay; inside every string, raw or not, a backslash escapes the
+/// next character, which is how Python finds where a string ends.
+fn python_code_only(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut code = bytes.to_vec();
+    let mut blank = |range: std::ops::Range<usize>| {
+        for byte in &mut code[range] {
+            if *byte != b'\n' {
+                *byte = b' ';
+            }
+        }
+    };
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'#' => {
+                let end = bytes[index..]
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map_or(bytes.len(), |offset| index + offset);
+                blank(index..end);
+                index = end;
+            }
+            quote @ (b'\'' | b'"') => {
+                let delimiter: &[u8] = if bytes[index..].starts_with(&[quote; 3]) {
+                    &bytes[index..index + 3]
+                } else {
+                    &bytes[index..index + 1]
+                };
+                let triple = delimiter.len() == 3;
+                let mut end = index + delimiter.len();
+                while end < bytes.len() {
+                    match bytes[end] {
+                        b'\\' => end += 2,
+                        // An unterminated single-quoted string ends with its line.
+                        b'\n' if !triple => break,
+                        byte if byte == quote && bytes[end..].starts_with(delimiter) => {
+                            end += delimiter.len();
+                            break;
+                        }
+                        _ => end += 1,
+                    }
+                }
+                let end = end.min(bytes.len());
+                blank(index..end);
+                index = end;
+            }
+            _ => index += 1,
+        }
+    }
+    // Only whole characters were blanked: every literal and comment starts at
+    // an ASCII byte and ends at one or at the end of the source.
+    String::from_utf8_lossy(&code).into_owned()
 }
 
 fn write_sdk_provenance_manifest_file(
@@ -9810,6 +9951,86 @@ mod tests {
         .expect("hosted Python bundle should resolve")
         .expect("hosted Python bundle should be present");
         assert_eq!(resolved.input_hash.as_deref(), Some("hash-3"));
+    }
+
+    /// The mapping a Python entry exports must be assigned by a module-level
+    /// statement at column 0; a name in a comment, a string, a docstring, a
+    /// nested block or a bracketed continuation is not an export.
+    #[test]
+    fn python_entry_export_requires_a_module_level_assignment() {
+        for source in [
+            "STACK_EXTENSIONS = {}\n",
+            "STACK_EXTENSIONS = {}",
+            "STACK_EXTENSIONS={\"math\": None}\r\n",
+            "STACK_EXTENSIONS: dict[str, object] = {}\n",
+            "STACK_EXTENSIONS: \"Mapping[str, Any]\" = {}\n",
+            "STACK_EXTENSIONS: Annotated[dict, Field(default=None)] = {}\n",
+            "STACK_EXTENSIONS: dict \\\n    = {}\n",
+            "STACK_EXTENSIONS = OTHER = {}\n",
+            "\u{feff}STACK_EXTENSIONS = {}\n",
+            "\"\"\"Exports STACK_EXTENSIONS.\n\nSTACK_EXTENSIONS = {...}\n\"\"\"\n\nfrom . import math  # STACK_EXTENSIONS below\n\nSTACK_EXTENSIONS = {\n    \"math\": math,\n}\n",
+            "NOTE = r'\\\\'\nSTACK_EXTENSIONS = {}\n",
+            "TEXT = '''\nit's\n'''\nSTACK_EXTENSIONS = {}\n",
+        ] {
+            assert!(
+                python_assigns_at_module_level(source, "STACK_EXTENSIONS"),
+                "{source:?} assigns STACK_EXTENSIONS"
+            );
+        }
+        for source in [
+            "",
+            "# STACK_EXTENSIONS = {}\n",
+            "X = 1  # STACK_EXTENSIONS = {}\n",
+            "\"\"\"Exports STACK_EXTENSIONS = {...}.\"\"\"\n",
+            "\"\"\"\nSTACK_EXTENSIONS = {}\n\"\"\"\n",
+            "'''\nSTACK_EXTENSIONS = {}\n'''\n",
+            "NOTE = 'STACK_EXTENSIONS = {}'\n",
+            "NOTE = \"a \\\" STACK_EXTENSIONS = {}\"\n",
+            "NOTE = 'a \\\nSTACK_EXTENSIONS = {}'\n",
+            "__all__ = [\"STACK_EXTENSIONS\"]\n",
+            "from .helpers import STACK_EXTENSIONS\n",
+            "def STACK_EXTENSIONS():\n    return {}\n",
+            "class STACK_EXTENSIONS:\n    pass\n",
+            "    STACK_EXTENSIONS = {}\n",
+            "if True:\n    STACK_EXTENSIONS = {}\n",
+            "STACK_EXTENSIONS: dict\n",
+            "STACK_EXTENSIONS: dict\nOTHER = {}\n",
+            "STACK_EXTENSIONS += {}\n",
+            "STACK_EXTENSIONS == {}\n",
+            "STACK_EXTENSIONS != {}\n",
+            "STACK_EXTENSIONS_V2 = {}\n",
+            "STACK_EXTENSIONS.update({})\n",
+            "STACK_EXTENSIONS[\"math\"] = None\n",
+            "STACK_EXTENSIONS, OTHER = {}, {}\n",
+            "build(\nSTACK_EXTENSIONS={},\n)\n",
+            "VALUE = 1 + \\\nSTACK_EXTENSIONS\n",
+        ] {
+            assert!(
+                !python_assigns_at_module_level(source, "STACK_EXTENSIONS"),
+                "{source:?} does not assign STACK_EXTENSIONS"
+            );
+        }
+
+        let mut artifact = python_test_artifact("hash-1");
+        let set_entry = |artifact: &mut ResolvedExtensionsArtifact, contents: &str| {
+            artifact
+                .files
+                .iter_mut()
+                .find(|file| file.path == "extensions.py")
+                .unwrap()
+                .contents = contents.to_string();
+        };
+        set_entry(
+            &mut artifact,
+            "\"\"\"Exports STACK_EXTENSIONS.\"\"\"\n# STACK_EXTENSIONS = {}\n",
+        );
+        let error = ensure_python_entry_export(&artifact, "STACK_EXTENSIONS").unwrap_err();
+        assert!(
+            error.to_string().contains("must export STACK_EXTENSIONS"),
+            "{error}"
+        );
+        set_entry(&mut artifact, "STACK_EXTENSIONS: dict = {}\n");
+        ensure_python_entry_export(&artifact, "STACK_EXTENSIONS").expect("an annotated export");
     }
 
     #[test]
