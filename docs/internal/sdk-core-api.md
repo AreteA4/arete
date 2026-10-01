@@ -187,7 +187,15 @@ Layered, lowest to highest; every layer is present in every SDK:
 1. **`raw.<ix>.build(params)`** — pure instruction building. Params are IDL wire shape:
    account-name keys override addresses, arg-name keys serialize, `resolve` feeds
    PDA-only seeds. Resolution classes: `signer | known | pda | userProvided`; PDA seeds
-   (`literal | bytes | argRef | accountRef`) resolve in topological order. Args
+   (`literal | bytes | argRef | accountRef`) resolve in topological order. An explicit
+   address (a params key, or the build's `accounts`, which wins) is used for every
+   class, never re-derived, and seeds the PDAs that reference it; it must be a base58
+   32-byte public key (`Invalid account override for "<name>": …`). A `signer` is
+   caller-provided unless its kind is `wallet` (TS `signerKind: 'wallet'`, Rust
+   `AccountResolution::WalletSigner`, Python `signer_kind="wallet"`): only a wallet
+   signer falls back to the build's wallet (`payer`), and generated handlers declare
+   every signer caller-provided (TS `'provided'`, Rust `AccountResolution::Signer`,
+   Python `signer_kind="provided"`). Args
    serialize via the shared borsh layout
    (`u8…u128, i8…i128, f32/f64, bool, string, pubkey, bytes, vec, option, array,
    hashMap, struct, enum`). **Fail closed**: unknown param or missing non-option arg is
@@ -257,14 +265,22 @@ Layered, lowest to highest; every layer is present in every SDK:
    program (§9, Rust and Python extension bundles).
 
 Prepared values carry `name`, `artifacts`, `required_signer_addresses`, `errors`, and
-compose (prepend/append; `create_prepared_transaction({operations})`).
+per transaction the signer material it was prepared with (`signers`, such as a created
+account's keypair: TS `signers`, Rust `PreparedTransactionBody::signers` set with
+`with_signers`, Python `signers=`), and compose (prepend/append;
+`create_prepared_transaction({operations})`, which keeps its parts' signers).
 
 ## 7. Execution
 
 - `client.transaction(instructions, options)` — wrap built instructions and execute.
 - `client.execute(prepared, options)` — run a prepared operation through the wallet:
   fail-closed signer validation (`SignerRegistry`), per-transaction callbacks
-  (`on_transaction_start`, …), receipts with signatures.
+  (`on_transaction_start`, …), receipts with signatures. Each send hands the adapter
+  the transaction's `signers`, then the registry's (TS and Python `signers`, Rust
+  `WalletExecutionContext::signers`), and their addresses count toward validation. A
+  Rust signer that carries its key implements `Signer::sign_transaction_message` (the
+  Solana adapter's `SolanaOperationSigner`); the Solana adapters sign a required
+  signature they do not own with it.
 - **Outcome model** (identical in every SDK): four terminal statuses
   `confirmed | not-submitted | submitted-unknown | chain-failed`, each with the phase
   that produced it.
