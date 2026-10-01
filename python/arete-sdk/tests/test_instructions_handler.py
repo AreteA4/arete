@@ -226,6 +226,29 @@ class TestBuild:
         assert built.accounts[2].pubkey == TOKEN_PROGRAM
 
 
+class TestArtifact:
+    def test_to_artifact_is_the_typescript_built_instruction(self):
+        from arete.operations import to_json_value
+
+        built = make_handler().build(
+            {"amount": 100, "mint": SYSTEM_PROGRAM}, payer=WSOL_MINT
+        )
+        artifact = built.to_artifact()
+        assert artifact == {
+            "programId": TOKEN_PROGRAM,
+            "keys": [
+                {"pubkey": WSOL_MINT, "isSigner": True, "isWritable": True},
+                {"pubkey": SYSTEM_PROGRAM, "isSigner": False, "isWritable": False},
+                {"pubkey": STATE_WSOL_PDA, "isSigner": False, "isWritable": True},
+            ],
+            "data": bytes([1, 100, 0, 0, 0, 0, 0, 0, 0]),
+        }
+        # TypeScript's toJsonValue encodes the bytes as byte values.
+        assert to_json_value({"instruction": artifact})["instruction"]["data"] == [
+            1, 100, 0, 0, 0, 0, 0, 0, 0,
+        ]
+
+
 class TestErrorMetadata:
     def test_looks_up_idl_errors_by_code(self):
         handler = make_handler()

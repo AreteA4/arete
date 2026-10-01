@@ -10,7 +10,7 @@ Building is pure — no network access.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, List, Mapping, Optional, Sequence, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 from ._curve import decode_base58
 from .accounts import AccountMeta, resolve_accounts
@@ -34,6 +34,31 @@ class BuiltInstruction:
     program_id: str
     accounts: List[BuiltAccountMeta]
     data: bytes
+
+    def to_artifact(self) -> Dict[str, Any]:
+        """The instruction in the shape TypeScript gives it in a semantic
+        instruction's ``artifacts.instruction``, a TypeScript
+        ``BuiltInstruction``: ``{"programId", "keys": [{"pubkey", "isSigner",
+        "isWritable"}], "data"}``. ``data`` is ``bytes``, as the TypeScript
+        artifact holds a ``Uint8Array``; :func:`arete.operations.to_json_value`
+        turns it into a list of byte values, as TypeScript's ``toJsonValue``
+        does.
+
+        A port mirroring ``artifacts: { instruction }`` passes
+        ``{"instruction": instruction.to_artifact()}``.
+        """
+        return {
+            "programId": self.program_id,
+            "keys": [
+                {
+                    "pubkey": meta.pubkey,
+                    "isSigner": meta.is_signer,
+                    "isWritable": meta.is_writable,
+                }
+                for meta in self.accounts
+            ],
+            "data": bytes(self.data),
+        }
 
 
 def _validated_address(address: str) -> str:
