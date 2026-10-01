@@ -177,6 +177,13 @@ jobs:
             "a4-npm-v$VERSION"
             "arete-mcp-npm-v$VERSION"
           )
+          # Older release sources do not include the contracts crate. When it
+          # exists, validate its release and ancestry before any publishing job
+          # can run or attempt to upload the shared fixture archive.
+          if [[ -f rust/arete-solana-contracts/Cargo.toml ]]; then
+            CONTRACTS_VERSION="$(crate_version arete-solana-contracts)"
+            RELEASE_TAGS+=("arete-solana-contracts-v$CONTRACTS_VERSION")
+          fi
 
           for tag in "${RELEASE_TAGS[@]}"; do
             gh release view "$tag" >/dev/null
