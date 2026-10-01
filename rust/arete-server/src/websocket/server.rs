@@ -2900,13 +2900,30 @@ async fn load_query_entities(
     query: &SubscriptionQuery,
     apply_snapshot_limit: bool,
 ) -> Vec<(String, Value)> {
-    let (entities, preordered) = if let Some(sorted_caches) = sorted_caches {
+    let ordered = if let Some(sorted_caches) = sorted_caches {
         let mut caches = sorted_caches.write().await;
-        let entities = caches
+        caches
             .get_mut(&view_spec.id)
             .map(|cache| cache.get_all_ordered())
-            .unwrap_or_default();
+    } else {
+        None
+    };
+    let (entities, preordered) = if let Some(entities) = ordered {
         (entities, true)
+    } else if view_spec.is_derived() {
+        // Empty and filter-only pipelines have no sorted cache. Evaluate the
+        // source rows, retaining the pipeline predicate before query selection.
+        let mut entities = entity_cache
+            .get_all(view_spec.source_view.as_deref().unwrap_or(&view_spec.id))
+            .await;
+        if let Some(filter) = view_spec
+            .pipeline
+            .as_ref()
+            .and_then(|pipeline| pipeline.filter.as_ref())
+        {
+            entities.retain(|(_, data)| filter.matches(data));
+        }
+        (entities, false)
     } else if view_spec.mode == Mode::State {
         let entity = match query.key.as_deref() {
             Some(key) => entity_cache
@@ -2920,7 +2937,15 @@ async fn load_query_entities(
     } else {
         (entity_cache.get_all(&view_spec.id).await, false)
     };
-    select_query_entities(entities, query, preordered, apply_snapshot_limit)
+    let mut query = query.clone();
+    if let Some(limit) = view_spec
+        .pipeline
+        .as_ref()
+        .and_then(|pipeline| pipeline.limit)
+    {
+        query.take = Some(query.take.unwrap_or(limit).min(limit));
+    }
+    select_query_entities(entities, &query, preordered, apply_snapshot_limit)
 }
 
 fn select_query_entities(
@@ -3581,6 +3606,71 @@ mod tests {
     #[tokio::test]
     async fn derived_source_receiver_is_installed_before_snapshot() {
         assert_list_receiver_precedes_snapshot("Thing/list-source").await;
+    }
+
+    #[tokio::test]
+    async fn unsorted_derived_reads_preserve_filters_order_and_snapshot_window() {
+        use crate::materialized_view::{CompareOp, FilterConfig, ViewPipeline};
+        let cache = EntityCache::new();
+        for id in 1..=6 {
+            cache
+                .upsert(
+                    "Thing/list",
+                    &id.to_string(),
+                    json!({
+                        "_seq": format!("{}:0", id * 10), "active": id != 6,
+                        "owner": "alice", "id": id
+                    }),
+                )
+                .await;
+        }
+        let mut spec = list_spec();
+        spec.id = "Thing/custom".into();
+        spec.source_view = Some("Thing/list".into());
+        spec.pipeline = Some(ViewPipeline::default());
+        let caches = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        let mut query = SubscriptionQuery {
+            view: spec.id.clone(),
+            ..Default::default()
+        };
+        let rows = load_query_entities(&cache, Some(caches.clone()), &spec, &query, false).await;
+        assert_eq!(
+            rows.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
+            ["6", "5", "4", "3", "2", "1"]
+        );
+        spec.pipeline.as_mut().unwrap().filter = Some(FilterConfig {
+            field_path: vec!["active".into()],
+            op: CompareOp::Eq,
+            value: json!(true),
+        });
+        query.filters.insert("owner".into(), json!("alice"));
+        query.skip = Some(1);
+        query.take = Some(3);
+        query.snapshot_limit = Some(1);
+        let rows = load_query_entities(&cache, Some(caches.clone()), &spec, &query, false).await;
+        assert_eq!(
+            rows.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
+            ["4", "3", "2"]
+        );
+        assert_eq!(
+            load_query_entities(&cache, Some(caches.clone()), &spec, &query, true)
+                .await
+                .len(),
+            1
+        );
+        query.skip = None;
+        query.after = Some("20:0".into());
+        let rows = load_query_entities(&cache, Some(caches.clone()), &spec, &query, false).await;
+        assert_eq!(
+            rows.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
+            ["3", "4", "5"]
+        );
+        query.filters.insert("owner".into(), json!("bob"));
+        assert!(
+            load_query_entities(&cache, Some(caches), &spec, &query, false)
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -4676,7 +4766,15 @@ mod tests {
                 delivery: WebSocketDeliveryConfig,
                 entity_cache: EntityCache,
             ) -> Self {
-                let view_index = Arc::new(thing_index());
+                Self::start_with_index(delivery, entity_cache, thing_index()).await
+            }
+
+            async fn start_with_index(
+                delivery: WebSocketDeliveryConfig,
+                entity_cache: EntityCache,
+                index: ViewIndex,
+            ) -> Self {
+                let view_index = Arc::new(index);
                 let bus_manager = BusManager::new();
                 let (tx, rx) = mpsc::channel::<MutationBatch>(64);
                 // Unconstrained, so Tokio's cooperative budget never makes the
@@ -4815,6 +4913,70 @@ mod tests {
                 harness
                     .patch(key, json!({"name": format!("thing-{key}"), "count": 1}))
                     .await;
+            }
+        }
+
+        fn derived_index() -> ViewIndex {
+            use crate::materialized_view::{
+                CompareOp, FilterConfig, SortConfig, SortOrder, ViewPipeline,
+            };
+            let mut index = thing_index();
+            for name in ["empty", "filtered", "sorted"] {
+                let mut pipeline = ViewPipeline::default();
+                if name != "empty" {
+                    pipeline.filter = Some(FilterConfig {
+                        field_path: vec!["owner".into()],
+                        op: CompareOp::Eq,
+                        value: json!("alice"),
+                    });
+                    pipeline.limit = Some(2);
+                }
+                if name == "sorted" {
+                    pipeline.sort = Some(SortConfig {
+                        field_path: vec!["amount".into()],
+                        order: SortOrder::Desc,
+                    });
+                }
+                index.add_spec(ViewSpec {
+                    id: format!("Thing/{name}"),
+                    source_view: Some("Thing/list".into()),
+                    pipeline: Some(pipeline),
+                    ..list_spec()
+                });
+            }
+            index
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn unsorted_derived_idle_bootstrap_and_reconnect_are_authoritative() {
+            let harness = Harness::start_with_index(
+                WebSocketDeliveryConfig::default(),
+                EntityCache::new(),
+                derived_index(),
+            )
+            .await;
+            harness
+                .patch("a", json!({"owner":"alice", "amount":1}))
+                .await;
+            harness.patch("b", json!({"owner":"bob", "amount":2})).await;
+            harness
+                .patch("c", json!({"owner":"alice", "amount":3}))
+                .await;
+            harness
+                .patch("d", json!({"owner":"alice", "amount":4}))
+                .await;
+            for _ in 0..2 {
+                for (view, expected) in [
+                    ("empty", vec!["d", "c", "b", "a"]),
+                    ("filtered", vec!["d", "c"]),
+                    ("sorted", vec!["d", "c"]),
+                ] {
+                    let mut socket = harness
+                        .subscribe(json!({"view": format!("Thing/{view}"), "take":100}), true)
+                        .await;
+                    assert_eq!(snapshot_keys(&mut socket).await, expected);
+                    socket.close(None).await.unwrap();
+                }
             }
         }
 
