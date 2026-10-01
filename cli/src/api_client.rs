@@ -189,6 +189,7 @@ fn url_value<'a>(
 /// Production API URL (used by default in release builds)
 #[cfg(not(feature = "local"))]
 const DEFAULT_API_URL: &str = "https://api.arete.run";
+const DEFAULT_APP_ORIGIN: &str = "https://app.arete.run";
 
 /// Local development API URL (enabled with --features local)
 #[cfg(feature = "local")]
@@ -2901,7 +2902,7 @@ impl ApiClient {
             if cfg!(feature = "local") {
                 "http://localhost:3000".to_string()
             } else {
-                "https://arete.run".to_string()
+                DEFAULT_APP_ORIGIN.to_string()
             }
         });
         let mut origin = url::Url::parse(&value)

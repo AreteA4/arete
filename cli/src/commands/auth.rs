@@ -46,6 +46,19 @@ fn format_remaining_seconds(seconds: i64) -> String {
     }
 }
 
+fn signup_expiry_matches(identity: Option<&str>, signup: &str) -> bool {
+    let Some(identity) = identity else {
+        return false;
+    };
+    let Ok(identity) = chrono::DateTime::parse_from_rfc3339(identity) else {
+        return false;
+    };
+    let Ok(signup) = chrono::DateTime::parse_from_rfc3339(signup) else {
+        return false;
+    };
+    identity.timestamp_micros() == signup.timestamp_micros()
+}
+
 pub fn login(api_key: Option<String>, requested_profile: Option<&str>) -> Result<()> {
     let api_url = config::get_api_url(None);
 
@@ -1082,8 +1095,10 @@ fn perform_signup(
         })?;
     if identity.slug != response.slug
         || identity.plan.as_deref() != Some(response.plan.as_str())
-        || identity.entitlement_expires_at.as_deref()
-            != Some(response.entitlement_expires_at.as_str())
+        || !signup_expiry_matches(
+            identity.entitlement_expires_at.as_deref(),
+            &response.entitlement_expires_at,
+        )
         || identity.claim_state != response.claim_state
     {
         anyhow::bail!(
@@ -1551,6 +1566,27 @@ mod signup_tests {
             me_request.header("authorization"),
             Some(format!("Bearer {stored_key}").as_str())
         );
+    }
+
+    #[test]
+    fn signup_accepts_database_precision_in_the_verified_expiry() {
+        let _sandbox = CredentialsSandbox::new();
+        let signup = OK_BODY.replace("2026-10-06T00:00:00Z", "2026-10-06T00:00:00.000000499Z");
+        let server = MockServer::json_sequence(vec![(200, signup), (200, ME_BODY.to_string())]);
+        let client = ApiClient::with_base_url(server.base_url());
+
+        let outcome = perform_signup(
+            &client,
+            server.base_url(),
+            Some("Robo"),
+            "agent",
+            false,
+            false,
+        )
+        .expect("PostgreSQL microsecond precision verifies");
+
+        assert!(outcome.created);
+        assert_eq!(outcome.identity.slug, "agent-7f3a");
     }
 
     #[test]
