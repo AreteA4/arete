@@ -8,8 +8,8 @@ use crate::stack_types::{
     ProgramTypeDefs, StackResolvedTypes,
 };
 use crate::typescript_instructions::{
-    dedupe_errors_by_code, disambiguate_instruction_account_names, normalize_seed_arg_type,
-    split_generic,
+    dedupe_errors_by_code, disambiguate_instruction_account_names, error_metadata_msg,
+    normalize_seed_arg_type, split_generic,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -2548,6 +2548,69 @@ mod tests {
             .contains("impl arete_sdk::Programs for DemoStackPrograms"));
         assert!(output.lib_rs.contains("pub mod programs;"));
         assert!(output.lib_rs.contains("DemoStackPrograms"));
+    }
+
+    /// The `msg` text the TypeScript generator emits for error `code` in
+    /// `spec`'s program error metadata (the reference SDK).
+    fn typescript_error_msg(spec: &SerializableStackSpec, code: u32) -> String {
+        let typescript = crate::typescript_instructions::generate_instructions_code(
+            &spec.stack_name,
+            &spec.instructions,
+            &spec.idls,
+            &spec.pdas,
+            &spec.program_ids,
+            &HashSet::new(),
+        );
+        let marker = format!("{{ code: {code}, name: '");
+        let line = typescript
+            .code
+            .lines()
+            .find(|line| line.contains(&marker))
+            .unwrap_or_else(|| panic!("TypeScript emits error {code}:\n{}", typescript.code));
+        let start = line.find("msg: '").expect("TypeScript error has a msg") + "msg: '".len();
+        let end = line.rfind("' }").expect("TypeScript error msg is closed");
+        line[start..end].to_string()
+    }
+
+    #[test]
+    fn rust_error_metadata_carries_typescripts_single_line_messages() {
+        // An IDL message wrapped across source lines, as token-2022's error 39
+        // (`MaximumPendingBalanceCreditCounterExceeded`) is.
+        let wrapped = IdlErrorSnapshot {
+            code: 6001,
+            name: "CounterExceeded".to_string(),
+            msg: Some("Deposits cannot exceed\n            the counter\r\nset at init".to_string()),
+        };
+        let mut spec = programs_stack_spec();
+        spec.idls[0].errors.push(wrapped.clone());
+        let typescript_msg = typescript_error_msg(&spec, 6001);
+        assert_eq!(
+            typescript_msg,
+            "Deposits cannot exceed             the counter  set at init"
+        );
+        let expected = format!(
+            "ErrorMetadata {{ code: 6001, name: \"CounterExceeded\".to_string(), msg: \"{typescript_msg}\".to_string() }},"
+        );
+
+        // Program-wide metadata, which an instruction without its own errors carries.
+        let programs = compile_stack_spec(spec.clone(), None)
+            .expect("rust stack generation should succeed")
+            .programs_rs
+            .expect("programs.rs is generated");
+        assert_eq!(programs.matches(&expected).count(), 1, "{programs}");
+
+        // Instruction-scoped metadata.
+        spec.instructions[0].errors = vec![wrapped];
+        let programs = compile_stack_spec(spec, None)
+            .expect("rust stack generation should succeed")
+            .programs_rs
+            .expect("programs.rs is generated");
+        assert_eq!(programs.matches(&expected).count(), 1, "{programs}");
+        assert!(!programs.contains("exceed\\n"), "{programs}");
+
+        // The normalization is the metadata's own: other strings keep their
+        // escapes.
+        assert_eq!(rust_string_literal("a\nb"), "\"a\\nb\"");
     }
 
     #[test]
@@ -5987,7 +6050,7 @@ fn generate_rust_instruction_block(
                     "                ErrorMetadata {{ code: {}, name: {}.to_string(), msg: {}.to_string() }},",
                     error.code,
                     rust_string_literal(&error.name),
-                    rust_string_literal(error.msg.as_deref().unwrap_or(""))
+                    rust_string_literal(&error_metadata_msg(error))
                 )
             })
             .collect();
