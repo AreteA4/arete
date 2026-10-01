@@ -191,10 +191,14 @@ from arete.stack import (  # noqa: E402
 )
 from arete.extensions import (  # noqa: E402
     EXTENSION_API_VERSION,
+    PROGRAM_EXTENSION_KEYS,
+    STACK_EXTENSION_KEYS,
     apply_connected_stack_extensions,
     extend_program,
     extend_programs,
     extend_stack,
+    program_extensions_of,
+    stack_extensions_of,
     with_program_identity,
 )
 from arete.client import Arete  # noqa: E402
@@ -251,9 +255,13 @@ __all__ = [
     "with_programs",
     # extensions
     "EXTENSION_API_VERSION",
+    "PROGRAM_EXTENSION_KEYS",
+    "STACK_EXTENSION_KEYS",
     "extend_stack",
     "extend_program",
     "extend_programs",
+    "program_extensions_of",
+    "stack_extensions_of",
     "with_program_identity",
     "apply_connected_stack_extensions",
     "Operation",
