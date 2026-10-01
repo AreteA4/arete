@@ -341,6 +341,189 @@ pub struct Automation {
     pub conditions: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AdminConfig {
+pub authority: String,
+pub fee_collector: String,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub fee_rate: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProtocolConfig {
+pub authority: String,
+pub fee_collector: String,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub fee_rate: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub intermission_slots: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub round_slots: u64,
+pub entropy_var_address: String,
+pub entropy_program_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Numeric {
+pub bits: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AutomationConditions {
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub max_production_cost: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub min_motherlode: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub max_motherlode: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResetEvent {
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub disc: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub round_id: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub start_slot: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub end_slot: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub winning_square: u64,
+pub top_miner: String,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub num_winners: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub motherlode: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub total_deployed: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub total_vaulted: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub total_winnings: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub total_minted: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub ts: i64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub rng: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub deployed_winning_square: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BuryEvent {
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub disc: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub ore_buried: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub ore_shared: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub sol_amount: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub new_circulating_supply: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub ts: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeployEvent {
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub disc: u64,
+pub authority: String,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub amount: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub mask: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub round_id: u64,
+pub signer: String,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub strategy: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub total_squares: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub ts: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiqEvent {
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub disc: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub sol_amount: u64,
+pub recipient: String,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub ts: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClaimEvent {
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub disc: u64,
+pub authority: String,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub amount: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub claim_type: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub ts: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Config {
+pub admin: AdminConfig,
+pub protocol: ProtocolConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Round {
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub id: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer_vec")]
+pub deployed: Vec<u64>,
+#[serde(deserialize_with = "serde_utils::deserialize_integer_vec")]
+pub mass: Vec<u64>,
+#[serde(deserialize_with = "serde_utils::deserialize_integer_vec")]
+pub count: Vec<u64>,
+pub slot_hash: Vec<u8>,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub expires_at: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub motherlode: u64,
+pub rent_payer: String,
+#[serde(deserialize_with = "serde_utils::deserialize_integer_vec")]
+pub rewards: Vec<u64>,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub total_vaulted: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub total_returned_sol: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub total_miners: u64,
+pub top_miner: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Var {
+pub authority: String,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub id: u64,
+pub provider: String,
+pub commit: Vec<u8>,
+pub seed: Vec<u8>,
+pub slot_hash: Vec<u8>,
+pub value: Vec<u8>,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub samples: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub is_auto: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub start_at: u64,
+#[serde(deserialize_with = "serde_utils::deserialize_integer")]
+pub end_at: u64,
+}
+
 /// Slot hash resolved by the builtin `SlotHash` resolver.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SlotHashBytes {

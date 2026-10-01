@@ -1488,10 +1488,26 @@ pub mod ore {
             ))
         }
 
+        /// Typed reader for `Config` accounts (release-addressed HTTP reads).
+        pub fn config_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Config>, arete_sdk::AreteError> {
+            Ok(arete_sdk::AccountReader::new(
+                "Config",
+                std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
+            ))
+        }
+
         /// Typed reader for `Miner` accounts (release-addressed HTTP reads).
         pub fn miner_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Miner>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Miner",
+                std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
+            ))
+        }
+
+        /// Typed reader for `Round` accounts (release-addressed HTTP reads).
+        pub fn round_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Round>, arete_sdk::AreteError> {
+            Ok(arete_sdk::AccountReader::new(
+                "Round",
                 std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
             ))
         }
@@ -1836,7 +1852,6 @@ pub mod entropy {
     /// Program accessor exposed on the stack client's `programs` namespace.
     #[derive(Clone)]
     pub struct EntropyProgram {
-        #[allow(dead_code)]
         builder: arete_sdk::ProgramBuilder,
     }
 
@@ -1864,6 +1879,14 @@ pub mod entropy {
 
         pub fn sample(&self, params: SampleParams) -> Result<BuiltInstruction, InstructionError> {
             sample(params)
+        }
+
+        /// Typed reader for `Var` accounts (release-addressed HTTP reads).
+        pub fn var_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Var>, arete_sdk::AreteError> {
+            Ok(arete_sdk::AccountReader::new(
+                "Var",
+                std::sync::Arc::new(self.builder.account_transport("entropy", &read_descriptor())?),
+            ))
         }
     }
 }

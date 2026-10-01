@@ -142,6 +142,7 @@ name = "arete-a4-sdk"
 version = "0.28.0"
 dependencies = [
  "anyhow",
+ "arete-solana-contracts",
  "async-trait",
  "base64 0.22.1",
  "bs58",
@@ -272,6 +273,7 @@ dependencies = [
  "arete-auth",
  "arete-hash",
  "arete-interpreter",
+ "arete-solana-contracts",
  "async-trait",
  "base64 0.22.1",
  "bs58",
@@ -299,6 +301,16 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "zstd",
+]
+
+[[package]]
+name = "arete-solana-contracts"
+version = "0.1.0"
+dependencies = [
+ "bs58",
+ "chrono",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
