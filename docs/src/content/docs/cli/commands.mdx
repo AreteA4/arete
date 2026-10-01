@@ -79,36 +79,36 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 
 ## Quick Reference
 
-| Command                               | Description                                    |
-| ------------------------------------- | ---------------------------------------------- |
-| `a4 create [name]`                    | Scaffold a new app from a template             |
-| `a4 init`                             | Set up the project for Arete and coding agents |
-| `a4 doctor`                           | Check install, project, auth, agents           |
-| `a4 self install`                     | Finish installing the `a4` binary              |
-| `a4 self update` / `a4 upgrade`       | Update `a4` in place                           |
-| `a4 self uninstall`                   | Remove `a4`                                    |
-| `a4 mcp`                              | Run the stream MCP server (stdio)              |
-| `a4 auth signup`                      | Register an agent account                      |
-| `a4 program build <idl>`              | Build a portable ProgramSpec                   |
-| `a4 stack compose`                    | Compose live views and program SDKs            |
-| `a4 sdk create --manifest ... --ts`   | Generate a TypeScript SDK from a StackManifest |
-| `a4 sdk create --manifest ... --rust` | Generate a Rust SDK from a StackManifest       |
-| `a4 sdk create --program-spec ... --rust` | Generate a Rust (or `--python`) program SDK from a ProgramSpec |
+| Command                                                                       | Description                                                      |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `a4 create [name]`                                                            | Scaffold a new app from a template                               |
+| `a4 init`                                                                     | Set up the project for Arete and coding agents                   |
+| `a4 doctor`                                                                   | Check install, project, auth, agents                             |
+| `a4 self install`                                                             | Finish installing the `a4` binary                                |
+| `a4 self update` / `a4 upgrade`                                               | Update `a4` in place                                             |
+| `a4 self uninstall`                                                           | Remove `a4`                                                      |
+| `a4 mcp`                                                                      | Run the stream MCP server (stdio)                                |
+| `a4 auth signup`                                                              | Register an agent account                                        |
+| `a4 program build <idl>`                                                      | Build a portable ProgramSpec                                     |
+| `a4 stack compose`                                                            | Compose live views and program SDKs                              |
+| `a4 sdk create --manifest ... --ts`                                           | Generate a TypeScript SDK from a StackManifest                   |
+| `a4 sdk create --manifest ... --rust`                                         | Generate a Rust SDK from a StackManifest                         |
+| `a4 sdk create --program-spec ... --rust`                                     | Generate a Rust (or `--python`) program SDK from a ProgramSpec   |
 | `a4 sdk create --manifest ... --rust --program-extensions <program>=<bundle>` | Embed a program's own bundle in a Rust (or `--python`) stack SDK |
-| `a4 up <manifest>`                    | Deploy one exact StackManifest                 |
-| `a4 up <alias>`                       | Deploy an installed stack                      |
-| `a4 status`                           | Show project overview                          |
-| `a4 stack list`                       | List deployed stacks                           |
-| `a4 telemetry status`                 | Show telemetry status                          |
-| `a4 explore`                          | Discover installable stacks                    |
-| `a4 explore programs`                 | Discover installable standalone programs       |
-| `a4 explore stack <ref>`              | Inspect an exact stack install descriptor      |
-| `a4 explore program <ref>`            | Inspect an exact program install descriptor    |
-| `a4 know search --query <intent>`     | Search the knowledge layer by intent           |
-| `a4 know protocol <slug>`             | Curated knowledge for one protocol             |
-| `a4 know program <slug>`              | Curated annotations for one program            |
-| `a4 know recipe <slug>`               | One cross-protocol recipe                      |
-| `a4 know concepts`                    | Concept and category vocabularies              |
+| `a4 up <manifest>`                                                            | Deploy one exact StackManifest                                   |
+| `a4 up <alias>`                                                               | Deploy an installed stack                                        |
+| `a4 status`                                                                   | Show project overview                                            |
+| `a4 stack list`                                                               | List deployed stacks                                             |
+| `a4 telemetry status`                                                         | Show telemetry status                                            |
+| `a4 explore`                                                                  | Discover installable stacks                                      |
+| `a4 explore programs`                                                         | Discover installable standalone programs                         |
+| `a4 explore stack <ref>`                                                      | Inspect an exact stack install descriptor                        |
+| `a4 explore program <ref>`                                                    | Inspect an exact program install descriptor                      |
+| `a4 know search --query <intent>`                                             | Search the knowledge layer by intent                             |
+| `a4 know protocol <slug>`                                                     | Curated knowledge for one protocol                               |
+| `a4 know program <slug>`                                                      | Curated annotations for one program                              |
+| `a4 know recipe <slug>`                                                       | One cross-protocol recipe                                        |
+| `a4 know concepts`                                                            | Concept and category vocabularies                                |
 
 :::note[One binary]
 Every install route (`install.sh`, `install.ps1`, `npx @usearete/a4 install`) puts the same prebuilt binary at `~/.local/bin/a4`. `npx @usearete/a4 <command>` runs that binary too, installing it first if needed.
