@@ -118,6 +118,39 @@ TOML
 (cd "$PROGRAM_PROJECT" && "${A4_CMD[@]}" --config "$PROGRAM_PROJECT/arete.toml" install)
 PROGRAM_CRATE="$PROGRAM_PROJECT/generated/ore-program"
 
+# Compile probe: every account of the ProgramSpec has a typed reader on the
+# program accessor, decoding into a model the crate root exports under the
+# account's name (the bindings a program package's extension bundle uses).
+PROGRAM_LIB="$(awk -F'"' '/^name = / { gsub("-", "_", $2); print $2; exit }' "$PROGRAM_CRATE/Cargo.toml")"
+mkdir -p "$PROGRAM_CRATE/examples"
+python3 - "$PROGRAM_SPEC" "$PROGRAM_LIB" >"$PROGRAM_CRATE/examples/account_bindings.rs" <<'PY'
+import json
+import re
+import sys
+
+spec = json.load(open(sys.argv[1]))
+lib = sys.argv[2]
+accounts = spec["payload"]["idlSnapshot"]["accounts"]
+if not accounts:
+    sys.exit("the ProgramSpec declares no accounts to probe")
+print("#![allow(dead_code)]")
+print(f"use {lib}::OrePrograms;")
+print("")
+print("fn probe(")
+print("    client: &arete_sdk::Arete<arete_sdk::ProgramStack<OrePrograms>>,")
+print(") -> Result<(), arete_sdk::AreteError> {")
+print("    let program = &client.programs.ore;")
+for account in accounts:
+    name = account["name"]
+    model = name[:1].upper() + name[1:]
+    reader = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+    print(f"    let _: arete_sdk::AccountReader<{lib}::{model}> = program.{reader}_accounts()?;")
+print("    Ok(())")
+print("}")
+print("")
+print("fn main() {}")
+PY
+
 echo "Generating a standalone Rust stack crate..."
 STACK_CRATE="$WORK_DIR/ore-stack"
 "${A4_CMD[@]}" sdk create --manifest "$STACK_MANIFEST" --rust \
@@ -201,7 +234,24 @@ RS
     esac
 }
 
+# The golden installs with program package extensions: one Rust bundle staged
+# at a standalone program crate's root and inside a stack crate's
+# `programs::vault` module must compile in both.
+GOLDEN_DIR="$ROOT_DIR/cli/tests/golden/installed-rust-python/rust"
+EXTENDED_CRATES=()
+for kind in programs stacks; do
+    crate_dir="$WORK_DIR/installed-$kind-vault"
+    cp -R "$GOLDEN_DIR/$kind/vault" "$crate_dir"
+    sed "s/{{ARETE_VERSION}}/$SDK_VERSION/" "$crate_dir/Cargo.toml" >"$crate_dir/Cargo.toml.tmp"
+    mv "$crate_dir/Cargo.toml.tmp" "$crate_dir/Cargo.toml"
+    check_manifest "$crate_dir"
+    EXTENDED_CRATES+=("$crate_dir")
+done
+
 echo "Compiling generated crates (mode: $MODE)..."
 compile_crate "$PROGRAM_CRATE"
 compile_crate "$STACK_CRATE"
-echo "Generated Rust program and stack crates build against arete-a4-sdk $SDK_VERSION ($MODE mode)."
+for crate_dir in "${EXTENDED_CRATES[@]}"; do
+    compile_crate "$crate_dir"
+done
+echo "Generated Rust program and stack crates, with and without program extensions, build against arete-a4-sdk $SDK_VERSION ($MODE mode)."

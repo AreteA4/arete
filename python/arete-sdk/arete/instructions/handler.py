@@ -10,7 +10,7 @@ Building is pure — no network access.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, List, Mapping, Optional, Sequence, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 from ._curve import decode_base58
 from .accounts import AccountMeta, resolve_accounts
@@ -34,6 +34,31 @@ class BuiltInstruction:
     program_id: str
     accounts: List[BuiltAccountMeta]
     data: bytes
+
+    def to_artifact(self) -> Dict[str, Any]:
+        """The instruction in the shape TypeScript gives it in a semantic
+        instruction's ``artifacts.instruction``, a TypeScript
+        ``BuiltInstruction``: ``{"programId", "keys": [{"pubkey", "isSigner",
+        "isWritable"}], "data"}``. ``data`` is ``bytes``, as the TypeScript
+        artifact holds a ``Uint8Array``; :func:`arete.operations.to_json_value`
+        turns it into a list of byte values, as TypeScript's ``toJsonValue``
+        does.
+
+        A port mirroring ``artifacts: { instruction }`` passes
+        ``{"instruction": instruction.to_artifact()}``.
+        """
+        return {
+            "programId": self.program_id,
+            "keys": [
+                {
+                    "pubkey": meta.pubkey,
+                    "isSigner": meta.is_signer,
+                    "isWritable": meta.is_writable,
+                }
+                for meta in self.accounts
+            ],
+            "data": bytes(self.data),
+        }
 
 
 def _validated_address(address: str) -> str:
@@ -82,12 +107,15 @@ class InstructionHandler:
 
         Params are IDL wire shape: keys matching a declared argument name are
         serialized args; keys matching a declared account name (with a string
-        value) are account-address overrides — including signer slots, which
-        win over the ``payer`` fallback. A ``resolve`` key carries helper-only
-        PDA seed inputs. Anything else raises — a typo'd key silently dropped
-        here would otherwise change the built instruction. The ``accounts``
-        option remains an unvalidated escape hatch that wins over
-        param-derived overrides; ``remaining_accounts`` are appended after the
+        value) are account addresses. An explicit address wins for every
+        account, as in the TypeScript ``buildInstruction``: a signer over the
+        ``payer`` fallback, and a PDA or known account over its derivation or
+        fixed address. ``payer`` fills only ``signer_kind="wallet"`` signers;
+        any other signer must be given. A ``resolve`` key carries helper-only PDA seed inputs.
+        Anything else raises — a typo'd key silently dropped here would
+        otherwise change the built instruction. The ``accounts`` option wins
+        over param-derived addresses; every explicit address must be a base58
+        32-byte public key. ``remaining_accounts`` are appended after the
         declared accounts (Anchor's ``remainingAccounts``).
         """
         if params is None:

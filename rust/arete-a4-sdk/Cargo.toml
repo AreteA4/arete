@@ -48,6 +48,12 @@ pin-project-lite = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# `arete_sdk::encoding::{sha256, keccak256}` for extension bundles. sha2 is
+# already in this crate's graph (solana-pubkey's `sha2` feature); sha3 is
+# RustCrypto's Keccak-256 on the same `digest` traits, locked in this
+# workspace already (arete-interpreter), and adds only `sha3` + `keccak`.
+sha2 = "0.10"
+sha3 = "0.10"
 solana-pubkey = { version = "2.3", default-features = false, features = ["std", "sha2", "curve25519"] }
 thiserror = "1.0"
 tokio = { version = "1.0", features = ["rt-multi-thread", "sync", "time", "macros"] }

@@ -196,6 +196,7 @@ fn generate_all(source: &ResolvedStackSource, output: &Path) -> Result<()> {
         false,
         None,
         None,
+        &[],
     )?;
     generate_python_stack_sdk(
         source,
@@ -205,6 +206,7 @@ fn generate_all(source: &ResolvedStackSource, output: &Path) -> Result<()> {
         false,
         None,
         None,
+        &[],
     )
 }
 

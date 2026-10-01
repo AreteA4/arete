@@ -55,7 +55,7 @@ DEPLOY_HANDLER = InstructionHandler(
     program_id=PROGRAM_ID,
     discriminator=bytes([1]),
     accounts=[
-        AccountMeta("signer", True, True, Signer()),
+        AccountMeta("signer", True, True, Signer(), signer_kind="wallet"),
         AccountMeta("miner", False, True, UserProvided()),
     ],
     args=[ArgSchema("amount", "u64")],

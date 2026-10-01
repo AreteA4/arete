@@ -4,7 +4,7 @@ use arete_sdk::instruction::BuiltInstruction;
 use arete_sdk::prelude::*;
 use generated::ore::programs::entropy as entropy_program;
 use generated::ore::programs::ore as ore_program;
-use generated::ore::{OreDevex, OreRound, OreStreamStack, OreTreasury};
+use generated::ore::{OreRound, OreStreamStack, OreTreasury};
 
 // Use your own API key in production (can be secret or publishable)
 const API_KEY: &str = "hspk_alt8MN3BmJebxARE3IlOnnaAEibCrqqXfdG5VoGW";
@@ -56,10 +56,11 @@ async fn main() -> anyhow::Result<()> {
     println!("--- Building an ore `deploy` instruction offline ---\n");
     let (miner_pda, bump) = ore_program::pdas::miner(AUTHORITY)?;
     println!("Derived miner PDA: {miner_pda} (bump {bump})");
-    // Devex address helpers are pure too (staged extension, root re-export).
+    // Extension `addresses` are pure too (staged extension, bound at the
+    // stack module root).
     println!(
-        "Treasury PDA (via devex helper): {}",
-        generated::ore::treasury_address()?
+        "Treasury PDA (via the addresses extension): {}",
+        generated::ore::addresses::treasury()?
     );
     let instruction = ore_program::deploy(demo_deploy_params())?;
     print_instruction("standalone module", &instruction);
@@ -98,27 +99,30 @@ async fn main() -> anyhow::Result<()> {
         Err(error) => eprintln!("warning: board account reader unavailable: {error}"),
     }
 
-    // --- Devex extensions: the staged OreDevex trait attaches to the client
-    // via the stack module's root re-export (best-effort). ---
-    println!("\n--- Reading the current round via the OreDevex extension ---\n");
-    match a4.current_round().await {
+    // --- Devex extensions: namespace modules of free functions. Stack reads
+    // take the client; program operations take the program's context
+    // (best-effort). ---
+    println!("\n--- Reading the current round via the read extension ---\n");
+    match generated::ore::read::current_round(&a4).await {
         Some(round) => println!(
-            "Current round via OreDevex: #{} (deploy count {:?})",
+            "Current round via read::current_round: #{} (deploy count {:?})",
             round.id.round_id.unwrap_or(0),
             round.metrics.deploy_count
         ),
         None => eprintln!("warning: current round unavailable (no board/round state yet)"),
     }
 
-    println!("\n--- Preparing deployWithCheckpoint via the OreDevex extension ---\n");
-    match a4
-        .deploy_with_checkpoint(generated::ore::DeployWithCheckpointInput {
+    println!("\n--- Preparing deployWithCheckpoint via the transactions extension ---\n");
+    match generated::ore::transactions::mining::deploy_with_checkpoint(
+        &a4.programs.ore.context(),
+        generated::ore::DeployWithCheckpointInput {
             authority: AUTHORITY.to_string(),
             amount: 1_000_000,
             squares: 3,
             ..Default::default()
-        })
-        .await
+        },
+    )
+    .await
     {
         Ok(operation) => println!(
             "Prepared '{}' spanning {} transaction body(ies)",

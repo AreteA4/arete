@@ -11,29 +11,21 @@ from __future__ import annotations
 from typing import Optional
 
 from arete.chain import ChainClient
+from arete.encoding import decode_base58
 
 SPL_TOKEN_PROGRAM_ADDRESS = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 TOKEN_2022_PROGRAM_ADDRESS = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 ASSOCIATED_TOKEN_PROGRAM_ADDRESS = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 SYSTEM_PROGRAM_ADDRESS = "11111111111111111111111111111111"
 
-_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-_BASE58_INDEX = {char: index for index, char in enumerate(_BASE58_ALPHABET)}
-
-
 def _public_key_seed(address: str) -> bytes:
-    """Decode a base58 address into its 32 seed bytes (TS createPublicKeySeed)."""
-    number = 0
-    for char in address:
-        digit = _BASE58_INDEX.get(char)
-        if digit is None:
-            raise ValueError(f"Invalid base58 public key: {address}")
-        number = number * 58 + digit
-    raw = number.to_bytes((number.bit_length() + 7) // 8, "big")
-    padding = len(address) - len(address.lstrip("1"))
-    decoded = b"\x00" * padding + raw
+    """Decode a base58 address into its 32 seed bytes (TS
+    ``createPublicKeySeed``), raising ``ValueError`` with the TypeScript
+    messages: ``Invalid base58 character: <c>`` and
+    ``Invalid public key length: expected 32, got <n>``."""
+    decoded = decode_base58(address)
     if len(decoded) != 32:
-        raise ValueError(f"Invalid base58 public key: {address}")
+        raise ValueError(f"Invalid public key length: expected 32, got {len(decoded)}")
     return decoded
 
 
@@ -61,13 +53,22 @@ async def resolve_token_program_address(
 def derive_associated_token_account(
     *, owner: str, mint: str, token_program: Optional[str] = None
 ) -> str:
-    """Derive the associated token account address for ``owner`` + ``mint``."""
+    """Derive the associated token account address for ``owner`` + ``mint``.
+
+    ``token_program`` defaults to the SPL Token program when it is ``None``
+    (TypeScript ``??``); any other value, the empty string included, is a
+    seed. Each address must be a base58 32-byte public key: the error is a
+    ``ValueError`` with the TypeScript message, checked in the order owner,
+    token program, mint.
+    """
     from arete.instructions.pda import find_program_address
 
     address, _bump = find_program_address(
         [
             _public_key_seed(owner),
-            _public_key_seed(token_program or SPL_TOKEN_PROGRAM_ADDRESS),
+            _public_key_seed(
+                SPL_TOKEN_PROGRAM_ADDRESS if token_program is None else token_program
+            ),
             _public_key_seed(mint),
         ],
         ASSOCIATED_TOKEN_PROGRAM_ADDRESS,

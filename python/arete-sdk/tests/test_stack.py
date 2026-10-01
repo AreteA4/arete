@@ -59,7 +59,7 @@ DEPLOY_HANDLER = InstructionHandler(
     program_id=PROGRAM_ID,
     discriminator=bytes([1]),
     accounts=[
-        AccountMeta("signer", True, True, Signer()),
+        AccountMeta("signer", True, True, Signer(), signer_kind="wallet"),
         AccountMeta("miner", False, True, UserProvided()),
         AccountMeta("system_program", False, False, Known(SYSTEM_PROGRAM)),
     ],
@@ -162,7 +162,7 @@ class TestRawInstructions:
             program_id=PROGRAM_ID,
             discriminator=bytes([2]),
             accounts=[
-                AccountMeta("signer", True, True, Signer()),
+                AccountMeta("signer", True, True, Signer(), signer_kind="wallet"),
                 AccountMeta("payer", False, True, UserProvided()),
             ],
             args=[],
@@ -180,6 +180,25 @@ class TestRawInstructions:
         client.wallet = FakeWallet()  # set after connect: wallet is read live
         built = program.raw.deploy.build(amount=5, miner=BOB)
         assert built.accounts[0].pubkey == ALICE
+
+    def test_the_client_wallet_never_fills_a_provided_signer(self):
+        # Generated handlers mark every signer "provided" (TypeScript
+        # `signerKind: 'provided'`): the connected wallet does not fill it.
+        handler = InstructionHandler(
+            program_id=PROGRAM_ID,
+            discriminator=bytes([3]),
+            accounts=[AccountMeta("signer", True, True, Signer(), signer_kind="provided")],
+            args=[],
+        )
+        program, client = connect_program(
+            make_program_def(raw_instructions={"close": handler})
+        )
+        client.wallet = FakeWallet()
+        with pytest.raises(InstructionError, match="Missing required accounts: signer"):
+            program.raw.close.build()
+        with pytest.raises(InstructionError, match="Missing required accounts: signer"):
+            program.raw.close.build(wallet=ALICE)
+        assert program.raw.close.build(signer=BOB).accounts[0].pubkey == BOB
 
     def test_handler_escape_hatch(self):
         program, _ = connect_program()

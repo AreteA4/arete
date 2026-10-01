@@ -4,12 +4,10 @@
 //! synchronous associated-token-account derivation, and token-program
 //! resolution from a mint's owner.
 
-use std::str::FromStr;
-
-use solana_pubkey::Pubkey;
 use thiserror::Error;
 
 use crate::chain::{ChainClient, ChainError};
+use crate::encoding::{decode_base58, Base58Error};
 use crate::instruction::{derive_program_address, InstructionError};
 
 /// SPL Token program.
@@ -24,9 +22,23 @@ pub const SYSTEM_PROGRAM_ADDRESS: &str = "11111111111111111111111111111111";
 /// Errors produced by SPL helpers.
 #[derive(Debug, Error)]
 pub enum SplError {
-    /// An address is not a valid base58 32-byte public key.
+    /// An address is not a valid base58 32-byte public key. The helpers here
+    /// report [`SplError::InvalidBase58`] and
+    /// [`SplError::InvalidPublicKeyLength`] instead, with the TypeScript
+    /// messages; the variant stays for callers that match it.
     #[error("Invalid public key: {0}")]
     InvalidPubkey(String),
+
+    /// An address is not base58: `Invalid base58 character: <c>`, the
+    /// TypeScript message.
+    #[error(transparent)]
+    InvalidBase58(#[from] Base58Error),
+
+    /// An address does not decode to 32 bytes:
+    /// `Invalid public key length: expected 32, got <n>`, the TypeScript
+    /// message.
+    #[error("Invalid public key length: expected 32, got {0}")]
+    InvalidPublicKeyLength(usize),
 
     /// PDA derivation failed.
     #[error(transparent)]
@@ -45,16 +57,22 @@ pub enum SplError {
     Chain(#[from] ChainError),
 }
 
+/// The 32 seed bytes of a base58 address (TypeScript `createPublicKeySeed`).
 fn pubkey_seed(address: &str) -> Result<Vec<u8>, SplError> {
-    Pubkey::from_str(address)
-        .map(|key| key.to_bytes().to_vec())
-        .map_err(|_| SplError::InvalidPubkey(address.to_string()))
+    let decoded = decode_base58(address)?;
+    if decoded.len() != 32 {
+        return Err(SplError::InvalidPublicKeyLength(decoded.len()));
+    }
+    Ok(decoded)
 }
 
 /// Derives the associated token account for `owner` + `mint` (synchronously).
 ///
 /// Seeds are `[owner, token_program, mint]` against the associated-token
-/// program; `token_program` defaults to the SPL Token program.
+/// program; `token_program` defaults to the SPL Token program when `None`
+/// (TypeScript `??`: `Some("")` is a seed). Each address must be a base58
+/// 32-byte public key, checked in the order owner, token program, mint, and
+/// fails with the TypeScript message.
 pub fn derive_associated_token_account(
     owner: &str,
     mint: &str,
@@ -198,14 +216,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_pubkeys() {
+    fn rejects_invalid_pubkeys_with_the_typescript_messages() {
+        let message = |owner: &str, mint: &str, token_program: Option<&str>| {
+            derive_associated_token_account(owner, mint, token_program)
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            message("not-base58!", USDC_MINT, None),
+            "Invalid base58 character: -"
+        );
+        assert_eq!(
+            message(WSOL_MINT, "short", None),
+            "Invalid public key length: expected 32, got 4"
+        );
+        // Only `None` defaults the token program: `Some("")` decodes to no
+        // bytes.
+        assert_eq!(
+            message(WSOL_MINT, USDC_MINT, Some("")),
+            "Invalid public key length: expected 32, got 0"
+        );
         assert!(matches!(
-            derive_associated_token_account("not-base58!", USDC_MINT, None),
-            Err(SplError::InvalidPubkey(_))
-        ));
-        assert!(matches!(
-            derive_associated_token_account(WSOL_MINT, "short", None),
-            Err(SplError::InvalidPubkey(_))
+            derive_associated_token_account(WSOL_MINT, "0", None),
+            Err(SplError::InvalidBase58(_))
         ));
     }
 

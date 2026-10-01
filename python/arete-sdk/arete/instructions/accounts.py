@@ -1,6 +1,9 @@
 """Instruction account resolution.
 
-Python port of ``instructions/account-resolver.ts``. Resolution order:
+Python port of ``instructions/account-resolver.ts``. An explicit address (a
+params override or the ``accounts`` option) wins for every account, whatever
+its resolution, as in TypeScript: a named PDA or known account is not
+re-derived. Resolution order:
 
 1. Non-PDA accounts (signer, known, user-provided) resolve first.
 2. PDA accounts resolve in dependency order (accounts they reference via
@@ -32,7 +35,8 @@ from .pda import (
 
 @dataclass(frozen=True)
 class Signer:
-    """Must sign; resolved from an override or the fallback payer."""
+    """Must sign. Resolved from an explicit address; only a signer whose
+    :attr:`AccountMeta.signer_kind` is ``"wallet"`` falls back to the payer."""
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,13 @@ class UserProvided:
 AccountResolution = Union[Signer, Known, Pda, UserProvided]
 
 
+#: How a signer account is satisfied (TypeScript ``AccountMeta.signerKind``).
+#: Only a ``"wallet"`` signer is filled from the build's payer (the client
+#: wallet); a ``"provided"`` signer, the generator's, or one without a kind is
+#: supplied by the caller. ``"generated"`` is reserved, as in TypeScript.
+SIGNER_KINDS = ("wallet", "provided", "generated")
+
+
 @dataclass(frozen=True)
 class AccountMeta:
     """Metadata for a single account in an instruction."""
@@ -66,6 +77,8 @@ class AccountMeta:
     is_writable: bool
     resolution: AccountResolution
     is_optional: bool = False
+    #: How a :class:`Signer` account is satisfied; see :data:`SIGNER_KINDS`.
+    signer_kind: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -131,8 +144,13 @@ def resolve_accounts(
 ) -> AccountResolutionResult:
     """Resolves instruction accounts against args, overrides, and a payer.
 
-    ``overrides`` are explicit account-address overrides (including signer
-    slots, which win over the ``payer`` fallback); ``resolve`` carries
+    ``payer`` fills only signers whose ``signer_kind`` is ``"wallet"``, as the
+    TypeScript wallet does: an IDL says that an account signs, not that the
+    connected wallet is that account.
+
+    ``overrides`` are explicit account addresses. One wins over the account's
+    own resolution for every kind of account (signer, known, PDA or
+    user-provided), and must be a base58 32-byte public key; ``resolve`` carries
     helper-only PDA seed inputs that are not serialized on-chain;
     ``program_id`` is the fallback program for PDA derivation and the
     placeholder for omitted non-trailing optional accounts.
@@ -192,9 +210,18 @@ def _resolve_single(
     program_id: Optional[str],
     resolved: Mapping[str, ResolvedAccount],
 ) -> Optional[ResolvedAccount]:
+    explicit = overrides.get(meta.name)
+    if explicit is not None:
+        _validate_account_override(meta.name, explicit)
+        return ResolvedAccount(
+            name=meta.name,
+            address=explicit,
+            is_signer=meta.is_signer,
+            is_writable=meta.is_writable,
+        )
     resolution = meta.resolution
     if isinstance(resolution, Signer):
-        address = overrides.get(meta.name) or payer
+        address = payer if meta.signer_kind == "wallet" else None
         if not address:
             return None
         return ResolvedAccount(
@@ -211,18 +238,27 @@ def _resolve_single(
             is_writable=meta.is_writable,
         )
     if isinstance(resolution, UserProvided):
-        address = overrides.get(meta.name)
-        if not address:
-            return None
-        return ResolvedAccount(
-            name=meta.name,
-            address=address,
-            is_signer=meta.is_signer,
-            is_writable=meta.is_writable,
-        )
+        # Only an explicit address resolves a user-provided account.
+        return None
     if isinstance(resolution, Pda):
         return _resolve_pda(meta, resolution.config, args, resolve, resolved, program_id)
     raise InstructionError(f"Unknown account resolution: {resolution!r}")
+
+
+def _validate_account_override(name: str, address: Any) -> None:
+    """An explicit account address must be a base58 32-byte public key (the
+    TypeScript ``validateAccountAddress``)."""
+    try:
+        decoded = decode_base58(address)
+    except (TypeError, ValueError):
+        raise InstructionError(
+            f'Invalid account override for "{name}": expected a base58 public key'
+        ) from None
+    if len(decoded) != 32:
+        raise InstructionError(
+            f'Invalid account override for "{name}": expected a 32-byte public '
+            f"key, got {len(decoded)} bytes"
+        )
 
 
 def _resolve_pda(

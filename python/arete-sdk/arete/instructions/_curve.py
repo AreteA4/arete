@@ -1,4 +1,4 @@
-"""Vendored base58 (Bitcoin alphabet) and ed25519 on-curve check.
+"""Ed25519 on-curve check (and base58, re-exported from ``arete.encoding``).
 
 Pure Python, stdlib only, so PDA derivation works offline with no native or
 third-party dependencies. The on-curve check mirrors ``Point.fromHex`` in
@@ -9,44 +9,9 @@ has a square root in GF(p).
 
 from __future__ import annotations
 
-_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-_BASE58_INDEX = {char: index for index, char in enumerate(_BASE58_ALPHABET)}
-
-
-def decode_base58(text: str) -> bytes:
-    """Decodes a base58 string (Bitcoin/Solana alphabet) to bytes."""
-    if not text:
-        return b""
-    number = 0
-    for char in text:
-        value = _BASE58_INDEX.get(char)
-        if value is None:
-            raise ValueError("Invalid base58 character: " + char)
-        number = number * 58 + value
-    body = number.to_bytes((number.bit_length() + 7) // 8, "big") if number else b""
-    leading_zeros = 0
-    for char in text:
-        if char != "1":
-            break
-        leading_zeros += 1
-    return b"\x00" * leading_zeros + body
-
-
-def encode_base58(data: bytes) -> str:
-    """Encodes bytes to a base58 string (Bitcoin/Solana alphabet)."""
-    if not data:
-        return ""
-    number = int.from_bytes(data, "big")
-    digits = []
-    while number > 0:
-        number, remainder = divmod(number, 58)
-        digits.append(_BASE58_ALPHABET[remainder])
-    leading_zeros = 0
-    for byte in data:
-        if byte != 0:
-            break
-        leading_zeros += 1
-    return "1" * leading_zeros + "".join(reversed(digits))
+# Base58 lives in ``arete.encoding``; re-exported here for the instruction
+# modules that import it from this module.
+from ..encoding import decode_base58, encode_base58  # noqa: F401
 
 
 # Ed25519 field parameters (RFC 8032 section 5.1).

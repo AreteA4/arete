@@ -42,6 +42,7 @@ mod client;
 pub mod collation;
 mod config;
 mod connection;
+pub mod encoding;
 mod entity;
 mod error;
 mod frame;
@@ -66,7 +67,8 @@ pub mod wallet;
 
 #[cfg(feature = "solana-adapter")]
 pub use adapters::solana::{
-    AdapterTransportSelection, SharedSigner, SolanaAdapterConfig, SolanaWalletAdapter,
+    AdapterTransportSelection, SharedSigner, SolanaAdapterConfig, SolanaOperationSigner,
+    SolanaWalletAdapter,
 };
 pub use amounts::{
     format_raw_to_ui, parse_ui_amount_to_raw, resolve_amount, resolve_amount_to_raw, to_raw_amount,
@@ -87,6 +89,7 @@ pub use client::{
 pub use collation::{collation_key, locale_compare, CollationKey};
 pub use config::{AreteConfig, ConnectionConfig};
 pub use connection::{ConnectionManager, ConnectionState, SubscriptionLease, SubscriptionOptions};
+pub use encoding::{decode_base58, encode_base58, keccak256, sha256, Base58Error};
 pub use entity::Stack;
 pub use error::{
     ApiProblemV1, AreteError, AuthErrorCode, GapCode, ReadyRecoveryAction, ReadyRecoveryActionV1,
@@ -125,8 +128,8 @@ pub use operations::{
     TransactionFailureOutcome, TransactionOutcome,
 };
 pub use program::{
-    same_program, AttachedPrograms, ProgramBuilder, ProgramSdk, ProgramStack, Programs,
-    StackWithPrograms,
+    same_program, AttachedPrograms, ProgramAccessor, ProgramBuilder, ProgramContext, ProgramSdk,
+    ProgramStack, Programs, StackWithPrograms,
 };
 pub use program_read_transport::{
     BearerTokenSource, ProgramReadRequest, ProgramReadTransport, ReadAuthTarget,
@@ -157,7 +160,8 @@ pub use subscription::{
     MAX_SUBSCRIPTION_ID_BYTES, PROTOCOL_VERSION,
 };
 pub use view::{
-    RichWatchBuilder, StateView, UseBuilder, ViewBuilder, ViewHandle, Views, WatchBuilder,
+    GetOptions, RichWatchBuilder, StateView, UseBuilder, ViewBuilder, ViewError, ViewHandle, Views,
+    WatchBuilder,
 };
 
 #[cfg(test)]

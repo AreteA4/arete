@@ -50,8 +50,14 @@ def meta(name, resolution, *, signer=False, writable=False, optional=False):
     )
 
 
-def signer_meta(name):
-    return meta(name, Signer(), signer=True, writable=True)
+def signer_meta(name, signer_kind="wallet"):
+    return AccountMeta(
+        name=name,
+        is_signer=True,
+        is_writable=True,
+        resolution=Signer(),
+        signer_kind=signer_kind,
+    )
 
 
 class TestResolveAccounts:
@@ -71,6 +77,25 @@ class TestResolveAccounts:
         assert result.accounts[1].address == SYSTEM_PROGRAM
         assert result.accounts[2].address == TOKEN_PROGRAM
 
+    def test_fills_only_wallet_signers_from_the_payer(self):
+        # TypeScript `resolveSignerAccount`: an IDL says an account signs, not
+        # that the wallet is that account, so the payer fills only signers
+        # marked as the wallet's. The generator marks its signers "provided".
+        for kind in ("provided", None):
+            result = resolve_accounts(
+                [signer_meta("authority", kind)], {}, payer=WSOL_MINT
+            )
+            assert result.missing == ["authority"]
+            assert result.accounts == []
+        result = resolve_accounts(
+            [signer_meta("authority", "provided")],
+            {},
+            overrides={"authority": TOKEN_PROGRAM},
+            payer=WSOL_MINT,
+        )
+        assert [a.address for a in result.accounts] == [TOKEN_PROGRAM]
+        assert result.accounts[0].is_signer is True
+
     def test_prefers_explicit_signer_overrides_over_the_payer(self):
         metas = [signer_meta("authority"), meta("mint", UserProvided())]
         result = resolve_accounts(
@@ -81,6 +106,44 @@ class TestResolveAccounts:
         )
         validate_account_resolution(result)
         assert [a.address for a in result.accounts] == [TOKEN_PROGRAM, WSOL_MINT]
+
+    def test_an_explicit_address_wins_for_known_and_pda_accounts(self):
+        # The PDA's seed argument is absent: an explicit address is used as
+        # given, never derived (TypeScript `resolveSingleAccount`).
+        metas = [
+            meta("systemProgram", Known(SYSTEM_PROGRAM), writable=True),
+            meta(
+                "state",
+                Pda(PdaConfig(seeds=[ArgRefSeed("index", "u64")], program_id=TOKEN_PROGRAM)),
+            ),
+            meta(
+                "child",
+                Pda(PdaConfig(seeds=[AccountRefSeed("state")], program_id=TOKEN_PROGRAM)),
+            ),
+        ]
+        result = resolve_accounts(
+            metas, {}, overrides={"systemProgram": TOKEN_PROGRAM, "state": WSOL_MINT}
+        )
+        validate_account_resolution(result)
+        # A PDA seeded by an explicit account derives from the given address.
+        child = find_program_address([decode_base58(WSOL_MINT)], TOKEN_PROGRAM)[0]
+        assert [a.address for a in result.accounts] == [TOKEN_PROGRAM, WSOL_MINT, child]
+        assert result.accounts[0].is_writable is True
+        assert result.accounts[0].is_signer is False
+
+    def test_rejects_an_explicit_address_that_is_not_a_public_key(self):
+        metas = [meta("systemProgram", Known(SYSTEM_PROGRAM))]
+        with pytest.raises(InstructionError) as excinfo:
+            resolve_accounts(metas, {}, overrides={"systemProgram": "not-base58!"})
+        assert str(excinfo.value) == (
+            'Invalid account override for "systemProgram": expected a base58 public key'
+        )
+        with pytest.raises(InstructionError) as excinfo:
+            resolve_accounts(metas, {}, overrides={"systemProgram": "1111"})
+        assert str(excinfo.value) == (
+            'Invalid account override for "systemProgram": expected a 32-byte '
+            "public key, got 4 bytes"
+        )
 
     def test_derives_a_pda_referencing_a_signer_and_keeps_original_order(self):
         metas = [

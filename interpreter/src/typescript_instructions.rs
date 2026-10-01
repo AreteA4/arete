@@ -2662,6 +2662,19 @@ pub(crate) fn dedupe_errors_by_code(errors: &[IdlErrorSnapshot]) -> Vec<IdlError
     by_code.into_values().collect()
 }
 
+/// An IDL error's `msg` as the generated SDKs' error metadata carries it:
+/// empty when absent, with every line break (`\n`, `\r`) turned into a space,
+/// so a message the IDL wraps across source lines reads as one line. The
+/// TypeScript SDK set this text; the Rust and Python generators use the same
+/// function so all three SDKs report identical messages.
+pub(crate) fn error_metadata_msg(error: &IdlErrorSnapshot) -> String {
+    error
+        .msg
+        .as_deref()
+        .unwrap_or("")
+        .replace(['\n', '\r'], " ")
+}
+
 fn render_program_errors(const_name: &str, type_name: &str, errors: &[IdlErrorSnapshot]) -> String {
     if errors.is_empty() {
         return format!(
@@ -2683,7 +2696,7 @@ fn render_program_errors(const_name: &str, type_name: &str, errors: &[IdlErrorSn
                 "  {{ code: {}, name: '{}', msg: '{}' }},",
                 err.code,
                 err.name,
-                escape_single_quotes(err.msg.as_deref().unwrap_or(""))
+                escape_single_quotes(&error_metadata_msg(err))
             )
         })
         .collect();

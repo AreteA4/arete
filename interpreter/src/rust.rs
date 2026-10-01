@@ -1,12 +1,16 @@
 use crate::ast::*;
 use crate::identifiers::{rust as rust_ident, IdentifierCase, IdentifierScope};
+use crate::idl_models::{
+    bind_idl_models, DeclaredModel, IdlModel, IdlModelKind, ModelField, ModelLanguage, WireType,
+};
+use crate::rust_doc;
 use crate::stack_types::{
-    entity_program_name, resolved_type_namespaces, AccountModels, ProgramTypeDefs,
-    StackResolvedTypes,
+    account_reader_programs, entity_program_name, resolved_type_namespaces, AccountModels,
+    ProgramTypeDefs, StackResolvedTypes,
 };
 use crate::typescript_instructions::{
-    dedupe_errors_by_code, disambiguate_instruction_account_names, normalize_seed_arg_type,
-    split_generic,
+    dedupe_errors_by_code, disambiguate_instruction_account_names, error_metadata_msg,
+    normalize_seed_arg_type, split_generic,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -19,6 +23,18 @@ pub struct RustOutput {
     /// Generated program SDK module (`programs.rs`). `None` when the stack
     /// spec declares no instructions.
     pub programs_rs: Option<String>,
+    /// The program modules `programs.rs` declares, in order. A program
+    /// package extension configured in
+    /// [`RustStackConfig::program_extensions`] is staged under
+    /// `programs/<module_name>/`, next to `programs.rs`.
+    pub program_modules: Vec<RustProgramModule>,
+}
+
+/// One program module of a generated `programs.rs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustProgramModule {
+    pub program_id: String,
+    pub module_name: String,
 }
 
 /// Rust output for a standalone program SDK.
@@ -487,6 +503,7 @@ impl RustCompiler {
             types_rs: self.generate_types_rs(),
             entity_rs: self.generate_entity_rs(),
             programs_rs: None,
+            program_modules: Vec::new(),
         }
     }
 
@@ -543,7 +560,7 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
         }
 
         output.push_str(&self.generate_main_entity_struct(&resolved_name_map));
-        output.push_str(&self.generate_resolved_types(&resolved_name_map, &mut generated, None));
+        output.push_str(&self.generate_resolved_types(&resolved_name_map, &mut generated));
 
         let builtins = render_builtin_resolver_structs(&self.used_builtin_resolver_types());
         if !builtins.is_empty() {
@@ -637,7 +654,6 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
         &self,
         resolved_name_map: &HashMap<String, String>,
         generated: &mut HashSet<String>,
-        mut account_structs: Option<&mut BTreeMap<String, String>>,
     ) -> String {
         let mut output = String::new();
 
@@ -649,12 +665,6 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
                 if let Some(resolved) = &field.resolved_type {
                     let emitted_name = self.resolved_type_to_rust_name(resolved, resolved_name_map);
                     if generated.insert(emitted_name.clone()) {
-                        if resolved.is_account && !resolved.is_enum {
-                            if let Some(map) = account_structs.as_deref_mut() {
-                                map.entry(resolved.type_name.clone())
-                                    .or_insert_with(|| emitted_name.clone());
-                            }
-                        }
                         output.push_str("\n\n");
                         output.push_str(&self.generate_resolved_struct(resolved, &emitted_name));
                     }
@@ -670,48 +680,7 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
         resolved: &ResolvedStructType,
         emitted_name: &str,
     ) -> String {
-        if resolved.is_enum {
-            let variants: Vec<String> = resolved
-                .enum_variants
-                .iter()
-                .map(|v| format!("    {},", to_pascal_case(v)))
-                .collect();
-
-            format!(
-                "#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]\npub enum {} {{\n{}\n}}",
-                emitted_name,
-                variants.join("\n")
-            )
-        } else {
-            let fields: Vec<String> = resolved
-                .fields
-                .iter()
-                .zip(Self::canonical_resolved_field_names(&resolved.fields))
-                .map(|(f, field_name)| {
-                    let rust_type = self.resolved_field_to_rust(f);
-                    let mut serde_attrs = vec![self.serde_attr_for_resolved_field(f)];
-                    let wire_name = Self::resolved_field_wire_name(f);
-                    if field_name != wire_name {
-                        serde_attrs.push(format!(
-                            "#[serde(rename = {})]",
-                            rust_string_literal(&wire_name)
-                        ));
-                    }
-                    format!(
-                        "    {}\n    pub {}: {},",
-                        serde_attrs.join("\n    "),
-                        field_name,
-                        rust_type
-                    )
-                })
-                .collect();
-
-            format!(
-                "#[derive(Debug, Clone, Serialize, Deserialize, Default)]\npub struct {} {{\n{}\n}}",
-                emitted_name,
-                fields.join("\n")
-            )
-        }
+        render_resolved_struct(resolved, emitted_name)
     }
 
     /// Produce stable, distinct Rust identifiers for resolved IDL fields.
@@ -1029,16 +998,6 @@ impl {entity_name}EntityViews {{
         )
     }
 
-    fn scalar_shape_for_resolved_field(&self, field: &ResolvedField) -> RustScalarShape {
-        rust_scalar_field_shape(
-            &field.base_type,
-            field.effective_integer_kind(),
-            field.is_array,
-            Some(field.field_type.as_str()),
-            &field.field_type,
-        )
-    }
-
     /// Return the `#[serde(...)]` attribute for a field.
     /// Integer fields get a `deserialize_with` pointing to the appropriate
     /// `serde_utils` function so that string-encoded big integers are handled.
@@ -1052,25 +1011,6 @@ impl {entity_name}EntityViews {{
         match deserialize_with_for_shape(&shape, field.is_optional) {
             Some(deser_fn) => format!("#[serde(default, deserialize_with = \"{}\")]", deser_fn),
             None => "#[serde(default)]".to_string(),
-        }
-    }
-
-    /// Same as `serde_attr_for_field` but for resolved struct fields.
-    fn serde_attr_for_resolved_field(&self, field: &ResolvedField) -> String {
-        let shape = self.scalar_shape_for_resolved_field(field);
-        match deserialize_with_for_shape(&shape, field.is_optional) {
-            Some(deser_fn) => format!("#[serde(default, deserialize_with = \"{}\")]", deser_fn),
-            None => "#[serde(default)]".to_string(),
-        }
-    }
-
-    fn resolved_field_to_rust(&self, field: &ResolvedField) -> String {
-        let typed = self.scalar_shape_for_resolved_field(field).rust_type;
-
-        if field.is_optional {
-            format!("Option<Option<{}>>", typed)
-        } else {
-            format!("Option<{}>", typed)
         }
     }
 
@@ -1159,6 +1099,258 @@ impl {entity_name}EntityViews {{
     }
 }
 
+/// Render one resolved IDL type (struct or fieldless enum) as `types.rs`
+/// declares it. Every resolved type of a Rust SDK, whether an entity maps it
+/// or it is a program account's model, is declared through this one renderer,
+/// so the same IDL type always gets the same fields, types and serde
+/// attributes.
+pub(crate) fn render_resolved_struct(resolved: &ResolvedStructType, emitted_name: &str) -> String {
+    if resolved.is_enum {
+        let variants: Vec<String> = resolved
+            .enum_variants
+            .iter()
+            .map(|v| format!("    {},", to_pascal_case(v)))
+            .collect();
+
+        return format!(
+            "#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]\npub enum {} {{\n{}\n}}",
+            emitted_name,
+            variants.join("\n")
+        );
+    }
+    let fields: Vec<String> = resolved
+        .fields
+        .iter()
+        .zip(RustCompiler::canonical_resolved_field_names(
+            &resolved.fields,
+        ))
+        .map(|(f, field_name)| {
+            let rust_type = resolved_field_to_rust(f);
+            let mut serde_attrs = vec![serde_attr_for_resolved_field(f)];
+            let wire_name = RustCompiler::resolved_field_wire_name(f);
+            if field_name != wire_name {
+                serde_attrs.push(format!(
+                    "#[serde(rename = {})]",
+                    rust_string_literal(&wire_name)
+                ));
+            }
+            format!(
+                "    {}\n    pub {}: {},",
+                serde_attrs.join("\n    "),
+                field_name,
+                rust_type
+            )
+        })
+        .collect();
+
+    format!(
+        "#[derive(Debug, Clone, Serialize, Deserialize, Default)]\npub struct {} {{\n{}\n}}",
+        emitted_name,
+        fields.join("\n")
+    )
+}
+
+/// A declared model under `name`: an entity's resolved type, or an
+/// IDL-derived model.
+fn render_declared_model(model: &DeclaredModel, name: &str) -> String {
+    match model {
+        DeclaredModel::Resolved(resolved) => render_resolved_struct(resolved, name),
+        DeclaredModel::Idl(model) => render_idl_model(model, name),
+    }
+}
+
+/// The Rust declaration of an IDL-derived model (see [`crate::idl_models`]).
+///
+/// A struct is a serde struct whose fields are all `Option`s, as
+/// [`render_resolved_struct`] renders one (a struct of flat fields renders
+/// exactly as it does). An enum is externally tagged, the Program Read wire
+/// shape: a unit variant is its name, a data variant a one-key object from
+/// its name to its fields (tuple fields keyed `field_<index>`).
+pub(crate) fn render_idl_model(model: &IdlModel, name: &str) -> String {
+    match &model.kind {
+        IdlModelKind::Struct(fields) => format!(
+            "#[derive(Debug, Clone, Serialize, Deserialize, Default)]\npub struct {} {{\n{}\n}}",
+            name,
+            render_idl_model_fields(fields, "    ", "pub ").join("\n")
+        ),
+        IdlModelKind::Enum(variants) => {
+            let derive = if variants.iter().all(|variant| variant.fields.is_empty()) {
+                "#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]"
+            } else {
+                "#[derive(Debug, Clone, Serialize, Deserialize)]"
+            };
+            let mut used = HashSet::new();
+            let variants = variants
+                .iter()
+                .map(|variant| {
+                    let base = rust_ident::identifier(&variant.name, IdentifierCase::Pascal);
+                    let ident = std::iter::once(base.clone())
+                        .chain((2usize..).map(|index| format!("{base}{index}")))
+                        .find(|candidate| used.insert(candidate.clone()))
+                        .expect("the numbered candidates are unbounded");
+                    let mut lines = Vec::new();
+                    if ident != variant.name {
+                        lines.push(format!(
+                            "    #[serde(rename = {})]",
+                            rust_string_literal(&variant.name)
+                        ));
+                    }
+                    if variant.fields.is_empty() {
+                        lines.push(format!("    {ident},"));
+                    } else {
+                        lines.push(format!(
+                            "    {ident} {{\n{}\n    }},",
+                            render_idl_model_fields(&variant.fields, "        ", "").join("\n")
+                        ));
+                    }
+                    lines.join("\n")
+                })
+                .collect::<Vec<_>>();
+            format!("{derive}\npub enum {name} {{\n{}\n}}", variants.join("\n"))
+        }
+    }
+}
+
+/// The fields of an IDL-derived struct or enum variant. A field keeps its
+/// flat rendering when the flat projection types it; otherwise it is typed
+/// from its wire shape. Fields are renamed to their snake_case wire key and
+/// also accept the IDL's own spelling (the key the server sends).
+fn render_idl_model_fields(fields: &[ModelField], indent: &str, visibility: &str) -> Vec<String> {
+    let flats = fields
+        .iter()
+        .map(|field| field.flat.clone())
+        .collect::<Vec<_>>();
+    fields
+        .iter()
+        .zip(RustCompiler::canonical_resolved_field_names(&flats))
+        .map(|(field, ident)| {
+            let (rust_type, mut attrs) = match &field.typed {
+                None => (
+                    resolved_field_to_rust(&field.flat),
+                    vec![serde_attr_for_resolved_field(&field.flat)],
+                ),
+                Some(typed) => rust_typed_field(typed),
+            };
+            let wire = field.wire_name();
+            let raw = field.flat.raw_field_name();
+            if ident != wire {
+                attrs.push(format!("#[serde(rename = {})]", rust_string_literal(&wire)));
+            }
+            if raw != wire {
+                attrs.push(format!("#[serde(alias = {})]", rust_string_literal(raw)));
+            }
+            format!(
+                "{indent}{}\n{indent}{visibility}{ident}: {rust_type},",
+                attrs.join(&format!("\n{indent}"))
+            )
+        })
+        .collect()
+}
+
+/// The type and serde attribute of a field typed from its wire shape: an
+/// `Option` (not received), or `Option<Option<..>>` for an IDL option.
+fn rust_typed_field(typed: &WireType) -> (String, Vec<String>) {
+    let (inner, optional) = match typed {
+        WireType::Option(inner) => (inner.as_ref(), true),
+        other => (other, false),
+    };
+    let rust = rust_wire_type(inner);
+    let rust_type = if optional {
+        format!("Option<Option<{rust}>>")
+    } else {
+        format!("Option<{rust}>")
+    };
+    let attr = match rust_wire_shape(inner) {
+        None => "#[serde(default)]".to_string(),
+        Some(shape) => format!(
+            "#[serde(default, deserialize_with = \"serde_utils::deserialize_wire_option{}::<_, _, {shape}>\")]",
+            if optional { "_option" } else { "" }
+        ),
+    };
+    (rust_type, vec![attr])
+}
+
+/// The Rust type of a wire shape. Integers take the flat convention's
+/// normalized kinds.
+fn rust_wire_type(wire: &WireType) -> String {
+    match wire {
+        WireType::Scalar {
+            base_type: BaseType::Integer,
+            integer_kind: Some(kind),
+        } => normalized_integer_kind_of(*kind).to_string(),
+        WireType::Scalar { base_type, .. } => base_type_to_rust(base_type, "i64"),
+        WireType::Option(inner) => format!("Option<{}>", rust_wire_type(inner)),
+        WireType::List(inner) => format!("Vec<{}>", rust_wire_type(inner)),
+        WireType::Map(inner) => format!(
+            "std::collections::BTreeMap<String, {}>",
+            rust_wire_type(inner)
+        ),
+        WireType::Tuple(elements) => {
+            let elements = elements.iter().map(rust_wire_type).collect::<Vec<_>>();
+            match elements.as_slice() {
+                [only] => format!("({only},)"),
+                elements => format!("({})", elements.join(", ")),
+            }
+        }
+        WireType::Model(name) => name.clone(),
+        WireType::Json => "serde_json::Value".to_string(),
+    }
+}
+
+/// The `serde_utils::wire` shape a value decodes with, or `None` when its
+/// own `Deserialize` impl suffices (it holds no integer outside a model).
+fn rust_wire_shape(wire: &WireType) -> Option<String> {
+    if !wire.has_integer() {
+        return None;
+    }
+    let shape = |inner: &WireType| {
+        rust_wire_shape(inner).unwrap_or_else(|| "serde_utils::wire::Plain".to_string())
+    };
+    Some(match wire {
+        WireType::Scalar { .. } => "serde_utils::wire::Int".to_string(),
+        WireType::Option(inner) => format!("serde_utils::wire::Opt<{}>", shape(inner)),
+        WireType::List(inner) => format!("serde_utils::wire::List<{}>", shape(inner)),
+        WireType::Map(inner) => format!("serde_utils::wire::Map<{}>", shape(inner)),
+        WireType::Tuple(elements) => {
+            let elements = elements.iter().map(shape).collect::<Vec<_>>();
+            match elements.as_slice() {
+                [only] => format!("({only},)"),
+                elements => format!("({})", elements.join(", ")),
+            }
+        }
+        WireType::Model(_) | WireType::Json => return None,
+    })
+}
+
+fn scalar_shape_for_resolved_field(field: &ResolvedField) -> RustScalarShape {
+    rust_scalar_field_shape(
+        &field.base_type,
+        field.effective_integer_kind(),
+        field.is_array,
+        Some(field.field_type.as_str()),
+        &field.field_type,
+    )
+}
+
+/// The `#[serde(...)]` attribute of a resolved struct field: integers get a
+/// `serde_utils` deserializer so string-encoded big integers parse.
+fn serde_attr_for_resolved_field(field: &ResolvedField) -> String {
+    let shape = scalar_shape_for_resolved_field(field);
+    match deserialize_with_for_shape(&shape, field.is_optional) {
+        Some(deser_fn) => format!("#[serde(default, deserialize_with = \"{}\")]", deser_fn),
+        None => "#[serde(default)]".to_string(),
+    }
+}
+
+fn resolved_field_to_rust(field: &ResolvedField) -> String {
+    let typed = scalar_shape_for_resolved_field(field).rust_type;
+    if field.is_optional {
+        format!("Option<Option<{}>>", typed)
+    } else {
+        format!("Option<{}>", typed)
+    }
+}
+
 fn unique_resolved_type_name(
     resolved: &ResolvedStructType,
     reserved_names: &mut HashSet<String>,
@@ -1195,21 +1387,28 @@ fn unique_resolved_type_name(
 
 /// [`normalized_integer_kind`] for an already-classified [`IntegerKind`].
 /// Kept byte-for-byte equivalent to the string-sniffing version: only
-/// `u64`/`i64`/`u32`/`i32` have `serde_utils` deserializers, so unsigned small
-/// ints widen to `u64` and everything else widens to `i64`.
+/// `u64`/`i64`/`u32`/`i32`/`u128`/`i128` have `serde_utils` deserializers, so
+/// unsigned small ints widen to `u64` and signed small ints to `i64`.
 fn normalized_integer_kind_of(kind: IntegerKind) -> &'static str {
     match kind {
         IntegerKind::U64 => "u64",
         IntegerKind::U32 => "u32",
         IntegerKind::I32 => "i32",
+        // 128-bit values arrive as decimal strings beyond any 64-bit range.
+        IntegerKind::U128 => "u128",
+        IntegerKind::I128 => "i128",
         IntegerKind::U8 | IntegerKind::U16 | IntegerKind::Usize => "u64",
-        // Signed small ints (i16/i8/isize) and the 128-bit kinds widen to i64.
+        // Signed small ints (i16/i8/isize) widen to i64.
         _ => "i64",
     }
 }
 
 fn normalized_integer_kind(rust_type_name: &str) -> &'static str {
-    if rust_type_name.contains("u64") {
+    if rust_type_name.contains("u128") {
+        "u128"
+    } else if rust_type_name.contains("i128") {
+        "i128"
+    } else if rust_type_name.contains("u64") {
         "u64"
     } else if rust_type_name.contains("i64") {
         "i64"
@@ -2007,6 +2206,89 @@ mod tests {
         assert!(!programs.contains("`submit`: arg 'submission' has unsupported type"));
     }
 
+    /// The `use arete_sdk::instruction::{…}` line of the first program module.
+    fn instruction_imports(programs: &str) -> Vec<String> {
+        let line = programs
+            .lines()
+            .find(|line| {
+                line.trim_start()
+                    .starts_with("use arete_sdk::instruction::{")
+            })
+            .expect("instruction import");
+        line.trim()
+            .trim_start_matches("use arete_sdk::instruction::{")
+            .trim_end_matches("};")
+            .split(", ")
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A program module imports exactly the schema items its instruction
+    /// handlers name, so `-D warnings` builds of generated crates stay clean:
+    /// struct-only defined types import `ArgField` alone, and only an inlined
+    /// enum imports `EnumVariantDef` and `EnumVariantKind`.
+    #[test]
+    fn rust_program_module_imports_only_the_schema_items_it_emits() {
+        let struct_type = |name: &str| IdlTypeDefSnapshot {
+            name: name.to_string(),
+            docs: vec![],
+            serialization: None,
+            type_def: IdlTypeDefKindSnapshot::Struct {
+                kind: "struct".to_string(),
+                fields: vec![IdlFieldSnapshot {
+                    name: "value".to_string(),
+                    type_: IdlTypeSnapshot::Simple("u64".to_string()),
+                    amount_hint: None,
+                }],
+            },
+        };
+        let instruction = |name: &str, arg_type: &str| InstructionDef {
+            name: name.to_string(),
+            discriminator: vec![7],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![instruction_arg("value", arg_type)],
+            errors: vec![],
+            program_id: Some(TEST_PROGRAM_ID.to_string()),
+            docs: vec![],
+        };
+
+        let plain = compile_stack_spec(programs_stack_spec(), None).unwrap();
+        let imports = instruction_imports(&plain.programs_rs.unwrap());
+        assert!(!imports.iter().any(|item| item == "ArgField"));
+        assert!(!imports.iter().any(|item| item.starts_with("EnumVariant")));
+
+        let mut spec = programs_stack_spec();
+        spec.idls[0].types.push(struct_type("FixedPoint"));
+        spec.instructions.push(instruction("swap", "FixedPoint"));
+        let structs = compile_stack_spec(spec.clone(), None).unwrap();
+        let imports = instruction_imports(&structs.programs_rs.unwrap());
+        assert!(imports.iter().any(|item| item == "ArgField"), "{imports:?}");
+        assert!(
+            !imports.iter().any(|item| item.starts_with("EnumVariant")),
+            "{imports:?}"
+        );
+
+        spec.idls[0].types.push(IdlTypeDefSnapshot {
+            name: "Side".to_string(),
+            docs: vec![],
+            serialization: None,
+            type_def: IdlTypeDefKindSnapshot::Enum {
+                kind: "enum".to_string(),
+                variants: vec![IdlEnumVariantSnapshot {
+                    name: "Bid".to_string(),
+                    fields: vec![],
+                }],
+            },
+        });
+        spec.instructions.push(instruction("place", "Side"));
+        let enums = compile_stack_spec(spec, None).unwrap();
+        let imports = instruction_imports(&enums.programs_rs.unwrap());
+        for item in ["ArgField", "EnumVariantDef", "EnumVariantKind"] {
+            assert!(imports.iter().any(|import| import == item), "{imports:?}");
+        }
+    }
+
     #[test]
     fn rust_generator_supports_inline_tuples_from_idl_snapshots() {
         let mut spec = programs_stack_spec();
@@ -2269,6 +2551,106 @@ mod tests {
         assert!(output.lib_rs.contains("DemoStackPrograms"));
     }
 
+    /// The `msg` text the TypeScript generator emits for error `code` in
+    /// `spec`'s program error metadata (the reference SDK).
+    fn typescript_error_msg(spec: &SerializableStackSpec, code: u32) -> String {
+        let typescript = crate::typescript_instructions::generate_instructions_code(
+            &spec.stack_name,
+            &spec.instructions,
+            &spec.idls,
+            &spec.pdas,
+            &spec.program_ids,
+            &HashSet::new(),
+        );
+        let marker = format!("{{ code: {code}, name: '");
+        let line = typescript
+            .code
+            .lines()
+            .find(|line| line.contains(&marker))
+            .unwrap_or_else(|| panic!("TypeScript emits error {code}:\n{}", typescript.code));
+        let start = line.find("msg: '").expect("TypeScript error has a msg") + "msg: '".len();
+        let end = line.rfind("' }").expect("TypeScript error msg is closed");
+        line[start..end].to_string()
+    }
+
+    #[test]
+    fn rust_error_metadata_carries_typescripts_single_line_messages() {
+        // An IDL message wrapped across source lines, as token-2022's error 39
+        // (`MaximumPendingBalanceCreditCounterExceeded`) is.
+        let wrapped = IdlErrorSnapshot {
+            code: 6001,
+            name: "CounterExceeded".to_string(),
+            msg: Some("Deposits cannot exceed\n            the counter\r\nset at init".to_string()),
+        };
+        let mut spec = programs_stack_spec();
+        spec.idls[0].errors.push(wrapped.clone());
+        let typescript_msg = typescript_error_msg(&spec, 6001);
+        assert_eq!(
+            typescript_msg,
+            "Deposits cannot exceed             the counter  set at init"
+        );
+        let expected = format!(
+            "ErrorMetadata {{ code: 6001, name: \"CounterExceeded\".to_string(), msg: \"{typescript_msg}\".to_string() }},"
+        );
+
+        // Program-wide metadata, which an instruction without its own errors carries.
+        let programs = compile_stack_spec(spec.clone(), None)
+            .expect("rust stack generation should succeed")
+            .programs_rs
+            .expect("programs.rs is generated");
+        assert_eq!(programs.matches(&expected).count(), 1, "{programs}");
+
+        // Instruction-scoped metadata.
+        spec.instructions[0].errors = vec![wrapped];
+        let programs = compile_stack_spec(spec, None)
+            .expect("rust stack generation should succeed")
+            .programs_rs
+            .expect("programs.rs is generated");
+        assert_eq!(programs.matches(&expected).count(), 1, "{programs}");
+        assert!(!programs.contains("exceed\\n"), "{programs}");
+
+        // The normalization is the metadata's own: other strings keep their
+        // escapes.
+        assert_eq!(rust_string_literal("a\nb"), "\"a\\nb\"");
+    }
+
+    #[test]
+    fn rust_instruction_docs_render_markdown_clippy_accepts() {
+        // pancakeswap amm_v3 `create_pool`: a list item running on into an
+        // unindented line (`clippy::doc_lazy_continuation`), here also split
+        // inside one docs entry.
+        let mut spec = programs_stack_spec();
+        spec.instructions[0].docs = vec![
+            "Does the thing.".to_string(),
+            "".to_string(),
+            "* `ctx` - the accounts".to_string(),
+            "Note: runs on\n            across lines".to_string(),
+            "".to_string(),
+        ];
+        let programs = compile_stack_spec(spec.clone(), None)
+            .expect("rust stack generation should succeed")
+            .programs_rs
+            .expect("programs.rs is generated");
+        assert!(
+            programs.contains(
+                "    /// Does the thing.\n    ///\n    /// * `ctx` - the accounts\n    ///   Note: runs on\n    ///   across lines\n    pub fn do_thing("
+            ),
+            "{programs}"
+        );
+
+        // Blank docs take the generated summary rather than an empty doc
+        // comment (`clippy::empty_docs`).
+        spec.instructions[0].docs = vec!["".to_string(), "  ".to_string()];
+        let programs = compile_stack_spec(spec, None)
+            .expect("rust stack generation should succeed")
+            .programs_rs
+            .expect("programs.rs is generated");
+        assert!(
+            programs.contains("    /// Builds the `doThing` instruction.\n    pub fn do_thing("),
+            "{programs}"
+        );
+    }
+
     #[test]
     fn rust_program_compiler_emits_no_view_or_stack_shell() {
         let mut stack = programs_stack_spec();
@@ -2493,7 +2875,8 @@ mod tests {
                 source_path: None,
                 resolved_type: Some(ResolvedStructType {
                     type_name: "Counter".to_string(),
-                    fields: vec![],
+                    // The IDL layout of `Counter`, as the entity maps it.
+                    fields: vec![resolved_field_of("count", "u64", BaseType::Integer)],
                     is_instruction: false,
                     is_account: true,
                     is_event: false,
@@ -2528,6 +2911,61 @@ mod tests {
         ));
         assert!(programs.contains("self.builder.account_transport(\"demo\", &read_descriptor())?"));
         assert!(programs.contains("arete_sdk::AccountReader::new(\n                \"Counter\","));
+    }
+
+    /// A keyword name is escaped where it is the whole identifier (`use_`),
+    /// and a suffixed name is built from the unescaped stem (`use_handler`,
+    /// `type_accounts`): `use__handler` trips `non_snake_case`.
+    #[test]
+    fn rust_generator_suffixes_keyword_names_from_their_unescaped_stem() {
+        let idl_json = format!(
+            r#"{{
+              "address": "{TEST_PROGRAM_ID}",
+              "version": "0.1.0",
+              "name": "demo",
+              "instructions": [
+                {{
+                  "name": "use",
+                  "accounts": [{{ "name": "authority", "isMut": true, "isSigner": true }}],
+                  "args": [{{ "name": "numberOfUses", "type": "u64" }}],
+                  "discriminant": {{ "type": "u8", "value": 1 }}
+                }}
+              ],
+              "accounts": [
+                {{
+                  "name": "Type",
+                  "type": {{
+                    "kind": "struct",
+                    "fields": [{{ "name": "count", "type": "u64" }}]
+                  }}
+                }}
+              ],
+              "types": [],
+              "events": [],
+              "errors": []
+            }}"#
+        );
+        let spec = crate::program_sdk::build_program_only_stack_spec_from_idl_bytes(
+            idl_json.as_bytes(),
+            None,
+            "Demo",
+        )
+        .expect("program-only stack spec should build");
+        let output = compile_program_modules(spec, None).expect("program SDK");
+        let programs = output.programs_rs;
+
+        assert!(
+            programs.contains("pub fn use_(params: UseParams)"),
+            "{programs}"
+        );
+        assert!(programs.contains("pub fn use_handler() -> InstructionHandler"));
+        assert!(programs.contains("use_handler().build(params)"));
+        assert!(
+            programs.contains("pub fn type_accounts(&self)"),
+            "{programs}"
+        );
+        assert!(!programs.contains("__handler"));
+        assert!(!programs.contains("__accounts"));
     }
 
     #[test]
@@ -2657,7 +3095,7 @@ mod tests {
 
     #[test]
     fn rust_generator_rejects_extension_module_collisions() {
-        for reserved in ["entity", "types", "programs"] {
+        for reserved in ["entity", "types", "programs", "generated", "models"] {
             let config = RustStackConfig {
                 extension_modules: vec![reserved.to_string(), "extensions".to_string()],
                 extension_entry: Some("extensions".to_string()),
@@ -2688,6 +3126,447 @@ mod tests {
             ..Default::default()
         };
         assert!(compile_stack_spec(programs_stack_spec(), Some(entry_not_last)).is_err());
+    }
+
+    #[test]
+    fn rust_program_accessors_produce_a_program_context() {
+        let programs = compile_stack_spec(programs_stack_spec(), None)
+            .expect("rust stack generation should succeed")
+            .programs_rs
+            .expect("programs.rs should be generated");
+        assert!(programs.contains(
+            "        pub fn context(&self) -> arete_sdk::ProgramContext<'_, DemoProgram> {\n            arete_sdk::ProgramContext::new(self)\n        }"
+        ), "{programs}");
+        assert!(programs.contains(
+            "    impl arete_sdk::ProgramAccessor for DemoProgram {\n        fn program_builder(&self) -> &arete_sdk::ProgramBuilder {\n            &self.builder\n        }\n    }"
+        ), "{programs}");
+        assert!(
+            !programs.contains("#[allow(dead_code)]\n        builder"),
+            "{programs}"
+        );
+
+        // An instruction named `context` keeps its builder method name.
+        let mut spec = programs_stack_spec();
+        spec.instructions[0].name = "context".to_string();
+        let programs = compile_stack_spec(spec, None).unwrap().programs_rs.unwrap();
+        assert!(
+            !programs.contains("arete_sdk::ProgramContext::new(self)"),
+            "{programs}"
+        );
+        assert!(
+            programs.contains("pub fn context(&self, params: ContextParams)"),
+            "{programs}"
+        );
+        assert!(
+            programs.contains("`context()` is not generated"),
+            "{programs}"
+        );
+        assert!(programs.contains("impl arete_sdk::ProgramAccessor for DemoProgram"));
+    }
+
+    #[test]
+    fn rust_program_crate_binds_its_bundle_at_the_crate_root() {
+        let config = RustStackConfig {
+            crate_name: "demo-program".to_string(),
+            extension_modules: vec!["demo_math".to_string(), "extensions".to_string()],
+            extension_entry: Some("extensions".to_string()),
+            ..Default::default()
+        };
+        let output = compile_program_modules(programs_stack_spec(), Some(config))
+            .expect("program crate generation should succeed");
+        assert!(output.lib_rs.contains(
+            "#[allow(unused_imports)]\nmod generated {\n    pub use super::programs::demo::*;\n    pub use super::types::*;\n}\npub mod demo_math;\npub mod extensions;\npub use extensions::*;\n"
+        ), "{}", output.lib_rs);
+
+        // A program bundle must also compile beside a stack program module's
+        // generated `pdas`, and never shadow `generated`.
+        for reserved in ["pdas", "generated", "models", "views"] {
+            let config = RustStackConfig {
+                extension_modules: vec![reserved.to_string(), "extensions".to_string()],
+                extension_entry: Some("extensions".to_string()),
+                ..Default::default()
+            };
+            let error = compile_program_modules(programs_stack_spec(), Some(config))
+                .expect_err("a reserved module name is refused");
+            assert!(error.contains(&format!("'{reserved}.rs'")), "{error}");
+        }
+    }
+
+    #[test]
+    fn rust_stack_embeds_a_program_package_extension_in_its_program_module() {
+        let config = RustStackConfig {
+            program_extensions: vec![RustProgramExtensionConfig {
+                program_id: TEST_PROGRAM_ID.to_string(),
+                modules: vec!["demo_math".to_string(), "extensions".to_string()],
+                entry: "extensions".to_string(),
+            }],
+            ..Default::default()
+        };
+        let output = compile_stack_spec(programs_stack_spec(), Some(config))
+            .expect("rust stack generation should succeed");
+        assert_eq!(
+            output.program_modules,
+            vec![RustProgramModule {
+                program_id: TEST_PROGRAM_ID.to_string(),
+                module_name: "demo".to_string(),
+            }]
+        );
+        let programs = output.programs_rs.as_deref().unwrap();
+        let wiring = "    // Hand-authored program package extension (staged from programs/demo/extensions.json; not generated).\n    /// Generated items, as the extension bundle beside this module imports them\n    /// (`super::generated::…`).\n    #[allow(unused_imports)]\n    mod generated {\n        pub use super::*;\n        pub use crate::types::*;\n    }\n    pub mod demo_math;\n    pub mod extensions;\n    pub use extensions::*;\n}";
+        assert!(programs.contains(wiring), "{programs}");
+        // The stack root has no bundle of its own, so no root `generated`.
+        assert!(
+            !output.lib_rs.contains("mod generated"),
+            "{}",
+            output.lib_rs
+        );
+
+        // Module mode reaches the stack's types from the nested module.
+        let config = RustStackConfig {
+            module_mode: true,
+            program_extensions: vec![RustProgramExtensionConfig {
+                program_id: TEST_PROGRAM_ID.to_string(),
+                modules: vec!["extensions".to_string()],
+                entry: "extensions".to_string(),
+            }],
+            ..Default::default()
+        };
+        let programs = compile_stack_spec(programs_stack_spec(), Some(config))
+            .unwrap()
+            .programs_rs
+            .unwrap();
+        assert!(
+            programs.contains("        pub use super::super::super::types::*;"),
+            "{programs}"
+        );
+
+        let unknown = RustStackConfig {
+            program_extensions: vec![RustProgramExtensionConfig {
+                program_id: "Other11111111111111111111111111111111111111".to_string(),
+                modules: vec!["extensions".to_string()],
+                entry: "extensions".to_string(),
+            }],
+            ..Default::default()
+        };
+        let error = compile_stack_spec(programs_stack_spec(), Some(unknown)).unwrap_err();
+        assert!(
+            error.contains("names a program this stack does not generate"),
+            "{error}"
+        );
+
+        let pdas = RustStackConfig {
+            program_extensions: vec![RustProgramExtensionConfig {
+                program_id: TEST_PROGRAM_ID.to_string(),
+                modules: vec!["pdas".to_string(), "extensions".to_string()],
+                entry: "extensions".to_string(),
+            }],
+            ..Default::default()
+        };
+        let error = compile_stack_spec(programs_stack_spec(), Some(pdas)).unwrap_err();
+        assert!(error.contains("'pdas.rs' collides"), "{error}");
+    }
+
+    /// A program-only spec for the Meteora DLMM fixture: twelve Anchor
+    /// accounts declared through `types`, `u128` fields and arrays, PDAs.
+    fn dlmm_program_spec() -> SerializableStackSpec {
+        crate::program_sdk::build_program_only_stack_spec_from_idl_bytes(
+            include_bytes!("../../arete-idl/tests/fixtures/meteora_dlmm.json"),
+            None,
+            "MeteoraDlmm",
+        )
+        .expect("the DLMM fixture builds a program-only stack spec")
+    }
+
+    #[test]
+    fn rust_program_sdk_reads_every_program_spec_account() {
+        let spec = dlmm_program_spec();
+        let idl = spec.idls[0].clone();
+        let spec_pdas = crate::program_sdk::program_spec_pdas(&spec.program_specs[0]);
+        assert!(idl.accounts.len() >= 12);
+        assert!(
+            !spec_pdas.is_empty(),
+            "the fixture's ProgramSpec declares PDAs"
+        );
+
+        let output = compile_program_modules(spec, None).expect("standalone program SDK");
+        for account in &idl.accounts {
+            let (reader, model) = (to_snake_case(&account.name), to_pascal_case(&account.name));
+            assert!(
+                output.programs_rs.contains(&format!(
+                    "pub fn {reader}_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::{model}>, arete_sdk::AreteError>"
+                )),
+                "no typed reader for {}",
+                account.name
+            );
+            assert!(
+                output.types_rs.contains(&format!("pub struct {model} {{")),
+                "no model for {}",
+                account.name
+            );
+        }
+        // IDL `u128`s decode losslessly from decimal strings.
+        assert!(output.types_rs.contains(
+            "#[serde(default, deserialize_with = \"serde_utils::deserialize_option_u128\")]\n    pub permission: Option<u128>,"
+        ));
+        assert!(output.types_rs.contains(
+            "#[serde(default, deserialize_with = \"serde_utils::deserialize_option_vec_u128\")]\n    pub liquidity_shares: Option<Vec<u128>>,"
+        ));
+        // Every ProgramSpec PDA is derivable from `pdas`.
+        for pda in spec_pdas.values() {
+            assert!(
+                output
+                    .programs_rs
+                    .contains(&format!("        pub fn {}(", to_snake_case(&pda.name))),
+                "no PDA helper for {}",
+                pda.name
+            );
+        }
+    }
+
+    #[test]
+    fn rust_stack_program_module_is_a_superset_of_the_standalone_program_sdk() {
+        let standalone = compile_program_modules(dlmm_program_spec(), None).unwrap();
+
+        // A stack over the same program: its entity `LbPair` takes the
+        // account's own name, and an entity captures `Oracle` exactly as the
+        // IDL lays it out. The stack declares no PDAs of its own.
+        let mut spec = dlmm_program_spec();
+        let idl = spec.idls[0].clone();
+        let program_id = spec.program_ids[0].clone();
+        spec.pdas.clear();
+        let oracle = idl
+            .accounts
+            .iter()
+            .find(|account| account.name == "Oracle")
+            .unwrap();
+        let mut entity = minimal_entity("LbPair");
+        entity.program_id = Some(program_id.clone());
+        entity.sections.push(EntitySection {
+            name: "state".to_string(),
+            fields: vec![FieldTypeInfo {
+                resolved_type: crate::stack_types::idl_account_model(&idl, oracle),
+                ..FieldTypeInfo::new("oracle".to_string(), "Oracle".to_string())
+            }],
+            is_nested_struct: false,
+            parent_field: None,
+        });
+        spec.entities.push(entity);
+        let config = RustStackConfig {
+            program_extensions: vec![RustProgramExtensionConfig {
+                program_id,
+                modules: vec!["extensions".to_string()],
+                entry: "extensions".to_string(),
+            }],
+            ..Default::default()
+        };
+        let output = compile_stack_spec(spec, Some(config)).expect("stack SDK");
+        let programs = output.programs_rs.unwrap();
+
+        // Every reader of the standalone SDK, and every PDA helper.
+        for line in standalone.programs_rs.lines().filter(|line| {
+            line.contains("_accounts(&self)")
+                || line.starts_with("        pub fn ") && !line.contains("&self")
+        }) {
+            let signature = line.split("->").next().unwrap();
+            assert!(programs.contains(signature), "stack lacks `{signature}`");
+        }
+        // `Oracle` shares the entity's type; `LbPair` is renamed around the
+        // entity, and `generated` re-exports it under its standalone name.
+        assert!(programs.contains("AccountReader<crate::types::Oracle>"));
+        assert_eq!(output.types_rs.matches("pub struct Oracle {").count(), 1);
+        assert!(programs.contains("AccountReader<crate::types::LbClmmLbPair>"));
+        assert!(programs.contains("LbClmmLbPair as LbPair, "), "{programs}");
+        assert!(
+            programs.contains("        pub use crate::types::{BinArray, "),
+            "{programs}"
+        );
+        assert!(programs.contains(", Oracle, "), "{programs}");
+
+        // The IDL declares `InitializeLbPair2Params` (the type of
+        // `initialize_lb_pair2`'s `params` argument), so that instruction's
+        // typed params take the TypeScript fallback name in both contexts,
+        // and the name stays free for the IDL type.
+        for module in [&standalone.programs_rs, &programs] {
+            assert!(module.contains("pub struct InitializeLbPair2InstructionParams {"));
+            assert!(module.contains(
+                "pub fn initialize_lb_pair2(params: InitializeLbPair2InstructionParams)"
+            ));
+            assert!(!module.contains("pub struct InitializeLbPair2Params {"));
+            assert!(module.contains("pub struct InitializeLbPairParams {"));
+        }
+    }
+
+    /// A standalone program SDK declares every model (its accounts' and the
+    /// IDL types they reach) under its stable name, so its `generated`
+    /// renames nothing.
+    #[test]
+    fn rust_standalone_models_are_declared_under_their_stable_names() {
+        use crate::idl_models::tests::{mpl_core_stack, ore_stack, pyth_rec_stack};
+        for spec in [
+            dlmm_program_spec(),
+            ore_stack(),
+            pyth_rec_stack(),
+            mpl_core_stack(),
+        ] {
+            let programs = spec.idls.iter().map(|idl| idl.name.clone()).collect();
+            let (_, models) = generate_stack_types_rs(&[], &[], &spec.idls, &programs);
+            let names = models.program_model_names(&spec.idls[0].name);
+            assert!(names.len() > spec.idls[0].accounts.len() / 2);
+            for (stable, declared) in names {
+                assert_eq!(stable, declared, "{}", spec.stack_name);
+            }
+        }
+    }
+
+    #[test]
+    fn rust_program_sdk_types_nested_defined_types() {
+        let output = compile_program_modules(crate::idl_models::tests::ore_stack(), None).unwrap();
+        assert!(output.types_rs.contains(
+            "/// IDL type `AdminConfig` as program reads decode it.\n#[derive(Debug, Clone, Serialize, Deserialize, Default)]\npub struct AdminConfig {\n    #[serde(default)]\n    pub authority: Option<String>,\n    #[serde(default)]\n    pub fee_collector: Option<String>,\n    #[serde(default, deserialize_with = \"serde_utils::deserialize_option_u64\")]\n    pub fee_rate: Option<u64>,\n}"
+        ), "{}", output.types_rs);
+        assert!(output.types_rs.contains(
+            "pub struct Config {\n    #[serde(default)]\n    pub admin: Option<AdminConfig>,\n    #[serde(default)]\n    pub protocol: Option<ProtocolConfig>,\n}"
+        ));
+        assert!(output
+            .types_rs
+            .contains("    #[serde(default)]\n    pub miner_rewards_factor: Option<Numeric>,"));
+        assert!(output.types_rs.contains(
+            "pub struct Numeric {\n    #[serde(default, deserialize_with = \"serde_utils::deserialize_option_vec_u64\")]\n    pub bits: Option<Vec<u64>>,\n}"
+        ));
+        assert!(output
+            .programs_rs
+            .contains("AccountReader<crate::types::Config>"));
+    }
+
+    #[test]
+    fn rust_program_sdk_decodes_enums_as_the_wire_tags_them() {
+        use crate::idl_models::tests::{mpl_core_stack, pyth_rec_stack};
+        let pyth = compile_program_modules(pyth_rec_stack(), None).unwrap();
+        // A data variant is a one-key object; its fields accept the IDL's
+        // own (camelCase) keys.
+        assert!(pyth.types_rs.contains(
+            "#[derive(Debug, Clone, Serialize, Deserialize)]\npub enum VerificationLevel {\n    Partial {\n        #[serde(default, deserialize_with = \"serde_utils::deserialize_option_u64\")]\n        #[serde(alias = \"numSignatures\")]\n        num_signatures: Option<u64>,\n    },\n    Full,\n}"
+        ), "{}", pyth.types_rs);
+        assert!(pyth.types_rs.contains(
+            "    #[serde(default)]\n    #[serde(alias = \"verificationLevel\")]\n    pub verification_level: Option<VerificationLevel>,"
+        ));
+        assert!(pyth
+            .programs_rs
+            .contains("AccountReader<crate::types::PriceUpdateV2>"));
+
+        let core = compile_program_modules(mpl_core_stack(), None).unwrap();
+        // Tuple variants are keyed `field_<index>` on the wire.
+        assert!(core.types_rs.contains(
+            "pub enum UpdateAuthority {\n    None,\n    Address {\n        #[serde(default)]\n        field_0: Option<String>,\n    },\n    Collection {\n        #[serde(default)]\n        field_0: Option<String>,\n    },\n}"
+        ), "{}", core.types_rs);
+        assert!(core.types_rs.contains(
+            "#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]\npub enum HookableLifecycleEvent {"
+        ));
+        assert!(core.types_rs.contains(
+            "    #[serde(default)]\n    #[serde(alias = \"lifecycleChecks\")]\n    pub lifecycle_checks: Option<Option<Vec<(HookableLifecycleEvent, ExternalCheckResult)>>>,"
+        ));
+        assert!(core
+            .types_rs
+            .contains("    #[serde(default)]\n    pub registry: Option<Vec<RegistryRecord>>,"));
+    }
+
+    #[test]
+    fn rust_models_decode_integers_nested_in_containers() {
+        let idl: IdlSnapshot = serde_json::from_value(serde_json::json!({
+            "name": "nested",
+            "version": "0.1.0",
+            "accounts": [{
+                "name": "Holder",
+                "discriminator": [1, 0, 0, 0, 0, 0, 0, 0],
+                "fields": [
+                    { "name": "amounts", "type": { "vec": { "option": "u64" } } },
+                    { "name": "pair", "type": { "tuple": ["u64", "publicKey"] } },
+                    { "name": "balances", "type": { "hashMap": ["string", "u128"] } },
+                    { "name": "grid", "type": { "array": [{ "vec": "i64" }, 2] } },
+                    { "name": "flags", "type": { "option": { "vec": { "tuple": ["u8", "bool"] } } } },
+                    { "name": "names", "type": { "tuple": ["string", "bool"] } }
+                ]
+            }],
+            "instructions": [],
+            "types": [],
+            "discriminant_size": 8
+        }))
+        .unwrap();
+        let (types_rs, _) =
+            generate_stack_types_rs(&[], &[], &[idl], &HashSet::from(["nested".to_string()]));
+        for expected in [
+            "    #[serde(default, deserialize_with = \"serde_utils::deserialize_wire_option::<_, _, serde_utils::wire::List<serde_utils::wire::Opt<serde_utils::wire::Int>>>\")]\n    pub amounts: Option<Vec<Option<u64>>>,",
+            "    #[serde(default, deserialize_with = \"serde_utils::deserialize_wire_option::<_, _, (serde_utils::wire::Int, serde_utils::wire::Plain)>\")]\n    pub pair: Option<(u64, String)>,",
+            "    #[serde(default, deserialize_with = \"serde_utils::deserialize_wire_option::<_, _, serde_utils::wire::Map<serde_utils::wire::Int>>\")]\n    pub balances: Option<std::collections::BTreeMap<String, u128>>,",
+            "    #[serde(default, deserialize_with = \"serde_utils::deserialize_wire_option::<_, _, serde_utils::wire::List<serde_utils::wire::List<serde_utils::wire::Int>>>\")]\n    pub grid: Option<Vec<Vec<i64>>>,",
+            "    #[serde(default, deserialize_with = \"serde_utils::deserialize_wire_option_option::<_, _, serde_utils::wire::List<(serde_utils::wire::Int, serde_utils::wire::Plain)>>\")]\n    pub flags: Option<Option<Vec<(u64, bool)>>>,",
+            // No integer inside: its own `Deserialize` suffices.
+            "    #[serde(default)]\n    pub names: Option<(String, bool)>,",
+        ] {
+            assert!(types_rs.contains(expected), "missing:\n{expected}\nin:\n{types_rs}");
+        }
+    }
+
+    /// A stack keeps the flat types its entities capture accounts into
+    /// (nested types as JSON values, unchanged); the account readers read
+    /// into their own typed models, named as TypeScript names them, and the
+    /// program module's `generated` re-exports every model under its
+    /// standalone name.
+    #[test]
+    fn rust_stack_keeps_entity_types_flat_and_reads_accounts_into_typed_models() {
+        let spec = crate::public_artifacts::ore_stack_spec_from_exact_artifacts();
+        let config = RustStackConfig {
+            program_extensions: vec![RustProgramExtensionConfig {
+                program_id: "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string(),
+                modules: vec!["extensions".to_string()],
+                entry: "extensions".to_string(),
+            }],
+            ..Default::default()
+        };
+        let output = compile_stack_spec(spec, Some(config)).unwrap();
+        assert!(output.types_rs.contains(
+            "pub struct Treasury {\n    #[serde(default, deserialize_with = \"serde_utils::deserialize_option_u64\")]\n    pub motherlode: Option<u64>,\n    #[serde(default)]\n    pub miner_rewards_factor: Option<serde_json::Value>,"
+        ));
+        assert!(output.types_rs.contains(
+            "/// Account `Treasury` as program reads decode it.\n#[derive(Debug, Clone, Serialize, Deserialize, Default)]\npub struct OreTreasuryAccount {\n    #[serde(default, deserialize_with = \"serde_utils::deserialize_option_u64\")]\n    pub motherlode: Option<u64>,\n    #[serde(default)]\n    pub miner_rewards_factor: Option<Numeric>,"
+        ));
+        let programs = output.programs_rs.unwrap();
+        assert!(programs.contains(
+            "pub fn treasury_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::OreTreasuryAccount>, arete_sdk::AreteError>"
+        ));
+        // `Board` renders the same as the entity's and stays one type.
+        assert!(programs.contains("AccountReader<crate::types::Board>"));
+        let generated = programs
+            .lines()
+            .find(|line| line.contains("pub use crate::types::{"))
+            .expect("the ore module's generated re-exports its models");
+        for name in [
+            "OreTreasuryAccount as Treasury",
+            "OreMinerAccount as Miner",
+            "Board",
+            "Config",
+            "AdminConfig",
+            "ProtocolConfig",
+            "Numeric",
+        ] {
+            assert!(
+                generated.contains(&format!("{name},")) || generated.contains(&format!("{name}}}")),
+                "`generated` lacks {name}: {generated}"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_stack_bundle_imports_the_stack_through_generated() {
+        let config = RustStackConfig {
+            extension_modules: vec!["extensions".to_string()],
+            extension_entry: Some("extensions".to_string()),
+            ..Default::default()
+        };
+        let output = compile_stack_spec(programs_stack_spec(), Some(config)).unwrap();
+        assert!(output.lib_rs.contains(
+            "mod generated {\n    pub use super::entity::*;\n    pub use super::types::*;\n    pub use super::programs;\n}\npub mod extensions;\npub use extensions::*;\n"
+        ), "{}", output.lib_rs);
     }
 
     #[test]
@@ -2827,6 +3706,7 @@ mod tests {
             http_url: Some("https://ore.stack.arete.run".to_string()),
             extension_modules,
             extension_entry,
+            program_extensions: Vec::new(),
             program_reads: Vec::new(),
             gateway: None,
             release: None,
@@ -2917,10 +3797,16 @@ pub struct RustStackConfig {
     /// Stems are derived from the staged file names via [`rust_module_name`].
     pub extension_modules: Vec<String>,
     /// Module stem of the extension entry file. When set, the generated
-    /// `mod.rs`/`lib.rs` re-exports the entry at the stack module root
-    /// (`pub use <entry>::*;`) so extension traits come into scope with the
-    /// stack's own glob import.
+    /// `mod.rs`/`lib.rs` declares a `generated` re-export module for the
+    /// bundle (`super::generated`) and re-exports the entry at the SDK root
+    /// (`pub use <entry>::*;`), so the bundle's namespace modules resolve as
+    /// `<sdk root>::<namespace>`.
     pub extension_entry: Option<String>,
+    /// Program package extensions embedded in a stack crate: each is wired
+    /// into its program's module in `programs.rs` (files staged under
+    /// `programs/<module>/`), with its own `generated` re-export module, so
+    /// the bundle compiles unchanged from its standalone program crate.
+    pub program_extensions: Vec<RustProgramExtensionConfig>,
     /// Published-platform program read overrides keyed by program ID. When an
     /// entry matches a program, its exact `program_spec_hash` /
     /// `program_release_hash` (from a hosted platform release) are used for
@@ -2935,6 +3821,18 @@ pub struct RustStackConfig {
     /// `Stack::live_alias`. Only StackManifest generation for a hosted
     /// endpoint sets it; without it the generated impl is unchanged.
     pub release: Option<crate::public_artifacts::StackRelease>,
+}
+
+/// One program package's own extension bundle, embedded in a stack crate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustProgramExtensionConfig {
+    /// The program the bundle extends.
+    pub program_id: String,
+    /// Module stems of the staged files, helpers first and the entry last
+    /// (one `pub mod <stem>;` each inside the program's module).
+    pub modules: Vec<String>,
+    /// Module stem of the entry, re-exported into the program's module.
+    pub entry: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2986,6 +3884,7 @@ impl Default for RustStackConfig {
             http_url: None,
             extension_modules: Vec::new(),
             extension_entry: None,
+            program_extensions: Vec::new(),
             program_reads: Vec::new(),
             gateway: None,
             release: None,
@@ -3034,9 +3933,22 @@ fn compile_stack_spec_with_view_selection(
         .map(|(_, name)| name.clone())
         .collect::<Vec<_>>();
 
-    let (types_rs, account_structs) =
-        generate_stack_types_rs(&entity_specs, &entity_names, &stack_spec.idls);
+    let reader_programs = rust_reader_programs(
+        &stack_spec.idls,
+        &stack_spec.program_ids,
+        &stack_spec.instructions,
+        &stack_spec.program_specs,
+        &config.program_reads,
+        false,
+    );
+    let (types_rs, account_structs) = generate_stack_types_rs(
+        &entity_specs,
+        &entity_names,
+        &stack_spec.idls,
+        &reader_programs,
+    );
 
+    validate_program_extensions(&config.program_extensions)?;
     let programs = generate_stack_programs_rs(
         stack_name,
         &stack_spec.instructions,
@@ -3048,7 +3960,9 @@ fn compile_stack_spec_with_view_selection(
         config.module_mode,
         &config.program_reads,
         false,
+        &config.program_extensions,
     );
+    check_program_extensions_bound(&config.program_extensions, programs.as_ref())?;
     let entity_rs = generate_stack_entity_rs(
         &stack_ident,
         &stack_kebab,
@@ -3058,7 +3972,7 @@ fn compile_stack_spec_with_view_selection(
         exact_views,
         programs.as_ref(),
     );
-    validate_extension_modules(&config, programs.is_some())?;
+    validate_extension_modules(&config, &[])?;
     check_stack_identifiers(
         stack_name,
         &stack_ident,
@@ -3075,6 +3989,10 @@ fn compile_stack_spec_with_view_selection(
         config.extension_entry.as_deref(),
     );
     let cargo_toml = generate_stack_cargo_toml(&config);
+    let program_modules = programs
+        .as_ref()
+        .map(ProgramsCodegen::program_modules)
+        .unwrap_or_default();
 
     Ok(RustOutput {
         cargo_toml,
@@ -3082,6 +4000,7 @@ fn compile_stack_spec_with_view_selection(
         types_rs,
         entity_rs,
         programs_rs: programs.map(|codegen| codegen.code),
+        program_modules,
     })
 }
 
@@ -3131,8 +4050,25 @@ pub fn compile_program_modules(
         .map(|entity| entity.state_name.clone())
         .collect::<Vec<_>>();
     validate_entity_identifiers(&entity_names)?;
-    let (types_rs, account_structs) =
-        generate_stack_types_rs(&stack_spec.entities, &entity_names, &stack_spec.idls);
+    if !config.program_extensions.is_empty() {
+        return Err(
+            "a standalone program SDK carries its package extension at the crate root (extension_modules/extension_entry), not as an embedded program extension".to_string(),
+        );
+    }
+    let reader_programs = rust_reader_programs(
+        &stack_spec.idls,
+        &stack_spec.program_ids,
+        &stack_spec.instructions,
+        &stack_spec.program_specs,
+        &config.program_reads,
+        true,
+    );
+    let (types_rs, account_structs) = generate_stack_types_rs(
+        &stack_spec.entities,
+        &entity_names,
+        &stack_spec.idls,
+        &reader_programs,
+    );
     let mut programs = generate_stack_programs_rs(
         &stack_spec.stack_name,
         &stack_spec.instructions,
@@ -3144,6 +4080,7 @@ pub fn compile_program_modules(
         config.module_mode,
         &config.program_reads,
         true,
+        &[],
     )
     .ok_or_else(|| {
         format!(
@@ -3152,7 +4089,10 @@ pub fn compile_program_modules(
         )
     })?;
 
-    validate_extension_modules(&config, true)?;
+    // The bundle of a program package resolves its bindings at the crate
+    // root, and must compile unchanged inside a stack's program module, where
+    // the generated `pdas` module sits beside it.
+    validate_extension_modules(&config, &["pdas"])?;
     let aggregate_name = format!(
         "{}Programs",
         rust_ident::identifier_stem(&stack_spec.stack_name, IdentifierCase::Pascal)
@@ -3188,10 +4128,28 @@ pub fn compile_program_modules(
     let mut lib_rs = format!(
         "mod types;\npub mod programs;\n\npub use programs::{aggregate_name};\npub use types::*;\n\npub use arete_sdk::{{ProgramSdk, Programs}};\n"
     );
+    // `generated` for the program package's bundle: the program module's
+    // items and the generated types, as the same bundle sees them inside a
+    // stack's program module.
+    let mut generated = vec![
+        match programs.modules.as_slice() {
+            [program] => format!("super::programs::{}::*", program.module_name),
+            _ => "super::programs::*".to_string(),
+        },
+        "super::types::*".to_string(),
+    ];
+    if let [idl] = stack_spec.idls.as_slice() {
+        generated.extend(account_model_reexports(
+            &account_structs,
+            Some(&idl.name),
+            "super::types",
+        ));
+    }
     append_rust_extension_exports(
         &mut lib_rs,
         &config.extension_modules,
         config.extension_entry.as_deref(),
+        &generated,
     );
 
     Ok(RustProgramOutput {
@@ -3250,9 +4208,12 @@ pub fn compile_composed_public_artifacts_v2(
         );
     }
     let config = config.unwrap_or_default();
-    if !config.stack.extension_modules.is_empty() || config.stack.extension_entry.is_some() {
+    if !config.stack.extension_modules.is_empty()
+        || config.stack.extension_entry.is_some()
+        || !config.stack.program_extensions.is_empty()
+    {
         return Err(
-            "Rust composition SDKs do not support stack extensions; extensions attach to a single-live stack module".to_string(),
+            "Rust composition SDKs do not support stack or program package extensions; extensions attach to a single-live stack module".to_string(),
         );
     }
     let mut live_stacks = Vec::with_capacity(composed.live_specs.len());
@@ -3333,21 +4294,46 @@ serde_json = "1"
     )
 }
 
+/// Module names reserved for generated code in every extension bundle
+/// (`docs/internal/sdk-core-api.md` §9): the SDK's own modules and the
+/// `generated` re-export module the bundle imports through.
+pub const RESERVED_EXTENSION_MODULES: &[&str] = &[
+    "entity",
+    "types",
+    "mod",
+    "lib",
+    "programs",
+    "models",
+    "views",
+    "generated",
+];
+
 /// Validate hand-authored extension module stems against the generated
 /// module names. Entry-stem collisions are a hard error because the staged
-/// file would shadow (or be shadowed by) a generated file.
-fn validate_extension_modules(config: &RustStackConfig, has_programs: bool) -> Result<(), String> {
+/// file would shadow (or be shadowed by) a generated module.
+fn validate_extension_modules(
+    config: &RustStackConfig,
+    extra_reserved: &[&str],
+) -> Result<(), String> {
     if config.extension_modules.is_empty() && config.extension_entry.is_none() {
         return Ok(());
     }
-    if config.extension_entry.is_none() {
+    let Some(entry) = config.extension_entry.as_deref() else {
         return Err("extension modules were configured without an extension entry".to_string());
-    }
+    };
+    validate_extension_stems(&config.extension_modules, entry, extra_reserved)
+}
+
+fn validate_extension_stems(
+    modules: &[String],
+    entry: &str,
+    extra_reserved: &[&str],
+) -> Result<(), String> {
     let mut seen = HashSet::new();
-    for stem in &config.extension_modules {
-        let reserved = matches!(stem.as_str(), "entity" | "types" | "mod" | "lib")
-            || (stem == "programs" && has_programs);
-        if reserved {
+    for stem in modules {
+        if RESERVED_EXTENSION_MODULES.contains(&stem.as_str())
+            || extra_reserved.contains(&stem.as_str())
+        {
             return Err(format!(
                 "extension file '{stem}.rs' collides with the generated '{stem}' module; rename the extension file"
             ));
@@ -3358,13 +4344,52 @@ fn validate_extension_modules(config: &RustStackConfig, has_programs: bool) -> R
             ));
         }
     }
-    match &config.extension_entry {
-        Some(entry) if config.extension_modules.last() == Some(entry) => Ok(()),
-        Some(entry) => Err(format!(
+    if modules.last().map(String::as_str) != Some(entry) {
+        return Err(format!(
             "extension entry module '{entry}' must be the last configured extension module"
-        )),
-        None => unreachable!("checked above"),
+        ));
     }
+    Ok(())
+}
+
+/// Program package extensions embedded in a stack: one per program, each a
+/// valid bundle that also compiles beside the program module's own `pdas`.
+fn validate_program_extensions(extensions: &[RustProgramExtensionConfig]) -> Result<(), String> {
+    let mut programs = HashSet::new();
+    for extension in extensions {
+        if !programs.insert(extension.program_id.as_str()) {
+            return Err(format!(
+                "program {} has more than one package extension",
+                extension.program_id
+            ));
+        }
+        validate_extension_stems(&extension.modules, &extension.entry, &["pdas"])
+            .map_err(|error| format!("program {}: {error}", extension.program_id))?;
+    }
+    Ok(())
+}
+
+/// Every embedded program extension must name a program the stack
+/// generates.
+fn check_program_extensions_bound(
+    extensions: &[RustProgramExtensionConfig],
+    programs: Option<&ProgramsCodegen>,
+) -> Result<(), String> {
+    for extension in extensions {
+        let bound = programs.is_some_and(|programs| {
+            programs
+                .modules
+                .iter()
+                .any(|module| module.program_id == extension.program_id)
+        });
+        if !bound {
+            return Err(format!(
+                "program package extension for {} names a program this stack does not generate",
+                extension.program_id
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Entity names become Rust type names verbatim (and stay verbatim in view
@@ -3478,25 +4503,84 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
         all_exports = all_exports
     );
 
-    append_rust_extension_exports(&mut output, extension_modules, extension_entry);
+    // `generated` for the stack's bundle: the stack binding, the generated
+    // types and the program modules.
+    let mut generated = vec![
+        "super::entity::*".to_string(),
+        "super::types::*".to_string(),
+    ];
+    if has_programs {
+        generated.push("super::programs".to_string());
+    }
+    append_rust_extension_exports(&mut output, extension_modules, extension_entry, &generated);
 
     output
 }
 
+/// Wire a staged extension bundle into the module that holds it: the
+/// `generated` re-export module the bundle imports generated items through
+/// (`super::generated::…`), one `pub mod` per staged file, and the entry
+/// re-exported so its namespace modules resolve at the SDK root.
 fn append_rust_extension_exports(
     output: &mut String,
     extension_modules: &[String],
     extension_entry: Option<&str>,
+    generated: &[String],
 ) {
     if let Some(entry) = extension_entry {
         output.push_str(
             "\n// Hand-authored devex extensions (staged from extensions.json; not generated).\n",
         );
+        output.push_str(&render_generated_reexport_module(generated, ""));
         for stem in extension_modules {
             output.push_str(&format!("pub mod {stem};\n"));
         }
         output.push_str(&format!("pub use {entry}::*;\n"));
     }
+}
+
+/// `generated` re-exports of a program's account models, and the models of
+/// the IDL types they reach, under their stable names (the names its
+/// standalone program SDK declares them under). They are explicit, so they
+/// win over a same-named item another glob of `generated` brings in, such as
+/// a stack entity type.
+fn account_model_reexports(
+    account_models: &AccountModels,
+    program: Option<&str>,
+    types_path: &str,
+) -> Vec<String> {
+    let Some(program) = program else {
+        return Vec::new();
+    };
+    let names = account_models
+        .program_model_names(program)
+        .into_iter()
+        .map(|(stable, model)| {
+            if model == stable {
+                model
+            } else {
+                format!("{model} as {stable}")
+            }
+        })
+        .collect::<Vec<_>>();
+    match names.as_slice() {
+        [] => Vec::new(),
+        [name] => vec![format!("{types_path}::{name}")],
+        names => vec![format!("{types_path}::{{{}}}", names.join(", "))],
+    }
+}
+
+/// The `generated` module an extension bundle imports generated items
+/// through. It re-exports, and never defines, generated items.
+fn render_generated_reexport_module(paths: &[String], indent: &str) -> String {
+    let mut module = format!(
+        "{indent}/// Generated items, as the extension bundle beside this module imports them\n{indent}/// (`super::generated::…`).\n{indent}#[allow(unused_imports)]\n{indent}mod generated {{\n"
+    );
+    for path in paths {
+        module.push_str(&format!("{indent}    pub use {path};\n"));
+    }
+    module.push_str(&format!("{indent}}}\n"));
+    module
 }
 
 /// The struct names `types.rs` declares for entities, their sections and the
@@ -3553,6 +4637,7 @@ fn generate_stack_types_rs(
     entity_specs: &[SerializableStreamSpec],
     entity_names: &[String],
     idls: &[IdlSnapshot],
+    reader_programs: &HashSet<String>,
 ) -> (String, AccountModels) {
     let mut output = String::new();
     output.push_str("use serde::{Deserialize, Serialize};\n");
@@ -3572,6 +4657,7 @@ fn generate_stack_types_rs(
         let program_name = entity_program_name(spec, idls);
         for (name, resolved) in emitted_resolved_types(spec, &resolved_name_map) {
             stack_types.declare(&name, resolved);
+            account_structs.declare_model(&name, resolved);
             if resolved.is_account && !resolved.is_enum {
                 account_structs.record(program_name, &resolved.type_name, &name);
             }
@@ -3595,15 +4681,42 @@ fn generate_stack_types_rs(
         output.push_str(&compiler.generate_main_entity_struct(&resolved_name_map));
         output.push_str("\n\n");
 
-        let resolved = compiler.generate_resolved_types(
-            &resolved_name_map,
-            &mut generated,
-            Some(account_structs.first_mut()),
-        );
+        let resolved = compiler.generate_resolved_types(&resolved_name_map, &mut generated);
         output.push_str(&resolved);
         while !output.ends_with("\n\n") {
             output.push('\n');
         }
+    }
+
+    // Account models for the accounts no entity maps (or maps differently),
+    // and the IDL types they reach: every account a program module reads
+    // gets one.
+    let reserved = rust_stable_reserved_names();
+    let language = ModelLanguage {
+        pascal: &to_pascal_case,
+        render: &render_declared_model,
+        extra_names: &|_, _| Vec::new(),
+        reserved: &reserved,
+    };
+    let idl_models = bind_idl_models(
+        idls,
+        reader_programs,
+        &mut account_structs,
+        &language,
+        &|name| stack_types.is_taken(name),
+    );
+    for (name, model) in &idl_models {
+        output.push_str(&format!(
+            "/// {} `{}` as program reads decode it.\n",
+            if model.is_account {
+                "Account"
+            } else {
+                "IDL type"
+            },
+            model.type_name
+        ));
+        output.push_str(&render_idl_model(model, name));
+        output.push_str("\n\n");
     }
 
     // Generate the builtin resolver output structs (SlotHashBytes /
@@ -3615,6 +4728,49 @@ fn generate_stack_types_rs(
     output.push_str(WRAPPER_TYPES);
 
     (output, account_structs)
+}
+
+/// Names a program's account and IDL type models never take in any Rust
+/// SDK: the runtime envelopes and builtin resolver structs `types.rs` may
+/// declare, and the prelude and derive names its declarations use (a model
+/// named `Option` would shadow the `Option` every field is wrapped in).
+fn rust_stable_reserved_names() -> Vec<&'static str> {
+    let mut names = vec!["EventWrapper", "CaptureWrapper"];
+    names.extend(BUILTIN_RESOLVER_STRUCTS.iter().map(|(name, _)| *name));
+    names.extend([
+        "Box",
+        "Default",
+        "Deserialize",
+        "Option",
+        "Result",
+        "Serialize",
+        "String",
+        "Vec",
+    ]);
+    names
+}
+
+/// The programs whose module in `programs.rs` gets typed account readers.
+fn rust_reader_programs(
+    idls: &[IdlSnapshot],
+    program_ids: &[String],
+    instructions: &[InstructionDef],
+    program_specs: &[arete_hash::ProgramSpecV1],
+    reads: &[RustProgramReadConfig],
+    include_idl_only_programs: bool,
+) -> HashSet<String> {
+    account_reader_programs(
+        idls,
+        program_ids,
+        instructions,
+        include_idl_only_programs,
+        |program_id| {
+            reads.iter().any(|read| read.program_id == program_id)
+                || program_specs
+                    .iter()
+                    .any(|spec| spec.program_id == program_id)
+        },
+    )
 }
 
 /// Generate entity.rs with a single Stack impl and per-entity EntityViews.
@@ -3915,6 +5071,7 @@ impl arete_sdk::Programs for {aggregate_name} {{
 /// One generated program module and the accessor struct it exports.
 #[derive(Debug, Clone)]
 pub(crate) struct ProgramModule {
+    program_id: String,
     module_name: String,
     struct_name: String,
 }
@@ -3926,11 +5083,27 @@ pub(crate) struct ProgramsCodegen {
     modules: Vec<ProgramModule>,
 }
 
+impl ProgramsCodegen {
+    fn program_modules(&self) -> Vec<RustProgramModule> {
+        self.modules
+            .iter()
+            .map(|module| RustProgramModule {
+                program_id: module.program_id.clone(),
+                module_name: module.module_name.clone(),
+            })
+            .collect()
+    }
+}
+
 /// Which `arete_sdk::instruction` items a generated program module references.
 #[derive(Debug, Default)]
 struct ProgramImports {
     account_meta: bool,
     arg_schema: bool,
+    /// An inlined struct schema, or a struct enum variant, emits `ArgField`.
+    arg_field: bool,
+    /// An inlined enum schema emits `EnumVariantDef` and `EnumVariantKind`.
+    enum_variant: bool,
     pda: bool,
     error_metadata: bool,
 }
@@ -4326,16 +5499,20 @@ impl<'a> RustDefinedTypes<'a> {
     }
 }
 
-/// Whether any emitted schema expression references `ArgField` /
-/// `EnumVariantDef` (defined struct/enum types were inlined).
-fn schema_uses_defined_types(schema: &str) -> bool {
-    schema.contains("ArgField") || schema.contains("EnumVariantDef")
+/// Record the schema items an emitted `ArgType` expression names, so the
+/// program module imports exactly those: inlined struct types (and struct
+/// enum variants) name `ArgField`, inlined enum types `EnumVariantDef` and
+/// `EnumVariantKind`.
+fn note_schema_imports(schema: &str, needs: &mut ProgramImports) {
+    needs.arg_field |= schema.contains("ArgField {");
+    needs.enum_variant |= schema.contains("EnumVariantDef {");
 }
 
 /// How a mapped account surfaces in the typed params struct.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum RustAccountFieldKind {
-    /// Signer slot: optional address override (payer fallback applies).
+    /// Signer slot: the caller provides the address (`AccountResolution::Signer`,
+    /// which the build's payer never fills).
     Signer,
     /// Required user-provided account address.
     Required,
@@ -4608,7 +5785,70 @@ fn build_rust_pda_config(
 struct RustInstructionBlock {
     code: String,
     method: String,
-    uses_defined_types: bool,
+    /// The typed params struct's name, claimed once the block is emitted.
+    params_name: String,
+}
+
+/// Names a program module's typed params structs: `<Ix>Params`, unless the
+/// program's IDL declares a type or account of that name (meteora-dlmm's
+/// `InitializeLbPair2Params` is the type of `initialize_lb_pair2`'s `params`
+/// argument) or another instruction's params took it. Then the struct is
+/// `<Ix>InstructionParams`, numbered from 2 if that is taken too, as the
+/// TypeScript generator names it. Only the program's own IDL decides, so a
+/// standalone program crate and a stack's program module name every params
+/// struct alike, and an extension bundle that declares the IDL type under its
+/// own name compiles in both.
+struct RustParamsNames {
+    /// Pascal-case names of the program's IDL types and accounts.
+    declared: HashSet<String>,
+    /// Params struct names already emitted in the module.
+    taken: HashSet<String>,
+}
+
+impl RustParamsNames {
+    fn new(idl: Option<&IdlSnapshot>) -> Self {
+        let declared = idl
+            .map(|idl| {
+                idl.types
+                    .iter()
+                    .map(|def| to_pascal_case(&def.name))
+                    .chain(
+                        idl.accounts
+                            .iter()
+                            .map(|account| to_pascal_case(&account.name)),
+                    )
+                    .collect()
+            })
+            .unwrap_or_default();
+        RustParamsNames {
+            declared,
+            taken: HashSet::new(),
+        }
+    }
+
+    fn available(&self, name: &str) -> bool {
+        !self.declared.contains(name) && !self.taken.contains(name)
+    }
+
+    /// The name the params struct of instruction `pascal` takes.
+    fn candidate(&self, pascal: &str) -> String {
+        let preferred = format!("{pascal}Params");
+        if self.available(&preferred) {
+            return preferred;
+        }
+        let fallback = format!("{pascal}InstructionParams");
+        let mut candidate = fallback.clone();
+        let mut counter = 2;
+        while !self.available(&candidate) {
+            candidate = format!("{fallback}{counter}");
+            counter += 1;
+        }
+        candidate
+    }
+
+    fn claim(&mut self, name: String) {
+        self.taken.insert(name);
+    }
 }
 
 fn generate_rust_instruction_block(
@@ -4617,6 +5857,7 @@ fn generate_rust_instruction_block(
     errors: &[IdlErrorSnapshot],
     pda_lookup: &BTreeMap<&str, &PdaDefinition>,
     parser: &mut RustDefinedTypes<'_>,
+    params_names: &RustParamsNames,
     needs: &mut ProgramImports,
 ) -> Result<RustInstructionBlock, String> {
     // --- Parse args; skip the whole instruction on unsupported types. ---
@@ -4683,8 +5924,16 @@ fn generate_rust_instruction_block(
     }
 
     let fn_name = to_snake_case(&instr.name);
+    // Suffixed from the unescaped stem: `use` builds with `use_` and its
+    // handler is `use_handler`.
+    let handler_name = format!("{}_handler", to_snake_stem(&instr.name));
     let pascal = to_pascal_case(&instr.name);
-    let params_name = format!("{}Params", pascal);
+    let params_name = params_names.candidate(&pascal);
+    if params_name != format!("{pascal}Params") {
+        notes.push(format!(
+            "params are `{params_name}`: the program declares `{pascal}Params`, or another instruction's params use the name"
+        ));
+    }
 
     // --- Typed params struct: args first, then caller-supplied accounts.
     // Account collisions have already been assigned explicit aliases above;
@@ -4692,11 +5941,10 @@ fn generate_rust_instruction_block(
     // collisions between otherwise-distinct source names. ---
     let mut used_field_names: HashSet<String> = HashSet::new();
     let mut param_fields: Vec<String> = Vec::new();
-    let mut uses_defined_types = false;
     for (arg, parsed) in &parsed_args {
         let field_name = to_snake_case(&arg.name);
         used_field_names.insert(field_name.clone());
-        uses_defined_types |= schema_uses_defined_types(&parsed.schema);
+        note_schema_imports(&parsed.schema, needs);
         let mut lines = Vec::new();
         if field_name != arg.name {
             lines.push(format!(
@@ -4721,10 +5969,9 @@ fn generate_rust_instruction_block(
         }
         let mut lines = Vec::new();
         match kind {
-            RustAccountFieldKind::Signer => lines.push(format!(
-                "        /// Optional address override for the `{}` signer (defaults to the payer).",
-                name
-            )),
+            RustAccountFieldKind::Signer => {
+                lines.push(format!("        /// Address of the `{}` signer.", name))
+            }
             RustAccountFieldKind::Required => {
                 lines.push(format!("        /// Address of the `{}` account.", name))
             }
@@ -4769,11 +6016,7 @@ fn generate_rust_instruction_block(
     };
 
     // --- Typed builder fn. ---
-    let mut doc_lines: Vec<String> = instr
-        .docs
-        .iter()
-        .map(|line| line.trim().to_string())
-        .collect();
+    let mut doc_lines = rust_doc::normalize_doc_lines(&instr.docs);
     if doc_lines.is_empty() {
         doc_lines.push(format!("Builds the `{}` instruction.", instr.name));
     }
@@ -4784,22 +6027,13 @@ fn generate_rust_instruction_block(
             doc_lines.push(format!("- {}", note));
         }
     }
-    let docs = doc_lines
-        .iter()
-        .map(|line| {
-            if line.is_empty() {
-                "    ///".to_string()
-            } else {
-                format!("    /// {}", line)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let docs = rust_doc::render_doc_comment(&doc_lines, "    ");
 
     let typed_fn = format!(
-        "{docs}\n    pub fn {fn_name}(params: {params_name}) -> Result<BuiltInstruction, InstructionError> {{\n        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {{\n            context: \"params\".to_string(),\n            message: error.to_string(),\n        }})?;\n        {fn_name}_handler().build(params)\n    }}",
+        "{docs}\n    pub fn {fn_name}(params: {params_name}) -> Result<BuiltInstruction, InstructionError> {{\n        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {{\n            context: \"params\".to_string(),\n            message: error.to_string(),\n        }})?;\n        {handler_name}().build(params)\n    }}",
         docs = docs,
         fn_name = fn_name,
+        handler_name = handler_name,
         params_name = params_name
     );
 
@@ -4840,7 +6074,7 @@ fn generate_rust_instruction_block(
                     "                ErrorMetadata {{ code: {}, name: {}.to_string(), msg: {}.to_string() }},",
                     error.code,
                     rust_string_literal(&error.name),
-                    rust_string_literal(error.msg.as_deref().unwrap_or(""))
+                    rust_string_literal(&error_metadata_msg(error))
                 )
             })
             .collect();
@@ -4848,9 +6082,9 @@ fn generate_rust_instruction_block(
     };
 
     let handler_fn = format!(
-        "    /// Raw instruction handler for `{name}`.\n    pub fn {fn_name}_handler() -> InstructionHandler {{\n        InstructionHandler {{\n            program_id: PROGRAM_ID.to_string(),\n            discriminator: vec![{discriminator}],\n            accounts: {accounts},\n            args: {args},\n            errors: {errors},\n        }}\n    }}",
+        "    /// Raw instruction handler for `{name}`.\n    pub fn {handler_name}() -> InstructionHandler {{\n        InstructionHandler {{\n            program_id: PROGRAM_ID.to_string(),\n            discriminator: vec![{discriminator}],\n            accounts: {accounts},\n            args: {args},\n            errors: {errors},\n        }}\n    }}",
         name = instr.name,
-        fn_name = fn_name,
+        handler_name = handler_name,
         discriminator = discriminator,
         accounts = accounts_literal,
         args = args_literal,
@@ -4866,7 +6100,7 @@ fn generate_rust_instruction_block(
     Ok(RustInstructionBlock {
         code: format!("{}\n\n{}\n\n{}", params_struct, typed_fn, handler_fn),
         method,
-        uses_defined_types,
+        params_name,
     })
 }
 
@@ -5041,17 +6275,18 @@ fn generate_stack_programs_rs(
     module_mode: bool,
     reads: &[RustProgramReadConfig],
     include_idl_only_programs: bool,
+    program_extensions: &[RustProgramExtensionConfig],
 ) -> Option<ProgramsCodegen> {
     if instructions.is_empty() && !include_idl_only_programs {
         return None;
     }
 
     // Path to the generated types module from inside a `pub mod <program>`
-    // block within programs.rs.
-    let types_path = if module_mode {
-        "super::super::types"
+    // block within programs.rs, and from a `generated` module inside it.
+    let (types_path, nested_types_path) = if module_mode {
+        ("super::super::types", "super::super::super::types")
     } else {
-        "crate::types"
+        ("crate::types", "crate::types")
     };
 
     let default_program_id = program_ids.first().cloned().unwrap_or_default();
@@ -5128,7 +6363,7 @@ fn generate_stack_programs_rs(
         let mut blocks: Vec<String> = Vec::new();
         let mut methods: Vec<String> = Vec::new();
         let mut skipped: Vec<(String, String)> = Vec::new();
-        let mut uses_defined_types = false;
+        let mut params_names = RustParamsNames::new(idl);
         for instr in group {
             let errors = if instr.errors.is_empty() {
                 program_errors.clone()
@@ -5141,12 +6376,13 @@ fn generate_stack_programs_rs(
                 &errors,
                 &pda_lookup,
                 &mut parser,
+                &params_names,
                 &mut needs,
             ) {
                 Ok(block) => {
+                    params_names.claim(block.params_name);
                     blocks.push(block.code);
                     methods.push(block.method);
-                    uses_defined_types |= block.uses_defined_types;
                 }
                 Err(reason) => skipped.push((instr.name.clone(), reason)),
             }
@@ -5169,29 +6405,39 @@ fn generate_stack_programs_rs(
                 .map(|instr| to_snake_case(&instr.name))
                 .collect();
             used_method_names.insert("from_builder".to_string());
-            let accounts = idl.map(|idl| idl.accounts.as_slice()).unwrap_or_default();
+            // Every IDL account has a bound model (`types.rs`), or reads as
+            // raw JSON when its layout is an enum.
+            let accounts = idl
+                .map(|idl| account_structs.program_accounts(&idl.name))
+                .unwrap_or_default();
             for account in accounts {
-                let Some(struct_name) =
-                    account_structs.get(idl.map(|idl| idl.name.as_str()), &account.name)
-                else {
-                    // No generated struct for this account type; no reader.
-                    continue;
-                };
-                let method_name = format!("{}_accounts", to_snake_case(&account.name));
+                let method_name = format!("{}_accounts", to_snake_stem(&account.account));
                 if !used_method_names.insert(method_name.clone()) {
                     reader_notes.push(format!(
                         "account reader for `{}` skipped: method name `{}` collides with an instruction builder",
-                        account.name, method_name
+                        account.account, method_name
                     ));
                     continue;
                 }
+                let (value_type, doc) = match &account.model {
+                    Some(model) => (
+                        format!("{types_path}::{model}"),
+                        format!(
+                            "Typed reader for `{}` accounts (release-addressed HTTP reads).",
+                            account.account
+                        ),
+                    ),
+                    None => (
+                        "serde_json::Value".to_string(),
+                        format!(
+                            "Reader for `{}` accounts (release-addressed HTTP reads); its enum layout decodes as raw JSON.",
+                            account.account
+                        ),
+                    ),
+                };
                 reader_methods.push(format!(
-                    "        /// Typed reader for `{account}` accounts (release-addressed HTTP reads).\n        pub fn {method_name}(&self) -> Result<arete_sdk::AccountReader<{types_path}::{struct_name}>, arete_sdk::AreteError> {{\n            Ok(arete_sdk::AccountReader::new(\n                {account_literal},\n                std::sync::Arc::new(self.builder.account_transport({program_literal}, &read_descriptor())?),\n            ))\n        }}",
-                    account = account.name,
-                    method_name = method_name,
-                    types_path = types_path,
-                    struct_name = struct_name,
-                    account_literal = rust_string_literal(&account.name),
+                    "        /// {doc}\n        pub fn {method_name}(&self) -> Result<arete_sdk::AccountReader<{value_type}>, arete_sdk::AreteError> {{\n            Ok(arete_sdk::AccountReader::new(\n                {account_literal},\n                std::sync::Arc::new(self.builder.account_transport({program_literal}, &read_descriptor())?),\n            ))\n        }}",
+                    account_literal = rust_string_literal(&account.account),
                     program_literal = rust_string_literal(&raw_name),
                 ));
             }
@@ -5206,8 +6452,11 @@ fn generate_stack_programs_rs(
             if needs.arg_schema {
                 imports.extend(["ArgSchema", "ArgType"]);
             }
-            if uses_defined_types {
-                imports.extend(["ArgField", "EnumVariantDef", "EnumVariantKind"]);
+            if needs.arg_field {
+                imports.push("ArgField");
+            }
+            if needs.enum_variant {
+                imports.extend(["EnumVariantDef", "EnumVariantKind"]);
             }
             if needs.error_metadata {
                 imports.push("ErrorMetadata");
@@ -5254,55 +6503,98 @@ fn generate_stack_programs_rs(
             }
         }
         sections.extend(blocks);
-        if let Some(pdas_module) = own_pdas.and_then(generate_rust_pdas_module) {
+        // `pdas` carries every PDA the program's ProgramSpec declares, as the
+        // standalone program SDK does, plus the stack's own (which win on a
+        // name both declare).
+        let mut module_pdas = own_pdas.cloned().unwrap_or_default();
+        if let Some(spec) = program_specs
+            .iter()
+            .find(|spec| spec.program_id == *program_id)
+        {
+            for (name, pda) in crate::program_sdk::program_spec_pdas(spec) {
+                module_pdas.entry(name).or_insert(pda);
+            }
+        }
+        if let Some(pdas_module) = generate_rust_pdas_module(&module_pdas) {
             sections.push(pdas_module);
         }
 
         // Program accessor: carries the client's program runtime so account
-        // readers can build release-addressed transports. Instruction
-        // builders stay pure and are also available as free functions.
-        let builder_field = if reader_methods.is_empty() {
-            // No generated reader uses the runtime (yet); silence dead_code.
-            "        #[allow(dead_code)]\n        builder: arete_sdk::ProgramBuilder,"
-        } else {
-            "        builder: arete_sdk::ProgramBuilder,"
-        };
+        // readers can build release-addressed transports and program
+        // extensions get a `ProgramContext`. Instruction builders stay pure
+        // and are also available as free functions.
         let mut impl_methods: Vec<String> = vec![
             "        /// Construct from the connected client's program runtime.\n        pub fn from_builder(builder: arete_sdk::ProgramBuilder) -> Self {\n            Self { builder }\n        }"
                 .to_string(),
         ];
+        // An instruction named `context` keeps its builder method; the
+        // context stays available as `arete_sdk::ProgramContext::new(&program)`.
+        let context_taken = group
+            .iter()
+            .any(|instr| to_snake_case(&instr.name) == "context");
+        if context_taken {
+            reader_notes.push(
+                "`context()` is not generated: an instruction builder uses the name; use `arete_sdk::ProgramContext::new(&program)`".to_string(),
+            );
+        } else {
+            impl_methods.push(format!(
+                "        /// The context program extension functions take: the client's chain\n        /// reader, its wallet, and this accessor.\n        pub fn context(&self) -> arete_sdk::ProgramContext<'_, {struct_name}> {{\n            arete_sdk::ProgramContext::new(self)\n        }}"
+            ));
+        }
         impl_methods.extend(methods);
         impl_methods.extend(reader_methods);
         let program_struct = format!(
-            "    /// Program accessor exposed on the stack client's `programs` namespace.\n    #[derive(Clone)]\n    pub struct {struct_name} {{\n{builder_field}\n    }}\n\n    impl {struct_name} {{\n{impl_methods}\n    }}",
+            "    /// Program accessor exposed on the stack client's `programs` namespace.\n    #[derive(Clone)]\n    pub struct {struct_name} {{\n        builder: arete_sdk::ProgramBuilder,\n    }}\n\n    impl {struct_name} {{\n{impl_methods}\n    }}\n\n    impl arete_sdk::ProgramAccessor for {struct_name} {{\n        fn program_builder(&self) -> &arete_sdk::ProgramBuilder {{\n            &self.builder\n        }}\n    }}",
             struct_name = struct_name,
-            builder_field = builder_field,
             impl_methods = impl_methods.join("\n\n")
         );
         sections.push(program_struct);
 
-        let mut doc = format!(
-            "/// Program SDK for `{}` (program ID `{}`).\n",
-            raw_name, program_id
-        );
-        if let Err(reason) = &read_layer {
-            doc.push_str(&format!(
-                "///\n/// Program read layer omitted: {}.\n",
-                reason
+        // The program package's own extension, embedded: files staged under
+        // `programs/<module>/`, bound here exactly as at a standalone program
+        // crate's root.
+        if let Some(extension) = program_extensions
+            .iter()
+            .find(|extension| extension.program_id == *program_id)
+        {
+            let mut wiring = format!(
+                "    // Hand-authored program package extension (staged from programs/{module_name}/extensions.json; not generated).\n"
+            );
+            let mut generated = vec!["super::*".to_string(), format!("{nested_types_path}::*")];
+            generated.extend(account_model_reexports(
+                account_structs,
+                idl.map(|idl| idl.name.as_str()),
+                nested_types_path,
             ));
+            wiring.push_str(&render_generated_reexport_module(&generated, "    "));
+            for stem in &extension.modules {
+                wiring.push_str(&format!("    pub mod {stem};\n"));
+            }
+            wiring.push_str(&format!("    pub use {}::*;", extension.entry));
+            sections.push(wiring);
+        }
+
+        let mut doc_lines = vec![format!(
+            "Program SDK for `{}` (program ID `{}`).",
+            raw_name, program_id
+        )];
+        if let Err(reason) = &read_layer {
+            doc_lines.push(String::new());
+            doc_lines.push(format!("Program read layer omitted: {}.", reason));
         }
         if !reader_notes.is_empty() {
-            doc.push_str("///\n");
-            for note in &reader_notes {
-                doc.push_str(&format!("/// {}\n", note));
-            }
+            doc_lines.push(String::new());
+            doc_lines.extend(reader_notes.iter().cloned());
         }
         if !skipped.is_empty() {
-            doc.push_str("///\n/// Skipped instructions (unsupported by instruction codegen):\n");
+            doc_lines.push(String::new());
+            doc_lines
+                .push("Skipped instructions (unsupported by instruction codegen):".to_string());
             for (name, reason) in &skipped {
-                doc.push_str(&format!("/// - `{}`: {}\n", name, reason));
+                doc_lines.push(format!("- `{}`: {}", name, reason));
             }
         }
+        let doc = format!("{}\n", rust_doc::render_doc_comment(&doc_lines, ""));
         module_blocks.push(format!(
             "{doc}pub mod {module_name} {{\n{body}\n}}",
             doc = doc,
@@ -5310,6 +6602,7 @@ fn generate_stack_programs_rs(
             body = sections.join("\n\n")
         ));
         modules.push(ProgramModule {
+            program_id: program_id.clone(),
             module_name,
             struct_name,
         });
@@ -5351,6 +6644,17 @@ fn to_pascal_case(s: &str) -> String {
 }
 
 fn to_snake_case(s: &str) -> String {
+    let mut result = to_snake_stem(s);
+    if is_rust_keyword(&result) {
+        result.push('_');
+    }
+    result
+}
+
+/// `to_snake_case` without the keyword escape: the stem a suffixed name is
+/// built from. `use` is the instruction `use_`, but its handler is
+/// `use_handler`, not `use__handler` (which `non_snake_case` rejects).
+fn to_snake_stem(s: &str) -> String {
     let mut result = String::new();
     let mut separator = false;
     for ch in s.chars() {
@@ -5377,9 +6681,6 @@ fn to_snake_case(s: &str) -> String {
         .is_some_and(|character| character.is_ascii_digit())
     {
         result.insert_str(0, "value_");
-    }
-    if is_rust_keyword(&result) {
-        result.push('_');
     }
     result
 }

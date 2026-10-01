@@ -293,8 +293,9 @@ pub enum OperationError {
 }
 
 /// One transaction inside a prepared operation: named, non-empty instruction
-/// list, required signers, and IDL error metadata for failure parsing.
-#[derive(Debug, Clone, PartialEq)]
+/// list, required signers, IDL error metadata for failure parsing, and the
+/// signer material it was prepared with.
+#[derive(Clone)]
 pub struct PreparedTransactionBody {
     /// Transaction name (used in error messages and receipts).
     pub name: String,
@@ -306,6 +307,67 @@ pub struct PreparedTransactionBody {
     pub required_signer_addresses: Vec<String>,
     /// IDL error metadata used to parse chain failures.
     pub errors: Vec<ErrorMetadata>,
+    /// Signer material created while preparing this transaction (TypeScript
+    /// `signers`), such as the keypair of an account it creates; each signer
+    /// once (by identity), in order. Set with
+    /// [`with_signers`](PreparedTransactionBody::with_signers). Execution
+    /// counts their addresses toward signer validation and hands them to the
+    /// wallet adapter ([`WalletExecutionContext::signers`]). Equality and
+    /// `Debug` see only their addresses, and descriptions leave them out.
+    pub signers: Vec<Arc<dyn Signer>>,
+}
+
+impl PreparedTransactionBody {
+    /// This body with `signers` appended to its [`signers`](Self::signers),
+    /// each signer once (TypeScript `createPreparedTransactionBody({ signers })`).
+    #[must_use]
+    pub fn with_signers(mut self, signers: impl IntoIterator<Item = Arc<dyn Signer>>) -> Self {
+        self.signers.extend(signers);
+        self.signers = dedupe_signers(std::mem::take(&mut self.signers));
+        self
+    }
+}
+
+impl fmt::Debug for PreparedTransactionBody {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreparedTransactionBody")
+            .field("name", &self.name)
+            .field("instructions", &self.instructions)
+            .field("required_signer_addresses", &self.required_signer_addresses)
+            .field("errors", &self.errors)
+            .field("signers", &signer_addresses(&self.signers))
+            .finish()
+    }
+}
+
+/// Bodies are equal when their fields are, signers by address.
+impl PartialEq for PreparedTransactionBody {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.instructions == other.instructions
+            && self.required_signer_addresses == other.required_signer_addresses
+            && self.errors == other.errors
+            && signer_addresses(&self.signers) == signer_addresses(&other.signers)
+    }
+}
+
+fn signer_addresses(signers: &[Arc<dyn Signer>]) -> Vec<String> {
+    signers.iter().map(|signer| signer.address()).collect()
+}
+
+/// Signers in order, each object once (TypeScript dedupes them with a `Set`,
+/// by identity).
+fn dedupe_signers(signers: Vec<Arc<dyn Signer>>) -> Vec<Arc<dyn Signer>> {
+    let mut result: Vec<Arc<dyn Signer>> = Vec::with_capacity(signers.len());
+    for signer in signers {
+        if !result
+            .iter()
+            .any(|kept| std::ptr::addr_eq(Arc::as_ptr(kept), Arc::as_ptr(&signer)))
+        {
+            result.push(signer);
+        }
+    }
+    result
 }
 
 fn dedupe(values: Vec<String>) -> Vec<String> {
@@ -356,6 +418,7 @@ pub fn create_prepared_transaction_body(
         instructions,
         required_signer_addresses,
         errors: errors.unwrap_or_default(),
+        signers: Vec::new(),
     })
 }
 
@@ -393,6 +456,28 @@ pub struct PreparedFlow {
     pub transactions: Vec<PreparedTransactionBody>,
     /// Operation artifacts (typed payloads ride in via serde).
     pub artifacts: Value,
+}
+
+impl PreparedInstruction {
+    /// This operation with `signers` appended to its transaction's
+    /// [`signers`](PreparedTransactionBody::signers) (TypeScript
+    /// `createPreparedInstruction({ signers })`).
+    #[must_use]
+    pub fn with_signers(mut self, signers: impl IntoIterator<Item = Arc<dyn Signer>>) -> Self {
+        self.transaction = self.transaction.with_signers(signers);
+        self
+    }
+}
+
+impl PreparedTransaction {
+    /// This operation with `signers` appended to its transaction's
+    /// [`signers`](PreparedTransactionBody::signers) (TypeScript
+    /// `createPreparedTransaction({ signers })`).
+    #[must_use]
+    pub fn with_signers(mut self, signers: impl IntoIterator<Item = Arc<dyn Signer>>) -> Self {
+        self.transaction = self.transaction.with_signers(signers);
+        self
+    }
 }
 
 /// Any prepared operation: instruction, transaction, or flow.
@@ -517,7 +602,9 @@ pub enum PreparedTransactionChildren {
 ///
 /// Child signer and error metadata is inherited (concatenated in child order,
 /// signers deduplicated) unless overridden via `required_signer_addresses` /
-/// `errors`. Flows are rejected as children.
+/// `errors`. The children's signer material
+/// ([`PreparedTransactionBody::signers`]) is always kept; add more with
+/// [`PreparedTransaction::with_signers`]. Flows are rejected as children.
 pub fn create_prepared_transaction(
     name: impl Into<String>,
     children: PreparedTransactionChildren,
@@ -560,12 +647,17 @@ pub fn create_prepared_transaction(
     });
     let inherited_errors =
         errors.unwrap_or_else(|| parts.iter().flat_map(|part| part.errors.clone()).collect());
+    let signer_material: Vec<Arc<dyn Signer>> = parts
+        .iter()
+        .flat_map(|part| part.signers.iter().cloned())
+        .collect();
     let transaction = create_prepared_transaction_body(
         name.clone(),
         instructions,
         Some(inherited_signers),
         Some(inherited_errors),
-    )?;
+    )?
+    .with_signers(signer_material);
     Ok(PreparedTransaction {
         name,
         transaction,
@@ -574,7 +666,8 @@ pub fn create_prepared_transaction(
 }
 
 /// Build a [`PreparedFlow`] from transaction bodies (each re-validated:
-/// non-empty instructions, deduplicated signers).
+/// non-empty instructions, deduplicated signers; each keeps its signer
+/// material).
 pub fn create_prepared_flow(
     name: impl Into<String>,
     transactions: Vec<PreparedTransactionBody>,
@@ -593,6 +686,7 @@ pub fn create_prepared_flow(
                 Some(body.required_signer_addresses),
                 Some(body.errors),
             )
+            .map(|rebuilt| rebuilt.with_signers(body.signers))
         })
         .collect::<Result<_, _>>()?;
     Ok(PreparedFlow {
@@ -619,6 +713,7 @@ pub fn prepend_transaction_instructions(
         Some(signers),
         Some(transaction.errors.clone()),
     )
+    .map(|body| body.with_signers(transaction.signers.iter().cloned()))
 }
 
 /// Return a copy of `transaction` with `instructions` appended. Signers
@@ -638,6 +733,7 @@ pub fn append_transaction_instructions(
         Some(signers),
         Some(transaction.errors.clone()),
     )
+    .map(|body| body.with_signers(transaction.signers.iter().cloned()))
 }
 
 /// Return a copy of `flow` with `transactions` appended.
@@ -719,17 +815,32 @@ impl OperationReceipt {
 /// An opaque signer that knows its own address.
 ///
 /// TS registers fully opaque values and duck-types their addresses at
-/// validation time; the Rust idiom makes the address explicit. Concrete
-/// signing material stays inside wallet adapters — the registry only
-/// enumerates addresses for pre-dispatch validation and lets adapters fetch
-/// the values they registered.
+/// validation time; the Rust idiom makes the address explicit. A signer's
+/// address counts toward pre-dispatch signer validation. Its signing
+/// material may stay inside the wallet adapter, or travel with the signer
+/// ([`sign_transaction_message`](Signer::sign_transaction_message)): the
+/// executor hands a transaction's [`PreparedTransactionBody::signers`] and
+/// the registry's signers to the adapter
+/// ([`WalletExecutionContext::signers`]), and an adapter that signs locally
+/// uses those that sign for a required signature it does not own.
 pub trait Signer: Send + Sync {
     /// Base58 address this signer can sign for.
     fn address(&self) -> String;
+
+    /// The ed25519 signature of `message` (a serialized transaction message)
+    /// by this signer's own key. `None`, the default, means the signer
+    /// carries no key material: the wallet adapter must hold the key itself.
+    /// The Solana adapter's
+    /// `SolanaOperationSigner` signs with a Solana keypair.
+    fn sign_transaction_message(&self, message: &[u8]) -> Option<Result<[u8; 64], WalletError>> {
+        let _ = message;
+        None
+    }
 }
 
 /// Address-keyed registry of opaque signers (port of the TS
-/// `SignerRegistry`).
+/// `SignerRegistry`). Execution counts the registered addresses toward signer
+/// validation and hands the signers to the wallet adapter on every send.
 ///
 /// Uses interior mutability so it can be shared via `Arc` (mirroring the TS
 /// closure-captured `Map`). Entries are stored sorted by address (divergence:
@@ -1003,6 +1114,7 @@ fn missing_signers(
     if let Some(registry) = &options.signer_registry {
         owned.extend(registry.addresses());
     }
+    owned.extend(signer_addresses(&transaction.signers));
     if let Some(wallet) = host.wallet {
         owned.extend(wallet.signer_addresses());
         owned.push(wallet.public_key());
@@ -1044,12 +1156,14 @@ pub(crate) fn classify_wallet_error(
 /// 1. Validate required signers against the union of
 ///    `options.available_signer_addresses`,
 ///    `host.available_signer_addresses`, the signer registry's addresses, the
+///    transaction's [`signers`](PreparedTransactionBody::signers), the
 ///    wallet's [`signer_addresses`](WalletAdapter::signer_addresses), and the
 ///    wallet's [`public_key`](WalletAdapter::public_key) — failing closed
 ///    (`"Missing signer(s) for <tx>: …"`, phase [`FailurePhase::Build`])
 ///    **before** dispatch.
 /// 2. Invoke `on_transaction_start`.
-/// 3. `wallet.sign_and_send(...)`.
+/// 3. `wallet.sign_and_send(...)`, with the transaction's signers and then
+///    the registry's (each once) in [`WalletExecutionContext::signers`].
 /// 4. Record the transaction receipt.
 /// 5. Invoke `on_transaction_success`.
 ///
@@ -1136,7 +1250,12 @@ pub async fn execute_prepared_operation(
             ));
         }
 
-        let context = WalletExecutionContext::new(host.transaction_transport.clone());
+        let mut signers = transaction.signers.clone();
+        if let Some(registry) = &options.signer_registry {
+            signers.extend(registry.values());
+        }
+        let context = WalletExecutionContext::new(host.transaction_transport.clone())
+            .with_signers(dedupe_signers(signers));
         let result = wallet
             .sign_and_send(&transaction.instructions, &options.send, &context)
             .await
@@ -1402,6 +1521,8 @@ mod tests {
         calls: Mutex<usize>,
         results: Mutex<VecDeque<Result<SendResult, WalletError>>>,
         events: Option<Arc<Mutex<Vec<String>>>>,
+        /// The addresses of each send's per-send signers.
+        sent_signers: Mutex<Vec<Vec<String>>>,
     }
 
     impl MockWallet {
@@ -1412,6 +1533,7 @@ mod tests {
                 calls: Mutex::new(0),
                 results: Mutex::new(results.into()),
                 events: None,
+                sent_signers: Mutex::new(Vec::new()),
             }
         }
 
@@ -1436,8 +1558,12 @@ mod tests {
             &self,
             _instructions: &[BuiltInstruction],
             _options: &SendOptions,
-            _context: &WalletExecutionContext,
+            context: &WalletExecutionContext,
         ) -> Result<SendResult, WalletError> {
+            self.sent_signers
+                .lock()
+                .unwrap()
+                .push(signer_addresses(&context.signers));
             let call = {
                 let mut calls = self.calls.lock().unwrap();
                 *calls += 1;
@@ -2017,6 +2143,124 @@ mod tests {
             .unwrap();
         assert_eq!(receipt.signatures, vec!["sig-1"]);
         assert_eq!(wallet.calls(), 1);
+    }
+
+    #[test]
+    fn signer_material_rides_on_the_transaction_body() {
+        let new_account: Arc<dyn Signer> = Arc::new(AddressSigner(addr(20)));
+        let mint: Arc<dyn Signer> = Arc::new(AddressSigner(addr(21)));
+        let prepared = create_prepared_instruction(
+            "create",
+            instruction(1, vec![meta(0xAA, true), meta(20, true)]),
+            Value::Null,
+            None,
+            None,
+        )
+        .with_signers([Arc::clone(&new_account), Arc::clone(&new_account)]);
+        // Each signer once, by identity; equality and Debug see addresses.
+        assert_eq!(signer_addresses(&prepared.transaction.signers), [addr(20)]);
+        assert!(format!("{:?}", prepared.transaction).contains(&addr(20)));
+        let mut without = prepared.transaction.clone();
+        without.signers.clear();
+        assert_ne!(prepared.transaction, without);
+        let mut unsigned = prepared.clone();
+        unsigned.transaction.signers.clear();
+        assert_eq!(
+            describe_prepared_operation(&prepared.clone().into()),
+            describe_prepared_operation(&unsigned.into())
+        );
+
+        // Composition keeps them: the parts' signers, then the added ones.
+        let composed = create_prepared_transaction(
+            "combo",
+            PreparedTransactionChildren::Instructions(vec![
+                PreparedTransactionInstruction::Prepared(prepared),
+                PreparedTransactionInstruction::Built(instruction(2, vec![])),
+            ]),
+            Value::Null,
+            None,
+            None,
+        )
+        .unwrap()
+        .with_signers([Arc::clone(&mint)]);
+        assert_eq!(
+            signer_addresses(&composed.transaction.signers),
+            [addr(20), addr(21)]
+        );
+        let appended =
+            append_transaction_instructions(&composed.transaction, &[instruction(3, vec![])])
+                .unwrap();
+        assert_eq!(appended.signers.len(), 2);
+        let prepended =
+            prepend_transaction_instructions(&composed.transaction, &[instruction(3, vec![])])
+                .unwrap();
+        assert_eq!(prepended.signers.len(), 2);
+        let flow = create_prepared_flow("flow", vec![composed.transaction], Value::Null).unwrap();
+        let flow =
+            prepend_flow_transaction_instructions(&flow, 0, &[instruction(4, vec![])]).unwrap();
+        assert_eq!(
+            signer_addresses(&flow.transactions[0].signers),
+            [addr(20), addr(21)]
+        );
+    }
+
+    #[tokio::test]
+    async fn transaction_signers_are_validated_and_handed_to_the_wallet() {
+        let wallet = MockWallet::new(vec![]);
+        let registry = Arc::new(SignerRegistry::new());
+        registry
+            .register_signer(Arc::new(AddressSigner(addr(30))))
+            .unwrap();
+        let new_account: Arc<dyn Signer> = Arc::new(AddressSigner(addr(20)));
+        let create = create_prepared_instruction(
+            "create",
+            instruction(1, vec![meta(0xAA, true), meta(20, true)]),
+            Value::Null,
+            None,
+            None,
+        )
+        .with_signers([new_account]);
+        let then = create_prepared_instruction(
+            "then",
+            instruction(2, vec![meta(0xAA, true)]),
+            Value::Null,
+            None,
+            None,
+        );
+        let flow: PreparedOperation = create_prepared_flow(
+            "flow",
+            vec![create.transaction.clone(), then.transaction],
+            Value::Null,
+        )
+        .unwrap()
+        .into();
+        let host = ExecutionHost {
+            wallet: Some(&wallet),
+            ..ExecutionHost::default()
+        };
+        let options = ExecuteOptions {
+            signer_registry: Some(registry),
+            ..ExecuteOptions::default()
+        };
+        execute_prepared_operation(&host, &flow, &options)
+            .await
+            .unwrap();
+        // The transaction's own signers, then the registry's.
+        assert_eq!(
+            *wallet.sent_signers.lock().unwrap(),
+            vec![vec![addr(20), addr(30)], vec![addr(30)]]
+        );
+
+        // Without the transaction's signer, its address fails closed.
+        let mut bare = create.transaction;
+        bare.signers.clear();
+        let bare: PreparedOperation = create_prepared_flow("bare", vec![bare], Value::Null)
+            .unwrap()
+            .into();
+        let error = execute_prepared_operation(&host, &bare, &ExecuteOptions::default())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Missing signer(s)"), "{error}");
     }
 
     #[tokio::test]

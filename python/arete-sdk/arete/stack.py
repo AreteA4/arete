@@ -126,6 +126,11 @@ class ProgramDef:
     connected program) and returns :class:`ProgramOperations` (or a mapping
     with ``instructions`` / ``transactions`` / ``flows`` keys) whose leaves
     are :class:`Operation` values.
+
+    ``create_read`` is the program read factory installed the same way (TS
+    ``createRead``): it receives the same context and returns a mapping of
+    async callables, surfaced as the connected program's ``read`` namespace
+    before ``create_operations`` runs, so operations can use it.
     """
 
     name: str
@@ -141,6 +146,9 @@ class ProgramDef:
     math: Dict[str, Any] = field(default_factory=dict)
     create_operations: Optional[
         Callable[["ProgramOperationContext"], Any]
+    ] = None
+    create_read: Optional[
+        Callable[["ProgramOperationContext"], Mapping[str, Any]]
     ] = None
     # Provenance hashes (pin-validated by the extensions pipeline).
     program_spec_hash: Optional[str] = None
@@ -430,8 +438,8 @@ def normalize_program_operations(value: Any) -> ProgramOperations:
 
 
 class ProgramOperationContext:
-    """Context given to ``create_operations``: chain reads, the live wallet,
-    and the fully connected program."""
+    """Context given to ``create_operations`` and ``create_read``: chain
+    reads, the live wallet, and the fully connected program."""
 
     def __init__(self, client: Any, program: "ConnectedProgram") -> None:
         self._client = client
@@ -457,9 +465,11 @@ class RawInstruction:
 
     Params are IDL wire shape: arg-name keys serialize, account-name keys
     override addresses, ``resolve`` feeds PDA-only seeds; unknown params fail
-    closed. Reserved keyword-only options: ``wallet`` (signer fallback address;
-    defaults to the client wallet's public key), ``accounts`` (unvalidated
-    escape-hatch overrides), ``remaining_accounts``.
+    closed. Reserved keyword-only options: ``wallet`` (the address of
+    ``signer_kind="wallet"`` signers, defaulting to the client wallet's public
+    key; generated signers are caller-provided, as in TypeScript),
+    ``accounts`` (addresses that override the params),
+    ``remaining_accounts``.
 
     The fallback option is named ``wallet`` and not ``payer`` (matching the
     TypeScript ``BuildOptions.wallet``) because ``payer`` is a real IDL account
@@ -614,10 +624,23 @@ class ConnectedProgram:
         self.constants = AttrNamespace(f"{prefix}.constants", definition.constants)
         self.defaults = AttrNamespace(f"{prefix}.defaults", definition.defaults)
         self.math = AttrNamespace(f"{prefix}.math", definition.math)
+        self.read = AttrNamespace(f"{prefix}.read", {})
+        self.instructions = OperationNamespace(f"{prefix}.instructions", {})
+        self.transactions = OperationNamespace(f"{prefix}.transactions", {})
+        self.flows = OperationNamespace(f"{prefix}.flows", {})
 
+        # TS order: the read namespace first, so operations can read through
+        # `context.program.read`.
+        context = ProgramOperationContext(client, self)
+        if definition.create_read is not None:
+            read = definition.create_read(context)
+            if read is not None and not isinstance(read, Mapping):
+                raise TypeError(
+                    f"create_read must return a mapping, got {type(read).__name__}"
+                )
+            self.read = AttrNamespace(f"{prefix}.read", read or {})
         operations = ProgramOperations()
         if definition.create_operations is not None:
-            context = ProgramOperationContext(client, self)
             operations = normalize_program_operations(
                 definition.create_operations(context)
             )
