@@ -539,6 +539,12 @@ impl TransactionTransport for RpcTransactionTransport {
                     },
                 )
                 .collect(),
+            transaction: result
+                .get("transaction")
+                .map(|v| arete_solana_contracts::precision_safe_json(v, "transaction")),
+            meta: Some(arete_solana_contracts::precision_safe_json(meta, "meta")),
+            version: result.get("version").cloned(),
+            metadata_available: Some(true),
         }))
     }
 

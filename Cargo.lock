@@ -185,6 +185,7 @@ name = "arete-a4-sdk"
 version = "0.28.0"
 dependencies = [
  "anyhow",
+ "arete-solana-contracts",
  "async-trait",
  "axum 0.7.9",
  "base64 0.22.1",

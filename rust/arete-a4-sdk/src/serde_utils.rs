@@ -9,6 +9,57 @@
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use std::fmt;
 
+/// Exact IDL integer decoding, including u128/i128, from strings or integral JSON numbers.
+/// Fractional values and overflows fail; account keys and strings never pass through this helper.
+pub fn deserialize_integer<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: fmt::Display,
+{
+    use serde::Deserialize;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let text = match value {
+        serde_json::Value::String(text) => text,
+        serde_json::Value::Number(number) if number.is_u64() || number.is_i64() => {
+            number.to_string()
+        }
+        _ => {
+            return Err(de::Error::custom(
+                "expected an exact integer or decimal string",
+            ))
+        }
+    };
+    text.parse().map_err(de::Error::custom)
+}
+
+pub fn deserialize_integer_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: fmt::Display,
+{
+    use serde::Deserialize;
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(|value| deserialize_integer(value).map_err(de::Error::custom))
+        .collect()
+}
+
+pub fn deserialize_optional_integer<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: fmt::Display,
+{
+    use serde::Deserialize;
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    value
+        .map(|value| deserialize_integer(value).map_err(de::Error::custom))
+        .transpose()
+}
+
 // ─── Core visitors ──────────────────────────────────────────────────────────
 
 struct U64OrStringVisitor;

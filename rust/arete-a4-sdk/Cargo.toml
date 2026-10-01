@@ -38,6 +38,7 @@ solana-adapter = [
 ]
 
 [dependencies]
+arete-solana-contracts = { version = "0.1.0", path = "../arete-solana-contracts" }
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
