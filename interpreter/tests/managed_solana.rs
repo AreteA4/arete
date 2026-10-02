@@ -283,3 +283,66 @@ fn collision_spec(mut entity: SerializableStreamSpec) -> SerializableStackSpec {
     first.instructions.extend(second.instructions);
     first.with_content_hash()
 }
+
+#[test]
+fn complete_orca_and_spl_program_interfaces_compile() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    for name in ["whirlpool", "spl-token"] {
+        let fixture = root
+            .join("tests/fixtures/managed-solana-v1/production-idls")
+            .join(format!("{name}.idl.json"));
+        let idl =
+            arete_idl::parse::parse_idl_content(&fs::read_to_string(&fixture).unwrap()).unwrap();
+        let spec = arete_interpreter::program_sdk::build_program_only_stack_spec_from_idl(
+            &idl,
+            "ProductionProgram",
+        );
+        assert!(!spec.instructions.is_empty());
+        let output =
+            rust::compile_program_modules(spec, Some(rust::RustStackConfig::default())).unwrap();
+        assert!(
+            output.programs_rs.contains("AccountReader<"),
+            "{name} lacks account readers"
+        );
+        if name == "whirlpool" {
+            assert!(output.types_rs.contains("pub enum DynamicTick"));
+            assert!(output.types_rs.contains("Initialized(DynamicTickData)"));
+        }
+        let dir = root.join("target/production-solana-generated").join(name);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/types.rs"), output.types_rs).unwrap();
+        fs::write(dir.join("src/programs.rs"), output.programs_rs).unwrap();
+        fs::write(dir.join("src/lib.rs"), "pub mod types; pub mod programs;\n").unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            format!(
+                r#"[package]
+name = "production-{name}-generated"
+version = "0.0.0"
+edition = "2021"
+[workspace]
+[dependencies]
+arete-sdk = {{ package = "arete-a4-sdk", path = {:?} }}
+serde = {{ version = "1", features = ["derive"] }}
+serde_json = "1"
+"#,
+                root.join("rust/arete-a4-sdk")
+            ),
+        )
+        .unwrap();
+        let result = Command::new("cargo")
+            .args(["check", "--quiet"])
+            .current_dir(&dir)
+            .env("CARGO_TARGET_DIR", root.join("target"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "complete {name} interface failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}

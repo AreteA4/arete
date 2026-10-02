@@ -1,0 +1,23 @@
+{
+  "contract": "managed-solana/v1",
+  "fixtures": [
+    {
+      "file": "production-idls/whirlpool.idl.json",
+      "sha256": "f3e95ddf321d24b71ce56f5ba842055899f32a1feee3be9f0d3ccf2bd6a55bb8",
+      "source": "https://registry.npmjs.org/@orca-so/whirlpools-sdk/-/whirlpools-sdk-0.22.0.tgz",
+      "description": "package/dist/artifacts/whirlpool.json; byte-for-byte public npm distribution"
+    },
+    {
+      "file": "production-idls/spl-token.source.json",
+      "sha256": "4d360d369e34a86e7cddb1b9ba71190f71ddab1b5eb345e8ebf9fa46c276eca2",
+      "source": "https://github.com/coral-xyz/anchor/blob/25bc2141b13071ce2a1cbf2678f2574d07c29d3e/ts/packages/spl-token/idl.json",
+      "description": "Complete public Anchor SPL Token IDL, unchanged"
+    },
+    {
+      "file": "production-idls/spl-token.idl.json",
+      "sha256": "289150e1adca8df698e6038def305ddd1005cc0c5258abbc026dbd04d76c527f",
+      "source": "https://github.com/coral-xyz/anchor/blob/25bc2141b13071ce2a1cbf2678f2574d07c29d3e/ts/packages/spl-token/idl.json",
+      "description": "Public source adapted by prepare_spl_token.py: explicit untagged native account layouts, fixed account COptions, instruction u8 tags/options; borrowed string normalized to owned IDL string for interface generation"
+    }
+  ]
+}

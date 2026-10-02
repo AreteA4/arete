@@ -2888,7 +2888,7 @@ fn generate_program_runtime_definitions_fn(pipelines: &[PipelineInfo]) -> TokenS
                 let program_key_lit = program_key.clone();
                 quote! {
                     #account_name_lit => {
-                        let decoded = #parser_mod::#state_enum::try_unpack(data).map_err(|error| {
+                        let decoded = #parser_mod::#state_enum::try_unpack_as(account, data).map_err(|error| {
                             arete::runtime::anyhow::anyhow!(
                                 "Failed to decode {}.{} account bytes: {}",
                                 #program_key_lit,
