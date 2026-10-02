@@ -4,7 +4,7 @@ use crate::mutation_batch::{MutationBatch, SlotContext};
 use crate::view::{ViewIndex, ViewSpec};
 use crate::websocket::frame::{apply_wire_format, Mode, SourceFrame};
 use arete_interpreter::vm::{VmContext, WholeEntityRequests};
-use arete_interpreter::{CanonicalLog, WholeEntity};
+use arete_interpreter::{AccountPosition, CanonicalLog, WholeEntity};
 use bytes::Bytes;
 use lru::LruCache;
 use serde_json::Value;
@@ -24,8 +24,14 @@ use crate::metrics::Metrics;
 /// bound holds for the positions their resends keep.
 const WHOLE_ENTITY_REQUEST_CAPACITY: usize = 4_096;
 
-/// `(export, key)` to the `_seq` of the key's latest change.
-type LastChanges = LruCache<(String, String), Option<String>>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RememberedChange {
+    seq: Option<String>,
+    account_position: Option<AccountPosition>,
+}
+
+/// `(export, key)` to the recency and account lifetime of its latest change.
+type LastChanges = LruCache<(String, String), RememberedChange>;
 
 /// The projector's way back to the VM its mutations come from.
 ///
@@ -48,6 +54,9 @@ type LastChanges = LruCache<(String, String), Option<String>>;
 /// positions are assigned per batch, after the VM has emitted it. A resend
 /// with no remembered position (one past the bound, or from a source without
 /// a VM, which sends whole entities as changes) takes its batch's.
+/// For an account-owned entity it also remembers the explicit account position
+/// at request time, so a whole entity produced for an old lifetime cannot land
+/// after deletion and recreation.
 ///
 /// The generated runtime hands its VM over through
 /// [`crate::snapshot::register_runtime`], inside [`Self::scope`], before it
@@ -59,8 +68,8 @@ type LastChanges = LruCache<(String, String), Option<String>>;
 #[derive(Clone)]
 pub struct EntityResync {
     requests: WholeEntityRequests,
-    /// For each key with a resend on its way: the `_seq` of its latest change,
-    /// which the resend keeps. Capped by hand at
+    /// For each key with a resend on its way: the `_seq` of its latest change
+    /// and the account lifetime for which it was requested. Capped by hand at
     /// [`WHOLE_ENTITY_REQUEST_CAPACITY`], least recently changed out first.
     last_changes: Arc<StdMutex<LastChanges>>,
     linked: Arc<AtomicBool>,
@@ -130,26 +139,42 @@ impl EntityResync {
     /// be requested whole, so its position is remembered for the resend; any
     /// other change moves a remembered position forward. Only a linked VM
     /// resends.
-    fn note_change(&self, export: &str, key: &str, seq: &Option<String>, refused: bool) {
+    fn note_change(
+        &self,
+        export: &str,
+        key: &str,
+        seq: &Option<String>,
+        account_position: Option<AccountPosition>,
+        refused: bool,
+    ) {
         if !self.is_linked() {
             return;
         }
         let mut last_changes = self.last_changes();
         if refused {
-            last_changes.put((export.to_string(), key.to_string()), seq.clone());
+            last_changes.put(
+                (export.to_string(), key.to_string()),
+                RememberedChange {
+                    seq: seq.clone(),
+                    account_position,
+                },
+            );
             while last_changes.len() > WHOLE_ENTITY_REQUEST_CAPACITY {
                 last_changes.pop_lru();
             }
         } else if !last_changes.is_empty() {
             if let Some(last) = last_changes.get_mut(&(export.to_string(), key.to_string())) {
-                *last = seq.clone();
+                last.seq = seq.clone();
+                if account_position.is_some() {
+                    last.account_position = account_position;
+                }
             }
         }
     }
 
-    /// The position a resend of `export` `key` keeps, if one is remembered:
-    /// the `_seq` of the key's latest change. Forgets it.
-    fn take_last_change(&self, export: &str, key: &str) -> Option<Option<String>> {
+    /// The recency and account-lifetime position a resend of `export` `key`
+    /// keeps, if one is remembered. Forgets it.
+    fn take_last_change(&self, export: &str, key: &str) -> Option<RememberedChange> {
         let mut last_changes = self.last_changes();
         if last_changes.is_empty() {
             return None;
@@ -418,6 +443,10 @@ impl Projector {
             return Ok(0);
         }
 
+        let account_position = mutation
+            .take_account_position()
+            .map_err(anyhow::Error::msg)?;
+
         if mutation.is_delete() {
             let key = Self::extract_key(&mutation.key);
             let seq = slot_context.map(|ctx| ctx.to_seq_string());
@@ -426,7 +455,7 @@ impl Projector {
             for spec in specs.iter().filter(|spec| spec.filters.matches(&key)) {
                 if !self
                     .entity_cache
-                    .delete(&spec.id, &key, seq.as_deref())
+                    .delete(&spec.id, &key, account_position)
                     .await
                 {
                     continue;
@@ -486,13 +515,20 @@ impl Projector {
         // The position (`_seq`) recency order sorts by: the batch's for a
         // change, the latest change's for a resend (see `EntityResync`).
         let batch_seq = slot_context.map(|ctx| ctx.to_seq_string());
+        let remembered = if whole {
+            self.resync.take_last_change(&export, &key)
+        } else {
+            None
+        };
         let seq = if whole {
-            self.resync
-                .take_last_change(&export, &key)
+            remembered
+                .as_ref()
+                .map(|change| change.seq.clone())
                 .unwrap_or(batch_seq)
         } else {
             batch_seq
         };
+        let resend_account_position = remembered.and_then(|change| change.account_position);
         if let (Some(seq), Value::Object(map)) = (&seq, &mut patch) {
             map.insert("_seq".to_string(), Value::String(seq.clone()));
         }
@@ -506,15 +542,26 @@ impl Projector {
         if match_count == 0 {
             return Ok(0);
         }
+        let current_account_position = self
+            .entity_cache
+            .account_position(&matching_specs[0].id, &key)
+            .await;
+        let change_account_position = account_position.or(current_account_position);
 
         let mut frames_published = 0u32;
         let mut refused = false;
 
         for (i, spec) in matching_specs.into_iter().enumerate() {
-            if !self
-                .entity_cache
-                .accepts_mutation(&spec.id, &key, &patch, origin == PatchOrigin::Creation)
-                .await
+            if !whole
+                && !self
+                    .entity_cache
+                    .accepts_lifetime_mutation(
+                        &spec.id,
+                        &key,
+                        origin == PatchOrigin::Creation,
+                        account_position,
+                    )
+                    .await
             {
                 continue;
             }
@@ -537,7 +584,17 @@ impl Projector {
 
             if whole {
                 frames_published += self
-                    .apply_whole_entity(spec, &key, projected, wire_data, seq, json_buffer)
+                    .apply_whole_entity(
+                        spec,
+                        &key,
+                        projected,
+                        wire_data,
+                        RememberedChange {
+                            seq,
+                            account_position: resend_account_position,
+                        },
+                        json_buffer,
+                    )
                     .await?;
                 continue;
             }
@@ -593,7 +650,14 @@ impl Projector {
 
             let write = self
                 .entity_cache
-                .upsert_with_append(&spec.id, &key, projected, &frame.append, origin)
+                .upsert_with_lifetime(
+                    &spec.id,
+                    &key,
+                    projected,
+                    &frame.append,
+                    origin,
+                    account_position,
+                )
                 .await;
 
             match write {
@@ -632,7 +696,8 @@ impl Projector {
         }
 
         if !whole {
-            self.resync.note_change(&export, &key, &seq, refused);
+            self.resync
+                .note_change(&export, &key, &seq, change_account_position, refused);
         }
         if refused && !arriving_whole.contains(&(export.clone(), key.clone())) {
             self.resync.request(&export, &source_key);
@@ -655,12 +720,16 @@ impl Projector {
         key: &str,
         projected: Value,
         wire_data: Value,
-        seq: Option<String>,
+        position: RememberedChange,
         json_buffer: &mut Vec<u8>,
     ) -> anyhow::Result<u32> {
-        if !self.entity_cache
-            .store_whole(&spec.id, key, projected)
-            .await { return Ok(0); }
+        if !self
+            .entity_cache
+            .store_whole_for_lifetime(&spec.id, key, projected, position.account_position)
+            .await
+        {
+            return Ok(0);
+        }
         match spec.mode {
             Mode::Append => return Ok(0),
             Mode::List => self.update_derived_view_caches(&spec.id, key).await,
@@ -673,7 +742,7 @@ impl Projector {
             key: key.to_string(),
             data: wire_data,
             append: Vec::new(),
-            seq,
+            seq: position.seq,
             offset: None,
         };
         json_buffer.clear();
@@ -856,12 +925,19 @@ mod tests {
     #[test]
     fn a_resend_keeps_the_latest_change_seen_before_it() {
         let resync = linked();
-        resync.note_change("Round", "1", &seq(5), true);
-        resync.note_change("Round", "1", &seq(6), true);
-        resync.note_change("Round", "2", &seq(7), false);
+        let lifetime = Some(AccountPosition::new(4, 3));
+        resync.note_change("Round", "1", &seq(5), lifetime, true);
+        resync.note_change("Round", "1", &seq(6), lifetime, true);
+        resync.note_change("Round", "2", &seq(7), None, false);
         assert_eq!(resync.take_last_change("Round", "2"), None, "never refused");
-        resync.note_change("Round", "1", &seq(8), false);
-        assert_eq!(resync.take_last_change("Round", "1"), Some(seq(8)));
+        resync.note_change("Round", "1", &seq(8), None, false);
+        assert_eq!(
+            resync.take_last_change("Round", "1"),
+            Some(RememberedChange {
+                seq: seq(8),
+                account_position: lifetime,
+            })
+        );
         assert_eq!(resync.take_last_change("Round", "1"), None);
     }
 
@@ -869,7 +945,7 @@ mod tests {
     fn remembered_positions_are_bounded_like_requests() {
         let resync = linked();
         for key in 0..=WHOLE_ENTITY_REQUEST_CAPACITY {
-            resync.note_change("Round", &key.to_string(), &seq(key as u64), true);
+            resync.note_change("Round", &key.to_string(), &seq(key as u64), None, true);
         }
         assert_eq!(
             resync.take_last_change("Round", "0"),
@@ -879,7 +955,10 @@ mod tests {
         let newest = WHOLE_ENTITY_REQUEST_CAPACITY;
         assert_eq!(
             resync.take_last_change("Round", &newest.to_string()),
-            Some(seq(newest as u64))
+            Some(RememberedChange {
+                seq: seq(newest as u64),
+                account_position: None,
+            })
         );
     }
 
@@ -888,7 +967,7 @@ mod tests {
     #[test]
     fn nothing_is_remembered_without_a_vm() {
         let resync = EntityResync::new();
-        resync.note_change("Round", "1", &seq(5), true);
+        resync.note_change("Round", "1", &seq(5), None, true);
         assert_eq!(resync.take_last_change("Round", "1"), None);
     }
 }

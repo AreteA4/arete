@@ -14,9 +14,21 @@ events or aggregates.
 
 For VM-backed sources, hold the snapshot processing barrier and VM lock, call
 `VmContext::discard_account(address)`, then call `delete_entity(bytecode, export,
-key)` for each mapped entity. Submit the returned mutations in the ordered
-`MutationBatch` stream with the deletion's `SlotContext` and snapshot guard before
-advancing the source checkpoint. Custom sources use `Mutation::delete` directly.
+key)` for each mapped entity. Call `Mutation::mark_account_position` with the
+deletion's `AccountPosition::new(slot, write_version)` on each returned mutation,
+then submit them in the ordered `MutationBatch` stream with the deletion's
+`SlotContext` and snapshot guard before advancing the source checkpoint. Custom
+sources use `Mutation::delete` and attach the same account position.
+
+Apply that marker to every address-keyed entity mutation authoritatively owned by
+an account update, including the complete creation. Do not apply it to aggregate
+mutations, instruction mutations, background resolver results or resends. Continue
+to put the source position in `SlotContext`: it supplies `_seq` for recency and
+client cursors, but it is not a lifetime clock. In particular, account
+`write_version` and instruction `txn_index` are unrelated within one slot.
+When a queued account update is replayed while handling an instruction, retain
+the queued update's original account position on its mutations; do not substitute
+the enclosing instruction's `txn_index`.
 
 The VM clears state, identity indexes, buffered inputs, deferred writes, resolver
 targets and whole-entity requests. The projector removes current cached and sorted
@@ -28,11 +40,13 @@ Linked VMs mark creation automatically; custom sources call `Mutation::mark_crea
 The projector publishes a complete `upsert`, replacing a subscriber's previous
 copy even when deletion and recreation occur before it reads either frame.
 
-Cached deletion/recreation barriers survive snapshots and are bounded to eight
-times the entity cache capacity per view. Sparse patches and whole resends cannot
-restart a deleted lifetime. Ingestion integrations must retain durable ordering
-beyond that bounded retention and validate bootstrap, deletion, reconnect and
-recreation through their own source pipeline.
+Cached live/deleted account checkpoints survive snapshots and are bounded to eight
+times the entity cache capacity per view. They reject old account writes and stale
+tombstones without comparing them to instruction activity. Sparse patches,
+background resolver results and whole resends cannot restart a deleted lifetime;
+a recreation is a complete replacement, not a merge. Ingestion integrations must
+retain durable ordering beyond that bounded retention and validate bootstrap,
+deletion, reconnect and recreation through their own source pipeline.
 
 The first planned linked release containing this API is 0.29.0, with
 `arete-solana-contracts` 0.1.0. Publication is pending; published 0.28.0 does not

@@ -1566,7 +1566,7 @@ async fn attach_state_subscription(
                         let metadata = source_frame_metadata(&payload);
                         if metadata.op == "delete" {
                             if !task_context.entity_cache
-                                .delete(&query.view, &key, metadata.seq.as_deref())
+                                .deletion_is_current(&query.view, &key)
                                 .await
                             {
                                 behind = true;
@@ -2011,18 +2011,12 @@ async fn apply_collection_source_event(
     if metadata.op != "delete" {
         return;
     }
-    // A slow subscription can observe an old delete after the projector has
-    // already recreated the key. Never let subscriber-local lag erase newer
-    // shared cache state.
-    let current = context
+    // The projector changed the shared cache before publishing this frame.
+    // A slow subscription must inspect that authoritative lifetime state, not
+    // replay the delete against `_seq` and potentially erase a recreation.
+    if !context
         .entity_cache
-        .get(source_view_id, &envelope.key)
-        .await;
-    if source_delete_is_stale(current.as_ref(), metadata.seq.as_deref()) {
-        return;
-    }
-    if !context.entity_cache
-        .delete(source_view_id, &envelope.key, metadata.seq.as_deref())
+        .deletion_is_current(source_view_id, &envelope.key)
         .await
     {
         return;
@@ -2033,18 +2027,6 @@ async fn apply_collection_source_event(
         if let Some(cache) = guard.get_mut(&query.view) {
             cache.remove(&envelope.key);
         }
-    }
-}
-
-fn source_delete_is_stale(current: Option<&Value>, delete_seq: Option<&str>) -> bool {
-    match (current, delete_seq) {
-        (Some(current), Some(delete_seq)) => current
-            .get("_seq")
-            .and_then(Value::as_str)
-            .is_some_and(|current_seq| {
-                cmp_seq(current_seq, delete_seq) == std::cmp::Ordering::Greater
-            }),
-        _ => false,
     }
 }
 
@@ -3398,14 +3380,6 @@ mod tests {
     }
 
     #[test]
-    fn a_delayed_delete_cannot_erase_a_newer_recreated_entity() {
-        let recreated = json!({"balance": 2, "_seq": "10:000004"});
-        assert!(source_delete_is_stale(Some(&recreated), Some("10:000002")));
-        assert!(!source_delete_is_stale(Some(&recreated), Some("10:000004")));
-        assert!(!source_delete_is_stale(Some(&recreated), None));
-    }
-
-    #[test]
     fn a_lagged_snapshotless_subscription_gets_a_fatal_retryable_error() {
         let issue = SocketIssueMessage::subscription_lagged("balances".to_string(), 42);
         assert_eq!(issue.code, "subscription-lagged");
@@ -4750,7 +4724,7 @@ mod tests {
         use super::*;
         use crate::projector::Projector;
         use crate::{MutationBatch, SlotContext};
-        use arete_interpreter::Mutation;
+        use arete_interpreter::{AccountPosition, Mutation};
         use futures_util::{SinkExt, StreamExt};
         use std::time::Duration;
         use tokio::net::{TcpListener, TcpStream};
@@ -5022,7 +4996,9 @@ mod tests {
             assert_eq!(next_frame(&mut list).await["op"], "remove");
             harness.patch("a", json!({"owner":"alice"})).await;
             assert_eq!(next_frame(&mut list).await["op"], "upsert");
-            harness.mutate(Mutation::delete("Thing", json!("a"))).await;
+            let mut deletion = Mutation::delete("Thing", json!("a"));
+            deletion.mark_account_position(AccountPosition::new(100, 1001));
+            harness.mutate(deletion).await;
             assert_eq!(next_frame(&mut list).await["op"], "delete");
             // State patches may precede its deletion on the socket.
             loop {
@@ -5067,6 +5043,7 @@ mod tests {
                 append: vec![],
             };
             recreated.mark_created();
+            recreated.mark_account_position(AccountPosition::new(100, 1002));
             harness.mutate(recreated).await;
             for view in [
                 "Thing/list",

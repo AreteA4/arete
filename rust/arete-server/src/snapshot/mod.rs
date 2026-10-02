@@ -642,6 +642,7 @@ impl SnapshotService {
             // still match the current projections. Preserve only durable VM
             // state and let live input rebuild every projection cache.
             payload.entity_cache.clear();
+            payload.entity_lifetimes = Some(Default::default());
             payload.entity_tombstones.clear();
             // Retained frames are published view output, shaped by the same
             // projections, so the same doubt applies — and replaying stale
@@ -662,9 +663,16 @@ impl SnapshotService {
             .map(|view| view.records.len())
             .sum();
         self.entity_cache.hydrate(payload.entity_cache).await;
-        self.entity_cache
-            .hydrate_tombstones(payload.entity_tombstones)
-            .await;
+        match payload.entity_lifetimes {
+            Some(lifetimes) => self.entity_cache.hydrate_lifetimes(lifetimes).await,
+            None => {
+                // Migrate the old account delete/recreation barriers once;
+                // all newly written snapshots persist their ordering domain.
+                self.entity_cache
+                    .hydrate_legacy_tombstones(payload.entity_tombstones)
+                    .await;
+            }
+        }
         // The VM keeps more entities than the cache does (and after a legacy
         // migration the cache keeps none), so its next patch for one the
         // cache lacks is only the fields that changed. A VM linked to the
@@ -873,7 +881,8 @@ impl SnapshotService {
                 .collect(),
         };
         let payload = SnapshotPayload {
-            entity_tombstones: self.entity_cache.dump_tombstones().await,
+            entity_lifetimes: Some(self.entity_cache.dump_lifetimes().await),
+            entity_tombstones: Default::default(),
             vm: vm_snapshot,
             entity_cache: entity_cache_dump,
             journal: journal_dump,

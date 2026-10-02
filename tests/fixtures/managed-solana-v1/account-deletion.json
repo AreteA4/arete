@@ -9,7 +9,11 @@
     "export": "Account",
     "key": "11111111111111111111111111111111",
     "patch": {
-      "__arete_entity_delete": true
+      "__arete_entity_delete": true,
+      "__arete_account_position": {
+        "slot": "9007199254740993",
+        "writeVersion": "18446744073709551615"
+      }
     }
   },
   "sourceFrame": {

@@ -62,6 +62,11 @@ pub struct SnapshotPayload {
     pub vm: VmSnapshot,
     /// Per view id: `(entity_key, entity)` pairs, most-recently-used first.
     pub entity_cache: Vec<(String, Vec<(String, Value)>)>,
+    /// Explicit account-lifetime ordering. `None` identifies a snapshot from
+    /// before account write_version was separated from instruction txn_index.
+    #[serde(default)]
+    pub entity_lifetimes: Option<crate::cache::EntityLifetimes>,
+    /// Legacy `_seq`-based deletion barriers, read only for migration.
     #[serde(default)]
     pub entity_tombstones: crate::cache::EntityTombstones,
     /// Retained event tape per view. Absent in snapshots written before
@@ -146,6 +151,17 @@ mod tests {
         };
         let payload = SnapshotPayload {
             vm: VmSnapshot::default(),
+            entity_lifetimes: Some(vec![(
+                "tokens/list".to_string(),
+                "key1".to_string(),
+                crate::cache::EntityLifetimeCheckpoint {
+                    account_position: Some(arete_interpreter::AccountPosition::new(
+                        9_007_199_254_740_993,
+                        u64::MAX,
+                    )),
+                    deleted: false,
+                },
+            )]),
             entity_tombstones: Default::default(),
             entity_cache: vec![(
                 "tokens/list".to_string(),
@@ -168,6 +184,14 @@ mod tests {
         let decoded_payload = decode_payload(&bytes).unwrap();
         assert_eq!(decoded_payload.entity_cache.len(), 1);
         assert_eq!(decoded_payload.entity_cache[0].0, "tokens/list");
+        let checkpoint = decoded_payload.entity_lifetimes.unwrap()[0].2;
+        assert_eq!(
+            checkpoint.account_position,
+            Some(arete_interpreter::AccountPosition::new(
+                9_007_199_254_740_993,
+                u64::MAX
+            ))
+        );
     }
 
     #[test]

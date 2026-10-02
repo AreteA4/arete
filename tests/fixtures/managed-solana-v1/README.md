@@ -15,7 +15,10 @@ index watermark or unavailable execution metadata must remain unknown.
 `account-deletion.json` defines the chain-to-runtime tombstone boundary, rather
 than another HTTP operation. `delete` ends an account-derived entity's lifetime;
 `remove` evicts it from a view. Recreation requires a complete marked creation.
-Ingestion owners enforce ordering and explicitly map accounts to entities. See
+Every entity mutation authoritatively sourced from an account update carries its
+exact account slot/writeVersion position separately from `_seq`; instruction txn
+indexes never participate in lifetime ordering. Ingestion owners enforce ordering
+and explicitly map accounts to entities. See
 `docs/internal/managed-solana/account-lifecycle.md` in the OSS source for the
 public integration sequence and cache retention limits.
 

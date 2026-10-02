@@ -104,6 +104,55 @@ pub const WHOLE_ENTITY_MARKER: &str = "__arete_whole_entity";
 /// Reserved mutation metadata for an explicit source deletion. Never an entity field.
 pub const ENTITY_DELETE_MARKER: &str = "__arete_entity_delete";
 
+/// Reserved mutation metadata for an authoritative Solana account position.
+///
+/// This is deliberately separate from a mutation batch's `_seq`: account
+/// `write_version` and instruction `txn_index` are different ordering domains
+/// and must never be compared to decide which account lifetime is current.
+pub const ACCOUNT_POSITION_MARKER: &str = "__arete_account_position";
+
+/// The authoritative order of an account write within the Solana stream.
+///
+/// Producers attach this only to mutations owned by an account update or
+/// account deletion. Instruction and resolver mutations must not invent one.
+/// Decimal strings keep both components exact across JSON boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountPosition {
+    #[serde(with = "decimal_u64")]
+    pub slot: u64,
+    #[serde(with = "decimal_u64")]
+    pub write_version: u64,
+}
+
+impl AccountPosition {
+    pub const fn new(slot: u64, write_version: u64) -> Self {
+        Self {
+            slot,
+            write_version,
+        }
+    }
+}
+
+mod decimal_u64 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// [`WHOLE_ENTITY_MARKER`]'s value for [`WholeEntity::Created`]. The value for
 /// [`WholeEntity::Resent`] is `true`.
 const CREATED_MARK: &str = "created";
@@ -122,8 +171,10 @@ pub enum WholeEntity {
 
 impl Mutation {
     /// End an entity's lifetime. Submit in the same ordered stream as its updates,
-    /// with the deletion's slot/write version. This is distinct from view eviction.
-    /// VM-backed sources must use [`vm::VmContext::delete_entity`] to remove state too.
+    /// and call [`Self::mark_account_position`] for an account-owned entity. The
+    /// batch position still supplies `_seq`, but does not order lifetimes. This
+    /// is distinct from view eviction. VM-backed sources must use
+    /// [`vm::VmContext::delete_entity`] to remove state too.
     pub fn delete(export: impl Into<String>, key: Value) -> Self {
         Self {
             export: export.into(),
@@ -135,6 +186,34 @@ impl Mutation {
 
     pub fn is_delete(&self) -> bool {
         self.patch.get(ENTITY_DELETE_MARKER) == Some(&Value::Bool(true))
+    }
+
+    /// Attach the authoritative account-write position that owns this
+    /// mutation. This metadata is consumed before projection and never becomes
+    /// an entity field.
+    pub fn mark_account_position(&mut self, position: AccountPosition) {
+        if let Value::Object(fields) = &mut self.patch {
+            fields.insert(
+                ACCOUNT_POSITION_MARKER.to_string(),
+                serde_json::to_value(position).expect("AccountPosition is serializable"),
+            );
+        }
+    }
+
+    /// Remove and decode authoritative account-write metadata.
+    ///
+    /// Invalid metadata is an ingestion error rather than an unmarked
+    /// mutation: silently accepting it would disable stale-lifetime guards.
+    pub fn take_account_position(&mut self) -> Result<Option<AccountPosition>, String> {
+        let Value::Object(fields) = &mut self.patch else {
+            return Ok(None);
+        };
+        let Some(value) = fields.remove(ACCOUNT_POSITION_MARKER) else {
+            return Ok(None);
+        };
+        serde_json::from_value(value)
+            .map(Some)
+            .map_err(|error| format!("invalid {ACCOUNT_POSITION_MARKER}: {error}"))
     }
 
     /// Declare that `patch` holds the whole entity again, after a mutation
@@ -268,4 +347,32 @@ pub struct CaptureWrapper<T = Value> {
     /// Optional transaction signature from UpdateContext
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+}
+
+#[cfg(test)]
+mod mutation_metadata_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn account_position_is_exact_reserved_metadata() {
+        let mut mutation = Mutation {
+            export: "Account".into(),
+            key: json!("address"),
+            patch: json!({"balance": 1}),
+            append: vec![],
+        };
+        let position = AccountPosition::new(9_007_199_254_740_993, u64::MAX);
+        mutation.mark_account_position(position);
+        assert_eq!(
+            mutation.patch[ACCOUNT_POSITION_MARKER],
+            json!({
+                "slot": "9007199254740993",
+                "writeVersion": "18446744073709551615"
+            })
+        );
+        assert_eq!(mutation.take_account_position().unwrap(), Some(position));
+        assert!(mutation.patch.get(ACCOUNT_POSITION_MARKER).is_none());
+        assert_eq!(mutation.patch["balance"], 1);
+    }
 }

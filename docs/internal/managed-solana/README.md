@@ -100,7 +100,10 @@ four new optional fields. Custom TypeScript/Python transports must expose `get`.
 TypeScript schemas and the Rust managed decoder now preserve unit, named and
 tuple enum payloads, including Orca's `Initialized(DynamicTickData)` variant.
 Rust IDL-only program and stack generation emits account models and readers;
-u128/i128 payload values remain exact. Python readers preserve payload JSON, and
+u128/i128 payload values remain exact. The current Rust stack generator also
+keeps mapped Orca live-model u128/i128 fields at their wide integer types; an
+artifact generated from an older source pin must not be used to infer narrowing
+in the planned 0.29.0 output. Python readers preserve payload JSON, and
 resolved enum aliases carrying payloads use Any rather than incorrectly claiming
 str. Python generation does not yet offer fully typed IDL-only account models;
 use its AccountReader with an explicit parser or raw mapping. Mixed named/tuple
@@ -157,13 +160,16 @@ ties. `skip`/`take` still select the live window; a pipeline limit caps `take`.
 snapshot, including an empty result. Sorted views keep their configured order.
 
 Source deletion uses `Mutation::delete`; VM-backed sources use
-`VmContext::delete_entity` plus `discard_account`. The projector removes cached
-and sorted rows before publishing `delete`. Predicate/window departure remains
-`remove`. Deleted rows accept only a newer complete creation marked
-`mark_created`, so resends and sparse patches cannot resurrect them. Snapshot
-payloads retain deletion barriers; barriers are bounded to eight times the entity
-cache capacity per view. Ingestion owners must retain durable ingestion deduplication and
-resume watermarks beyond that cache retention.
+`VmContext::delete_entity` plus `discard_account`. Account-owned entity mutations
+and deletes also carry `Mutation::mark_account_position(AccountPosition::new(slot,
+write_version))`; instruction, resolver and resend mutations do not. `SlotContext`
+still controls `_seq` recency, but never account lifetime ordering. The projector
+removes cached and sorted rows before publishing `delete`. Predicate/window
+departure remains `remove`. Deleted rows accept only a newer complete creation
+marked `mark_created`, so resends and sparse patches cannot resurrect them.
+Snapshot payloads retain explicit live/deleted account checkpoints, bounded to
+eight times the entity cache capacity per view. Ingestion owners must retain
+durable ingestion deduplication and resume watermarks beyond that cache retention.
 
 See [Account lifecycle integration](account-lifecycle.md) for the public ingestion
 boundary. The validation harness compiles every instruction and account reader

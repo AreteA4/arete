@@ -409,7 +409,7 @@
     "ordering": "discovery ordering/cursor is provider-defined; opaque cursor must bind owner, mint and tokenProgram",
     "unknownMetadata": "outer transaction=null means unseen; metadataAvailable=false with meta=null means observed execution metadata unavailable; no fabricated success, fee or balances",
     "nativeQuery": "At least owner or pool is required by the request contract and SDK validation. The shared server checks release/auth then returns 501 unsupported_capability before reading the body; Hosted implementations own request validation and the supported filter/type matrix.",
-    "deletion": "account-deletion.json is a chain-to-runtime integration contract, not an HTTP endpoint; delete ends lifetime, remove is view eviction",
+    "deletion": "account-deletion.json is a chain-to-runtime integration contract, not an HTTP endpoint; authoritative account mutations carry an exact slot/writeVersion position, delete ends lifetime, and remove is view eviction",
     "invalidJson": "chain/discovery malformed JSON or unknown request fields return 400 invalid_request; typed reads return 400 INVALID_REQUEST",
     "wrongMethod": "chain/typed routes return 404; transaction relay returns 405; no alias routes or /v2 workaround",
     "transactionErrors": "Handler and admission errors use the transaction envelope; gateway target and auth-plugin denials occur earlier and use the authorization envelope.",

@@ -102,6 +102,13 @@ fn versioned_manifest_and_deletion_contract_are_precise() {
         serde_json::to_value(tombstone).unwrap(),
         fixture("account-deletion")["tombstone"]
     );
+    assert_eq!(
+        fixture("account-deletion")["mutation"]["patch"]["__arete_account_position"],
+        serde_json::json!({
+            "slot": "9007199254740993",
+            "writeVersion": "18446744073709551615"
+        })
+    );
     for case in fixture("wire-cases")["cases"].as_array().unwrap() {
         let route = manifest["routes"]
             .as_array()
