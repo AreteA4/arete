@@ -11,7 +11,7 @@
 
 /// Program SDK for `alpha` (program ID `2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM`).
 pub mod alpha {
-    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgField, ArgSchema, ArgType, BuiltInstruction, EnumVariantDef, EnumVariantKind, InstructionError, InstructionHandler};
+    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgField, ArgSchema, ArgType, BuiltInstruction, InstructionError, InstructionHandler};
     use serde::Serialize;
 
     pub const PROGRAM_ID: &str = "2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM";
@@ -36,7 +36,7 @@ pub mod alpha {
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct ConfigureParams {
         pub header: serde_json::Value,
-        /// Optional address override for the `authority` signer (defaults to the payer).
+        /// Address of the `authority` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub authority: Option<String>,
         /// Address of the `vault` account.
@@ -92,6 +92,12 @@ pub mod alpha {
             Self { builder }
         }
 
+        /// The context program extension functions take: the client's chain
+        /// reader, its wallet, and this accessor.
+        pub fn context(&self) -> arete_sdk::ProgramContext<'_, AlphaProgram> {
+            arete_sdk::ProgramContext::new(self)
+        }
+
         pub fn configure(&self, params: ConfigureParams) -> Result<BuiltInstruction, InstructionError> {
             configure(params)
         }
@@ -104,11 +110,17 @@ pub mod alpha {
             ))
         }
     }
+
+    impl arete_sdk::ProgramAccessor for AlphaProgram {
+        fn program_builder(&self) -> &arete_sdk::ProgramBuilder {
+            &self.builder
+        }
+    }
 }
 
 /// Program SDK for `beta` (program ID `Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS`).
 pub mod beta {
-    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgField, ArgSchema, ArgType, BuiltInstruction, EnumVariantDef, EnumVariantKind, InstructionError, InstructionHandler};
+    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgField, ArgSchema, ArgType, BuiltInstruction, InstructionError, InstructionHandler};
     use serde::Serialize;
 
     pub const PROGRAM_ID: &str = "Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS";
@@ -133,7 +145,7 @@ pub mod beta {
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct ConfigureParams {
         pub header: serde_json::Value,
-        /// Optional address override for the `authority` signer (defaults to the payer).
+        /// Address of the `authority` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub authority: Option<String>,
         /// Address of the `vault` account.
@@ -189,6 +201,12 @@ pub mod beta {
             Self { builder }
         }
 
+        /// The context program extension functions take: the client's chain
+        /// reader, its wallet, and this accessor.
+        pub fn context(&self) -> arete_sdk::ProgramContext<'_, BetaProgram> {
+            arete_sdk::ProgramContext::new(self)
+        }
+
         pub fn configure(&self, params: ConfigureParams) -> Result<BuiltInstruction, InstructionError> {
             configure(params)
         }
@@ -199,6 +217,12 @@ pub mod beta {
                 "Header",
                 std::sync::Arc::new(self.builder.account_transport("beta", &read_descriptor())?),
             ))
+        }
+    }
+
+    impl arete_sdk::ProgramAccessor for BetaProgram {
+        fn program_builder(&self) -> &arete_sdk::ProgramBuilder {
+            &self.builder
         }
     }
 }

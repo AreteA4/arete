@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use solana_pubkey::Pubkey;
 use thiserror::Error;
 
@@ -26,6 +26,36 @@ pub struct BuiltInstruction {
     pub accounts: Vec<BuiltAccountMeta>,
     /// Discriminator followed by Borsh-encoded arguments.
     pub data: Vec<u8>,
+}
+
+impl BuiltInstruction {
+    /// The instruction in the shape TypeScript gives it in a semantic
+    /// instruction's `artifacts.instruction`, a TypeScript `BuiltInstruction`:
+    /// `{ "programId", "keys": [{ "pubkey", "isSigner", "isWritable" }],
+    /// "data" }`, addresses in base58. Prepared-operation artifacts are JSON,
+    /// so `data` is an array of byte values, as TypeScript's `toJsonValue`
+    /// (`describePreparedOperation`) encodes the instruction's bytes.
+    ///
+    /// A port mirroring `artifacts: { instruction }` passes
+    /// `json!({ "instruction": instruction.to_artifact() })`.
+    pub fn to_artifact(&self) -> Value {
+        let keys: Vec<Value> = self
+            .accounts
+            .iter()
+            .map(|meta| {
+                json!({
+                    "pubkey": meta.pubkey.to_string(),
+                    "isSigner": meta.is_signer,
+                    "isWritable": meta.is_writable,
+                })
+            })
+            .collect();
+        json!({
+            "programId": self.program_id.to_string(),
+            "keys": keys,
+            "data": self.data,
+        })
+    }
 }
 
 /// Supported argument types for Borsh serialization.
@@ -142,8 +172,14 @@ pub struct PdaConfig {
 /// How an account's address is determined during resolution.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AccountResolution {
-    /// Must sign; resolved from an override or the fallback payer.
+    /// Must sign; the caller provides the address (TypeScript
+    /// `signerKind: 'provided'`, what generated handlers declare). An IDL
+    /// says that an account signs, not that the wallet is that account, so
+    /// the build's payer never fills it.
     Signer,
+    /// Must sign; resolved from an explicit address, else the build's
+    /// [`BuildOptions::payer`], the wallet (TypeScript `signerKind: 'wallet'`).
+    WalletSigner,
     /// Fixed, well-known address (e.g. the System Program).
     Known(String),
     /// Derived from seeds via [`PdaConfig`].
@@ -181,9 +217,14 @@ pub struct ErrorMetadata {
 /// Options for building an instruction (no network access).
 #[derive(Debug, Clone, Default)]
 pub struct BuildOptions {
-    /// Fallback signer address (mirror of the TS `wallet.publicKey` fallback).
+    /// Address of [`AccountResolution::WalletSigner`] accounts the build does
+    /// not name (mirror of the TS `wallet.publicKey` fallback, which fills
+    /// only `signerKind: 'wallet'` signers). It never fills a
+    /// [`AccountResolution::Signer`].
     pub payer: Option<String>,
-    /// Unvalidated account-address overrides (win over param-derived overrides).
+    /// Account-address overrides; they win over param-derived overrides.
+    /// Like those, each wins over its account's own resolution and must be a
+    /// base58 32-byte public key.
     pub accounts: BTreeMap<String, String>,
     /// Extra account metas appended after declared accounts (Anchor `remainingAccounts`).
     pub remaining_accounts: Vec<BuiltAccountMeta>,
@@ -225,6 +266,15 @@ pub enum InstructionError {
     /// An address failed to parse as a base58 32-byte public key.
     #[error("Invalid pubkey: {0}")]
     InvalidPubkey(String),
+    /// An explicit account address is not a base58 32-byte public key (the
+    /// TypeScript resolver's message).
+    #[error("Invalid account override for \"{name}\": {message}")]
+    InvalidAccountOverride {
+        /// Account name.
+        name: String,
+        /// What is wrong with the address.
+        message: String,
+    },
     /// PDA `accountRef` seeds form a cycle.
     #[error("Circular dependency in PDA accounts: {0}")]
     CircularPdaDependency(String),
@@ -242,5 +292,45 @@ pub(crate) fn json_kind(value: &Value) -> &'static str {
         Value::String(_) => "string",
         Value::Array(_) => "array",
         Value::Object(_) => "object",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    #[test]
+    fn to_artifact_is_the_typescript_built_instruction() {
+        let program = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+        let owner = "So11111111111111111111111111111111111111112";
+        let instruction = BuiltInstruction {
+            program_id: Pubkey::from_str(program).unwrap(),
+            accounts: vec![
+                BuiltAccountMeta {
+                    pubkey: Pubkey::from_str(owner).unwrap(),
+                    is_signer: true,
+                    is_writable: false,
+                },
+                BuiltAccountMeta {
+                    pubkey: Pubkey::from_str(program).unwrap(),
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ],
+            data: vec![3, 0, 255],
+        };
+        assert_eq!(
+            instruction.to_artifact(),
+            json!({
+                "programId": program,
+                "keys": [
+                    { "pubkey": owner, "isSigner": true, "isWritable": false },
+                    { "pubkey": program, "isSigner": false, "isWritable": true },
+                ],
+                "data": [3, 0, 255],
+            })
+        );
     }
 }

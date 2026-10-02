@@ -2494,6 +2494,33 @@ fn verify_extension_list(
                 extension.target
             );
         }
+        // A bundle is stored under the target its manifest `language` names,
+        // so a mismatch is never generated, dropped or locked.
+        let declared = extension
+            .artifact
+            .manifest
+            .language
+            .as_deref()
+            .unwrap_or("typescript");
+        if declared != extension.target {
+            bail!(
+                "Registry returned a '{}' SDK extension{owner} whose manifest declares language '{declared}' (content {}); nothing was installed",
+                extension.target,
+                extension.content_hash
+            );
+        }
+        // Rust and Python bundles are exactly the content they are locked
+        // by: their bytes re-hash to the resolved content hash.
+        if extension.target != InstallTarget::TypeScript.as_str() {
+            let actual = crate::commands::sdk::registry_extension_content_hash(&extension.artifact);
+            if actual != extension.content_hash {
+                bail!(
+                    "Registry returned a '{}' SDK extension{owner} whose files hash to {actual}, not its content hash {}; nothing was installed",
+                    extension.target,
+                    extension.content_hash
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -5768,7 +5795,33 @@ version = "^1.0.0"
         contents: &str,
         language: Option<&str>,
     ) -> Value {
-        let hash = marker.to_string().repeat(64);
+        // Rust and Python bundles are re-hashed on install, so they carry
+        // their real content hash; `marker` then only varies their contents.
+        let (hash, contents) = match language {
+            Some(language @ ("rust" | "python")) => {
+                let contents = format!(
+                    "{contents}\n{} marker {marker}\n",
+                    match language {
+                        "rust" => "//",
+                        _ => "#",
+                    }
+                );
+                let files = BTreeMap::from([(entry.to_string(), contents.clone())]);
+                (
+                    crate::commands::sdk::sdk_extension_content_hash(
+                        entry,
+                        &[entry.to_string()],
+                        &files,
+                        Some(input.0),
+                        Some(input.1),
+                        None,
+                        Some(language),
+                    ),
+                    contents,
+                )
+            }
+            _ => (marker.to_string().repeat(64), contents.to_string()),
+        };
         let mut manifest = json!({
             "entry": entry,
             "files": [entry],
@@ -5793,19 +5846,27 @@ version = "^1.0.0"
 
     const ORE_PROGRAM_EXTENSION: &str = "import { defineProgramExtensions } from '@usearete/sdk';\nimport type { ORE } from './ore-core.js';\n\nexport default defineProgramExtensions<typeof ORE>()({\n  createOperations: () => ({\n    transactions: {\n      mining: {\n        deployWithCheckpoint: {},\n      },\n    },\n  }),\n});\n";
 
+    const ORE_RUST_PROGRAM_EXTENSION: &str = "//! ORE program package extension.\n\npub mod constants {\n    pub const ORE_DECIMALS: u8 = 11;\n}\n\npub mod addresses {\n    pub fn program() -> &'static str {\n        super::super::generated::PROGRAM_ID\n    }\n}\n";
+
+    const ORE_PYTHON_PROGRAM_EXTENSION: &str = "\"\"\"ORE program package extension.\"\"\"\n\nfrom .programs import ORE_PROGRAM_ID\n\nPROGRAM_EXTENSIONS = {\n    \"addresses\": {\"program\": ORE_PROGRAM_ID},\n    \"constants\": {\"ore_decimals\": 11},\n}\n";
+
     fn ore_program_extension(target: &str, marker: char) -> Value {
         let spec = ore_program_spec_hash();
-        let (entry, language) = match target {
-            "rust" => ("extensions.rs", Some("rust")),
-            "python" => ("extensions.py", Some("python")),
-            _ => ("ore-extensions.ts", None),
+        let (entry, language, contents) = match target {
+            "rust" => ("extensions.rs", Some("rust"), ORE_RUST_PROGRAM_EXTENSION),
+            "python" => (
+                "extensions.py",
+                Some("python"),
+                ORE_PYTHON_PROGRAM_EXTENSION,
+            ),
+            _ => ("ore-extensions.ts", None, ORE_PROGRAM_EXTENSION),
         };
         sdk_extension(
             target,
             marker,
             ("program-spec", &spec),
             entry,
-            ORE_PROGRAM_EXTENSION,
+            contents,
             language,
         )
     }
@@ -6338,32 +6399,148 @@ version = "^1.0.0"
     }
 
     #[test]
-    fn a_program_sdk_extension_rust_stacks_cannot_include_fails_loudly() {
+    fn rust_and_python_stacks_embed_their_programs_sdk_extensions() {
+        let extensions = vec![
+            ore_program_extension("typescript", 'e'),
+            ore_program_extension("rust", 'f'),
+            ore_program_extension("python", 'c'),
+        ];
+        let hashes = extensions
+            .iter()
+            .map(|extension| extension["contentHash"].as_str().unwrap().to_string())
+            .collect::<BTreeSet<_>>();
         let sandbox = RegistrySandbox::new(
             vec![(
                 200,
-                resolution(vec![ore_stack_with_program_sdk(
-                    '7',
-                    "1.0.2",
-                    vec![
-                        ore_program_extension("typescript", 'e'),
-                        ore_program_extension("rust", 'f'),
-                    ],
-                )]),
+                resolution(vec![ore_stack_with_program_sdk('7', "1.0.2", extensions)]),
+            )],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        install_project(&manifest, InstallOptions::default())
+            .expect("a stack installs its programs' own extensions for every target");
+        sandbox.request();
+
+        // Rust: the bundle is staged beside `programs.rs` and wired into the
+        // program's module with its own `generated` re-export module.
+        let rust = generated_files(&manifest, "rust");
+        let (bundle, _) = rust
+            .iter()
+            .find(|(path, _)| path.ends_with("programs/ore/extensions.rs"))
+            .unwrap_or_else(|| panic!("rust bundle staged: {:?}", rust.keys()));
+        assert!(
+            bundle.ends_with("src/programs/ore/extensions.rs"),
+            "{bundle}"
+        );
+        let programs = rust
+            .iter()
+            .find(|(path, _)| path.ends_with("src/programs.rs"))
+            .map(|(_, contents)| contents)
+            .unwrap();
+        // `generated` also names every account model the program reads, and
+        // every IDL type model they reach, under the name its standalone
+        // program crate declares it under: the readers of accounts whose
+        // nested types the entities keep as JSON read into their own models.
+        assert!(programs.contains("    mod generated {\n        pub use super::*;\n        pub use crate::types::*;\n        pub use crate::types::{OreAutomation as Automation, Board, Config, OreMinerAccount as Miner, Round, OreTreasuryAccount as Treasury, AutomationConditions, AdminConfig, ProtocolConfig, Numeric};\n    }\n    pub mod extensions;\n    pub use extensions::*;"), "{programs}");
+        assert!(rust
+            .keys()
+            .any(|path| path.ends_with("src/programs/ore/extensions.json")));
+
+        // Python: a `program_sdks/ore` subpackage laid out like the
+        // standalone program package; the stack binds the extended program.
+        let python = generated_files(&manifest, "python");
+        let init = python
+            .iter()
+            .find(|(path, _)| path.ends_with("program_sdks/ore/__init__.py"))
+            .map(|(_, contents)| contents)
+            .unwrap_or_else(|| panic!("python program package: {:?}", python.keys()));
+        assert!(
+            init.contains("from . import extensions  # noqa: F401,E402"),
+            "{init}"
+        );
+        assert!(init.contains("_with_program_identity("), "{init}");
+        assert!(python
+            .keys()
+            .any(|path| path.ends_with("program_sdks/ore/extensions.py")));
+        assert!(python
+            .keys()
+            .any(|path| path.ends_with("program_sdks/ore/programs.py")));
+        let stack_init = python
+            .iter()
+            .find(|(path, contents)| {
+                path.ends_with("__init__.py") && contents.contains("StackDef(")
+            })
+            .map(|(_, contents)| contents)
+            .unwrap();
+        assert!(
+            stack_init.contains("from .program_sdks import ore as _ore_program_sdk"),
+            "{stack_init}"
+        );
+        assert!(
+            stack_init.contains("    programs=PROGRAMS,"),
+            "{stack_init}"
+        );
+
+        // The lock records the program's extension for every target.
+        let lock = lock_of(&manifest);
+        let recorded = lock.dependencies[0]
+            .programs
+            .iter()
+            .find(|program| program.program_id == ORE_PROGRAM_ID)
+            .unwrap()
+            .sdk_extension_hashes
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(recorded, hashes);
+    }
+
+    #[test]
+    fn a_program_sdk_extension_whose_language_differs_from_its_target_is_refused() {
+        let mut rust = ore_program_extension("rust", 'f');
+        rust["artifact"]["manifest"]
+            .as_object_mut()
+            .unwrap()
+            .remove("language");
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![ore_stack_with_program_sdk('7', "1.0.2", vec![rust])]),
             )],
             false,
         );
         let manifest = stack_project(&sandbox, "");
         let original = fs::read(&manifest).unwrap();
         let error = install_project(&manifest, InstallOptions::default())
-            .expect_err("a Rust program SDK extension cannot be dropped silently");
+            .expect_err("a TypeScript bundle served as the Rust extension is refused");
         sandbox.request();
         let text = format!("{error:#}");
         assert!(
-            text.contains("cannot include per-program extensions yet"),
+            text.contains("'rust' SDK extension for program 'ore' whose manifest declares language 'typescript'"),
             "{text}"
         );
-        assert!(text.contains("a4 install program ore --rust"), "{text}");
+        assert_project_untouched(&manifest, &original);
+    }
+
+    #[test]
+    fn a_program_sdk_extension_whose_bytes_differ_from_its_content_hash_is_refused() {
+        let mut python = ore_program_extension("python", 'c');
+        python["artifact"]["files"]["extensions.py"] =
+            json!("PROGRAM_EXTENSIONS = {\"constants\": {\"tampered\": 1}}\n");
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![ore_stack_with_program_sdk('7', "1.0.2", vec![python])]),
+            )],
+            false,
+        );
+        let manifest = stack_project(&sandbox, "");
+        let original = fs::read(&manifest).unwrap();
+        let error = install_project(&manifest, InstallOptions::default())
+            .expect_err("tampered bundle bytes are refused");
+        sandbox.request();
+        let text = format!("{error:#}");
+        assert!(text.contains("not its content hash"), "{text}");
         assert_project_untouched(&manifest, &original);
     }
 

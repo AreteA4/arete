@@ -14,7 +14,7 @@ pub use arete_solana_contracts::{
 };
 use async_trait::async_trait;
 use base64::Engine as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 
@@ -92,13 +92,18 @@ impl ChainError {
 }
 
 /// Cluster clock as reported by `/chain/clock`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+///
+/// Serializes as the TypeScript `ChainClock` does: camelCase fields
+/// (`slot`, `epoch`, `leaderScheduleEpoch`, `unixTimestamp`), with an absent
+/// optional field omitted rather than `null`, so an extension result can
+/// carry the clock unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChainClock {
     pub slot: u64,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader_schedule_epoch: Option<u64>,
     pub unix_timestamp: i64,
 }
@@ -1301,5 +1306,44 @@ mod tests {
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(tokens.invalidations.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn chain_clock_serializes_as_the_typescript_clock() {
+        let clock = ChainClock {
+            slot: 378_120_100,
+            epoch: Some(875),
+            leader_schedule_epoch: Some(876),
+            unix_timestamp: 1_784_550_100,
+        };
+        assert_eq!(
+            serde_json::to_value(&clock).unwrap(),
+            json!({
+                "slot": 378_120_100u64,
+                "epoch": 875,
+                "leaderScheduleEpoch": 876,
+                "unixTimestamp": 1_784_550_100i64,
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ChainClock>(serde_json::to_value(&clock).unwrap()).unwrap(),
+            clock
+        );
+
+        // Absent optional fields are omitted, as TypeScript's `epoch?` is.
+        let bare = ChainClock {
+            slot: 1,
+            epoch: None,
+            leader_schedule_epoch: None,
+            unix_timestamp: -2,
+        };
+        assert_eq!(
+            serde_json::to_value(&bare).unwrap(),
+            json!({ "slot": 1, "unixTimestamp": -2 })
+        );
+        assert_eq!(
+            serde_json::from_value::<ChainClock>(serde_json::to_value(&bare).unwrap()).unwrap(),
+            bare
+        );
     }
 }

@@ -21,11 +21,13 @@ pub struct Vault {
     pub balance: VaultBalance,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Account `Vault` as program reads decode it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VaultVault {
-pub authority: String,
-#[serde(deserialize_with = "serde_utils::deserialize_integer")]
-pub balance: u64,
+    #[serde(default)]
+    pub authority: Option<String>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub balance: Option<u64>,
 }
 
 

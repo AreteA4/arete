@@ -175,6 +175,42 @@ class TestPreparedComposition:
         assert appended.required_signer_addresses == ("alice", "zed")
 
 
+    def test_signers_ride_on_the_transaction_body(self):
+        # TypeScript `signers`: signer material created while preparing a
+        # transaction, such as a new account's keypair.
+        class Keypair:
+            def __init__(self, address):
+                self.address = address
+
+        new_account, mint = Keypair("new-account"), Keypair("mint")
+        prepared = create_prepared_instruction(
+            name="create",
+            instruction=ix(signers=["alice", "new-account"]),
+            signers=[new_account, new_account],
+        )
+        assert prepared.transaction.signers == (new_account,)
+        # Never compared, shown or serialized.
+        assert prepared.transaction == create_prepared_instruction(
+            name="create", instruction=ix(signers=["alice", "new-account"])
+        ).transaction
+        assert "signers" not in repr(prepared.transaction)
+        assert "signers" not in to_json_value(prepared.transaction)
+        assert "signers" not in str(describe_prepared_operation(prepared))
+
+        # Composition keeps them: the parts' signers, then the explicit ones.
+        composed = create_prepared_transaction(
+            name="combo", instructions=[prepared, ix()], signers=[mint]
+        )
+        assert composed.transaction.signers == (new_account, mint)
+        assert append_transaction_instructions(
+            composed.transaction, [ix()]
+        ).signers == (new_account, mint)
+        flow = create_prepared_flow(name="flow", transactions=[composed.transaction])
+        assert flow.plan.transactions[0].signers == (new_account, mint)
+        flow = prepend_flow_transaction_instructions(flow, 0, [ix(signers=["payer"])])
+        assert flow.plan.transactions[0].signers == (new_account, mint)
+
+
 class TestSignerRegistry:
     def test_round_trip(self):
         registry = create_signer_registry([("alice", {"kp": 1})])
@@ -371,6 +407,37 @@ class TestExecutePreparedOperation:
         )
         assert receipt.signatures == ("signature",)
         assert host.calls[0]["signers"] == [{"kp": 1}]
+
+    async def test_transaction_signers_are_validated_and_forwarded_per_transaction(self):
+        registered = {"kp": "registered"}
+        new_account = {"address": "new-account"}
+        call_signer = {"address": "call"}
+        create = create_prepared_instruction(
+            name="create",
+            instruction=ix(signers=["alice", "new-account"]),
+            signers=[new_account],
+        )
+        use = create_prepared_instruction(name="use", instruction=ix(signers=["alice"]))
+        flow = create_prepared_flow(
+            name="flow", transactions=[create.transaction, use.transaction]
+        )
+        host = FakeHost(public_key="alice")
+        await execute_prepared_operation(
+            host,
+            flow,
+            signer_registry=SignerRegistry([("registered", registered)]),
+            signers=[call_signer],
+        )
+        # The transaction's own signers, then the registry's, then the call's.
+        assert host.calls[0]["signers"] == [new_account, registered, call_signer]
+        assert host.calls[1]["signers"] == [registered, call_signer]
+
+        # Without the transaction's signer, its address fails closed.
+        bare = create_prepared_instruction(
+            name="create", instruction=ix(signers=["alice", "new-account"])
+        )
+        with pytest.raises(OperationExecutionError, match="Missing signer"):
+            await execute_prepared_operation(FakeHost(public_key="alice"), bare)
 
     async def test_classifies_outcomeless_wallet_error_as_not_submitted_send(self):
         rejected = WalletError("User rejected the wallet request")

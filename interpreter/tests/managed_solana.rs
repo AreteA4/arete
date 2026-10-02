@@ -141,7 +141,7 @@ async fn main() {{
     let first: collision::types::Position = serde_json::from_value(serde_json::json!({{"amount": "9"}})).unwrap();
     let second: collision::types::SecondPosition = serde_json::from_value(serde_json::json!({{"mint": "second-mint"}})).unwrap();
     assert_eq!(first.amount, Some(9));
-    assert_eq!(second.mint, "second-mint");
+    assert_eq!(second.mint.as_deref(), Some("second-mint"));
     fn distinct_readers(first: collision::programs::first::FirstProgram, second: collision::programs::second::SecondProgram) {{
         let _: arete_sdk::AccountReader<collision::types::Position> = first.position_accounts().unwrap();
         let _: arete_sdk::AccountReader<collision::types::SecondPosition> = second.position_accounts().unwrap();
@@ -150,10 +150,10 @@ async fn main() {{
     let fixture: serde_json::Value = serde_json::from_str(include_str!({:?})).unwrap();
     let value: types::TickFixture = serde_json::from_value(fixture["expected"].clone()).unwrap();
     match value.tick {{
-        types::DynamicTick::Initialized(data) => {{
-            assert_eq!(data.liquidity_gross, 1u128 << 100);
-            assert_eq!(data.liquidity_net, -(1i128 << 80));
-            assert_eq!(data.reward_growths_outside.len(), 3);
+        Some(types::DynamicTick::Initialized(data)) => {{
+            assert_eq!(data.liquidity_gross, Some(1u128 << 100));
+            assert_eq!(data.liquidity_net, Some(-(1i128 << 80)));
+            assert_eq!(data.reward_growths_outside.as_ref().unwrap().len(), 3);
         }}
         _ => panic!("payload lost"),
     }}
@@ -219,7 +219,7 @@ async fn main() {{
         commitment: Some(arete_sdk::managed_solana::Commitment::Finalized), min_context_slot: Some(40),
     }}).await.unwrap();
     assert_eq!(read.context.unwrap().slot, 42);
-    assert!(matches!(read.value.unwrap().tick, types::DynamicTick::Initialized(_)));
+    assert!(matches!(read.value.unwrap().tick, Some(types::DynamicTick::Initialized(_))));
     mock.join().unwrap();
     let bindings: arete_sdk::HostedSolanaGatewayBindings = serde_json::from_str(include_str!({:?})).unwrap();
     arete_sdk::create_hosted_solana_gateway_transports(&bindings, None, None).unwrap();

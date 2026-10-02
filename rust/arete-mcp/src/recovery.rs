@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::credentials;
 
 const DEFAULT_API_URL: &str = "https://api.arete.run";
-const DEFAULT_APP_ORIGIN: &str = "https://arete.run";
+const DEFAULT_APP_ORIGIN: &str = "https://app.arete.run";
 const MAX_RECOVERY_BODY_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -265,7 +265,7 @@ mod tests {
         );
         assert_eq!(
             default_app_origin("https://api.arete.run").as_str(),
-            "https://arete.run/"
+            "https://app.arete.run/"
         );
     }
 

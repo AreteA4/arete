@@ -36,7 +36,7 @@ pub mod vault {
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct DepositParams {
         pub amount: u64,
-        /// Optional address override for the `authority` signer (defaults to the payer).
+        /// Address of the `authority` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub authority: Option<String>,
         /// Address of the `vault` account.
@@ -94,6 +94,12 @@ pub mod vault {
             Self { builder }
         }
 
+        /// The context program extension functions take: the client's chain
+        /// reader, its wallet, and this accessor.
+        pub fn context(&self) -> arete_sdk::ProgramContext<'_, VaultProgram> {
+            arete_sdk::ProgramContext::new(self)
+        }
+
         pub fn deposit(&self, params: DepositParams) -> Result<BuiltInstruction, InstructionError> {
             deposit(params)
         }
@@ -104,6 +110,12 @@ pub mod vault {
                 "Vault",
                 std::sync::Arc::new(self.builder.account_transport("vault", &read_descriptor())?),
             ))
+        }
+    }
+
+    impl arete_sdk::ProgramAccessor for VaultProgram {
+        fn program_builder(&self) -> &arete_sdk::ProgramBuilder {
+            &self.builder
         }
     }
 }

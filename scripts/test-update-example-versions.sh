@@ -35,7 +35,7 @@ const manifestPath = process.argv[2];
 const manifest = fs.readFileSync(manifestPath, 'utf8');
 fs.writeFileSync(
   manifestPath,
-  manifest.replace('async-trait = "0.1"', 'async-trait = "0.1"\ntemplate-helper = { path = "template-helper" }'),
+  manifest.replace('anyhow = "1"', 'anyhow = "1"\ntemplate-helper = { path = "template-helper" }'),
 );
 EOF
 

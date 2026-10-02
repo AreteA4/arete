@@ -284,13 +284,38 @@ pub fn installed_typescript_sdk(start: &Path) -> Option<InstalledRuntime> {
     read_installed_npm_package(&resolve_npm_package(start, TYPESCRIPT_SDK)?)
 }
 
+/// A manifest an SDK generation is about to write (the generated crate's
+/// `Cargo.toml` or package's `pyproject.toml`). Runtime discovery reads it in
+/// place of the file on disk, so a bundle's runtime is checked against the SDK
+/// as it will be written before anything is written.
+#[derive(Debug, Clone, Copy)]
+pub struct PendingManifest<'a> {
+    pub path: &'a Path,
+    pub contents: &'a str,
+}
+
+/// The text of `path`: `pending`'s when it is that file, otherwise what is on
+/// disk.
+pub fn read_manifest(path: &Path, pending: Option<PendingManifest<'_>>) -> Option<String> {
+    match pending {
+        Some(pending) if pending.path == path => Some(pending.contents.to_string()),
+        _ => fs::read_to_string(path).ok(),
+    }
+}
+
 /// The `arete-a4-sdk` crate a Rust package at or above `start` builds
 /// against: a path dependency or `[patch]` entry, otherwise the registry
 /// release its `Cargo.lock` pins, read from Cargo's source cache. `None` when
-/// it cannot be located without running Cargo.
-pub fn installed_rust_sdk(start: &Path) -> Option<InstalledRuntime> {
+/// it cannot be located without running Cargo. A `pending` manifest is read in
+/// place of the `Cargo.toml` at its path.
+pub fn installed_rust_sdk(
+    start: &Path,
+    pending: Option<PendingManifest<'_>>,
+) -> Option<InstalledRuntime> {
     for ancestor in start.ancestors() {
-        let Some(manifest) = read_toml(&ancestor.join("Cargo.toml")) else {
+        let Some(manifest) = read_manifest(&ancestor.join("Cargo.toml"), pending)
+            .and_then(|contents| contents.parse::<toml::Table>().ok())
+        else {
             continue;
         };
         if let Some(path) = rust_sdk_path(&manifest) {
@@ -722,9 +747,24 @@ mod tests {
             &temp.path().join("app/Cargo.toml"),
             "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\narete-sdk = { package = \"arete-a4-sdk\", version = \"0\" }\n\n[patch.crates-io]\narete-a4-sdk = { path = \"../sdk\" }\n",
         );
-        let installed = installed_rust_sdk(&temp.path().join("app/src/generated")).unwrap();
+        let installed = installed_rust_sdk(&temp.path().join("app/src/generated"), None).unwrap();
         assert_eq!(installed.version, "0.23.0");
         assert_eq!(installed.extension_api, Some(1));
+
+        // A manifest about to be generated replaces the one on disk: without
+        // the patch, nothing locates the SDK.
+        let pending = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n";
+        let app = temp.path().join("app/Cargo.toml");
+        assert_eq!(
+            installed_rust_sdk(
+                &temp.path().join("app/src/generated"),
+                Some(PendingManifest {
+                    path: &app,
+                    contents: pending,
+                }),
+            ),
+            None
+        );
     }
 
     #[test]

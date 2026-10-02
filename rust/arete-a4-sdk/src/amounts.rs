@@ -4,11 +4,37 @@
 //! precision loss). Raw amounts are `u128` (base units); UI amounts are
 //! non-negative decimal strings.
 
+use std::fmt;
+
+use serde::de::{self, Deserializer, MapAccess, Visitor};
+use serde::ser::{SerializeMap, Serializer};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::chain::{ChainClient, ChainError};
+use crate::error::AreteError;
 
 /// A token amount expressed either in raw base units or UI units.
+///
+/// Deserializes from exactly the shapes the TypeScript `AmountInput`
+/// (`bigint | { ui: string | number } | { raw: bigint | string | number }`)
+/// accepts, so an extension input field can be typed `AmountInput` directly:
+///
+/// - a bare integer: raw base units (TypeScript `bigint`);
+/// - `{ "raw": … }`: an integer, an integral number, or a string that
+///   JavaScript's `BigInt(…)` reads (decimal with an optional sign, or
+///   `0x`/`0o`/`0b`; surrounding whitespace ignored; empty is `0`);
+/// - `{ "ui": … }`: a decimal string, or a number, kept as the text
+///   JavaScript's `String(number)` gives (`1e-7`, `1e+21`), so
+///   [`parse_ui_amount_to_raw`] reports the TypeScript message.
+///
+/// Objects carry exactly one of `raw` or `ui`. A bare string or non-integer
+/// number is not an amount. Raw amounts are unsigned here: a negative raw
+/// value fails to deserialize, where TypeScript would accept the bigint.
+///
+/// Serializes as `{ "raw": "<decimal>" }` or `{ "ui": "<text>" }` (raw as a
+/// string so no JSON reader loses precision), which deserializes back to the
+/// same value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AmountInput {
     /// Raw base units; never requires the mint's decimals to resolve.
@@ -41,6 +67,256 @@ impl From<String> for AmountInput {
     }
 }
 
+impl Serialize for AmountInput {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(1))?;
+        match self {
+            Self::Raw(raw) => map.serialize_entry("raw", &raw.to_string())?,
+            Self::Ui(text) => map.serialize_entry("ui", text)?,
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for AmountInput {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(AmountInputVisitor)
+    }
+}
+
+const AMOUNT_FIELDS: &[&str] = &["raw", "ui"];
+
+fn negative_raw<E: de::Error>(value: impl fmt::Display) -> E {
+    E::custom(format!(
+        "raw amount {value} is negative; AmountInput raw amounts are unsigned"
+    ))
+}
+
+fn raw_from_i128<E: de::Error>(value: i128) -> Result<u128, E> {
+    u128::try_from(value).map_err(|_| negative_raw(value))
+}
+
+/// JavaScript's `BigInt(number)`: integral finite numbers only.
+fn raw_from_f64<E: de::Error>(value: f64) -> Result<u128, E> {
+    if !value.is_finite() || value.fract() != 0.0 {
+        return Err(E::custom(format!(
+            "The number {} cannot be converted to a BigInt because it is not an integer",
+            javascript_number_text(value)
+        )));
+    }
+    if value < 0.0 {
+        return Err(negative_raw(javascript_number_text(value)));
+    }
+    // 2^128 is exactly representable; every smaller integral f64 fits.
+    if value >= 340_282_366_920_938_463_463_374_607_431_768_211_456.0 {
+        return Err(E::custom(format!(
+            "raw amount {} exceeds the u128 range",
+            javascript_number_text(value)
+        )));
+    }
+    Ok(value as u128)
+}
+
+/// JavaScript's `StrWhiteSpaceChar` (WhiteSpace and LineTerminator).
+fn is_javascript_whitespace(character: char) -> bool {
+    // Tab, line feed, vertical tab, form feed and carriage return are
+    // U+0009..U+000D.
+    matches!(character, '\u{9}'..='\u{d}' | ' ' | '\u{a0}' | '\u{1680}')
+        || matches!(character, '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}')
+        || matches!(character, '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}')
+}
+
+/// JavaScript's `BigInt(string)` (`StringToBigInt`), restricted to the
+/// unsigned values a raw amount holds.
+fn raw_from_text<E: de::Error>(text: &str) -> Result<u128, E> {
+    let invalid = || E::custom(format!("Cannot convert {text} to a BigInt"));
+    let trimmed = text.trim_matches(is_javascript_whitespace);
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    let prefixed = |prefix: [&str; 2]| {
+        prefix
+            .iter()
+            .find_map(|prefix| trimmed.strip_prefix(prefix))
+    };
+    let (digits, radix, negative) = if let Some(digits) = prefixed(["0x", "0X"]) {
+        (digits, 16, false)
+    } else if let Some(digits) = prefixed(["0o", "0O"]) {
+        (digits, 8, false)
+    } else if let Some(digits) = prefixed(["0b", "0B"]) {
+        (digits, 2, false)
+    } else if let Some(digits) = trimmed.strip_prefix('-') {
+        (digits, 10, true)
+    } else {
+        (trimmed.strip_prefix('+').unwrap_or(trimmed), 10, false)
+    };
+    if digits.is_empty() || !digits.chars().all(|digit| digit.is_digit(radix)) {
+        return Err(invalid());
+    }
+    let significant = digits.trim_start_matches('0');
+    if negative && !significant.is_empty() {
+        return Err(negative_raw(trimmed));
+    }
+    if significant.is_empty() {
+        return Ok(0);
+    }
+    u128::from_str_radix(significant, radix)
+        .map_err(|_| E::custom(format!("raw amount {trimmed} exceeds the u128 range")))
+}
+
+/// JavaScript's `String(number)`: the shortest round-trip digits, in the
+/// exponent form JavaScript uses below 1e-6 and from 1e21.
+fn javascript_number_text(value: f64) -> String {
+    if value.is_nan() {
+        return "NaN".to_string();
+    }
+    if value.is_infinite() {
+        return if value > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+    }
+    if value == 0.0 {
+        return "0".to_string();
+    }
+    if (1e-6..1e21).contains(&value.abs()) {
+        return format!("{value}");
+    }
+    let text = format!("{value:e}");
+    match text.split_once('e') {
+        Some((mantissa, exponent)) if !exponent.starts_with('-') => {
+            format!("{mantissa}e+{exponent}")
+        }
+        _ => text,
+    }
+}
+
+struct AmountInputVisitor;
+
+impl<'de> Visitor<'de> for AmountInputVisitor {
+    type Value = AmountInput;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a raw integer amount, { raw } or { ui }")
+    }
+
+    fn visit_u64<E: de::Error>(self, value: u64) -> Result<AmountInput, E> {
+        Ok(AmountInput::Raw(u128::from(value)))
+    }
+
+    fn visit_u128<E: de::Error>(self, value: u128) -> Result<AmountInput, E> {
+        Ok(AmountInput::Raw(value))
+    }
+
+    fn visit_i64<E: de::Error>(self, value: i64) -> Result<AmountInput, E> {
+        raw_from_i128(i128::from(value)).map(AmountInput::Raw)
+    }
+
+    fn visit_i128<E: de::Error>(self, value: i128) -> Result<AmountInput, E> {
+        raw_from_i128(value).map(AmountInput::Raw)
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<AmountInput, A::Error> {
+        let Some(key) = map.next_key::<String>()? else {
+            return Err(de::Error::custom("an amount needs `raw` or `ui`"));
+        };
+        let amount = match key.as_str() {
+            "raw" => AmountInput::Raw(map.next_value::<RawAmountValue>()?.0),
+            "ui" => AmountInput::Ui(map.next_value::<UiAmountValue>()?.0),
+            other => return Err(de::Error::unknown_field(other, AMOUNT_FIELDS)),
+        };
+        if let Some(extra) = map.next_key::<String>()? {
+            return Err(de::Error::custom(format!(
+                "an amount has exactly one of `raw` or `ui`, not `{extra}` too"
+            )));
+        }
+        Ok(amount)
+    }
+}
+
+/// The value of `{ raw }`.
+struct RawAmountValue(u128);
+
+impl<'de> Deserialize<'de> for RawAmountValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct RawVisitor;
+
+        impl Visitor<'_> for RawVisitor {
+            type Value = RawAmountValue;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a raw amount: an integer, or a string BigInt reads")
+            }
+
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<RawAmountValue, E> {
+                Ok(RawAmountValue(u128::from(value)))
+            }
+
+            fn visit_u128<E: de::Error>(self, value: u128) -> Result<RawAmountValue, E> {
+                Ok(RawAmountValue(value))
+            }
+
+            fn visit_i64<E: de::Error>(self, value: i64) -> Result<RawAmountValue, E> {
+                raw_from_i128(i128::from(value)).map(RawAmountValue)
+            }
+
+            fn visit_i128<E: de::Error>(self, value: i128) -> Result<RawAmountValue, E> {
+                raw_from_i128(value).map(RawAmountValue)
+            }
+
+            fn visit_f64<E: de::Error>(self, value: f64) -> Result<RawAmountValue, E> {
+                raw_from_f64(value).map(RawAmountValue)
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<RawAmountValue, E> {
+                raw_from_text(value).map(RawAmountValue)
+            }
+        }
+
+        deserializer.deserialize_any(RawVisitor)
+    }
+}
+
+/// The value of `{ ui }`.
+struct UiAmountValue(String);
+
+impl<'de> Deserialize<'de> for UiAmountValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct UiVisitor;
+
+        impl Visitor<'_> for UiVisitor {
+            type Value = UiAmountValue;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a UI amount: a decimal string or a number")
+            }
+
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<UiAmountValue, E> {
+                Ok(UiAmountValue(value.to_string()))
+            }
+
+            fn visit_u128<E: de::Error>(self, value: u128) -> Result<UiAmountValue, E> {
+                Ok(UiAmountValue(value.to_string()))
+            }
+
+            fn visit_i64<E: de::Error>(self, value: i64) -> Result<UiAmountValue, E> {
+                Ok(UiAmountValue(value.to_string()))
+            }
+
+            fn visit_i128<E: de::Error>(self, value: i128) -> Result<UiAmountValue, E> {
+                Ok(UiAmountValue(value.to_string()))
+            }
+
+            fn visit_f64<E: de::Error>(self, value: f64) -> Result<UiAmountValue, E> {
+                Ok(UiAmountValue(javascript_number_text(value)))
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<UiAmountValue, E> {
+                Ok(UiAmountValue(value.to_string()))
+            }
+        }
+
+        deserializer.deserialize_any(UiVisitor)
+    }
+}
+
 /// Errors produced by amount parsing and resolution.
 #[derive(Debug, Error)]
 pub enum AmountError {
@@ -63,6 +339,18 @@ pub enum AmountError {
     /// The chain read failed.
     #[error(transparent)]
     Chain(#[from] ChainError),
+}
+
+/// An amount that cannot be resolved is an extension input error
+/// ([`AreteError::InvalidInput`], the message alone); a failed chain read
+/// converts as [`ChainError`] does.
+impl From<AmountError> for AreteError {
+    fn from(error: AmountError) -> Self {
+        match error {
+            AmountError::Chain(error) => error.into(),
+            other => AreteError::InvalidInput(other.to_string()),
+        }
+    }
 }
 
 /// Input for [`resolve_amount`] / [`resolve_amount_to_raw`].
@@ -367,6 +655,221 @@ mod tests {
             to_raw_amount(&AmountInput::from("0.25".to_string()), 8).unwrap(),
             25_000_000
         );
+    }
+
+    fn amount(value: serde_json::Value) -> Result<AmountInput, String> {
+        serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+
+    fn raw(value: u128) -> Result<AmountInput, String> {
+        Ok(AmountInput::Raw(value))
+    }
+
+    fn ui(text: &str) -> Result<AmountInput, String> {
+        Ok(AmountInput::Ui(text.to_string()))
+    }
+
+    #[test]
+    fn amount_input_deserializes_a_bare_bigint_as_raw() {
+        use serde_json::json;
+        assert_eq!(amount(json!(0)), raw(0));
+        assert_eq!(amount(json!(5_000_000)), raw(5_000_000));
+        assert_eq!(amount(json!(u64::MAX)), raw(u128::from(u64::MAX)));
+        // Formats with native 128-bit integers keep the full range.
+        use serde::de::value::{Error, I128Deserializer, U128Deserializer};
+        assert_eq!(
+            AmountInput::deserialize(U128Deserializer::<Error>::new(u128::MAX)).unwrap(),
+            AmountInput::Raw(u128::MAX)
+        );
+        assert_eq!(
+            AmountInput::deserialize(I128Deserializer::<Error>::new(i128::MAX)).unwrap(),
+            AmountInput::Raw(i128::MAX as u128)
+        );
+        assert!(AmountInput::deserialize(I128Deserializer::<Error>::new(-1)).is_err());
+    }
+
+    #[test]
+    fn amount_input_deserializes_raw_objects_as_bigint_reads_them() {
+        use serde_json::json;
+        assert_eq!(amount(json!({ "raw": 7 })), raw(7));
+        assert_eq!(amount(json!({ "raw": "25" })), raw(25));
+        // `BigInt(string)`: surrounding whitespace, sign, radix prefixes,
+        // leading zeros, and the empty string as zero.
+        assert_eq!(amount(json!({ "raw": "  42\n" })), raw(42));
+        assert_eq!(amount(json!({ "raw": "\u{feff}42\u{a0}" })), raw(42));
+        assert_eq!(amount(json!({ "raw": "+9" })), raw(9));
+        assert_eq!(amount(json!({ "raw": "-0" })), raw(0));
+        assert_eq!(amount(json!({ "raw": "007" })), raw(7));
+        assert_eq!(amount(json!({ "raw": "0x1F" })), raw(31));
+        assert_eq!(amount(json!({ "raw": "0O17" })), raw(15));
+        assert_eq!(amount(json!({ "raw": "0b101" })), raw(5));
+        assert_eq!(amount(json!({ "raw": "" })), raw(0));
+        assert_eq!(amount(json!({ "raw": " " })), raw(0));
+        assert_eq!(
+            amount(json!({ "raw": "340282366920938463463374607431768211455" })),
+            raw(u128::MAX)
+        );
+        // `BigInt(number)`: integral numbers only.
+        assert_eq!(amount(json!({ "raw": 5.0 })), raw(5));
+        assert_eq!(amount(json!({ "raw": 1e21 })), raw(10u128.pow(21)));
+    }
+
+    #[test]
+    fn amount_input_rejects_raw_values_bigint_rejects_with_its_message() {
+        use serde_json::json;
+        for (value, message) in [
+            (json!({ "raw": "abc" }), "Cannot convert abc to a BigInt"),
+            (json!({ "raw": "1.5" }), "Cannot convert 1.5 to a BigInt"),
+            (json!({ "raw": "1e3" }), "Cannot convert 1e3 to a BigInt"),
+            (
+                json!({ "raw": "1_000" }),
+                "Cannot convert 1_000 to a BigInt",
+            ),
+            (json!({ "raw": "0x" }), "Cannot convert 0x to a BigInt"),
+            (json!({ "raw": "-0x1" }), "Cannot convert -0x1 to a BigInt"),
+            (json!({ "raw": "0b2" }), "Cannot convert 0b2 to a BigInt"),
+            (json!({ "raw": "+" }), "Cannot convert + to a BigInt"),
+            (
+                json!({ "raw": 1.5 }),
+                "The number 1.5 cannot be converted to a BigInt because it is not an integer",
+            ),
+            (
+                json!({ "raw": 1e-7 }),
+                "The number 1e-7 cannot be converted to a BigInt because it is not an integer",
+            ),
+        ] {
+            let error = amount(value.clone()).unwrap_err();
+            assert!(error.contains(message), "{value}: {error}");
+        }
+    }
+
+    #[test]
+    fn amount_input_rejects_raw_values_outside_u128() {
+        use serde_json::json;
+        for value in [
+            json!(-1),
+            json!({ "raw": -1 }),
+            json!({ "raw": "-5" }),
+            json!({ "raw": -2.0 }),
+        ] {
+            let error = amount(value.clone()).unwrap_err();
+            assert!(error.contains("is negative"), "{value}: {error}");
+        }
+        for value in [
+            json!({ "raw": "340282366920938463463374607431768211456" }),
+            json!({ "raw": 1e39 }),
+        ] {
+            let error = amount(value.clone()).unwrap_err();
+            assert!(error.contains("exceeds the u128 range"), "{value}: {error}");
+        }
+    }
+
+    #[test]
+    fn amount_input_deserializes_ui_objects_with_javascript_number_text() {
+        use serde_json::json;
+        assert_eq!(amount(json!({ "ui": "1.5" })), ui("1.5"));
+        assert_eq!(amount(json!({ "ui": " 0.25 " })), ui(" 0.25 "));
+        assert_eq!(amount(json!({ "ui": "one" })), ui("one"));
+        assert_eq!(amount(json!({ "ui": 2 })), ui("2"));
+        assert_eq!(amount(json!({ "ui": -3 })), ui("-3"));
+        assert_eq!(amount(json!({ "ui": 1.5 })), ui("1.5"));
+        assert_eq!(amount(json!({ "ui": 0.000001 })), ui("0.000001"));
+        assert_eq!(amount(json!({ "ui": 1e-7 })), ui("1e-7"));
+        assert_eq!(amount(json!({ "ui": 1.5e-7 })), ui("1.5e-7"));
+        assert_eq!(amount(json!({ "ui": 1e16 })), ui("10000000000000000"));
+        assert_eq!(amount(json!({ "ui": 1e21 })), ui("1e+21"));
+        assert_eq!(amount(json!({ "ui": 1.2345e25 })), ui("1.2345e+25"));
+
+        // The text then fails exactly as TypeScript's parse does.
+        let AmountInput::Ui(text) = amount(json!({ "ui": 1e-7 })).unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(
+            parse_ui_amount_to_raw(&text, 9).unwrap_err().to_string(),
+            "Invalid UI amount: 1e-7"
+        );
+    }
+
+    #[test]
+    fn amount_input_rejects_shapes_typescript_does_not_accept() {
+        use serde_json::json;
+        for value in [
+            json!("5"),
+            json!(1.5),
+            json!(true),
+            json!(null),
+            json!([1]),
+            json!({}),
+            json!({ "amount": 1 }),
+            json!({ "raw": 1, "ui": "1" }),
+            json!({ "ui": "1", "decimals": 9 }),
+            json!({ "raw": null }),
+            json!({ "raw": true }),
+            json!({ "raw": [1] }),
+            json!({ "ui": null }),
+            json!({ "ui": false }),
+            json!({ "ui": { "value": "1" } }),
+        ] {
+            assert!(amount(value.clone()).is_err(), "{value} should not decode");
+        }
+    }
+
+    #[test]
+    fn amount_input_serializes_to_a_shape_it_deserializes() {
+        use serde_json::json;
+        for (input, wire) in [
+            (AmountInput::Raw(42), json!({ "raw": "42" })),
+            (
+                AmountInput::Raw(u128::MAX),
+                json!({ "raw": "340282366920938463463374607431768211455" }),
+            ),
+            (AmountInput::Ui("1.5".to_string()), json!({ "ui": "1.5" })),
+        ] {
+            assert_eq!(serde_json::to_value(&input).unwrap(), wire);
+            assert_eq!(amount(wire).unwrap(), input);
+        }
+    }
+
+    #[test]
+    fn amount_input_works_as_a_typed_input_field() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct DeployInput {
+            amount_per_square: AmountInput,
+            #[serde(default)]
+            deposit: Option<AmountInput>,
+        }
+
+        let input: DeployInput = serde_json::from_value(serde_json::json!({
+            "amountPerSquare": { "ui": "0.005" },
+            "deposit": 1_000,
+        }))
+        .unwrap();
+        assert_eq!(
+            input.amount_per_square,
+            AmountInput::Ui("0.005".to_string())
+        );
+        assert_eq!(input.deposit, Some(AmountInput::Raw(1_000)));
+        assert_eq!(
+            to_raw_amount(&input.amount_per_square, 9).unwrap(),
+            5_000_000
+        );
+    }
+
+    #[test]
+    fn amount_errors_convert_to_invalid_input() {
+        let error: AreteError = to_raw_amount(&AmountInput::from("one"), 9)
+            .unwrap_err()
+            .into();
+        assert!(matches!(error, AreteError::InvalidInput(_)));
+        assert_eq!(error.to_string(), "Invalid UI amount: one");
+
+        let error: AreteError = AmountError::Chain(ChainError::InvalidResponse {
+            path: "/chain/mints/A".to_string(),
+            message: "bad".to_string(),
+        })
+        .into();
+        assert!(matches!(error, AreteError::Serialization(_)));
     }
 
     #[tokio::test]

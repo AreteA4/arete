@@ -273,8 +273,9 @@ Do not pass `api_key` in tool calls. The server resolves credentials in this ord
    legacy entry in the credentials file
 
 Generated MCP config runs `a4 --profile agent mcp`; the selected profile
-deliberately outranks an ambient human key. Run `a4 auth signup` once and omit
-the argument. Humans store a separate key with
+deliberately outranks an ambient human key. Run
+`a4 --profile agent auth signup --if-missing` during bootstrap and omit the
+argument. Humans store a separate key with
 `a4 auth login --profile human --key <a4_sk_…>`.
 
 The knowledge tools (`search_knowledge`, `get_protocol`, `get_program_knowledge`, `get_recipe`, `list_concepts`) require a key from step 2 or 3 and fail with an actionable error when none resolves. The discovery tools attach a resolved key **only when `ARETE_API_URL` names an Arete origin over HTTPS** — `https://arete.run` or any `https://*.arete.run` subdomain. Plain HTTP is accepted only for loopback (`localhost`, `127.0.0.1`, `[::1]`), where the request never reaches a network. Everything else, including `http://api.arete.run`, gets an unauthenticated request rather than your key in cleartext or sent to a host it does not belong to — the endpoints these tools touch are public, so you still get the public result set.

@@ -46,7 +46,18 @@ Arete can:
     the user to reload or restart the agent host. After the restart, run
     `a4 doctor --json` again instead of repeatedly rewriting config.
 
-4.  Continue from what the user actually asked. For the bootstrap prompt, which
+4.  Create or verify the restricted agent account used by hosted views and the
+    knowledge layer:
+
+        a4 --profile agent auth signup --if-missing --json
+
+    This setup prompt authorizes creation of the agent account. The command
+    stores its `a4_ak_*` credential in the `agent` profile and never prints the
+    secret. Confirm `credentialStored` is `true`; do not request, copy, or use a
+    human `a4_sk_*` credential. Generated MCP configuration is pinned to this
+    agent profile.
+
+5.  Continue from what the user actually asked. For the bootstrap prompt, which
     asks only what Arete can do, summarize the capability list above and use the
     catalog vocabulary for current discovery categories:
 
@@ -66,7 +77,7 @@ Arete can:
     A catalog result is not permission to invent missing delivery. Respect its
     reported modes, SDK targets, authentication, bindings, and install command.
 
-5.  Route the task:
+6.  Route the task:
     - Use the `arete` skill for discovery and project dependencies.
     - Use `arete-streams` for deployed views and live subscriptions.
     - Use `arete-programs` for account reads, PDAs, operations, and transactions.
@@ -74,12 +85,12 @@ Arete can:
     - Use `arete-deploy` only for an explicitly authorized publication or
       hosted deployment task.
 
-6.  Use MCP for exploration and generated SDKs for shipped code. For a hosted
+7.  Use MCP for exploration and generated SDKs for shipped code. For a hosted
     view, inspect the exact schema, connect with its descriptor, take a bounded
     sample, answer with provenance, and disconnect. If no suitable view exists,
     explain the gap. Do not construct endpoints.
 
-7.  Add proven capabilities to the project:
+8.  Add proven capabilities to the project:
 
         a4 install program <slug> --ts
         a4 install stack <slug> --ts
@@ -95,10 +106,10 @@ Arete can:
     without transactions; install a program on its own only when no stack you
     use covers it. Never merge stack and program objects by hand.
 
-Authentication may be required for the knowledge layer or hosted connections:
+The setup command above is idempotent. When the user has instead supplied an
+existing agent key, store it in the same restricted profile:
 
-       a4 auth signup
-       a4 auth login --key <a4_ak_...>   # when a key was supplied by a human
+       a4 auth login --profile agent --key <a4_ak_...>
 
 Never put a secret key in source, a prompt, or an MCP tool argument.
 
