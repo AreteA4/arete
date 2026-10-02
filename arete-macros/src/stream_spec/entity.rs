@@ -338,6 +338,7 @@ pub fn process_entity_struct_with_idl(
                                 is_account_source: true,
                                 source_type_path: acct_path,
                                 source_field_name,
+                                source_field_location: None,
                                 target_field_name: snapshot_attr.target_field_name.clone(),
                                 is_primary_key: false,
                                 is_lookup_index: false,
@@ -399,6 +400,10 @@ pub fn process_entity_struct_with_idl(
                                 is_account_source: false,
                                 source_type_path: instr_path.clone(),
                                 source_field_name,
+                                source_field_location: aggr_attr
+                                    .field
+                                    .as_ref()
+                                    .and_then(|field| field.explicit_location.clone()),
                                 target_field_name: aggr_attr.target_field_name.clone(),
                                 is_primary_key: false,
                                 is_lookup_index: false,

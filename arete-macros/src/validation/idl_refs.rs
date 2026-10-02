@@ -126,24 +126,40 @@ pub fn resolve_source_lookup_from_path<'a>(
     }
 }
 
+/// Validate a field selected from an event.
+///
+/// A bare (or `data::`) name is an event payload field. `accounts::name` is an account of the
+/// instruction that emitted the event; the IDL does not say which instruction that is, so any
+/// instruction's account is accepted, and one the emitting instruction lacks is unset at runtime.
 pub fn validate_event_field_spec(
     idl: &IdlSpec,
     event_name: &str,
     field_spec: &parse::FieldSpec,
 ) -> Result<(), IdlSearchError> {
-    if matches!(
+    let field_name = field_spec.ident.to_string();
+    if !matches!(
         field_spec.explicit_location,
         Some(parse::FieldLocation::Account)
     ) {
-        return Err(IdlSearchError::InvalidPath {
-            path: format!(
-                "accounts::{} is not valid for event '{}'",
-                field_spec.ident, event_name
-            ),
-        });
+        return lookup_event_field(idl, event_name, &field_name);
     }
 
-    lookup_event_field(idl, event_name, &field_spec.ident.to_string())
+    let mut accounts: Vec<String> = idl
+        .instructions
+        .iter()
+        .flat_map(|instruction| instruction.accounts.iter())
+        .map(|account| account.name.clone())
+        .collect();
+    if accounts.contains(&field_name) {
+        return Ok(());
+    }
+    accounts.sort();
+    accounts.dedup();
+    Err(not_found_with_suggestions(
+        &field_name,
+        format!("instruction accounts that can emit event '{}'", event_name),
+        accounts,
+    ))
 }
 
 pub fn validate_event_field_name(
