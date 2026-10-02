@@ -1,3 +1,4 @@
+pub mod admission;
 pub mod auth;
 pub mod client_manager;
 pub mod frame;
@@ -8,6 +9,7 @@ pub mod server;
 pub mod subscription;
 pub mod usage;
 
+pub use admission::{WebSocketAdmissionProvider, WebSocketConnectionPermit};
 pub use auth::{
     AllowAllAuthPlugin, AuthContext, AuthDecision, AuthDeny, AuthErrorDetails,
     ConnectionAuthRequest, ErrorResponse, RetryPolicy, SignedSessionAuthPlugin,

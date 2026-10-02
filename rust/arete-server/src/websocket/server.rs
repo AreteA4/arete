@@ -2,6 +2,7 @@ use crate::bus::{BusManager, BusMessage, StateUpdate};
 use crate::cache::{cmp_seq, EntityCache, SnapshotBatchConfig};
 use crate::compression::maybe_compress;
 use crate::view::{ViewIndex, ViewSpec};
+use crate::websocket::admission::{WebSocketAdmissionProvider, WebSocketConnectionPermit};
 use crate::websocket::auth::{
     AuthContext, AuthDecision, AuthDeny, ConnectionAuthRequest, WebSocketAuthPlugin,
 };
@@ -308,18 +309,22 @@ async fn handle_refresh_auth(
     let response = match refresh_result {
         Ok(new_context) => {
             let expires_at = new_context.expires_at;
-            if client_manager.update_client_auth(client_id, new_context) {
-                RefreshAuthResponse {
+            match client_manager.try_update_client_auth(client_id, new_context) {
+                Ok(true) => RefreshAuthResponse {
                     success: true,
                     error: None,
                     expires_at: Some(expires_at),
-                }
-            } else {
-                RefreshAuthResponse {
+                },
+                Ok(false) => RefreshAuthResponse {
                     success: false,
                     error: Some("client-not-found".to_string()),
                     expires_at: None,
-                }
+                },
+                Err(deny) => RefreshAuthResponse {
+                    success: false,
+                    error: Some(deny.code.as_str().to_string()),
+                    expires_at: None,
+                },
             }
         }
         Err(error) => {
@@ -500,6 +505,7 @@ pub struct WebSocketServer {
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
     usage_emitter: Option<UsageEmitterHandle>,
     rate_limit_config: Option<RateLimitConfig>,
+    admission_provider: Option<Arc<dyn WebSocketAdmissionProvider>>,
     journal: Option<Arc<crate::journal::EventJournal>>,
     delivery: WebSocketDeliveryConfig,
     #[cfg(feature = "otel")]
@@ -525,6 +531,7 @@ impl WebSocketServer {
             auth_plugin: Arc::new(crate::websocket::auth::AllowAllAuthPlugin),
             usage_emitter: None,
             rate_limit_config: None,
+            admission_provider: None,
             journal: None,
             delivery: WebSocketDeliveryConfig::default(),
             metrics,
@@ -548,6 +555,7 @@ impl WebSocketServer {
             auth_plugin: Arc::new(crate::websocket::auth::AllowAllAuthPlugin),
             usage_emitter: None,
             rate_limit_config: None,
+            admission_provider: None,
             journal: None,
             delivery: WebSocketDeliveryConfig::default(),
         }
@@ -579,6 +587,15 @@ impl WebSocketServer {
         self
     }
 
+    /// Install an embedder-owned provider for cross-runtime admission.
+    pub fn with_admission_provider(
+        mut self,
+        provider: Arc<dyn WebSocketAdmissionProvider>,
+    ) -> Self {
+        self.admission_provider = Some(provider);
+        self
+    }
+
     pub fn with_delivery_config(mut self, config: WebSocketDeliveryConfig) -> Self {
         self.delivery = config;
         self
@@ -603,10 +620,13 @@ impl WebSocketServer {
     /// The cleanup handle is returned rather than detached so a caller that
     /// stops serving can stop it too.
     pub(crate) fn into_acceptor(self) -> (ConnectionAcceptor, tokio::task::JoinHandle<()>) {
-        let client_manager = self
+        let mut client_manager = self
             .rate_limit_config
             .map(ClientManager::with_config)
             .unwrap_or(self.client_manager);
+        if let Some(provider) = self.admission_provider {
+            client_manager = client_manager.with_admission_provider(provider);
+        }
         let cleanup = client_manager.start_cleanup_task();
 
         #[cfg(feature = "otel")]
@@ -804,11 +824,18 @@ async fn accept_authorized_connection(
     remote_addr: SocketAddr,
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
     client_manager: ClientManager,
-) -> Result<Option<(tokio_tungstenite::WebSocketStream<TcpStream>, AuthContext)>> {
+) -> Result<
+    Option<(
+        tokio_tungstenite::WebSocketStream<TcpStream>,
+        AuthContext,
+        Option<Arc<dyn WebSocketConnectionPermit>>,
+    )>,
+> {
     use std::sync::Mutex;
 
-    let capture: Arc<Mutex<Option<Result<AuthContext, HandshakeReject>>>> =
-        Arc::new(Mutex::new(None));
+    type Admission =
+        Result<(AuthContext, Option<Arc<dyn WebSocketConnectionPermit>>), HandshakeReject>;
+    let capture: Arc<Mutex<Option<Admission>>> = Arc::new(Mutex::new(None));
     let capture_ref = capture.clone();
     let auth_plugin_ref = auth_plugin.clone();
     let manager_ref = client_manager.clone();
@@ -821,7 +848,8 @@ async fn accept_authorized_connection(
                     AuthDecision::Allow(context) => manager_ref
                         .check_connection_allowed(remote_addr, &Some(context.clone()))
                         .await
-                        .map(|()| context)
+                        .and_then(|()| manager_ref.reserve_connection_admission(&context))
+                        .map(|permit| (context, permit))
                         .map_err(|deny| HandshakeReject::from_deny(&deny)),
                     AuthDecision::Deny(deny) => Err(HandshakeReject::from_deny(&deny)),
                 }
@@ -838,7 +866,7 @@ async fn accept_authorized_connection(
     let auth_result = capture.lock().expect("capture lock poisoned").take();
     match handshake_result {
         Ok(stream) => match auth_result {
-            Some(Ok(context)) => Ok(Some((stream, context))),
+            Some(Ok((context, permit))) => Ok(Some((stream, context, permit))),
             Some(Err(reject)) => Err(anyhow::anyhow!(
                 "handshake unexpectedly succeeded after rejection: {}",
                 reject.body.message
@@ -867,7 +895,7 @@ async fn handle_connection(
             context.client_manager.clone(),
         ) => accepted?,
     };
-    let Some((ws_stream, auth_context)) = accepted else {
+    let Some((ws_stream, auth_context, admission_permit)) = accepted else {
         return Ok(());
     };
 
@@ -887,9 +915,13 @@ async fn handle_connection(
         .connection_opened(connection_metrics_metering_key.as_deref());
 
     let (ws_sender, mut ws_receiver) = ws_stream.split();
-    context
-        .client_manager
-        .add_client(client_id, ws_sender, Some(auth_context), remote_addr);
+    context.client_manager.add_client_with_admission(
+        client_id,
+        ws_sender,
+        Some(auth_context),
+        remote_addr,
+        admission_permit,
+    );
     emit_usage_event(
         &context.usage_emitter,
         WebSocketUsageEvent::ConnectionEstablished {
@@ -985,15 +1017,29 @@ async fn handle_connection(
                 }
 
                 let cancel_token = CancellationToken::new();
-                if !context
+                let added = match context
                     .client_manager
-                    .add_client_subscription(
+                    .try_add_client_subscription(
                         client_id,
                         subscription_id.clone(),
                         cancel_token.clone(),
                     )
                     .await
                 {
+                    Ok(added) => added,
+                    Err(deny) => {
+                        send_socket_issue(
+                            client_id,
+                            &context.client_manager,
+                            &deny,
+                            false,
+                            Some(subscription_id),
+                        )
+                        .await;
+                        continue;
+                    }
+                };
+                if !added {
                     send_protocol_issue(
                         client_id,
                         &context.client_manager,

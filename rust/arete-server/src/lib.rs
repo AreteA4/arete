@@ -96,6 +96,7 @@ pub use websocket::{
     WebSocketRateLimiter, WebSocketServer, WebSocketUsageBatch, WebSocketUsageEmitter,
     WebSocketUsageEnvelope, WebSocketUsageEvent,
 };
+pub use websocket::{WebSocketAdmissionProvider, WebSocketConnectionPermit};
 
 use anyhow::Result;
 use arete_interpreter::ast::ViewDef;
@@ -271,6 +272,7 @@ pub struct ServerBuilder {
     solana_gateway_usage_observer: Option<Arc<dyn SolanaGatewayUsageObserver>>,
     websocket_max_clients: Option<usize>,
     websocket_rate_limit_config: Option<crate::websocket::client_manager::RateLimitConfig>,
+    websocket_admission_provider: Option<Arc<dyn WebSocketAdmissionProvider>>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -288,6 +290,7 @@ impl ServerBuilder {
             solana_gateway_usage_observer: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
+            websocket_admission_provider: None,
             #[cfg(feature = "otel")]
             metrics: None,
         }
@@ -362,6 +365,15 @@ impl ServerBuilder {
         config: crate::websocket::client_manager::RateLimitConfig,
     ) -> Self {
         self.websocket_rate_limit_config = Some(config);
+        self
+    }
+
+    /// Install an embedder-owned provider for cross-runtime admission.
+    pub fn websocket_admission_provider(
+        mut self,
+        provider: Arc<dyn WebSocketAdmissionProvider>,
+    ) -> Self {
+        self.websocket_admission_provider = Some(provider);
         self
     }
 
@@ -578,6 +590,10 @@ impl ServerBuilder {
 
         if let Some(rate_limit_config) = self.websocket_rate_limit_config {
             runtime = runtime.with_websocket_rate_limit_config(rate_limit_config);
+        }
+
+        if let Some(provider) = self.websocket_admission_provider {
+            runtime = runtime.with_websocket_admission_provider(provider);
         }
 
         if let Some(registry) = materialized_registry {
