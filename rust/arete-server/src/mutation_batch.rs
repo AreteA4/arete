@@ -48,6 +48,10 @@ pub struct MutationBatch {
     /// Keeps snapshot capture blocked from the VM update that produced this
     /// batch until the projector has applied it.
     pub(crate) snapshot_guard: Option<crate::snapshot::SnapshotProcessingGuard>,
+    /// Produced by the slot scheduler, not by parsed stream input, so it must
+    /// not advance the snapshot resume watermark: that means "the highest
+    /// slot whose input has been fully applied".
+    pub(crate) scheduled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +72,7 @@ impl MutationBatch {
             event_context: None,
             flush_ack: None,
             snapshot_guard: None,
+            scheduled: false,
         }
     }
 
@@ -79,9 +84,12 @@ impl MutationBatch {
             event_context: None,
             flush_ack: None,
             snapshot_guard: None,
+            scheduled: false,
         }
     }
 
+    /// Parsed stream input at `slot_context`. Applying it advances the resume
+    /// watermark to that slot, so the slot must be one the parser finished.
     pub fn with_slot_context(
         mutations: SmallVec<[Mutation; 6]>,
         slot_context: SlotContext,
@@ -93,6 +101,19 @@ impl MutationBatch {
             event_context: None,
             flush_ack: None,
             snapshot_guard: None,
+            scheduled: false,
+        }
+    }
+
+    /// A batch the slot scheduler produced from entity state rather than from
+    /// parsed stream input. `slot_context` still orders it, but its slot is
+    /// the live tip the scheduler observed, which can be ahead of the parser:
+    /// advancing the resume watermark to it would make a restart skip every
+    /// slot in between.
+    pub fn scheduled(mutations: SmallVec<[Mutation; 6]>, slot_context: SlotContext) -> Self {
+        Self {
+            scheduled: true,
+            ..Self::with_slot_context(mutations, slot_context)
         }
     }
 
@@ -106,6 +127,7 @@ impl MutationBatch {
             event_context: None,
             flush_ack: Some(ack),
             snapshot_guard: None,
+            scheduled: false,
         }
     }
 
