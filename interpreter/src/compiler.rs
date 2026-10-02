@@ -2575,6 +2575,66 @@ mod tests {
     }
 
     #[test]
+    fn deletion_preserves_unrelated_resolver_sharing_and_isolates_recreation() {
+        let bytecode = pool_bytecode();
+        let (mut vm, _) = linked_vm(Default::default());
+        let key = process(&mut vm, &bytecode, pool_event(1, 10))[0]
+            .key
+            .clone();
+        let target = |primary_key| crate::vm::ResolverTarget {
+            state_id: 0,
+            entity_name: "Pool".into(),
+            primary_key,
+            extracts: vec![crate::ast::ResolverExtractSpec {
+                target_path: "resolved".into(),
+                source_path: Some("value".into()),
+                transform: None,
+            }],
+        };
+        let enqueue = |vm: &mut VmContext, key| {
+            vm.enqueue_resolver_request(
+                "ignored".into(),
+                crate::ast::ResolverType::Token,
+                json!("shared-mint"),
+                target(key),
+            )
+        };
+        enqueue(&mut vm, key.clone());
+        enqueue(&mut vm, json!("unrelated"));
+        let old = vm.take_resolver_requests();
+        assert_eq!(old.len(), 1);
+        vm.delete_entity(&bytecode, "Pool", &key).unwrap();
+        enqueue(&mut vm, json!("unrelated"));
+        enqueue(&mut vm, json!("another-unrelated"));
+        assert!(
+            vm.take_resolver_requests().is_empty(),
+            "unaffected targets reuse the old pending call"
+        );
+        enqueue(&mut vm, key.clone());
+        let fresh = vm.take_resolver_requests();
+        assert_eq!(fresh.len(), 1);
+        assert_ne!(fresh[0].cache_key, old[0].cache_key);
+        enqueue(&mut vm, json!("unrelated"));
+        enqueue(&mut vm, json!("another-unrelated"));
+        enqueue(&mut vm, key.clone());
+        assert!(
+            vm.take_resolver_requests().is_empty(),
+            "unaffected targets reuse pending calls"
+        );
+        let old_mutations = vm
+            .apply_resolver_result(&bytecode, &old[0].cache_key, json!({"value":"old"}))
+            .unwrap();
+        assert_eq!(old_mutations.len(), 2);
+        assert!(old_mutations.iter().all(|mutation| mutation.key != key));
+        assert!(vm.get_entity_state(0, &key).is_none());
+        let fresh_mutations = vm
+            .apply_resolver_result(&bytecode, &fresh[0].cache_key, json!({"value":"fresh"}))
+            .unwrap();
+        assert_eq!(fresh_mutations.len(), 1);
+        assert_eq!(fresh_mutations[0].key, key);
+    }
+
+    #[test]
     fn a_requested_entity_is_emitted_whole_once() {
         let bytecode = pool_bytecode();
         let (mut vm, requests) = linked_vm(Default::default());

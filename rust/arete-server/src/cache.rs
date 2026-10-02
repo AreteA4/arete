@@ -149,15 +149,36 @@ impl ViewEntries {
             let Some(seq) = entity.get("_seq").and_then(Value::as_str) else {
                 return false;
             };
-            if cmp_seq(seq, deleted_at) != std::cmp::Ordering::Greater {
+            let ordering = cmp_seq(seq, deleted_at);
+            if ordering == std::cmp::Ordering::Less
+                || (creation && ordering == std::cmp::Ordering::Equal)
+            {
                 return false;
+            }
+            if let Some(current) = self
+                .entities
+                .peek(key)
+                .and_then(|entity| entity.get("_seq"))
+                .and_then(Value::as_str)
+            {
+                // Accounts and instructions have different offset domains:
+                // legitimate changes can move _seq backwards within a slot.
+                // Reject earlier slots, and use the retained creation barrier
+                // (not the last patch's offset) to separate account lifetimes.
+                if cmp_seq(
+                    seq.split(':').next().unwrap(),
+                    current.split(':').next().unwrap(),
+                ) == std::cmp::Ordering::Less
+                {
+                    return false;
+                }
             }
         }
         creation || self.entities.contains(key)
     }
 }
 
-/// `(view, key, deletion sequence)` in most-recently-deleted order.
+/// `(view, key, lifetime barrier sequence)` in most-recently-changed order.
 pub type EntityTombstones = Vec<(String, String, Option<String>)>;
 
 /// Compare two `_seq` values numerically.
@@ -285,6 +306,18 @@ impl EntityCache {
 
         if !view.accepts(key, &patch, origin == PatchOrigin::Creation) {
             return CacheWrite::Refused { patch };
+        }
+        // Retain the recreation boundary even if this row is later evicted or
+        // restored. A patch between deletion and creation belongs to the old
+        // lifetime, despite being newer than the original tombstone.
+        if origin == PatchOrigin::Creation && view.tombstones.contains(key) {
+            view.tombstones.put(
+                key.to_string(),
+                patch
+                    .get("_seq")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            );
         }
 
         if let Some(entity) = view.entities.get_mut(key) {
@@ -774,6 +807,85 @@ mod tests {
                 .await,
             CacheWrite::Merged
         );
+    }
+
+    #[tokio::test]
+    async fn recreated_rows_reject_previous_lifetime_patches_and_replays() {
+        let cache = EntityCache::with_config(EntityCacheConfig {
+            max_entities_per_view: 1,
+            ..Default::default()
+        });
+        cache.delete("v", "a", Some("100:0")).await;
+        cache
+            .upsert_with_append(
+                "v",
+                "a",
+                json!({"fresh":true, "_seq":"102:0"}),
+                &[],
+                PatchOrigin::Creation,
+            )
+            .await;
+        assert!(
+            !cache
+                .accepts_mutation("v", "a", &json!({"old":true, "_seq":"101:1"}), false)
+                .await
+        );
+        assert!(matches!(
+            cache
+                .upsert_with_append(
+                    "v",
+                    "a",
+                    json!({"old":true, "_seq":"101:1"}),
+                    &[],
+                    PatchOrigin::Change
+                )
+                .await,
+            CacheWrite::Refused { .. }
+        ));
+        assert!(
+            !cache
+                .store_whole("v", "a", json!({"old":true, "_seq":"101:1"}))
+                .await
+        );
+        assert!(cache.get("v", "a").await.unwrap().get("old").is_none());
+        for seq in ["103:100", "103:1"] {
+            assert_eq!(
+                cache
+                    .upsert_with_append("v", "a", json!({"_seq":seq}), &[], PatchOrigin::Change)
+                    .await,
+                CacheWrite::Merged
+            );
+        }
+        assert!(matches!(
+            cache
+                .upsert_with_append(
+                    "v",
+                    "a",
+                    json!({"old":true, "_seq":"102:1"}),
+                    &[],
+                    PatchOrigin::Change
+                )
+                .await,
+            CacheWrite::Refused { .. }
+        ));
+        cache.upsert("v", "other", json!({})).await; // Evict the recreated row.
+        let restored = EntityCache::new();
+        restored.hydrate(cache.dump().await).await;
+        restored
+            .hydrate_tombstones(cache.dump_tombstones().await)
+            .await;
+        assert!(matches!(
+            restored
+                .upsert_with_append(
+                    "v",
+                    "a",
+                    json!({"old":true, "_seq":"101:1"}),
+                    &[],
+                    PatchOrigin::Creation
+                )
+                .await,
+            CacheWrite::Refused { .. }
+        ));
     }
 
     #[tokio::test]

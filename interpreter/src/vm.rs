@@ -1049,6 +1049,8 @@ pub struct PendingResolverEntry {
     pub resolver: ResolverType,
     pub input: Value,
     pub targets: Vec<ResolverTarget>,
+    // Lifetimes removed while this call was in flight cannot rejoin it.
+    invalidated_targets: HashSet<(u32, Value)>,
     pub queued_at: i64,
     pub next_retry_at: Instant,
     pub retry_count: u32,
@@ -1996,6 +1998,13 @@ impl VmContext {
             .checked_add(1)
             .expect("resolver epoch overflow");
         self.resolver_pending.retain(|_, entry| {
+            if entry
+                .targets
+                .iter()
+                .any(|target| target.state_id == state_id && &target.primary_key == key)
+            {
+                entry.invalidated_targets.insert((state_id, key.clone()));
+            }
             entry
                 .targets
                 .retain(|target| target.state_id != state_id || &target.primary_key != key);
@@ -2360,10 +2369,34 @@ impl VmContext {
         target: ResolverTarget,
     ) {
         let base_key = resolver_cache_key(&resolver, &input);
-        let cache_key = if self.resolver_epoch == 0 {
+        let new_key = if self.resolver_epoch == 0 {
             base_key
         } else {
             format!("{base_key}:entity-epoch:{}", self.resolver_epoch)
+        };
+        // Preserve sharing for unaffected entities, including requests already
+        // in flight before a deletion. Prefer the call this entity has joined.
+        // Invalidations live only with that pending call, not in an unbounded
+        // per-entity generation table.
+        let identity = (target.state_id, target.primary_key.clone());
+        let cache_key = if self.resolver_epoch == 0 {
+            new_key
+        } else {
+            self.resolver_pending
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.resolver == resolver
+                        && entry.input == input
+                        && !entry.invalidated_targets.contains(&identity)
+                })
+                .max_by_key(|(_, entry)| {
+                    entry.targets.iter().any(|existing| {
+                        existing.state_id == target.state_id
+                            && existing.primary_key == target.primary_key
+                    })
+                })
+                .map(|(key, _)| key.clone())
+                .unwrap_or(new_key)
         };
 
         if let Some(entry) = self.resolver_pending.get_mut(&cache_key) {
@@ -2390,6 +2423,7 @@ impl VmContext {
                 resolver: resolver.clone(),
                 input: input.clone(),
                 targets: vec![target],
+                invalidated_targets: HashSet::new(),
                 queued_at,
                 next_retry_at: Instant::now(),
                 retry_count: 0,
