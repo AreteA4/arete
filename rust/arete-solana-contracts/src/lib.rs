@@ -6,6 +6,25 @@ pub const MAX_BATCH_ADDRESSES: usize = 100;
 pub const MAX_PAGE_SIZE: u16 = 100;
 pub const MAX_CURSOR_BYTES: usize = 2048;
 
+/// A chain account's deletion, independent of any entity/view mapping.
+/// Ingestion emits this only after recognizing an authoritative tombstone and
+/// enforcing its replay watermark; empty data alone does not imply deletion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountTombstone {
+    pub address: String,
+    #[serde(with = "decimal_u64")]
+    pub slot: u64,
+    #[serde(with = "decimal_u64")]
+    pub write_version: u64,
+}
+
+impl AccountTombstone {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_address(&self.address)
+    }
+}
+
 pub mod decimal_u64 {
     use serde::{Deserialize, Deserializer, Serializer};
     pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {

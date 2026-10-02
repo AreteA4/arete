@@ -141,3 +141,17 @@ class NativePositionPage:
     addresses: tuple[str, ...]
     next_cursor: Optional[str]
     discovery: DiscoveryProvenance
+
+@dataclass(frozen=True)
+class AccountTombstone:
+    """Authoritative chain deletion; ingestion owns recognition and entity mapping."""
+    address: str
+    slot: int
+    write_version: int
+
+    @classmethod
+    def from_json(cls, value: Dict[str, Any]) -> "AccountTombstone":
+        validate_address(value["address"])
+        if set(value) != {"address", "slot", "writeVersion"}:
+            raise ValueError("Invalid tombstone fields")
+        return cls(value["address"], decimal_u64(value["slot"], "slot"), decimal_u64(value["writeVersion"], "writeVersion"))

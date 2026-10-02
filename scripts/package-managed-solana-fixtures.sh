@@ -4,6 +4,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "$ROOT_DIR/target"
 python3 - "$ROOT_DIR" <<'PY'
 import gzip
+import hashlib
 import io
 from pathlib import Path
 import sys
@@ -22,5 +23,9 @@ with (root / "target/managed-solana-v1.tar.gz").open("wb") as output:
                 entry.size = len(content)
                 entry.mode = 0o644
                 archive.addfile(entry, io.BytesIO(content))
+asset = root / "target/managed-solana-v1.tar.gz"
+asset.with_suffix(asset.suffix + ".sha256").write_text(
+    hashlib.sha256(asset.read_bytes()).hexdigest() + "  " + asset.name + "\n"
+)
 PY
 echo "$ROOT_DIR/target/managed-solana-v1.tar.gz"

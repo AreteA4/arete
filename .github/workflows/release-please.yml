@@ -216,6 +216,7 @@ jobs:
         run: |
           ./scripts/package-managed-solana-fixtures.sh
           ./scripts/upload-release-asset.sh "$CONTRACT_TAG" target/managed-solana-v1.tar.gz
+          ./scripts/upload-release-asset.sh "$CONTRACT_TAG" target/managed-solana-v1.tar.gz.sha256
           ./scripts/publish-crate.sh rust/arete-solana-contracts
 
       - name: Publish arete-server

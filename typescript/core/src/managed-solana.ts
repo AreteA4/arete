@@ -55,3 +55,11 @@ export function managedDiscovery(value: Record<string, unknown>): DiscoveryProve
   if (!value || typeof value.source !== 'string' || !value.source || typeof value.observedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value.observedAt) || !Number.isFinite(Date.parse(value.observedAt))) throw new TypeError('Invalid discovery provenance');
   return { source: value.source, observedAt: value.observedAt, ...(value.watermark == null ? {} : { watermark: managedU64(value.watermark, 'watermark') }) };
 }
+
+/** Authoritative chain deletion; ingestion owns recognition and entity mapping. */
+export interface AccountTombstone { address: string; slot: bigint; writeVersion: bigint }
+export function accountTombstone(value: Record<string, unknown>): AccountTombstone {
+  managedAddress(value.address as string);
+  if (Object.keys(value).some(key => !['address', 'slot', 'writeVersion'].includes(key))) throw new TypeError('Unknown tombstone field');
+  return { address: value.address as string, slot: managedU64(value.slot, 'slot'), writeVersion: managedU64(value.writeVersion, 'writeVersion') };
+}

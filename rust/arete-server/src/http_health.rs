@@ -564,7 +564,13 @@ async fn handle_owner_token_accounts(
 ) -> Response<Full<Bytes>> {
     let request = match read_json_body::<OwnerTokenAccountsRequest>(req).await {
         Ok(request) => request,
-        Err(response) => return response,
+        Err(_) => {
+            return capability_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "Invalid JSON request",
+            )
+        }
     };
     if let Err(error) = request.validate() {
         return capability_error(StatusCode::BAD_REQUEST, "invalid_request", error);
@@ -634,12 +640,24 @@ async fn handle_contextual_accounts(
     let (addresses, options) = if single {
         match read_json_body::<ContextualAccountBody>(req).await {
             Ok(body) => (vec![body.address], body.options),
-            Err(response) => return response,
+            Err(_) => {
+                return capability_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "Invalid JSON request",
+                )
+            }
         }
     } else {
         match read_json_body::<ContextualAccountsBody>(req).await {
             Ok(body) => (body.addresses, body.options),
-            Err(response) => return response,
+            Err(_) => {
+                return capability_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "Invalid JSON request",
+                )
+            }
         }
     };
     if addresses.len() > batch_address_limit(auth, MAX_CHAIN_BATCH_ADDRESSES) {

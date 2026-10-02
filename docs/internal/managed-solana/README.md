@@ -19,7 +19,7 @@ The schemas, capability descriptor, example binding descriptors and deterministi
 fixtures are in [`tests/fixtures/managed-solana-v1`](../../../tests/fixtures/managed-solana-v1).
 Run `scripts/package-managed-solana-fixtures.sh` to build the release asset.
 The release workflow uploads this bundle and publishes `arete-solana-contracts`
-before its dependent SDK/server releases. Platform implementations can target the
+before its dependent SDK/server releases. Service implementers can target the
 bundle before those releases finish.
 
 | Operation | Route | Request | Response |
@@ -58,7 +58,7 @@ integers remain decimal strings in the retained JSON metadata; token amounts
 already use exact decimal strings. Other retained integer fields outside the
 JavaScript exact range are also strings. Account indexes remain numbers.
 
-## Provider and platform handoff
+## Provider integration
 
 Implement `arete_server::token_discovery::OwnerTokenAccountsProvider` and pass it
 to `Server::solana_gateway(...).owner_token_accounts_provider(...)`, the general
@@ -71,7 +71,7 @@ observation time. Unsupported discovery returns HTTP 501 with
 The shared Program Read handlers implement contextual reads with release
 authorization and decoder ownership checks. Native position querying is a
 transport contract: the shared server explicitly returns `unsupported_capability`.
-The platform owns the implementation and supported release/type/filter matrix.
+Hosted services supply the implementation and supported release/type/filter matrix.
 SDK readers expose `query_positions` / `queryPositions`; the generic query
 executor does not advertise availability of a native endpoint.
 
@@ -108,11 +108,11 @@ enum layouts are rejected rather than emitted as valid-looking unit variants.
 
 Generated account decoders expose `try_from_bytes_exact`. It rejects trailing
 bytes with `unsupported_layout`; existing `try_from_bytes` retains its padded
-account behavior. A platform release limited to fixed layouts must select the
+account behavior. A service limited to fixed layouts must select the
 strict decoder or enforce account length before decoding. The fixed-position
 fixture isolates the 70-entry resize boundary. It is a synthetic acceptance
 fixture, not a curated production Meteora IDL. Extended Meteora positions remain
-unsupported until stack definitions and platform decoder policy declare support.
+unsupported until stack definitions and decoder policy declare support.
 
 ## Validation and release assembly
 
@@ -126,8 +126,58 @@ payloads, unknown tags, truncation and strict fixed-layout boundaries. It needs 
 live chain, hosted service, provider credentials or protocol stack deployment.
 
 The fixture bundle, integration harness and migration notes are ready for
-platform and stack consumers. Publish the linked release group after CI; both
+service and stack consumers. Publish the linked release group after CI; both
 release and recovery upload the reproducible fixture asset before publishing
 dependent packages. Integrations that depend on hosted discovery or native
 queries must verify provider conformance, supported account layouts and binding
 availability before enabling those capabilities.
+
+## Release and canonical contract
+
+Published SDK/server/compiler **0.28.0 does not contain these APIs or runtime
+fixes**. The first planned linked release is **0.29.0**, with
+`arete-solana-contracts` **0.1.0**. Both are pending publication; a checkout whose
+package manifests still say 0.28.0 is not evidence that the registry release
+contains this work. Consumers must use the merged revision or the published
+0.29.0 release before enabling the integrations.
+
+`tests/fixtures/managed-solana-v1/manifest.json` is the canonical route/method,
+request/response schema, default and error manifest for fixture bundle **1.0.0**.
+Release automation attaches `managed-solana-v1.tar.gz` and its SHA-256 checksum to
+`arete-solana-contracts-v0.1.0`. The archive includes HTTP examples, exact integer
+and unknown metadata cases, the account deletion boundary, and complete pinned
+Orca Whirlpool/SPL Token IDLs with source hashes. Routes remain
+`managed-solana/v1`; Service implementations align their routes and envelopes to these fixtures.
+
+Empty and filter-only derived views read the source cache when there is no
+sorted cache. Pipeline filters run before subscription filters; unsorted results
+use numeric `_seq` order (descending by default, ascending for `after`), with key
+ties. `skip`/`take` still select the live window; a pipeline limit caps `take`.
+`snapshotLimit` truncates initial delivery only. Reconnect replaces the client
+snapshot, including an empty result. Sorted views keep their configured order.
+
+Source deletion uses `Mutation::delete`; VM-backed sources use
+`VmContext::delete_entity` plus `discard_account`. The projector removes cached
+and sorted rows before publishing `delete`. Predicate/window departure remains
+`remove`. Deleted rows accept only a newer complete creation marked
+`mark_created`, so resends and sparse patches cannot resurrect them. Snapshot
+payloads retain deletion barriers; barriers are bounded to eight times the entity
+cache capacity per view. Ingestion owners must retain durable ingestion deduplication and
+resume watermarks beyond that cache retention.
+
+See [Account lifecycle integration](account-lifecycle.md) for the public ingestion
+boundary. The validation harness compiles every instruction and account reader
+from the complete public Orca Whirlpool IDL and the public Anchor SPL Token IDL.
+The SPL adapter explicitly declares native account layouts and option encodings;
+its source and transformation are bundled for reproducibility.
+
+Decoder regressions construct an Orca `DynamicTickArray` containing 88 enum values
+with exact u128/i128 payloads and independently pack a 165-byte SPL Token account
+from its public layout. Both are constructed test data, not captured accounts.
+`production-idls/provenance.json` records only public upstream sources and hashes.
+
+IDLs can explicitly declare discriminator-free account layouts with
+`arete.account_untagged=true` in account docs and an empty discriminator. Omitting a
+discriminator without that declaration retains Anchor derivation. Untagged managed
+reads select the requested account type and require an exact layout. Generic
+untagged parsing rejects ambiguous layouts.

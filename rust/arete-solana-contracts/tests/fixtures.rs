@@ -77,3 +77,43 @@ fn discovery_requires_an_actual_timestamp_with_a_timezone() {
         assert!(discovery.validate().is_err());
     }
 }
+
+#[test]
+fn versioned_manifest_and_deletion_contract_are_precise() {
+    let manifest = fixture("manifest");
+    assert_eq!(manifest["contract"], CONTRACT_VERSION);
+    assert_eq!(manifest["bundleVersion"], "1.0.0");
+    assert_eq!(manifest["sdkRelease"]["firstPlannedRelease"], "0.29.0");
+    let schema = fixture("schema");
+    for route in manifest["routes"].as_array().unwrap() {
+        assert_eq!(route["method"], "POST");
+        for field in ["requestSchema", "responseSchema"] {
+            assert!(schema["$defs"]
+                .get(route[field].as_str().unwrap())
+                .is_some());
+        }
+    }
+    let tombstone: AccountTombstone =
+        serde_json::from_value(fixture("account-deletion")["tombstone"].clone()).unwrap();
+    tombstone.validate().unwrap();
+    assert_eq!(tombstone.slot, 9_007_199_254_740_993);
+    assert_eq!(tombstone.write_version, u64::MAX);
+    assert_eq!(
+        serde_json::to_value(tombstone).unwrap(),
+        fixture("account-deletion")["tombstone"]
+    );
+    for case in fixture("wire-cases")["cases"].as_array().unwrap() {
+        let route = manifest["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|route| route["id"] == case["route"])
+            .unwrap();
+        assert_eq!(case["method"], route["method"]);
+        if case["status"] == 200 {
+            let value: Contextual<Value> =
+                serde_json::from_value(case["response"].clone()).unwrap();
+            assert_eq!(serde_json::to_value(value).unwrap(), case["response"]);
+        }
+    }
+}

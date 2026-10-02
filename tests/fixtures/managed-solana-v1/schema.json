@@ -16,7 +16,8 @@
     "cursor": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 2048
+      "maxLength": 2048,
+      "description": "Opaque nonempty cursor; implementations enforce at most 2048 UTF-8 bytes."
     },
     "readOptions": {
       "type": "object",
@@ -233,13 +234,12 @@
     },
     "typedSingleRequest": {
       "type": "object",
-      "required": [],
+      "additionalProperties": false,
       "properties": {
         "options": {
           "$ref": "#/$defs/readOptions"
         }
-      },
-      "additionalProperties": false
+      }
     },
     "ownerTokenAccount": {
       "type": "object",
@@ -767,6 +767,68 @@
           "additionalProperties": true
         }
       ]
+    },
+    "accountTombstone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "slot",
+        "writeVersion"
+      ],
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/address"
+        },
+        "slot": {
+          "$ref": "#/$defs/u64"
+        },
+        "writeVersion": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    "typedSingleResponse": {
+      "type": "object",
+      "required": [
+        "context",
+        "value"
+      ],
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/context"
+        },
+        "value": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    },
+    "transactionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signature"
+      ],
+      "properties": {
+        "signature": {
+          "type": "string",
+          "description": "Base58 encoded 64-byte signature"
+        },
+        "commitment": {
+          "enum": [
+            "confirmed",
+            "finalized"
+          ]
+        },
+        "maxSupportedTransactionVersion": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        }
+      }
     }
   },
   "description": "Wire spelling is frozen by this bundle. Scalars and bounds are shared; clients and server enforce u64 ranges, address byte widths, filter binding, page size versus requested limit, and positional alignment."

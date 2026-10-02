@@ -290,6 +290,7 @@ jobs:
             contract_version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "arete-solana-contracts") | .version')"
             ./scripts/package-managed-solana-fixtures.sh
             ./scripts/upload-release-asset.sh "arete-solana-contracts-v$contract_version" target/managed-solana-v1.tar.gz
+            ./scripts/upload-release-asset.sh "arete-solana-contracts-v$contract_version" target/managed-solana-v1.tar.gz.sha256
             ./scripts/publish-crate.sh rust/arete-solana-contracts --allow-existing
           fi
           ./scripts/publish-crate.sh rust/arete-server --allow-existing

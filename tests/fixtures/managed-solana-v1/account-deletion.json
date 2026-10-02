@@ -1,0 +1,25 @@
+{
+  "contract": "managed-solana/v1",
+  "tombstone": {
+    "address": "11111111111111111111111111111111",
+    "slot": "9007199254740993",
+    "writeVersion": "18446744073709551615"
+  },
+  "mutation": {
+    "export": "Account",
+    "key": "11111111111111111111111111111111",
+    "patch": {
+      "__arete_entity_delete": true
+    }
+  },
+  "sourceFrame": {
+    "mode": "list",
+    "entity": "Account/list",
+    "op": "delete",
+    "key": "11111111111111111111111111111111",
+    "data": null,
+    "seq": "9007199254740993:18446744073709551615"
+  },
+  "viewEvictionOperation": "remove",
+  "recreation": "newer marked creation containing the complete new entity"
+}

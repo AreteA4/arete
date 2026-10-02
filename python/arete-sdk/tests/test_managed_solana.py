@@ -111,3 +111,32 @@ def test_shared_fixture_bundle_matches_versioned_schemas():
             validate("nativePage", case["response"])
     for case in fixture("transactions")["cases"]:
         validate("transactionResponse", case["response"])
+
+
+def test_versioned_manifest_and_account_deletion_contract():
+    import hashlib
+    from jsonschema import Draft202012Validator
+    manifest = fixture("manifest")
+    assert manifest["contract"] == MANAGED_SOLANA_CONTRACT_VERSION
+    assert manifest["bundleVersion"] == "1.0.0"
+    for file in manifest["fixtures"]:
+        assert (ROOT / file).is_file()
+    for file in json.loads((ROOT / "production-idls/provenance.json").read_text())["fixtures"]:
+        assert hashlib.sha256((ROOT / file["file"]).read_bytes()).hexdigest() == file["sha256"]
+    schema = fixture("schema")
+    routes = {route["id"]: route for route in manifest["routes"]}
+    for route in routes.values():
+        assert route["method"] == "POST"
+        assert route["requestSchema"] in schema["$defs"]
+        assert route["responseSchema"] in schema["$defs"]
+    for case in fixture("wire-cases")["cases"]:
+        route = routes[case["route"]]
+        assert case["method"] == route["method"]
+        name = route["responseSchema"] if case["status"] == 200 else "error"
+        Draft202012Validator({"$ref": f"#/$defs/{name}", "$defs": schema["$defs"]}).validate(case["response"])
+    value = fixture("account-deletion")["tombstone"]
+    Draft202012Validator({"$ref":"#/$defs/accountTombstone", "$defs":schema["$defs"]}).validate(value)
+    tombstone = AccountTombstone.from_json(value)
+    assert tombstone.slot == 9007199254740993
+    assert tombstone.write_version == 2**64 - 1
+    with pytest.raises(ValueError): AccountTombstone.from_json({**value, "slot": 42})

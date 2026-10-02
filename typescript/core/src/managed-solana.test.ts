@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createChainClient } from './chain';
 import { createTransactionTransport } from './transactions';
 import { createProgramReadTransport } from './program-read-transport';
-import { managedU64 } from './managed-solana';
+import { managedU64, accountTombstone } from './managed-solana';
 
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`../../../tests/fixtures/managed-solana-v1/${name}.json`, import.meta.url), 'utf8'));
 const response = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
@@ -73,4 +73,24 @@ describe('managed Solana v1 shared fixtures', () => {
     expect(JSON.parse(String(mock.mock.calls[1][1]?.body))).toEqual({ addresses: ['a'], options: { commitment: 'finalized', minContextSlot: '42' } });
     for (const bad of [42, '18446744073709551616', '-1', '+42', '1.5']) expect(() => managedU64(bad, 'slot')).toThrow();
   });
+});
+
+
+it('uses the canonical route manifest and exact deletion contract', () => {
+  const manifest = fixture('manifest');
+  expect(manifest.contract).toBe('managed-solana/v1');
+  expect(manifest.bundleVersion).toBe('1.0.0');
+  const definitions = fixture('schema').$defs;
+  for (const route of manifest.routes) {
+    expect(route.method).toBe('POST');
+    expect(definitions[route.requestSchema]).toBeDefined();
+    expect(definitions[route.responseSchema]).toBeDefined();
+  }
+  for (const test of fixture('wire-cases').cases) {
+    expect(test.method).toBe(manifest.routes.find((route: { id: string }) => route.id === test.route).method);
+  }
+  const value = accountTombstone(fixture('account-deletion').tombstone);
+  expect(value.slot).toBe(9_007_199_254_740_993n);
+  expect(value.writeVersion).toBe(18_446_744_073_709_551_615n);
+  expect(() => accountTombstone({ ...fixture('account-deletion').tombstone, writeVersion: 42 })).toThrow();
 });
