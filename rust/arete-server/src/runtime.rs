@@ -71,6 +71,7 @@ pub struct Runtime {
     solana_gateway_usage_observer: Option<Arc<dyn SolanaGatewayUsageObserver>>,
     websocket_max_clients: Option<usize>,
     websocket_rate_limit_config: Option<RateLimitConfig>,
+    websocket_admission_provider: Option<Arc<dyn crate::WebSocketAdmissionProvider>>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -90,6 +91,7 @@ impl Runtime {
             solana_gateway_usage_observer: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
+            websocket_admission_provider: None,
             metrics,
         }
     }
@@ -108,6 +110,7 @@ impl Runtime {
             solana_gateway_usage_observer: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
+            websocket_admission_provider: None,
         }
     }
 
@@ -164,6 +167,14 @@ impl Runtime {
     /// via AuthContext.Limits from the authentication token.
     pub fn with_websocket_rate_limit_config(mut self, config: RateLimitConfig) -> Self {
         self.websocket_rate_limit_config = Some(config);
+        self
+    }
+
+    pub fn with_websocket_admission_provider(
+        mut self,
+        provider: Arc<dyn crate::WebSocketAdmissionProvider>,
+    ) -> Self {
+        self.websocket_admission_provider = Some(provider);
         self
     }
 
@@ -400,6 +411,9 @@ impl Runtime {
             }
             if let Some(rate_limit_config) = self.websocket_rate_limit_config {
                 ws_server = ws_server.with_rate_limit_config(rate_limit_config);
+            }
+            if let Some(provider) = self.websocket_admission_provider.clone() {
+                ws_server = ws_server.with_admission_provider(provider);
             }
             let (connection_acceptor, cleanup_handle) = ws_server.into_acceptor();
             background.push(cleanup_handle);
