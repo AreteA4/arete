@@ -1,5 +1,6 @@
 use crate::account_policy::{redact_identity, AccountPolicyError, AccountPolicyRegistry};
 use crate::compression::CompressedPayload;
+use crate::websocket::admission::{WebSocketAdmissionProvider, WebSocketConnectionPermit};
 use crate::websocket::auth::{AuthContext, AuthDeny, AuthErrorCode};
 use crate::websocket::rate_limiter::{RateLimitResult, WebSocketRateLimiter};
 use arete_auth::Limits;
@@ -198,6 +199,7 @@ pub struct ClientInfo {
     /// queue drains. It is kept out of the queue so that a full queue cannot
     /// lose it.
     close_frame: Arc<std::sync::OnceLock<CloseFrame>>,
+    admission_permit: Option<Arc<dyn WebSocketConnectionPermit>>,
 }
 
 impl ClientInfo {
@@ -217,6 +219,7 @@ impl ClientInfo {
             egress_tracker: std::sync::Mutex::new(EgressTracker::new()),
             message_rate_tracker: std::sync::Mutex::new(MessageRateTracker::new()),
             close_frame: Arc::new(std::sync::OnceLock::new()),
+            admission_permit: None,
         }
     }
 
@@ -512,6 +515,8 @@ pub struct ClientManager {
     account_policies: Arc<AccountPolicyRegistry>,
     /// Per-process aggregate message/egress usage per account
     account_usage: Arc<DashMap<String, AccountUsage>>,
+    /// Optional embedder-owned admission state shared across runtimes.
+    admission_provider: Option<Arc<dyn WebSocketAdmissionProvider>>,
 }
 
 impl ClientManager {
@@ -527,7 +532,28 @@ impl ClientManager {
             rate_limiter: None,
             account_policies: Arc::new(AccountPolicyRegistry::default()),
             account_usage: Arc::new(DashMap::new()),
+            admission_provider: None,
         }
+    }
+
+    /// Install an embedder-owned provider for cross-runtime admission.
+    pub fn with_admission_provider(
+        mut self,
+        provider: Arc<dyn WebSocketAdmissionProvider>,
+    ) -> Self {
+        self.admission_provider = Some(provider);
+        self
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn reserve_connection_admission(
+        &self,
+        context: &AuthContext,
+    ) -> Result<Option<Arc<dyn WebSocketConnectionPermit>>, AuthDeny> {
+        self.admission_provider
+            .as_ref()
+            .map(|provider| provider.reserve_connection(context))
+            .unwrap_or(Ok(None))
     }
 
     /// Load configuration from environment variables
@@ -644,7 +670,7 @@ impl ClientManager {
 
     /// Enforce the per-connection and aggregate account egress budgets.
     fn enforce_egress_budgets(&self, client_id: Uuid, bytes: usize) -> Result<(), SendError> {
-        let (connection_ok, account_ok) = {
+        let (connection_ok, account_ok, permit_id) = {
             let Some(client) = self.clients.get(&client_id) else {
                 return Err(SendError::ClientNotFound);
             };
@@ -655,7 +681,8 @@ impl ClientManager {
                     .as_ref()
                     .map(|ctx| self.record_account_egress(ctx, bytes))
                     .unwrap_or(true);
-            (connection_ok, account_ok)
+            let permit_id = client.admission_permit.as_ref().map(|permit| permit.id());
+            (connection_ok, account_ok, permit_id)
         };
         if !connection_ok {
             warn!("Client {} exceeded egress limit, disconnecting", client_id);
@@ -670,6 +697,13 @@ impl ClientManager {
             self.clients.remove(&client_id);
             return Err(SendError::ClientDisconnected);
         }
+        if let (Some(provider), Some(permit_id)) = (&self.admission_provider, permit_id) {
+            if let Err(deny) = provider.check_egress(permit_id, bytes) {
+                warn!(client = %client_id, reason = %deny.reason, "admission provider denied egress");
+                self.clients.remove(&client_id);
+                return Err(SendError::ClientDisconnected);
+            }
+        }
         Ok(())
     }
 
@@ -681,13 +715,36 @@ impl ClientManager {
     pub fn add_client(
         &self,
         client_id: Uuid,
-        mut ws_sender: WebSocketSender,
+        ws_sender: WebSocketSender,
         auth_context: Option<AuthContext>,
         remote_addr: SocketAddr,
     ) {
+        let permit = if let Some(context) = auth_context.as_ref() {
+            match self.reserve_connection_admission(context) {
+                Ok(permit) => permit,
+                Err(deny) => {
+                    warn!(reason = %deny.reason, "connection admission denied");
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        self.add_client_with_admission(client_id, ws_sender, auth_context, remote_addr, permit);
+    }
+
+    pub(crate) fn add_client_with_admission(
+        &self,
+        client_id: Uuid,
+        mut ws_sender: WebSocketSender,
+        auth_context: Option<AuthContext>,
+        remote_addr: SocketAddr,
+        admission_permit: Option<Arc<dyn WebSocketConnectionPermit>>,
+    ) {
         let (client_tx, mut client_rx) =
             mpsc::channel::<Message>(self.rate_limit_config.message_queue_size);
-        let client_info = ClientInfo::new(client_id, client_tx, auth_context, remote_addr);
+        let mut client_info = ClientInfo::new(client_id, client_tx, auth_context, remote_addr);
+        client_info.admission_permit = admission_permit;
         let close_frame = client_info.close_frame.clone();
 
         let clients_ref = self.clients.clone();
@@ -725,12 +782,39 @@ impl ClientManager {
     ///
     /// Used for in-band auth refresh without reconnecting.
     pub fn update_client_auth(&self, client_id: Uuid, auth_context: AuthContext) -> bool {
+        self.try_update_client_auth(client_id, auth_context)
+            .unwrap_or(false)
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn try_update_client_auth(
+        &self,
+        client_id: Uuid,
+        auth_context: AuthContext,
+    ) -> Result<bool, AuthDeny> {
         if let Some(mut client) = self.clients.get_mut(&client_id) {
+            if let Some(provider) = &self.admission_provider {
+                let subscriptions = client.subscriptions.try_read().map_err(|_| {
+                    AuthDeny::new(
+                        AuthErrorCode::InternalError,
+                        "Subscription admission is busy",
+                    )
+                })?;
+                let active_subscriptions = subscriptions.keys().cloned().collect::<Vec<_>>();
+                drop(subscriptions);
+                let current_permit = client.admission_permit.clone();
+                let permit = provider.refresh_connection(
+                    current_permit,
+                    &auth_context,
+                    &active_subscriptions,
+                )?;
+                client.admission_permit = permit;
+            }
             client.auth_context = Some(auth_context);
             debug!("Updated auth context for client {}", client_id);
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -949,7 +1033,7 @@ impl ClientManager {
             ));
         }
 
-        let (connection_ok, account_ok) = {
+        let (connection_ok, account_ok, permit_id) = {
             let Some(client) = self.clients.get(&client_id) else {
                 return Err(AuthDeny::new(
                     crate::websocket::auth::AuthErrorCode::InternalError,
@@ -963,10 +1047,17 @@ impl ClientManager {
                     .as_ref()
                     .map(|ctx| self.record_account_message(ctx))
                     .unwrap_or(true);
-            (connection_ok, account_ok)
+            let permit_id = client.admission_permit.as_ref().map(|permit| permit.id());
+            (connection_ok, account_ok, permit_id)
         };
 
         if connection_ok && account_ok {
+            if let (Some(provider), Some(permit_id)) = (&self.admission_provider, permit_id) {
+                if let Err(deny) = provider.check_inbound_message(permit_id) {
+                    self.clients.remove(&client_id);
+                    return Err(deny);
+                }
+            }
             return Ok(());
         }
         self.clients.remove(&client_id);
@@ -993,16 +1084,58 @@ impl ClientManager {
         subscription_id: String,
         token: CancellationToken,
     ) -> bool {
-        if let Some(client) = self.clients.get(&client_id) {
-            client.add_subscription(subscription_id, token).await
-        } else {
-            false
+        self.try_add_client_subscription(client_id, subscription_id, token)
+            .await
+            .unwrap_or(false)
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub(crate) async fn try_add_client_subscription(
+        &self,
+        client_id: Uuid,
+        subscription_id: String,
+        token: CancellationToken,
+    ) -> Result<bool, AuthDeny> {
+        let Some((subscriptions, permit_id)) = self.clients.get(&client_id).map(|client| {
+            (
+                client.subscriptions.clone(),
+                client.admission_permit.as_ref().map(|permit| permit.id()),
+            )
+        }) else {
+            return Ok(false);
+        };
+        if let (Some(provider), Some(permit_id)) = (&self.admission_provider, permit_id) {
+            if !provider.add_subscription(permit_id, &subscription_id)? {
+                return Ok(false);
+            }
         }
+        let mut subscriptions = subscriptions.write().await;
+        if subscriptions.contains_key(&subscription_id) {
+            if let (Some(provider), Some(permit_id)) = (&self.admission_provider, permit_id) {
+                provider.remove_subscription(permit_id, &subscription_id);
+            }
+            return Ok(false);
+        }
+        subscriptions.insert(subscription_id, token);
+        Ok(true)
     }
 
     pub async fn remove_client_subscription(&self, client_id: Uuid, subscription_id: &str) -> bool {
-        if let Some(client) = self.clients.get(&client_id) {
-            client.remove_subscription(subscription_id).await
+        let Some((subscriptions, permit_id)) = self.clients.get(&client_id).map(|client| {
+            (
+                client.subscriptions.clone(),
+                client.admission_permit.as_ref().map(|permit| permit.id()),
+            )
+        }) else {
+            return false;
+        };
+        let token = subscriptions.write().await.remove(subscription_id);
+        if let Some(token) = token {
+            token.cancel();
+            if let (Some(provider), Some(permit_id)) = (&self.admission_provider, permit_id) {
+                provider.remove_subscription(permit_id, subscription_id);
+            }
+            true
         } else {
             false
         }
@@ -1072,6 +1205,9 @@ impl ClientManager {
                     info!("Cleaned up {} stale clients", removed);
                 }
                 client_manager.cleanup_account_state();
+                if let Some(provider) = &client_manager.admission_provider {
+                    provider.cleanup();
+                }
             }
         })
     }
@@ -1489,6 +1625,10 @@ impl Default for ClientManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+#[path = "admission_tests.rs"]
+mod admission_tests;
 
 #[cfg(test)]
 mod tests {
