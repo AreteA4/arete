@@ -1859,7 +1859,7 @@ fn py_variant_classes<'v>(
     let mut used = HashSet::new();
     variants
         .iter()
-        .filter(|variant| !variant.fields.is_empty())
+        .filter(|variant| !variant.fields.is_empty() && !variant.is_tuple)
         .map(|variant| {
             let base = format!("{enum_name}{}", to_pascal_case(&variant.name));
             let class = std::iter::once(base.clone())
@@ -1938,6 +1938,100 @@ fn py_idl_fields(fields: &[ModelField]) -> Vec<PyField> {
             }
         })
         .collect()
+}
+
+/// Converter for a required enum-payload value. Unlike a model field, the
+/// value is already present; only an IDL `Option` remains None-safe.
+fn py_variant_wire_converter(wire: &WireType) -> String {
+    match wire {
+        WireType::Scalar { base_type, .. } => {
+            if matches!(base_type, BaseType::Integer) {
+                "_to_int".to_string()
+            } else {
+                "_identity".to_string()
+            }
+        }
+        WireType::Option(inner) => {
+            format!("_optional_of({})", py_variant_wire_converter(inner))
+        }
+        WireType::List(inner) => format!("_list_of({})", py_variant_wire_converter(inner)),
+        WireType::Map(inner) => format!("_map_of({})", py_variant_wire_converter(inner)),
+        WireType::Tuple(elements) => format!(
+            "_tuple_of({})",
+            elements
+                .iter()
+                .map(py_variant_wire_converter)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        WireType::Model(name) => format!("{}_from_wire", to_snake_case(name)),
+        WireType::Json => "_identity".to_string(),
+    }
+}
+
+/// Annotation and converter for one positional enum-payload field. Model
+/// fields add an outer `Optional` for partial responses; variant fields do
+/// not, so required values shed only that outer wrapper.
+fn py_tuple_variant_field(field: &ModelField) -> (String, String) {
+    match &field.typed {
+        Some(typed) => (py_wire_annotation(typed), py_variant_wire_converter(typed)),
+        None => {
+            let (annotation, conversion) = py_scalar_field_shape(
+                &field.flat.base_type,
+                field.flat.effective_integer_kind(),
+                field.flat.is_array,
+                Some(field.flat.field_type.as_str()),
+            );
+            let annotation = if field.flat.is_optional {
+                annotation
+            } else {
+                annotation
+                    .strip_prefix("Optional[")
+                    .and_then(|inner| inner.strip_suffix(']'))
+                    .unwrap_or(&annotation)
+                    .to_string()
+            };
+            let converter = match conversion {
+                WireConversion::PassThrough => "_identity",
+                WireConversion::Int => "_to_int",
+                WireConversion::IntList => "_to_int_list",
+                _ => unreachable!("flat IDL fields use only scalar conversions"),
+            };
+            (annotation, converter.to_string())
+        }
+    }
+}
+
+/// Python type and converter for a positional enum payload. Serde-style
+/// newtype variants carry their only value directly; variants with several
+/// fields carry a tuple/JSON array.
+fn py_tuple_variant_payload(variant: &ModelVariant) -> (String, String) {
+    let fields = variant
+        .fields
+        .iter()
+        .map(py_tuple_variant_field)
+        .collect::<Vec<_>>();
+    match fields.as_slice() {
+        [(annotation, converter)] => (annotation.clone(), converter.clone()),
+        fields => (
+            format!(
+                "Tuple[{}]",
+                fields
+                    .iter()
+                    .map(|(annotation, _)| annotation.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            format!(
+                "_tuple_of({})",
+                fields
+                    .iter()
+                    .map(|(_, converter)| converter.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ),
+    }
 }
 
 /// The annotation of a wire shape.
@@ -2048,8 +2142,8 @@ fn py_multiline(open: &str, close: &str, items: &[String], indent: &str) -> Stri
 /// A struct is a dataclass with strict and patch converters, as
 /// [`render_py_model`] renders one. An enum value is what the wire carries:
 /// a unit variant's name (`str`), or a one-key mapping from a data variant's
-/// name to its fields, typed by a dataclass per data variant
-/// (`{"Stable": CurveTypeStable(...)}`).
+/// name to its payload. Named payloads use a dataclass; positional payloads
+/// keep their direct value or tuple shape.
 fn render_py_idl_model(model: &IdlModel, name: &str, doc: &str) -> String {
     let snake = to_snake_case(name);
     match &model.kind {
@@ -2079,14 +2173,31 @@ fn render_py_idl_model(model: &IdlModel, name: &str, doc: &str) -> String {
                     true,
                 ));
             }
-            let alias = match classes.as_slice() {
+            let mut payload_types = variants
+                .iter()
+                .filter(|variant| !variant.fields.is_empty())
+                .map(|variant| {
+                    if variant.is_tuple {
+                        py_tuple_variant_payload(variant).0
+                    } else {
+                        classes
+                            .iter()
+                            .find(|(candidate, _)| candidate.name == variant.name)
+                            .map(|(_, class)| class.clone())
+                            .expect("named data variant has a class")
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mut seen_payload_types = HashSet::new();
+            payload_types.retain(|payload| seen_payload_types.insert(payload.clone()));
+            let alias = match payload_types.as_slice() {
                 [] => "str".to_string(),
-                [(_, class)] => format!("Union[str, Dict[str, {class}]]"),
-                classes => format!(
+                [payload] => format!("Union[str, Dict[str, {payload}]]"),
+                payloads => format!(
                     "Union[str, Dict[str, Union[{}]]]",
-                    classes
+                    payloads
                         .iter()
-                        .map(|(_, class)| class.as_str())
+                        .map(String::as_str)
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
@@ -2102,18 +2213,24 @@ fn render_py_idl_model(model: &IdlModel, name: &str, doc: &str) -> String {
                 .filter(|variant| variant.fields.is_empty())
                 .map(|variant| py_string_literal(&variant.name))
                 .collect::<Vec<_>>();
-            let converters = classes
+            let converters = variants
                 .iter()
-                .map(|(variant, class)| {
-                    format!(
-                        "{}: {}_from_wire",
-                        py_string_literal(&variant.name),
-                        to_snake_case(class)
-                    )
+                .filter(|variant| !variant.fields.is_empty())
+                .map(|variant| {
+                    let converter = if variant.is_tuple {
+                        py_tuple_variant_payload(variant).1
+                    } else {
+                        classes
+                            .iter()
+                            .find(|(candidate, _)| candidate.name == variant.name)
+                            .map(|(_, class)| format!("{}_from_wire", to_snake_case(class)))
+                            .expect("named data variant has a class")
+                    };
+                    format!("{}: {}", py_string_literal(&variant.name), converter)
                 })
                 .collect::<Vec<_>>();
             blocks.push(format!(
-                "def {snake}_from_wire(value: Any) -> {name}:\n    \"\"\"Converts a wire `{name}` value: a unit variant's name, or a one-key\n    mapping from a data variant's name to its fields.\n\n    Raises ``ValueError`` for any other value.\"\"\"\n    return _enum_from_wire(\n        value,\n        {context},\n        {units},\n        {converters},\n    )\n",
+                "def {snake}_from_wire(value: Any) -> {name}:\n    \"\"\"Converts a wire `{name}` value: a unit variant's name, or a one-key\n    mapping from a data variant's name to its payload.\n\n    Raises ``ValueError`` for any other value.\"\"\"\n    return _enum_from_wire(\n        value,\n        {context},\n        {units},\n        {converters},\n    )\n",
                 context = py_string_literal(name),
                 units = py_multiline("(", ")", &units, "        "),
                 converters = py_multiline("{", "}", &converters, "        "),
@@ -6151,8 +6268,7 @@ assert models.operator_from_wire(payload).permission == 2**128 - 1
 
         let core = compile_program_modules(mpl_core_stack(), config()).unwrap();
         for expected in [
-            "UpdateAuthority = Union[str, Dict[str, Union[UpdateAuthorityAddress, UpdateAuthorityCollection]]]\n",
-            "@dataclass\nclass UpdateAuthorityAddress:\n    \"\"\"Variant `Address` of `UpdateAuthority`.\"\"\"\n\n    field_0: Optional[str] = None\n",
+            "UpdateAuthority = Union[str, Dict[str, str]]\n",
             "    lifecycle_checks: Optional[List[Tuple[HookableLifecycleEvent, ExternalCheckResult]]] = None\n",
             "        lifecycle_checks=_list_of(_tuple_of(_optional_of(hookable_lifecycle_event_from_wire), _optional_of(external_check_result_from_wire)))(data.get(\"lifecycle_checks\")),\n",
             "        registry=_convert_list(_require(data, \"registry\", \"PluginRegistryV1\"), registry_record_from_wire),\n",
@@ -6164,8 +6280,8 @@ assert models.operator_from_wire(payload).permission == 2**128 - 1
 
     /// The generated converters decode Program Read payloads: integers from
     /// decimal strings at any depth, nested structs, enums (unit names and
-    /// one-key data variants, tuple fields keyed `field_<index>`), tuples and
-    /// maps; camelCase keys normalize to the snake_case fields.
+    /// one-key data variants with named-object or positional tuple payloads),
+    /// tuples and maps; camelCase keys normalize to the snake_case fields.
     #[test]
     fn python_models_decode_program_read_payloads() {
         use crate::idl_models::tests::{mpl_core_stack, ore_stack, pyth_rec_stack};
@@ -6179,11 +6295,23 @@ assert models.operator_from_wire(payload).permission == 2**128 - 1
                     { "name": "amounts", "type": { "vec": { "option": "u64" } } },
                     { "name": "pair", "type": { "tuple": ["u64", "publicKey"] } },
                     { "name": "balances", "type": { "hashMap": ["string", "u128"] } },
-                    { "name": "grid", "type": { "array": [{ "vec": "i64" }, 2] } }
+                    { "name": "grid", "type": { "array": [{ "vec": "i64" }, 2] } },
+                    { "name": "payload", "type": { "defined": "PayloadFixture" } }
                 ]
             }],
             "instructions": [],
-            "types": [],
+            "types": [{
+                "name": "PayloadFixture",
+                "type": {
+                    "kind": "enum",
+                    "variants": [
+                        { "name": "Empty" },
+                        { "name": "Named", "fields": [{ "name": "exactAmount", "type": "u64" }] },
+                        { "name": "Tuple", "fields": ["u64", "i64"] },
+                        { "name": "Large", "fields": [{ "vec": "u64" }] }
+                    ]
+                }
+            }],
             "discriminant_size": 8
         }))
         .unwrap();
@@ -6243,10 +6371,10 @@ for bad in ("Partial", {"Full": {}}, {"Nope": {}}, 1):
 
 asset = core.asset_v1_from_wire({
     "key": "AssetV1", "owner": "O",
-    "updateAuthority": {"Collection": {"field_0": "C"}},
+    "updateAuthority": {"Collection": "C"},
     "name": "n", "uri": "u", "seq": "7",
 })
-assert asset.update_authority["Collection"].field_0 == "C" and asset.seq == 7
+assert asset.update_authority["Collection"] == "C" and asset.seq == 7
 assert core.asset_v1_from_wire({
     "key": "AssetV1", "owner": "O", "updateAuthority": "None",
     "name": "n", "uri": "u", "seq": None,
@@ -6266,11 +6394,17 @@ holder = nested.holder_from_wire({
     "pair": ["18446744073709551615", "K"],
     "balances": {"a": "340282366920938463463374607431768211455"},
     "grid": [["-1", 2], []],
+    "payload": {"Tuple": ["9007199254740993", "-9007199254740993"]},
 })
 assert holder.amounts == [1, None, 3]
 assert holder.pair == (2**64 - 1, "K")
 assert holder.balances == {"a": 2**128 - 1}
 assert holder.grid == [[-1, 2], []]
+assert holder.payload["Tuple"] == (2**53 + 1, -(2**53 + 1))
+named = nested.payload_fixture_from_wire({"Named": {"exactAmount": "9007199254740993"}})
+assert isinstance(named["Named"], nested.PayloadFixtureNamed)
+assert named["Named"].exact_amount == 2**53 + 1
+assert nested.payload_fixture_from_wire({"Large": ["1", 2]})["Large"] == [1, 2]
 print("ok")
 "#;
         let python = std::env::var_os("PYTHON").unwrap_or_else(|| "python3".into());

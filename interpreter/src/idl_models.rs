@@ -899,11 +899,13 @@ pub(crate) mod tests {
         assert_eq!(level[0].fields[0].flat.raw_field_name(), "numSignatures");
         assert_eq!(level[0].fields[0].wire_name(), "num_signatures");
 
-        // Tuple variant fields are keyed `field_<index>`.
+        // Tuple variant fields keep their positional wire shape. The
+        // synthetic names are only used while binding their field types.
         let spec = mpl_core_stack();
         let models = ProgramModels::build(&spec.idls[0]);
         let authority = variants(&models.types["UpdateAuthority"]);
         assert_eq!(authority[1].name, "Address");
+        assert!(authority[1].is_tuple);
         assert_eq!(authority[1].fields[0].flat.raw_field_name(), "field_0");
         assert_eq!(authority[1].fields[0].flat.base_type, BaseType::Pubkey);
         // A struct variant keeps its field names.

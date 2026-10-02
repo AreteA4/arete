@@ -1346,18 +1346,15 @@ mod tests {
 
     /// Program account enums are externally tagged, the Program Read wire
     /// shape: a unit variant is its name, a data variant a one-key object
-    /// (tuple fields keyed `field_<index>`).
+    /// whose payload keeps its named-object or positional shape.
     #[derive(Deserialize, Debug, PartialEq)]
     enum TestLevel {
         Partial {
-            #[serde(default, deserialize_with = "deserialize_option_u64")]
+            #[serde(deserialize_with = "deserialize_integer")]
             #[serde(alias = "numSignatures")]
-            num_signatures: Option<u64>,
+            num_signatures: u64,
         },
-        Address {
-            #[serde(default)]
-            field_0: Option<String>,
-        },
+        Address(String),
         Full,
     }
 
@@ -1367,15 +1364,11 @@ mod tests {
         assert_eq!(decode(r#""Full""#).unwrap(), TestLevel::Full);
         assert_eq!(
             decode(r#"{"Partial": {"numSignatures": "5"}}"#).unwrap(),
-            TestLevel::Partial {
-                num_signatures: Some(5)
-            }
+            TestLevel::Partial { num_signatures: 5 }
         );
         assert_eq!(
-            decode(r#"{"Address": {"field_0": "key"}}"#).unwrap(),
-            TestLevel::Address {
-                field_0: Some("key".to_string())
-            }
+            decode(r#"{"Address": "key"}"#).unwrap(),
+            TestLevel::Address("key".to_string())
         );
         assert!(decode(r#""Partial""#).is_err());
         assert!(decode("1").is_err());
