@@ -606,8 +606,11 @@ pub fn process_entity_struct_with_idl(
 
     let views = view_specs.into_iter().map(|spec| spec.view).collect();
 
+    let entity_program = parse::parse_entity_attribute(&input.attrs)?.program;
     let ast = build_and_write_ast(
         &entity_name,
+        input.ident.span(),
+        entity_program.as_ref(),
         &primary_keys,
         &lookup_indexes,
         &sources_by_type,

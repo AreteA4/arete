@@ -1480,25 +1480,32 @@ pub fn has_entity_attribute(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident("entity"))
 }
 
-pub fn parse_entity_name(attrs: &[Attribute]) -> Option<String> {
-    for attr in attrs {
-        if attr.path().is_ident("entity") {
-            if let syn::Meta::List(meta_list) = &attr.meta {
-                let tokens_str = meta_list.tokens.to_string();
-                if tokens_str.contains("name") {
-                    if let Ok(parsed) = syn::parse_str::<syn::ExprAssign>(&tokens_str) {
-                        if let syn::Expr::Lit(expr_lit) = &*parsed.right {
-                            if let syn::Lit::Str(lit_str) = &expr_lit.lit {
-                                return Some(lit_str.value());
-                            }
-                        }
-                    }
-                }
-            }
-            return None;
-        }
+#[derive(Debug, Default)]
+pub struct EntityAttribute {
+    pub name: Option<String>,
+    /// The program owning a cross-program entity, e.g. `program = "ore"`.
+    pub program: Option<syn::LitStr>,
+}
+
+pub fn parse_entity_attribute(attrs: &[Attribute]) -> syn::Result<EntityAttribute> {
+    let mut entity = EntityAttribute::default();
+    let Some(attr) = attrs.iter().find(|attr| attr.path().is_ident("entity")) else {
+        return Ok(entity);
+    };
+    if !matches!(attr.meta, syn::Meta::List(_)) {
+        return Ok(entity);
     }
-    None
+    attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("name") {
+            entity.name = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+        } else if meta.path.is_ident("program") {
+            entity.program = Some(meta.value()?.parse()?);
+        } else {
+            return Err(meta.error("unknown #[entity] argument; expected `name` or `program`"));
+        }
+        Ok(())
+    })?;
+    Ok(entity)
 }
 
 #[derive(Debug, Clone)]
