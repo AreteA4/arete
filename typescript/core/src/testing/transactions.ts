@@ -116,6 +116,7 @@ export function createFakeTransactionTransport(
   const fallbackSignature = encodeBase58(new Uint8Array(64).fill(7));
 
   return {
+    async get() { return null; },
     calls,
     simulated,
     sent,

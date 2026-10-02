@@ -87,7 +87,26 @@ class TransactionSignatureStatus:
     err: Any = None
 
 
+@dataclass(frozen=True)
+class TransactionAccountBalance:
+    pubkey: str
+    pre_balance: int
+    post_balance: int
+
+@dataclass(frozen=True)
+class ConfirmedTransaction:
+    signature: str
+    slot: int
+    block_time: Optional[int]
+    err: Any
+    accounts: tuple[TransactionAccountBalance, ...]
+    transaction: Optional[Dict[str, Any]] = None
+    meta: Optional[Dict[str, Any]] = None
+    version: Any = None
+    metadata_available: Optional[bool] = None
+
 class TransactionTransport(Protocol):
+    async def get(self, signature: str, *, commitment: Optional[str] = None, max_supported_transaction_version: Optional[int] = None) -> Optional[ConfirmedTransaction]: ...
     async def get_latest_blockhash(
         self,
         *,
@@ -153,7 +172,10 @@ def _int_field(value: Any, name: str) -> int:
             code="invalid_response",
             message=f"Invalid decimal u64 field '{name}' in transaction response",
         )
-    return int(value)
+    parsed = int(value)
+    if parsed > 18446744073709551615:
+        raise TransactionTransportError(0, code="invalid_response", message=f"{name} exceeds u64")
+    return parsed
 
 
 def _optional_int(value: Any, name: str) -> Optional[int]:
@@ -215,6 +237,32 @@ class HttpTransactionTransport:
             raise _transport_error(
                 getattr(e, "status", None), getattr(e, "body", None)
             ) from e
+
+    async def get(self, signature: str, *, commitment: Optional[str] = None, max_supported_transaction_version: Optional[int] = None) -> Optional[ConfirmedTransaction]:
+        if commitment is not None and commitment not in ("confirmed", "finalized"):
+            raise ValueError("get accepts confirmed or finalized")
+        if max_supported_transaction_version is not None and (isinstance(max_supported_transaction_version, bool) or not isinstance(max_supported_transaction_version, int) or not 0 <= max_supported_transaction_version <= 255):
+            raise ValueError("Invalid maximum transaction version")
+        body = await self._post("get", {"signature": signature, "commitment": commitment, "maxSupportedTransactionVersion": max_supported_transaction_version}, INSPECT_SCOPE)
+        if "transaction" not in body:
+            raise ValueError("Missing transaction field")
+        tx = body["transaction"]
+        if tx is None:
+            return None
+        if not isinstance(tx.get("signature"), str) or not isinstance(tx.get("accounts"), list):
+            raise ValueError("Invalid transaction response")
+        accounts = []
+        for item in tx["accounts"]:
+            if not isinstance(item.get("pubkey"), str):
+                raise ValueError("Invalid transaction account pubkey")
+            accounts.append(TransactionAccountBalance(item["pubkey"], _int_field(item.get("preBalance"), "preBalance"), _int_field(item.get("postBalance"), "postBalance")))
+        block_time = tx.get("blockTime")
+        if block_time is not None:
+            import re
+            if not isinstance(block_time, str) or re.fullmatch(r"-?[0-9]+", block_time) is None or not -9223372036854775808 <= int(block_time) <= 9223372036854775807:
+                raise ValueError("Invalid blockTime")
+            block_time = int(block_time)
+        return ConfirmedTransaction(tx["signature"], _int_field(tx.get("slot"), "slot"), block_time, tx.get("err"), tuple(accounts), tx.get("transaction"), tx.get("meta"), tx.get("version"), tx.get("metadataAvailable"))
 
     async def get_latest_blockhash(
         self,

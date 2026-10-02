@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+use arete_solana_contracts::{NativePositionQuery, ReadOptions, MAX_BATCH_ADDRESSES};
 use serde_json::Value;
 
 use crate::error::AuthErrorCode;
@@ -58,6 +59,20 @@ pub trait BearerTokenSource: Send + Sync {
 /// One program read operation (TS `ProgramReadRequest`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProgramReadRequest<'a> {
+    FetchWithContext {
+        account: &'a str,
+        address: &'a str,
+        options: ReadOptions,
+    },
+    FetchManyWithContext {
+        account: &'a str,
+        addresses: &'a [&'a str],
+        options: ReadOptions,
+    },
+    NativeQuery {
+        account: &'a str,
+        query: &'a NativePositionQuery,
+    },
     Fetch {
         account: &'a str,
         address: &'a str,
@@ -76,6 +91,9 @@ impl ProgramReadRequest<'_> {
     fn account(&self) -> &str {
         match self {
             Self::Fetch { account, .. }
+            | Self::FetchWithContext { account, .. }
+            | Self::FetchManyWithContext { account, .. }
+            | Self::NativeQuery { account, .. }
             | Self::FetchMany { account, .. }
             | Self::Exists { account, .. } => account,
         }
@@ -158,6 +176,11 @@ impl ProgramReadTransport {
             encode_uri_component(request.account())
         );
         match request {
+            ProgramReadRequest::FetchWithContext { address, .. } => {
+                format!("{root}/{}/context", encode_uri_component(address))
+            }
+            ProgramReadRequest::FetchManyWithContext { .. } => format!("{root}/context"),
+            ProgramReadRequest::NativeQuery { .. } => format!("{root}/query"),
             ProgramReadRequest::FetchMany { .. } => root,
             ProgramReadRequest::Fetch { address, .. } => {
                 format!(
@@ -186,6 +209,20 @@ impl ProgramReadTransport {
     /// token invalidation and replay when an auth source and target are
     /// configured.
     pub async fn read(&self, request: &ProgramReadRequest<'_>) -> Result<Value, ReadError> {
+        match request {
+            ProgramReadRequest::FetchMany { addresses, .. }
+            | ProgramReadRequest::FetchManyWithContext { addresses, .. }
+                if addresses.len() > MAX_BATCH_ADDRESSES =>
+            {
+                return Err(ReadError::InvalidConfig {
+                    message: "addresses exceeds the 100-address limit".into(),
+                })
+            }
+            ProgramReadRequest::NativeQuery { query, .. } => query
+                .validate()
+                .map_err(|message| ReadError::InvalidConfig { message })?,
+            _ => {}
+        }
         let path = self.request_path(request);
         let url = append_url(&self.endpoint, &path);
 
@@ -231,6 +268,17 @@ impl ProgramReadTransport {
             None => None,
         };
         let mut builder = match request {
+            ProgramReadRequest::FetchWithContext { options, .. } => self
+                .http
+                .post(url)
+                .json(&serde_json::json!({ "options": options })),
+            ProgramReadRequest::FetchManyWithContext {
+                addresses, options, ..
+            } => self
+                .http
+                .post(url)
+                .json(&serde_json::json!({ "addresses": addresses, "options": options })),
+            ProgramReadRequest::NativeQuery { query, .. } => self.http.post(url).json(query),
             ProgramReadRequest::FetchMany { addresses, .. } => self
                 .http
                 .post(url)

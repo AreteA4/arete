@@ -1165,7 +1165,7 @@ fn render_declared_model(model: &DeclaredModel, name: &str) -> String {
 /// [`render_resolved_struct`] renders one (a struct of flat fields renders
 /// exactly as it does). An enum is externally tagged, the Program Read wire
 /// shape: a unit variant is its name, a data variant a one-key object from
-/// its name to its fields (tuple fields keyed `field_<index>`).
+/// its name to a required named-object or tuple-array payload.
 pub(crate) fn render_idl_model(model: &IdlModel, name: &str) -> String {
     match &model.kind {
         IdlModelKind::Struct(fields) => format!(
@@ -1197,10 +1197,31 @@ pub(crate) fn render_idl_model(model: &IdlModel, name: &str) -> String {
                     }
                     if variant.fields.is_empty() {
                         lines.push(format!("    {ident},"));
+                    } else if variant.is_tuple {
+                        let fields = variant
+                            .fields
+                            .iter()
+                            .map(render_idl_variant_field)
+                            .collect::<Vec<_>>();
+                        if let [field] = fields.as_slice() {
+                            if !field.contains('\n') {
+                                lines.push(format!("    {ident}({field}),"));
+                            } else {
+                                lines.push(format!(
+                                    "    {ident}(\n        {},\n    ),",
+                                    field.replace('\n', "\n        ")
+                                ));
+                            }
+                        } else {
+                            lines.push(format!(
+                                "    {ident}(\n        {},\n    ),",
+                                fields.join(",\n        ").replace('\n', "\n        ")
+                            ));
+                        }
                     } else {
                         lines.push(format!(
                             "    {ident} {{\n{}\n    }},",
-                            render_idl_model_fields(&variant.fields, "        ", "").join("\n")
+                            render_idl_variant_fields(&variant.fields, "        ").join("\n")
                         ));
                     }
                     lines.join("\n")
@@ -1209,6 +1230,80 @@ pub(crate) fn render_idl_model(model: &IdlModel, name: &str) -> String {
             format!("{derive}\npub enum {name} {{\n{}\n}}", variants.join("\n"))
         }
     }
+}
+
+/// A required enum-payload field. Unlike a model struct field, it has no
+/// outer patch `Option`: serde must reject a missing named field or a short
+/// tuple payload, while preserving an IDL `Option` inside the payload.
+fn render_idl_variant_field(field: &ModelField) -> String {
+    let (rust_type, shape) = match &field.typed {
+        Some(typed) => (rust_wire_type(typed), rust_wire_shape(typed)),
+        None => {
+            let scalar = scalar_shape_for_resolved_field(&field.flat);
+            let mut shape = scalar.integer_kind.map(|_| {
+                if scalar.is_vec {
+                    "serde_utils::wire::List<serde_utils::wire::Int>".to_string()
+                } else {
+                    "serde_utils::wire::Int".to_string()
+                }
+            });
+            let rust_type = if field.flat.is_optional {
+                if let Some(inner) = shape.take() {
+                    shape = Some(format!("serde_utils::wire::Opt<{inner}>"));
+                }
+                format!("Option<{}>", scalar.rust_type)
+            } else {
+                scalar.rust_type
+            };
+            (rust_type, shape)
+        }
+    };
+    match shape {
+        Some(shape) => format!(
+            "#[serde(deserialize_with = \"serde_utils::deserialize_wire::<_, _, {shape}>\")]\n{rust_type}"
+        ),
+        None => rust_type,
+    }
+}
+
+/// Required named fields of an enum payload. Their wire-name aliases match
+/// model-struct fields, but they intentionally do not use `#[serde(default)]`.
+fn render_idl_variant_fields(fields: &[ModelField], indent: &str) -> Vec<String> {
+    let flats = fields
+        .iter()
+        .map(|field| field.flat.clone())
+        .collect::<Vec<_>>();
+    fields
+        .iter()
+        .zip(RustCompiler::canonical_resolved_field_names(&flats))
+        .map(|(field, ident)| {
+            let rendered = render_idl_variant_field(field);
+            let (attributes, rust_type) = rendered
+                .rsplit_once('\n')
+                .map_or(("", rendered.as_str()), |(attributes, rust_type)| {
+                    (attributes, rust_type)
+                });
+            let wire = field.wire_name();
+            let raw = field.flat.raw_field_name();
+            let mut attrs = attributes
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if ident != wire {
+                attrs.push(format!("#[serde(rename = {})]", rust_string_literal(&wire)));
+            }
+            if raw != wire {
+                attrs.push(format!("#[serde(alias = {})]", rust_string_literal(raw)));
+            }
+            let attributes = if attrs.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n{indent}", attrs.join(&format!("\n{indent}")))
+            };
+            format!("{indent}{attributes}{ident}: {rust_type},")
+        })
+        .collect()
 }
 
 /// The fields of an IDL-derived struct or enum variant. A field keeps its
@@ -3442,10 +3537,10 @@ mod tests {
     fn rust_program_sdk_decodes_enums_as_the_wire_tags_them() {
         use crate::idl_models::tests::{mpl_core_stack, pyth_rec_stack};
         let pyth = compile_program_modules(pyth_rec_stack(), None).unwrap();
-        // A data variant is a one-key object; its fields accept the IDL's
-        // own (camelCase) keys.
+        // A named data variant is a one-key object; its required fields
+        // accept the IDL's own (camelCase) keys.
         assert!(pyth.types_rs.contains(
-            "#[derive(Debug, Clone, Serialize, Deserialize)]\npub enum VerificationLevel {\n    Partial {\n        #[serde(default, deserialize_with = \"serde_utils::deserialize_option_u64\")]\n        #[serde(alias = \"numSignatures\")]\n        num_signatures: Option<u64>,\n    },\n    Full,\n}"
+            "#[derive(Debug, Clone, Serialize, Deserialize)]\npub enum VerificationLevel {\n    Partial {\n        #[serde(deserialize_with = \"serde_utils::deserialize_wire::<_, _, serde_utils::wire::Int>\")]\n        #[serde(alias = \"numSignatures\")]\n        num_signatures: u64,\n    },\n    Full,\n}"
         ), "{}", pyth.types_rs);
         assert!(pyth.types_rs.contains(
             "    #[serde(default)]\n    #[serde(alias = \"verificationLevel\")]\n    pub verification_level: Option<VerificationLevel>,"
@@ -3455,9 +3550,9 @@ mod tests {
             .contains("AccountReader<crate::types::PriceUpdateV2>"));
 
         let core = compile_program_modules(mpl_core_stack(), None).unwrap();
-        // Tuple variants are keyed `field_<index>` on the wire.
+        // Tuple variants keep their positional array payload on the wire.
         assert!(core.types_rs.contains(
-            "pub enum UpdateAuthority {\n    None,\n    Address {\n        #[serde(default)]\n        field_0: Option<String>,\n    },\n    Collection {\n        #[serde(default)]\n        field_0: Option<String>,\n    },\n}"
+            "pub enum UpdateAuthority {\n    None,\n    Address(String),\n    Collection(String),\n}"
         ), "{}", core.types_rs);
         assert!(core.types_rs.contains(
             "#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]\npub enum HookableLifecycleEvent {"
@@ -4678,6 +4773,7 @@ fn generate_stack_types_rs(
         }
 
         // Generate main entity struct (e.g., OreRound, OreTreasury)
+        generated.insert(entity_name.clone());
         output.push_str(&compiler.generate_main_entity_struct(&resolved_name_map));
         output.push_str("\n\n");
 
@@ -6631,7 +6727,7 @@ fn to_kebab_case(s: &str) -> String {
     result
 }
 
-fn to_pascal_case(s: &str) -> String {
+pub(crate) fn to_pascal_case(s: &str) -> String {
     s.split(['_', '-', '.', ':'])
         .map(|word| {
             let mut chars = word.chars();

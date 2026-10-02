@@ -1,0 +1,119 @@
+{
+  "contract": "managed-solana/v1",
+  "cases": [
+    {
+      "name": "single",
+      "path": "/chain/v1/account",
+      "request": {
+        "address": "11111111111111111111111111111111",
+        "options": {
+          "commitment": "finalized",
+          "minContextSlot": "9007199254740993"
+        }
+      },
+      "response": {
+        "context": {
+          "slot": "9007199254740994"
+        },
+        "value": {
+          "address": "11111111111111111111111111111111",
+          "ownerProgram": "11111111111111111111111111111111",
+          "lamports": "9007199254740993",
+          "executable": false,
+          "data": "AQID"
+        }
+      }
+    },
+    {
+      "name": "missing",
+      "path": "/chain/v1/account",
+      "request": {
+        "address": "So11111111111111111111111111111111111111112"
+      },
+      "response": {
+        "context": {
+          "slot": "42"
+        },
+        "value": null
+      }
+    },
+    {
+      "name": "batch",
+      "path": "/chain/v1/accounts",
+      "request": {
+        "addresses": [
+          "11111111111111111111111111111111",
+          "So11111111111111111111111111111111111111112"
+        ]
+      },
+      "response": {
+        "context": {
+          "slot": "42"
+        },
+        "value": [
+          {
+            "address": "11111111111111111111111111111111",
+            "ownerProgram": "11111111111111111111111111111111",
+            "lamports": "9007199254740993",
+            "executable": false,
+            "data": "AQID"
+          },
+          null
+        ]
+      }
+    },
+    {
+      "name": "empty",
+      "path": "/chain/v1/accounts",
+      "request": {
+        "addresses": []
+      },
+      "response": {
+        "context": null,
+        "value": []
+      }
+    },
+    {
+      "name": "typed-batch",
+      "path": "/v1/releases/arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/accounts/Position/context",
+      "request": {
+        "addresses": [
+          "11111111111111111111111111111111",
+          "So11111111111111111111111111111111111111112",
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ],
+        "options": {
+          "commitment": "confirmed",
+          "minContextSlot": "40"
+        }
+      },
+      "response": {
+        "context": {
+          "slot": "42"
+        },
+        "value": {
+          "items": [
+            {
+              "address": "11111111111111111111111111111111",
+              "status": "ok",
+              "value": {
+                "liquidity": "9007199254740993"
+              }
+            },
+            {
+              "address": "So11111111111111111111111111111111111111112",
+              "status": "missing"
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "status": "error",
+              "error": {
+                "code": "ACCOUNT_DECODE_FAILED"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

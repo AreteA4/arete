@@ -1,0 +1,59 @@
+{
+  "contract": "managed-solana/v1",
+  "cases": [
+    {
+      "name": "owner-pool",
+      "path": "/v1/releases/arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/accounts/Position/query",
+      "request": {
+        "owner": "11111111111111111111111111111111",
+        "pool": "So11111111111111111111111111111111111111112",
+        "limit": 1
+      },
+      "response": {
+        "addresses": [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ],
+        "nextCursor": "opaque:page-2",
+        "discovery": {
+          "source": "mock-index",
+          "observedAt": "2026-10-01T12:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "last-page",
+      "path": "/v1/releases/arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/accounts/Position/query",
+      "request": {
+        "owner": "11111111111111111111111111111111",
+        "pool": "So11111111111111111111111111111111111111112",
+        "limit": 1,
+        "cursor": "opaque:page-2"
+      },
+      "response": {
+        "addresses": [],
+        "nextCursor": null,
+        "discovery": {
+          "source": "mock-index",
+          "observedAt": "2026-10-01T12:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "release-not-found",
+      "status": 404,
+      "response": {
+        "error": {
+          "code": "PROGRAM_RELEASE_NOT_FOUND"
+        }
+      }
+    },
+    {
+      "name": "unsupported",
+      "status": 501,
+      "response": {
+        "code": "unsupported_capability",
+        "error": "Position query is not supported for this release/type/filter"
+      }
+    }
+  ]
+}

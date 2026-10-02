@@ -1,3 +1,4 @@
+import { managedU64 } from './managed-solana';
 export type TransactionCommitment = 'processed' | 'confirmed' | 'finalized';
 export type TransactionAuthScope = 'transaction:inspect' | 'transaction:send';
 
@@ -82,7 +83,26 @@ export class TransactionTransportError extends Error {
   }
 }
 
+export interface TransactionInspectOptions {
+  commitment?: 'confirmed' | 'finalized';
+  maxSupportedTransactionVersion?: number;
+}
+export interface TransactionAccountBalance { pubkey: string; preBalance: bigint; postBalance: bigint }
+export interface TransactionExecutionMetadata {
+  err?: unknown; fee?: string; preBalances?: string[]; postBalances?: string[];
+  preTokenBalances?: unknown[]; postTokenBalances?: unknown[]; innerInstructions?: unknown[] | null;
+  logMessages?: string[] | null; returnData?: unknown; computeUnitsConsumed?: string; costUnits?: string;
+  [field: string]: unknown;
+}
+export interface ConfirmedTransaction {
+  signature: string; slot: bigint; blockTime: bigint | null; err: unknown | null;
+  accounts: TransactionAccountBalance[];
+  transaction?: Record<string, unknown>; meta?: TransactionExecutionMetadata | null;
+  version?: 'legacy' | number; metadataAvailable?: boolean;
+}
+
 export interface TransactionTransport {
+  get(signature: string, options?: TransactionInspectOptions): Promise<ConfirmedTransaction | null>;
   getLatestBlockhash(options?: TransactionRequestContext): Promise<LatestBlockhashResult>;
   getFeeForMessage(message: string, options?: TransactionRequestContext): Promise<TransactionFeeResult>;
   simulateTransaction(
@@ -164,6 +184,25 @@ export function createTransactionTransport(
   };
 
   return {
+    async get(signature, options = {}) {
+      if (options.commitment !== undefined && !['confirmed', 'finalized'].includes(options.commitment)) throw new TypeError('get accepts confirmed or finalized');
+      if (options.maxSupportedTransactionVersion !== undefined && (!Number.isInteger(options.maxSupportedTransactionVersion) || options.maxSupportedTransactionVersion < 0 || options.maxSupportedTransactionVersion > 255)) throw new RangeError('Invalid maximum transaction version');
+      const body = await post<{ transaction: Record<string, unknown> | null }>('get', { signature, ...options }, 'transaction:inspect');
+      if (body.transaction === null) return null;
+      const tx = body.transaction;
+      if (!tx || typeof tx.signature !== 'string' || !Array.isArray(tx.accounts)) throw new TypeError('Invalid transaction response');
+      const accounts = tx.accounts.map((entry: Record<string, unknown>) => {
+        if (typeof entry.pubkey !== 'string') throw new TypeError('Missing transaction account pubkey');
+        return { pubkey: entry.pubkey, preBalance: managedU64(entry.preBalance, 'preBalance'), postBalance: managedU64(entry.postBalance, 'postBalance') };
+      });
+      let blockTime: bigint | null = null;
+      if (tx.blockTime != null) {
+        if (typeof tx.blockTime !== 'string' || !/^-?\d+$/.test(tx.blockTime)) throw new TypeError('Invalid blockTime');
+        blockTime = BigInt(tx.blockTime);
+        if (blockTime < -9223372036854775808n || blockTime > 9223372036854775807n) throw new RangeError('blockTime exceeds i64');
+      }
+      return { ...tx, signature: tx.signature, slot: managedU64(tx.slot, 'slot'), blockTime, err: tx.err ?? null, accounts } as ConfirmedTransaction;
+    },
     async getLatestBlockhash(options = {}) {
       const value = await post<Record<string, unknown>>('latest-blockhash', {
         commitment: options.commitment,

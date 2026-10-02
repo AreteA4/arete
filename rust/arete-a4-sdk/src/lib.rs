@@ -38,6 +38,8 @@ pub mod adapters;
 pub mod amounts;
 mod auth;
 pub mod chain;
+/// Versioned managed Solana read and discovery contracts.
+pub use arete_solana_contracts as managed_solana;
 mod client;
 pub mod collation;
 mod config;
@@ -49,6 +51,8 @@ mod frame;
 pub mod gateway;
 pub mod http;
 pub mod instruction;
+#[cfg(test)]
+mod managed_solana_tests;
 pub mod operations;
 pub mod prelude;
 pub mod program;

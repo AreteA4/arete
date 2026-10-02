@@ -1,0 +1,835 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:arete:managed-solana:v1",
+  "title": "Managed Solana v1",
+  "type": "object",
+  "$defs": {
+    "u64": {
+      "type": "string",
+      "pattern": "^[0-9]+$",
+      "description": "Decimal integer in 0..18446744073709551615; implementations enforce range"
+    },
+    "address": {
+      "type": "string",
+      "description": "base58 encoded 32-byte public key"
+    },
+    "cursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "Opaque nonempty cursor; implementations enforce at most 2048 UTF-8 bytes."
+    },
+    "readOptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "commitment": {
+          "enum": [
+            "processed",
+            "confirmed",
+            "finalized"
+          ]
+        },
+        "minContextSlot": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "required": [
+        "slot"
+      ],
+      "properties": {
+        "slot": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "required": [
+        "source",
+        "observedAt"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "watermark": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    "ownerRequest": {
+      "type": "object",
+      "required": [
+        "owner"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "$ref": "#/$defs/address"
+        },
+        "mint": {
+          "$ref": "#/$defs/address"
+        },
+        "tokenProgram": {
+          "$ref": "#/$defs/address"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 100
+        },
+        "cursor": {
+          "$ref": "#/$defs/cursor"
+        }
+      }
+    },
+    "nativeQuery": {
+      "type": "object",
+      "anyOf": [
+        {
+          "required": [
+            "owner"
+          ]
+        },
+        {
+          "required": [
+            "pool"
+          ]
+        }
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "$ref": "#/$defs/address"
+        },
+        "pool": {
+          "$ref": "#/$defs/address"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 100
+        },
+        "cursor": {
+          "$ref": "#/$defs/cursor"
+        }
+      }
+    },
+    "contextualResponse": {
+      "type": "object",
+      "required": [
+        "context",
+        "value"
+      ],
+      "properties": {
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/context"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value": {}
+      }
+    },
+    "transactionGet": {
+      "type": "object",
+      "required": [
+        "signature"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "signature": {
+          "type": "string"
+        },
+        "commitment": {
+          "enum": [
+            "confirmed",
+            "finalized"
+          ]
+        },
+        "maxSupportedTransactionVersion": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        }
+      }
+    },
+    "rawAccount": {
+      "type": "object",
+      "required": [
+        "address",
+        "ownerProgram",
+        "lamports",
+        "executable",
+        "data"
+      ],
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/address"
+        },
+        "ownerProgram": {
+          "$ref": "#/$defs/address"
+        },
+        "lamports": {
+          "$ref": "#/$defs/u64"
+        },
+        "executable": {
+          "type": "boolean"
+        },
+        "data": {
+          "type": "string",
+          "contentEncoding": "base64"
+        }
+      },
+      "additionalProperties": true
+    },
+    "accountRequest": {
+      "type": "object",
+      "required": [
+        "address"
+      ],
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/address"
+        },
+        "options": {
+          "$ref": "#/$defs/readOptions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "accountsRequest": {
+      "type": "object",
+      "required": [
+        "addresses"
+      ],
+      "properties": {
+        "addresses": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/address"
+          }
+        },
+        "options": {
+          "$ref": "#/$defs/readOptions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "typedSingleRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "options": {
+          "$ref": "#/$defs/readOptions"
+        }
+      }
+    },
+    "ownerTokenAccount": {
+      "type": "object",
+      "required": [
+        "address",
+        "mint",
+        "tokenProgram",
+        "owner",
+        "amount",
+        "decimals",
+        "state"
+      ],
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/address"
+        },
+        "mint": {
+          "$ref": "#/$defs/address"
+        },
+        "tokenProgram": {
+          "$ref": "#/$defs/address"
+        },
+        "owner": {
+          "$ref": "#/$defs/address"
+        },
+        "amount": {
+          "$ref": "#/$defs/u64"
+        },
+        "decimals": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "state": {
+          "enum": [
+            "initialized",
+            "frozen",
+            "uninitialized"
+          ]
+        },
+        "delegate": {
+          "$ref": "#/$defs/address"
+        },
+        "delegatedAmount": {
+          "$ref": "#/$defs/u64"
+        },
+        "closeAuthority": {
+          "$ref": "#/$defs/address"
+        }
+      },
+      "additionalProperties": true
+    },
+    "ownerPage": {
+      "type": "object",
+      "required": [
+        "items",
+        "nextCursor",
+        "discovery"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/ownerTokenAccount"
+          }
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/cursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "discovery": {
+          "$ref": "#/$defs/discovery"
+        }
+      },
+      "additionalProperties": true
+    },
+    "nativePage": {
+      "type": "object",
+      "required": [
+        "addresses",
+        "nextCursor",
+        "discovery"
+      ],
+      "properties": {
+        "addresses": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/address"
+          }
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/cursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "discovery": {
+          "$ref": "#/$defs/discovery"
+        }
+      },
+      "additionalProperties": true
+    },
+    "batchItem": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "address",
+            "status",
+            "value"
+          ],
+          "properties": {
+            "address": {
+              "$ref": "#/$defs/address"
+            },
+            "status": {
+              "const": "ok"
+            },
+            "value": {}
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "address",
+            "status"
+          ],
+          "properties": {
+            "address": {
+              "$ref": "#/$defs/address"
+            },
+            "status": {
+              "const": "missing"
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "address",
+            "status",
+            "error"
+          ],
+          "properties": {
+            "address": {
+              "$ref": "#/$defs/address"
+            },
+            "status": {
+              "const": "error"
+            },
+            "error": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "typedBatch": {
+      "type": "object",
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/batchItem"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "rawSingleResponse": {
+      "type": "object",
+      "required": [
+        "context",
+        "value"
+      ],
+      "properties": {
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/context"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/rawAccount"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "rawBatchResponse": {
+      "type": "object",
+      "required": [
+        "context",
+        "value"
+      ],
+      "properties": {
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/context"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/rawAccount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "typedBatchResponse": {
+      "type": "object",
+      "required": [
+        "context",
+        "value"
+      ],
+      "properties": {
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/context"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/typedBatch"
+        }
+      },
+      "additionalProperties": true
+    },
+    "transactionAccountBalance": {
+      "type": "object",
+      "required": [
+        "pubkey",
+        "preBalance",
+        "postBalance"
+      ],
+      "properties": {
+        "pubkey": {
+          "type": "string"
+        },
+        "preBalance": {
+          "$ref": "#/$defs/u64"
+        },
+        "postBalance": {
+          "$ref": "#/$defs/u64"
+        }
+      },
+      "additionalProperties": true
+    },
+    "transactionMeta": {
+      "type": "object",
+      "required": [],
+      "properties": {
+        "fee": {
+          "$ref": "#/$defs/u64"
+        },
+        "computeUnitsConsumed": {
+          "$ref": "#/$defs/u64"
+        },
+        "costUnits": {
+          "$ref": "#/$defs/u64"
+        },
+        "loadedAccountsDataSize": {
+          "$ref": "#/$defs/u64"
+        },
+        "preBalances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/u64"
+          }
+        },
+        "postBalances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/u64"
+          }
+        },
+        "innerInstructions": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preTokenBalances": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "postTokenBalances": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logMessages": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "confirmedTransaction": {
+      "type": "object",
+      "required": [
+        "signature",
+        "slot",
+        "blockTime",
+        "err",
+        "accounts"
+      ],
+      "properties": {
+        "signature": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/u64"
+        },
+        "blockTime": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?[0-9]+$",
+              "description": "i64 decimal seconds"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "err": {},
+        "accounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/transactionAccountBalance"
+          }
+        },
+        "transaction": {
+          "type": "object",
+          "required": [
+            "message"
+          ],
+          "properties": {
+            "signatures": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "message": {
+              "type": "object"
+            }
+          }
+        },
+        "meta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/transactionMeta"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metadataAvailable": {
+          "type": "boolean"
+        },
+        "version": {
+          "oneOf": [
+            {
+              "const": "legacy"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "transactionResponse": {
+      "type": "object",
+      "required": [
+        "transaction"
+      ],
+      "properties": {
+        "transaction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/confirmedTransaction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "code",
+            "error"
+          ],
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "error"
+          ],
+          "properties": {
+            "error": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "accountTombstone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "slot",
+        "writeVersion"
+      ],
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/address"
+        },
+        "slot": {
+          "$ref": "#/$defs/u64"
+        },
+        "writeVersion": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    "typedSingleResponse": {
+      "type": "object",
+      "required": [
+        "context",
+        "value"
+      ],
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/context"
+        },
+        "value": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    },
+    "transactionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signature"
+      ],
+      "properties": {
+        "signature": {
+          "type": "string",
+          "description": "Base58 encoded 64-byte signature"
+        },
+        "commitment": {
+          "enum": [
+            "confirmed",
+            "finalized"
+          ]
+        },
+        "maxSupportedTransactionVersion": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        }
+      }
+    }
+  },
+  "description": "Wire spelling is frozen by this bundle. Scalars and bounds are shared; clients and server enforce u64 ranges, address byte widths, filter binding, page size versus requested limit, and positional alignment."
+}

@@ -10,6 +10,9 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+pub use arete_solana_contracts::{
+    Contextual, NativePositionPage, NativePositionQuery, ReadOptions,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,6 +23,23 @@ use crate::program_read_transport::{
 };
 
 const READ_SCOPES: &[&str] = &["read"];
+
+fn check_context(
+    context: &Option<arete_solana_contracts::ReadContext>,
+    options: ReadOptions,
+    required: bool,
+) -> Result<(), ReadError> {
+    if (required && context.is_none())
+        || context
+            .as_ref()
+            .is_some_and(|ctx| options.min_context_slot.is_some_and(|min| ctx.slot < min))
+    {
+        return Err(ReadError::InvalidConfig {
+            message: "Missing context or response slot below minContextSlot".into(),
+        });
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Release / binding descriptor types (TS `types.ts`, camelCase on the wire)
@@ -456,6 +476,91 @@ impl<T> AccountReader<T> {
 }
 
 impl<T: DeserializeOwned> AccountReader<T> {
+    /// Actual context of one underlying managed read. A missing account remains None.
+    pub async fn fetch_with_context(
+        &self,
+        address: &str,
+        options: ReadOptions,
+    ) -> Result<Contextual<Option<T>>, ReadError> {
+        let request = ProgramReadRequest::FetchWithContext {
+            account: &self.account,
+            address,
+            options,
+        };
+        let path = self.transport.request_path(&request);
+        let wire: Contextual<Option<Value>> =
+            serde_json::from_value(self.transport.read(&request).await?)
+                .map_err(|source| ReadError::InvalidResponse { path, source })?;
+        check_context(&wire.context, options, true)?;
+        let value = wire
+            .value
+            .map(|value| parse_program_account_value(&self.account, value))
+            .transpose()?;
+        Ok(Contextual {
+            context: wire.context,
+            value,
+        })
+    }
+
+    pub async fn fetch_many_with_context(
+        &self,
+        addresses: &[&str],
+        options: ReadOptions,
+    ) -> Result<Contextual<AccountBatchResult<T>>, ReadError> {
+        if addresses.len() > arete_solana_contracts::MAX_BATCH_ADDRESSES {
+            return Err(ReadError::InvalidConfig {
+                message: "addresses exceeds the 100-address limit".into(),
+            });
+        }
+        if addresses.is_empty() {
+            return Ok(Contextual {
+                context: None,
+                value: AccountBatchResult { items: vec![] },
+            });
+        }
+        let request = ProgramReadRequest::FetchManyWithContext {
+            account: &self.account,
+            addresses,
+            options,
+        };
+        let path = self.transport.request_path(&request);
+        let wire: Contextual<WireBatch> =
+            serde_json::from_value(self.transport.read(&request).await?)
+                .map_err(|source| ReadError::InvalidResponse { path, source })?;
+        check_context(&wire.context, options, true)?;
+        let value = self.decode_batch(wire.value, addresses)?;
+        Ok(Contextual {
+            context: wire.context,
+            value,
+        })
+    }
+
+    /// Native discovery is supported only when the pinned release/type/filter has a service capability.
+    pub async fn query_positions(
+        &self,
+        query: &NativePositionQuery,
+    ) -> Result<NativePositionPage, ReadError> {
+        let request = ProgramReadRequest::NativeQuery {
+            account: &self.account,
+            query,
+        };
+        let path = self.transport.request_path(&request);
+        let page: NativePositionPage = serde_json::from_value(self.transport.read(&request).await?)
+            .map_err(|source| ReadError::InvalidResponse { path, source })?;
+        arete_solana_contracts::validate_page(query.limit, page.next_cursor.as_deref())
+            .map_err(|message| ReadError::InvalidConfig { message })?;
+        if page.addresses.len() > query.limit as usize || page.discovery.validate().is_err() {
+            return Err(ReadError::InvalidConfig {
+                message: "Invalid native discovery page".into(),
+            });
+        }
+        for address in &page.addresses {
+            arete_solana_contracts::validate_address(address)
+                .map_err(|message| ReadError::InvalidConfig { message })?;
+        }
+        Ok(page)
+    }
+
     /// Fetch one decoded account. A wire body of `null` means the account is
     /// missing and yields `Ok(None)`.
     pub async fn fetch(&self, address: &str) -> Result<Option<T>, ReadError> {
@@ -481,6 +586,19 @@ impl<T: DeserializeOwned> AccountReader<T> {
         let value = self.transport.read(&request).await?;
         let batch: WireBatch = serde_json::from_value(value)
             .map_err(|source| ReadError::InvalidResponse { path, source })?;
+        self.decode_batch(batch, addresses)
+    }
+
+    fn decode_batch(
+        &self,
+        batch: WireBatch,
+        addresses: &[&str],
+    ) -> Result<AccountBatchResult<T>, ReadError> {
+        if batch.items.len() != addresses.len() {
+            return Err(ReadError::InvalidConfig {
+                message: "Batch result count does not match addresses".into(),
+            });
+        }
         let mut items = Vec::with_capacity(batch.items.len());
         for item in batch.items {
             items.push(match item {
@@ -493,6 +611,15 @@ impl<T: DeserializeOwned> AccountReader<T> {
                     address,
                     code: error.code,
                 },
+            });
+        }
+        if items
+            .iter()
+            .zip(addresses)
+            .any(|(item, address)| item.address() != *address)
+        {
+            return Err(ReadError::InvalidConfig {
+                message: "Batch results are not aligned with addresses".into(),
             });
         }
         Ok(AccountBatchResult { items })

@@ -1020,53 +1020,59 @@ impl<S> TypeScriptCompiler<S> {
         Some(render_schema_from_ts_fields(interface_name, &fields, true))
     }
 
-    fn generate_idl_enum_schemas(&self) -> Vec<(String, String)> {
-        let mut schemas = Vec::new();
-        let mut generated_types = self.already_emitted_types.clone();
-
-        let idl_value = match &self.idl {
-            Some(idl) => idl,
-            None => return schemas,
-        };
-
-        let types_array = match idl_value.get("types").and_then(|v| v.as_array()) {
-            Some(types) => types,
-            None => return schemas,
-        };
-
-        for type_def in types_array {
-            if let (Some(type_name), Some(type_obj)) = (
-                type_def.get("name").and_then(|v| v.as_str()),
-                type_def.get("type").and_then(|v| v.as_object()),
-            ) {
-                if type_obj.get("kind").and_then(|v| v.as_str()) == Some("enum") {
-                    let interface_name = to_pascal_case(type_name);
-                    if !generated_types.insert(interface_name.clone()) {
-                        continue;
-                    }
-                    if let Some(variants) = type_obj.get("variants").and_then(|v| v.as_array()) {
-                        let variant_names: Vec<String> = variants
-                            .iter()
-                            .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
-                            .map(|s| format!("\"{}\"", to_pascal_case(s)))
-                            .collect();
-
-                        let schema = if variant_names.is_empty() {
-                            format!("export const {}Schema = z.string();", interface_name)
-                        } else {
-                            format!(
-                                "export const {}Schema = z.enum([{}]);",
-                                interface_name,
-                                variant_names.join(", ")
-                            )
-                        };
-                        schemas.push((format!("{}Schema", interface_name), schema));
-                    }
-                }
+    /// Enums emitted by the legacy raw-IDL compiler also need every type
+    /// reachable through their payloads, even without an account reference.
+    fn generate_idl_enum_artifacts(&self) -> Vec<(String, String, String)> {
+        let definitions: Vec<IdlTypeDefSnapshot> = self
+            .idl
+            .as_ref()
+            .and_then(|idl| idl.get("types"))
+            .and_then(|types| types.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|def| serde_json::from_value(def.clone()).ok())
+            .collect();
+        let type_defs = definitions
+            .iter()
+            .map(|def| (def.name.clone(), def))
+            .collect();
+        let mut required = BTreeSet::new();
+        for def in &definitions {
+            if matches!(def.type_def, IdlTypeDefKindSnapshot::Enum { .. }) {
+                collect_required_defined_types(
+                    &IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                        defined: IdlDefinedInnerSnapshot::Simple(def.name.clone()),
+                    }),
+                    &type_defs,
+                    &HashSet::new(),
+                    &mut required,
+                );
             }
         }
+        let name_map: BTreeMap<_, _> = required
+            .iter()
+            .map(|name| (name.clone(), to_pascal_case(name)))
+            .collect();
+        required
+            .into_iter()
+            .filter(|name| !self.already_emitted_types.contains(&name_map[name]))
+            .filter_map(|name| {
+                let mut def = (*type_defs.get(&name)?).clone();
+                if let IdlTypeDefKindSnapshot::Enum { variants, .. } = &mut def.type_def {
+                    for variant in variants {
+                        variant.name = to_pascal_case(&variant.name);
+                    }
+                }
+                generate_type_defs_from_idl_type(&def, &name_map)
+            })
+            .collect()
+    }
 
-        schemas
+    fn generate_idl_enum_schemas(&self) -> Vec<(String, String)> {
+        self.generate_idl_enum_artifacts()
+            .into_iter()
+            .map(|(_, name, schema)| (name, schema))
+            .collect()
     }
 
     fn typescript_type_to_zod_for_schema(
@@ -1423,48 +1429,10 @@ export default {};"#,
         // Generate event interfaces from instruction handlers
         interfaces.extend(self.generate_event_interfaces(&mut generated_types));
 
-        // Also generate all enum types from the IDL (even if not directly referenced)
-        if let Some(idl_value) = &self.idl {
-            if let Some(types_array) = idl_value.get("types").and_then(|v| v.as_array()) {
-                for type_def in types_array {
-                    if let (Some(type_name), Some(type_obj)) = (
-                        type_def.get("name").and_then(|v| v.as_str()),
-                        type_def.get("type").and_then(|v| v.as_object()),
-                    ) {
-                        if type_obj.get("kind").and_then(|v| v.as_str()) == Some("enum") {
-                            // Only generate if not already generated
-                            let interface_name = to_pascal_case(type_name);
-                            if generated_types.insert(interface_name.clone()) {
-                                if let Some(variants) =
-                                    type_obj.get("variants").and_then(|v| v.as_array())
-                                {
-                                    let variant_names: Vec<String> = variants
-                                        .iter()
-                                        .filter_map(|v| {
-                                            v.get("name")
-                                                .and_then(|n| n.as_str())
-                                                .map(|s| s.to_string())
-                                        })
-                                        .collect();
-
-                                    if !variant_names.is_empty() {
-                                        let variant_strings: Vec<String> = variant_names
-                                            .iter()
-                                            .map(|v| format!("\"{}\"", to_pascal_case(v)))
-                                            .collect();
-
-                                        let enum_type = format!(
-                                            "export type {} = {};",
-                                            interface_name,
-                                            variant_strings.join(" | ")
-                                        );
-                                        interfaces.push(enum_type);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        for (interface, schema_name, _) in self.generate_idl_enum_artifacts() {
+            let type_name = schema_name.trim_end_matches("Schema");
+            if generated_types.insert(type_name.to_string()) {
+                interfaces.push(interface);
             }
         }
 
@@ -2575,25 +2543,126 @@ fn generate_type_defs_from_idl_type(
             Some((interface, schema_name, schema))
         }
         IdlTypeDefKindSnapshot::Enum { variants, .. } => {
-            let variant_names = variants
-                .iter()
-                .map(|variant| format!("\"{}\"", variant.name))
-                .collect::<Vec<_>>();
-            let interface = if variant_names.is_empty() {
-                format!("export type {} = string;", type_name)
-            } else {
-                format!("export type {} = {};", type_name, variant_names.join(" | "))
+            if !variants.is_empty() && variants.iter().all(|variant| variant.fields.is_empty()) {
+                let labels = variants
+                    .iter()
+                    .map(|variant| serde_json::to_string(&variant.name).expect("variant label"))
+                    .collect::<Vec<_>>();
+                return Some((
+                    format!("export type {type_name} = {};", labels.join(" | ")),
+                    schema_name.clone(),
+                    format!(
+                        "export const {schema_name} = z.enum([{}]);",
+                        labels.join(", ")
+                    ),
+                ));
+            }
+            let mut type_variants = Vec::new();
+            let mut schema_variants = Vec::new();
+            for variant in variants {
+                let label = serde_json::to_string(&variant.name).expect("variant label");
+                if variant.fields.is_empty() {
+                    type_variants.push(label.clone());
+                    schema_variants.push(format!("z.literal({label})"));
+                    continue;
+                }
+                let named: Vec<_> = variant
+                    .fields
+                    .iter()
+                    .filter_map(|field| match field {
+                        IdlEnumVariantFieldSnapshot::Named(field) => Some(field),
+                        _ => None,
+                    })
+                    .collect();
+                let (payload_type, payload_schema) = if named.len() == variant.fields.len() {
+                    let fields: Vec<_> = named.into_iter().cloned().collect();
+                    let fields = normalize_idl_fields(&fields, local_name_map);
+                    let ty = fields
+                        .iter()
+                        .map(|field| {
+                            format!(
+                                "{}: {}",
+                                field.name,
+                                if field.nullable {
+                                    format!("{} | null", field.ts_type)
+                                } else {
+                                    field.ts_type.clone()
+                                }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    let declaration = render_schema_from_ts_fields("EnumPayload", &fields, true);
+                    let schema = declaration
+                        .strip_prefix("export const EnumPayloadSchema = ")
+                        .expect("schema declaration")
+                        .trim_end_matches(';')
+                        .to_string();
+                    (format!("{{ {ty} }}"), schema)
+                } else if named.is_empty() {
+                    let types: Vec<_> = variant
+                        .fields
+                        .iter()
+                        .map(|field| match field {
+                            IdlEnumVariantFieldSnapshot::Tuple(ty) => ty,
+                            _ => unreachable!(),
+                        })
+                        .collect();
+                    if types.len() == 1 {
+                        (
+                            idl_snapshot_type_to_typescript(types[0], local_name_map),
+                            idl_snapshot_type_to_zod(types[0], local_name_map),
+                        )
+                    } else {
+                        (
+                            format!(
+                                "[{}]",
+                                types
+                                    .iter()
+                                    .map(|ty| idl_snapshot_type_to_typescript(ty, local_name_map))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                            format!(
+                                "z.tuple([{}])",
+                                types
+                                    .iter()
+                                    .map(|ty| idl_snapshot_type_to_zod(ty, local_name_map))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        )
+                    }
+                } else {
+                    // Unsupported layouts must never turn into valid-looking fieldless labels.
+                    type_variants.push("never /* unsupported mixed enum payload */".into());
+                    schema_variants.push("z.never()".into());
+                    continue;
+                };
+                type_variants.push(format!("{{ {label}: {payload_type} }}"));
+                schema_variants.push(format!(
+                    "z.object({{ {label}: z.lazy(() => {payload_schema}) }})"
+                ));
+            }
+            let interface = format!(
+                "export type {} = {};",
+                type_name,
+                if type_variants.is_empty() {
+                    "never".into()
+                } else {
+                    type_variants.join(" | ")
+                }
+            );
+            let schema_expr = match schema_variants.len() {
+                0 => "z.never()".into(),
+                1 => schema_variants.remove(0),
+                _ => format!("z.union([{}])", schema_variants.join(", ")),
             };
-            let schema = if variant_names.is_empty() {
-                format!("export const {} = z.string();", schema_name)
-            } else {
-                format!(
-                    "export const {} = z.enum([{}]);",
-                    schema_name,
-                    variant_names.join(", ")
-                )
-            };
-            Some((interface, schema_name, schema))
+            Some((
+                interface,
+                schema_name.clone(),
+                format!("export const {schema_name} = {schema_expr};"),
+            ))
         }
     }
 }
@@ -3108,7 +3177,8 @@ fn extract_emitted_enum_type_names(interfaces: &str, idl: Option<&IdlSnapshot>) 
         if let Some(start) = line.find("export const ") {
             let end = line
                 .find("Schema = z.enum")
-                .or_else(|| line.find("Schema = z.string()"));
+                .or_else(|| line.find("Schema = z.string()"))
+                .or_else(|| line.find("Schema = "));
             if let Some(end) = end {
                 let schema_name = line[start + 13..end].trim();
                 // Check if this schema name corresponds to an IDL enum type
@@ -3847,6 +3917,14 @@ fn compile_stack_spec_with_view_selection(
         let emitted_enum_names =
             extract_emitted_enum_type_names(&output.interfaces, idl_for_check.as_ref());
         emitted_types.extend(emitted_enum_names);
+        // Supporting structs emitted for enum payloads are shared by later
+        // entities too, just like the enum declaration itself.
+        emitted_types.extend(
+            compiler
+                .generate_idl_enum_artifacts()
+                .into_iter()
+                .map(|(_, schema_name, _)| schema_name.strip_suffix("Schema").unwrap().to_string()),
+        );
         emitted_types.extend(builtin_type_names);
         if output
             .interfaces

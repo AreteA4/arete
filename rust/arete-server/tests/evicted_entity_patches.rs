@@ -794,6 +794,8 @@ async fn a_resend_keeps_the_position_of_the_last_change() {
     for pool in ["a", "b", "c", "d"] {
         harness.send_batch(pools.update(pool, 1)).await;
     }
+    // Observe only the later resend, after all initial creation frames publish.
+    harness.flush().await;
     let mut frames = harness.bus.get_or_create_list_bus("Pool/list").await;
 
     harness.send_batch(pools.update("a", 2)).await;

@@ -142,7 +142,7 @@ pub struct TransactionAccountBalance {
     pub post_balance: u64,
 }
 
-/// Result of `get` — a confirmed transaction's effect, not its instructions.
+/// Result of `get`: compatible summary plus the actual parsed transaction and metadata.
 ///
 /// `accounts` covers every account the transaction resolved, lookup-table entries included, in the
 /// cluster's own order.
@@ -153,6 +153,14 @@ pub struct ConfirmedTransaction {
     pub block_time: Option<i64>,
     pub err: Option<Value>,
     pub accounts: Vec<TransactionAccountBalance>,
+    /// Actual RPC transaction (signatures/message/resolved keys/instructions). None for older relays.
+    pub transaction: Option<Value>,
+    /// Execution metadata. Exact fee, balances and resource integers use decimal strings.
+    /// Missing metadata is distinct from a missing transaction; optional fields remain absent.
+    pub meta: Option<Value>,
+    pub version: Option<Value>,
+    /// None for older relays; false means execution metadata is unavailable.
+    pub metadata_available: Option<bool>,
 }
 
 /// Options for `signatures`. `before`/`until` are signatures, exclusive on both ends, and page
@@ -518,6 +526,15 @@ fn parse_confirmed_transaction(
             Some(err) => Some(err.clone()),
         },
         accounts,
+        transaction: transaction
+            .get("transaction")
+            .cloned()
+            .filter(|v| !v.is_null()),
+        meta: transaction.get("meta").cloned().filter(|v| !v.is_null()),
+        version: transaction.get("version").cloned(),
+        metadata_available: transaction
+            .get("metadataAvailable")
+            .and_then(Value::as_bool),
     }))
 }
 

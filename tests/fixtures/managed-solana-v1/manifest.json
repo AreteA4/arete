@@ -1,0 +1,433 @@
+{
+  "contract": "managed-solana/v1",
+  "bundleVersion": "1.0.0",
+  "schema": "schema.json",
+  "sdkRelease": {
+    "baseline": "0.28.0",
+    "firstPlannedRelease": "0.29.0",
+    "status": "pending-publication",
+    "contractsCrate": "0.1.0"
+  },
+  "routes": [
+    {
+      "id": "rawAccount",
+      "method": "POST",
+      "path": "/chain/v1/account",
+      "requestSchema": "accountRequest",
+      "responseSchema": "rawSingleResponse",
+      "defaults": {
+        "options": {
+          "commitment": "confirmed"
+        },
+        "minContextSlot": "omitted"
+      },
+      "errorSet": "chain",
+      "scope": "read",
+      "availability": "shared-server",
+      "errorEnvelope": "chainAndDiscovery",
+      "authorizationErrorSet": "authorization"
+    },
+    {
+      "id": "rawAccounts",
+      "method": "POST",
+      "path": "/chain/v1/accounts",
+      "requestSchema": "accountsRequest",
+      "responseSchema": "rawBatchResponse",
+      "defaults": {
+        "options": {
+          "commitment": "confirmed"
+        },
+        "maxAddresses": 100,
+        "emptyResponse": {
+          "context": null,
+          "value": []
+        }
+      },
+      "errorSet": "chain",
+      "scope": "read",
+      "availability": "shared-server",
+      "errorEnvelope": "chainAndDiscovery",
+      "authorizationErrorSet": "authorization"
+    },
+    {
+      "id": "ownerTokenAccounts",
+      "method": "POST",
+      "path": "/chain/v1/owner-token-accounts",
+      "requestSchema": "ownerRequest",
+      "responseSchema": "ownerPage",
+      "defaults": {
+        "limit": 100,
+        "cursor": "omitted",
+        "mint": "omitted",
+        "tokenProgram": "omitted"
+      },
+      "errorSet": "discovery",
+      "scope": "read",
+      "availability": "requires-OwnerTokenAccountsProvider",
+      "errorEnvelope": "chainAndDiscovery",
+      "authorizationErrorSet": "authorization"
+    },
+    {
+      "id": "typedAccount",
+      "method": "POST",
+      "path": "/v1/releases/{programReleaseHash}/accounts/{accountType}/{address}/context",
+      "requestSchema": "typedSingleRequest",
+      "responseSchema": "typedSingleResponse",
+      "defaults": {
+        "options": {
+          "commitment": "confirmed"
+        },
+        "missingResponse": {
+          "context": {
+            "slot": "actual-read-slot"
+          },
+          "value": null
+        }
+      },
+      "errorSet": "programRead",
+      "scope": "read",
+      "availability": "requires-release-decoder",
+      "errorEnvelope": "programRead",
+      "authorizationErrorSet": "authorization"
+    },
+    {
+      "id": "typedAccounts",
+      "method": "POST",
+      "path": "/v1/releases/{programReleaseHash}/accounts/{accountType}/context",
+      "requestSchema": "accountsRequest",
+      "responseSchema": "typedBatchResponse",
+      "defaults": {
+        "options": {
+          "commitment": "confirmed"
+        },
+        "maxAddresses": 100,
+        "emptyResponse": {
+          "context": null,
+          "value": {
+            "items": []
+          }
+        }
+      },
+      "errorSet": "programRead",
+      "scope": "read",
+      "availability": "requires-release-decoder",
+      "errorEnvelope": "programRead",
+      "authorizationErrorSet": "authorization"
+    },
+    {
+      "id": "nativePositionQuery",
+      "method": "POST",
+      "path": "/v1/releases/{programReleaseHash}/accounts/{accountType}/query",
+      "requestSchema": "nativeQuery",
+      "responseSchema": "nativePage",
+      "defaults": {
+        "limit": 100,
+        "cursor": "omitted"
+      },
+      "errorSet": "nativeQuery",
+      "scope": "read",
+      "availability": "Hosted implementation; shared server returns 501 unsupported_capability",
+      "errorEnvelope": "programReadOrCapability",
+      "authorizationErrorSet": "authorization"
+    },
+    {
+      "id": "fullTransaction",
+      "method": "POST",
+      "path": "/transactions/v1/get",
+      "requestSchema": "transactionRequest",
+      "responseSchema": "transactionResponse",
+      "defaults": {
+        "commitment": "finalized",
+        "maxSupportedTransactionVersion": 1,
+        "upstreamEncoding": "jsonParsed"
+      },
+      "errorSet": "transaction",
+      "scope": "transaction:inspect",
+      "availability": "requires-enabled-transaction-relay",
+      "errorEnvelope": "transaction",
+      "authorizationErrorSet": "authorization"
+    }
+  ],
+  "errorSets": {
+    "chain": [
+      {
+        "status": 400,
+        "code": "invalid_request"
+      },
+      {
+        "status": 503,
+        "code": "rpc_unavailable"
+      },
+      {
+        "status": 502,
+        "code": "invalid_upstream_response"
+      }
+    ],
+    "discovery": [
+      {
+        "status": 400,
+        "code": "invalid_request"
+      },
+      {
+        "status": 400,
+        "code": "invalid_cursor"
+      },
+      {
+        "status": 501,
+        "code": "unsupported_capability"
+      },
+      {
+        "status": 502,
+        "code": "provider_unavailable"
+      },
+      {
+        "status": 502,
+        "code": "invalid_provider_response"
+      }
+    ],
+    "programRead": [
+      {
+        "status": 404,
+        "code": "NOT_FOUND"
+      },
+      {
+        "status": 404,
+        "code": "PROGRAM_RELEASE_NOT_FOUND"
+      },
+      {
+        "status": 400,
+        "code": "INVALID_PROGRAM_RELEASE_HASH"
+      },
+      {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      {
+        "status": 403,
+        "code": "PROGRAM_READ_UNAUTHORIZED"
+      },
+      {
+        "status": 503,
+        "code": "PROGRAM_READ_AUTH_NOT_CONFIGURED"
+      },
+      {
+        "status": 413,
+        "code": "BATCH_LIMIT_EXCEEDED"
+      },
+      {
+        "status": 503,
+        "code": "PROGRAM_READS_DISABLED"
+      },
+      {
+        "status": 503,
+        "code": "READ_RPC_NOT_CONFIGURED"
+      },
+      {
+        "status": 502,
+        "code": "RPC_REQUEST_FAILED"
+      },
+      {
+        "status": 502,
+        "code": "RPC_RESPONSE_INVALID"
+      },
+      {
+        "status": 422,
+        "code": "ACCOUNT_OWNER_MISMATCH"
+      },
+      {
+        "status": 502,
+        "code": "ACCOUNT_DATA_INVALID"
+      },
+      {
+        "status": 413,
+        "code": "ACCOUNT_DATA_TOO_LARGE"
+      },
+      {
+        "status": 422,
+        "code": "ACCOUNT_DECODE_FAILED"
+      },
+      {
+        "status": 504,
+        "code": "ACCOUNT_DECODE_TIMEOUT"
+      }
+    ],
+    "authorization": [
+      {
+        "status": 401,
+        "code": "token-missing"
+      },
+      {
+        "status": 403,
+        "code": "invalid_gateway_target"
+      },
+      {
+        "status": 403,
+        "code": "insufficient_scope"
+      },
+      {
+        "status": 429,
+        "code": "rate-limit-exceeded"
+      }
+    ],
+    "transaction": [
+      {
+        "status": 400,
+        "code": "invalid_request"
+      },
+      {
+        "status": 400,
+        "code": "invalid_body"
+      },
+      {
+        "status": 400,
+        "code": "invalid_signature"
+      },
+      {
+        "status": 400,
+        "code": "invalid_commitment"
+      },
+      {
+        "status": 401,
+        "code": "authentication_required"
+      },
+      {
+        "status": 401,
+        "code": "stale_policy_version"
+      },
+      {
+        "status": 403,
+        "code": "insufficient_scope"
+      },
+      {
+        "status": 403,
+        "code": "policy_conflict"
+      },
+      {
+        "status": 405,
+        "code": "method_not_allowed"
+      },
+      {
+        "status": 413,
+        "code": "request_too_large"
+      },
+      {
+        "status": 429,
+        "code": "rate_limit_exceeded"
+      },
+      {
+        "status": 502,
+        "code": "upstream_unavailable"
+      },
+      {
+        "status": 502,
+        "code": "upstream_rpc_error"
+      },
+      {
+        "status": 503,
+        "code": "server_busy"
+      }
+    ],
+    "nativeQuery": [
+      {
+        "status": 404,
+        "code": "NOT_FOUND"
+      },
+      {
+        "status": 404,
+        "code": "PROGRAM_RELEASE_NOT_FOUND"
+      },
+      {
+        "status": 400,
+        "code": "INVALID_PROGRAM_RELEASE_HASH"
+      },
+      {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      {
+        "status": 403,
+        "code": "PROGRAM_READ_UNAUTHORIZED"
+      },
+      {
+        "status": 503,
+        "code": "PROGRAM_READ_AUTH_NOT_CONFIGURED"
+      },
+      {
+        "status": 503,
+        "code": "PROGRAM_READS_DISABLED"
+      },
+      {
+        "status": 501,
+        "code": "unsupported_capability",
+        "envelope": "chainAndDiscovery"
+      },
+      {
+        "status": 400,
+        "code": "invalid_cursor",
+        "envelope": "chainAndDiscovery"
+      }
+    ]
+  },
+  "errorEnvelopes": {
+    "chainAndDiscovery": {
+      "code": "stable error code",
+      "error": "human-readable message"
+    },
+    "programRead": {
+      "error": {
+        "code": "stable error code"
+      }
+    },
+    "authorization": {
+      "code": "stable error code",
+      "error": "stable error code",
+      "message": "human-readable message",
+      "retryable": "boolean",
+      "fatal": "boolean"
+    },
+    "transaction": {
+      "code": "stable error code",
+      "message": "human-readable message",
+      "retryable": "boolean",
+      "requestId": "opaque string"
+    },
+    "programReadOrCapability": {
+      "default": "programRead",
+      "unsupported_capability": "chainAndDiscovery",
+      "invalid_cursor": "chainAndDiscovery"
+    }
+  },
+  "semantics": {
+    "integerEncoding": "u64/u128/i128 quantities are decimal strings; indexes/counts/transaction versions are numbers",
+    "readContext": "actual RPC read slot, decimal u64; null only if no read occurred (empty batch)",
+    "discovery": "index provenance only; absent watermark is unknown; no implied chain commitment",
+    "batchAlignment": "one result per requested address in input order, including duplicates and missing/error items",
+    "typedItemErrors": "item-level error.code uses the programRead error set; HTTP batch remains 200",
+    "typedAuthorization": "read scope plus exact binding target, program ID and release hash",
+    "gatewayAuthorization": "read or transaction:inspect scope plus exact Solana gateway audience and binding target",
+    "sessionLimits": "max_http_batch_addresses may lower the protocol ceiling; omitted discovery limit remains 100 and can exceed that session limit",
+    "ordering": "discovery ordering/cursor is provider-defined; opaque cursor must bind owner, mint and tokenProgram",
+    "unknownMetadata": "outer transaction=null means unseen; metadataAvailable=false with meta=null means observed execution metadata unavailable; no fabricated success, fee or balances",
+    "nativeQuery": "At least owner or pool is required by the request contract and SDK validation. The shared server checks release/auth then returns 501 unsupported_capability before reading the body; Hosted implementations own request validation and the supported filter/type matrix.",
+    "deletion": "account-deletion.json is a chain-to-runtime integration contract, not an HTTP endpoint; authoritative account mutations carry an exact slot/writeVersion position, delete ends lifetime, and remove is view eviction",
+    "invalidJson": "chain/discovery malformed JSON or unknown request fields return 400 invalid_request; typed reads return 400 INVALID_REQUEST",
+    "wrongMethod": "chain/typed routes return 404; transaction relay returns 405; no alias routes or /v2 workaround",
+    "transactionErrors": "Handler and admission errors use the transaction envelope; gateway target and auth-plugin denials occur earlier and use the authorization envelope.",
+    "authorizationErrors": "Configured auth plugins may return additional plugin-owned denial codes in the authorization envelope before any route handler runs."
+  },
+  "fixtures": [
+    "owner-token-accounts.json",
+    "contextual-accounts.json",
+    "native-position-query.json",
+    "transactions.json",
+    "wire-cases.json",
+    "account-deletion.json",
+    "binding-descriptors.json",
+    "capabilities.json",
+    "production-idls/provenance.json",
+    "production-idls/spl-token-layout-account.json",
+    "production-idls/whirlpool.idl.json",
+    "production-idls/spl-token.idl.json",
+    "production-idls/spl-token.source.json"
+  ]
+}

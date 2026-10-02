@@ -1,3 +1,4 @@
+use arete_solana_contracts::precision_safe_json;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1465,42 +1466,61 @@ fn confirmed_transaction_json(signature: &str, value: &Value) -> Result<Value, T
         .ok_or_else(|| {
             upstream_malformed("Malformed transaction response", Operation::Get, None)
         })?;
-    let pre = balances(value, "/meta/preBalances")?;
-    let post = balances(value, "/meta/postBalances")?;
-    // Balances are positional against the resolved key list; a short array would credit one
-    // account's movement to another.
-    if pre.len() != keys.len() || post.len() != keys.len() {
-        return Err(upstream_malformed(
-            "Transaction balances did not match its account keys",
-            Operation::Get,
-            None,
-        ));
-    }
-    let accounts = keys
-        .iter()
-        .zip(pre)
-        .zip(post)
-        .map(|((key, pre), post)| {
-            let pubkey = key.get("pubkey").and_then(Value::as_str).ok_or_else(|| {
-                upstream_malformed("Malformed transaction account key", Operation::Get, None)
-            })?;
-            Ok(json!({
-                "pubkey": pubkey,
-                "preBalance": pre.to_string(),
-                "postBalance": post.to_string(),
-            }))
-        })
-        .collect::<Result<Vec<_>, TxError>>()?;
-    Ok(json!({
+    let metadata = value.get("meta").filter(|meta| !meta.is_null());
+    let accounts = if metadata.is_some() {
+        let pre = balances(value, "/meta/preBalances")?;
+        let post = balances(value, "/meta/postBalances")?;
+        if pre.len() != keys.len() || post.len() != keys.len() {
+            return Err(upstream_malformed(
+                "Transaction balances did not match its account keys",
+                Operation::Get,
+                None,
+            ));
+        }
+        for field in ["preTokenBalances", "postTokenBalances"] {
+            if let Some(entries) = value
+                .pointer(&format!("/meta/{field}"))
+                .filter(|v| !v.is_null())
+            {
+                let entries = entries.as_array().ok_or_else(|| {
+                    upstream_malformed("Malformed token balances", Operation::Get, None)
+                })?;
+                for entry in entries {
+                    if entry
+                        .get("accountIndex")
+                        .and_then(Value::as_u64)
+                        .is_none_or(|index| index >= keys.len() as u64)
+                    {
+                        return Err(upstream_malformed(
+                            "Token balance account index is outside the resolved keys",
+                            Operation::Get,
+                            None,
+                        ));
+                    }
+                }
+            }
+        }
+        keys.iter().zip(pre).zip(post).map(|((key, pre), post)| {
+            let pubkey = key.get("pubkey").and_then(Value::as_str).or_else(|| key.as_str()).ok_or_else(|| upstream_malformed("Malformed transaction account key", Operation::Get, None))?;
+            Ok(json!({ "pubkey": pubkey, "preBalance": pre.to_string(), "postBalance": post.to_string() }))
+        }).collect::<Result<Vec<_>, TxError>>()?
+    } else {
+        vec![]
+    };
+    let mut result = json!({
         "signature": signature,
         "slot": required_u64(value, "/slot")?.to_string(),
-        "blockTime": value
-            .pointer("/blockTime")
-            .and_then(Value::as_i64)
-            .map(|seconds| seconds.to_string()),
+        "blockTime": value.pointer("/blockTime").and_then(Value::as_i64).map(|seconds| seconds.to_string()),
         "err": value.pointer("/meta/err").cloned().unwrap_or(Value::Null),
         "accounts": accounts,
-    }))
+        "transaction": precision_safe_json(value.get("transaction").expect("validated transaction"), "transaction"),
+        "meta": metadata.map(|meta| precision_safe_json(meta, "meta")),
+        "metadataAvailable": metadata.is_some(),
+    });
+    if let Some(version) = value.get("version") {
+        result["version"] = version.clone();
+    }
+    Ok(result)
 }
 
 fn balances(value: &Value, pointer: &str) -> Result<Vec<u64>, TxError> {
@@ -1860,6 +1880,22 @@ mod tests {
     }
 
     #[test]
+    fn managed_transaction_fixtures_preserve_actual_metadata() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/managed-solana-v1/transactions.json"
+        ))
+        .unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let actual =
+                confirmed_transaction_json("fixture-signature", &case["upstream"]).unwrap();
+            assert_eq!(actual, case["response"]["transaction"], "{}", case["name"]);
+        }
+        let mut bad = fixture["cases"][0]["upstream"].clone();
+        bad["meta"]["postTokenBalances"][0]["accountIndex"] = json!(99);
+        assert!(confirmed_transaction_json("fixture-signature", &bad).is_err());
+    }
+
+    #[test]
     fn trusted_client_ip_uses_proxy_appended_address() {
         let config = TransactionConfig {
             trusted_proxy_cidrs: vec!["10.0.0.0/8".parse().unwrap()],
@@ -2008,7 +2044,13 @@ mod tests {
                 "accounts": [
                     { "pubkey": "vault", "preBalance": "5000", "postBalance": "3995" },
                     { "pubkey": "winner", "preBalance": "10", "postBalance": "1010" }
-                ]
+                ],
+                "transaction": { "message": { "accountKeys": [
+                    { "pubkey": "vault", "source": "transaction" },
+                    { "pubkey": "winner", "source": "lookupTable" }
+                ] } },
+                "meta": { "err": null, "preBalances": ["5000", "10"], "postBalances": ["3995", "1010"] },
+                "metadataAvailable": true
             }})
         );
     }

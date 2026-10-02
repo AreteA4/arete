@@ -1,0 +1,98 @@
+{
+  "contract": "managed-solana/v1",
+  "cases": [
+    {
+      "name": "first-page-unknown-watermark",
+      "request": {
+        "owner": "11111111111111111111111111111111",
+        "mint": "So11111111111111111111111111111111111111112",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "limit": 1
+      },
+      "response": {
+        "items": [
+          {
+            "address": "So11111111111111111111111111111111111111112",
+            "mint": "So11111111111111111111111111111111111111112",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "owner": "11111111111111111111111111111111",
+            "amount": "18446744073709551615",
+            "decimals": 9,
+            "state": "initialized",
+            "delegate": "11111111111111111111111111111111",
+            "delegatedAmount": "9007199254740993",
+            "closeAuthority": "11111111111111111111111111111111"
+          }
+        ],
+        "nextCursor": "opaque:page-2",
+        "discovery": {
+          "source": "mock-index",
+          "observedAt": "2026-10-01T12:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "second-page",
+      "request": {
+        "owner": "11111111111111111111111111111111",
+        "mint": "So11111111111111111111111111111111111111112",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "limit": 1,
+        "cursor": "opaque:page-2"
+      },
+      "response": {
+        "items": [],
+        "nextCursor": null,
+        "discovery": {
+          "source": "mock-index",
+          "observedAt": "2026-10-01T12:00:00Z",
+          "watermark": "9007199254740993"
+        }
+      }
+    },
+    {
+      "name": "empty",
+      "request": {
+        "owner": "11111111111111111111111111111111",
+        "limit": 100
+      },
+      "response": {
+        "items": [],
+        "nextCursor": null,
+        "discovery": {
+          "source": "mock-index",
+          "observedAt": "2026-10-01T12:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "unsupported",
+      "request": {
+        "owner": "11111111111111111111111111111111",
+        "mint": "So11111111111111111111111111111111111111112",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "limit": 1
+      },
+      "status": 501,
+      "response": {
+        "code": "unsupported_capability",
+        "error": "Owner token discovery is not configured"
+      }
+    },
+    {
+      "name": "changed-filter-cursor",
+      "request": {
+        "owner": "So11111111111111111111111111111111111111112",
+        "mint": "So11111111111111111111111111111111111111112",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "limit": 1,
+        "cursor": "opaque:page-2"
+      },
+      "status": 400,
+      "response": {
+        "code": "invalid_cursor",
+        "error": "Cursor does not match the owner and filters"
+      }
+    }
+  ]
+}

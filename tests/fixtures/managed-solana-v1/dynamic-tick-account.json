@@ -1,0 +1,92 @@
+{
+  "contract": "managed-solana/v1",
+  "source": "Orca DynamicTick/DynamicTickData from checked-in whirlpool IDL; reduced account wrapper",
+  "data": "AQIDBAUGBwgBAAAAAAAAAAAAAP///////wAAAAAAAAAAAAAAABAAAAABAAAAAAAAAAAAAAABAAAAAwAAAAAAAAAAAACAAAAAAAUAAAAAAAAAAAAAABAAAAAGAAAAAAAAAAAAAAAQAAAABwAAAAAAAAAAAAAAEAAAAA==",
+  "expected": {
+    "tick": {
+      "Initialized": {
+        "liquidity_net": "-1208925819614629174706176",
+        "liquidity_gross": "1267650600228229401496703205376",
+        "fee_growth_outside_a": "79228162514264337593543950337",
+        "fee_growth_outside_b": "39614081257132168796771975171",
+        "reward_growths_outside": [
+          "1267650600228229401496703205381",
+          "1267650600228229401496703205382",
+          "1267650600228229401496703205383"
+        ]
+      }
+    }
+  },
+  "uninitializedData": "AQIDBAUGBwgA",
+  "unknownVariantData": "AQIDBAUGBwgC",
+  "enumPayloadCases": [
+    {
+      "data": "AA==",
+      "expected": "Empty"
+    },
+    {
+      "data": "AQEAAAAAACAA",
+      "expected": {
+        "Named": {
+          "exact_amount": "9007199254740993"
+        }
+      }
+    },
+    {
+      "data": "AgEAAAAAACAA////////3/8=",
+      "expected": {
+        "Tuple": [
+          "9007199254740993",
+          "-9007199254740993"
+        ]
+      }
+    },
+    {
+      "data": "AwEAAAAAACAAAQAAAAAAIAABAAAAAAAgAAEAAAAAACAAAQAAAAAAIAABAAAAAAAgAAEAAAAAACAAAQAAAAAAIAABAAAAAAAgAAEAAAAAACAAAQAAAAAAIAABAAAAAAAgAAEAAAAAACAAAQAAAAAAIAABAAAAAAAgAAEAAAAAACAAAQAAAAAAIAABAAAAAAAgAAEAAAAAACAAAQAAAAAAIAABAAAAAAAgAAEAAAAAACAAAQAAAAAAIAABAAAAAAAgAAEAAAAAACAAAQAAAAAAIAABAAAAAAAgAAEAAAAAACAAAQAAAAAAIAABAAAAAAAgAAEAAAAAACAAAQAAAAAAIAABAAAAAAAgAAEAAAAAACAAAQAAAAAAIAABAAAAAAAgAAEAAAAAACAAAQAAAAAAIAABAAAAAAAgAAEAAAAAACAA",
+      "expected": {
+        "Large": [
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993",
+          "9007199254740993"
+        ]
+      }
+    }
+  ]
+}

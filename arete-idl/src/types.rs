@@ -342,13 +342,27 @@ pub struct IdlAccount {
 }
 
 impl IdlAccount {
+    /// Explicitly declared discriminator-free account layout. Omitting a
+    /// discriminator alone retains the normal Anchor derivation.
+    pub fn is_untagged(&self) -> bool {
+        self.discriminator.is_empty()
+            && self
+                .docs
+                .iter()
+                .any(|doc| doc.trim() == "arete.account_untagged=true")
+    }
+
     pub fn get_discriminator(&self) -> Vec<u8> {
+        if self.is_untagged() {
+            return Vec::new();
+        }
         if !self.discriminator.is_empty() {
             return self.discriminator.clone();
         }
 
         crate::discriminator::anchor_discriminator(&format!("account:{}", self.name))
     }
+
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -749,6 +763,25 @@ pub fn to_pascal_case(s: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod account_discriminator_tests {
+    use super::*;
+
+    #[test]
+    fn untagged_accounts_require_an_explicit_declaration() {
+        let mut account: IdlAccount =
+            serde_json::from_str(r#"{"name":"Account","discriminator":[]}"#).unwrap();
+        assert!(!account.is_untagged());
+        assert_eq!(account.get_discriminator().len(), 8);
+        account.docs.push("arete.account_untagged=true".into());
+        assert!(account.is_untagged());
+        assert!(account.get_discriminator().is_empty());
+        account.discriminator = vec![9];
+        assert!(!account.is_untagged());
+        assert_eq!(account.get_discriminator(), vec![9]);
+    }
 }
 
 #[cfg(test)]

@@ -19,6 +19,7 @@ name = "arete-a4-sdk"
 version = "0.28.0"
 dependencies = [
  "anyhow",
+ "arete-solana-contracts",
  "async-trait",
  "base64",
  "bs58",
@@ -39,6 +40,16 @@ dependencies = [
  "unicode-normalization",
  "unicode-properties",
  "url",
+]
+
+[[package]]
+name = "arete-solana-contracts"
+version = "0.1.0"
+dependencies = [
+ "bs58",
+ "chrono",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -143,6 +154,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "chrono"
+version = "0.4.45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]

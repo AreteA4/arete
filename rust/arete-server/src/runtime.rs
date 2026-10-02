@@ -68,6 +68,7 @@ pub struct Runtime {
     websocket_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     http_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     websocket_usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    token_accounts_provider: Option<Arc<dyn crate::token_discovery::OwnerTokenAccountsProvider>>,
     solana_gateway_usage_observer: Option<Arc<dyn SolanaGatewayUsageObserver>>,
     websocket_max_clients: Option<usize>,
     websocket_rate_limit_config: Option<RateLimitConfig>,
@@ -87,6 +88,7 @@ impl Runtime {
             websocket_auth_plugin: None,
             http_auth_plugin: None,
             websocket_usage_emitter: None,
+            token_accounts_provider: None,
             solana_gateway_usage_observer: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
@@ -105,6 +107,7 @@ impl Runtime {
             websocket_auth_plugin: None,
             http_auth_plugin: None,
             websocket_usage_emitter: None,
+            token_accounts_provider: None,
             solana_gateway_usage_observer: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
@@ -141,6 +144,14 @@ impl Runtime {
         websocket_usage_emitter: Arc<dyn WebSocketUsageEmitter>,
     ) -> Self {
         self.websocket_usage_emitter = Some(websocket_usage_emitter);
+        self
+    }
+
+    pub fn with_owner_token_accounts_provider(
+        mut self,
+        provider: Arc<dyn crate::token_discovery::OwnerTokenAccountsProvider>,
+    ) -> Self {
+        self.token_accounts_provider = Some(provider);
         self
     }
 
@@ -536,6 +547,9 @@ impl Runtime {
             }
             if plan.transactions && transaction_config.enabled {
                 http_server = http_server.with_transaction_config(transaction_config.clone());
+            }
+            if let Some(provider) = self.token_accounts_provider.clone() {
+                http_server = http_server.with_owner_token_accounts_provider(provider);
             }
             if let Some(observer) = self.solana_gateway_usage_observer.clone() {
                 http_server = http_server.with_solana_gateway_usage_observer(observer);
