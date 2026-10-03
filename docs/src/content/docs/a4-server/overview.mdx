@@ -82,10 +82,11 @@ projections. Program-only reads do not require Yellowstone. Live options include
 
 `a4-server` reads configuration from environment variables:
 
-| Variable               | Required          | Description                           |
-| ---------------------- | ----------------- | ------------------------------------- |
-| `YELLOWSTONE_ENDPOINT` | For live runtime  | Your Yellowstone gRPC endpoint URL    |
-| `YELLOWSTONE_X_TOKEN`  | Provider-specific | Authentication token for the endpoint |
+| Variable                 | Required          | Description                                                                                                          |
+| ------------------------ | ----------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `YELLOWSTONE_ENDPOINT`   | For live runtime  | Your Yellowstone gRPC endpoint URL                                                                                   |
+| `YELLOWSTONE_X_TOKEN`    | Provider-specific | Authentication token for the endpoint                                                                                |
+| `YELLOWSTONE_COMMITMENT` | No                | `processed` (default), `confirmed` or `finalized`; see [the reference](/a4-server/reference/#yellowstone-commitment) |
 
 ## When to Use a4-server
 

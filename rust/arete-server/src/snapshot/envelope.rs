@@ -54,6 +54,11 @@ pub struct SnapshotHeader {
     /// treated as the unclean case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<crate::snapshot::SnapshotTrigger>,
+    /// The Yellowstone commitment the state was gathered at. Absent in
+    /// snapshots written before the level was selectable, all of which were
+    /// taken at processed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commitment: Option<crate::Commitment>,
 }
 
 /// The compressed body of a snapshot.
@@ -140,6 +145,7 @@ mod tests {
             observed_slot: 50,
             created_at_epoch_ms: 1_000,
             trigger: Some(crate::snapshot::SnapshotTrigger::Shutdown),
+            commitment: Some(crate::Commitment::Finalized),
             entry_counts: BTreeMap::new(),
         };
         let payload = SnapshotPayload {

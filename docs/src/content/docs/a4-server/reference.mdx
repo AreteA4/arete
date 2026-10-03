@@ -80,22 +80,59 @@ services, then supply independent chain and transaction transports.
 
 These environment variables are read by the generated runtime and server code:
 
-| Variable                     | Required               | Default | Description                                               |
-| ---------------------------- | ---------------------- | ------- | --------------------------------------------------------- |
-| `YELLOWSTONE_ENDPOINT`       | For live runtime       | —       | Yellowstone gRPC endpoint URL                             |
-| `YELLOWSTONE_X_TOKEN`        | Provider-specific      | —       | Authentication token for the endpoint                     |
-| `ARETE_READ_RPC_URL`         | For RPC-backed reads   | —       | Upstream used by Program Read and chain-read routes       |
-| `ARETE_TRANSACTION_RPC_URL`  | For transaction routes | —       | Independent transaction inspect/send upstream             |
-| `ARETE_TRANSACTIONS_ENABLED` | No                     | `false` | Explicitly enables fixed transaction routes               |
-| `ARETE_SNAPSHOT_ENABLED`     | No                     | `false` | Enables state snapshots for restart recovery              |
-| `ARETE_SNAPSHOT_URL`         | For snapshots          | —       | Snapshot store location (`file://...` or local path)      |
-| `ARETE_JOURNAL_ENABLED`      | No                     | `false` | Retains published events so append views replay by cursor |
-| `ARETE_JOURNAL_MAX_RECORDS`  | No                     | `10000` | Retained events per view                                  |
-| `ARETE_JOURNAL_MAX_AGE_SECS` | No                     | `900`   | Age bound on retained events                              |
-| `RUST_LOG`                   | No                     | `info`  | Log level filter (e.g., `debug`, `info,a4_server=debug`)  |
+| Variable                     | Required               | Default     | Description                                               |
+| ---------------------------- | ---------------------- | ----------- | --------------------------------------------------------- |
+| `YELLOWSTONE_ENDPOINT`       | For live runtime       | —           | Yellowstone gRPC endpoint URL                             |
+| `YELLOWSTONE_X_TOKEN`        | Provider-specific      | —           | Authentication token for the endpoint                     |
+| `YELLOWSTONE_COMMITMENT`     | No                     | `processed` | Commitment level to ingest at; see below                  |
+| `ARETE_READ_RPC_URL`         | For RPC-backed reads   | —           | Upstream used by Program Read and chain-read routes       |
+| `ARETE_TRANSACTION_RPC_URL`  | For transaction routes | —           | Independent transaction inspect/send upstream             |
+| `ARETE_TRANSACTIONS_ENABLED` | No                     | `false`     | Explicitly enables fixed transaction routes               |
+| `ARETE_SNAPSHOT_ENABLED`     | No                     | `false`     | Enables state snapshots for restart recovery              |
+| `ARETE_SNAPSHOT_URL`         | For snapshots          | —           | Snapshot store location (`file://...` or local path)      |
+| `ARETE_JOURNAL_ENABLED`      | No                     | `false`     | Retains published events so append views replay by cursor |
+| `ARETE_JOURNAL_MAX_RECORDS`  | No                     | `10000`     | Retained events per view                                  |
+| `ARETE_JOURNAL_MAX_AGE_SECS` | No                     | `900`       | Age bound on retained events                              |
+| `RUST_LOG`                   | No                     | `info`      | Log level filter (e.g., `debug`, `info,a4_server=debug`)  |
 
 The full set of `ARETE_SNAPSHOT_*` variables is documented in
 [State Snapshots & Restore](/a4-server/state-snapshots/).
+
+### Yellowstone commitment
+
+`YELLOWSTONE_COMMITMENT` selects the level every Yellowstone subscription asks
+for: the program stream, its reconnects and snapshot resumes, and the slot
+subscription that drives scheduling and readiness. Accepted values are
+`processed`, `confirmed` and `finalized` (case-insensitive). Unset means
+`processed`, the level every existing deployment already ingests at. An empty or
+unrecognised value stops the runtime at startup instead of falling back.
+
+`processed` delivers first but can include slots the cluster later drops;
+`finalized` delivers only rooted data, about 32 slots (roughly 13 seconds) behind
+the tip.
+`confirmed` sits between them. The runtime logs the level it resolved at startup and a live runtime reports it
+as `yellowstone_commitment` on `/status`. Runtimes without live ingestion
+(`http`, `program_reads`, the Solana gateway) report `null` there.
+
+To set it per runtime rather than per process, use the builder:
+
+```rust
+use arete::server::Commitment;
+
+Server::builder()
+    .spec(my_stack::spec())
+    .commitment(Commitment::Finalized)
+    .start()
+    .await?;
+```
+
+A snapshot records the level it was taken at. A runtime never resumes from a
+snapshot taken at a weaker level than its own, because that state may hold
+slots the stronger level never delivers; it cold-starts instead. A stronger
+snapshot resumes normally at a weaker level.
+
+Transaction routes and chain reads keep their own `confirmed` RPC commitment;
+this setting does not affect them.
 
 ## WebSocket Configuration
 
@@ -280,7 +317,7 @@ Server::builder()
 | ------------------------ | ------ | ------------------------------------------------------------------------ |
 | `/health` or `/healthz`  | GET    | Liveness check — returns `200 OK` if server is running                   |
 | `/ready` or `/readiness` | GET    | Readiness check — returns `200 OK` if stream is healthy, `503` otherwise |
-| `/status`                | GET    | Detailed JSON status with health state and error count                   |
+| `/status`                | GET    | Health state, error count and the ingestion commitment                   |
 
 #### Example `/status` Response
 
@@ -288,7 +325,8 @@ Server::builder()
 {
   "healthy": true,
   "status": "Connected",
-  "error_count": 0
+  "error_count": 0,
+  "yellowstone_commitment": "processed"
 }
 ```
 
