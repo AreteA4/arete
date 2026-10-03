@@ -404,10 +404,15 @@ impl SnapshotRuntime {
 
 /// Called by the generated runtime after it creates its `VmContext` and
 /// `SlotTracker`, so the snapshot manager can dump them later.
+///
+/// Whether or not snapshots are enabled, this also links the VM to the
+/// server's projector, which asks it for whole entities its bounded cache had
+/// to drop (see [`crate::projector::EntityResync`]).
 pub fn register_runtime(
     vm: Arc<StdMutex<VmContext>>,
     slot_tracker: SlotTracker,
 ) -> Option<SnapshotBarrier> {
+    crate::projector::link_active_resync(&vm);
     match ACTIVE_SNAPSHOT_RUNTIME.try_with(|runtime| runtime.register_runtime(vm, slot_tracker)) {
         Ok(barrier) => Some(barrier),
         Err(_) => {
@@ -656,6 +661,15 @@ impl SnapshotService {
             .map(|view| view.records.len())
             .sum();
         self.entity_cache.hydrate(payload.entity_cache).await;
+        // The VM keeps more entities than the cache does (and after a legacy
+        // migration the cache keeps none), so its next patch for one the
+        // cache lacks is only the fields that changed. A VM linked to the
+        // projector has that patch refused anyway: a restored entity's next
+        // mutation is not its creation, and only a creation is stored for a
+        // key the cache lacks. Treat them all as evicted as well, for a VM
+        // registered without that link; the memory is bounded (see
+        // `EntityCache`), and a view fed by a linked VM drops it.
+        remember_uncached_vm_keys(view_index, &payload.vm, &self.entity_cache).await;
         // Only a shutdown snapshot is exact; see `EventJournal::hydrate`.
         let exact_offsets = header.trigger == Some(SnapshotTrigger::Shutdown);
         self.journal.hydrate(payload.journal, exact_offsets).await;
@@ -891,6 +905,34 @@ impl SnapshotService {
     }
 }
 
+/// Mark every entity the restored VM holds but a restored view does not as
+/// evicted from that view, so the VM's next patch for it — only the fields
+/// that changed — is refused rather than stored as the whole entity even if
+/// the VM does not mark creations (see [`EntityCache`]'s "Only whole
+/// entities").
+async fn remember_uncached_vm_keys(
+    view_index: &ViewIndex,
+    vm: &VmSnapshot,
+    entity_cache: &EntityCache,
+) {
+    for table in vm.states.values() {
+        let views = view_index.by_export(&table.entity_name);
+        if views.is_empty() || table.data.is_empty() {
+            continue;
+        }
+        let keys: Vec<String> = table
+            .data
+            .iter()
+            .map(|(key, _)| crate::projector::Projector::extract_key(key))
+            .collect();
+        for view in views {
+            entity_cache
+                .remember_evicted(&view.id, keys.iter().cloned())
+                .await;
+        }
+    }
+}
+
 /// Rebuild each derived `SortedViewCache` from the hydrated `EntityCache`,
 /// mirroring the projector's upsert path. Sorted caches are not persisted:
 /// they are derived state and MB-scale rebuilds are sub-millisecond.
@@ -921,5 +963,76 @@ async fn rebuild_sorted_caches(view_index: &ViewIndex, entity_cache: &EntityCach
             cache.trim_to_max_entries(max_entries);
             debug!(view_id = %spec.id, count, "Rebuilt sorted cache from snapshot");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::CacheWrite;
+    use crate::view::{Delivery, Filters, Projection, ViewSpec};
+    use crate::websocket::frame::Mode;
+    use arete_interpreter::snapshot::StateTableSnapshot;
+    use serde_json::json;
+
+    fn view(id: &str, mode: Mode) -> ViewSpec {
+        ViewSpec {
+            id: id.to_string(),
+            export: "Round".to_string(),
+            mode,
+            wire_format: Default::default(),
+            projection: Projection::all(),
+            filters: Filters::all(),
+            delivery: Delivery::default(),
+            pipeline: None,
+            source_view: None,
+        }
+    }
+
+    /// After a restore the VM holds entities the cache does not; the VM's next
+    /// patch for one of them is a fragment and must not become the entity.
+    #[tokio::test]
+    async fn restored_vm_entities_missing_from_the_cache_are_remembered_as_evicted() {
+        let mut index = ViewIndex::new();
+        index.add_spec(view("Round/list", Mode::List));
+        index.add_spec(view("Round/state", Mode::State));
+        let cache = EntityCache::new();
+        cache
+            .hydrate(vec![(
+                "Round/list".to_string(),
+                vec![("2".to_string(), json!({"id": 2}))],
+            )])
+            .await;
+        let vm = VmSnapshot {
+            states: HashMap::from([(
+                0,
+                StateTableSnapshot {
+                    entity_name: "Round".to_string(),
+                    data: vec![(json!(1), json!({"id": 1})), (json!(2), json!({"id": 2}))],
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+
+        remember_uncached_vm_keys(&index, &vm, &cache).await;
+
+        assert!(matches!(
+            cache.upsert("Round/list", "1", json!({"n": 1})).await,
+            CacheWrite::Refused { .. }
+        ));
+        assert!(matches!(
+            cache.upsert("Round/state", "1", json!({"n": 1})).await,
+            CacheWrite::Refused { .. }
+        ));
+        assert_eq!(
+            cache.upsert("Round/list", "2", json!({"n": 1})).await,
+            CacheWrite::Merged
+        );
+        // A key the VM never held is new.
+        assert_eq!(
+            cache.upsert("Round/list", "3", json!({"id": 3})).await,
+            CacheWrite::Created
+        );
     }
 }

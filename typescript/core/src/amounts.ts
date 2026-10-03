@@ -13,7 +13,8 @@ export type AmountInput =
 export interface AmountResolutionInput {
   mint: string;
   amount: AmountInput;
-  decimals?: number;
+  /** The mint's decimals; read from the mint when absent. */
+  decimals?: number | undefined;
 }
 
 /** Convert a UI amount ("1.5") to raw base units using string math (no float precision loss). */

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import bs58 from 'bs58';
 import {
   Keypair,
+  PublicKey,
   SendTransactionError,
   VersionedTransaction,
   type Connection,
@@ -15,9 +16,12 @@ import {
   type TransactionFailureOutcome,
   type TransactionTransport,
 } from '@usearete/sdk';
+import { createFakeTransactionTransport } from '@usearete/sdk/testing';
 
 import {
+  INSPECT_ONLY_WALLET_ERROR,
   connectionAccountLoader,
+  createInspectOnlyWalletAdapter,
   createWalletAdapter,
   type VersionedTransactionSigner,
 } from './index';
@@ -710,5 +714,53 @@ describe('instruction converters', () => {
     const web3Instruction = (await import('./index')).toTransactionInstruction(original);
 
     expect(new Uint8Array(web3Instruction.data)).toEqual(original.data);
+  });
+});
+
+describe('createInspectOnlyWalletAdapter', () => {
+  const owner = Keypair.generate().publicKey.toBase58();
+
+  it('prepares and inspects for a bare public key through the Arete relay', async () => {
+    const relay = createFakeTransactionTransport({
+      simulation: { unitsConsumed: 2_345n, logs: ['Program log: inspected'] },
+    });
+    const wallet = createInspectOnlyWalletAdapter({ publicKey: owner, transport: relay });
+
+    expect(wallet.publicKey).toBe(owner);
+    expect(wallet.signerAddresses).toEqual([owner]);
+    await expect(wallet.inspectTransaction([makeInstruction([owner])])).resolves.toMatchObject({
+      feeLamports: 5_000,
+      computeUnitsConsumed: 2_345,
+      logs: ['Program log: inspected'],
+    });
+    expect(relay.calls).toEqual(['latest-blockhash', 'fee', 'simulate']);
+  });
+
+  it('inspects through a direct connection too', async () => {
+    const { connection } = createConnectionStub();
+    const wallet = createInspectOnlyWalletAdapter({
+      publicKey: new PublicKey(owner),
+      connection,
+      transport: 'direct',
+    });
+
+    await expect(wallet.inspectTransaction([makeInstruction([owner])])).resolves.toMatchObject({
+      feeLamports: 5_000,
+      computeUnitsConsumed: 1234,
+    });
+  });
+
+  it('refuses every sign or send before anything is built or dispatched', async () => {
+    const relay = createFakeTransactionTransport();
+    const { connection, getSendCalls } = createConnectionStub();
+    const wallet = createInspectOnlyWalletAdapter({ publicKey: owner, connection, transport: relay });
+
+    const error = await wallet.signAndSend([makeInstruction([owner])]).catch((value: unknown) => value);
+
+    expect(failureOutcome(error)).toMatchObject({ status: 'not-submitted', phase: 'wallet' });
+    expect(failureOutcome(error).cause).toMatchObject({ name: INSPECT_ONLY_WALLET_ERROR });
+    expect((error as Error).message).toMatch(/inspect-only wallet adapter .* cannot sign or send/i);
+    expect(relay.calls).toEqual([]);
+    expect(getSendCalls()).toBe(0);
   });
 });

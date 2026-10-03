@@ -8,7 +8,7 @@ interface BlockGridProps {
   countPerSquare?: readonly number[];
   /** Your UI-denominated SOL per square, shipped by `OreMiner.state`. */
   myDeployment?: readonly number[];
-  preRevealWinningSquare?: number;
+  /** The round's winning square, highlighted as soon as the stack knows it. */
   winningSquare?: number;
   selected: readonly SquareIndex[];
   onToggle: (square: SquareIndex) => void;
@@ -22,7 +22,6 @@ export function BlockGrid({
   deployedPerSquare,
   countPerSquare,
   myDeployment,
-  preRevealWinningSquare,
   winningSquare,
   selected,
   onToggle,
@@ -37,7 +36,6 @@ export function BlockGrid({
           const isSelected = selectedSet.has(index);
           const mine = myDeployment?.[index] ?? 0;
           const isMine = mine > 0;
-          const isCandidate = preRevealWinningSquare === index;
           const isWinner = winningSquare === index;
           const deployed = deployedPerSquare?.[index] ?? 0;
           const miners = countPerSquare?.[index] ?? 0;
@@ -45,18 +43,15 @@ export function BlockGrid({
           const mineText = String(mine);
           const highlightClass = isWinner
             ? 'bg-emerald-50 outline outline-[3px] outline-offset-[-3px] outline-emerald-500 shadow-lg dark:bg-emerald-900/30 dark:outline-emerald-400'
-            : isCandidate
-              ? 'bg-amber-50 outline outline-[3px] outline-offset-[-3px] outline-amber-400 dark:bg-amber-900/20 dark:outline-amber-400'
-              : isMine
-                ? 'bg-sky-100 outline outline-2 outline-offset-[-2px] outline-sky-500 dark:bg-sky-950/60 dark:outline-sky-400'
-                : isSelected
-                  ? 'outline outline-2 outline-offset-[-2px] outline-stone-700 dark:outline-stone-200'
-                  : '';
+            : isMine
+              ? 'bg-sky-100 outline outline-2 outline-offset-[-2px] outline-sky-500 dark:bg-sky-950/60 dark:outline-sky-400'
+              : isSelected
+                ? 'outline outline-2 outline-offset-[-2px] outline-stone-700 dark:outline-stone-200'
+                : '';
           const stateText = [
             isSelected ? 'selected' : '',
             isMine ? 'your current position' : '',
-            isCandidate ? 'pre-reveal candidate' : '',
-            isWinner ? 'finalized winner' : '',
+            isWinner ? 'winning square' : '',
           ].filter(Boolean).join(', ');
           return (
             <button
@@ -66,7 +61,7 @@ export function BlockGrid({
               aria-pressed={isSelected}
               aria-label={`Square ${index + 1}, protocol index ${index}, ${deployedText} SOL total${isMine ? `, ${mineText} SOL yours` : ''}, ${miners} miners${stateText ? `, ${stateText}` : ''}`}
               data-testid={`tile-${index + 1}`}
-              data-winning-state={isWinner ? 'final' : isCandidate ? 'candidate' : undefined}
+              data-winner={isWinner ? 'true' : undefined}
               onClick={() => onToggle(square)}
             >
               <span className="flex items-start justify-between gap-1 text-[10px] font-medium text-stone-400 dark:text-stone-500 sm:text-sm">

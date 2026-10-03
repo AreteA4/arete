@@ -11,7 +11,7 @@ import pytest
 
 from arete.chain import HttpChainClient
 from arete.client import Arete, validate_program_reads
-from arete.errors import AreteError
+from arete.errors import AreteConnectionError, AreteError
 from arete.gateway import (
     HostedSolanaGatewayBindings,
     HostedSolanaGatewayCapabilityBinding,
@@ -50,7 +50,7 @@ DEPLOY_HANDLER = InstructionHandler(
     program_id=PROGRAM_ID,
     discriminator=bytes([1]),
     accounts=[
-        AccountMeta("signer", True, True, Signer()),
+        AccountMeta("signer", True, True, Signer(), signer_kind="wallet"),
         AccountMeta("miner", False, True, UserProvided()),
     ],
     args=[ArgSchema("amount", "u64")],
@@ -211,6 +211,53 @@ class TestConnectLifecycle:
             assert a4.is_connected()
         assert not a4.is_connected()
 
+    async def test_get_raises_the_socket_failure_instead_of_timing_out(self):
+        async def refuse(url, headers):
+            raise OSError("connection refused")
+
+        a4 = await Arete.connect(
+            make_stack(), auto_connect=False, connect_factory=refuse
+        )
+        pending = asyncio.create_task(a4.views.ore_round.latest.get(timeout=None))
+        await asyncio.sleep(0)
+        with pytest.raises(AreteError):
+            await a4.connect_socket()
+
+        with pytest.raises(AreteConnectionError) as excinfo:
+            await asyncio.wait_for(pending, TIMEOUT)
+        assert excinfo.value.code == "CONNECTION_ERROR"
+        assert excinfo.value.message == "Failed to create WebSocket connection"
+        await a4.disconnect()
+
+    async def test_get_keeps_a_fatal_server_message_as_sent(self):
+        factory = FakeConnectFactory()
+        a4 = await Arete.connect(make_stack(), connect_factory=factory)
+        pending = asyncio.create_task(a4.views.ore_round.latest.get(timeout=None))
+        await asyncio.sleep(0)
+        factory.sockets[0].push({
+            "type": "error",
+            "code": "internal-error",
+            "message": "[CONNECTION_ERROR] upstream unavailable",
+            "fatal": True,
+        })
+
+        with pytest.raises(AreteConnectionError) as excinfo:
+            await asyncio.wait_for(pending, TIMEOUT)
+        assert excinfo.value.code == "CONNECTION_ERROR"
+        assert excinfo.value.message == "[CONNECTION_ERROR] upstream unavailable"
+        await a4.disconnect()
+
+    async def test_disconnect_cancels_a_pending_get(self):
+        factory = FakeConnectFactory()
+        a4 = await Arete.connect(make_stack(), connect_factory=factory)
+        pending = asyncio.create_task(a4.views.ore_round.latest.get(timeout=None))
+        await asyncio.sleep(0)
+        await a4.disconnect()
+
+        with pytest.raises(AreteConnectionError) as excinfo:
+            await asyncio.wait_for(pending, TIMEOUT)
+        assert excinfo.value.code == "CONNECTION_CANCELLED"
+
     async def test_connection_state_hook(self):
         factory = FakeConnectFactory()
         states = []
@@ -297,6 +344,56 @@ class TestHttpOnlyMode:
         )
         a4 = await Arete.connect(stack)
         assert not a4.is_connected()
+
+
+@pytest.mark.asyncio
+async def test_the_generated_release_is_named_only_for_the_generated_endpoint():
+    import httpx
+
+    from arete.auth import AuthConfig
+    from arete.stack import StackRelease
+
+    release = StackRelease(
+        stack_manifest_hash="arete:h1:stack-manifest:sha256:" + "a" * 64,
+        live_alias="live",
+    )
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"token": "minted", "expires_at": 4102444800})
+
+    stack = make_stack(
+        endpoints=StackEndpoints(ws="wss://ore.stack.arete.run"), release=release
+    )
+    auth = AuthConfig(token_endpoint="https://auth.example/ws/sessions")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        generated = await Arete.connect(
+            stack, auth=auth, http_client=http_client, auto_connect=False
+        )
+        await generated._http.get_token()
+        overridden = await Arete.connect(
+            stack,
+            url="wss://other.stack.arete.run",
+            auth=auth,
+            http_client=http_client,
+            auto_connect=False,
+        )
+        await overridden._http.get_token()
+
+    assert bodies == [
+        {
+            "websocket_url": "wss://ore.stack.arete.run",
+            "scopes": ["read"],
+            "stackManifestHash": release.stack_manifest_hash,
+            "liveAlias": "live",
+        },
+        {"websocket_url": "wss://other.stack.arete.run", "scopes": ["read"]},
+    ]
+    # The WebSocket session request carries the same release.
+    assert generated._connection._auth_state.stack_release == release
+    assert overridden._connection._auth_state.stack_release is None
 
 
 @pytest.mark.asyncio

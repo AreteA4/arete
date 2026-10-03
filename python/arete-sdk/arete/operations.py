@@ -4,7 +4,8 @@ Python port of ``typescript/core/src/operations.ts`` +
 ``signer-registry.ts`` (Rust sibling: ``arete_sdk::operations``).
 
 Prepared values are portable data: name, artifacts, per-transaction
-instruction lists, required signer addresses, and error metadata. They
+instruction lists, required signer addresses, and error metadata, plus the
+signer material a transaction was prepared with (``signers``). They
 compose (prepend/append, ``create_prepared_transaction(operations=...)``)
 and execute through :func:`execute_prepared_operation` with fail-closed
 signer validation, per-transaction callbacks, and receipts.
@@ -22,7 +23,7 @@ import dataclasses
 import inspect as _inspect
 import math as _math
 import re as _re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import (
     Any,
     Awaitable,
@@ -121,6 +122,15 @@ class PreparedTransactionBody:
     instructions: Tuple[BuiltInstruction, ...]
     required_signer_addresses: Tuple[str, ...] = ()
     errors: Tuple[ErrorMetadata, ...] = ()
+    #: Signer material created while preparing this transaction (TypeScript
+    #: ``signers``): opaque, adapter-specific values such as the ``solders``
+    #: keypair of an account the transaction creates. Executing the
+    #: transaction forwards them to the wallet adapter, and their addresses
+    #: count toward signer validation. They are never compared, shown in
+    #: ``repr`` or converted by :func:`to_json_value`.
+    signers: Tuple[Any, ...] = field(
+        default=(), repr=False, compare=False, metadata={"json": False}
+    )
 
 
 @dataclass(frozen=True)
@@ -181,6 +191,18 @@ def _dedupe(values: Iterable[str]) -> Tuple[str, ...]:
     return tuple(out)
 
 
+def _dedupe_signers(signers: Iterable[Any]) -> Tuple[Any, ...]:
+    """Signers in order, each object once (TypeScript dedupes them with a
+    ``Set``, by identity)."""
+    seen: Set[int] = set()
+    out: List[Any] = []
+    for signer in signers:
+        if id(signer) not in seen:
+            seen.add(id(signer))
+            out.append(signer)
+    return tuple(out)
+
+
 def _infer_signer_addresses(
     instructions: Sequence[BuiltInstruction],
 ) -> Tuple[str, ...]:
@@ -198,9 +220,12 @@ def create_prepared_transaction_body(
     instructions: Sequence[BuiltInstruction],
     required_signer_addresses: Optional[Sequence[str]] = None,
     errors: Optional[Sequence[ErrorMetadata]] = None,
+    signers: Optional[Sequence[Any]] = None,
 ) -> PreparedTransactionBody:
     """Build a transaction body; signer addresses default to those inferred
-    from the instructions' signer account metas. Fails closed on empty
+    from the instructions' signer account metas. ``signers`` is the signer
+    material the transaction was prepared with (see
+    :attr:`PreparedTransactionBody.signers`). Fails closed on empty
     instruction lists."""
     instruction_tuple = tuple(instructions)
     if not instruction_tuple:
@@ -214,6 +239,7 @@ def create_prepared_transaction_body(
             else _infer_signer_addresses(instruction_tuple)
         ),
         errors=tuple(errors or ()),
+        signers=_dedupe_signers(signers or ()),
     )
 
 
@@ -233,12 +259,14 @@ def create_prepared_instruction(
     artifacts: Any = None,
     required_signer_addresses: Optional[Sequence[str]] = None,
     errors: Optional[Sequence[ErrorMetadata]] = None,
+    signers: Optional[Sequence[Any]] = None,
 ) -> PreparedInstruction:
     transaction = create_prepared_transaction_body(
         name=name,
         instructions=[instruction],
         required_signer_addresses=required_signer_addresses,
         errors=errors,
+        signers=signers,
     )
     return PreparedInstruction(
         name=name,
@@ -261,11 +289,13 @@ def create_prepared_transaction(
     artifacts: Any = None,
     required_signer_addresses: Optional[Sequence[str]] = None,
     errors: Optional[Sequence[ErrorMetadata]] = None,
+    signers: Optional[Sequence[Any]] = None,
 ) -> PreparedTransaction:
     """Compose one atomic transaction from built/prepared instructions or
     prepared operations. Exactly one of ``instructions`` / ``operations``
     must be given; explicit ``required_signer_addresses`` / ``errors``
-    override the metadata inherited from composed parts."""
+    override the metadata inherited from composed parts. The parts'
+    ``signers`` are kept, followed by ``signers``."""
     if (instructions is None) == (operations is None):
         raise ValueError(
             f"Transaction '{name}' must provide exactly one of instructions or operations"
@@ -298,6 +328,10 @@ def create_prepared_transaction(
             if errors is not None
             else [error for part in parts for error in part.errors]
         ),
+        signers=[
+            *(signer for part in parts for signer in part.signers),
+            *(signers or ()),
+        ],
     )
     return PreparedTransaction(
         name=name,
@@ -316,6 +350,7 @@ def _coerce_transaction_body(
             instructions=value.instructions,
             required_signer_addresses=value.required_signer_addresses,
             errors=value.errors,
+            signers=value.signers,
         )
     return create_prepared_transaction_body(**dict(value))
 
@@ -346,6 +381,7 @@ def prepend_transaction_instructions(
             *transaction.required_signer_addresses,
         ],
         errors=transaction.errors,
+        signers=transaction.signers,
     )
 
 
@@ -361,6 +397,7 @@ def append_transaction_instructions(
             *_infer_signer_addresses(tuple(instructions)),
         ],
         errors=transaction.errors,
+        signers=transaction.signers,
     )
 
 
@@ -1097,12 +1134,16 @@ async def execute_prepared_operation(
     """Execute a prepared operation transaction-by-transaction through the
     host's wallet adapter.
 
+    Each transaction is sent with its own :attr:`PreparedTransactionBody.signers`,
+    then the signer registry's signers, then ``signers`` (each object once),
+    as the TS executor merges them.
+
     Per transaction, mirroring the TS executor's order exactly: (1) validate
     required signers against the union of ``available_signer_addresses``, the
     signer registry's addresses, the effective wallet's declared signer
     addresses, the effective wallet's public key (falling back to the host's
     public key only when that wallet has none), and addresses inferable from
-    ``signers`` — failing closed *before* dispatch;
+    those signers — failing closed *before* dispatch;
     (2) invoke ``on_transaction_start``; (3) dispatch via
     ``host.transaction``; (4) record the receipt; (5) invoke
     ``on_transaction_success``. Callbacks are observational: their failures
@@ -1137,11 +1178,14 @@ async def execute_prepared_operation(
         )
 
     for transaction_index, transaction in enumerate(operation.plan.transactions):
+        transaction_signers = _dedupe_signers(
+            [*transaction.signers, *combined_signers]
+        )
         missing = _missing_signers(
             transaction,
             host,
             wallet,
-            combined_signers,
+            transaction_signers,
             signer_registry,
             available_signer_addresses,
         )
@@ -1175,7 +1219,7 @@ async def execute_prepared_operation(
                 wallet=wallet,
                 send=send,
                 errors=list(transaction.errors),
-                signers=combined_signers if combined_signers else None,
+                signers=list(transaction_signers) if transaction_signers else None,
                 transaction_transport=transaction_transport,
             )
         except Exception as cause:
@@ -1368,7 +1412,8 @@ def to_json_value(value: Any, _ancestors: Optional[Set[int]] = None) -> Any:
 
     ``bytes`` become integer lists; sets/tuples become lists; dataclasses and
     mappings become dicts; non-finite floats become ``None``; circular values
-    raise ``ValueError``.
+    raise ``ValueError``. A dataclass field marked ``metadata={"json": False}``
+    (a transaction body's signer material) is left out.
     """
     if value is None or isinstance(value, (bool, str, int)):
         return value
@@ -1392,6 +1437,7 @@ def to_json_value(value: Any, _ancestors: Optional[Set[int]] = None) -> Any:
             return {
                 item.name: to_json_value(getattr(value, item.name), ancestors)
                 for item in dataclasses.fields(value)
+                if item.metadata.get("json", True)
             }
         return str(value)
     finally:

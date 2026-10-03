@@ -91,7 +91,22 @@ class TestDeriveAssociatedTokenAccount:
             owner=owner, mint=mint, token_program=TOKEN_2022_PROGRAM_ADDRESS
         )
 
-    def test_rejects_invalid_base58_addresses(self):
+    def test_rejects_invalid_addresses_with_the_typescript_messages(self):
         pytest.importorskip("arete.instructions.pda")
-        with pytest.raises(ValueError, match="base58"):
-            derive_associated_token_account(owner="not base58 0OIl", mint="mint")
+        owner = "So11111111111111111111111111111111111111112"
+        mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        cases = [
+            (dict(owner="not base58 0OIl", mint=mint), "Invalid base58 character:  "),
+            (dict(owner="0wner", mint=mint), "Invalid base58 character: 0"),
+            (dict(owner=owner, mint="mint"), "Invalid public key length: expected 32, got 3"),
+            # Only None defaults the token program (TypeScript `??`): the
+            # empty string is a seed, and decodes to no bytes.
+            (
+                dict(owner=owner, mint=mint, token_program=""),
+                "Invalid public key length: expected 32, got 0",
+            ),
+        ]
+        for kwargs, message in cases:
+            with pytest.raises(ValueError) as excinfo:
+                derive_associated_token_account(**kwargs)
+            assert str(excinfo.value) == message

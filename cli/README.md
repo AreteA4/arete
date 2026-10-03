@@ -56,8 +56,8 @@ a4 explore --json
 a4 explore stack ore --json
 
 # Need an account (deploying, knowledge layer)?
-a4 auth signup                      # register as an agent, stores the key
-a4 auth login --key <a4_ak_...>     # or use a human-issued key
+a4 auth signup                                  # restricted agent profile
+a4 auth login --profile human --key <a4_sk_...> # separate human profile
 
 # Build explicit artifacts and deploy the exact manifest
 cargo build
@@ -194,15 +194,18 @@ and does not make a program global or public.
 ## Authentication
 
 ```bash
-a4 auth signup [name]           # Register an agent (5 per hour per IP); --force to replace saved credentials
-a4 auth signup --json           # Also prints "apiKey" (a secret) for ARETE_API_KEY in sub-processes
-a4 auth login --key <a4_ak_...> # Use a human-issued key; prompts only in an interactive terminal
+a4 auth signup [name]                       # Register an agent; --force replaces its profile key
+a4 auth signup --json                       # Metadata only; never prints the secret
+a4 auth login --profile human --key <a4_sk_...> # Save a separate human key
 a4 auth logout
 a4 auth status
 a4 auth whoami                  # Verify with server
 ```
 
-Credentials: `~/.arete/credentials.toml`
+Credentials: named profiles in `~/.arete/credentials.toml`. `a4 init` writes
+the non-secret `.arete/auth.toml` project default (`agent`) and pins generated
+MCP config to `a4 --profile agent mcp`. Humans opt in with
+`a4 --profile human <command>`.
 
 ## Agent Setup
 
@@ -228,7 +231,7 @@ a4 mcp
 
 Stream MCP server over stdio (registry discovery, knowledge layer, live entity
 reads). `a4 init` writes the config; the manual shape for Claude Code is
-`{"mcpServers":{"arete":{"type":"stdio","command":"a4","args":["mcp"]},"arete-docs":{"type":"http","url":"https://docs.arete.run/mcp"}}}`.
+`{"mcpServers":{"arete":{"type":"stdio","command":"a4","args":["--profile","agent","mcp"]},"arete-docs":{"type":"http","url":"https://docs.arete.run/mcp"}}}`.
 
 ## Registry Exploration
 
@@ -347,7 +350,7 @@ tenant-local transports.
 
 | Error | Solution |
 |-------|----------|
-| `Not authenticated` | Run `a4 auth signup` (or `a4 auth login --key <a4_ak_...>`) |
+| `Not authenticated` | Run `a4 auth signup` or `a4 auth login --profile human --key <a4_sk_...>` |
 | `a4: command not found` | Run `export PATH="$HOME/.local/bin:$PATH"` or use the `A4_BIN=` path the installer printed |
 | `a4 was not installed by the Arete installer` | Reinstall with `curl -fsSL https://arete.run/install.sh \| sh` |
 | `Stack not found` | Check `a4 stack list` |

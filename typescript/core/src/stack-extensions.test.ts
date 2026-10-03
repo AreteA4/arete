@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import packageJson from '../package.json';
 import {
+  EXTENSION_API_VERSION,
+  PROGRAM_OPERATION_EXTENSIONS,
+  STACK_RUNTIME_EXTENSIONS,
   applyConnectedStackExtensions,
   createPreparedFlow,
   createPreparedInstruction,
@@ -14,8 +18,12 @@ import {
   getProgramRuntimeExtensions,
   getStackRuntimeExtensions,
   instructionOperation,
+  compareProgramIdentity,
+  isSameProgramSdk,
   transactionOperation,
+  withProgramIdentity,
   withProgramRead,
+  withPrograms,
 } from './index';
 import { getProgramReadDescriptor } from './program-sdk';
 import type { ProgramSdkDefinition, StackDefinition } from './types';
@@ -348,6 +356,180 @@ describe('extendPrograms', () => {
     expect(extended.ore.addresses).toEqual({ vault: 'vault' });
     expect(extended.ore.math.double(3)).toBe(6);
     expect(extended.entropy.name).toBe('entropy');
+  });
+});
+
+describe('spread-safe runtime extensions', () => {
+  const descriptor = {
+    release: { programReleaseHash: 'release-ore', programSpecHash: 'spec-ore' },
+    transport: { kind: 'local-http', endpointSource: 'connect-http-url' },
+  } as const;
+
+  it('keeps read, flows and readArgCounts when a stack is spread', () => {
+    const extended = extendStack(BASE_STACK, {
+      readArgCounts: { ping: 0 },
+      createRead: () => ({ ping: () => 'pong' }),
+      createFlows: () => ({
+        close: flowOperation(async () => createPreparedFlow({
+          name: 'close',
+          transactions: [{
+            name: 'close',
+            instructions: [{ programId: 'x', keys: [], data: new Uint8Array([]) }],
+          }],
+          artifacts: {},
+        })),
+      }),
+    });
+    const spread = { ...extended, name: 'renamed' };
+
+    expect(getStackRuntimeExtensions(spread)).toBe(getStackRuntimeExtensions(extended));
+    expect(getStackRuntimeExtensions(spread)?.readArgCounts).toEqual({ ping: 0 });
+    const client = applyConnectedStackExtensions({}, spread) as {
+      read?: { ping(): string };
+      flows?: { close?: unknown };
+    };
+    expect(client.read?.ping()).toBe('pong');
+    expect(client.flows?.close).toBeDefined();
+
+    // Invisible to key enumeration and serialization.
+    expect(Object.keys(extended)).toEqual(Object.keys(BASE_STACK));
+    expect(JSON.parse(JSON.stringify(extended))).toEqual(JSON.parse(JSON.stringify(BASE_STACK)));
+  });
+
+  it('keeps operations and the read descriptor when a program is spread', () => {
+    const program = withProgramRead(
+      extendProgram(BASE_PROGRAM, {
+        createOperations: () => ({ instructions: { ping: 'op' as never } }),
+      }),
+      descriptor,
+    );
+    const spread = { ...program };
+
+    expect(getProgramReadDescriptor(spread)).toBe(descriptor);
+    expect(getProgramRuntimeExtensions(spread)).toBe(getProgramRuntimeExtensions(program));
+    expect(getProgramRuntimeExtensions(spread)?.createOperations?.({
+      chain: null as never,
+      wallet: undefined,
+      program: {} as never,
+    })?.instructions).toEqual({ ping: 'op' });
+    expect(Object.getOwnPropertySymbols(spread)).toContain(PROGRAM_OPERATION_EXTENSIONS);
+    expect(Object.keys(spread)).not.toContain('__areteProgramOperationExtensions');
+    expect(JSON.stringify(spread)).not.toContain('areteProgram');
+  });
+
+  it('keeps operations written by a generated object literal when spread', () => {
+    const generated = {
+      ...BASE_PROGRAM,
+      [PROGRAM_OPERATION_EXTENSIONS]: {
+        createOperations: () => ({ instructions: { ping: 'op' as never } }),
+      },
+    };
+    const spread = { ...generated };
+
+    expect(getProgramRuntimeExtensions(spread)?.createOperations).toBe(
+      generated[PROGRAM_OPERATION_EXTENSIONS].createOperations
+    );
+    expect(Object.keys(generated)).toEqual(Object.keys(BASE_PROGRAM));
+  });
+
+  it('uses registry symbols so separate module copies interoperate', () => {
+    expect(STACK_RUNTIME_EXTENSIONS).toBe(Symbol.for('@usearete/sdk/stack-runtime-extensions'));
+    expect(PROGRAM_OPERATION_EXTENSIONS).toBe(Symbol.for('@usearete/sdk/program-runtime-extensions'));
+  });
+});
+
+describe('program identity', () => {
+  const descriptor = {
+    release: { programReleaseHash: 'release-ore', programSpecHash: 'spec-ore' },
+    transport: { kind: 'local-http', endpointSource: 'connect-http-url' },
+  } as const;
+  const RELEASE = 'arete:registry-package-release:v2:ore';
+  const SPEC = { ...BASE_PROGRAM, programSpecHash: 'spec-ore' };
+  const RELEASED = { ...SPEC, packageReleaseHash: RELEASE };
+
+  it('drops packageReleaseHash when a program is changed outside its generated SDK', () => {
+    const extended = extendProgram(RELEASED, { constants: { unit: 1 } });
+    const bundled = withProgramRead(RELEASED, descriptor);
+    const programs = extendPrograms({ ore: RELEASED, other: RELEASED }, { ore: { math: { one: () => 1 } } });
+
+    for (const program of [extended, bundled, programs.ore]) {
+      expect('packageReleaseHash' in program).toBe(false);
+      expect(program.programSpecHash).toBe('spec-ore');
+    }
+    // An entry the extension does not target is untouched.
+    expect(programs.other).toBe(RELEASED);
+    // sdkDefinitionHash describes generated content only, so extension drops it.
+    expect('sdkDefinitionHash' in extended).toBe(false);
+  });
+
+  it('keeps packageReleaseHash where programs are only carried, not changed', () => {
+    const stack = extendStack({ ...BASE_STACK, programs: { ore: RELEASED } }, { addresses: { vault: 'V' } });
+    const attached = withPrograms(BASE_STACK, { ore: RELEASED });
+
+    expect(stack.programs.ore).toBe(RELEASED);
+    expect(attached.programs.ore).toBe(RELEASED);
+  });
+
+  it('stamps identity last, keeping extensions and the read descriptor', () => {
+    const generated = withProgramIdentity(
+      withProgramRead(
+        extendProgram(SPEC, {
+          constants: { unit: 1 },
+          createOperations: () => ({ instructions: { ping: 'op' as never } }),
+        }),
+        descriptor,
+      ),
+      { packageReleaseHash: RELEASE },
+    );
+
+    expect(generated.packageReleaseHash).toBe(RELEASE);
+    expect(generated.constants).toEqual({ unit: 1 });
+    expect(getProgramRuntimeExtensions(generated)?.createOperations).toBeTypeOf('function');
+    expect(getProgramReadDescriptor(generated)).toBe(descriptor);
+    expect(isSameProgramSdk(generated, RELEASED)).toBe(true);
+    // A spread keeps every part of the identity-stamped program.
+    expect(isSameProgramSdk({ ...generated }, RELEASED)).toBe(true);
+    expect(getProgramReadDescriptor({ ...generated })).toBe(descriptor);
+    // An absent identity removes it.
+    expect('packageReleaseHash' in withProgramIdentity(generated, {})).toBe(false);
+  });
+
+  it('compares by package release, then by program spec, never by name', () => {
+    expect(compareProgramIdentity(BASE_PROGRAM, BASE_PROGRAM)).toBe('same');
+    expect(compareProgramIdentity(RELEASED, { ...RELEASED, name: 'renamed' })).toBe('same');
+    expect(compareProgramIdentity(RELEASED, { ...RELEASED, packageReleaseHash: 'other' })).toBe('different');
+    // At least one side unknown: the program spec decides between a match that
+    // cannot be proven and a conflict.
+    expect(compareProgramIdentity(RELEASED, SPEC)).toBe('unproven');
+    expect(compareProgramIdentity(SPEC, { ...SPEC })).toBe('unproven');
+    expect(compareProgramIdentity(SPEC, { ...SPEC, programSpecHash: 'spec-other' })).toBe('different');
+    expect(compareProgramIdentity(BASE_PROGRAM, { ...BASE_PROGRAM })).toBe('different');
+
+    expect(isSameProgramSdk(RELEASED, { ...RELEASED })).toBe(true);
+    expect(isSameProgramSdk(SPEC, { ...SPEC })).toBe(false);
+  });
+
+  it('lets a user-extended copy of a stack program replace it, with one warning', () => {
+    const stack = { ...BASE_STACK, programs: { ore: RELEASED } };
+    const userOre = extendProgram(RELEASED, {
+      createOperations: () => ({ instructions: { mine: 'op' as never } }),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(withPrograms(stack, { ore: userOre }).programs.ore).toBe(userOre);
+      expect(withPrograms(stack, { ore: userOre }).programs.ore).toBe(userOre);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/could not be proven identical/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('extension contract version', () => {
+  it('is exported and matches the package manifest', () => {
+    expect(EXTENSION_API_VERSION).toBe(1);
+    expect(packageJson.arete.extensionApi).toBe(EXTENSION_API_VERSION);
   });
 });
 

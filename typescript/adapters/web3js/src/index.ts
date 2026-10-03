@@ -724,6 +724,62 @@ export function createWalletAdapter(config: Web3JsAdapterConfig): Web3JsWalletAd
   };
 }
 
+export interface InspectOnlyWalletAdapterConfig {
+  /** The address transactions are prepared for (fee payer and wallet signer). */
+  publicKey: PublicKey | string;
+  /** Direct Solana RPC dependency, for inspection without an Arete client. */
+  connection?: Connection;
+  /** Arete when connected, direct when explicitly selected, or a custom transport. */
+  transport?: AdapterTransportSelection;
+  /** Default commitment for blockhash, fee and simulation RPCs. */
+  defaultCommitment?: Commitment;
+}
+
+/** `name` of the error an inspect-only adapter refuses a sign or send with. */
+export const INSPECT_ONLY_WALLET_ERROR = 'InspectOnlyWalletError';
+
+function inspectOnlyRefusal(address: string, action: string): AdapterTransactionError {
+  const cause = new Error(
+    `Inspect-only wallet adapter for ${address} cannot ${action}: it holds only a public key. `
+      + 'Use it to prepare and inspect (fee and simulation); connect a signing wallet to execute.'
+  );
+  cause.name = INSPECT_ONLY_WALLET_ERROR;
+  return transactionError({ status: 'not-submitted', phase: 'wallet', cause });
+}
+
+/**
+ * A WalletAdapter that holds only a public key: operations prepare against it
+ * and `client.inspectOperation()` estimates fees and simulates them, but every
+ * sign or send is refused before anything is built or dispatched. For agents
+ * and CI that verify transactions without keys.
+ */
+export function createInspectOnlyWalletAdapter(
+  config: InspectOnlyWalletAdapterConfig,
+): Web3JsWalletAdapter {
+  const publicKey = typeof config.publicKey === 'string'
+    ? new PublicKey(config.publicKey)
+    : config.publicKey;
+  const address = publicKey.toBase58();
+  const inner = createWalletAdapter({
+    connection: config.connection,
+    transport: config.transport,
+    defaultCommitment: config.defaultCommitment,
+    signer: {
+      publicKey,
+      supportedTransactionVersions: new Set<TransactionVersion>([0]),
+      async signTransaction(): Promise<VersionedTransaction> {
+        throw inspectOnlyRefusal(address, 'sign transactions');
+      },
+    },
+  });
+  return {
+    ...inner,
+    async signAndSend(): Promise<SendResult> {
+      throw inspectOnlyRefusal(address, 'sign or send transactions');
+    },
+  };
+}
+
 /** Create a WalletAdapter backed by a local Keypair. */
 export function createKeypairWalletAdapter(config: {
   connection?: Connection;

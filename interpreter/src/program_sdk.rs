@@ -98,6 +98,13 @@ fn build_program_only_stack_spec_from_program_spec_ref(
     .with_content_hash()
 }
 
+/// The PDAs a ProgramSpec declares, in the generator's AST shape.
+pub(crate) fn program_spec_pdas(
+    program_spec: &arete_hash::ProgramSpecV1,
+) -> BTreeMap<String, PdaDefinition> {
+    transcode_program_projection(program_spec.pdas.clone())
+}
+
 fn transcode_program_projection<T, U>(value: T) -> U
 where
     T: serde::Serialize,

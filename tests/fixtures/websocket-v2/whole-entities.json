@@ -1,0 +1,92 @@
+{
+  "name": "patches for keys the client does not hold follow the server's guarantee",
+  "client": [
+    {
+      "type": "subscribe",
+      "protocolVersion": 2,
+      "subscriptionId": "rounds",
+      "query": { "view": "Round/list" },
+      "snapshot": { "enabled": true }
+    },
+    {
+      "type": "subscribe",
+      "protocolVersion": 2,
+      "subscriptionId": "legacy-pools",
+      "query": { "view": "Pool/list" },
+      "snapshot": { "enabled": true }
+    }
+  ],
+  "server": [
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "rounds",
+      "op": "subscribed",
+      "query": { "view": "Round/list" },
+      "mode": "list",
+      "wholeEntities": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "rounds",
+      "snapshotId": "snapshot-rounds-1",
+      "authoritative": true,
+      "mode": "list",
+      "entity": "Round/list",
+      "op": "snapshot",
+      "data": [{ "key": "1", "data": { "round_id": 1, "score": 1 } }],
+      "complete": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "rounds",
+      "mode": "list",
+      "entity": "Round/list",
+      "op": "patch",
+      "key": "2",
+      "data": { "score": 5 },
+      "seq": "30:000000000001"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "rounds",
+      "mode": "list",
+      "entity": "Round/list",
+      "op": "patch",
+      "key": "1",
+      "data": { "score": 2 },
+      "seq": "30:000000000002"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "legacy-pools",
+      "op": "subscribed",
+      "query": { "view": "Pool/list" },
+      "mode": "list"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "legacy-pools",
+      "snapshotId": "snapshot-pools-1",
+      "authoritative": true,
+      "mode": "list",
+      "entity": "Pool/list",
+      "op": "snapshot",
+      "data": [],
+      "complete": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "legacy-pools",
+      "mode": "list",
+      "entity": "Pool/list",
+      "op": "patch",
+      "key": "p",
+      "data": { "price": 7 },
+      "seq": "31:000000000001"
+    }
+  ],
+  "expected": {
+    "Round/list": { "1": { "round_id": 1, "score": 2 } },
+    "Pool/list": { "p": { "price": 7 } }
+  }
+}

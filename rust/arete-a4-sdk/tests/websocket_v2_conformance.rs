@@ -682,3 +682,78 @@ async fn a_field_this_sdk_has_never_heard_of_is_not_a_protocol_error() {
         Some("0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b:4209")
     );
 }
+
+/// A server that stamps `_version` has one key's frames ordered by it, since
+/// `seq` is shared within a transaction and not ordered within a slot; without
+/// a version the `seq` rule applies as before.
+#[tokio::test]
+async fn frames_are_ordered_by_version_and_by_seq_without_one() {
+    let fixture = fixture("frame-versions.json");
+    let store = SharedStore::new();
+    let mut subscriptions = Vec::new();
+    for client in fixture["client"].as_array().unwrap() {
+        let subscription = subscription(client);
+        register(&store, &subscription).await;
+        subscriptions.push(subscription);
+    }
+    for frame in fixture["server"].as_array().unwrap() {
+        apply(&store, frame).await;
+    }
+
+    for subscription in &subscriptions {
+        let view = subscription.query.view.as_str();
+        let expected = fixture["expected"][view].as_object().unwrap();
+        let mut keys = store
+            .keys_for_subscription(&subscription.subscription_id)
+            .await;
+        keys.sort();
+        let mut expected_keys: Vec<String> = expected.keys().cloned().collect();
+        expected_keys.sort();
+        assert_eq!(keys, expected_keys, "{view} membership");
+        for (key, entity) in expected {
+            let value: Value = store
+                .get_for_subscription(&subscription.subscription_id, key)
+                .await
+                .expect("expected entity should be held");
+            for (field, expected) in entity.as_object().unwrap() {
+                assert_eq!(&value[field], expected, "{view} {key} {field}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_patch_for_an_unheld_key_is_dropped_only_under_the_whole_entity_guarantee() {
+    let fixture = fixture("whole-entities.json");
+    let store = SharedStore::new();
+    let mut subscriptions = Vec::new();
+    for client in fixture["client"].as_array().unwrap() {
+        let subscription = subscription(client);
+        register(&store, &subscription).await;
+        subscriptions.push(subscription);
+    }
+    for frame in fixture["server"].as_array().unwrap() {
+        apply(&store, frame).await;
+    }
+
+    for subscription in &subscriptions {
+        let view = subscription.query.view.as_str();
+        let expected = fixture["expected"][view].as_object().unwrap();
+        let mut keys = store
+            .keys_for_subscription(&subscription.subscription_id)
+            .await;
+        keys.sort();
+        let mut expected_keys: Vec<String> = expected.keys().cloned().collect();
+        expected_keys.sort();
+        assert_eq!(keys, expected_keys, "{view} membership");
+        for (key, entity) in expected {
+            let value: Value = store
+                .get_for_subscription(&subscription.subscription_id, key)
+                .await
+                .expect("expected entity should be held");
+            for (field, expected) in entity.as_object().unwrap() {
+                assert_eq!(&value[field], expected, "{view} {key} {field}");
+            }
+        }
+    }
+}

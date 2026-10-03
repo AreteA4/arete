@@ -8,6 +8,7 @@
 
 import { readFile, writeFile, readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { stripPageDirective } from "../lib/docs-search.mjs";
 
 const DIST = "dist";
 const SKIP_NAMES = new Set([
@@ -57,7 +58,8 @@ for await (const file of walkMarkdown(DIST)) {
   const slug = rel === "index" ? "" : rel;
   const title =
     typeof data.title === "string" ? data.title : slug || "Untitled";
-  index.push({ slug, title, content: body });
+  // The llms.txt directive heading every page is navigation, not content.
+  index.push({ slug, title, content: stripPageDirective(body) });
 }
 
 index.sort((a, b) => a.slug.localeCompare(b.slug));

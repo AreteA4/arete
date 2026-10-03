@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "program-spec",
+    "hash": "arete:h1:program-spec:sha256:5469c29441aaeac7da96e8f1ac69a42de33bf7805a76c83c75da9d762213b952"
+  },
+  "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}",
+  "extensions": {
+    "contentSha256": "ae966449481c81ea89e6e1ba3999c584c2918480792cb4ad438a762fae21c536"
+  },
+  "artifacts": [
+    "Cargo.toml",
+    "src/extensions.json",
+    "src/extensions.rs",
+    "src/lib.rs",
+    "src/programs.rs",
+    "src/types.rs",
+    "src/vault_math.rs"
+  ]
+}

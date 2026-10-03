@@ -47,6 +47,19 @@ class Harness:
     def process(self, frame: dict) -> None:
         self.store.handle_frame(parse_frame(json.dumps(frame)))
 
+    def acknowledge(self, subscription_id: str, query: dict, mode: str, whole_entities: bool = True):
+        """The server's ``subscribed`` ack; current servers promise whole entities."""
+        frame = {
+            "protocolVersion": 2,
+            "subscriptionId": subscription_id,
+            "op": "subscribed",
+            "query": query,
+            "mode": mode,
+        }
+        if whole_entities:
+            frame["wholeEntities"] = True
+        self.process(frame)
+
     def result(self, subscription_id: str) -> QueryResult:
         result = self.store.get_result(subscription_id)
         assert result is not None
@@ -70,7 +83,39 @@ class TestConformanceFixtures:
             "errors.json",
             "replay-cursors.json",
             "replay-gaps.json",
+            "whole-entities.json",
+            "frame-versions.json",
         ]
+
+    def test_frames_are_ordered_by_version_and_by_seq_without_one(self):
+        spec = fixture("frame-versions.json")
+        h = Harness()
+        for request in spec["client"]:
+            h.register(request["subscriptionId"], request["query"])
+        for frame in spec["server"]:
+            h.process(frame)
+        for request in spec["client"]:
+            view = request["query"]["view"]
+            expected = spec["expected"][view]
+            assert sorted(h.result(request["subscriptionId"]).keys) == sorted(expected)
+            for key, entity in expected.items():
+                stored = h.store.get_entity(view, key)
+                assert {field: stored.get(field) for field in entity} == entity, view
+
+    def test_patches_for_unheld_keys_follow_the_whole_entity_guarantee(self):
+        spec = fixture("whole-entities.json")
+        h = Harness()
+        for request in spec["client"]:
+            h.register(request["subscriptionId"], request["query"])
+        for frame in spec["server"]:
+            h.process(frame)
+        for request in spec["client"]:
+            view = request["query"]["view"]
+            expected = spec["expected"][view]
+            assert sorted(h.result(request["subscriptionId"]).keys) == sorted(expected)
+            for key, entity in expected.items():
+                stored = h.store.get_entity(view, key)
+                assert {field: stored.get(field) for field in entity} == entity
 
     def test_keyed_state_snapshot_and_patch_apply_to_their_query(self):
         h = Harness()
@@ -382,9 +427,66 @@ class TestPatchMerge:
         assert deep_merge_with_append({"a": 1}, 5, []) == 5
         assert deep_merge_with_append(3, {"a": 1}, []) == {"a": 1}
 
-    def test_patch_before_any_entity_uses_patch_as_value(self):
+    def test_patch_for_an_unknown_key_is_discarded(self):
+        # Canonical §5 "No partial entities": a patch for a key the store
+        # does not hold is not an entity. Nothing is stored, no sequence is
+        # tracked, no membership or update appears.
         h = Harness()
         h.register("s", {"view": "Thing/state", "key": "k"})
+        h.acknowledge("s", {"view": "Thing/state", "key": "k"}, "state")
+        patch = {
+            "protocolVersion": 2,
+            "subscriptionId": "s",
+            "mode": "state",
+            "entity": "Thing/state",
+            "op": "patch",
+            "key": "k",
+            "data": {"score": 2},
+            "seq": "50:000000000009",
+        }
+        h.process(patch)
+        assert h.store.get_entity("Thing/state", "k") is None
+        assert h.result("s").keys == ()
+        assert h.updates == []
+
+        # The discarded patch left no sequence behind to reject this with,
+        # and the full upsert is the entity.
+        h.process({
+            **patch,
+            "op": "upsert",
+            "data": {"name": "k", "score": 1},
+            "seq": "50:000000000001",
+        })
+        assert h.store.get_entity("Thing/state", "k") == {"name": "k", "score": 1}
+        assert h.result("s").keys == ("k",)
+
+        # Once held, patches merge again.
+        h.process({**patch, "seq": "50:000000000002"})
+        assert h.store.get_entity("Thing/state", "k") == {"name": "k", "score": 2}
+
+    def test_patch_after_delete_is_discarded(self):
+        h = Harness()
+        h.register("s", {"view": "Thing/state", "key": "k"})
+        h.acknowledge("s", {"view": "Thing/state", "key": "k"}, "state")
+        base = {
+            "protocolVersion": 2,
+            "subscriptionId": "s",
+            "mode": "state",
+            "entity": "Thing/state",
+            "key": "k",
+        }
+        h.process({**base, "op": "upsert", "data": {"name": "k"}, "seq": "50:0001"})
+        h.process({**base, "op": "delete", "data": None})
+        h.process({**base, "op": "patch", "data": {"score": 3}, "seq": "50:0002"})
+        assert h.store.get_entity("Thing/state", "k") is None
+        assert h.result("s").keys == ()
+
+    def test_patch_for_an_unknown_key_is_kept_without_the_guarantee(self):
+        # An older server may send a key's first change as a patch (after a
+        # truncated or disabled snapshot); that patch is all there is.
+        h = Harness()
+        h.register("s", {"view": "Thing/state", "key": "k"})
+        h.acknowledge("s", {"view": "Thing/state", "key": "k"}, "state", whole_entities=False)
         h.process({
             "protocolVersion": 2,
             "subscriptionId": "s",
@@ -393,8 +495,34 @@ class TestPatchMerge:
             "op": "patch",
             "key": "k",
             "data": {"score": 2},
+            "seq": "50:000000000009",
         })
         assert h.store.get_entity("Thing/state", "k") == {"score": 2}
+        assert h.result("s").keys == ("k",)
+
+    def test_tape_record_for_an_unknown_key_is_applied(self):
+        # Frames with an offset are replayable-view events, exempt from the
+        # discard rule: a consumer resuming from a cursor holds what came
+        # before it.
+        h = Harness()
+        h.register("s", {"view": "Trade/append"})
+        record = {
+            "protocolVersion": 2,
+            "subscriptionId": "s",
+            "mode": "append",
+            "entity": "Trade/append",
+            "op": "patch",
+            "key": "pool1",
+            "data": {"amount": 100},
+            "seq": "381471241:000000000007",
+            "offset": 4209,
+        }
+        h.process(record)
+        # Same seq, next offset: a second event from the same transaction,
+        # not a duplicate.
+        h.process({**record, "data": {"amount": 125}, "offset": 4210})
+        assert h.store.get_entity("Trade/append", "pool1") == {"amount": 125}
+        assert [u.data for _, u in h.updates] == [{"amount": 100}, {"amount": 125}]
 
     def test_stale_sequence_patch_does_not_remerge(self):
         h = Harness()
@@ -433,6 +561,45 @@ class TestPatchMerge:
         h.process({**base, "data": {"v": "new"}, "seq": "50:000000000002"})
         h.process({**base, "data": {"v": "old"}, "seq": "50:000000000001"})
         assert h.store.get_entity("Thing/state", "k") == {"v": "new"}
+
+    def test_an_unversioned_frame_keeps_the_tracked_version(self):
+        h = Harness()
+        h.register("s", {"view": "Thing/state", "key": "k"})
+        base = {
+            "protocolVersion": 2,
+            "subscriptionId": "s",
+            "mode": "state",
+            "entity": "Thing/state",
+            "key": "k",
+        }
+        h.process({
+            **base, "op": "upsert",
+            "data": {"v": "first", "_version": "3f9a2c1d:5"}, "seq": "50:000000000009",
+        })
+        # No version: the seq rule decides, and this seq is newer.
+        h.process({**base, "op": "patch", "data": {"w": "second"}, "seq": "51:000000000001"})
+        # The version recorded before the unversioned write still orders frames.
+        h.process({
+            **base, "op": "patch",
+            "data": {"v": "stale", "_version": "3f9a2c1d:4"}, "seq": "52:000000000001",
+        })
+        stored = h.store.get_entity("Thing/state", "k")
+        assert (stored["v"], stored["w"]) == ("first", "second")
+
+    def test_a_version_that_does_not_parse_is_never_stale(self):
+        h = Harness()
+        h.register("s", {"view": "Thing/state", "key": "k"})
+        base = {
+            "protocolVersion": 2,
+            "subscriptionId": "s",
+            "mode": "state",
+            "entity": "Thing/state",
+            "key": "k",
+            "seq": "50:000000000001",
+        }
+        h.process({**base, "op": "upsert", "data": {"v": 1, "_version": "3f9a2c1d:5"}})
+        h.process({**base, "op": "patch", "data": {"v": 2, "_version": "not-a-version"}})
+        assert h.store.get_entity("Thing/state", "k")["v"] == 2
 
 
 class TestServerSort:
@@ -504,6 +671,39 @@ class TestServerSort:
                 "seq": seq,
             })
         assert h.result("s").keys == ("a", "b")
+
+    @pytest.mark.parametrize(
+        ("order", "ranked"), [("desc", ("b", "a")), ("asc", ("a", "b"))]
+    )
+    def test_entities_without_a_sort_value_sort_last_in_both_directions(
+        self, order, ranked
+    ):
+        h = Harness()
+        h.register("s", {"view": "Round/list"})
+        h.process({
+            "protocolVersion": 2,
+            "subscriptionId": "s",
+            "op": "subscribed",
+            "query": {"view": "Round/list"},
+            "mode": "list",
+            "sort": {"field": ["rank"], "order": order},
+        })
+        for key, data in (
+            ("nil", {"rank": None}),
+            ("a", {"rank": 1}),
+            ("none", {}),
+            ("b", {"rank": 2}),
+        ):
+            h.process({
+                "protocolVersion": 2,
+                "subscriptionId": "s",
+                "mode": "list",
+                "entity": "Round/list",
+                "op": "upsert",
+                "key": key,
+                "data": data,
+            })
+        assert h.result("s").keys == (*ranked, "nil", "none")
 
     def test_key_tie_break_uses_localecompare_not_code_point(self):
         # Finding 7: TS breaks sort ties with leftKey.localeCompare(rightKey)

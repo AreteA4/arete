@@ -1,5 +1,180 @@
 # Changelog
 
+## [0.28.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.27.0...arete-interpreter-v0.28.0) (2026-09-30)
+
+
+### Miscellaneous Chores
+
+* **arete-interpreter:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.27.0 to 0.28.0
+
+## [0.27.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.26.0...arete-interpreter-v0.27.0) (2026-09-29)
+
+
+### Miscellaneous Chores
+
+* **arete-interpreter:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.26.0 to 0.27.0
+
+## [0.26.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.25.1...arete-interpreter-v0.26.0) (2026-09-29)
+
+
+### Miscellaneous Chores
+
+* **arete-interpreter:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.25.1 to 0.26.0
+
+## [0.25.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.25.0...arete-interpreter-v0.25.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* generated TypeScript compiles under tsc --init defaults ([b8aba03](https://github.com/AreteA4/arete/commit/b8aba03d1436be844697ac3d016cdf1e5d894f2d))
+* **interpreter:** let semantic decimals overrides be passed on as undefined ([5976ec2](https://github.com/AreteA4/arete/commit/5976ec232c887c058b677c942d02ce448191a45a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.25.0 to 0.25.1
+
+## [0.25.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.24.0...arete-interpreter-v0.25.0) (2026-09-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** ServerFrame::Subscribed gains a whole_entities field.
+* **sdk:** attaching a different program under a key a stack already provides throws PROGRAM_KEY_CONFLICT.
+* **sdk:** attaching a different program under a key a stack already provides raises ProgramKeyConflictError instead of keeping the stack's program with a warning.
+
+### Features
+
+* **cli:** attach program identity after the package extension ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** carry program SDKs in stacks ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** check runtime SDK compatibility ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** compose stacks from registry parts ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** explore one operation, a stack summary or selected views ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** make publishable key creation scriptable ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** report account readiness in a4 doctor and a4 explore ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** report requested, regenerated and shared dependencies on install ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** report the program SDK each program gets on a4 up ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **docs:** rank documentation search by query terms ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **interpreter:** let a consumer request a whole entity from the VM ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **mcp:** summarise explore results and look up one operation ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** add inspect-only wallet adapters ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** add testing helpers ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** drop patches for keys the Rust client does not hold ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** identify program SDKs by package release in Python ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** identify program SDKs by package release in Rust ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** identify program SDKs by package release in TypeScript ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** keep runtime extensions through object spread ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** publish the extension API version ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+
+
+### Bug Fixes
+
+* **cli:** check the extensionApi the registry reports for an extension ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** confine --env-file to the project and replace it atomically ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** keep locks from older a4 releases installable ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** keep the previous composition artifacts until the replacement lands ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** pin the program SDKs of locked composed parts ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** require an older lock to pin exactly the SDK extensions it generates ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **interpreter:** send a requested whole entity with the next batch ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **react:** peer-depend on @usearete/sdk ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** drop patches for keys the Python client does not hold ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** drop patches for keys the TypeScript client does not hold ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** keep a stack's program types when no programs are attached ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** share a same-release program only when it reads the same way ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** keep a resent entity's own position in recency order ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** never serve partial entities and resend evicted entities whole ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** rank entities without a sort value last ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** replace a state subscriber's copy when a missed frame replaced the entity ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** tell created entities from changes instead of trusting eviction memory ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.24.0 to 0.25.0
+
+## [0.24.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.23.1...arete-interpreter-v0.24.0) (2026-09-27)
+
+
+### Miscellaneous Chores
+
+* **arete-interpreter:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.23.1 to 0.24.0
+
+## [0.23.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.23.0...arete-interpreter-v0.23.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **interpreter:** replay updates whose numeric lookup key missed ([0711e9a](https://github.com/AreteA4/arete/commit/0711e9ac5e3fd487f4ef9a4bf43741038bd5d3b9))
+* **interpreter:** replay updates whose numeric lookup key missed ([d7215e2](https://github.com/AreteA4/arete/commit/d7215e203efd2f789b0f984b4518d3ecdea41b10))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.23.0 to 0.23.1
+
+## [0.23.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.22.4...arete-interpreter-v0.23.0) (2026-09-25)
+
+
+### Features
+
+* **interpreter:** emit the served stack version in hosted SDKs ([1c8ee5c](https://github.com/AreteA4/arete/commit/1c8ee5cfb759733a37a9340af8d4977ebf29193c))
+* **sdk:** name the served stack version when minting sessions ([aa06836](https://github.com/AreteA4/arete/commit/aa068362d434fb38f2998677fca763f3dba53714))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.22.4 to 0.23.0
+
+## [0.22.4](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.22.3...arete-interpreter-v0.22.4) (2026-09-24)
+
+
+### Miscellaneous Chores
+
+* **arete-interpreter:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.22.3 to 0.22.4
+
 ## [0.22.3](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.22.2...arete-interpreter-v0.22.3) (2026-09-24)
 
 

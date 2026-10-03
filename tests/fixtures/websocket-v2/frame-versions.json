@@ -1,0 +1,518 @@
+{
+  "name": "clients order one key's frames by _version, falling back to seq without one",
+  "client": [
+    {
+      "type": "subscribe",
+      "protocolVersion": 2,
+      "subscriptionId": "rounds",
+      "query": {
+        "view": "Round/list"
+      },
+      "snapshot": {
+        "enabled": true
+      }
+    },
+    {
+      "type": "subscribe",
+      "protocolVersion": 2,
+      "subscriptionId": "events:all",
+      "query": {
+        "view": "Event/list"
+      },
+      "snapshot": {
+        "enabled": true
+      }
+    },
+    {
+      "type": "subscribe",
+      "protocolVersion": 2,
+      "subscriptionId": "events:first",
+      "query": {
+        "view": "Event/list",
+        "take": 5
+      },
+      "snapshot": {
+        "enabled": true
+      }
+    },
+    {
+      "type": "subscribe",
+      "protocolVersion": 2,
+      "subscriptionId": "pools",
+      "query": {
+        "view": "Pool/list"
+      },
+      "snapshot": {
+        "enabled": true
+      }
+    },
+    {
+      "type": "subscribe",
+      "protocolVersion": 2,
+      "subscriptionId": "vaults",
+      "query": {
+        "view": "Vault/list"
+      },
+      "snapshot": {
+        "enabled": true
+      }
+    },
+    {
+      "type": "subscribe",
+      "protocolVersion": 2,
+      "subscriptionId": "legacy",
+      "query": {
+        "view": "Legacy/list"
+      },
+      "snapshot": {
+        "enabled": true
+      }
+    }
+  ],
+  "server": [
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "rounds",
+      "op": "subscribed",
+      "query": {
+        "view": "Round/list"
+      },
+      "mode": "list",
+      "wholeEntities": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "rounds",
+      "snapshotId": "snapshot-rounds",
+      "authoritative": true,
+      "mode": "list",
+      "entity": "Round/list",
+      "op": "snapshot",
+      "data": [
+        {
+          "key": "7",
+          "data": {
+            "round_id": 7,
+            "_seq": "100:000000000001",
+            "_version": "3f9a2c1d:10"
+          }
+        }
+      ],
+      "complete": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "rounds",
+      "mode": "list",
+      "entity": "Round/list",
+      "op": "patch",
+      "key": "7",
+      "data": {
+        "slot_hash": "abc",
+        "_seq": "140:003836292257",
+        "_version": "3f9a2c1d:11"
+      },
+      "seq": "140:003836292257"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "rounds",
+      "mode": "list",
+      "entity": "Round/list",
+      "op": "patch",
+      "key": "7",
+      "data": {
+        "seed": "def",
+        "_seq": "140:000000001200",
+        "_version": "3f9a2c1d:12"
+      },
+      "seq": "140:000000001200"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "rounds",
+      "mode": "list",
+      "entity": "Round/list",
+      "op": "patch",
+      "key": "7",
+      "data": {
+        "total": 1,
+        "_seq": "140:000000001200",
+        "_version": "3f9a2c1d:13"
+      },
+      "seq": "140:000000001200"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "events:all",
+      "op": "subscribed",
+      "query": {
+        "view": "Event/list"
+      },
+      "mode": "list",
+      "wholeEntities": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "events:all",
+      "snapshotId": "snapshot-events-all",
+      "authoritative": true,
+      "mode": "list",
+      "entity": "Event/list",
+      "op": "snapshot",
+      "data": [
+        {
+          "key": "e1",
+          "data": {
+            "values": [
+              "a"
+            ],
+            "_seq": "50:000000000001",
+            "_version": "3f9a2c1d:20"
+          }
+        }
+      ],
+      "complete": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "events:first",
+      "op": "subscribed",
+      "query": {
+        "view": "Event/list",
+        "take": 5
+      },
+      "mode": "list",
+      "wholeEntities": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "events:first",
+      "snapshotId": "snapshot-events-first",
+      "authoritative": true,
+      "mode": "list",
+      "entity": "Event/list",
+      "op": "snapshot",
+      "data": [
+        {
+          "key": "e1",
+          "data": {
+            "values": [
+              "a"
+            ],
+            "_seq": "50:000000000001",
+            "_version": "3f9a2c1d:20"
+          }
+        }
+      ],
+      "complete": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "events:all",
+      "mode": "list",
+      "entity": "Event/list",
+      "op": "patch",
+      "key": "e1",
+      "data": {
+        "values": [
+          "b"
+        ],
+        "_seq": "51:000000000001",
+        "_version": "3f9a2c1d:21"
+      },
+      "append": [
+        "values"
+      ],
+      "seq": "51:000000000001"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "events:first",
+      "mode": "list",
+      "entity": "Event/list",
+      "op": "patch",
+      "key": "e1",
+      "data": {
+        "values": [
+          "b"
+        ],
+        "_seq": "51:000000000001",
+        "_version": "3f9a2c1d:21"
+      },
+      "append": [
+        "values"
+      ],
+      "seq": "51:000000000001"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "events:all",
+      "mode": "list",
+      "entity": "Event/list",
+      "op": "patch",
+      "key": "e1",
+      "data": {
+        "values": [
+          "c"
+        ],
+        "_seq": "51:000000000001",
+        "_version": "3f9a2c1d:22"
+      },
+      "append": [
+        "values"
+      ],
+      "seq": "51:000000000001"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "events:first",
+      "mode": "list",
+      "entity": "Event/list",
+      "op": "patch",
+      "key": "e1",
+      "data": {
+        "values": [
+          "c"
+        ],
+        "_seq": "51:000000000001",
+        "_version": "3f9a2c1d:22"
+      },
+      "append": [
+        "values"
+      ],
+      "seq": "51:000000000001"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "pools",
+      "op": "subscribed",
+      "query": {
+        "view": "Pool/list"
+      },
+      "mode": "list",
+      "wholeEntities": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "pools",
+      "snapshotId": "snapshot-pools",
+      "authoritative": true,
+      "mode": "list",
+      "entity": "Pool/list",
+      "op": "snapshot",
+      "data": [
+        {
+          "key": "p",
+          "data": {
+            "price": 7,
+            "_seq": "60:000000000001",
+            "_version": "3f9a2c1d:31"
+          }
+        }
+      ],
+      "complete": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "pools",
+      "mode": "list",
+      "entity": "Pool/list",
+      "op": "patch",
+      "key": "p",
+      "data": {
+        "price": 6,
+        "_seq": "60:000000000009",
+        "_version": "3f9a2c1d:30"
+      },
+      "seq": "60:000000000009"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "pools",
+      "mode": "list",
+      "entity": "Pool/list",
+      "op": "patch",
+      "key": "p",
+      "data": {
+        "volume": 8,
+        "_seq": "61:000000000001",
+        "_version": "3f9a2c1d:32"
+      },
+      "seq": "61:000000000001"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "vaults",
+      "op": "subscribed",
+      "query": {
+        "view": "Vault/list"
+      },
+      "mode": "list",
+      "wholeEntities": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "vaults",
+      "snapshotId": "snapshot-vaults",
+      "authoritative": true,
+      "mode": "list",
+      "entity": "Vault/list",
+      "op": "snapshot",
+      "data": [
+        {
+          "key": "v",
+          "data": {
+            "balance": 1,
+            "log": [
+              "x"
+            ],
+            "_seq": "70:000000000001",
+            "_version": "3f9a2c1d:40"
+          }
+        }
+      ],
+      "complete": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "vaults",
+      "mode": "list",
+      "entity": "Vault/list",
+      "op": "patch",
+      "key": "v",
+      "data": {
+        "balance": 2,
+        "log": [
+          "y"
+        ],
+        "_seq": "70:000000000001",
+        "_version": "a1b2c3d4:1"
+      },
+      "seq": "70:000000000001",
+      "append": [
+        "log"
+      ]
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "vaults",
+      "mode": "list",
+      "entity": "Vault/list",
+      "op": "patch",
+      "key": "v",
+      "data": {
+        "balance": 2,
+        "log": [
+          "y"
+        ],
+        "_seq": "70:000000000001",
+        "_version": "a1b2c3d4:1"
+      },
+      "seq": "70:000000000001",
+      "append": [
+        "log"
+      ]
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "legacy",
+      "op": "subscribed",
+      "query": {
+        "view": "Legacy/list"
+      },
+      "mode": "list",
+      "wholeEntities": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "legacy",
+      "snapshotId": "snapshot-legacy",
+      "authoritative": true,
+      "mode": "list",
+      "entity": "Legacy/list",
+      "op": "snapshot",
+      "data": [
+        {
+          "key": "l",
+          "data": {
+            "n": 1,
+            "_seq": "80:000000000005"
+          }
+        }
+      ],
+      "complete": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "legacy",
+      "mode": "list",
+      "entity": "Legacy/list",
+      "op": "patch",
+      "key": "l",
+      "data": {
+        "n": 2
+      },
+      "seq": "80:000000000004"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "legacy",
+      "mode": "list",
+      "entity": "Legacy/list",
+      "op": "patch",
+      "key": "l",
+      "data": {
+        "m": 1
+      },
+      "seq": "81:000000000001"
+    }
+  ],
+  "expected": {
+    "Round/list": {
+      "7": {
+        "round_id": 7,
+        "slot_hash": "abc",
+        "seed": "def",
+        "total": 1
+      }
+    },
+    "Event/list": {
+      "e1": {
+        "values": [
+          "a",
+          "b",
+          "c"
+        ]
+      }
+    },
+    "Pool/list": {
+      "p": {
+        "price": 7,
+        "volume": 8
+      }
+    },
+    "Vault/list": {
+      "v": {
+        "balance": 2,
+        "log": [
+          "x",
+          "y"
+        ]
+      }
+    },
+    "Legacy/list": {
+      "l": {
+        "n": 1,
+        "m": 1
+      }
+    }
+  },
+  "notes": {
+    "Round/list": "An account update, then two instruction patches from one transaction: the second seq sorts below the first and the third equals it, yet each version is newer, so all apply.",
+    "Event/list": "Each patch is routed to both subscriptions of the view and arrives twice with one version. Each applies once, so the appends do not double, and the second patch applies although its seq equals the first's.",
+    "Pool/list": "A frame already in the snapshot arrives after it with a newer seq but an older version, and is dropped.",
+    "Vault/list": "A new epoch is not compared with the old one: its first frame applies although its counter is lower. The same frame arriving again is a duplicate in that epoch, so its append applies once.",
+    "Legacy/list": "Without versions the seq rule applies as before: the older seq is dropped."
+  }
+}

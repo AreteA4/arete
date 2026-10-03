@@ -964,7 +964,7 @@ impl ClientView {
             .and_then(Value::as_str)
             .ok_or_else(|| format!("live {op} without a key: {frame}"))?
             .to_string();
-        let data = frame.get_mut("data").map(Value::take).unwrap_or_default();
+        let data = without_version(frame.get_mut("data").map(Value::take).unwrap_or_default());
         match op {
             "upsert" => self.change_row(&key, |rows| {
                 rows.insert(key.clone(), data);
@@ -1044,7 +1044,7 @@ impl ClientView {
                 .and_then(Value::as_str)
                 .ok_or_else(|| format!("snapshot {id} row without a key"))?
                 .to_string();
-            let data = entry.get_mut("data").map(Value::take).unwrap_or_default();
+            let data = without_version(entry.get_mut("data").map(Value::take).unwrap_or_default());
             pending.rows.push((key, data));
         }
         if !complete {
@@ -1141,6 +1141,16 @@ fn merge_patch(base: &mut Value, patch: Value, append: &[String], path: &str) {
         }
         (base, patch) => *base = patch,
     }
+}
+
+/// Drop the `_version` the projector stamps. The model predicts every other
+/// field, but a version's epoch is random per projector, and its order is
+/// checked by the tests that cover versions, not by delivery accounting.
+fn without_version(mut data: Value) -> Value {
+    if let Value::Object(fields) = &mut data {
+        fields.remove("_version");
+    }
+    data
 }
 
 fn state_digest(rows: &Rows) -> String {

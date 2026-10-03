@@ -1,4 +1,4 @@
-use crate::bus::{BusManager, BusMessage};
+use crate::bus::{BusManager, BusMessage, StateUpdate};
 use crate::cache::{cmp_seq, EntityCache, SnapshotBatchConfig};
 use crate::compression::maybe_compress;
 use crate::view::{ViewIndex, ViewSpec};
@@ -14,7 +14,7 @@ use crate::websocket::subscription::{
     ClientMessage, RefreshAuthRequest, RefreshAuthResponse, SocketIssueMessage, Subscription,
     SubscriptionQuery, Unsubscription, PROTOCOL_VERSION,
 };
-use crate::websocket::usage::{WebSocketUsageEmitter, WebSocketUsageEvent};
+use crate::websocket::usage::{UsageIdentity, WebSocketUsageEmitter, WebSocketUsageEvent};
 use crate::WebSocketDeliveryConfig;
 use anyhow::Result;
 use bytes::Bytes;
@@ -58,6 +58,10 @@ struct WsMetrics {
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct DeliveryProbe {
+    /// `arete.ws.connections.active`, by metering key
+    pub(crate) active_connections: std::sync::Mutex<std::collections::BTreeMap<String, i64>>,
+    /// `arete.ws.subscriptions.active`, by view and metering key
+    pub(crate) active_subscriptions: std::sync::Mutex<std::collections::BTreeMap<String, i64>>,
     /// `arete.ws.messages.sent`
     pub(crate) messages_sent: std::sync::atomic::AtomicU64,
     /// `arete.ws.subscription.lagged`
@@ -79,6 +83,18 @@ impl DeliveryProbe {
     fn add(counter: &std::sync::atomic::AtomicU64, value: u64) {
         counter.fetch_add(value, std::sync::atomic::Ordering::Relaxed);
     }
+
+    fn add_active(
+        counts: &std::sync::Mutex<std::collections::BTreeMap<String, i64>>,
+        key: String,
+        delta: i64,
+    ) {
+        *counts
+            .lock()
+            .expect("delivery probe lock poisoned")
+            .entry(key)
+            .or_default() += delta;
+    }
 }
 
 impl WsMetrics {
@@ -99,6 +115,14 @@ impl WsMetrics {
     }
 
     fn connection_opened(&self, metering_key: Option<&str>) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add_active(
+                &probe.active_connections,
+                metering_key.unwrap_or("<none>").to_string(),
+                1,
+            )
+        });
         #[cfg(not(feature = "otel"))]
         let _ = metering_key;
         #[cfg(feature = "otel")]
@@ -112,6 +136,14 @@ impl WsMetrics {
     }
 
     fn connection_closed(&self, duration_secs: f64, metering_key: Option<&str>) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add_active(
+                &probe.active_connections,
+                metering_key.unwrap_or("<none>").to_string(),
+                -1,
+            )
+        });
         #[cfg(not(feature = "otel"))]
         let _ = (duration_secs, metering_key);
         #[cfg(feature = "otel")]
@@ -147,6 +179,14 @@ impl WsMetrics {
     }
 
     fn subscription_created(&self, view: &str, metering_key: Option<&str>) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add_active(
+                &probe.active_subscriptions,
+                format!("{view}|{}", metering_key.unwrap_or("<none>")),
+                1,
+            )
+        });
         #[cfg(not(feature = "otel"))]
         let _ = (view, metering_key);
         #[cfg(feature = "otel")]
@@ -160,6 +200,14 @@ impl WsMetrics {
     }
 
     fn subscription_removed(&self, view: &str, metering_key: Option<&str>) {
+        #[cfg(test)]
+        self.probe(|probe| {
+            DeliveryProbe::add_active(
+                &probe.active_subscriptions,
+                format!("{view}|{}", metering_key.unwrap_or("<none>")),
+                -1,
+            )
+        });
         #[cfg(not(feature = "otel"))]
         let _ = (view, metering_key);
         #[cfg(feature = "otel")]
@@ -347,52 +395,78 @@ fn key_class_label(key_class: arete_auth::KeyClass) -> &'static str {
     }
 }
 
-fn emit_usage_event(
-    usage_emitter: &Option<Arc<dyn WebSocketUsageEmitter>>,
-    event: WebSocketUsageEvent,
-) {
-    if let Some(emitter) = usage_emitter.clone() {
-        tokio::spawn(async move {
+#[derive(Clone)]
+struct UsageEmitterHandle {
+    emitter: Arc<dyn WebSocketUsageEmitter>,
+    tasks: TaskTracker,
+}
+
+impl UsageEmitterHandle {
+    fn new(emitter: Arc<dyn WebSocketUsageEmitter>) -> Self {
+        Self {
+            emitter,
+            tasks: TaskTracker::new(),
+        }
+    }
+
+    fn emit(&self, event: WebSocketUsageEvent) {
+        let emitter = self.emitter.clone();
+        self.tasks.spawn(async move {
             emitter.emit(event).await;
         });
     }
+
+    async fn close_and_wait(&self) {
+        self.tasks.close();
+        self.tasks.wait().await;
+    }
 }
 
-fn usage_identity(
+fn emit_usage_event(usage_emitter: &Option<UsageEmitterHandle>, event: WebSocketUsageEvent) {
+    if let Some(emitter) = usage_emitter {
+        emitter.emit(event);
+    }
+}
+
+fn usage_identity_from_context(
     auth_context: Option<&AuthContext>,
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
+) -> (UsageIdentity, Option<String>) {
     match auth_context {
-        Some(context) => (
-            Some(context.metering_key.clone()),
-            Some(context.subject.clone()),
-            Some(key_class_label(context.key_class).to_string()),
-            context.deployment_id.clone(),
-        ),
-        None => (None, None, None, None),
+        Some(context) => {
+            let v2 = !context.is_legacy_policy();
+            (
+                UsageIdentity {
+                    metering_key: Some(context.metering_key.clone()),
+                    subject: Some(context.subject.clone()),
+                    key_class: Some(key_class_label(context.key_class).to_string()),
+                    actor_key: v2.then(|| context.actor_key.clone()).flatten(),
+                    account_key: v2.then(|| context.account_key.clone()).flatten(),
+                    consumer_key: v2.then(|| context.consumer_key.clone()).flatten(),
+                    plan_code: v2.then(|| context.plan.clone()).flatten(),
+                    policy_version: v2.then_some(context.policy_version).flatten(),
+                },
+                context.deployment_id.clone(),
+            )
+        }
+        None => (UsageIdentity::default(), None),
     }
 }
 
 fn emit_update_sent_for_client(
-    usage_emitter: &Option<Arc<dyn WebSocketUsageEmitter>>,
+    usage_emitter: &Option<UsageEmitterHandle>,
     client_manager: &ClientManager,
     client_id: Uuid,
     view_id: &str,
     bytes: usize,
 ) {
     let auth_context = client_manager.get_auth_context(client_id);
-    let (metering_key, subject, _, deployment_id) = usage_identity(auth_context.as_ref());
+    let (identity, deployment_id) = usage_identity_from_context(auth_context.as_ref());
     emit_usage_event(
         usage_emitter,
         WebSocketUsageEvent::UpdateSent {
             client_id: client_id.to_string(),
             deployment_id,
-            metering_key,
-            subject,
+            identity,
             view_id: view_id.to_string(),
             messages: 1,
             bytes: bytes as u64,
@@ -407,7 +481,7 @@ struct SubscriptionContext {
     bus_manager: BusManager,
     entity_cache: EntityCache,
     view_index: Arc<ViewIndex>,
-    usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    usage_emitter: Option<UsageEmitterHandle>,
     journal: Option<Arc<crate::journal::EventJournal>>,
     metrics: WsMetrics,
     delivery: WebSocketDeliveryConfig,
@@ -424,7 +498,7 @@ pub struct WebSocketServer {
     view_index: Arc<ViewIndex>,
     max_clients: usize,
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
-    usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    usage_emitter: Option<UsageEmitterHandle>,
     rate_limit_config: Option<RateLimitConfig>,
     journal: Option<Arc<crate::journal::EventJournal>>,
     delivery: WebSocketDeliveryConfig,
@@ -490,7 +564,7 @@ impl WebSocketServer {
     }
 
     pub fn with_usage_emitter(mut self, usage_emitter: Arc<dyn WebSocketUsageEmitter>) -> Self {
-        self.usage_emitter = Some(usage_emitter);
+        self.usage_emitter = Some(UsageEmitterHandle::new(usage_emitter));
         self
     }
 
@@ -573,7 +647,7 @@ pub(crate) struct ConnectionAcceptor {
     view_index: Arc<ViewIndex>,
     max_clients: usize,
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
-    usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    usage_emitter: Option<UsageEmitterHandle>,
     journal: Option<Arc<crate::journal::EventJournal>>,
     delivery: WebSocketDeliveryConfig,
     metrics: WsMetrics,
@@ -612,6 +686,14 @@ impl ConnectionAcceptor {
     /// up. Call after [`shutdown`](Self::shutdown).
     pub(crate) async fn wait_for_sessions(&self) {
         self.sessions.wait().await;
+    }
+
+    /// Stop accepting usage emissions and wait for every event spawned by a
+    /// completed session to enter the emitter queue.
+    pub(crate) async fn wait_for_usage_events(&self) {
+        if let Some(emitter) = &self.usage_emitter {
+            emitter.close_and_wait().await;
+        }
     }
 
     /// Serve one accepted connection: WebSocket handshake, authentication,
@@ -792,8 +874,17 @@ async fn handle_connection(
     let client_id = Uuid::new_v4();
     context.client_id = client_id;
     let connection_start = Instant::now();
-    let (metering_key, subject, key_class, deployment_id) = usage_identity(Some(&auth_context));
-    context.metrics.connection_opened(metering_key.as_deref());
+    let (mut usage_identity, mut deployment_id) = usage_identity_from_context(Some(&auth_context));
+    let mut metering_key = usage_identity.metering_key.clone();
+    // Active gauges must be decremented with the same attributes used for
+    // their increment. The signed usage identity may legitimately move to a
+    // claimed owner's account during an in-band refresh, but that must not
+    // leave the original account's active count stuck or make the new one
+    // negative when this connection closes.
+    let connection_metrics_metering_key = metering_key.clone();
+    context
+        .metrics
+        .connection_opened(connection_metrics_metering_key.as_deref());
 
     let (ws_sender, mut ws_receiver) = ws_stream.split();
     context
@@ -805,13 +896,11 @@ async fn handle_connection(
             client_id: client_id.to_string(),
             remote_addr: remote_addr.to_string(),
             deployment_id: deployment_id.clone(),
-            metering_key: metering_key.clone(),
-            subject: subject.clone(),
-            key_class,
+            identity: usage_identity.clone(),
         },
     );
 
-    let mut active_subscriptions: HashMap<String, String> = HashMap::new();
+    let mut active_subscriptions: HashMap<String, ActiveSubscription> = HashMap::new();
     loop {
         let message = tokio::select! {
             _ = context.shutdown.cancelled() => break,
@@ -952,7 +1041,13 @@ async fn handle_connection(
                     continue;
                 }
 
-                active_subscriptions.insert(subscription_id, view.clone());
+                active_subscriptions.insert(
+                    subscription_id,
+                    ActiveSubscription {
+                        view: view.clone(),
+                        metrics_metering_key: metering_key.clone(),
+                    },
+                );
                 context
                     .metrics
                     .subscription_created(&view, metering_key.as_deref());
@@ -961,8 +1056,7 @@ async fn handle_connection(
                     WebSocketUsageEvent::SubscriptionCreated {
                         client_id: client_id.to_string(),
                         deployment_id: deployment_id.clone(),
-                        metering_key: metering_key.clone(),
-                        subject: subject.clone(),
+                        identity: usage_identity.clone(),
                         view_id: view,
                     },
                 );
@@ -972,10 +1066,8 @@ async fn handle_connection(
                     &context,
                     unsubscription,
                     &mut active_subscriptions,
-                    metering_key.as_deref(),
                     &deployment_id,
-                    &metering_key,
-                    &subject,
+                    &usage_identity,
                 )
                 .await;
             }
@@ -983,6 +1075,15 @@ async fn handle_connection(
             ClientMessage::RefreshAuth(request) => {
                 handle_refresh_auth(client_id, &request, &context.client_manager, &auth_plugin)
                     .await;
+                // A successful refresh replaces the verified context. Keep
+                // every later usage event on the same current identity used
+                // by snapshots and updates; on failure the manager still
+                // returns the previous context.
+                if let Some(current_auth) = context.client_manager.get_auth_context(client_id) {
+                    (usage_identity, deployment_id) =
+                        usage_identity_from_context(Some(&current_auth));
+                    metering_key = usage_identity.metering_key.clone();
+                }
             }
         }
     }
@@ -995,32 +1096,31 @@ async fn handle_connection(
     if let Some(rate_limiter) = context.client_manager.rate_limiter().cloned() {
         rate_limiter.remove_client_buckets(client_id).await;
     }
-    for view in active_subscriptions.values() {
-        context
-            .metrics
-            .subscription_removed(view, metering_key.as_deref());
+    for subscription in active_subscriptions.values() {
+        context.metrics.subscription_removed(
+            &subscription.view,
+            subscription.metrics_metering_key.as_deref(),
+        );
         emit_usage_event(
             &context.usage_emitter,
             WebSocketUsageEvent::SubscriptionRemoved {
                 client_id: client_id.to_string(),
                 deployment_id: deployment_id.clone(),
-                metering_key: metering_key.clone(),
-                subject: subject.clone(),
-                view_id: view.clone(),
+                identity: usage_identity.clone(),
+                view_id: subscription.view.clone(),
             },
         );
     }
     let duration = connection_start.elapsed().as_secs_f64();
     context
         .metrics
-        .connection_closed(duration, metering_key.as_deref());
+        .connection_closed(duration, connection_metrics_metering_key.as_deref());
     emit_usage_event(
         &context.usage_emitter,
         WebSocketUsageEvent::ConnectionClosed {
             client_id: client_id.to_string(),
             deployment_id,
-            metering_key,
-            subject,
+            identity: usage_identity,
             duration_secs: Some(duration),
             subscription_count: u32::try_from(active_subscriptions.len()).unwrap_or(u32::MAX),
         },
@@ -1028,15 +1128,19 @@ async fn handle_connection(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+struct ActiveSubscription {
+    view: String,
+    /// Attribute set used for the active-gauge increment. It is immutable
+    /// even if a later token refresh moves usage to another billing account.
+    metrics_metering_key: Option<String>,
+}
+
 async fn handle_unsubscribe(
     context: &SubscriptionContext,
     unsubscription: Unsubscription,
-    active_subscriptions: &mut HashMap<String, String>,
-    metrics_metering_key: Option<&str>,
+    active_subscriptions: &mut HashMap<String, ActiveSubscription>,
     deployment_id: &Option<String>,
-    usage_metering_key: &Option<String>,
-    subject: &Option<String>,
+    usage_identity: &UsageIdentity,
 ) {
     let subscription_id = unsubscription.subscription_id.clone();
     if let Err(message) = unsubscription.validate() {
@@ -1069,21 +1173,25 @@ async fn handle_unsubscribe(
         return;
     }
 
-    let Some(view) = active_subscriptions.remove(&subscription_id) else {
+    let Some(subscription) = active_subscriptions.remove(&subscription_id) else {
         return;
     };
-    let _ = send_control_frame(context, &UnsubscribedFrame::new(subscription_id), &view);
-    context
-        .metrics
-        .subscription_removed(&view, metrics_metering_key);
+    let _ = send_control_frame(
+        context,
+        &UnsubscribedFrame::new(subscription_id),
+        &subscription.view,
+    );
+    context.metrics.subscription_removed(
+        &subscription.view,
+        subscription.metrics_metering_key.as_deref(),
+    );
     emit_usage_event(
         &context.usage_emitter,
         WebSocketUsageEvent::SubscriptionRemoved {
             client_id: context.client_id.to_string(),
             deployment_id: deployment_id.clone(),
-            metering_key: usage_metering_key.clone(),
-            subject: subject.clone(),
-            view_id: view,
+            identity: usage_identity.clone(),
+            view_id: subscription.view,
         },
     );
 }
@@ -1205,14 +1313,13 @@ async fn send_snapshot_batches(
         context.metrics.message_sent();
 
         let auth_context = context.client_manager.get_auth_context(context.client_id);
-        let (metering_key, subject, _, deployment_id) = usage_identity(auth_context.as_ref());
+        let (identity, deployment_id) = usage_identity_from_context(auth_context.as_ref());
         emit_usage_event(
             &context.usage_emitter,
             WebSocketUsageEvent::SnapshotSent {
                 client_id: context.client_id.to_string(),
                 deployment_id,
-                metering_key,
-                subject,
+                identity,
                 view_id: subscription.query.view.clone(),
                 rows,
                 messages: 1,
@@ -1291,15 +1398,15 @@ async fn subscribe_state_then_snapshot<F, Fut, T>(
     view_id: &str,
     key: &str,
     snapshot: F,
-) -> (watch::Receiver<Arc<Bytes>>, T)
+) -> (watch::Receiver<StateUpdate>, u64, T)
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = T>,
 {
     let mut receiver = bus_manager.get_or_create_state_bus(view_id, key).await;
-    receiver.borrow_and_update();
+    let published = receiver.borrow_and_update().published;
     let snapshot = snapshot().await;
-    (receiver, snapshot)
+    (receiver, published, snapshot)
 }
 
 async fn subscribe_list_then_snapshot<F, Fut, T>(
@@ -1374,23 +1481,36 @@ async fn attach_state_subscription(
     let query = subscription.query.clone();
     let cache = context.entity_cache.clone();
     let view_spec_for_snapshot = view_spec.clone();
-    let (mut receiver, initial) =
+    let (mut receiver, mut seen, initial) =
         subscribe_state_then_snapshot(&context.bus_manager, &view_id, &key, move || async move {
             load_query_entities(&cache, None, &view_spec_for_snapshot, &query, false).await
         })
         .await;
 
-    let mut snapshot_entities = initial.clone();
+    let mut snapshot_entities = initial;
     if let Some(limit) = subscription.query.snapshot_limit {
         snapshot_entities.truncate(limit);
     }
     enforce_snapshot_limit(context, snapshot_entities.len())?;
     send_subscribed_frame(context, &subscription, &view_spec)?;
+    // The client holds the entity only if the snapshot actually carried it.
+    // A disabled snapshot, or one `snapshotLimit` cut to nothing, leaves it
+    // without a copy, so its first change must be a full `upsert`: a patch
+    // would have nothing to merge into.
+    let delivered = subscription.snapshot.enabled && !snapshot_entities.is_empty();
+    let snapshot_rows = to_wire_snapshot_entities(snapshot_entities, &view_spec);
+    // The entity as the client last received it whole, which a catch-up is
+    // measured against.
+    let synced = if delivered {
+        snapshot_rows.first().map(|row| row.data.clone())
+    } else {
+        None
+    };
     if subscription.snapshot.enabled {
         send_snapshot_batches(
             context,
             &subscription,
-            &to_wire_snapshot_entities(snapshot_entities, &view_spec),
+            &snapshot_rows,
             view_spec.mode,
             SnapshotPurpose::Initial,
             &context.entity_cache.snapshot_config(),
@@ -1406,7 +1526,25 @@ async fn attach_state_subscription(
     let span_key = key.clone();
     tokio::spawn(
         async move {
-            let mut member = !initial.is_empty();
+            // Whether the client holds this key, not whether it exists.
+            let mut member = delivered;
+            // The entity as the client last received it whole (its snapshot
+            // row, an upsert or the last catch-up), in wire format. A catch-up
+            // sends what changed since, and every field a patch forwarded in
+            // between set (`touched`, see `mark_fields`): the entity may have
+            // set it back, and a client may have dropped the patch.
+            let mut synced = synced;
+            let mut touched = Value::Null;
+            // Whether the client lacks fields of frames the bus overwrote
+            // before this task read them. The cached entity is sent in their
+            // place, but while the cache lacks the key there is none, so the
+            // debt waits for the next frame that finds it cached.
+            let mut behind = false;
+            // Whether, while behind, a frame the client missed replaced the
+            // entity (a delete, or a whole upsert): its copy may then hold
+            // fields the entity no longer has, which merging keeps, so the
+            // catch-up must replace it.
+            let mut replaced = false;
             loop {
                 tokio::select! {
                     _ = cancel_token.cancelled() => break,
@@ -1414,7 +1552,17 @@ async fn attach_state_subscription(
                         if changed.is_err() {
                             break;
                         }
-                        let payload = receiver.borrow().clone();
+                        let (payload, published, replaced_at) = {
+                            let update = receiver.borrow_and_update();
+                            (update.payload.clone(), update.published, update.replaced)
+                        };
+                        // The bus keeps only the latest frame. If more than one
+                        // was published since the last read, the earlier ones
+                        // were overwritten and the latest patch alone would
+                        // drop their fields, so send the cached entity instead.
+                        behind |= published > seen + 1;
+                        replaced |= behind && replaced_at > seen;
+                        seen = published;
                         let metadata = source_frame_metadata(&payload);
                         if metadata.op == "delete" {
                             task_context.entity_cache.remove(&query.view, &key).await;
@@ -1430,37 +1578,112 @@ async fn attach_state_subscription(
                                 break;
                             }
                             member = false;
+                            behind = false;
+                            replaced = false;
+                            synced = None;
+                            touched = Value::Null;
                             continue;
                         }
 
-                        let selected = load_query_entities(
-                            &task_context.entity_cache,
-                            None,
-                            &view_spec_task,
-                            &query,
-                            false,
-                        ).await;
+                        // A key missing from the cache was evicted there or
+                        // never held whole, not deleted (deletes arrive
+                        // above): the cache refused this patch and the whole
+                        // entity is on its way (see `EntityResync`). The
+                        // client's copy is still good, so a holder gets the
+                        // patch and stays a holder; `remove` is only for an
+                        // entity that stopped matching. If it is behind, it
+                        // stays behind: the resend that brings the entity
+                        // back carries the seq of the latest change, which it
+                        // already has, so only the catch-up below reaches it.
+                        let Some(cached) = task_context
+                            .entity_cache
+                            .get(&view_spec_task.id, &key)
+                            .await
+                        else {
+                            // A copy of a replaced entity takes no patch: it
+                            // waits for the whole entity to replace it.
+                            if member && !replaced {
+                                record_forwarded(&payload, &metadata.op, &mut synced, &mut touched);
+                                if send_scoped_source_payload(
+                                    &task_context,
+                                    &subscription_id,
+                                    &query.view,
+                                    payload,
+                                ).is_err() {
+                                    break;
+                                }
+                            }
+                            continue;
+                        };
+                        let selected =
+                            select_query_entities(vec![(key.clone(), cached)], &query, true, false);
                         let is_member = !selected.is_empty();
-                        let result = match (member, is_member) {
-                            (true, true) => send_scoped_source_payload(
-                                &task_context,
-                                &subscription_id,
-                                &query.view,
-                                payload,
-                            ),
-                            (false, true) => {
-                                let (entity_key, data) = selected.into_iter().next().unwrap();
+                        let caught_up = !std::mem::take(&mut behind);
+                        let replace = std::mem::take(&mut replaced);
+                        let result = match (member, selected.into_iter().next()) {
+                            (true, Some(_)) if caught_up => {
+                                record_forwarded(&payload, &metadata.op, &mut synced, &mut touched);
+                                send_scoped_source_payload(
+                                    &task_context,
+                                    &subscription_id,
+                                    &query.view,
+                                    payload,
+                                )
+                            }
+                            // The catch-up: a patch of the cached entity's
+                            // fields that changed since the client last received
+                            // it whole or that a forwarded patch set, which
+                            // merges into what the client holds.
+                            // If a missed frame replaced the entity, it is the
+                            // whole entity as an upsert instead, which replaces
+                            // the client's copy: merging would keep the fields of
+                            // the entity that was deleted or replaced. Either
+                            // carries no seq, because it is newer than anything
+                            // this subscriber was sent and seqs are not ordered
+                            // within a slot: account updates and instructions
+                            // number themselves differently, so the latest
+                            // patch's seq can sort below one already delivered.
+                            (true, Some((entity_key, data))) => {
+                                let mut current = data;
+                                apply_wire_format(&mut current, &view_spec_task.wire_format);
+                                let body = match (&synced, replace) {
+                                    (Some(base), false) => changed_fields(base, &current, &touched),
+                                    _ => Some(current.clone()),
+                                };
+                                synced = Some(current);
+                                touched = Value::Null;
+                                match body {
+                                    Some(body) => send_membership_frame(
+                                        &task_context,
+                                        &subscription_id,
+                                        &view_spec_task,
+                                        if replace { "upsert" } else { "patch" },
+                                        &entity_key,
+                                        body,
+                                        None,
+                                    ),
+                                    None => Ok(()),
+                                }
+                            }
+                            (false, Some((entity_key, data))) => {
+                                let mut current = data;
+                                apply_wire_format(&mut current, &view_spec_task.wire_format);
+                                synced = Some(current.clone());
+                                touched = Value::Null;
                                 send_membership_frame(
                                     &task_context,
                                     &subscription_id,
                                     &view_spec_task,
                                     "upsert",
                                     &entity_key,
-                                    data,
+                                    current,
                                     metadata.seq,
                                 )
                             }
-                            (true, false) => send_membership_frame(
+                            (true, None) => {
+                                synced = None;
+                                touched = Value::Null;
+                                send_membership_frame(
                                 &task_context,
                                 &subscription_id,
                                 &view_spec_task,
@@ -1468,8 +1691,9 @@ async fn attach_state_subscription(
                                 &key,
                                 Value::Null,
                                 metadata.seq,
-                            ),
-                            (false, false) => Ok(()),
+                                )
+                            }
+                            (false, None) => Ok(()),
                         };
                         if result.is_err() {
                             break;
@@ -1509,6 +1733,20 @@ async fn attach_collection_subscription(
     }
     enforce_snapshot_limit(context, snapshot_entities.len())?;
     send_subscribed_frame(context, &subscription, &view_spec)?;
+    // Window members the client was never sent: everything past a
+    // `snapshotLimit` cut, or the whole window when the snapshot is disabled.
+    // They stay in the window (take/skip positions still count them) but the
+    // client holds no copy, so none of them may ever be sent a patch.
+    let delivered_rows = if subscription.snapshot.enabled {
+        snapshot_entities.len()
+    } else {
+        0
+    };
+    let mut undelivered: HashSet<String> = initial_membership
+        .iter()
+        .skip(delivered_rows)
+        .map(|(key, _)| key.clone())
+        .collect();
     if subscription.snapshot.enabled {
         send_snapshot_batches(
             context,
@@ -1584,6 +1822,7 @@ async fn attach_collection_subscription(
                             &current,
                             &next,
                             &pending,
+                            &mut undelivered,
                         ).is_err() {
                             task_context.metrics.delivery_stopped(&view_id, "send-failed");
                             break;
@@ -1641,6 +1880,9 @@ async fn attach_collection_subscription(
                                     Ok((next_receiver, recovered)) => {
                                         receiver = next_receiver;
                                         current = recovered;
+                                        // Recovery replaces the whole live
+                                        // membership, untruncated.
+                                        undelivered.clear();
                                         pending.clear();
                                         pending_updates = 0;
                                         task_context.metrics.subscription_resnapshot(&view_id);
@@ -1692,6 +1934,7 @@ async fn attach_collection_subscription(
                             &next,
                             &envelope,
                             &metadata,
+                            &mut undelivered,
                         ).is_err() {
                             task_context.metrics.delivery_stopped(&view_id, "send-failed");
                             break;
@@ -1829,6 +2072,16 @@ impl std::error::Error for RejectedSubscription {}
 /// way [`attach_collection_subscription`] does. The cache folds each patch
 /// into the resident entity, so a membership diff cannot express "these three
 /// events happened"; the retained records can.
+///
+/// For the same reason records are never promoted to a full `upsert` the
+/// first time this subscription sees their key, the way a window entry is.
+/// The cache only holds the latest state, not the state as of a record's
+/// offset, so substituting it would hand a consumer state from after its
+/// cursor. Records go out exactly as retained, `patch` included: a tape is
+/// events, and the consumer that resumes from a cursor holds whatever came
+/// before it. Clients therefore apply frames that carry an `offset` as events
+/// and do not discard them as partial entities (see "Partial entities" in
+/// `docs/websocket-v2-protocol.md`).
 async fn attach_journal_subscription(
     context: &SubscriptionContext,
     subscription: Subscription,
@@ -2219,6 +2472,89 @@ fn source_frame_metadata(payload: &[u8]) -> SourceFrameMetadata {
         .unwrap_or_default()
 }
 
+/// The `data` of a source frame, as a client receives it.
+fn source_frame_data(payload: &[u8]) -> Option<Value> {
+    let mut frame: Value = serde_json::from_slice(payload).ok()?;
+    frame.get_mut("data").map(Value::take)
+}
+
+/// Tracks what a client holds after a frame forwarded to it as published. An
+/// upsert hands it the entity whole, which a catch-up is then measured
+/// against; a patch sets fields (see [`mark_fields`]).
+fn record_forwarded(payload: &[u8], op: &str, synced: &mut Option<Value>, touched: &mut Value) {
+    let data = source_frame_data(payload);
+    if op == "upsert" {
+        *synced = data;
+        *touched = Value::Null;
+    } else if let Some(data) = data {
+        mark_fields(touched, &data);
+    }
+}
+
+/// Marks in `touched` the fields `patch` sets: objects field by field, any
+/// other value whole (`true`). `null` marks nothing.
+///
+/// A client holds whatever a forwarded patch set, which the entity may have
+/// set back before the next catch-up (or the client may have dropped the
+/// patch), so a catch-up sends these fields even when they match the entity
+/// the client last received whole.
+fn mark_fields(touched: &mut Value, patch: &Value) {
+    let Value::Object(fields) = patch else {
+        *touched = Value::Bool(true);
+        return;
+    };
+    if touched.is_null() {
+        *touched = Value::Object(serde_json::Map::new());
+    }
+    let Value::Object(marked) = touched else {
+        // Already marked whole.
+        return;
+    };
+    for (field, value) in fields {
+        mark_fields(marked.entry(field.clone()).or_insert(Value::Null), value);
+    }
+}
+
+/// The fields of `current` that differ from `base` or that `touched` marks
+/// (see [`mark_fields`]), as a patch that turns what the client holds into
+/// `current` when merged: objects compare field by field, any other value is
+/// sent whole, and a field `current` no longer has is sent as `null`. `None`
+/// when nothing needs sending.
+fn changed_fields(base: &Value, current: &Value, touched: &Value) -> Option<Value> {
+    match (base, current, touched) {
+        (_, _, Value::Bool(true)) => Some(current.clone()),
+        (Value::Object(base), Value::Object(current), _) => {
+            let marked = touched.as_object();
+            let mut patch = serde_json::Map::new();
+            for (field, value) in current {
+                let touched = marked
+                    .and_then(|marked| marked.get(field))
+                    .unwrap_or(&Value::Null);
+                match base.get(field) {
+                    Some(old) => {
+                        if let Some(changed) = changed_fields(old, value, touched) {
+                            patch.insert(field.clone(), changed);
+                        }
+                    }
+                    None => {
+                        patch.insert(field.clone(), value.clone());
+                    }
+                }
+            }
+            for field in base
+                .keys()
+                .chain(marked.into_iter().flat_map(|marked| marked.keys()))
+            {
+                if !current.contains_key(field) {
+                    patch.insert(field.clone(), Value::Null);
+                }
+            }
+            (!patch.is_empty()).then_some(Value::Object(patch))
+        }
+        _ => (base != current || !touched.is_null()).then(|| current.clone()),
+    }
+}
+
 fn send_scoped_source_payload(
     context: &SubscriptionContext,
     subscription_id: &str,
@@ -2287,6 +2623,9 @@ fn send_membership_frame(
     Ok(())
 }
 
+/// Send what one source mutation owes a subscriber, and keep `undelivered`
+/// (window members the client holds no copy of) in step with what was sent.
+#[allow(clippy::too_many_arguments)]
 fn emit_collection_delta(
     context: &SubscriptionContext,
     subscription_id: &str,
@@ -2295,6 +2634,7 @@ fn emit_collection_delta(
     next: &[(String, Value)],
     envelope: &BusMessage,
     metadata: &SourceFrameMetadata,
+    undelivered: &mut HashSet<String>,
 ) -> Result<()> {
     let current_keys: Vec<&str> = current.iter().map(|(key, _)| key.as_str()).collect();
     let next_keys: Vec<&str> = next.iter().map(|(key, _)| key.as_str()).collect();
@@ -2305,6 +2645,10 @@ fn emit_collection_delta(
         .copied()
         .filter(|key| !next_set.contains(key))
     {
+        // A key the client was never sent has nothing to remove.
+        if undelivered.remove(key) {
+            continue;
+        }
         let op = if metadata.op == "delete" && key == envelope.key {
             "delete"
         } else {
@@ -2322,9 +2666,10 @@ fn emit_collection_delta(
     }
 
     for (key, data) in next.iter() {
-        let was_member = current_keys.iter().any(|candidate| *candidate == key);
+        let in_window = current_keys.iter().any(|candidate| *candidate == key);
         match member_action(
-            was_member,
+            in_window,
+            in_window && !undelivered.contains(key),
             key == &envelope.key,
             view_spec.is_derived(),
             &metadata.op,
@@ -2350,6 +2695,7 @@ fn emit_collection_delta(
                     data.clone(),
                     seq,
                 )?;
+                undelivered.remove(key);
             }
         }
     }
@@ -2367,8 +2713,17 @@ fn emit_coalesced_collection_delta(
     current: &[(String, Value)],
     next: &[(String, Value)],
     pending: &HashMap<String, Arc<BusMessage>>,
+    undelivered: &mut HashSet<String>,
 ) -> Result<()> {
-    for change in plan_coalesced_collection_delta(current, next, pending) {
+    let changes = plan_coalesced_collection_delta(current, next, pending, undelivered);
+    // Every key that left the window or was just upserted is settled: the
+    // client either never needs it or now holds all of it.
+    let next_keys: HashSet<&str> = next.iter().map(|(key, _)| key.as_str()).collect();
+    undelivered.retain(|key| next_keys.contains(key.as_str()));
+    for change in changes {
+        if change.op == "upsert" {
+            undelivered.remove(&change.key);
+        }
         send_membership_frame(
             context,
             subscription_id,
@@ -2390,10 +2745,14 @@ struct CollectionChange {
     seq: Option<String>,
 }
 
+/// Plan one coalescing interval. `undelivered` holds window members the
+/// client was never sent; they get no `remove`/`delete` when they leave, and
+/// like every changed key they are sent whole when they change.
 fn plan_coalesced_collection_delta(
     current: &[(String, Value)],
     next: &[(String, Value)],
     pending: &HashMap<String, Arc<BusMessage>>,
+    undelivered: &HashSet<String>,
 ) -> Vec<CollectionChange> {
     let current_by_key: HashMap<&str, &Value> = current
         .iter()
@@ -2408,7 +2767,7 @@ fn plan_coalesced_collection_delta(
 
     for (key, _) in current
         .iter()
-        .filter(|(key, _)| !next_keys.contains(key.as_str()))
+        .filter(|(key, _)| !next_keys.contains(key.as_str()) && !undelivered.contains(key.as_str()))
     {
         let metadata = pending
             .get(key)
@@ -2473,36 +2832,46 @@ enum MemberAction {
 
 /// Decide what to send for one key in the query window.
 ///
-/// Only the mutated key's data changed, so a key that was already a member has
-/// at most moved index — and index is not the server's to communicate.
-/// `subscribed` announces the window's sort (see [`extract_sort_config`], which
-/// is `_seq` descending for a plain list) and every SDK re-sorts locally from
-/// it, so resending an unchanged entity to convey its new position is pure
-/// waste. This matters because on a `_seq`-ordered list the mutated entity
-/// jumps to the front on *every* mutation: keying the decision on position
-/// change meant rebroadcasting the whole window each time, and the mutated
-/// entity itself never kept its position long enough to have its patch
-/// forwarded.
+/// `in_window` says the key was in the window before this mutation; `held`
+/// says the client also has a copy of it. The two differ after a snapshot
+/// that `snapshotLimit` truncated or that was disabled: those keys count for
+/// the window's positions, but the client was never sent them.
+///
+/// Only the mutated key's data changed, so a key that was already in the
+/// window has at most moved index — and index is not the server's to
+/// communicate. `subscribed` announces the window's sort (see
+/// [`extract_sort_config`], which is `_seq` descending for a plain list) and
+/// every SDK re-sorts locally from it, so resending an unchanged entity to
+/// convey its new position is pure waste. This matters because on a
+/// `_seq`-ordered list the mutated entity jumps to the front on *every*
+/// mutation: keying the decision on position change meant rebroadcasting the
+/// whole window each time, and the mutated entity itself never kept its
+/// position long enough to have its patch forwarded.
 fn member_action(
-    was_member: bool,
+    in_window: bool,
+    held: bool,
     is_mutated_key: bool,
     is_derived: bool,
     op: &str,
 ) -> MemberAction {
     if !is_mutated_key {
         // A key entering the window has no local state to merge into, so it
-        // needs the whole entity; one already held is unchanged.
-        return if was_member {
+        // needs the whole entity. One already in the window is unchanged:
+        // if the client holds it there is nothing new, and if it doesn't the
+        // snapshot limit deliberately left it out, so it waits for its own
+        // next change.
+        return if in_window {
             MemberAction::Skip
         } else {
             MemberAction::Upsert
         };
     }
     // The mutated entity rides its own patch through untouched, but only when
-    // the subscriber already holds a copy. Derived views still send whole
-    // entities: the patch on the bus is scoped to the source view, not this
-    // one (see A4-150).
-    if was_member && !is_derived && op != "delete" {
+    // the subscriber already holds a copy; a patch for a key the client never
+    // received is not an entity. Derived views still send whole entities: the
+    // patch on the bus is scoped to the source view, not this one (see
+    // A4-150).
+    if held && !is_derived && op != "delete" {
         MemberAction::ForwardPatch
     } else {
         MemberAction::Upsert
@@ -2616,10 +2985,113 @@ fn value_at_dot_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::EntityCacheConfig;
+    use crate::cache::{EntityCacheConfig, PatchOrigin};
     use crate::view::{Delivery, Filters, Projection};
     use serde_json::json;
     use tokio::sync::oneshot;
+
+    #[derive(Default)]
+    struct DelayedUsageEmitter {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        events: tokio::sync::Mutex<Vec<WebSocketUsageEvent>>,
+    }
+
+    #[async_trait::async_trait]
+    impl WebSocketUsageEmitter for DelayedUsageEmitter {
+        async fn emit(&self, event: WebSocketUsageEvent) {
+            self.started.notify_one();
+            self.release.notified().await;
+            self.events.lock().await.push(event);
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_emitter_handle_waits_for_spawned_emissions() {
+        let emitter = Arc::new(DelayedUsageEmitter::default());
+        let handle = UsageEmitterHandle::new(emitter.clone());
+        handle.emit(WebSocketUsageEvent::ConnectionEstablished {
+            client_id: "client-1".to_string(),
+            remote_addr: "127.0.0.1:1234".to_string(),
+            deployment_id: Some("1".to_string()),
+            identity: UsageIdentity::default(),
+        });
+        emitter.started.notified().await;
+
+        let closing_handle = handle.clone();
+        let closing = tokio::spawn(async move {
+            closing_handle.close_and_wait().await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!closing.is_finished());
+
+        emitter.release.notify_one();
+        closing.await.expect("usage task wait should finish");
+        assert_eq!(emitter.events.lock().await.len(), 1);
+    }
+
+    #[test]
+    fn a_catch_up_carries_only_the_fields_that_changed() {
+        let base = json!({
+            "id": 7,
+            "state": {"deployed": [1, 2, 3], "total": 6},
+            "results": {"square": null},
+            "gone": true,
+        });
+        let current = json!({
+            "id": 7,
+            "state": {"deployed": [1, 2, 4], "total": 6},
+            "results": {"square": 3},
+            "fresh": "x",
+        });
+        assert_eq!(
+            changed_fields(&base, &current, &Value::Null),
+            Some(json!({
+                // An array that changed is sent whole.
+                "state": {"deployed": [1, 2, 4]},
+                "results": {"square": 3},
+                "fresh": "x",
+                // A field the entity no longer has is cleared.
+                "gone": null,
+            }))
+        );
+        assert_eq!(changed_fields(&current, &current, &Value::Null), None);
+        // Anything that is not an object on both sides is compared whole.
+        assert_eq!(
+            changed_fields(&json!(null), &current, &Value::Null),
+            Some(current.clone())
+        );
+    }
+
+    #[test]
+    fn a_catch_up_resends_the_fields_forwarded_patches_set() {
+        let base = json!({"a": 1, "state": {"x": 1, "y": 1}, "list": [1]});
+        let mut touched = Value::Null;
+        mark_fields(&mut touched, &json!({"a": 2, "state": {"x": 2}}));
+        mark_fields(&mut touched, &json!({"list": [2], "extra": true}));
+        assert_eq!(
+            touched,
+            json!({"a": true, "state": {"x": true}, "list": true, "extra": true})
+        );
+        // The entity set `a` and `state.x` back and never kept `extra`: the
+        // client still holds what the forwarded patches set, so a catch-up
+        // compared with `base` alone would leave it stale.
+        let current = json!({"a": 1, "state": {"x": 1, "y": 1}, "list": [1, 2]});
+        assert_eq!(
+            changed_fields(&base, &current, &Value::Null),
+            Some(json!({"list": [1, 2]}))
+        );
+        assert_eq!(
+            changed_fields(&base, &current, &touched),
+            Some(json!({"a": 1, "state": {"x": 1}, "list": [1, 2], "extra": null}))
+        );
+        // A patch whose data is not an object marks everything.
+        mark_fields(&mut touched, &json!(null));
+        assert_eq!(
+            changed_fields(&base, &current, &touched),
+            Some(current.clone())
+        );
+    }
 
     fn list_spec() -> ViewSpec {
         ViewSpec {
@@ -2644,16 +3116,108 @@ mod tests {
         is_derived: bool,
         op: &str,
     ) -> Vec<(String, MemberAction)> {
+        plan_window_with_undelivered(current_keys, &[], next_keys, envelope_key, is_derived, op)
+    }
+
+    /// [`plan_window`] for a subscriber that was never sent `undelivered`.
+    fn plan_window_with_undelivered(
+        current_keys: &[&str],
+        undelivered: &[&str],
+        next_keys: &[&str],
+        envelope_key: &str,
+        is_derived: bool,
+        op: &str,
+    ) -> Vec<(String, MemberAction)> {
         next_keys
             .iter()
             .map(|key| {
-                let was_member = current_keys.contains(key);
+                let in_window = current_keys.contains(key);
+                let held = in_window && !undelivered.contains(key);
                 (
                     (*key).to_string(),
-                    member_action(was_member, *key == envelope_key, is_derived, op),
+                    member_action(in_window, held, *key == envelope_key, is_derived, op),
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn a_window_member_the_client_never_received_is_sent_whole() {
+        // snapshotLimit cut the window [4, 3, 2, 1] to [4, 3]. "1" still
+        // counts for positions, but a patch for it would reach a client with
+        // nothing to merge into.
+        let plan = plan_window_with_undelivered(
+            &["4", "3", "2", "1"],
+            &["2", "1"],
+            &["1", "4", "3", "2"],
+            "1",
+            false,
+            "patch",
+        );
+        assert_eq!(
+            plan,
+            vec![
+                ("1".to_string(), MemberAction::Upsert),
+                ("4".to_string(), MemberAction::Skip),
+                ("3".to_string(), MemberAction::Skip),
+                // Unchanged and never sent: it waits for its own change
+                // rather than undoing the snapshot limit.
+                ("2".to_string(), MemberAction::Skip),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_held_member_still_rides_its_patch_after_a_truncated_snapshot() {
+        let plan = plan_window_with_undelivered(
+            &["4", "3", "2", "1"],
+            &["2", "1"],
+            &["4", "3", "2", "1"],
+            "4",
+            false,
+            "patch",
+        );
+        assert_eq!(plan[0], ("4".to_string(), MemberAction::ForwardPatch));
+    }
+
+    #[test]
+    fn coalescing_sends_no_remove_for_a_key_the_client_never_received() {
+        let current = vec![
+            ("held".to_string(), json!({"count": 1, "_seq": "10:000001"})),
+            (
+                "unsent".to_string(),
+                json!({"count": 1, "_seq": "10:000001"}),
+            ),
+            ("gone".to_string(), json!({"count": 1, "_seq": "10:000001"})),
+        ];
+        let next = vec![
+            ("held".to_string(), json!({"count": 1, "_seq": "10:000001"})),
+            (
+                "unsent".to_string(),
+                json!({"count": 2, "_seq": "10:000003"}),
+            ),
+        ];
+        let pending = HashMap::from([
+            (
+                "unsent".to_string(),
+                list_message("unsent", "patch", "10:000003"),
+            ),
+            (
+                "gone".to_string(),
+                list_message("gone", "delete", "10:000002"),
+            ),
+        ]);
+        let undelivered = HashSet::from(["unsent".to_string(), "gone".to_string()]);
+
+        assert_eq!(
+            plan_coalesced_collection_delta(&current, &next, &pending, &undelivered),
+            vec![CollectionChange {
+                op: "upsert",
+                key: "unsent".to_string(),
+                data: json!({"count": 2, "_seq": "10:000003"}),
+                seq: Some("10:000003".to_string()),
+            }]
+        );
     }
 
     #[test]
@@ -2775,7 +3339,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            plan_coalesced_collection_delta(&current, &next, &pending),
+            plan_coalesced_collection_delta(&current, &next, &pending, &HashSet::new()),
             vec![
                 CollectionChange {
                     op: "delete",
@@ -2973,7 +3537,7 @@ mod tests {
         release_snapshot_tx.send(()).unwrap();
         let mut receiver = task.await.unwrap();
         receiver.changed().await.unwrap();
-        assert!(!receiver.borrow().is_empty());
+        assert!(!receiver.borrow().payload.is_empty());
     }
 
     async fn assert_list_receiver_precedes_snapshot(view: &'static str) {
@@ -3070,6 +3634,7 @@ mod tests {
             "incremental-snapshot.json",
             "reconnect-replacement.json",
             "errors.json",
+            "whole-entities.json",
         ] {
             assert!(names.contains(required), "missing fixture {required}");
         }
@@ -3085,6 +3650,7 @@ mod tests {
             include_str!("../../../../tests/fixtures/websocket-v2/incremental-snapshot.json"),
             include_str!("../../../../tests/fixtures/websocket-v2/reconnect-replacement.json"),
             include_str!("../../../../tests/fixtures/websocket-v2/errors.json"),
+            include_str!("../../../../tests/fixtures/websocket-v2/whole-entities.json"),
         ] {
             let fixture: Value = serde_json::from_str(document).unwrap();
             assert!(fixture["name"].is_string());
@@ -3595,6 +4161,911 @@ mod tests {
             assert_eq!(collect_trades(&mut socket, 50).await.len(), 50);
             socket.close(None).await.ok();
         }
+
+        const ROUND: &str = "Round/state";
+
+        /// A state view with no projector: the test writes the cache and the
+        /// bus itself, so it controls exactly when the subscriber can run.
+        #[derive(Clone)]
+        struct StateServer {
+            addr: SocketAddr,
+            bus_manager: BusManager,
+            entity_cache: EntityCache,
+        }
+
+        impl StateServer {
+            async fn start() -> Self {
+                let mut index = ViewIndex::new();
+                index.add_spec(ViewSpec {
+                    id: ROUND.to_string(),
+                    export: "Round".to_string(),
+                    mode: Mode::State,
+                    wire_format: Default::default(),
+                    projection: Projection::all(),
+                    filters: Filters::all(),
+                    delivery: Delivery::default(),
+                    pipeline: None,
+                    source_view: None,
+                });
+                let bus_manager = BusManager::new();
+                let entity_cache = EntityCache::new();
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let server = WebSocketServer::new(
+                    addr,
+                    bus_manager.clone(),
+                    entity_cache.clone(),
+                    Arc::new(index),
+                    #[cfg(feature = "otel")]
+                    None,
+                );
+                let (acceptor, _cleanup) = server.into_acceptor();
+                tokio::spawn(async move { acceptor.serve_listener(listener).await });
+                Self {
+                    addr,
+                    bus_manager,
+                    entity_cache,
+                }
+            }
+
+            /// Publish a patch the way the projector does: stamp its `_seq`,
+            /// write the cache, then the key's bus.
+            async fn publish(&self, key: &str, mut patch: Value, seq: &str) {
+                patch["_seq"] = Value::String(seq.to_string());
+                self.entity_cache
+                    .upsert_with_append(ROUND, key, patch.clone(), &[], PatchOrigin::Unknown)
+                    .await;
+                self.publish_frame(key, "patch", patch, seq).await;
+            }
+
+            /// Publish a frame to the key's bus without touching the cache.
+            async fn publish_frame(&self, key: &str, op: &str, data: Value, seq: &str) {
+                let frame = json!({
+                    "mode": "state",
+                    "entity": ROUND,
+                    "op": op,
+                    "key": key,
+                    "data": data,
+                    "seq": seq,
+                });
+                self.bus_manager
+                    .publish_state(ROUND, key, Arc::new(Bytes::from(frame.to_string())))
+                    .await;
+            }
+
+            /// Subscribe to one key and read through its snapshot.
+            async fn subscribe(&self, key: &str) -> WebSocketStream<TcpStream> {
+                let stream = TcpStream::connect(self.addr).await.unwrap();
+                let mut socket = client_async(format!("ws://{}/", self.addr), stream)
+                    .await
+                    .unwrap()
+                    .0;
+                socket
+                    .send(Message::Text(
+                        json!({
+                            "type": "subscribe",
+                            "protocolVersion": 2,
+                            "subscriptionId": "round",
+                            "query": {"view": ROUND, "key": key},
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+                let ack = next_frame(&mut socket).await;
+                assert_eq!(ack["op"], "subscribed", "unexpected ack: {ack}");
+                loop {
+                    let frame = next_frame(&mut socket).await;
+                    assert_eq!(frame["op"], "snapshot", "unexpected frame: {frame}");
+                    if frame["complete"] == true {
+                        return socket;
+                    }
+                }
+            }
+        }
+
+        /// Two patches to one key, published before the subscriber reads the
+        /// first, must both reach it. The bus holds only the latest frame, so
+        /// forwarding it alone drops the fields of the one it replaced.
+        // One worker, so tasks run one at a time. The handshake needs the
+        // multi-threaded runtime.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_state_subscriber_keeps_the_fields_of_an_overwritten_patch() {
+            let server = StateServer::start().await;
+            server
+                .publish("7", json!({"id": 7}), "100:000000000001")
+                .await;
+            let mut socket = server.subscribe("7").await;
+
+            // A lone patch is forwarded as it was published. This one is an
+            // account update, numbered by its write version.
+            server
+                .publish(
+                    "7",
+                    json!({"results": {"slot_hash": "abc"}}),
+                    "140:003836292257",
+                )
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert_eq!(frame["seq"], "140:003836292257");
+
+            // Two instruction patches from later in the same slot, numbered by
+            // transaction index. Both writes happen in one task that never
+            // yields to the subscriber, so the second replaces the first on
+            // the bus before the subscriber wakes.
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer
+                    .publish("7", json!({"entropy": {"seed": "def"}}), "140:000000001200")
+                    .await;
+                writer
+                    .publish("7", json!({"total": 1}), "140:000000001200")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            // Everything that changed since the snapshot, the forwarded patch
+            // included; `id` has not.
+            assert_eq!(
+                frame["data"],
+                json!({
+                    "results": {"slot_hash": "abc"},
+                    "entropy": {"seed": "def"},
+                    "total": 1,
+                    "_seq": "140:000000001200",
+                })
+            );
+            // The latest seq sorts below the one already delivered, and a
+            // client would drop the frame as stale.
+            assert!(frame.get("seq").is_none(), "unexpected seq: {frame}");
+
+            // Having caught up, the subscriber forwards patches again.
+            server
+                .publish("7", json!({"total": 2}), "141:000000000002")
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({"total": 2, "_seq": "141:000000000002"})
+            );
+
+            // The next catch-up is measured against the last one: only what
+            // changed since it, not the fields that one already carried.
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer
+                    .publish("7", json!({"total": 3}), "142:000000000001")
+                    .await;
+                writer
+                    .publish("7", json!({"flag": true}), "142:000000000001")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert!(frame.get("seq").is_none(), "unexpected seq: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({"total": 3, "flag": true, "_seq": "142:000000000001"})
+            );
+
+            socket.close(None).await.ok();
+        }
+
+        /// A whole entity forwarded as it was published replaces the client's
+        /// copy, so a later catch-up is measured against it.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_forwarded_whole_entity_is_what_a_catch_up_is_measured_against() {
+            let server = StateServer::start().await;
+            server
+                .publish("7", json!({"id": 7, "a": 1}), "100:000000000001")
+                .await;
+            let mut socket = server.subscribe("7").await;
+
+            let whole = json!({"id": 7, "a": 1, "b": 2, "_seq": "101:000000000001"});
+            server
+                .entity_cache
+                .store_whole(ROUND, "7", whole.clone())
+                .await;
+            server
+                .publish_frame("7", "upsert", whole.clone(), "101:000000000001")
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["data"], whole);
+
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer
+                    .publish("7", json!({"c": 3}), "102:000000000001")
+                    .await;
+                writer
+                    .publish("7", json!({"d": 4}), "102:000000000002")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({"c": 3, "d": 4, "_seq": "102:000000000002"}),
+                "`b` came with the whole entity, so it is not sent again"
+            );
+            socket.close(None).await.ok();
+        }
+
+        /// A catch-up resends a field a forwarded patch set even when the
+        /// entity has set it back to the value the client last received
+        /// whole: the client still holds the forwarded value.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_catch_up_restores_a_field_a_forwarded_patch_set() {
+            let server = StateServer::start().await;
+            server
+                .publish("7", json!({"id": 7, "a": 1}), "100:000000000001")
+                .await;
+            let mut socket = server.subscribe("7").await;
+
+            server
+                .publish("7", json!({"a": 2}), "101:000000000001")
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert_eq!(frame["data"], json!({"a": 2, "_seq": "101:000000000001"}));
+
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer
+                    .publish("7", json!({"a": 1}), "102:000000000001")
+                    .await;
+                writer
+                    .publish("7", json!({"b": 1}), "102:000000000002")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({"a": 1, "b": 1, "_seq": "102:000000000002"}),
+                "`a` matches the snapshot but the client holds 2"
+            );
+            socket.close(None).await.ok();
+        }
+
+        /// A key deleted and created again before the subscriber reads
+        /// either frame: the bus keeps only the new entity's. Merged into the
+        /// client's copy it would leave the deleted entity's fields in place,
+        /// so the client gets the new entity whole, replacing its copy.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_key_deleted_and_recreated_between_reads_replaces_the_clients_copy() {
+            let server = StateServer::start().await;
+            server
+                .publish("7", json!({"id": 7, "old": true}), "100:000000000001")
+                .await;
+            let mut socket = server.subscribe("7").await;
+
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer.entity_cache.remove(ROUND, "7").await;
+                writer
+                    .publish_frame("7", "delete", Value::Null, "101:000000000001")
+                    .await;
+                writer
+                    .publish("7", json!({"id": 7, "fresh": true}), "101:000000000002")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({"id": 7, "fresh": true, "_seq": "101:000000000002"})
+            );
+            assert!(frame.get("seq").is_none(), "unexpected seq: {frame}");
+
+            // Deleted, with a patch overwritten before it: the delete is final.
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer
+                    .publish("7", json!({"n": 1}), "102:000000000001")
+                    .await;
+                writer.entity_cache.remove(ROUND, "7").await;
+                writer
+                    .publish_frame("7", "delete", Value::Null, "102:000000000002")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "delete", "unexpected frame: {frame}");
+
+            // Created again: the client holds nothing, so it arrives whole.
+            server
+                .publish("7", json!({"id": 7, "third": true}), "103:000000000001")
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["data"]["third"], true);
+            assert!(frame["data"].get("fresh").is_none(), "{frame}");
+            socket.close(None).await.ok();
+        }
+
+        /// A missed delete, then a patch the cache refused (it lacks the new
+        /// entity): the client's copy is of the deleted entity, so the patch
+        /// is not merged into it. The new entity replaces it once it is whole.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_copy_of_a_deleted_entity_takes_no_patch_until_it_is_replaced() {
+            let server = StateServer::start().await;
+            server
+                .publish("7", json!({"id": 7, "old": true}), "100:000000000001")
+                .await;
+            let mut socket = server.subscribe("7").await;
+
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer.entity_cache.remove(ROUND, "7").await;
+                writer
+                    .publish_frame("7", "delete", Value::Null, "101:000000000001")
+                    .await;
+                writer
+                    .publish_frame("7", "patch", json!({"n": 1}), "101:000000000002")
+                    .await;
+            })
+            .await
+            .unwrap();
+            // Let the subscriber read the patch, and withhold it, before the
+            // whole entity arrives. Nothing is sent, so there is no frame to
+            // wait for.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let whole = json!({"id": 7, "n": 1, "_seq": "101:000000000002"});
+            server
+                .entity_cache
+                .store_whole(ROUND, "7", whole.clone())
+                .await;
+            server
+                .publish_frame("7", "upsert", whole.clone(), "101:000000000002")
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["data"], whole);
+            socket.close(None).await.ok();
+        }
+
+        /// The source replaced the entity whole (an `upsert`, dropping a field)
+        /// and then patched it, both before the subscriber read either. The
+        /// patch alone, or the entity merged in, would keep the dropped field.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_whole_entity_among_overwritten_frames_replaces_the_clients_copy() {
+            let server = StateServer::start().await;
+            server
+                .publish("7", json!({"id": 7, "dropped": 1}), "100:000000000001")
+                .await;
+            let mut socket = server.subscribe("7").await;
+
+            let writer = server.clone();
+            tokio::spawn(async move {
+                let whole = json!({"id": 7, "_seq": "101:000000000001"});
+                writer
+                    .entity_cache
+                    .store_whole(ROUND, "7", whole.clone())
+                    .await;
+                writer
+                    .publish_frame("7", "upsert", whole, "101:000000000001")
+                    .await;
+                writer
+                    .publish("7", json!({"n": 1}), "101:000000000002")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(
+                frame["data"],
+                json!({"id": 7, "n": 1, "_seq": "101:000000000002"})
+            );
+            assert!(frame.get("seq").is_none(), "unexpected seq: {frame}");
+            socket.close(None).await.ok();
+        }
+
+        /// Patches overwritten on the bus while the cache lacks the key (it
+        /// evicted it, and refused them) leave nothing whole to send in their
+        /// place: the holder gets the latest patch, as a holder of an evicted
+        /// key does, and stays behind. The resend that brings the entity back
+        /// carries the seq of the key's latest change, which the holder
+        /// already has and would drop as stale, so it gets the cached entity
+        /// without a seq instead: as an upsert, since the resend is the whole
+        /// entity and replaces what the holder has.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_holder_behind_on_an_evicted_key_catches_up_when_it_returns() {
+            let server = StateServer::start().await;
+            server
+                .publish("7", json!({"id": 7}), "100:000000000001")
+                .await;
+            let mut socket = server.subscribe("7").await;
+            server.entity_cache.remove(ROUND, "7").await;
+
+            let writer = server.clone();
+            tokio::spawn(async move {
+                writer
+                    .publish_frame("7", "patch", json!({"a": 1}), "101:000000000001")
+                    .await;
+                writer
+                    .publish_frame("7", "patch", json!({"b": 2}), "101:000000000002")
+                    .await;
+            })
+            .await
+            .unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert_eq!(frame["data"], json!({"b": 2}));
+            assert_eq!(frame["seq"], "101:000000000002");
+
+            // The resend: the whole entity, at the latest change's position.
+            let whole = json!({"id": 7, "a": 1, "b": 2, "_seq": "101:000000000002"});
+            server
+                .entity_cache
+                .store_whole(ROUND, "7", whole.clone())
+                .await;
+            server
+                .publish_frame("7", "upsert", whole.clone(), "101:000000000002")
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["data"], whole);
+            assert!(frame.get("seq").is_none(), "unexpected seq: {frame}");
+
+            // Caught up: patches are forwarded again.
+            server
+                .publish("7", json!({"c": 3}), "102:000000000001")
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["data"], json!({"c": 3, "_seq": "102:000000000001"}));
+            assert_eq!(frame["seq"], "102:000000000001");
+            socket.close(None).await.ok();
+        }
+    }
+
+    /// A key only counts as held by the client once a frame actually carried
+    /// it. A truncated or disabled snapshot leaves keys the client never saw,
+    /// and their first change must arrive whole.
+    mod partial_entities_over_a_socket {
+        use super::*;
+        use crate::projector::Projector;
+        use crate::{MutationBatch, SlotContext};
+        use arete_interpreter::Mutation;
+        use futures_util::{SinkExt, StreamExt};
+        use std::time::Duration;
+        use tokio::net::{TcpListener, TcpStream};
+        use tokio::sync::mpsc;
+        use tokio_tungstenite::tungstenite::Message;
+        use tokio_tungstenite::{client_async, WebSocketStream};
+
+        fn thing_index() -> ViewIndex {
+            let mut index = ViewIndex::new();
+            index.add_spec(list_spec());
+            index.add_spec(ViewSpec {
+                id: "Thing/state".to_string(),
+                mode: Mode::State,
+                ..list_spec()
+            });
+            index
+        }
+
+        struct Harness {
+            addr: SocketAddr,
+            tx: mpsc::Sender<MutationBatch>,
+            slot: std::sync::atomic::AtomicU64,
+        }
+
+        impl Harness {
+            async fn start(delivery: WebSocketDeliveryConfig) -> Self {
+                Self::start_with_cache(delivery, EntityCache::new()).await
+            }
+
+            async fn start_with_cache(
+                delivery: WebSocketDeliveryConfig,
+                entity_cache: EntityCache,
+            ) -> Self {
+                let view_index = Arc::new(thing_index());
+                let bus_manager = BusManager::new();
+                let (tx, rx) = mpsc::channel::<MutationBatch>(64);
+                // Unconstrained, so Tokio's cooperative budget never makes the
+                // projector yield partway through a batch: a test on one
+                // worker then knows no subscriber runs until the whole batch
+                // is published (see
+                // `snapshot_rows_patches_and_catch_ups_carry_the_version`).
+                tokio::spawn(tokio::task::unconstrained(
+                    Projector::new(
+                        view_index.clone(),
+                        bus_manager.clone(),
+                        entity_cache.clone(),
+                        rx,
+                        #[cfg(feature = "otel")]
+                        None,
+                    )
+                    .run(),
+                ));
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let server = WebSocketServer::new(
+                    addr,
+                    bus_manager,
+                    entity_cache,
+                    view_index,
+                    #[cfg(feature = "otel")]
+                    None,
+                )
+                .with_delivery_config(delivery);
+                let (acceptor, _cleanup) = server.into_acceptor();
+                tokio::spawn(async move { acceptor.serve_listener(listener).await });
+                Self {
+                    addr,
+                    tx,
+                    slot: std::sync::atomic::AtomicU64::new(100),
+                }
+            }
+
+            /// Apply one source patch and wait until the projector published it.
+            async fn patch(&self, key: &str, patch: Value) {
+                self.mutate(Mutation {
+                    export: "Thing".to_string(),
+                    key: json!(key),
+                    patch,
+                    append: vec![],
+                    occurrence: None,
+                })
+                .await;
+            }
+
+            async fn mutate(&self, mutation: Mutation) {
+                let slot = self.slot.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.tx
+                    .send(MutationBatch::with_slot_context(
+                        vec![mutation].into_iter().collect(),
+                        SlotContext::new(slot, 0),
+                    ))
+                    .await
+                    .unwrap();
+                let (ack, wait) = oneshot::channel();
+                self.tx
+                    .send(MutationBatch::flush_marker(ack))
+                    .await
+                    .unwrap();
+                wait.await.unwrap();
+            }
+
+            async fn subscribe(&self, query: Value, snapshot: bool) -> WebSocketStream<TcpStream> {
+                let stream = TcpStream::connect(self.addr).await.unwrap();
+                let mut socket = client_async(format!("ws://{}/", self.addr), stream)
+                    .await
+                    .unwrap()
+                    .0;
+                socket
+                    .send(Message::Text(
+                        json!({
+                            "type": "subscribe",
+                            "protocolVersion": 2,
+                            "subscriptionId": "things",
+                            "query": query,
+                            "snapshot": {"enabled": snapshot},
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+                let ack = next_frame(&mut socket).await;
+                assert_eq!(ack["op"], "subscribed", "unexpected ack: {ack}");
+                assert_eq!(
+                    ack["wholeEntities"],
+                    json!(true),
+                    "the ack advertises the whole-entity guarantee: {ack}"
+                );
+                socket
+            }
+        }
+
+        async fn next_frame(socket: &mut WebSocketStream<TcpStream>) -> Value {
+            loop {
+                let message = tokio::time::timeout(Duration::from_secs(10), socket.next())
+                    .await
+                    .expect("the server answers within the timeout")
+                    .expect("the stream stays open")
+                    .expect("a readable frame");
+                // Every frame here is far below the compression threshold.
+                let bytes = match &message {
+                    Message::Text(text) => text.as_bytes(),
+                    Message::Binary(bytes) => bytes.as_ref(),
+                    _ => continue,
+                };
+                return serde_json::from_slice(bytes).expect("frames are JSON");
+            }
+        }
+
+        /// The snapshot rows, in order, once the snapshot completes.
+        async fn snapshot_keys(socket: &mut WebSocketStream<TcpStream>) -> Vec<String> {
+            let mut keys = Vec::new();
+            loop {
+                let frame = next_frame(socket).await;
+                assert_eq!(frame["op"], "snapshot", "expected a snapshot: {frame}");
+                keys.extend(
+                    frame["data"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|row| row["key"].as_str().unwrap().to_string()),
+                );
+                if frame["complete"] == json!(true) {
+                    return keys;
+                }
+            }
+        }
+
+        async fn seed(harness: &Harness) {
+            for key in ["a", "b", "c"] {
+                harness
+                    .patch(key, json!({"name": format!("thing-{key}"), "count": 1}))
+                    .await;
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_change_to_a_key_cut_by_snapshot_limit_is_an_upsert() {
+            let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
+            seed(&harness).await;
+
+            let mut socket = harness
+                .subscribe(json!({"view": "Thing/list", "snapshotLimit": 1}), true)
+                .await;
+            // Newest first: only "c" was sent.
+            assert_eq!(snapshot_keys(&mut socket).await, ["c"]);
+
+            harness.patch("a", json!({"count": 2})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "a", "unexpected frame: {frame}");
+            assert_eq!(frame["op"], "upsert", "a key never sent arrives whole");
+            assert_eq!(frame["data"]["name"], "thing-a");
+            assert_eq!(frame["data"]["count"], 2);
+
+            // Now the client holds "a", so its next change is a patch again.
+            harness.patch("a", json!({"count": 3})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "a");
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            assert!(frame["data"].get("name").is_none());
+
+            // A key the snapshot did carry still rides its patch.
+            harness.patch("c", json!({"count": 2})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "c");
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            socket.close(None).await.ok();
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_list_without_a_snapshot_upserts_each_key_on_its_first_change() {
+            let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
+            seed(&harness).await;
+
+            let mut socket = harness
+                .subscribe(json!({"view": "Thing/list"}), false)
+                .await;
+            harness.patch("b", json!({"count": 2})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "b");
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["data"]["name"], "thing-b");
+
+            harness.patch("b", json!({"count": 3})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "b");
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            socket.close(None).await.ok();
+        }
+
+        /// Eviction from the server's bounded cache is not a change to the
+        /// entity: a client holding it keeps getting its patches, never a
+        /// `remove`, and the whole entity replaces its copy when it returns.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_state_holder_keeps_its_patches_when_the_cache_evicts_the_key() {
+            let harness = Harness::start_with_cache(
+                WebSocketDeliveryConfig::default(),
+                EntityCache::with_config(crate::cache::EntityCacheConfig {
+                    max_entities_per_view: 2,
+                    ..Default::default()
+                }),
+            )
+            .await;
+            harness
+                .patch("a", json!({"name": "thing-a", "count": 1}))
+                .await;
+            let mut socket = harness
+                .subscribe(json!({"view": "Thing/state", "key": "a"}), true)
+                .await;
+            assert_eq!(snapshot_keys(&mut socket).await, ["a"]);
+
+            // "b" and "c" push "a" out of the cache.
+            for key in ["b", "c"] {
+                harness
+                    .patch(key, json!({"name": format!("thing-{key}"), "count": 1}))
+                    .await;
+            }
+            harness.patch("a", json!({"count": 2})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "a", "unexpected frame: {frame}");
+            assert_eq!(frame["op"], "patch", "the holder merges it: {frame}");
+            assert_eq!(frame["data"]["count"], 2);
+
+            // The whole entity comes back from the VM.
+            let mut whole = Mutation {
+                export: "Thing".to_string(),
+                key: json!("a"),
+                patch: json!({"name": "thing-a", "count": 2}),
+                append: vec![],
+                occurrence: None,
+            };
+            whole.mark_whole_entity();
+            harness.mutate(whole).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["data"]["name"], "thing-a");
+            assert_eq!(frame["data"]["count"], 2);
+            assert!(frame["data"]
+                .get(arete_interpreter::WHOLE_ENTITY_MARKER)
+                .is_none());
+
+            harness.patch("a", json!({"count": 3})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            socket.close(None).await.ok();
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_state_view_without_a_snapshot_upserts_on_the_first_change() {
+            let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
+            seed(&harness).await;
+
+            let mut socket = harness
+                .subscribe(json!({"view": "Thing/state", "key": "a"}), false)
+                .await;
+            harness.patch("a", json!({"count": 2})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "a");
+            assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
+            assert_eq!(frame["data"]["name"], "thing-a");
+            assert_eq!(frame["data"]["count"], 2);
+
+            harness.patch("a", json!({"count": 3})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "patch", "unexpected frame: {frame}");
+            socket.close(None).await.ok();
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_coalesced_list_sends_no_remove_for_a_key_it_never_sent() {
+            let harness = Harness::start(WebSocketDeliveryConfig {
+                collection_coalesce_ms: Some(10),
+                ..Default::default()
+            })
+            .await;
+            seed(&harness).await;
+
+            // A one-row window holding "c", which the disabled snapshot never
+            // sent.
+            let mut socket = harness
+                .subscribe(json!({"view": "Thing/list", "take": 1}), false)
+                .await;
+            // "a" jumps to the front: it enters the window whole and "c",
+            // never sent, leaves it without a `remove`.
+            harness.patch("a", json!({"count": 2})).await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["key"], "a", "unexpected frame: {frame}");
+            assert_eq!(frame["op"], "upsert");
+            assert_eq!(frame["data"]["name"], "thing-a");
+
+            // "c" re-enters whole; "a", held, leaves with a `remove`.
+            harness.patch("c", json!({"count": 2})).await;
+            let mut frames = [next_frame(&mut socket).await, next_frame(&mut socket).await];
+            frames.sort_by_key(|frame| frame["key"].as_str().unwrap().to_string());
+            assert_eq!(frames[0]["key"], "a");
+            assert_eq!(frames[0]["op"], "remove");
+            assert_eq!(frames[1]["key"], "c");
+            assert_eq!(frames[1]["op"], "upsert");
+            assert_eq!(frames[1]["data"]["name"], "thing-c");
+            socket.close(None).await.ok();
+        }
+
+        /// `(epoch, counter)` from an entity's `_version`.
+        fn version_of(data: &Value) -> (String, u64) {
+            let version = data["_version"]
+                .as_str()
+                .unwrap_or_else(|| panic!("no _version in {data}"));
+            let (epoch, counter) = version.split_once(':').expect("epoch:counter");
+            (epoch.to_string(), counter.parse().expect("decimal counter"))
+        }
+
+        /// Every entity a subscriber receives carries the projector's
+        /// `_version`: a snapshot row, a forwarded patch, and a state
+        /// subscription's catch-up, which sends the cached entity after the
+        /// bus overwrote a patch.
+        // One worker, and a projector the cooperative budget cannot interrupt:
+        // within a batch it awaits only locks no other task holds, so it
+        // publishes both changes before the subscriber can run, and the
+        // second overwrites the first on the state bus.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn snapshot_rows_patches_and_catch_ups_carry_the_version() {
+            let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
+            harness.patch("7", json!({"name": "thing-7"})).await;
+
+            let mut list = harness.subscribe(json!({"view": "Thing/list"}), true).await;
+            let snapshot = next_frame(&mut list).await;
+            assert_eq!(snapshot["op"], "snapshot", "unexpected frame: {snapshot}");
+            let (epoch, _) = version_of(&snapshot["data"][0]["data"]);
+
+            let mut state = harness
+                .subscribe(json!({"view": "Thing/state", "key": "7"}), true)
+                .await;
+            let snapshot = next_frame(&mut state).await;
+            assert_eq!(snapshot["op"], "snapshot", "unexpected frame: {snapshot}");
+            let (state_epoch, seeded) = version_of(&snapshot["data"][0]["data"]);
+            assert_eq!(state_epoch, epoch, "one projector, one epoch");
+
+            harness.patch("7", json!({"count": 1})).await;
+            let patch = next_frame(&mut list).await;
+            assert_eq!(patch["op"], "patch", "unexpected frame: {patch}");
+            assert_eq!(version_of(&patch["data"]).0, epoch);
+            let patch = next_frame(&mut state).await;
+            assert_eq!(patch["op"], "patch", "unexpected frame: {patch}");
+            let (_, patched) = version_of(&patch["data"]);
+            assert!(patched > seeded, "{patched} after {seeded}");
+
+            // Two changes to the key in one batch.
+            let slot = harness
+                .slot
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mutation = |patch: Value| Mutation {
+                export: "Thing".to_string(),
+                key: json!("7"),
+                patch,
+                append: vec![],
+                occurrence: None,
+            };
+            harness
+                .tx
+                .send(MutationBatch::with_slot_context(
+                    vec![
+                        mutation(json!({"count": 2})),
+                        mutation(json!({"flag": true})),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    SlotContext::new(slot, 0),
+                ))
+                .await
+                .unwrap();
+
+            let catch_up = next_frame(&mut state).await;
+            assert_eq!(catch_up["op"], "patch", "unexpected frame: {catch_up}");
+            assert!(catch_up.get("seq").is_none(), "a catch-up: {catch_up}");
+            assert_eq!(catch_up["data"]["count"], 2);
+            assert_eq!(catch_up["data"]["flag"], true);
+            let (_, caught_up) = version_of(&catch_up["data"]);
+            assert!(caught_up > patched, "{caught_up} after {patched}");
+
+            list.close(None).await.ok();
+            state.close(None).await.ok();
+        }
     }
 
     /// Session tokens that expire while their socket is open.
@@ -3610,9 +5081,23 @@ mod tests {
         use tokio_tungstenite::tungstenite::Message;
         use tokio_tungstenite::{client_async, WebSocketStream};
 
+        #[derive(Default)]
+        struct RecordingUsageEmitter {
+            events: tokio::sync::Mutex<Vec<WebSocketUsageEvent>>,
+        }
+
+        #[async_trait::async_trait]
+        impl WebSocketUsageEmitter for RecordingUsageEmitter {
+            async fn emit(&self, event: WebSocketUsageEvent) {
+                self.events.lock().await.push(event);
+            }
+        }
+
         struct Server {
             addr: SocketAddr,
             signer: TokenSigner,
+            usage: Arc<RecordingUsageEmitter>,
+            metrics: Arc<DeliveryProbe>,
         }
 
         impl Server {
@@ -3622,6 +5107,7 @@ mod tests {
                     TokenVerifier::new(signing_key.verifying_key(), "test-issuer", "test-audience");
                 let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let addr = listener.local_addr().unwrap();
+                let usage = Arc::new(RecordingUsageEmitter::default());
                 let server = WebSocketServer::new(
                     addr,
                     BusManager::new(),
@@ -3630,12 +5116,17 @@ mod tests {
                     #[cfg(feature = "otel")]
                     None,
                 )
-                .with_auth_plugin(Arc::new(SignedSessionAuthPlugin::new(verifier)));
+                .with_auth_plugin(Arc::new(SignedSessionAuthPlugin::new(verifier)))
+                .with_usage_emitter(usage.clone());
+                let metrics = Arc::new(DeliveryProbe::default());
                 let (acceptor, _cleanup) = server.into_acceptor();
+                let acceptor = acceptor.with_delivery_probe(metrics.clone());
                 tokio::spawn(async move { acceptor.serve_listener(listener).await });
                 Self {
                     addr,
                     signer: TokenSigner::new(signing_key, "test-issuer"),
+                    usage,
+                    metrics,
                 }
             }
 
@@ -3643,6 +5134,22 @@ mod tests {
                 let claims = SessionClaims::builder("test-issuer", "test-subject", "test-audience")
                     .with_scope("read")
                     .with_key_class(KeyClass::Secret)
+                    .with_ttl(ttl_seconds)
+                    .build();
+                self.signer.sign(claims).unwrap()
+            }
+
+            fn account_token(&self, ttl_seconds: u64, account: &str) -> String {
+                let claims = SessionClaims::builder("test-issuer", account, "test-audience")
+                    .with_scope("read")
+                    .with_key_class(KeyClass::Secret)
+                    .with_metering_key(account)
+                    .with_plan("agent_trial")
+                    .with_actor_key(account)
+                    .with_account_key(account)
+                    .with_consumer_key(format!("consumer:{account}"))
+                    .with_policy_version(3)
+                    .with_account_limits(Default::default())
                     .with_ttl(ttl_seconds)
                     .build();
                 self.signer.sign(claims).unwrap()
@@ -3732,6 +5239,62 @@ mod tests {
                     .is_none(),
                 "the socket stays open on the refreshed token"
             );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn usage_after_auth_refresh_uses_the_refreshed_account() {
+            let server = Server::start().await;
+            let mut socket = server
+                .connect(&server.account_token(3_600, "account:1"))
+                .await;
+
+            send_json(
+                &mut socket,
+                json!({
+                    "type": "refresh_auth",
+                    "token": server.account_token(3_600, "account:2")
+                }),
+            )
+            .await;
+            let reply = tokio::time::timeout(Duration::from_secs(5), async {
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Message::Text(text) = message {
+                        return serde_json::from_str::<Value>(text.as_str()).ok();
+                    }
+                }
+                None
+            })
+            .await
+            .expect("the server answers the refresh")
+            .expect("the answer is JSON");
+            assert_eq!(reply["success"], true, "refresh accepted: {reply}");
+            socket.close(None).await.unwrap();
+
+            let account = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let events = server.usage.events.lock().await;
+                    if let Some(account) = events.iter().find_map(|event| match event {
+                        WebSocketUsageEvent::ConnectionClosed { identity, .. } => {
+                            identity.account_key.clone()
+                        }
+                        _ => None,
+                    }) {
+                        return account;
+                    }
+                    drop(events);
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("connection close usage event");
+            assert_eq!(account, "account:2");
+            let active = server
+                .metrics
+                .active_connections
+                .lock()
+                .expect("delivery probe lock poisoned");
+            assert_eq!(active.get("account:1"), Some(&0));
+            assert_eq!(active.get("account:2"), None);
         }
     }
 }

@@ -1,4 +1,14 @@
-use arete_server::{RuntimePlan, Server, TransactionConfig};
+use arete_server::{
+    RuntimePlan, Server, SolanaGatewayUsageObservation, SolanaGatewayUsageObserver,
+    TransactionConfig,
+};
+
+struct NoopUsageObserver;
+
+#[async_trait::async_trait]
+impl SolanaGatewayUsageObserver for NoopUsageObserver {
+    async fn observe(&self, _observation: SolanaGatewayUsageObservation) {}
+}
 
 #[test]
 fn public_gateway_composition_builds_without_a_spec_or_live_runtime() {
@@ -9,6 +19,7 @@ fn public_gateway_composition_builds_without_a_spec_or_live_runtime() {
             rpc_url: Some("http://127.0.0.1:8899".into()),
             ..TransactionConfig::default()
         })
+        .usage_observer(std::sync::Arc::new(NoopUsageObserver))
         .build()
         .unwrap();
 

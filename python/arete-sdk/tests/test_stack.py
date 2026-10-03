@@ -4,7 +4,12 @@ attribute namespaces)."""
 
 from __future__ import annotations
 
+import logging
+import warnings
+
 import pytest
+
+from arete.errors import ProgramKeyConflictError
 
 from arete.instructions import (
     AccountMeta,
@@ -35,6 +40,8 @@ from arete.stack import (
     instruction_operation,
     normalize_program_operations,
     transaction_operation,
+    compare_program_identity,
+    same_program,
     with_programs,
 )
 from arete.views import ViewDef
@@ -52,7 +59,7 @@ DEPLOY_HANDLER = InstructionHandler(
     program_id=PROGRAM_ID,
     discriminator=bytes([1]),
     accounts=[
-        AccountMeta("signer", True, True, Signer()),
+        AccountMeta("signer", True, True, Signer(), signer_kind="wallet"),
         AccountMeta("miner", False, True, UserProvided()),
         AccountMeta("system_program", False, False, Known(SYSTEM_PROGRAM)),
     ],
@@ -155,7 +162,7 @@ class TestRawInstructions:
             program_id=PROGRAM_ID,
             discriminator=bytes([2]),
             accounts=[
-                AccountMeta("signer", True, True, Signer()),
+                AccountMeta("signer", True, True, Signer(), signer_kind="wallet"),
                 AccountMeta("payer", False, True, UserProvided()),
             ],
             args=[],
@@ -173,6 +180,25 @@ class TestRawInstructions:
         client.wallet = FakeWallet()  # set after connect: wallet is read live
         built = program.raw.deploy.build(amount=5, miner=BOB)
         assert built.accounts[0].pubkey == ALICE
+
+    def test_the_client_wallet_never_fills_a_provided_signer(self):
+        # Generated handlers mark every signer "provided" (TypeScript
+        # `signerKind: 'provided'`): the connected wallet does not fill it.
+        handler = InstructionHandler(
+            program_id=PROGRAM_ID,
+            discriminator=bytes([3]),
+            accounts=[AccountMeta("signer", True, True, Signer(), signer_kind="provided")],
+            args=[],
+        )
+        program, client = connect_program(
+            make_program_def(raw_instructions={"close": handler})
+        )
+        client.wallet = FakeWallet()
+        with pytest.raises(InstructionError, match="Missing required accounts: signer"):
+            program.raw.close.build()
+        with pytest.raises(InstructionError, match="Missing required accounts: signer"):
+            program.raw.close.build(wallet=ALICE)
+        assert program.raw.close.build(signer=BOB).accounts[0].pubkey == BOB
 
     def test_handler_escape_hatch(self):
         program, _ = connect_program()
@@ -335,15 +361,79 @@ class TestStackDef:
         assert stack.endpoints.http is None
         assert stack.views["ore_round"]["latest"].mode == "list"
 
-    def test_with_programs_stack_keys_win(self):
-        stack = StackDef(name="s", programs={"ore": make_program_def()})
+    def test_with_programs_keeps_stack_keys_and_adds_new_ones(self):
+        core = make_program_def()
+        stack = StackDef(name="s", programs={"ore": core})
         attached = make_program_def(name="other")
-        with pytest.warns(UserWarning, match="already defines that key"):
-            merged = with_programs(stack, {"ore": attached, "extra": attached})
-        assert merged.programs["ore"].name == "ore"
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            # The same definition under the stack's key is the same program.
+            merged = with_programs(stack, {"ore": core, "extra": attached})
+        assert merged.programs["ore"] is core
         assert merged.programs["extra"].name == "other"
         # The original definition is untouched.
         assert "extra" not in stack.programs
+
+    def test_with_programs_matches_programs_by_package_release(self):
+        stack = StackDef(
+            name="s", programs={"ore": make_program_def(package_release_hash="pkg:1")}
+        )
+        standalone = make_program_def(name="ore-sdk", package_release_hash="pkg:1")
+        merged = with_programs(stack, {"ore": standalone})
+        # One program: the stack's stays under its key.
+        assert merged.programs["ore"] is stack.programs["ore"]
+        assert same_program(stack.programs["ore"], standalone)
+
+    @pytest.mark.parametrize(
+        ("stack_hash", "attached_hash", "attached_spec"),
+        [
+            ("pkg:1", "pkg:2", "spec:hash"),
+            (None, None, "spec:other"),
+            ("pkg:1", None, "spec:other"),
+            (None, None, None),
+        ],
+    )
+    def test_with_programs_rejects_a_different_program_under_a_stack_key(
+        self, stack_hash, attached_hash, attached_spec
+    ):
+        stack = StackDef(
+            name="s", programs={"ore": make_program_def(package_release_hash=stack_hash)}
+        )
+        attached = make_program_def(
+            package_release_hash=attached_hash, program_spec_hash=attached_spec
+        )
+        with pytest.raises(ProgramKeyConflictError) as excinfo:
+            with_programs(stack, {"ore": attached})
+        error = excinfo.value
+        assert error.code == "PROGRAM_KEY_CONFLICT"
+        assert error.key == "ore" and error.stacks == ("s",)
+        assert "stack 's'" in error.message
+        assert "programs.ore" in error.message
+        assert "different key" in error.message
+
+    @pytest.mark.parametrize(
+        ("stack_hash", "attached_hash"), [(None, None), ("pkg:1", None), (None, "pkg:1")]
+    )
+    def test_with_programs_uses_an_unproven_attached_program_and_warns_once(
+        self, stack_hash, attached_hash, caplog
+    ):
+        # A local stack and a local standalone copy (same program spec, no
+        # package release), or a program extended outside its generated SDK.
+        stack = StackDef(
+            name=f"s-{stack_hash}-{attached_hash}",
+            programs={"ore": make_program_def(package_release_hash=stack_hash)},
+        )
+        attached = make_program_def(name="mine", package_release_hash=attached_hash)
+        with caplog.at_level(logging.WARNING, logger="arete.stack"):
+            first = with_programs(stack, {"ore": attached})
+            second = with_programs(stack, {"ore": attached})
+        assert first.programs["ore"] is attached
+        assert second.programs["ore"] is attached
+        assert stack.programs["ore"] is not attached
+        warnings_logged = [r for r in caplog.records if r.name == "arete.stack"]
+        assert len(warnings_logged) == 1
+        assert "could not be proven identical" in warnings_logged[0].getMessage()
+        assert compare_program_identity(stack.programs["ore"], attached) == "unproven"
 
     def test_programs_namespace_errors(self):
         program, _ = connect_program()

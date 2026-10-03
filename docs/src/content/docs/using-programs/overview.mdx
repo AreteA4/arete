@@ -10,6 +10,12 @@ operations, and executing transactions.
 
 You can install a Program SDK on its own. No live stack is required.
 
+If your app uses a stack that covers this program, its Program SDK is already
+included. A stack includes the Program SDK for each program its views read from:
+the same program package release a standalone install gives you, under the
+stack's `programs`, so you don't need to install the program again. Run
+`a4 explore stack <ref> --summary` to see which Program SDKs a stack includes.
+
 ## Find a program
 
 Search by what you want to do:
@@ -163,6 +169,9 @@ authorized it to sign or submit.
 
 Program SDKs cover reading from a program and sending it transactions. Install
 a stack when your application also needs maintained, app-shaped views or
-stack-level operations.
+stack-level operations. The stack includes the Program SDK for each program its
+views read from, so a program the stack covers needs no separate install. If you
+already installed the program on its own, keeping it is fine: when both come
+from the same program package release, they are one program at runtime.
 
 [Programs, views, and stacks →](/concepts/programs-views-stacks/)

@@ -45,4 +45,21 @@ pub trait Stack: Sized + Send + Sync + 'static {
     fn gateway() -> Option<crate::HostedSolanaGatewayBindings> {
         None
     }
+
+    /// StackManifest hash (`arete:h1:stack-manifest:sha256:<hex>`) of the
+    /// served version this stack was generated for.
+    ///
+    /// Generated from a hosted StackManifest only; together with
+    /// [`Stack::live_alias`] it is sent with the WebSocket session request for
+    /// [`Stack::url`] so the session endpoint can route the client to that
+    /// version. Both must be set for either to be sent.
+    fn stack_manifest_hash() -> Option<&'static str> {
+        None
+    }
+
+    /// StackManifest live alias of the served version this stack was
+    /// generated for. See [`Stack::stack_manifest_hash`].
+    fn live_alias() -> Option<&'static str> {
+        None
+    }
 }

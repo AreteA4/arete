@@ -13,6 +13,37 @@ use serde::Serialize;
 
 use crate::ast::{InstructionDef, PdaDefinition, SerializableStackSpec, CURRENT_AST_VERSION};
 
+/// The exact served version a generated stack definition targets: one live
+/// alias of one StackManifest. Generated SDKs name it in their WebSocket
+/// session request so the session endpoint can route each client to the
+/// version it was generated for. Only StackManifest generation knows it;
+/// AST-only generation never emits one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackRelease {
+    /// `arete:h1:stack-manifest:sha256:<64 hex>`.
+    pub stack_manifest_hash: String,
+    /// The StackManifest live alias the stack definition serves.
+    pub live_alias: String,
+}
+
+impl StackRelease {
+    /// The release of `alias` within `manifest`.
+    pub fn for_alias(manifest: &StackManifestArtifactV2, alias: &str) -> Self {
+        Self {
+            stack_manifest_hash: manifest.artifact_hash.to_string(),
+            live_alias: alias.to_string(),
+        }
+    }
+
+    /// The release of a single-live manifest's only alias.
+    pub fn for_single_live(manifest: &StackManifestArtifactV2) -> Option<Self> {
+        match manifest.payload.live_specs.as_slice() {
+            [live] => Some(Self::for_alias(manifest, &live.alias)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AliasedStackSpecV2 {
     pub alias: String,
@@ -93,6 +124,12 @@ pub fn stack_spec_from_artifacts(
 
 /// Reconstruct the single-live generator input from typed V2 artifacts.
 /// This compatibility wrapper deliberately rejects zero- and multi-live inputs.
+///
+/// The result carries every program the StackManifest groups: the programs
+/// the LiveSpec requires, in LiveSpec order, followed by the manifest's
+/// independent programs in manifest order. A single-live stack is a group of
+/// one live view and its program SDKs, so an independent program is as much
+/// a part of its generated SDK as one the view indexes.
 pub fn stack_spec_from_artifacts_v2(
     programs: &[ProgramSpecArtifact],
     live_spec: &LiveSpecArtifactV2,
@@ -104,7 +141,64 @@ pub fn stack_spec_from_artifacts_v2(
     let alias = manifest.payload.live_specs[0].alias.clone();
     let lives = vec![(alias, live_spec.clone())];
     let mut composed = stack_specs_from_artifacts_v2(programs, &lives, manifest)?;
-    Ok(composed.live_specs.remove(0).stack_spec)
+    let mut stack = composed.live_specs.remove(0).stack_spec;
+    append_independent_programs(&mut stack, programs, live_spec, manifest)?;
+    Ok(stack)
+}
+
+/// Append the manifest programs `live_spec` does not require, in manifest
+/// order. The closure was already validated, so every manifest program is
+/// among `programs`.
+fn append_independent_programs(
+    stack: &mut SerializableStackSpec,
+    programs: &[ProgramSpecArtifact],
+    live_spec: &LiveSpecArtifactV2,
+    manifest: &StackManifestArtifactV2,
+) -> Result<(), String> {
+    let required = live_spec
+        .payload
+        .programs
+        .iter()
+        .map(|requirement| requirement.program_spec_hash.to_string())
+        .collect::<BTreeSet<_>>();
+    let independent = manifest
+        .payload
+        .programs
+        .iter()
+        .filter(|reference| !required.contains(&reference.artifact_hash.to_string()))
+        .map(|reference| {
+            programs
+                .iter()
+                .find(|program| program.artifact_hash == reference.artifact_hash)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "StackManifest program {} was not supplied",
+                        reference.artifact_hash
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if independent.is_empty() {
+        return Ok(());
+    }
+    let (program_ids, idls, program_specs, pdas, instructions) = program_inputs(&independent)?;
+    for idl in &idls {
+        if stack.idls.iter().any(|existing| existing.name == idl.name) {
+            return Err(format!(
+                "StackManifest groups two programs named '{}'; rename one of them",
+                idl.name
+            ));
+        }
+    }
+    stack.program_ids.extend(program_ids);
+    stack.idls.extend(idls);
+    stack.program_specs.extend(program_specs);
+    for (name, program_pdas) in pdas {
+        stack.pdas.entry(name).or_insert(program_pdas);
+    }
+    stack.instructions.extend(instructions);
+    Ok(())
 }
 
 /// Build one fresh generator model per manifest alias. ProgramSpec lookup is
@@ -312,6 +406,63 @@ mod tests {
         }"#;
         let document = CanonicalIdlDocument::parse(idl, None).unwrap();
         ProgramSpecArtifact::new(ProgramSpecV1::from_document(&document)).unwrap()
+    }
+
+    fn named_program(address: &str, name: &str) -> ProgramSpecArtifact {
+        let idl = format!(
+            r#"{{"address":"{address}","metadata":{{"name":"{name}","version":"1.0.0","spec":"0.1.0"}},"instructions":[],"accounts":[],"types":[],"events":[],"errors":[]}}"#
+        );
+        let document = CanonicalIdlDocument::parse(idl.as_bytes(), None).unwrap();
+        ProgramSpecArtifact::new(ProgramSpecV1::from_document(&document)).unwrap()
+    }
+
+    #[test]
+    fn a_single_live_stack_carries_its_independent_programs_after_the_live_programs() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("stacks/ore/.arete");
+        let load = |name: &str| std::fs::read(root.join(name)).unwrap();
+        let live = arete_artifacts::load_live_spec_v2(&load("OreStream.live-spec.json"))
+            .unwrap()
+            .artifact;
+        let ore = arete_artifacts::load_program_spec(&load("ore.program-spec.json"))
+            .unwrap()
+            .artifact;
+        let entropy = arete_artifacts::load_program_spec(&load("entropy.program-spec.json"))
+            .unwrap()
+            .artifact;
+        let vote = named_program(
+            "Vote111111111111111111111111111111111111111",
+            "vote_program",
+        );
+        // The independent program sits between the live programs in manifest
+        // order; generation still lists the live programs first.
+        let programs = vec![ore.clone(), vote.clone(), entropy.clone()];
+        let manifest = arete_artifacts::compose_stack_manifest_v2(
+            "OreWithVote",
+            &programs,
+            vec![("live".to_string(), &live)],
+            vec![arete_artifacts::SelectedViewV2 {
+                live_alias: "live".to_string(),
+                view_id: "OreRound/latest".to_string(),
+            }],
+        )
+        .unwrap();
+
+        let stack = stack_spec_from_artifacts_v2(&programs, &live, &manifest).unwrap();
+        assert_eq!(
+            stack.program_ids,
+            vec![
+                ore.payload.program_id.clone(),
+                entropy.payload.program_id.clone(),
+                vote.payload.program_id.clone(),
+            ]
+        );
+        assert_eq!(stack.idls.len(), 3);
+        assert_eq!(stack.program_specs.len(), 3);
+        assert!(stack.pdas.contains_key("vote_program"));
+        assert!(!stack.entities.is_empty());
     }
 
     #[test]

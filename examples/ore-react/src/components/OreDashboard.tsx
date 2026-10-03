@@ -44,12 +44,11 @@ export function OreDashboard() {
   const countPerSquare = roundState?.countPerSquare?.map(Number);
   const myDeploymentPerSquare = currentMinerState?.deployedPerSquareUi ?? undefined;
   const myDeploymentTotal = currentMinerState?.totalDeployed ?? undefined;
-  const preRevealWinningSquare = roundResults?.preRevealWinningSquare == null
-    ? undefined
-    : Number(roundResults.preRevealWinningSquare);
-  const winningSquare = roundResults?.winningSquare == null
-    ? undefined
-    : Number(roundResults.winningSquare);
+  // `preRevealWinningSquare` is set as soon as the round ends, from the seed
+  // ORE's entropy API serves early; `winningSquare` is the same square but
+  // only fills when the next round opens. Show the earlier one.
+  const winner = roundResults?.preRevealWinningSquare ?? roundResults?.winningSquare;
+  const winningSquare = winner == null ? undefined : Number(winner);
   const roundId = round.data?.id.roundId?.toString();
   const estimatedExpiresAtUnix = roundState?.estimatedExpiresAtUnix == null
     ? undefined
@@ -130,7 +129,6 @@ export function OreDashboard() {
           deployedPerSquare={deployedPerSquare}
           countPerSquare={countPerSquare}
           myDeployment={myDeploymentPerSquare}
-          preRevealWinningSquare={preRevealWinningSquare}
           winningSquare={winningSquare}
           selected={selected}
           onToggle={toggleSquare}

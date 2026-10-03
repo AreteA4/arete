@@ -1282,7 +1282,7 @@ impl ResolvedField {
     }
 }
 
-fn to_camel_case_owned(s: &str) -> String {
+pub(crate) fn to_camel_case_owned(s: &str) -> String {
     let mut result = String::new();
     let mut uppercase_next = false;
 
