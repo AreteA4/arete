@@ -1,5 +1,5 @@
 import { inflate } from 'pako';
-import type { SubscriptionQuery } from './types';
+import type { RecoveryAction, SubscriptionQuery, UsageLimit } from './types';
 
 export type FrameMode = 'state' | 'append' | 'list';
 export type FrameOp =
@@ -43,6 +43,12 @@ export interface SubscribedFrame extends IdentifiedFrame {
   sort?: SortConfig;
   /** Present on append views backed by the journal. */
   replayWindow?: ReplayWindow;
+  /**
+   * The server sends a key whole (`upsert` or a snapshot row) before any
+   * `patch` for it, so a patch for a key the client does not hold can be
+   * dropped. Older servers omit it; their patches for unknown keys are kept.
+   */
+  wholeEntities?: boolean;
 }
 
 export interface UnsubscribedFrame extends IdentifiedFrame {
@@ -86,13 +92,22 @@ export interface ErrorFrame {
   code: string;
   retryable?: boolean;
   fatal: boolean;
+  /** Seconds to wait before retrying, as the server sends it. */
+  retryAfter?: number;
+  suggestedAction?: string;
+  docsUrl?: string;
+  /** @deprecated The server sends `retryAfter`; kept for older servers. */
   retry_after?: number;
+  /** @deprecated The server sends `suggestedAction`; kept for older servers. */
   suggested_action?: string;
+  /** @deprecated The server sends `docsUrl`; kept for older servers. */
   docs_url?: string;
   /** Present on cursor refusals: what the view can still serve. */
   replayWindow?: ReplayWindow;
   /** Present on `replay-lagged`: cursor of the last record delivered before the gap. */
   recoverFrom?: string;
+  usage?: UsageLimit;
+  action?: RecoveryAction;
 }
 
 export type Frame<T = unknown> =

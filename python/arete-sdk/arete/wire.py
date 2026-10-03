@@ -107,6 +107,30 @@ def compare_seq(left: str, right: str) -> int:
     return -1 if left_parsed.index < right_parsed.index else 1
 
 
+def _parse_version(version: str) -> Optional[Tuple[str, int]]:
+    epoch, separator, counter = version.rpartition(":")
+    if not separator or not epoch or not counter.isascii() or not counter.isdigit():
+        return None
+    return epoch, int(counter)
+
+
+def is_stale_version(incoming: str, held: Optional[str]) -> bool:
+    """Whether a frame at version ``incoming`` was already applied, or is older.
+
+    A version is ``{epoch}:{counter}``, and counters compare only within an
+    epoch: a server restart or a reloaded stack starts a new one, whose first
+    frame is newer than anything from the old one. A version that does not
+    parse cannot be ordered and is never stale.
+    """
+    if held is None:
+        return False
+    next_version = _parse_version(incoming)
+    current = _parse_version(held)
+    if next_version is None or current is None or next_version[0] != current[0]:
+        return False
+    return next_version[1] <= current[1]
+
+
 # ---------------------------------------------------------------------------
 # Client envelopes (every message carries protocolVersion: 2)
 # ---------------------------------------------------------------------------
@@ -186,6 +210,10 @@ class SubscribedFrame:
     mode: str  # 'state' | 'append' | 'list'
     sort: Optional[SortConfig] = None
     replay_window: Optional[ReplayWindow] = None  # replayable append views only
+    #: The server sends every key whole (``upsert`` or a snapshot row) before
+    #: any ``patch`` for it, so a patch for a key the client does not hold can
+    #: be dropped. Older servers omit it.
+    whole_entities: bool = False
 
 
 @dataclass(frozen=True)
@@ -447,6 +475,12 @@ def is_valid_frame(frame: Any) -> bool:
     )
 
 
+def _camel_or_snake(frame: Mapping[str, Any], camel: str, snake: str) -> Any:
+    """The server sends camelCase; snake_case is an older-server fallback."""
+    value = frame.get(camel)
+    return value if value is not None else frame.get(snake)
+
+
 def _frame_from_dict(frame: Mapping[str, Any]) -> Frame:
     if frame.get("type") == "error":
         return ErrorFrame(
@@ -456,9 +490,9 @@ def _frame_from_dict(frame: Mapping[str, Any]) -> Frame:
             error=frame.get("error"),
             message=frame.get("message"),
             retryable=frame.get("retryable"),
-            retry_after=frame.get("retry_after"),
-            suggested_action=frame.get("suggested_action"),
-            docs_url=frame.get("docs_url"),
+            retry_after=_camel_or_snake(frame, "retryAfter", "retry_after"),
+            suggested_action=_camel_or_snake(frame, "suggestedAction", "suggested_action"),
+            docs_url=_camel_or_snake(frame, "docsUrl", "docs_url"),
             replay_window=_replay_window_from_dict(frame.get("replayWindow")),
             recover_from=frame.get("recoverFrom"),
         )
@@ -474,6 +508,7 @@ def _frame_from_dict(frame: Mapping[str, Any]) -> Frame:
             mode=frame["mode"],
             sort=SortConfig(field=tuple(sort["field"]), order=sort["order"]) if sort else None,
             replay_window=_replay_window_from_dict(frame.get("replayWindow")),
+            whole_entities=frame.get("wholeEntities") is True,
         )
     if op == "snapshot":
         return SnapshotFrame(

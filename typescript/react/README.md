@@ -10,7 +10,7 @@ Built on top of [`@usearete/sdk`](https://www.npmjs.com/package/@usearete/sdk), 
 npm install @usearete/react @usearete/sdk zod
 ```
 
-`@usearete/react` installs `zustand` as a normal dependency, so do not install it separately. React remains an application dependency. Generated consumers install the core SDK and Zod because generated stack files import their types and schemas directly.
+`@usearete/react` installs `zustand` as a normal dependency, so do not install it separately. React and `@usearete/sdk` are peer dependencies: the application owns exactly one copy of the core SDK, on the same release as `@usearete/react`, so error and outcome checks see one set of classes. Generated consumers install the core SDK and Zod because generated stack files import their types and schemas directly.
 
 ### Hooks linting
 
@@ -126,7 +126,7 @@ Supported props:
 - `auth`
 - `fetch`
 - `validateFrames` — set `false` to suppress rejected-frame warnings; generated schemas still normalize and validate entities
-- `onFrameValidationError` — structured callback for generated-schema rejections
+- `onFrameValidationError` — structured callback for frames that were not stored: schema rejections (`reason: 'schema'`) and patches for keys the client holds no entity for (`reason: 'unknown-key'`)
 - `reconnectIntervals`
 - `maxReconnectAttempts`
 - `maxEntriesPerView`
@@ -357,7 +357,7 @@ deploy.submit(args, { reconcile: { timeoutMs: 10_000 } });
 deploy.submit(args, { reconcile: async (context) => { /* ... */ } });
 ```
 
-The mutation `phase` field is the discriminated status to branch on for busy labels (`'preparing'`, `'awaiting-wallet'`, `'submitted'`, `'confirmed'`, `'reconciling'`, `'reconciled'`, plus the failure outcomes); `status` remains `'pending'` until the mutation settles. Generated operation hooks publish each completed receipt and signature during `submitted`, before the final operation receipt resolves. `onConfirmed` runs immediately after chain confirmation; `onSuccess` runs only after successful reconciliation (or immediately when reconciliation is disabled/skipped). Reconciliation failure, including a refreshed snapshot timeout, is exposed through `reconciliationError`, does not call `onSuccess`, and does not reject the confirmed `submit()` result. The confirmed transaction remains landed. `retryReconciliation()` repeats only post-confirmation watermark/refresh work using the saved receipts and targets; it never rebuilds, signs, or submits. Convenience booleans (`isPreparing`, `isAwaitingWallet`, `isReconciling`, `canRetryReconciliation`) remain available.
+The mutation `phase` field is the discriminated status to branch on. Its values are exactly `'idle'`, `'preparing'`, `'awaiting-wallet'`, `'submitted'`, `'confirmed'`, `'reconciling'`, `'reconciled'`, `'confirmed-unreconciled'`, `'not-submitted'`, `'submitted-unknown'` and `'chain-failed'`. There is no `'submitting'` or `'confirming'` phase: `'awaiting-wallet'` covers signing, sending and confirming, because the wallet adapter does all three in one call. `status` remains `'pending'` until the mutation settles. Generated operation hooks publish each completed receipt and signature during `submitted`, before the final operation receipt resolves. `onConfirmed` runs immediately after chain confirmation; `onSuccess` runs only after successful reconciliation (or immediately when reconciliation is disabled/skipped). Reconciliation failure, including a refreshed snapshot timeout, is exposed through `reconciliationError`, does not call `onSuccess`, and does not reject the confirmed `submit()` result. The confirmed transaction remains landed. `retryReconciliation()` repeats only post-confirmation watermark/refresh work using the saved receipts and targets; it never rebuilds, signs, or submits. Convenience booleans (`isPreparing`, `isAwaitingWallet`, `isReconciling`, `canRetryReconciliation`) remain available.
 
 ## Migration notes (0.3 → next)
 
@@ -379,6 +379,22 @@ The mutation `phase` field is the discriminated status to branch on for busy lab
 - `useArete` now exposes `socketIssue` and deduplicated `retry()`.
 - Stack reads expose imperative calls and hooks together under `arete.read.<name>`; `arete.reads` remains a deprecated alias.
 - Repeated `useArete` calls now share a provider-managed client when stack and option identities match; remove component-local connection ownership workarounds.
+
+## Testing
+
+`@usearete/react/testing` re-exports every `@usearete/sdk/testing` helper and adds:
+
+- `createAreteTestConfig(harness, props?)` — `<AreteProvider>` props that connect every client to a `createWebSocketHarness()` server, with no reconnects or batching delay.
+- `createMutationResultFixture(phase, overrides?)` — a complete, consistent `useMutation()` result for any of the `MUTATION_PHASES`, for rendering phase-specific UI without a wallet.
+
+```tsx
+import { createAreteTestConfig, createWebSocketHarness } from '@usearete/react/testing';
+
+const ws = createWebSocketHarness();
+render(<AreteProvider {...createAreteTestConfig(ws)}><Dashboard /></AreteProvider>);
+const subscription = await ws.waitForSubscription('OreRound/latest'); // flush renders between polls
+ws.serve(subscription, [{ key: '1', data: round }]);
+```
 
 ## Low-Level Hooks
 

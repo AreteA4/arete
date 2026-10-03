@@ -122,7 +122,11 @@ export interface AreteConfig {
   flushIntervalMs?: number;
   fetch?: CoreConnectOptions['fetch'];
   validateFrames?: boolean;
-  /** Receives structured details when a generated schema rejects a frame. */
+  /**
+   * Receives structured details when a frame is not stored: a generated schema
+   * rejected it (`reason: 'schema'`), or it was a patch for a key the client
+   * holds no entity for (`reason: 'unknown-key'`).
+   */
   onFrameValidationError?: CoreConnectOptions['onFrameValidationError'];
   /** Authentication configuration */
   auth?: CoreAuthConfig;

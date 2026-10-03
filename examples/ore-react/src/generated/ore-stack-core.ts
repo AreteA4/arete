@@ -1031,7 +1031,7 @@ export interface OreAutomation {
   conditions: AutomationConditions;
 }
 
-export interface OreBoard2 {
+export interface OreBoardAccount {
   roundId: bigint;
   startSlot: bigint;
   endSlot: bigint;
@@ -1043,7 +1043,7 @@ export interface Config {
   protocol: ProtocolConfig;
 }
 
-export interface OreMiner2 {
+export interface OreMinerAccount {
   authority: string;
   autoReturn: bigint;
   checkpointId: bigint;
@@ -1079,7 +1079,7 @@ export interface Round {
   topMiner: string;
 }
 
-export interface OreTreasury2 {
+export interface OreTreasuryAccount {
   motherlode: bigint;
   minerRewardsFactor: Numeric;
   totalRefined: bigint;
@@ -1170,7 +1170,7 @@ export const OreAutomationSchema = z.object({
   conditions: value.conditions,
 }));
 
-export const OreBoard2Schema = z.object({
+export const OreBoardAccountSchema = z.object({
   round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   start_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   end_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
@@ -1190,7 +1190,7 @@ export const ConfigSchema = z.object({
   protocol: value.protocol,
 }));
 
-export const OreMiner2Schema = z.object({
+export const OreMinerAccountSchema = z.object({
   authority: z.string(),
   auto_return: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   checkpoint_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
@@ -1258,7 +1258,7 @@ export const RoundSchema = z.object({
   topMiner: value.top_miner,
 }));
 
-export const OreTreasury2Schema = z.object({
+export const OreTreasuryAccountSchema = z.object({
   motherlode: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   miner_rewards_factor: z.lazy(() => NumericSchema),
   total_refined: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
@@ -1295,6 +1295,21 @@ export const VarSchema = z.object({
   startAt: value.start_at,
   endAt: value.end_at,
 }));
+
+/** @deprecated Use OreBoardAccount. */
+export type OreBoard2 = OreBoardAccount;
+/** @deprecated Use OreBoardAccountSchema. */
+export const OreBoard2Schema = OreBoardAccountSchema;
+
+/** @deprecated Use OreMinerAccount. */
+export type OreMiner2 = OreMinerAccount;
+/** @deprecated Use OreMinerAccountSchema. */
+export const OreMiner2Schema = OreMinerAccountSchema;
+
+/** @deprecated Use OreTreasuryAccount. */
+export type OreTreasury2 = OreTreasuryAccount;
+/** @deprecated Use OreTreasuryAccountSchema. */
+export const OreTreasury2Schema = OreTreasuryAccountSchema;
 
 // ============================================================================
 // Instruction Handlers
@@ -1984,11 +1999,13 @@ export const ORE_STREAM_STACK_CORE = {
     Numeric: NumericSchema,
     OreAutomation: OreAutomationSchema,
     OreBoard2: OreBoard2Schema,
+    OreBoardAccount: OreBoardAccountSchema,
     OreBoardCompleted: OreBoardCompletedSchema,
     OreBoardId: OreBoardIdSchema,
     OreBoard: OreBoardSchema,
     OreBoardState: OreBoardStateSchema,
     OreMiner2: OreMiner2Schema,
+    OreMinerAccount: OreMinerAccountSchema,
     OreMinerAutomation: OreMinerAutomationSchema,
     OreMinerCompleted: OreMinerCompletedSchema,
     OreMinerId: OreMinerIdSchema,
@@ -2004,6 +2021,7 @@ export const ORE_STREAM_STACK_CORE = {
     OreRoundState: OreRoundStateSchema,
     OreRoundTreasury: OreRoundTreasurySchema,
     OreTreasury2: OreTreasury2Schema,
+    OreTreasuryAccount: OreTreasuryAccountSchema,
     OreTreasuryCompleted: OreTreasuryCompletedSchema,
     OreTreasuryId: OreTreasuryIdSchema,
     OreTreasury: OreTreasurySchema,
@@ -2024,7 +2042,7 @@ export const ORE_STREAM_STACK_CORE = {
     ore: {
       name: 'ore',
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:43e4f8c4fdf9c02347c5eeec38c7a8f28bd04c6e3024337f306b0deae26b3d26',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:a41415a1364fda8fcd9906b4264e346f452c713344b3aeedbb09d2b3d32c35cc',
       programSpecHash: 'arete:h1:program-spec:sha256:41a3e99a926050fd86b09761b829570a0a2086c10766e1b6e328b901dd856f72',
       idlContentHash: 'arete:h1:idl-content:sha256:7a14fb6c2c406d74ac61bf93ff14949da4677a5f6a3d53058e550f1fe86f7bf3',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:b16f15a8d4ed1ce44127170eaf2050349573759961c33bd010a4cf59df787157',
@@ -2044,11 +2062,11 @@ export const ORE_STREAM_STACK_CORE = {
       },
       accounts: {
         Automation: programAccountRead<OreAutomation>({ account: 'Automation', schema: OreAutomationSchema }),
-        Board: programAccountRead<OreBoard2>({ account: 'Board', schema: OreBoard2Schema }),
+        Board: programAccountRead<OreBoardAccount>({ account: 'Board', schema: OreBoardAccountSchema }),
         Config: programAccountRead<Config>({ account: 'Config', schema: ConfigSchema }),
-        Miner: programAccountRead<OreMiner2>({ account: 'Miner', schema: OreMiner2Schema }),
+        Miner: programAccountRead<OreMinerAccount>({ account: 'Miner', schema: OreMinerAccountSchema }),
         Round: programAccountRead<Round>({ account: 'Round', schema: RoundSchema }),
-        Treasury: programAccountRead<OreTreasury2>({ account: 'Treasury', schema: OreTreasury2Schema }),
+        Treasury: programAccountRead<OreTreasuryAccount>({ account: 'Treasury', schema: OreTreasuryAccountSchema }),
       },
       rawInstructions: {
         automate: oreAutomateInstruction,
@@ -2194,7 +2212,7 @@ export const ORE_STREAM_STACK_CORE = {
     entropy: {
       name: 'entropy',
       programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:9b85f333d143af6a90d0e5fcd5e692b066426504016639214183573fb2cf7e7e',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:8526b0e4d44d6bd9d4dab159fbe7b5cc818a766a30fcd53f579c772581f49c8a',
       programSpecHash: 'arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b',
       idlContentHash: 'arete:h1:idl-content:sha256:2b5b3ed4de83cd3803bd6b82b33cfbea0e8b7c6a7ada7b138fcb57bb2fe1a01f',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:adc67e46a2ffc5e26fcff489fa7e21d5aa0d6338243dc23330ab0e85c3e150fc',

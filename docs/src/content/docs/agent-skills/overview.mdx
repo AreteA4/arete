@@ -104,6 +104,11 @@ a4 install program <slug> --ts
 a4 install stack <slug> --ts
 ```
 
+A stack includes the Program SDK for each program its views read from, the same
+one `a4 install program` gives you. So the agent installs a stack when the app
+needs live views, with or without transactions, and a program on its own when it
+only needs reads and transactions.
+
 `arete.toml` records what you asked for, and `arete.lock` pins the exact
 content. When prose examples disagree with the generated code, the descriptor,
 or current CLI output, the examples lose.

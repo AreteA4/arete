@@ -1144,6 +1144,53 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
   };
 }
 
+export interface InspectOnlyWalletAdapterConfig {
+  /** The address transactions are prepared for (fee payer and wallet signer). */
+  publicKey: string;
+  /** A Solana RPC client, for inspection without an Arete client. */
+  rpc?: Rpc<SolanaRpcApi>;
+  /** A Solana RPC subscriptions client, paired with `rpc`. */
+  rpcSubscriptions?: RpcSubscriptions<SolanaRpcSubscriptionsApi>;
+  /** Arete when connected, direct when explicitly selected, or a custom transport. */
+  transport?: AdapterTransportSelection;
+  /** Default commitment for blockhash, fee and simulation RPCs. */
+  defaultCommitment?: Commitment;
+}
+
+/** `name` of the error an inspect-only adapter refuses a sign or send with. */
+export const INSPECT_ONLY_WALLET_ERROR = 'InspectOnlyWalletError';
+
+/**
+ * A {@link WalletAdapter} that holds only a public key: operations prepare
+ * against it and `client.inspectOperation()` estimates fees and simulates
+ * them, but every sign or send is refused before anything is built or
+ * dispatched. For agents and CI that verify transactions without keys.
+ */
+export function createInspectOnlyWalletAdapter(
+  config: InspectOnlyWalletAdapterConfig,
+): KitWalletAdapter {
+  const inner = createWalletAdapter({
+    rpc: config.rpc,
+    rpcSubscriptions: config.rpcSubscriptions,
+    transport: config.transport,
+    defaultCommitment: config.defaultCommitment,
+    // Inspection compiles with a no-op fee payer and never reaches a signer.
+    signer: createNoopSigner(address(config.publicKey)),
+  });
+  return {
+    ...inner,
+    async signAndSend(): Promise<SendResult> {
+      const cause = new Error(
+        `Inspect-only wallet adapter for ${config.publicKey} cannot sign or send transactions: `
+          + 'it holds only a public key. Use it to prepare and inspect (fee and simulation); '
+          + 'connect a signing wallet to execute.'
+      );
+      cause.name = INSPECT_ONLY_WALLET_ERROR;
+      throw new KitTransactionExecutionError({ status: 'not-submitted', phase: 'wallet', cause });
+    },
+  };
+}
+
 export {
   SOLANA_SIGN_AND_SEND_TRANSACTION,
   SOLANA_SIGN_TRANSACTION,

@@ -39,6 +39,7 @@ from arete.auth import (
     request_token_from_endpoint,
     resolve_token_endpoint,
     should_refresh_token,
+    stack_release_fields,
 )
 from arete.errors import AreteError, AuthError
 
@@ -230,9 +231,13 @@ class HttpAuthClient:
         auth: Optional[AuthConfig] = None,
         websocket_url: Optional[str] = None,
         http_client: Optional[Any] = None,  # httpx.AsyncClient, injectable for tests
+        stack_release: Optional[Any] = None,  # arete.stack.StackRelease
     ) -> None:
         self._auth = auth
         self._websocket_url = websocket_url
+        # Named only in untargeted session requests; targeted requests never
+        # carry it.
+        self._stack_release = stack_release
         self._owns_http_client = http_client is None
         self._http: httpx.AsyncClient = http_client or httpx.AsyncClient()
         self._shared = _SharedTokenState()
@@ -364,6 +369,7 @@ class HttpAuthClient:
                 target_kind=target.kind if target is not None else None,
                 target_id=target.target_id if target is not None else None,
                 program_release_hash=target.release_hash if target is not None else None,
+                stack_release=self._stack_release if target is None else None,
             )
             return await request_token_from_endpoint(self._http, endpoint, auth, body)
         return None
@@ -394,6 +400,8 @@ class HttpAuthClient:
                 request["targetId"] = target.target_id
                 if target.release_hash is not None:
                     request["programReleaseHash"] = target.release_hash
+            else:
+                request.update(stack_release_fields(self._stack_release))
             return await provider(request)
         return await provider()
 

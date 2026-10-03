@@ -55,7 +55,12 @@ the network at `npm install` time.
 Once installed, `a4` is on PATH in new shells. `npx @usearete/a4 <args>` also
 works in the same session: it runs the binary recorded in
 `~/.arete/receipt.json`, installing it silently first if needed, so
-`npx @usearete/a4 explore --json` prints only the command's JSON.
+`npx @usearete/a4 explore --json` prints only the command's JSON. `install`
+installs the CLI only when every argument after it is an `a4 self install`
+option: `--install-dir`, `--no-modify-path`, `--json`, `--force`,
+`--verbose`, `-y`/`--yes`, `--non-interactive`, `-c`/`--config`,
+`--api-url` or `-h`/`--help`. Anything else is a project install, so
+`npx @usearete/a4 install stack ore --ts` runs `a4 install stack ore --ts`.
 
 ```bash
 a4 init -y          # arete.toml, AGENTS.md, CLAUDE.md, MCP config, skills

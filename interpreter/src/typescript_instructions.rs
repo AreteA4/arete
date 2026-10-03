@@ -2575,9 +2575,12 @@ fn render_semantic_params_interface(
             extra_params.insert(extra.clone());
         }
     }
+    // `| undefined`: callers pass an override they may not have on as it is
+    // (`amountDecimals: input.amountDecimals`), also under
+    // `exactOptionalPropertyTypes`; undefined reads the mint's decimals.
     for extra_param in extra_params {
         lines.push(format!(
-            "  {}?: number;",
+            "  {}?: number | undefined;",
             render_ts_property_name(&extra_param)
         ));
     }
@@ -2659,6 +2662,19 @@ pub(crate) fn dedupe_errors_by_code(errors: &[IdlErrorSnapshot]) -> Vec<IdlError
     by_code.into_values().collect()
 }
 
+/// An IDL error's `msg` as the generated SDKs' error metadata carries it:
+/// empty when absent, with every line break (`\n`, `\r`) turned into a space,
+/// so a message the IDL wraps across source lines reads as one line. The
+/// TypeScript SDK set this text; the Rust and Python generators use the same
+/// function so all three SDKs report identical messages.
+pub(crate) fn error_metadata_msg(error: &IdlErrorSnapshot) -> String {
+    error
+        .msg
+        .as_deref()
+        .unwrap_or("")
+        .replace(['\n', '\r'], " ")
+}
+
 fn render_program_errors(const_name: &str, type_name: &str, errors: &[IdlErrorSnapshot]) -> String {
     if errors.is_empty() {
         return format!(
@@ -2680,7 +2696,7 @@ fn render_program_errors(const_name: &str, type_name: &str, errors: &[IdlErrorSn
                 "  {{ code: {}, name: '{}', msg: '{}' }},",
                 err.code,
                 err.name,
-                escape_single_quotes(err.msg.as_deref().unwrap_or(""))
+                escape_single_quotes(&error_metadata_msg(err))
             )
         })
         .collect();
@@ -4285,7 +4301,7 @@ mod tests {
         assert!(out.code.contains("amount: bigint;"));
         assert!(out.code.contains("export interface DepositSemanticParams"));
         assert!(out.code.contains("amount: AmountInput;"));
-        assert!(out.code.contains("amountDecimals?: number;"));
+        assert!(out.code.contains("amountDecimals?: number | undefined;"));
         assert!(out.code.contains("build?: BuildOptions;"));
         assert!(out.needs_amount_input);
         assert!(out.needs_program_runtime_extensions);
@@ -4356,7 +4372,9 @@ mod tests {
         assert!(out
             .code
             .contains("params: { maxAmount: AmountInput; quoteMint: string; memo: string; };"));
-        assert!(out.code.contains("paramsMaxAmountDecimals?: number;"));
+        assert!(out
+            .code
+            .contains("paramsMaxAmountDecimals?: number | undefined;"));
         assert!(out.code.contains("build?: BuildOptions;"));
         assert_eq!(
             out.stack_entries[0].semantic_params_type.as_deref(),
@@ -4539,7 +4557,7 @@ mod tests {
 
         assert!(out.code.contains("export interface MintToSemanticParams"));
         assert!(out.code.contains("amount: AmountInput;"));
-        assert!(out.code.contains("amountDecimals?: number;"));
+        assert!(out.code.contains("amountDecimals?: number | undefined;"));
         assert!(out.code.contains("build?: BuildOptions;"));
         assert_eq!(out.stack_entries[0].semantic_amount_args.len(), 1);
         assert!(out.stack_entries[0].semantic_amount_args[0]
@@ -4601,7 +4619,9 @@ mod tests {
         assert!(out
             .code
             .contains("params: { maxAmount: AmountInput; memo: string; };"));
-        assert!(out.code.contains("paramsMaxAmountDecimals?: number;"));
+        assert!(out
+            .code
+            .contains("paramsMaxAmountDecimals?: number | undefined;"));
         assert!(out.code.contains("build?: BuildOptions;"));
         assert_eq!(out.stack_entries[0].semantic_amount_args.len(), 1);
         assert!(out.stack_entries[0].semantic_amount_args[0]

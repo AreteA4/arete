@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "a4-cli"
-version = "0.22.3"
+version = "0.28.0"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
@@ -23,6 +23,7 @@ dependencies = [
  "dialoguer",
  "dirs",
  "flate2",
+ "fs2",
  "futures-util",
  "indicatif",
  "jsonc-parser",
@@ -151,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "arete"
-version = "0.22.3"
+version = "0.28.0"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
@@ -181,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "arete-a4-sdk"
-version = "0.22.3"
+version = "0.28.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -196,6 +197,8 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "sha3",
  "solana-address",
  "solana-compute-budget-interface",
  "solana-hash 4.6.0",
@@ -303,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "arete-interpreter"
-version = "0.22.3"
+version = "0.28.0"
 dependencies = [
  "arete-artifacts",
  "arete-hash",
@@ -336,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "arete-macros"
-version = "0.22.3"
+version = "0.28.0"
 dependencies = [
  "arete-artifacts",
  "arete-hash",
@@ -355,7 +358,7 @@ dependencies = [
 
 [[package]]
 name = "arete-mcp"
-version = "0.22.3"
+version = "0.28.0"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
@@ -376,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "arete-server"
-version = "0.22.3"
+version = "0.28.0"
 dependencies = [
  "anyhow",
  "arete-auth",
@@ -1532,6 +1535,16 @@ dependencies = [
  "io-lifetimes 2.0.4",
  "rustix 1.1.3",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]

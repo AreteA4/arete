@@ -1,5 +1,128 @@
 # Changelog
 
+## [0.28.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.27.0...arete-mcp-v0.28.0) (2026-09-30)
+
+
+### Miscellaneous Chores
+
+* **arete-mcp:** Synchronize arete versions
+
+## [0.27.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.26.0...arete-mcp-v0.27.0) (2026-09-29)
+
+
+### Features
+
+* **discovery:** guide agent trials to starter stacks ([97883dc](https://github.com/AreteA4/arete/commit/97883dc21ee328a662befe24c8c3c06aa6a36a52))
+* isolate agent credentials and propagate recovery actions ([cf3716a](https://github.com/AreteA4/arete/commit/cf3716a5bb888a265b05e292bca4ae706844f893))
+
+
+### Bug Fixes
+
+* address agent credential recovery review ([c5cdd56](https://github.com/AreteA4/arete/commit/c5cdd569037701bdfb4a252401c826c9a842f1f4))
+* preserve MCP account status fields ([3134bed](https://github.com/AreteA4/arete/commit/3134beda351828c978423dfb7ba0bafc236f7a6d))
+
+## [0.26.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.25.1...arete-mcp-v0.26.0) (2026-09-29)
+
+
+### Features
+
+* **explore:** attach curated field descriptions from catalog knowledge ([eaf6313](https://github.com/AreteA4/arete/commit/eaf63137cd5019f777900956df671e520c5ac567))
+* **explore:** attach curated field descriptions from catalog knowledge ([9c38a3a](https://github.com/AreteA4/arete/commit/9c38a3a6a4c6af7bc64b2170d09149fa2c5d7dd9))
+
+
+### Bug Fixes
+
+* **explore:** skip the knowledge lookup where it cannot apply and bound it ([b2666d0](https://github.com/AreteA4/arete/commit/b2666d0f51dc039daef203d281dc67106acd373b))
+* **mcp:** attach schema guidance only for the StackManifest it describes ([cd6e011](https://github.com/AreteA4/arete/commit/cd6e0115add59e92f58acd981673b0f888054e5d))
+
+## [0.25.1](https://github.com/AreteA4/arete/compare/arete-mcp-v0.25.0...arete-mcp-v0.25.1) (2026-09-29)
+
+
+### Miscellaneous Chores
+
+* **arete-mcp:** Synchronize arete versions
+
+## [0.25.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.24.0...arete-mcp-v0.25.0) (2026-09-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** ServerFrame::Subscribed gains a whole_entities field.
+* **sdk:** attaching a different program under a key a stack already provides throws PROGRAM_KEY_CONFLICT.
+* **sdk:** attaching a different program under a key a stack already provides raises ProgramKeyConflictError instead of keeping the stack's program with a warning.
+
+### Features
+
+* **cli:** attach program identity after the package extension ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** carry program SDKs in stacks ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** check runtime SDK compatibility ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** compose stacks from registry parts ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** explore one operation, a stack summary or selected views ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** make publishable key creation scriptable ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** report account readiness in a4 doctor and a4 explore ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** report requested, regenerated and shared dependencies on install ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** report the program SDK each program gets on a4 up ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **docs:** rank documentation search by query terms ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **interpreter:** let a consumer request a whole entity from the VM ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **mcp:** summarise explore results and look up one operation ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** add inspect-only wallet adapters ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** add testing helpers ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** drop patches for keys the Rust client does not hold ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** identify program SDKs by package release in Python ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** identify program SDKs by package release in Rust ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** identify program SDKs by package release in TypeScript ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** keep runtime extensions through object spread ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** publish the extension API version ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+
+
+### Bug Fixes
+
+* **cli:** check the extensionApi the registry reports for an extension ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** confine --env-file to the project and replace it atomically ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** keep locks from older a4 releases installable ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** keep the previous composition artifacts until the replacement lands ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** pin the program SDKs of locked composed parts ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** require an older lock to pin exactly the SDK extensions it generates ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **interpreter:** send a requested whole entity with the next batch ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **react:** peer-depend on @usearete/sdk ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** drop patches for keys the Python client does not hold ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** drop patches for keys the TypeScript client does not hold ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** keep a stack's program types when no programs are attached ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** share a same-release program only when it reads the same way ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** keep a resent entity's own position in recency order ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** never serve partial entities and resend evicted entities whole ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** rank entities without a sort value last ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** replace a state subscriber's copy when a missed frame replaced the entity ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** tell created entities from changes instead of trusting eviction memory ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+
+## [0.24.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.23.1...arete-mcp-v0.24.0) (2026-09-27)
+
+
+### Miscellaneous Chores
+
+* **arete-mcp:** Synchronize arete versions
+
+## [0.23.1](https://github.com/AreteA4/arete/compare/arete-mcp-v0.23.0...arete-mcp-v0.23.1) (2026-09-25)
+
+
+### Miscellaneous Chores
+
+* **arete-mcp:** Synchronize arete versions
+
+## [0.23.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.22.4...arete-mcp-v0.23.0) (2026-09-25)
+
+
+### Miscellaneous Chores
+
+* **arete-mcp:** Synchronize arete versions
+
+## [0.22.4](https://github.com/AreteA4/arete/compare/arete-mcp-v0.22.3...arete-mcp-v0.22.4) (2026-09-24)
+
+
+### Miscellaneous Chores
+
+* **arete-mcp:** Synchronize arete versions
+
 ## [0.22.3](https://github.com/AreteA4/arete/compare/arete-mcp-v0.22.2...arete-mcp-v0.22.3) (2026-09-24)
 
 

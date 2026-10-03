@@ -12,6 +12,7 @@ from arete.auth import (
     DEFAULT_HOSTED_TOKEN_ENDPOINT,
     AuthConfig,
     AuthErrorCode,
+    AuthState,
     AuthToken,
     TokenTransport,
     build_token_endpoint_request_body,
@@ -19,12 +20,30 @@ from arete.auth import (
     is_hosted_arete_websocket_url,
     is_hosted_websocket_host,
     set_hosted_websocket_suffixes,
+    parse_error_code_from_close_reason,
     parse_jwt_expiry,
     request_token_from_endpoint,
     resolve_token_endpoint,
     should_refresh_token,
 )
 from arete.errors import AuthError
+from arete.stack import StackRelease
+
+STACK_MANIFEST_HASH = (
+    "arete:h1:stack-manifest:sha256:"
+    "338c718dfbb5a260392414ee5e7f2e07ceb01a07fdcccbf748822d43cdb89a09"
+)
+RELEASE = StackRelease(stack_manifest_hash=STACK_MANIFEST_HASH, live_alias="live")
+RETIRED_BODY = {
+    "error": "Stack ore 1.2.0 was retired.",
+    "code": "stack-version-retired",
+    "replacement": {
+        "version": "1.3.0",
+        "stackManifestHash": "arete:h1:stack-manifest:sha256:bb",
+    },
+    "upgradeCommand": "a4 install stack ore@1.3.0",
+    "retiredAt": "2026-10-01T00:00:00Z",
+}
 
 
 def test_public_api_is_intact():
@@ -42,6 +61,34 @@ def test_auth_token_expiry_check():
     assert not AuthToken(token="t").is_expiring()
     assert AuthToken(token="t", expires_at=int(time.time()) + 30).is_expiring()
     assert not AuthToken(token="t", expires_at=int(time.time()) + 3600).is_expiring()
+
+
+def test_close_reason_codes_come_only_from_the_wire_code_prefix():
+    assert (
+        parse_error_code_from_close_reason("token-expired: Token has expired")
+        is AuthErrorCode.TOKEN_EXPIRED
+    )
+    assert parse_error_code_from_close_reason("token-expired") is AuthErrorCode.TOKEN_EXPIRED
+    assert (
+        parse_error_code_from_close_reason("rate-limit-exceeded")
+        is AuthErrorCode.RATE_LIMIT_EXCEEDED
+    )
+    # Free-form reasons are not guessed at, whatever words they contain.
+    assert parse_error_code_from_close_reason("Invalid view requested") is None
+    assert parse_error_code_from_close_reason("Session token was revoked") is None
+    assert parse_error_code_from_close_reason("Subscription expired") is None
+    assert parse_error_code_from_close_reason("") is None
+    # A coded close keeps its existing meaning when the code is unknown.
+    assert (
+        parse_error_code_from_close_reason("node-draining: moving you")
+        is AuthErrorCode.INTERNAL_ERROR
+    )
+
+
+def test_from_wire_known_distinguishes_unknown_codes():
+    assert AuthErrorCode.from_wire_known("origin-required") is AuthErrorCode.ORIGIN_REQUIRED
+    assert AuthErrorCode.from_wire_known("node-draining") is None
+    assert AuthErrorCode.from_wire("node-draining") is AuthErrorCode.INTERNAL_ERROR
 
 
 def test_build_websocket_url_query_transport():
@@ -145,6 +192,128 @@ def test_build_token_endpoint_request_body_targeted():
         "targetId": "sgb_1",
         "scopes": ["transaction:send"],
     }
+
+
+def test_untargeted_request_body_names_the_stack_release_only_when_given():
+    assert build_token_endpoint_request_body(
+        websocket_url="wss://host/socket", scopes=["read"]
+    ) == {"websocket_url": "wss://host/socket", "scopes": ["read"]}
+    body = build_token_endpoint_request_body(
+        websocket_url="wss://host/socket", scopes=["read"], stack_release=RELEASE
+    )
+    assert body == {
+        "websocket_url": "wss://host/socket",
+        "scopes": ["read"],
+        "stackManifestHash": STACK_MANIFEST_HASH,
+        "liveAlias": "live",
+    }
+    assert list(body) == ["websocket_url", "scopes", "stackManifestHash", "liveAlias"]
+
+
+def test_targeted_request_body_never_names_the_stack_release():
+    assert build_token_endpoint_request_body(
+        websocket_url="wss://host/socket",
+        scopes=["read"],
+        target_kind="program-read-binding",
+        target_id="prb_1",
+        program_release_hash="hash-1",
+        stack_release=RELEASE,
+    ) == {
+        "targetKind": "program-read-binding",
+        "targetId": "prb_1",
+        "scopes": ["read"],
+        "programReleaseHash": "hash-1",
+    }
+
+
+def test_stack_release_requires_both_halves():
+    with pytest.raises(ValueError):
+        StackRelease(stack_manifest_hash="", live_alias="live")
+    with pytest.raises(ValueError):
+        StackRelease(stack_manifest_hash=STACK_MANIFEST_HASH, live_alias="")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stack_release", "expected"),
+    [
+        (None, {"websocket_url": "wss://demo.stack.arete.run"}),
+        (
+            RELEASE,
+            {
+                "websocket_url": "wss://demo.stack.arete.run",
+                "stackManifestHash": STACK_MANIFEST_HASH,
+                "liveAlias": "live",
+            },
+        ),
+    ],
+)
+async def test_websocket_session_request_body(stack_release, expected):
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"token": "minted", "expires_at": 4102444800})
+
+    state = AuthState(
+        "wss://demo.stack.arete.run",
+        AuthConfig(publishable_key="a4_pk_test"),
+        stack_release=stack_release,
+    )
+    state._http_session = _client(handler)
+    try:
+        assert await state.resolve_token() == "minted"
+    finally:
+        await state.close()
+    # Without a release the body is exactly what older clients send.
+    assert seen == [expected]
+    assert list(seen[0]) == list(expected)
+
+
+@pytest.mark.asyncio
+async def test_a_retired_stack_version_names_its_replacement():
+    def retired(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            409, headers={"X-Error-Code": "stack-version-retired"}, json=RETIRED_BODY
+        )
+
+    async with _client(retired) as http_client:
+        with pytest.raises(AuthError) as info:
+            await request_token_from_endpoint(
+                http_client, "https://auth.example/token", None, {}
+            )
+    error = info.value
+    assert error.code is AuthErrorCode.STACK_VERSION_RETIRED
+    assert error.is_stack_version_refusal
+    assert error.message == (
+        "Token endpoint returned 409: Stack ore 1.2.0 was retired. "
+        "Replacement: 1.3.0. Upgrade with: a4 install stack ore@1.3.0"
+    )
+    assert error.replacement_version == "1.3.0"
+    assert error.replacement_stack_manifest_hash == "arete:h1:stack-manifest:sha256:bb"
+    assert error.upgrade_command == "a4 install stack ore@1.3.0"
+    assert error.retired_at == "2026-10-01T00:00:00Z"
+    assert error.details["status"] == 409
+    assert error.details["wire_error_code"] == "stack-version-retired"
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_stack_version_keeps_the_server_message():
+    def unknown(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            409,
+            json={"error": "Stack version is not served here", "code": "stack-version-unknown"},
+        )
+
+    async with _client(unknown) as http_client:
+        with pytest.raises(AuthError) as info:
+            await request_token_from_endpoint(
+                http_client, "https://auth.example/token", None, {}
+            )
+    assert info.value.code is AuthErrorCode.STACK_VERSION_UNKNOWN
+    assert info.value.message == "Token endpoint returned 409: Stack version is not served here"
+    assert info.value.replacement_version is None
+    assert info.value.upgrade_command is None
 
 
 def test_parse_jwt_expiry():

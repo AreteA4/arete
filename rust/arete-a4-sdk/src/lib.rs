@@ -25,6 +25,15 @@
 //! }
 //! ```
 
+/// Version of the extension-authoring surface (`docs/internal/sdk-core-api.md`
+/// §9, "Extension API contract"): the program/stack binding traits generated
+/// code and extensions implement ([`Programs`], [`ProgramSdk`],
+/// [`StackWithPrograms`]), program read attachment, and the instruction
+/// helpers generated code imports. Bumped only on a breaking change; recorded
+/// as `[package.metadata.arete] extension-api` in this crate's `Cargo.toml`.
+/// The TypeScript and Python SDKs export the same value.
+pub const EXTENSION_API_VERSION: u32 = 1;
+
 pub mod adapters;
 pub mod amounts;
 mod auth;
@@ -33,6 +42,7 @@ mod client;
 pub mod collation;
 mod config;
 mod connection;
+pub mod encoding;
 mod entity;
 mod error;
 mod frame;
@@ -57,15 +67,16 @@ pub mod wallet;
 
 #[cfg(feature = "solana-adapter")]
 pub use adapters::solana::{
-    AdapterTransportSelection, SharedSigner, SolanaAdapterConfig, SolanaWalletAdapter,
+    AdapterTransportSelection, SharedSigner, SolanaAdapterConfig, SolanaOperationSigner,
+    SolanaWalletAdapter,
 };
 pub use amounts::{
     format_raw_to_ui, parse_ui_amount_to_raw, resolve_amount, resolve_amount_to_raw, to_raw_amount,
     AmountError, AmountInput, AmountResolutionInput, ResolvedAmount,
 };
 pub use auth::{
-    hosted_websocket_suffixes, is_hosted_websocket_host, AuthConfig, AuthToken, TokenTransport,
-    HOSTED_WEBSOCKET_SUFFIX, HOSTED_WEBSOCKET_SUFFIXES_ENV,
+    hosted_websocket_suffixes, is_hosted_websocket_host, AuthConfig, AuthToken, StackRelease,
+    TokenTransport, HOSTED_WEBSOCKET_SUFFIX, HOSTED_WEBSOCKET_SUFFIXES_ENV,
 };
 pub use chain::{
     derive_http_endpoint, ChainClient, ChainClock, ChainError, ContextSlotOptions, HttpChainClient,
@@ -78,8 +89,13 @@ pub use client::{
 pub use collation::{collation_key, locale_compare, CollationKey};
 pub use config::{AreteConfig, ConnectionConfig};
 pub use connection::{ConnectionManager, ConnectionState, SubscriptionLease, SubscriptionOptions};
+pub use encoding::{decode_base58, encode_base58, keccak256, sha256, Base58Error};
 pub use entity::Stack;
-pub use error::{AreteError, AuthErrorCode, GapCode, SocketIssue, StreamGap};
+pub use error::{
+    ApiProblemV1, AreteError, AuthErrorCode, GapCode, ReadyRecoveryAction, ReadyRecoveryActionV1,
+    RecoveryAction, SocketIssue, StackVersionRefusal, StreamGap, UsageLimit,
+    API_PROBLEM_SCHEMA_VERSION, CLAIM_AGENT_MATERIALIZER_PATH,
+};
 pub use frame::{
     parse_frame, parse_server_message, parse_snapshot_entities, try_parse_subscribed_frame, Frame,
     Mode, Operation, ProtocolErrorFrame, ReplayWindow, ServerFrame, ServerMessage, SnapshotEntity,
@@ -112,7 +128,8 @@ pub use operations::{
     TransactionFailureOutcome, TransactionOutcome,
 };
 pub use program::{
-    AttachedPrograms, ProgramBuilder, ProgramSdk, ProgramStack, Programs, StackWithPrograms,
+    same_program, AttachedPrograms, ProgramAccessor, ProgramBuilder, ProgramContext, ProgramSdk,
+    ProgramStack, Programs, StackWithPrograms,
 };
 pub use program_read_transport::{
     BearerTokenSource, ProgramReadRequest, ProgramReadTransport, ReadAuthTarget,
@@ -143,5 +160,27 @@ pub use subscription::{
     MAX_SUBSCRIPTION_ID_BYTES, PROTOCOL_VERSION,
 };
 pub use view::{
-    RichWatchBuilder, StateView, UseBuilder, ViewBuilder, ViewHandle, Views, WatchBuilder,
+    GetOptions, RichWatchBuilder, StateView, UseBuilder, ViewBuilder, ViewError, ViewHandle, Views,
+    WatchBuilder,
 };
+
+#[cfg(test)]
+mod tests {
+    /// The crate records the extension API it exports, so tools can read it
+    /// from the manifest without compiling anything.
+    #[test]
+    fn extension_api_version_is_recorded_in_the_manifest() {
+        let manifest = include_str!("../Cargo.toml");
+        let section = manifest
+            .split("[package.metadata.arete]")
+            .nth(1)
+            .expect("Cargo.toml has [package.metadata.arete]");
+        let recorded = section
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("extension-api"))
+            .and_then(|rest| rest.trim().strip_prefix('='))
+            .map(|value| value.trim().parse::<u32>().expect("an integer"))
+            .expect("extension-api is recorded");
+        assert_eq!(recorded, super::EXTENSION_API_VERSION);
+    }
+}

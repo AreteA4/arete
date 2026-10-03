@@ -45,6 +45,15 @@ const stack = {
   addresses: { board: () => 'board-address' },
   constants: { tileCount: 25 },
   math: { double: (value: number) => value * 2 },
+  programs: {
+    ore: {
+      name: 'ore',
+      programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+      schemas: {},
+      rawInstructions: {},
+      addresses: { board: () => 'program-board-address' },
+    },
+  },
 } as const;
 const stackCacheKey = createClientCacheKey(stack, {
   url: undefined,
@@ -96,6 +105,20 @@ describe('useArete lifecycle surface', () => {
     expect(rendered.result().addresses.board()).toBe('board-address');
     expect(rendered.result().constants.tileCount).toBe(25);
     expect(rendered.result().math.double(3)).toBe(6);
+    rendered.unmount();
+  });
+
+  it('exposes program addresses before the client connects', () => {
+    mockAreteContext.getClient.mockReturnValue(null);
+    mockAreteContext.getOrCreateClient.mockReturnValue(new Promise(() => undefined));
+    const rendered = renderArete();
+    const ore = rendered.result().programs.ore as unknown as {
+      programId: string;
+      addresses: { board: () => string };
+    };
+
+    expect(ore.programId).toBe('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv');
+    expect(ore.addresses.board()).toBe('program-board-address');
     rendered.unmount();
   });
 

@@ -287,9 +287,17 @@ class Arete:
         self._program_read_overrides = dict(program_read_overrides)
         self._execution_defaults = self._validate_execution_defaults(execution)
 
+        # The release names the version served at the generated endpoint; a
+        # different URL points somewhere the generator knew nothing about.
+        stack_release = (
+            stack.release
+            if websocket_url is not None and websocket_url == stack.endpoints.ws
+            else None
+        )
         connection_kwargs: Dict[str, Any] = {"auto_reconnect": auto_reconnect}
         if websocket_url is not None and auth is not None:
             connection_kwargs["auth"] = auth
+            connection_kwargs["stack_release"] = stack_release
         if reconnect_intervals is not None:
             connection_kwargs["reconnect_intervals"] = tuple(reconnect_intervals)
         if max_reconnect_attempts is not None:
@@ -302,14 +310,19 @@ class Arete:
         self._registry = SubscriptionRegistry(self._connection, self._store)
         self._connection.on_frame(self._store.handle_frame)
         self._connection.on_connection_state_change(
-            lambda state, error=None: self._registry.handle_connection_state(state)
+            lambda state, error=None: self._registry.handle_connection_state(
+                state, error, self._connection.state_error
+            )
         )
         self._views = ViewsNamespace(
             self._registry, stack.views, initial_data_timeout
         )
 
         self._http = HttpAuthClient(
-            auth=auth, websocket_url=websocket_url, http_client=http_client
+            auth=auth,
+            websocket_url=websocket_url,
+            http_client=http_client,
+            stack_release=stack_release,
         )
         self._hosted_read_clients: Dict[str, HttpAuthClient] = {}
         self._injected_http_client = http_client

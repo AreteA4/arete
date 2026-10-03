@@ -13,6 +13,7 @@ use crate::view::ViewIndex;
 use crate::websocket::client_manager::RateLimitConfig;
 use crate::websocket::server::ConnectionAcceptor;
 use crate::websocket::WebSocketServer;
+use crate::SolanaGatewayUsageObserver;
 use crate::Spec;
 use crate::WebSocketAuthPlugin;
 use crate::WebSocketUsageEmitter;
@@ -67,6 +68,7 @@ pub struct Runtime {
     websocket_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     http_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     websocket_usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    solana_gateway_usage_observer: Option<Arc<dyn SolanaGatewayUsageObserver>>,
     websocket_max_clients: Option<usize>,
     websocket_rate_limit_config: Option<RateLimitConfig>,
     #[cfg(feature = "otel")]
@@ -99,6 +101,7 @@ impl Runtime {
             websocket_auth_plugin: None,
             http_auth_plugin: None,
             websocket_usage_emitter: None,
+            solana_gateway_usage_observer: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
             metrics,
@@ -116,6 +119,7 @@ impl Runtime {
             websocket_auth_plugin: None,
             http_auth_plugin: None,
             websocket_usage_emitter: None,
+            solana_gateway_usage_observer: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
         }
@@ -151,6 +155,14 @@ impl Runtime {
         websocket_usage_emitter: Arc<dyn WebSocketUsageEmitter>,
     ) -> Self {
         self.websocket_usage_emitter = Some(websocket_usage_emitter);
+        self
+    }
+
+    pub fn with_solana_gateway_usage_observer(
+        mut self,
+        observer: Arc<dyn SolanaGatewayUsageObserver>,
+    ) -> Self {
+        self.solana_gateway_usage_observer = Some(observer);
         self
     }
 
@@ -362,7 +374,12 @@ impl Runtime {
                 Some(runtime) => projector.with_snapshot_runtime(runtime),
                 None => projector,
             };
-            let projector = projector.with_journal(journal.clone());
+            // The parser's VM links itself to this when it registers, so the
+            // projector can ask it for entities the bounded cache dropped.
+            let entity_resync = crate::projector::EntityResync::new();
+            let projector = projector
+                .with_journal(journal.clone())
+                .with_entity_resync(entity_resync.clone());
 
             // The projector runs for the lifetime of the server. Giving the
             // task a span would make that span the parent of every batch
@@ -449,6 +466,7 @@ impl Runtime {
                     let reconnection_config = self.config.reconnection.clone().unwrap_or_default();
                     let parser_snapshot_runtime = snapshot_runtime.clone();
                     let parser_journal = journal.clone();
+                    let parser_entity_resync = entity_resync.clone();
                     // The parser runs for the lifetime of the server, like
                     // the projector. A span on the task would be the current
                     // span of every update it processes, and OpenTelemetry
@@ -467,7 +485,9 @@ impl Runtime {
                         // The tape is in scope even with snapshots off, so
                         // a runtime that abandons its checkpoint can still
                         // mark the hole it just created.
-                        let result = commitment.scope(parser_journal.scope(scoped)).await;
+                        let result = commitment
+                            .scope(parser_entity_resync.scope(parser_journal.scope(scoped)))
+                            .await;
                         if let Err(e) = result {
                             error!(%program_id, "Vixen parser runtime error: {}", e);
                         }
@@ -549,6 +569,9 @@ impl Runtime {
             if plan.transactions && transaction_config.enabled {
                 http_server = http_server.with_transaction_config(transaction_config.clone());
             }
+            if let Some(observer) = self.solana_gateway_usage_observer.clone() {
+                http_server = http_server.with_solana_gateway_usage_observer(observer);
+            }
             #[cfg(feature = "otel")]
             {
                 http_server = http_server.with_metrics(self.metrics.clone());
@@ -592,6 +615,7 @@ impl Runtime {
             background,
             acceptor,
             entity_cache: entity_cache_handle,
+            websocket_usage_emitter: self.websocket_usage_emitter,
             http_shutdown,
             http_health_thread,
         })
@@ -618,6 +642,7 @@ pub struct RuntimeHandle {
     background: Vec<JoinHandle<()>>,
     acceptor: Option<ConnectionAcceptor>,
     entity_cache: Option<EntityCache>,
+    websocket_usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
     http_shutdown: CancellationToken,
     http_health_thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -648,6 +673,10 @@ const SESSION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long `shutdown` lets the projector drain queued batches after the
 /// producers have stopped.
 const PROJECTOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long `shutdown` waits for accepted usage events to reach the API or
+/// durable spool storage.
+const USAGE_EMITTER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Bound on the final snapshot, chosen to fit inside the platform's
 /// termination grace period.
@@ -785,7 +814,7 @@ impl RuntimeHandle {
         if let Some(ws) = self.ws_handle.take() {
             let _ = ws.await;
         }
-        if let Some(acceptor) = &self.acceptor {
+        let sessions_drained = if let Some(acceptor) = &self.acceptor {
             if tokio::time::timeout(SESSION_DRAIN_TIMEOUT, acceptor.wait_for_sessions())
                 .await
                 .is_err()
@@ -793,6 +822,59 @@ impl RuntimeHandle {
                 warn!(
                     "Sessions did not finish within {:?} of shutdown",
                     SESSION_DRAIN_TIMEOUT
+                );
+                false
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+
+        let usage_events_drained = if !sessions_drained {
+            false
+        } else if let Some(acceptor) = &self.acceptor {
+            if tokio::time::timeout(
+                USAGE_EMITTER_SHUTDOWN_TIMEOUT,
+                acceptor.wait_for_usage_events(),
+            )
+            .await
+            .is_err()
+            {
+                warn!(
+                    "WebSocket usage event tasks did not finish within {:?}",
+                    USAGE_EMITTER_SHUTDOWN_TIMEOUT
+                );
+                false
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+
+        if let Some(emitter) = self.websocket_usage_emitter.take() {
+            let operation = if usage_events_drained {
+                emitter.shutdown()
+            } else {
+                // A timed-out session can still enqueue its final usage event.
+                // Keep the receiver alive for that late producer, but put an
+                // ordered persistence barrier behind everything already in its
+                // queue so shutdown cannot strand the accepted backlog.
+                emitter.flush()
+            };
+            if tokio::time::timeout(USAGE_EMITTER_SHUTDOWN_TIMEOUT, operation)
+                .await
+                .is_err()
+            {
+                warn!(
+                    operation = if usage_events_drained {
+                        "shutdown"
+                    } else {
+                        "flush"
+                    },
+                    "WebSocket usage emitter operation did not finish within {:?}",
+                    USAGE_EMITTER_SHUTDOWN_TIMEOUT
                 );
             }
         }

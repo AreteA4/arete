@@ -35,20 +35,19 @@ describe('BlockGrid accessibility', () => {
     expect(onToggle).toHaveBeenCalledWith(0);
   });
 
-  it('highlights candidate and finalized winning squares with full rings', () => {
+  it('highlights the winning square with a full ring', () => {
     render(
       <BlockGrid
-        preRevealWinningSquare={1}
-        winningSquare={0}
+        winningSquare={1}
         selected={[]}
         onToggle={vi.fn()}
       />,
     );
 
-    expect(screen.getByTestId('tile-1')).toHaveClass('outline-emerald-500');
-    expect(screen.getByTestId('tile-1')).toHaveAttribute('data-winning-state', 'final');
-    expect(screen.getByTestId('tile-2')).toHaveClass('outline-amber-400');
-    expect(screen.getByTestId('tile-2')).toHaveAttribute('data-winning-state', 'candidate');
+    expect(screen.getByTestId('tile-2')).toHaveClass('outline-emerald-500');
+    expect(screen.getByTestId('tile-2')).toHaveAttribute('data-winner', 'true');
+    expect(screen.getByTestId('tile-2')).toHaveAccessibleName(expect.stringContaining('winning square'));
+    expect(screen.getByTestId('tile-1')).not.toHaveAttribute('data-winner');
   });
 
   it('fills positions confirmed on chain in blue', () => {

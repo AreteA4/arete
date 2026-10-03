@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "program-spec",
+    "hash": "arete:h1:program-spec:sha256:7f8377cbaeffdc6a33986144c5abb640d00d000519185ff85ac1ccfe1917b976"
+  },
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:147c365ed3b11c6533122ea25a51f6f937830d98ca628dee515272f3c429636d",
+  "extensions": {
+    "contentSha256": "1e7feb21470993fa5841d88266cecdf106abc81126e765db6ea7a2bcd3f0c1be"
+  },
+  "artifacts": [
+    "extensions.json",
+    "vault-core.ts",
+    "vault-extensions.ts",
+    "vault.ts"
+  ]
+}

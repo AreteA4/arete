@@ -497,6 +497,338 @@ pub fn deserialize_option_option_vec_i32<'de, D: Deserializer<'de>>(
     narrow_opt_opt_vec(deserialize_option_option_vec_i64(d)?)
 }
 
+// ─── 128-bit integers ───────────────────────────────────────────────────────
+// `u128`/`i128` values travel as decimal strings (they exceed every JSON
+// number type); small values may still arrive as JSON numbers. Generated
+// types use these for IDL `u128`/`i128` fields.
+
+fn wide_from_json<T, E>(value: &serde_json::Value, kind: &str) -> Result<T, E>
+where
+    T: std::str::FromStr,
+    T::Err: fmt::Display,
+    E: de::Error,
+{
+    let text = match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Number(number) if number.is_u64() || number.is_i64() => {
+            number.to_string()
+        }
+        other => {
+            return Err(E::custom(format!(
+                "expected {kind} or string-encoded {kind}, got {other}"
+            )))
+        }
+    };
+    text.parse::<T>()
+        .map_err(|error| E::custom(format!("invalid {kind} {text:?}: {error}")))
+}
+
+fn wide_opt<'de, D, T>(d: D, kind: &str) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: fmt::Display,
+{
+    match <Option<serde_json::Value> as serde::Deserialize>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => wide_from_json(&value, kind).map(Some),
+    }
+}
+
+fn wide_opt_opt<'de, D, T>(d: D, kind: &str) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: fmt::Display,
+{
+    match <serde_json::Value as serde::Deserialize>::deserialize(d)? {
+        serde_json::Value::Null => Ok(Some(None)),
+        value => wide_from_json(&value, kind).map(|value| Some(Some(value))),
+    }
+}
+
+fn wide_vec<T, E>(value: serde_json::Value, kind: &str) -> Result<Vec<T>, E>
+where
+    T: std::str::FromStr,
+    T::Err: fmt::Display,
+    E: de::Error,
+{
+    match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|item| wide_from_json(item, kind))
+            .collect(),
+        other => Err(E::custom(format!(
+            "expected an array of {kind} values, got {other}"
+        ))),
+    }
+}
+
+fn wide_opt_vec<'de, D, T>(d: D, kind: &str) -> Result<Option<Vec<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: fmt::Display,
+{
+    match <Option<serde_json::Value> as serde::Deserialize>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => wide_vec(value, kind).map(Some),
+    }
+}
+
+fn wide_opt_opt_vec<'de, D, T>(d: D, kind: &str) -> Result<Option<Option<Vec<T>>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: fmt::Display,
+{
+    match <serde_json::Value as serde::Deserialize>::deserialize(d)? {
+        serde_json::Value::Null => Ok(Some(None)),
+        value => wide_vec(value, kind).map(|value| Some(Some(value))),
+    }
+}
+
+/// Deserialize `Option<u128>` from null / number / decimal string.
+pub fn deserialize_option_u128<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u128>, D::Error> {
+    wide_opt(d, "u128")
+}
+
+/// Deserialize `Option<i128>` from null / number / decimal string.
+pub fn deserialize_option_i128<'de, D: Deserializer<'de>>(d: D) -> Result<Option<i128>, D::Error> {
+    wide_opt(d, "i128")
+}
+
+/// Deserialize `Option<Option<u128>>` for patch semantics.
+pub fn deserialize_option_option_u128<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<u128>>, D::Error> {
+    wide_opt_opt(d, "u128")
+}
+
+/// Deserialize `Option<Option<i128>>` for patch semantics.
+pub fn deserialize_option_option_i128<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<i128>>, D::Error> {
+    wide_opt_opt(d, "i128")
+}
+
+/// Deserialize `Option<Vec<u128>>` where each element may be a number or string.
+pub fn deserialize_option_vec_u128<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Vec<u128>>, D::Error> {
+    wide_opt_vec(d, "u128")
+}
+
+/// Deserialize `Option<Vec<i128>>` where each element may be a number or string.
+pub fn deserialize_option_vec_i128<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Vec<i128>>, D::Error> {
+    wide_opt_vec(d, "i128")
+}
+
+/// Deserialize `Option<Option<Vec<u128>>>` for optional array fields.
+pub fn deserialize_option_option_vec_u128<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<Vec<u128>>>, D::Error> {
+    wide_opt_opt_vec(d, "u128")
+}
+
+/// Deserialize `Option<Option<Vec<i128>>>` for optional array fields.
+pub fn deserialize_option_option_vec_i128<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<Vec<i128>>>, D::Error> {
+    wide_opt_opt_vec(d, "i128")
+}
+
+// ─── Nested shapes ──────────────────────────────────────────────────────────
+// Program account models type every IDL value, so an integer can sit inside
+// options, vectors, fixed arrays, tuples and maps (`Vec<Option<u64>>`,
+// `(Pubkey, u128)`, ...). The fixed helpers above cover the flat shapes; for
+// the rest, generated models name the value's shape with the markers in
+// [`wire`] and decode it with [`deserialize_wire_option`] (or
+// [`deserialize_wire_option_option`] for an IDL `Option`):
+//
+// ```ignore
+// #[serde(default, deserialize_with = "serde_utils::deserialize_wire_option::<_, _, serde_utils::wire::List<serde_utils::wire::Opt<serde_utils::wire::Int>>>")]
+// pub amounts: Option<Vec<Option<u64>>>,
+// ```
+
+/// Shape markers for [`deserialize_wire_option`]: how a JSON value decodes
+/// into a Rust value, with every integer accepting a JSON number or a
+/// decimal string.
+pub mod wire {
+    use serde::de::DeserializeOwned;
+    use serde_json::Value;
+    use std::collections::BTreeMap;
+    use std::marker::PhantomData;
+
+    /// Decodes a JSON value into `T`, following the shape `Self` names.
+    pub trait Decode<T> {
+        fn decode(value: Value) -> Result<T, String>;
+    }
+
+    /// An integer: a JSON number or a decimal string (wide integers travel
+    /// as strings).
+    pub enum Int {}
+
+    /// A value decoded by its own `Deserialize` impl (strings, floats,
+    /// booleans, generated models, ...).
+    pub enum Plain {}
+
+    /// `Option<T>`: `null` is `None`, anything else `Some` of `M`'s shape.
+    pub struct Opt<M>(PhantomData<M>);
+
+    /// `Vec<T>` from a JSON array (IDL vectors and fixed arrays).
+    pub struct List<M>(PhantomData<M>);
+
+    /// `BTreeMap<String, T>` from a JSON object (IDL maps; keys are strings
+    /// on the wire).
+    pub struct Map<M>(PhantomData<M>);
+
+    fn integer<T>(value: &Value, kind: &str) -> Result<T, String>
+    where
+        T: std::str::FromStr + TryFrom<u64> + TryFrom<i64> + TryFrom<i128>,
+        <T as std::str::FromStr>::Err: std::fmt::Display,
+    {
+        let out_of_range = || format!("{value} is out of {kind} range");
+        match value {
+            Value::String(text) => text
+                .parse::<T>()
+                .map_err(|error| format!("invalid {kind} {text:?}: {error}")),
+            Value::Number(number) => {
+                if let Some(unsigned) = number.as_u64() {
+                    T::try_from(unsigned).map_err(|_| out_of_range())
+                } else if let Some(signed) = number.as_i64() {
+                    T::try_from(signed).map_err(|_| out_of_range())
+                } else {
+                    match number.as_f64() {
+                        Some(float)
+                            if float.is_finite()
+                                && float.fract() == 0.0
+                                && float >= i128::MIN as f64
+                                && float <= i128::MAX as f64 =>
+                        {
+                            T::try_from(float as i128).map_err(|_| out_of_range())
+                        }
+                        _ => Err(format!("expected {kind}, got {value}")),
+                    }
+                }
+            }
+            other => Err(format!(
+                "expected {kind} or string-encoded {kind}, got {other}"
+            )),
+        }
+    }
+
+    macro_rules! decode_integers {
+        ($($kind:ty),* $(,)?) => {
+            $(
+                impl Decode<$kind> for Int {
+                    fn decode(value: Value) -> Result<$kind, String> {
+                        integer(&value, stringify!($kind))
+                    }
+                }
+            )*
+        };
+    }
+
+    decode_integers!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize);
+
+    impl<T: DeserializeOwned> Decode<T> for Plain {
+        fn decode(value: Value) -> Result<T, String> {
+            serde_json::from_value(value).map_err(|error| error.to_string())
+        }
+    }
+
+    impl<T, M: Decode<T>> Decode<Option<T>> for Opt<M> {
+        fn decode(value: Value) -> Result<Option<T>, String> {
+            match value {
+                Value::Null => Ok(None),
+                value => M::decode(value).map(Some),
+            }
+        }
+    }
+
+    impl<T, M: Decode<T>> Decode<Vec<T>> for List<M> {
+        fn decode(value: Value) -> Result<Vec<T>, String> {
+            match value {
+                Value::Array(items) => items.into_iter().map(M::decode).collect(),
+                other => Err(format!("expected an array, got {other}")),
+            }
+        }
+    }
+
+    impl<T, M: Decode<T>> Decode<BTreeMap<String, T>> for Map<M> {
+        fn decode(value: Value) -> Result<BTreeMap<String, T>, String> {
+            match value {
+                Value::Object(entries) => entries
+                    .into_iter()
+                    .map(|(key, item)| M::decode(item).map(|item| (key, item)))
+                    .collect(),
+                other => Err(format!("expected an object, got {other}")),
+            }
+        }
+    }
+
+    macro_rules! decode_tuples {
+        ($(($len:expr; $($value:ident $marker:ident),+)),* $(,)?) => {
+            $(
+                impl<$($value, $marker: Decode<$value>),+> Decode<($($value,)+)> for ($($marker,)+) {
+                    fn decode(value: Value) -> Result<($($value,)+), String> {
+                        let items = match value {
+                            Value::Array(items) if items.len() == $len => items,
+                            other => {
+                                return Err(format!("expected a {}-element array, got {other}", $len))
+                            }
+                        };
+                        let mut items = items.into_iter();
+                        Ok(($($marker::decode(items.next().expect("length checked"))?,)+))
+                    }
+                }
+            )*
+        };
+    }
+
+    decode_tuples!(
+        (1; T0 M0),
+        (2; T0 M0, T1 M1),
+        (3; T0 M0, T1 M1, T2 M2),
+        (4; T0 M0, T1 M1, T2 M2, T3 M3),
+        (5; T0 M0, T1 M1, T2 M2, T3 M3, T4 M4),
+        (6; T0 M0, T1 M1, T2 M2, T3 M3, T4 M4, T5 M5),
+        (7; T0 M0, T1 M1, T2 M2, T3 M3, T4 M4, T5 M5, T6 M6),
+        (8; T0 M0, T1 M1, T2 M2, T3 M3, T4 M4, T5 M5, T6 M6, T7 M7),
+    );
+}
+
+/// Deserialize `Option<T>` whose value has the nested shape `M` (see
+/// [`wire`]): `null` is `None`.
+pub fn deserialize_wire_option<'de, D, T, M>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    M: wire::Decode<T>,
+{
+    match <Option<serde_json::Value> as serde::Deserialize>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => M::decode(value).map(Some).map_err(de::Error::custom),
+    }
+}
+
+/// Deserialize `Option<Option<T>>` (patch semantics, IDL `Option` fields)
+/// whose value has the nested shape `M`: JSON `null` is `Some(None)`.
+pub fn deserialize_wire_option_option<'de, D, T, M>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    M: wire::Decode<T>,
+{
+    match <serde_json::Value as serde::Deserialize>::deserialize(d)? {
+        serde_json::Value::Null => Ok(Some(None)),
+        value => M::decode(value)
+            .map(|value| Some(Some(value)))
+            .map_err(de::Error::custom),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -807,5 +1139,180 @@ mod tests {
     fn vec_u32_overflow_rejected() {
         let r = serde_json::from_str::<TestVec32>(r#"{"values": [1, 4294967296]}"#);
         assert!(r.is_err());
+    }
+
+    // ── 128-bit ──
+
+    #[derive(Deserialize, Debug, PartialEq, Default)]
+    struct Test128 {
+        #[serde(default, deserialize_with = "deserialize_option_u128")]
+        sqrt_price: Option<u128>,
+        #[serde(default, deserialize_with = "deserialize_option_i128")]
+        delta: Option<i128>,
+        #[serde(default, deserialize_with = "deserialize_option_option_u128")]
+        patched: Option<Option<u128>>,
+        #[serde(default, deserialize_with = "deserialize_option_vec_u128")]
+        rewards: Option<Vec<u128>>,
+        #[serde(default, deserialize_with = "deserialize_option_option_vec_i128")]
+        growth: Option<Option<Vec<i128>>>,
+    }
+
+    #[test]
+    fn wide_integers_from_decimal_strings_and_numbers() {
+        let v: Test128 = serde_json::from_str(
+            r#"{
+                "sqrt_price": "340282366920938463463374607431768211455",
+                "delta": "-170141183460469231731687303715884105728",
+                "patched": 7,
+                "rewards": ["18446744073709551616", 2],
+                "growth": [-1, "-18446744073709551617"]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(v.sqrt_price, Some(u128::MAX));
+        assert_eq!(v.delta, Some(i128::MIN));
+        assert_eq!(v.patched, Some(Some(7)));
+        assert_eq!(v.rewards, Some(vec![u64::MAX as u128 + 1, 2]));
+        assert_eq!(v.growth, Some(Some(vec![-1, -(u64::MAX as i128) - 2])));
+    }
+
+    #[test]
+    fn wide_integers_null_missing_and_invalid() {
+        let v: Test128 =
+            serde_json::from_str(r#"{"sqrt_price": null, "patched": null, "growth": null}"#)
+                .unwrap();
+        assert_eq!(v.sqrt_price, None);
+        assert_eq!(v.patched, Some(None));
+        assert_eq!(v.growth, Some(None));
+        let v: Test128 = serde_json::from_str("{}").unwrap();
+        assert_eq!(v, Test128::default());
+        assert!(serde_json::from_str::<Test128>(r#"{"sqrt_price": "-1"}"#).is_err());
+        assert!(serde_json::from_str::<Test128>(r#"{"sqrt_price": 1.5}"#).is_err());
+        assert!(serde_json::from_str::<Test128>(r#"{"rewards": "1"}"#).is_err());
+    }
+
+    /// The nested shapes generated program account models use (the
+    /// attributes are the generator's, relative to this module).
+    #[derive(Deserialize, Debug, PartialEq, Default)]
+    struct TestWire {
+        #[serde(
+            default,
+            deserialize_with = "deserialize_wire_option::<_, _, wire::List<wire::Opt<wire::Int>>>"
+        )]
+        amounts: Option<Vec<Option<u64>>>,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_wire_option::<_, _, (wire::Int, wire::Plain)>"
+        )]
+        pair: Option<(u64, String)>,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_wire_option::<_, _, wire::Map<wire::Int>>"
+        )]
+        balances: Option<std::collections::BTreeMap<String, u128>>,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_wire_option::<_, _, wire::List<wire::List<wire::Int>>>"
+        )]
+        grid: Option<Vec<Vec<i64>>>,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_wire_option_option::<_, _, wire::List<(wire::Int, wire::Plain)>>"
+        )]
+        flags: Option<Option<Vec<(u64, bool)>>>,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_wire_option::<_, _, (wire::Int,)>"
+        )]
+        single: Option<(i32,)>,
+    }
+
+    #[test]
+    fn nested_integers_decode_at_any_depth() {
+        let v: TestWire = serde_json::from_str(
+            r#"{
+                "amounts": ["1", null, 3],
+                "pair": ["18446744073709551615", "key"],
+                "balances": {"a": "340282366920938463463374607431768211455", "b": 2},
+                "grid": [["-1", 2], []],
+                "flags": [[1, true], ["2", false]],
+                "single": ["-5"]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(v.amounts, Some(vec![Some(1), None, Some(3)]));
+        assert_eq!(v.pair, Some((u64::MAX, "key".to_string())));
+        assert_eq!(
+            v.balances,
+            Some(std::collections::BTreeMap::from([
+                ("a".to_string(), u128::MAX),
+                ("b".to_string(), 2),
+            ]))
+        );
+        assert_eq!(v.grid, Some(vec![vec![-1, 2], vec![]]));
+        assert_eq!(v.flags, Some(Some(vec![(1, true), (2, false)])));
+        assert_eq!(v.single, Some((-5,)));
+    }
+
+    #[test]
+    fn nested_shapes_null_missing_and_invalid() {
+        let v: TestWire = serde_json::from_str(r#"{"amounts": null, "flags": null}"#).unwrap();
+        assert_eq!(v.amounts, None);
+        assert_eq!(v.flags, Some(None));
+        assert_eq!(
+            serde_json::from_str::<TestWire>("{}").unwrap(),
+            TestWire::default()
+        );
+        for invalid in [
+            r#"{"amounts": [1.5]}"#,
+            r#"{"amounts": "1"}"#,
+            r#"{"pair": [1]}"#,
+            r#"{"pair": [1, "key", 2]}"#,
+            r#"{"balances": [1]}"#,
+            r#"{"single": ["2147483648"]}"#,
+            r#"{"grid": [[-1], ["x"]]}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<TestWire>(invalid).is_err(),
+                "accepted {invalid}"
+            );
+        }
+    }
+
+    /// Program account enums are externally tagged, the Program Read wire
+    /// shape: a unit variant is its name, a data variant a one-key object
+    /// (tuple fields keyed `field_<index>`).
+    #[derive(Deserialize, Debug, PartialEq)]
+    enum TestLevel {
+        Partial {
+            #[serde(default, deserialize_with = "deserialize_option_u64")]
+            #[serde(alias = "numSignatures")]
+            num_signatures: Option<u64>,
+        },
+        Address {
+            #[serde(default)]
+            field_0: Option<String>,
+        },
+        Full,
+    }
+
+    #[test]
+    fn enums_decode_the_program_read_wire_tags() {
+        let decode = |json: &str| serde_json::from_str::<TestLevel>(json);
+        assert_eq!(decode(r#""Full""#).unwrap(), TestLevel::Full);
+        assert_eq!(
+            decode(r#"{"Partial": {"numSignatures": "5"}}"#).unwrap(),
+            TestLevel::Partial {
+                num_signatures: Some(5)
+            }
+        );
+        assert_eq!(
+            decode(r#"{"Address": {"field_0": "key"}}"#).unwrap(),
+            TestLevel::Address {
+                field_0: Some("key".to_string())
+            }
+        );
+        assert!(decode(r#""Partial""#).is_err());
+        assert!(decode("1").is_err());
     }
 }

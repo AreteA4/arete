@@ -34,7 +34,8 @@ export function RecentRounds() {
         <ul className="divide-y divide-stone-100 text-xs tabular-nums dark:divide-stone-700">
           {recentRounds.map((round) => {
             const roundId = round.id.roundId?.toString() ?? '–';
-            const winner = round.results.winningSquare;
+            // Set once the round ends, before `winningSquare` fills at the next round.
+            const winner = round.results.preRevealWinningSquare ?? round.results.winningSquare;
             const total = round.state.totalDeployed;
             return (
               <li key={roundId} className="flex items-center justify-between gap-2 py-1.5">

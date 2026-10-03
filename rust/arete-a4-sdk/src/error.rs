@@ -1,6 +1,145 @@
-use serde::Deserialize;
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 use tokio_tungstenite::tungstenite::{self, http::Response};
+use url::{Host, Url};
+
+pub const API_PROBLEM_SCHEMA_VERSION: u8 = 1;
+pub const CLAIM_AGENT_MATERIALIZER_PATH: &str = "/api/agents/me/claim-links";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLimit {
+    pub unit: String,
+    pub used: u64,
+    pub limit: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<String>,
+}
+
+/// Tolerant recovery metadata from an API problem.
+///
+/// Unknown action types and future fields remain available to callers but are
+/// never executable unless [`RecoveryAction::is_claim_agent_materializer`]
+/// validates the complete closed v1 contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryAction {
+    #[serde(rename = "type")]
+    pub action_type: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+impl RecoveryAction {
+    pub fn is_claim_agent_materializer(&self) -> bool {
+        self.action_type == "claim_agent"
+            && self.method.as_deref() == Some("POST")
+            && self.path.as_deref() == Some(CLAIM_AGENT_MATERIALIZER_PATH)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiProblemV1 {
+    #[serde(default, serialize_with = "serialize_problem_schema_version")]
+    pub schema_version: Option<u8>,
+    pub error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retryable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageLimit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<RecoveryAction>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+fn serialize_problem_schema_version<S>(value: &Option<u8>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_u8(value.unwrap_or(API_PROBLEM_SCHEMA_VERSION))
+}
+
+impl ApiProblemV1 {
+    pub fn recovery_action(&self) -> Option<&RecoveryAction> {
+        self.action.as_ref()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadyRecoveryAction {
+    #[serde(rename = "type")]
+    pub action_type: String,
+    pub url: String,
+    pub elicitation_id: String,
+    pub expires_at: String,
+}
+
+impl std::fmt::Debug for ReadyRecoveryAction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReadyRecoveryAction")
+            .field("action_type", &self.action_type)
+            .field("url", &"[REDACTED]")
+            .field("elicitation_id", &self.elicitation_id)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+impl ReadyRecoveryAction {
+    pub fn is_safe_claim_url_for_origin(&self, expected_origin: &Url) -> bool {
+        if self.action_type != "claim_agent" {
+            return false;
+        }
+
+        let Ok(url) = Url::parse(&self.url) else {
+            return false;
+        };
+        let loopback = match url.host() {
+            Some(Host::Domain(host)) => host == "localhost",
+            Some(Host::Ipv4(address)) => address.is_loopback(),
+            Some(Host::Ipv6(address)) => address.is_loopback(),
+            None => false,
+        };
+        let secure = url.scheme() == "https" || (url.scheme() == "http" && loopback);
+        let same_origin = url.scheme() == expected_origin.scheme()
+            && url.host_str() == expected_origin.host_str()
+            && url.port_or_known_default() == expected_origin.port_or_known_default();
+
+        secure
+            && same_origin
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.path() == "/claim"
+            && url.query().is_none()
+            && url.fragment().is_some_and(|fragment| !fragment.is_empty())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadyRecoveryActionV1 {
+    pub schema_version: u8,
+    pub action: ReadyRecoveryAction,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocketIssue {
@@ -12,6 +151,8 @@ pub struct SocketIssue {
     pub code: Option<AuthErrorCode>,
     pub retryable: bool,
     pub retry_after: Option<u64>,
+    pub usage: Option<UsageLimit>,
+    pub action: Option<RecoveryAction>,
     pub suggested_action: Option<String>,
     pub docs_url: Option<String>,
     pub fatal: bool,
@@ -138,7 +279,14 @@ pub enum AuthErrorCode {
     SnapshotLimitExceeded,
     EgressLimitExceeded,
     QuotaExceeded,
+    AgentClaimRequired,
     InvalidStaticToken,
+    /// The session endpoint no longer serves the stack version this client
+    /// was generated for. Terminal: see [`StackVersionRefusal`].
+    StackVersionRetired,
+    /// The session endpoint does not know the stack version this client was
+    /// generated for. Terminal: see [`StackVersionRefusal`].
+    StackVersionUnknown,
     InternalError,
 }
 
@@ -171,7 +319,10 @@ impl AuthErrorCode {
             "snapshot-limit-exceeded" => Self::SnapshotLimitExceeded,
             "egress-limit-exceeded" => Self::EgressLimitExceeded,
             "quota-exceeded" => Self::QuotaExceeded,
+            "agent-claim-required" => Self::AgentClaimRequired,
             "invalid-static-token" => Self::InvalidStaticToken,
+            "stack-version-retired" => Self::StackVersionRetired,
+            "stack-version-unknown" => Self::StackVersionUnknown,
             "internal-error" => Self::InternalError,
             _ => return None,
         })
@@ -205,13 +356,22 @@ impl AuthErrorCode {
             Self::SnapshotLimitExceeded => "snapshot-limit-exceeded",
             Self::EgressLimitExceeded => "egress-limit-exceeded",
             Self::QuotaExceeded => "quota-exceeded",
+            Self::AgentClaimRequired => "agent-claim-required",
             Self::InvalidStaticToken => "invalid-static-token",
+            Self::StackVersionRetired => "stack-version-retired",
+            Self::StackVersionUnknown => "stack-version-unknown",
             Self::InternalError => "internal-error",
         }
     }
 
     pub fn should_retry(self) -> bool {
         matches!(self, Self::InternalError)
+    }
+
+    /// The session endpoint refused the client's stack version. No retry,
+    /// token refresh or reconnect can change the answer.
+    pub fn is_stack_version_refusal(self) -> bool {
+        matches!(self, Self::StackVersionRetired | Self::StackVersionUnknown)
     }
 
     pub fn should_refresh_token(self) -> bool {
@@ -224,6 +384,48 @@ impl AuthErrorCode {
                 | Self::TokenInvalidAudience
                 | Self::TokenKeyNotFound
         )
+    }
+}
+
+/// Structured fields of a `stack-version-retired` / `stack-version-unknown`
+/// session refusal. Every field is optional on the wire.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StackVersionRefusal {
+    /// Version that replaces the refused one, e.g. `1.3.0`.
+    pub replacement_version: Option<String>,
+    /// StackManifest hash of the replacement.
+    pub replacement_stack_manifest_hash: Option<String>,
+    /// Command that installs the replacement, e.g. `a4 install stack ore@1.3.0`.
+    pub upgrade_command: Option<String>,
+    /// RFC 3339 time the version was retired.
+    pub retired_at: Option<String>,
+}
+
+impl StackVersionRefusal {
+    /// `message` followed by the replacement and how to install it, when the
+    /// server named them.
+    fn describe(&self, message: String) -> String {
+        let mut guidance = Vec::new();
+        if let Some(replacement) = self
+            .replacement_version
+            .as_deref()
+            .or(self.replacement_stack_manifest_hash.as_deref())
+        {
+            guidance.push(format!("Replacement: {replacement}."));
+        }
+        if let Some(command) = &self.upgrade_command {
+            guidance.push(format!("Upgrade with: {command}"));
+        }
+        if guidance.is_empty() {
+            return message;
+        }
+        let trimmed = message.trim_end();
+        let separator = if trimmed.ends_with(['.', '!', '?']) {
+            " "
+        } else {
+            ". "
+        };
+        format!("{trimmed}{separator}{}", guidance.join(" "))
     }
 }
 
@@ -259,6 +461,10 @@ pub enum AreteError {
         status: u16,
         message: String,
         code: Option<AuthErrorCode>,
+        /// Present when `code` is a stack version refusal; `message` then
+        /// already names the replacement and upgrade command.
+        stack_version: Option<Box<StackVersionRefusal>>,
+        problem: Option<Box<ApiProblemV1>>,
     },
 
     #[error("WebSocket closed by server: {message}")]
@@ -296,6 +502,17 @@ pub enum AreteError {
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
 
+    /// An extension's input or validation error. `Display` is the message
+    /// alone, with no prefix, so it can carry the exact text the TypeScript
+    /// extension throws for the same condition (the conformance vectors
+    /// compare it). This is the variant extension bundles use for input
+    /// errors (`docs/internal/sdk-core-api.md` §9); build one with
+    /// [`AreteError::invalid_input`]. [`AmountError`](crate::AmountError),
+    /// [`InstructionError`](crate::InstructionError) and
+    /// [`Base58Error`](crate::Base58Error) convert to it.
+    #[error("{0}")]
+    InvalidInput(String),
+
     /// View subscriptions require the streaming WebSocket, but this client
     /// was connected with `Transport::Http` (mirror of the TS
     /// `WEBSOCKET_DISABLED` error).
@@ -314,13 +531,47 @@ pub enum AreteError {
     TransactionFailed(Box<crate::operations::TransactionFailureOutcome>),
 }
 
-#[derive(Debug, Deserialize)]
-struct ErrorPayload {
-    error: Option<String>,
-    code: Option<String>,
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StackVersionRefusalPayload {
+    #[serde(default)]
+    replacement: Option<ReplacementPayload>,
+    #[serde(default)]
+    upgrade_command: Option<String>,
+    #[serde(default)]
+    retired_at: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplacementPayload {
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    stack_manifest_hash: Option<String>,
+}
+
+fn parse_stack_version_refusal(body: Option<&[u8]>) -> StackVersionRefusal {
+    let payload = body
+        .and_then(|body| serde_json::from_slice::<StackVersionRefusalPayload>(body).ok())
+        .unwrap_or_default();
+    let non_empty = |value: Option<String>| value.filter(|value| !value.trim().is_empty());
+    let replacement = payload.replacement.unwrap_or_default();
+    StackVersionRefusal {
+        replacement_version: non_empty(replacement.version),
+        replacement_stack_manifest_hash: non_empty(replacement.stack_manifest_hash),
+        upgrade_command: non_empty(payload.upgrade_command),
+        retired_at: non_empty(payload.retired_at),
+    }
 }
 
 impl AreteError {
+    /// An extension input error ([`AreteError::InvalidInput`]) whose text is
+    /// `message` alone.
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        Self::InvalidInput(message.into())
+    }
+
     pub fn auth_code(&self) -> Option<AuthErrorCode> {
         match self {
             Self::WebSocket { code, .. }
@@ -332,9 +583,41 @@ impl AreteError {
         }
     }
 
+    /// The replacement and upgrade guidance of a stack version refusal.
+    pub fn stack_version_refusal(&self) -> Option<&StackVersionRefusal> {
+        match self {
+            Self::AuthRequestFailed {
+                stack_version: Some(refusal),
+                ..
+            } => Some(refusal),
+            _ => None,
+        }
+    }
+
     pub fn socket_issue(&self) -> Option<&SocketIssue> {
         match self {
             Self::SocketIssue(issue) => Some(issue),
+            _ => None,
+        }
+    }
+
+    pub fn api_problem(&self) -> Option<&ApiProblemV1> {
+        match self {
+            Self::AuthRequestFailed { problem, .. } => problem.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn recovery_action(&self) -> Option<&RecoveryAction> {
+        self.api_problem().and_then(ApiProblemV1::recovery_action)
+    }
+
+    pub fn retry_after(&self) -> Option<u64> {
+        match self {
+            Self::AuthRequestFailed { problem, .. } => problem
+                .as_deref()
+                .and_then(|problem| problem.retry_after_seconds),
+            Self::SocketIssue(issue) => issue.retry_after,
             _ => None,
         }
     }
@@ -349,8 +632,21 @@ impl AreteError {
 
     pub fn should_retry(&self) -> bool {
         match self {
-            Self::HandshakeRejected { status, code, .. }
-            | Self::AuthRequestFailed { status, code, .. } => code
+            Self::AuthRequestFailed {
+                status,
+                code,
+                problem,
+                ..
+            } => problem
+                .as_deref()
+                .and_then(|problem| problem.retryable)
+                .unwrap_or_else(|| {
+                    *status == 429
+                        || code
+                            .map(AuthErrorCode::should_retry)
+                            .unwrap_or(*status >= 500)
+                }),
+            Self::HandshakeRejected { status, code, .. } => code
                 .map(AuthErrorCode::should_retry)
                 .unwrap_or(*status >= 500),
             Self::ServerClosed { code, .. } | Self::WebSocket { code, .. } => {
@@ -365,9 +661,17 @@ impl AreteError {
             | Self::Protocol { .. }
             | Self::ChannelError(_)
             | Self::InvalidConfig(_)
+            | Self::InvalidInput(_)
             | Self::WebSocketDisabled
             | Self::TransactionFailed(_) => false,
         }
+    }
+
+    /// The session endpoint refused this client's stack version. Terminal:
+    /// the SDK neither retries the request nor reconnects.
+    pub fn is_stack_version_refusal(&self) -> bool {
+        self.auth_code()
+            .is_some_and(AuthErrorCode::is_stack_version_refusal)
     }
 
     pub fn should_refresh_token(&self) -> bool {
@@ -393,7 +697,7 @@ impl AreteError {
             .get("X-Error-Code")
             .and_then(|value| value.to_str().ok())
             .and_then(AuthErrorCode::from_wire);
-        let (body_message, body_code) = parse_error_payload(response.body().as_deref());
+        let (body_message, body_code, _) = parse_error_payload(response.body().as_deref());
         let code = header_code.or(body_code);
 
         let message = body_message.unwrap_or_else(|| {
@@ -416,9 +720,13 @@ impl AreteError {
         header_code: Option<&str>,
         body: Option<&[u8]>,
         fallback_message: Option<&str>,
+        retry_after_header: Option<u64>,
     ) -> Self {
         let header_code = header_code.and_then(AuthErrorCode::from_wire);
-        let (body_message, body_code) = parse_error_payload(body);
+        let (body_message, body_code, mut problem) = parse_error_payload(body);
+        if let Some(problem) = problem.as_mut() {
+            problem.retry_after_seconds = retry_after_header.or(problem.retry_after_seconds);
+        }
         let code = header_code.or(body_code);
         let message = body_message.unwrap_or_else(|| {
             fallback_message
@@ -426,10 +734,23 @@ impl AreteError {
                 .to_string()
         });
 
+        if code.is_some_and(AuthErrorCode::is_stack_version_refusal) {
+            let refusal = parse_stack_version_refusal(body);
+            return Self::AuthRequestFailed {
+                status,
+                message: refusal.describe(message),
+                code,
+                stack_version: Some(Box::new(refusal)),
+                problem: problem.map(Box::new),
+            };
+        }
+
         Self::AuthRequestFailed {
             status,
             message,
             code,
+            stack_version: None,
+            problem: problem.map(Box::new),
         }
     }
 
@@ -460,41 +781,92 @@ impl From<tungstenite::Error> for AreteError {
     }
 }
 
-fn parse_error_payload(body: Option<&[u8]>) -> (Option<String>, Option<AuthErrorCode>) {
+/// An instruction that cannot be built from an extension's input is an
+/// extension input error ([`AreteError::InvalidInput`]).
+impl From<crate::instruction::InstructionError> for AreteError {
+    fn from(value: crate::instruction::InstructionError) -> Self {
+        Self::InvalidInput(value.to_string())
+    }
+}
+
+fn parse_error_payload(
+    body: Option<&[u8]>,
+) -> (Option<String>, Option<AuthErrorCode>, Option<ApiProblemV1>) {
     let Some(body) = body.filter(|value| !value.is_empty()) else {
-        return (None, None);
+        return (None, None, None);
     };
 
-    if let Ok(payload) = serde_json::from_slice::<ErrorPayload>(body) {
+    if let Ok(payload) = serde_json::from_slice::<ApiProblemV1>(body) {
         let code = payload.code.as_deref().and_then(AuthErrorCode::from_wire);
-        let message = payload.error.map(|value| value.trim().to_string());
-        return (message.filter(|value| !value.is_empty()), code);
+        let message = payload.error.trim().to_string();
+        return (
+            (!message.is_empty()).then_some(message),
+            code,
+            Some(payload),
+        );
     }
 
     let message = String::from_utf8_lossy(body).trim().to_string();
     if message.is_empty() {
-        (None, None)
+        (None, None, None)
     } else {
-        (Some(message), None)
+        (Some(message), None, None)
     }
 }
 
+/// A close reason is `code: message`, or a bare known code such as
+/// `stack-version-retired`. Anything else carries no code.
 fn parse_close_reason(reason: &str) -> (Option<AuthErrorCode>, String) {
+    let reason = reason.trim();
     if let Some((wire_code, message)) = reason.split_once(':') {
-        let code = AuthErrorCode::from_wire(wire_code);
-        let message = message.trim();
-
-        if code.is_some() && !message.is_empty() {
-            return (code, message.to_string());
+        if let Some(code) = AuthErrorCode::from_wire(wire_code.trim()) {
+            let message = message.trim();
+            let message = if message.is_empty() {
+                wire_code.trim()
+            } else {
+                message
+            };
+            return (Some(code), message.to_string());
         }
     }
+    if let Some(code) = AuthErrorCode::from_wire(reason) {
+        return (Some(code), reason.to_string());
+    }
 
-    (None, reason.trim().to_string())
+    (None, reason.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_input_displays_the_message_alone() {
+        let error = AreteError::invalid_input("amountPerSquare must be greater than zero");
+        assert!(matches!(error, AreteError::InvalidInput(_)));
+        assert_eq!(
+            error.to_string(),
+            "amountPerSquare must be greater than zero"
+        );
+        assert!(!error.should_retry());
+        assert_eq!(error.auth_code(), None);
+
+        // Unlike the configuration variant, which prefixes its text.
+        assert_eq!(
+            AreteError::InvalidConfig("x".to_string()).to_string(),
+            "Invalid configuration: x"
+        );
+    }
+
+    #[test]
+    fn instruction_errors_convert_to_invalid_input() {
+        let error: AreteError = crate::instruction::InstructionError::MissingArgument {
+            name: "amount".to_string(),
+        }
+        .into();
+        assert!(matches!(error, AreteError::InvalidInput(_)));
+        assert_eq!(error.to_string(), "Missing required argument \"amount\"");
+    }
 
     #[test]
     fn parses_platform_handshake_rejection() {
@@ -528,6 +900,7 @@ mod tests {
                 br#"{"error":"WebSocket session mint rate limit exceeded","code":"websocket-session-rate-limit-exceeded"}"#,
             ),
             Some("Too Many Requests"),
+            Some(12),
         );
 
         assert!(matches!(
@@ -538,7 +911,79 @@ mod tests {
                 ..
             }
         ));
+        assert!(error.should_retry());
+        assert_eq!(error.retry_after(), Some(12));
+    }
+
+    #[test]
+    fn a_retired_stack_version_names_its_replacement_and_is_terminal() {
+        let error = AreteError::from_auth_response(
+            409,
+            Some("stack-version-retired"),
+            Some(
+                br#"{"error":"Stack ore 1.2.0 was retired.","code":"stack-version-retired","replacement":{"version":"1.3.0","stackManifestHash":"arete:h1:stack-manifest:sha256:bb"},"upgradeCommand":"a4 install stack ore@1.3.0","retiredAt":"2026-10-01T00:00:00Z"}"#,
+            ),
+            Some("Conflict"),
+            None,
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "Authentication request failed (409): Stack ore 1.2.0 was retired. Replacement: 1.3.0. Upgrade with: a4 install stack ore@1.3.0"
+        );
+        assert_eq!(error.auth_code(), Some(AuthErrorCode::StackVersionRetired));
+        assert_eq!(
+            error.stack_version_refusal(),
+            Some(&StackVersionRefusal {
+                replacement_version: Some("1.3.0".to_string()),
+                replacement_stack_manifest_hash: Some(
+                    "arete:h1:stack-manifest:sha256:bb".to_string()
+                ),
+                upgrade_command: Some("a4 install stack ore@1.3.0".to_string()),
+                retired_at: Some("2026-10-01T00:00:00Z".to_string()),
+            })
+        );
+        assert!(error.is_stack_version_refusal());
         assert!(!error.should_retry());
+        assert!(!error.should_refresh_token());
+    }
+
+    #[test]
+    fn an_unknown_stack_version_keeps_the_server_message_without_guidance() {
+        let error = AreteError::from_auth_response(
+            409,
+            None,
+            Some(br#"{"error":"Stack version is not served here","code":"stack-version-unknown"}"#),
+            Some("Conflict"),
+            None,
+        );
+
+        assert!(matches!(
+            &error,
+            AreteError::AuthRequestFailed {
+                status: 409,
+                code: Some(AuthErrorCode::StackVersionUnknown),
+                message,
+                stack_version: Some(_),
+                ..
+            } if message == "Stack version is not served here"
+        ));
+        assert!(error.is_stack_version_refusal());
+        assert!(!error.should_retry());
+    }
+
+    #[test]
+    fn other_auth_failures_carry_no_stack_version_refusal() {
+        let error = AreteError::from_auth_response(
+            403,
+            Some("origin-required"),
+            Some(br#"{"error":"Origin required","code":"origin-required"}"#),
+            None,
+            None,
+        );
+
+        assert_eq!(error.stack_version_refusal(), None);
+        assert!(!error.is_stack_version_refusal());
     }
 
     #[test]
@@ -556,6 +1001,23 @@ mod tests {
             }
         ));
         assert!(!error.should_retry());
+    }
+
+    #[test]
+    fn a_bare_refusal_close_reason_is_a_terminal_code() {
+        for (reason, expected) in [
+            ("stack-version-retired", AuthErrorCode::StackVersionRetired),
+            (
+                " stack-version-unknown ",
+                AuthErrorCode::StackVersionUnknown,
+            ),
+            ("stack-version-retired:", AuthErrorCode::StackVersionRetired),
+        ] {
+            let error = AreteError::from_close_reason(reason).expect("close reason should parse");
+            assert_eq!(error.auth_code(), Some(expected), "{reason:?}");
+            assert!(error.is_stack_version_refusal(), "{reason:?}");
+            assert!(!error.should_retry(), "{reason:?}");
+        }
     }
 
     #[test]
@@ -583,6 +1045,8 @@ mod tests {
             code: Some(AuthErrorCode::SubscriptionLimitExceeded),
             retryable: false,
             retry_after: None,
+            usage: None,
+            action: None,
             suggested_action: Some("unsubscribe first".to_string()),
             docs_url: None,
             fatal: false,
@@ -592,5 +1056,83 @@ mod tests {
         assert!(
             matches!(error.socket_issue(), Some(issue) if issue.message == "subscription limit exceeded")
         );
+    }
+
+    #[test]
+    fn problem_reader_accepts_legacy_and_future_fields() {
+        let legacy: ApiProblemV1 =
+            serde_json::from_str(r#"{"error":"legacy","code":"invalid-api-key"}"#)
+                .expect("legacy problem");
+        assert_eq!(legacy.schema_version, None);
+        assert_eq!(legacy.code.as_deref(), Some("invalid-api-key"));
+
+        let future: ApiProblemV1 = serde_json::from_str(
+            r#"{
+                "schemaVersion":1,
+                "error":"claim it",
+                "code":"agent-claim-required",
+                "retryable":false,
+                "usage":{"unit":"bytes","used":5,"limit":5,"resetsAt":null},
+                "action":{"type":"claim_agent","label":"Claim","method":"POST","path":"/api/agents/me/claim-links","futureActionField":true},
+                "futureProblemField":{"v":2}
+            }"#,
+        )
+        .expect("future problem");
+        assert!(future
+            .recovery_action()
+            .expect("action")
+            .is_claim_agent_materializer());
+        assert!(future.extra.contains_key("futureProblemField"));
+        assert!(future
+            .action
+            .unwrap()
+            .extra
+            .contains_key("futureActionField"));
+    }
+
+    #[test]
+    fn problem_writer_adds_v1_to_legacy_problem() {
+        let problem = ApiProblemV1 {
+            schema_version: None,
+            error: "legacy".to_string(),
+            code: None,
+            retryable: None,
+            request_id: None,
+            retry_after_seconds: None,
+            usage: None,
+            action: None,
+            extra: Default::default(),
+        };
+        let value = serde_json::to_value(problem).expect("serialize problem");
+        assert_eq!(value["schemaVersion"], API_PROBLEM_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn unknown_or_malformed_actions_are_not_executable() {
+        for body in [
+            r#"{"error":"x","action":{"type":"future_action","method":"POST","path":"/api/agents/me/claim-links"}}"#,
+            r#"{"error":"x","action":{"type":"claim_agent","method":"GET","path":"/api/agents/me/claim-links"}}"#,
+            r#"{"error":"x","action":{"type":"claim_agent","method":"POST","path":"https://evil.example/claim"}}"#,
+        ] {
+            let problem: ApiProblemV1 = serde_json::from_str(body).expect("tolerant action");
+            assert!(!problem.action.unwrap().is_claim_agent_materializer());
+        }
+    }
+
+    #[test]
+    fn ready_action_url_validation_is_origin_and_fragment_bound() {
+        let origin = Url::parse("https://arete.run").unwrap();
+        let action = ReadyRecoveryAction {
+            action_type: "claim_agent".to_string(),
+            url: "https://arete.run/claim#secret".to_string(),
+            elicitation_id: "claim-id".to_string(),
+            expires_at: "2026-09-22T12:30:00Z".to_string(),
+        };
+        assert!(action.is_safe_claim_url_for_origin(&origin));
+        let mut bad = action.clone();
+        bad.url = "https://evil.example/claim#secret".to_string();
+        assert!(!bad.is_safe_claim_url_for_origin(&origin));
+        bad.url = "https://arete.run/claim?token=secret".to_string();
+        assert!(!bad.is_safe_claim_url_for_origin(&origin));
     }
 }
