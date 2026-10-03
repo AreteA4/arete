@@ -425,7 +425,17 @@ impl Projector {
             key: source_key,
             mut patch,
             append,
+            occurrence,
         } = mutation;
+
+        // What lets a resume recognise an event it already retained. Needs the
+        // slot as well as the decode site: an occurrence is only unique within
+        // the transaction it came from.
+        let event_origin = slot_context.map(|ctx| crate::journal::EventOrigin {
+            slot: ctx.slot,
+            index: ctx.slot_index,
+            occurrence,
+        });
 
         // The position (`_seq`) recency order sorts by: the batch's for a
         // change, the latest change's for a resend (see `EntityResync`).
@@ -502,7 +512,7 @@ impl Projector {
             let retained = match journal {
                 Some(journal) => {
                     journal
-                        .append_with(&spec.id, &key, |offset| {
+                        .append_with(&spec.id, &key, event_origin.clone(), |offset| {
                             frame.offset = Some(offset);
                             json_buffer.clear();
                             serde_json::to_writer(&mut *json_buffer, &frame)?;
@@ -510,13 +520,16 @@ impl Projector {
                         })
                         .await?
                 }
-                None => None,
+                None => crate::journal::Append::Untracked,
             };
             let payload = match retained {
-                Some((_offset, payload)) => payload,
+                crate::journal::Append::Retained { payload, .. } => payload,
+                // A resume re-delivered an event the tape already holds.
+                // Publishing it would hand live subscribers a duplicate too.
+                crate::journal::Append::Duplicate => continue,
                 // No tape, or a sealed one: the event still publishes, it just
                 // carries no position to resume from.
-                None => {
+                crate::journal::Append::Untracked => {
                     frame.offset = None;
                     json_buffer.clear();
                     serde_json::to_writer(&mut *json_buffer, &frame)?;

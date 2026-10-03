@@ -3905,6 +3905,7 @@ mod tests {
                     key: json!(format!("pool{}", index % 4)),
                     patch: json!({"trade": index}),
                     append: vec![],
+                    occurrence: None,
                 }]
                 .into_iter()
                 .collect(),
@@ -4722,6 +4723,7 @@ mod tests {
                     key: json!(key),
                     patch,
                     append: vec![],
+                    occurrence: None,
                 })
                 .await;
             }
@@ -4911,6 +4913,7 @@ mod tests {
                 key: json!("a"),
                 patch: json!({"name": "thing-a", "count": 2}),
                 append: vec![],
+                occurrence: None,
             };
             whole.mark_whole_entity();
             harness.mutate(whole).await;
@@ -5036,6 +5039,7 @@ mod tests {
                 key: json!("7"),
                 patch,
                 append: vec![],
+                occurrence: None,
             };
             harness
                 .tx

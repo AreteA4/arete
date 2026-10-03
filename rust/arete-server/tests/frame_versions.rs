@@ -71,6 +71,7 @@ impl Harness {
                 key: json!(key),
                 patch,
                 append: vec![],
+                occurrence: None,
             })
             .collect();
         self.tx
