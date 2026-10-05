@@ -2581,6 +2581,9 @@ mod tests {
         let key = process(&mut vm, &bytecode, pool_event(1, 10))[0]
             .key
             .clone();
+        let late_joiner = process(&mut vm, &bytecode, pool_event_for("pool_2", 2, 20))[0]
+            .key
+            .clone();
         let target = |primary_key| crate::vm::ResolverTarget {
             state_id: 0,
             entity_name: "Pool".into(),
@@ -2614,6 +2617,14 @@ mod tests {
         let fresh = vm.take_resolver_requests();
         assert_eq!(fresh.len(), 1);
         assert_ne!(fresh[0].cache_key, old[0].cache_key);
+        // This entity never joined the old shared call. Deleting and
+        // recreating it must still keep it off that pre-deletion result.
+        vm.delete_entity(&bytecode, "Pool", &late_joiner).unwrap();
+        process(&mut vm, &bytecode, pool_event_for("pool_2", 3, 30));
+        enqueue(&mut vm, late_joiner.clone());
+        let late_joiner_fresh = vm.take_resolver_requests();
+        assert_eq!(late_joiner_fresh.len(), 1);
+        assert_ne!(late_joiner_fresh[0].cache_key, old[0].cache_key);
         enqueue(&mut vm, json!("unrelated"));
         enqueue(&mut vm, json!("another-unrelated"));
         enqueue(&mut vm, key.clone());
@@ -2632,6 +2643,15 @@ mod tests {
             .unwrap();
         assert_eq!(fresh_mutations.len(), 1);
         assert_eq!(fresh_mutations[0].key, key);
+        let late_joiner_mutations = vm
+            .apply_resolver_result(
+                &bytecode,
+                &late_joiner_fresh[0].cache_key,
+                json!({"value":"fresh-late-joiner"}),
+            )
+            .unwrap();
+        assert_eq!(late_joiner_mutations.len(), 1);
+        assert_eq!(late_joiner_mutations[0].key, late_joiner);
     }
 
     #[test]
