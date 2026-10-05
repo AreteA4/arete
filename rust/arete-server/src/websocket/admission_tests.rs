@@ -237,8 +237,8 @@ async fn public_add_client_returns_connection_denial() {
     assert!(!manager.has_client(client_id));
 }
 
-#[test]
-fn rejected_refresh_preserves_the_existing_context_and_permit() {
+#[tokio::test]
+async fn rejected_refresh_preserves_the_existing_context_and_permit() {
     let provider = Arc::new(FakeAdmission::default());
     let manager = ClientManager::new().with_admission_provider(Arc::new(provider.clone()));
     let client_id = insert_client(&manager, &provider, context("actor:old"));
@@ -246,6 +246,7 @@ fn rejected_refresh_preserves_the_existing_context_and_permit() {
 
     assert!(manager
         .try_update_client_auth(client_id, context("actor:new"))
+        .await
         .is_err());
     assert_eq!(
         manager
@@ -272,8 +273,10 @@ async fn refresh_serializes_subscription_changes_without_holding_the_registry() 
     provider.block_next_refresh(entered_tx, release_rx);
 
     let refresh_manager = manager.clone();
-    let refresh = tokio::task::spawn_blocking(move || {
-        refresh_manager.try_update_client_auth(client_id, context("actor:new"))
+    let refresh = tokio::spawn(async move {
+        refresh_manager
+            .try_update_client_auth(client_id, context("actor:new"))
+            .await
     });
     tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(1)))
         .await
@@ -313,6 +316,47 @@ async fn refresh_serializes_subscription_changes_without_holding_the_registry() 
     assert_eq!(
         reservation.subscriptions,
         HashSet::from(["sub-during-refresh".to_string()])
+    );
+}
+
+#[tokio::test]
+async fn refresh_waits_for_an_in_progress_subscription_change() {
+    let provider = Arc::new(FakeAdmission::default());
+    let manager =
+        Arc::new(ClientManager::new().with_admission_provider(Arc::new(provider.clone())));
+    let client_id = insert_client(&manager, &provider, context("actor:old"));
+    let lifecycle = manager
+        .clients
+        .get(&client_id)
+        .unwrap()
+        .admission_lifecycle
+        .clone();
+    let lifecycle_guard = lifecycle.lock().await;
+
+    let refresh_manager = manager.clone();
+    let mut refresh = tokio::spawn(async move {
+        refresh_manager
+            .try_update_client_auth(client_id, context("actor:new"))
+            .await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut refresh)
+            .await
+            .is_err()
+    );
+
+    drop(lifecycle_guard);
+    assert!(refresh.await.unwrap().unwrap());
+    assert_eq!(
+        manager
+            .clients
+            .get(&client_id)
+            .unwrap()
+            .auth_context
+            .as_ref()
+            .unwrap()
+            .subject,
+        "actor:new"
     );
 }
 
