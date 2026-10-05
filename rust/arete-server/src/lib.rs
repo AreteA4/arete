@@ -72,7 +72,7 @@ pub use journal::{EventJournal, JournalConfig, ReplayWindow};
 pub use materialized_view::{MaterializedView, MaterializedViewRegistry, ViewEffect};
 #[cfg(feature = "otel")]
 pub use metrics::Metrics;
-pub use mutation_batch::{EventContext, MutationBatch, SlotContext};
+pub use mutation_batch::{EventContext, MutationBatch, SlotContext, SlotIndexDomain};
 pub use program_runtime::{
     IdlContentHash, NormalizedIdlHash, ProgramAccountReaderFn, ProgramReleaseHash,
     ProgramRuntimeCatalog, ProgramRuntimeDefinition, ProgramSpecHash,

@@ -4818,10 +4818,15 @@ mod tests {
 
             async fn mutate(&self, mutation: Mutation) {
                 let slot = self.slot.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.mutate_with_context(mutation, SlotContext::new(slot, 0))
+                    .await;
+            }
+
+            async fn mutate_with_context(&self, mutation: Mutation, context: SlotContext) {
                 self.tx
                     .send(MutationBatch::with_slot_context(
                         vec![mutation].into_iter().collect(),
-                        SlotContext::new(slot, 0),
+                        context,
                     ))
                     .await
                     .unwrap();
@@ -5064,6 +5069,76 @@ mod tests {
                 );
                 socket.close(None).await.unwrap();
             }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn resolver_offsets_do_not_suppress_later_instruction_updates() {
+            let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
+            let mut created = Mutation {
+                export: "Thing".into(),
+                key: json!("a"),
+                patch: json!({"value":"created"}),
+                append: vec![],
+            };
+            created.mark_created();
+            created.mark_account_position(AccountPosition::new(100, 9));
+            harness
+                .mutate_with_context(created, SlotContext::account(100, 9))
+                .await;
+
+            harness
+                .mutate_with_context(
+                    Mutation {
+                        export: "Thing".into(),
+                        key: json!("a"),
+                        patch: json!({"value":"resolver", "resolved":true}),
+                        append: vec![],
+                    },
+                    SlotContext::resolver(100, 1_u64 << 63),
+                )
+                .await;
+            harness
+                .mutate_with_context(
+                    Mutation {
+                        export: "Thing".into(),
+                        key: json!("a"),
+                        patch: json!({"value":"instruction", "instruction":true}),
+                        append: vec![],
+                    },
+                    SlotContext::instruction(100, 900),
+                )
+                .await;
+
+            let mut socket = harness
+                .subscribe(json!({"view":"Thing/state", "key":"a"}), true)
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "snapshot", "{frame}");
+            let row = &frame["data"][0]["data"];
+            assert_eq!(row["value"], "instruction", "{frame}");
+            assert_eq!(row["resolved"], true, "{frame}");
+            assert_eq!(row["instruction"], true, "{frame}");
+
+            // Recency still applies inside the instruction domain even after
+            // activity from another source domain.
+            harness
+                .mutate_with_context(
+                    Mutation {
+                        export: "Thing".into(),
+                        key: json!("a"),
+                        patch: json!({"value":"stale", "stale":true}),
+                        append: vec![],
+                    },
+                    SlotContext::instruction(100, 899),
+                )
+                .await;
+            let mut reconnected = harness
+                .subscribe(json!({"view":"Thing/state", "key":"a"}), true)
+                .await;
+            let frame = next_frame(&mut reconnected).await;
+            let row = &frame["data"][0]["data"];
+            assert_eq!(row["value"], "instruction", "{frame}");
+            assert!(row.get("stale").is_none(), "{frame}");
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

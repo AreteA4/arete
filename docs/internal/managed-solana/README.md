@@ -162,13 +162,17 @@ snapshot, including an empty result. Sorted views keep their configured order.
 Source deletion uses `Mutation::delete`; VM-backed sources use
 `VmContext::delete_entity` plus `discard_account`. Account-owned entity mutations
 and deletes also carry `Mutation::mark_account_position(AccountPosition::new(slot,
-write_version))`; instruction, resolver and resend mutations do not. `SlotContext`
-still controls `_seq` recency, but never account lifetime ordering. The projector
+write_version))`; instruction, resolver and resend mutations do not. Use
+`SlotContext::account`, `SlotContext::instruction` and `SlotContext::resolver`
+for generated ingestion, or `SlotContext::with_domain` in a custom producer.
+`SlotContext` still controls `_seq` recency within its declared domain, but never
+account lifetime ordering or recency in a different domain. The projector
 removes cached and sorted rows before publishing `delete`. Predicate/window
 departure remains `remove`. Deleted rows accept only a newer complete creation
 marked `mark_created`, so resends and sparse patches cannot resurrect them.
-Snapshot payloads retain explicit live/deleted account checkpoints, bounded to
-eight times the entity cache capacity per view. Ingestion owners must retain
+Snapshot payloads retain explicit live/deleted account checkpoints and independent
+source-domain recency cursors, bounded to eight times the entity cache capacity
+per view. Ingestion owners must retain
 durable ingestion deduplication and resume watermarks beyond that cache retention.
 
 See [Account lifecycle integration](account-lifecycle.md) for the public ingestion
