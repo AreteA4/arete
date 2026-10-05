@@ -453,11 +453,14 @@ impl Projector {
             self.resync.cancel(&mutation.export, &mutation.key, &key);
             let mut published = 0;
             for spec in specs.iter().filter(|spec| spec.filters.matches(&key)) {
-                if !self
-                    .entity_cache
-                    .delete_ordered(&spec.id, &key, account_position, seq.as_deref())
-                    .await
-                {
+                let deleted = if account_position.is_none() && seq.is_none() {
+                    self.entity_cache.delete_current(&spec.id, &key).await
+                } else {
+                    self.entity_cache
+                        .delete_ordered(&spec.id, &key, account_position, seq.as_deref())
+                        .await
+                };
+                if !deleted {
                     continue;
                 }
                 let sorted = self.view_index.sorted_caches();
@@ -664,6 +667,10 @@ impl Projector {
                     LifetimeOrdering {
                         account_position,
                         source_seq: frame.seq.as_deref(),
+                        // Account mutations carry their authoritative
+                        // position. Unmarked projected mutations use the
+                        // independent instruction/source recency domain.
+                        source_seq_is_ordered: account_position.is_none(),
                     },
                 )
                 .await;
