@@ -88,6 +88,17 @@ export interface ProgramSdkDefinition {
   readonly programId?: string;
   /** Typed identity of generated program content. V2 excludes compiler provenance. */
   readonly sdkDefinitionHash?: string;
+  /**
+   * Program package release this SDK was generated from, for program SDKs
+   * installed from the registry. It is the program SDK's identity: a stack's
+   * embedded program and a standalone install with the same value are the same
+   * program, and the SDK runtime treats them as one when both are attached.
+   * Generated entries stamp it with `withProgramIdentity` after applying the
+   * package's own extension; `extendProgram`, `extendPrograms` and
+   * `withProgramRead` drop it, because a program changed outside its generated
+   * SDK is no longer provably that SDK.
+   */
+  readonly packageReleaseHash?: string;
   readonly programSpecHash?: string;
   readonly idlContentHash?: string;
   readonly normalizedIdlHash?: string;
@@ -196,11 +207,29 @@ export type ProgramReadOverrides<
   ? { readonly [K in keyof TPrograms]?: ProgramReadOverride }
   : Record<string, never>;
 
+/**
+ * The exact served version a generated stack definition was built for: one
+ * live alias of one StackManifest.
+ */
+export interface StackRelease {
+  /** `arete:h1:stack-manifest:sha256:<64 hex>` */
+  readonly stackManifestHash: string;
+  /** The StackManifest live alias this definition serves. */
+  readonly liveAlias: string;
+}
+
 export interface StackDefinition<
   TPrograms extends Record<string, ProgramSdkDefinition> = Record<string, ProgramSdkDefinition>,
 > {
   readonly name: string;
   readonly endpoints: StackEndpoints;
+  /**
+   * Served version this definition was generated for. Present only on
+   * definitions generated from a hosted StackManifest; it is sent with the
+   * WebSocket session request for `endpoints.ws` so the session endpoint can
+   * route the client to that version.
+   */
+  readonly release?: StackRelease;
   readonly views: Record<string, ViewGroup>;
   readonly schemas?: Record<string, Schema<unknown>>;
   readonly patchSchemas?: Record<string, Schema<unknown>>;
@@ -301,6 +330,15 @@ export interface WatchOptions<TSchema = unknown> {
   snapshotLimit?: number;
 }
 
+/** Options for the one-shot reads `get` and `getOne`. */
+export interface GetOptions extends WatchOptions {
+  /**
+   * How long to wait for the initial snapshot before rejecting with
+   * `InitialDataTimeoutError` (defaults to 5000). `null` waits forever.
+   */
+  timeoutMs?: number | null;
+}
+
 export interface AreteOptions<TStack extends StackDefinition> {
   stack: TStack;
   /** Connect immediately when the client is created (defaults to true). */
@@ -343,6 +381,14 @@ export type AuthTokenRequest =
       readonly targetKind?: never;
       readonly targetId?: never;
       readonly programReleaseHash?: never;
+      /**
+       * Served version of the stack this session is for, when its stack
+       * definition carries one. A custom `getToken` provider can forward it
+       * to the session endpoint as `stackManifestHash`.
+       */
+      readonly stackManifestHash?: string;
+      /** Live alias paired with `stackManifestHash`, forwarded as `liveAlias`. */
+      readonly liveAlias?: string;
     }
   | ({ readonly scopes: readonly string[] } & ProgramReadBindingAuthTarget)
   | ({ readonly scopes: readonly string[] } & SolanaGatewayBindingAuthTarget);
@@ -381,11 +427,23 @@ export interface AreteConfig {
   reconnectIntervals?: number[];
   maxReconnectAttempts?: number;
   initialSubscriptions?: Subscription[];
+  /**
+   * Entities kept per view; the oldest are dropped past it. `null` keeps all.
+   * Keep it above the size of every subscription on a view: the server still
+   * counts a dropped entity as held and sends only patches for it, which are
+   * discarded (reported as `'evicted-key'` diagnostics), so it stays missing
+   * until it re-enters the query or the subscription is re-established.
+   */
   maxEntriesPerView?: number | null;
   /** Authentication configuration */
   auth?: AuthConfig;
   /** Fetch implementation used for authentication token requests. */
   fetch?: typeof fetch;
+  /**
+   * Served stack version to name in WebSocket session requests. Omitted
+   * requests are exactly what older clients send.
+   */
+  release?: StackRelease;
 }
 
 export interface SocketIssue {
@@ -394,10 +452,156 @@ export interface SocketIssue {
   code: string | AuthErrorCode;
   retryable: boolean;
   retryAfter?: number;
+  usage?: UsageLimit;
+  action?: RecoveryAction;
   suggestedAction?: string;
   docsUrl?: string;
   fatal: boolean;
   subscriptionId?: string | null;
+}
+
+export const API_PROBLEM_SCHEMA_VERSION = 1 as const;
+export const CLAIM_AGENT_MATERIALIZER_PATH = '/api/agents/me/claim-links' as const;
+
+export interface UsageLimit {
+  readonly unit: string;
+  readonly used: number;
+  readonly limit: number;
+  readonly resetsAt?: string | null;
+}
+
+export interface RecoveryAction {
+  readonly type: string;
+  readonly label?: string;
+  readonly method?: string;
+  readonly path?: string;
+  readonly [key: string]: unknown;
+}
+
+export interface ApiProblemV1 {
+  readonly schemaVersion?: number;
+  readonly error: string;
+  readonly code?: string;
+  readonly retryable?: boolean;
+  readonly requestId?: string;
+  readonly retryAfterSeconds?: number | null;
+  readonly usage?: UsageLimit;
+  readonly action?: RecoveryAction;
+  readonly [key: string]: unknown;
+}
+
+export interface ReadyRecoveryAction {
+  readonly type: string;
+  readonly url: string;
+  readonly elicitationId: string;
+  readonly expiresAt: string;
+}
+
+export interface ReadyRecoveryActionV1 {
+  readonly schemaVersion: 1;
+  readonly action: ReadyRecoveryAction;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isSafeUnsignedInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function parseUsageLimit(value: unknown): UsageLimit | undefined {
+  if (!isRecord(value)
+    || typeof value['unit'] !== 'string'
+    || !isSafeUnsignedInteger(value['used'])
+    || !isSafeUnsignedInteger(value['limit'])
+    || (value['resetsAt'] !== undefined
+      && value['resetsAt'] !== null
+      && typeof value['resetsAt'] !== 'string')) {
+    return undefined;
+  }
+
+  return {
+    unit: value['unit'],
+    used: value['used'],
+    limit: value['limit'],
+    ...(value['resetsAt'] !== undefined ? { resetsAt: value['resetsAt'] as string | null } : {}),
+  };
+}
+
+function parseRecoveryAction(value: unknown): RecoveryAction | undefined {
+  if (!isRecord(value) || typeof value['type'] !== 'string') {
+    return undefined;
+  }
+
+  if ((value['label'] !== undefined && typeof value['label'] !== 'string')
+    || (value['method'] !== undefined && typeof value['method'] !== 'string')
+    || (value['path'] !== undefined && typeof value['path'] !== 'string')) {
+    return undefined;
+  }
+
+  return value as RecoveryAction;
+}
+
+export function isClaimAgentRecoveryAction(
+  action: RecoveryAction | undefined,
+): boolean {
+  return action?.type === 'claim_agent'
+    && action.method === 'POST'
+    && action.path === CLAIM_AGENT_MATERIALIZER_PATH;
+}
+
+export function parseApiProblem(value: unknown): ApiProblemV1 | undefined {
+  if (!isRecord(value) || typeof value['error'] !== 'string') {
+    return undefined;
+  }
+  if (value['schemaVersion'] !== undefined
+    && (!isSafeUnsignedInteger(value['schemaVersion']) || value['schemaVersion'] < 1)) {
+    return undefined;
+  }
+  if ((value['code'] !== undefined && typeof value['code'] !== 'string')
+    || (value['retryable'] !== undefined && typeof value['retryable'] !== 'boolean')
+    || (value['requestId'] !== undefined && typeof value['requestId'] !== 'string')
+    || (value['retryAfterSeconds'] !== undefined
+      && value['retryAfterSeconds'] !== null
+      && !isSafeUnsignedInteger(value['retryAfterSeconds']))) {
+    return undefined;
+  }
+
+  const usage = value['usage'] === undefined ? undefined : parseUsageLimit(value['usage']);
+  const action = value['action'] === undefined ? undefined : parseRecoveryAction(value['action']);
+  if ((value['usage'] !== undefined && !usage) || (value['action'] !== undefined && !action)) {
+    return undefined;
+  }
+
+  return {
+    ...value,
+    error: value['error'],
+    ...(usage ? { usage } : {}),
+    ...(action ? { action } : {}),
+  } as ApiProblemV1;
+}
+
+export function isSafeClaimActionUrl(action: ReadyRecoveryAction, expectedOrigin: string): boolean {
+  if (action.type !== 'claim_agent') return false;
+
+  try {
+    const url = new URL(action.url);
+    const origin = new URL(expectedOrigin);
+    const loopback = url.hostname === 'localhost'
+      || url.hostname === '127.0.0.1'
+      || url.hostname === '[::1]';
+    const secure = url.protocol === 'https:' || (url.protocol === 'http:' && loopback);
+    return secure
+      && url.origin === origin.origin
+      && url.username === ''
+      && url.password === ''
+      && url.pathname === '/claim'
+      && url.search === ''
+      && url.hash.length > 1;
+  } catch {
+    return false;
+  }
 }
 
 export const DEFAULT_CONFIG: Required<
@@ -444,10 +648,36 @@ export type AuthErrorCode =
   | 'SNAPSHOT_LIMIT_EXCEEDED'
   | 'EGRESS_LIMIT_EXCEEDED'
   | 'QUOTA_EXCEEDED'
+  | 'AGENT_CLAIM_REQUIRED'
   // Static token errors
   | 'INVALID_STATIC_TOKEN'
+  // Stack version errors: the session endpoint no longer serves, or never
+  // served, the stack version the client was generated for. Terminal.
+  | 'STACK_VERSION_RETIRED'
+  | 'STACK_VERSION_UNKNOWN'
   // Server errors
   | 'INTERNAL_ERROR';
+
+/**
+ * Structured fields of a `STACK_VERSION_RETIRED` / `STACK_VERSION_UNKNOWN`
+ * session refusal, carried on {@link AreteError.details} alongside `status`,
+ * `wireErrorCode` and `responseBody`.
+ */
+export interface StackVersionRefusal {
+  readonly replacement?: {
+    readonly version?: string;
+    readonly stackManifestHash?: string;
+  };
+  /** Command that installs the replacement, e.g. `a4 install stack ore@1.3.0`. */
+  readonly upgradeCommand?: string;
+  /** RFC 3339 time the version was retired. */
+  readonly retiredAt?: string;
+}
+
+/** True for the session refusals that no retry or reconnect can resolve. */
+export function isStackVersionRefusalCode(code: string): boolean {
+  return code === 'STACK_VERSION_RETIRED' || code === 'STACK_VERSION_UNKNOWN';
+}
 
 /**
  * Refusals of a replay cursor. Each has a distinct recovery, so they reach the
@@ -512,6 +742,19 @@ export class AreteError extends Error {
     super(message);
     this.name = 'AreteError';
   }
+
+  apiProblem(): ApiProblemV1 | undefined {
+    if (!isRecord(this.details)) return undefined;
+    return parseApiProblem(this.details['apiProblem']);
+  }
+
+  recoveryAction(): RecoveryAction | undefined {
+    return this.apiProblem()?.action;
+  }
+
+  retryAfter(): number | undefined {
+    return this.apiProblem()?.retryAfterSeconds ?? undefined;
+  }
 }
 
 export type TypedViews<TViews extends StackDefinition['views']> = {
@@ -532,7 +775,15 @@ export interface TypedStateView<T, TKey = string> {
   use<TSchema = T>(key: TKey, options?: WatchOptions<TSchema>): AsyncIterable<TSchema>;
   watch(key: TKey, options?: WatchOptions): AsyncIterable<Update<T>>;
   watchRich(key: TKey, options?: WatchOptions): AsyncIterable<RichUpdate<T>>;
-  get(key: TKey, options?: WatchOptions): Promise<T | null>;
+  /**
+   * Open (or reuse) the equivalent subscription, wait for its initial
+   * snapshot, and release it. Resolves `null` when the entity is absent.
+   */
+  get(key: TKey, options?: GetOptions): Promise<T | null>;
+  /**
+   * Read an already active equivalent subscription without waiting;
+   * `undefined` when none is active (absent is not the same as empty).
+   */
   getSync(key: TKey, options?: WatchOptions): T | null | undefined;
 }
 
@@ -540,7 +791,17 @@ export interface TypedListView<T> {
   use<TSchema = T>(options?: WatchOptions<TSchema>): AsyncIterable<TSchema>;
   watch(options?: WatchOptions): AsyncIterable<Update<T>>;
   watchRich(options?: WatchOptions): AsyncIterable<RichUpdate<T>>;
-  get(options?: WatchOptions): Promise<T[]>;
+  /**
+   * Open (or reuse) the equivalent subscription, wait for its initial
+   * snapshot, and release it.
+   */
+  get(options?: GetOptions): Promise<T[]>;
+  /** Like `get` with `take: 1`: the first item, or `null` when the list is empty. */
+  getOne(options?: Omit<GetOptions, 'take'>): Promise<T | null>;
+  /**
+   * Read an already active equivalent subscription without waiting;
+   * `undefined` when none is active (absent is not the same as empty).
+   */
   getSync(options?: WatchOptions): T[] | undefined;
 }
 
@@ -556,41 +817,69 @@ export type SocketIssueCallback = (issue: SocketIssue) => void;
  * collapsing them into a generic failure would destroy the only distinction.
  */
 export function parseErrorCode(errorCode: string): AuthErrorCode | ReplayErrorCode {
-  const codeMap: Record<string, AuthErrorCode> = {
-    'token-missing': 'TOKEN_MISSING',
-    'token-expired': 'TOKEN_EXPIRED',
-    'token-invalid-signature': 'TOKEN_INVALID_SIGNATURE',
-    'token-invalid-format': 'TOKEN_INVALID_FORMAT',
-    'token-invalid-issuer': 'TOKEN_INVALID_ISSUER',
-    'token-invalid-audience': 'TOKEN_INVALID_AUDIENCE',
-    'token-missing-claim': 'TOKEN_MISSING_CLAIM',
-    'token-key-not-found': 'TOKEN_KEY_NOT_FOUND',
-    'origin-mismatch': 'ORIGIN_MISMATCH',
-    'origin-required': 'ORIGIN_REQUIRED',
-    'origin-not-allowed': 'ORIGIN_NOT_ALLOWED',
-    'rate-limit-exceeded': 'RATE_LIMIT_EXCEEDED',
-    'websocket-session-rate-limit-exceeded': 'WEBSOCKET_SESSION_RATE_LIMIT_EXCEEDED',
-    'connection-limit-exceeded': 'CONNECTION_LIMIT_EXCEEDED',
-    'subscription-limit-exceeded': 'SUBSCRIPTION_LIMIT_EXCEEDED',
-    'snapshot-limit-exceeded': 'SNAPSHOT_LIMIT_EXCEEDED',
-    'egress-limit-exceeded': 'EGRESS_LIMIT_EXCEEDED',
-    'invalid-static-token': 'INVALID_STATIC_TOKEN',
-    'internal-error': 'INTERNAL_ERROR',
-    'auth-required': 'AUTH_REQUIRED',
-    'missing-authorization-header': 'MISSING_AUTHORIZATION_HEADER',
-    'invalid-authorization-format': 'INVALID_AUTHORIZATION_FORMAT',
-    'invalid-api-key': 'INVALID_API_KEY',
-    'expired-api-key': 'EXPIRED_API_KEY',
-    'user-not-found': 'USER_NOT_FOUND',
-    'secret-key-required': 'SECRET_KEY_REQUIRED',
-    'deployment-access-denied': 'DEPLOYMENT_ACCESS_DENIED',
-    'quota-exceeded': 'QUOTA_EXCEEDED',
-  };
-
   const normalized = errorCode.toLowerCase();
   if (isReplayErrorCode(normalized)) return normalized;
-  return codeMap[normalized] || 'INTERNAL_ERROR';
+  return authErrorCodeFromWire(normalized) ?? 'INTERNAL_ERROR';
 }
+
+/**
+ * Resolve a wire error code the way {@link parseErrorCode} does, except that a
+ * code this SDK does not know is returned as sent instead of being collapsed
+ * into `INTERNAL_ERROR`. A newer server's refusal then still reaches the
+ * consumer under its own name.
+ */
+/** Whether `code` is a wire error code this SDK knows. */
+export function isKnownWireErrorCode(code: string): boolean {
+  const normalized = code.trim().toLowerCase();
+  return isReplayErrorCode(normalized) || authErrorCodeFromWire(normalized) !== undefined;
+}
+
+export function parseWireErrorCode(errorCode: string): string | AuthErrorCode | ReplayErrorCode {
+  const trimmed = errorCode.trim();
+  const normalized = trimmed.toLowerCase();
+  if (isReplayErrorCode(normalized)) return normalized;
+  return authErrorCodeFromWire(normalized) ?? trimmed;
+}
+
+function authErrorCodeFromWire(normalized: string): AuthErrorCode | undefined {
+  return Object.prototype.hasOwnProperty.call(AUTH_ERROR_CODES_BY_WIRE, normalized)
+    ? AUTH_ERROR_CODES_BY_WIRE[normalized]
+    : undefined;
+}
+
+const AUTH_ERROR_CODES_BY_WIRE: Readonly<Record<string, AuthErrorCode>> = {
+  'token-missing': 'TOKEN_MISSING',
+  'token-expired': 'TOKEN_EXPIRED',
+  'token-invalid-signature': 'TOKEN_INVALID_SIGNATURE',
+  'token-invalid-format': 'TOKEN_INVALID_FORMAT',
+  'token-invalid-issuer': 'TOKEN_INVALID_ISSUER',
+  'token-invalid-audience': 'TOKEN_INVALID_AUDIENCE',
+  'token-missing-claim': 'TOKEN_MISSING_CLAIM',
+  'token-key-not-found': 'TOKEN_KEY_NOT_FOUND',
+  'origin-mismatch': 'ORIGIN_MISMATCH',
+  'origin-required': 'ORIGIN_REQUIRED',
+  'origin-not-allowed': 'ORIGIN_NOT_ALLOWED',
+  'rate-limit-exceeded': 'RATE_LIMIT_EXCEEDED',
+  'websocket-session-rate-limit-exceeded': 'WEBSOCKET_SESSION_RATE_LIMIT_EXCEEDED',
+  'connection-limit-exceeded': 'CONNECTION_LIMIT_EXCEEDED',
+  'subscription-limit-exceeded': 'SUBSCRIPTION_LIMIT_EXCEEDED',
+  'snapshot-limit-exceeded': 'SNAPSHOT_LIMIT_EXCEEDED',
+  'egress-limit-exceeded': 'EGRESS_LIMIT_EXCEEDED',
+  'invalid-static-token': 'INVALID_STATIC_TOKEN',
+  'internal-error': 'INTERNAL_ERROR',
+  'auth-required': 'AUTH_REQUIRED',
+  'missing-authorization-header': 'MISSING_AUTHORIZATION_HEADER',
+  'invalid-authorization-format': 'INVALID_AUTHORIZATION_FORMAT',
+  'invalid-api-key': 'INVALID_API_KEY',
+  'expired-api-key': 'EXPIRED_API_KEY',
+  'user-not-found': 'USER_NOT_FOUND',
+  'secret-key-required': 'SECRET_KEY_REQUIRED',
+  'deployment-access-denied': 'DEPLOYMENT_ACCESS_DENIED',
+  'quota-exceeded': 'QUOTA_EXCEEDED',
+  'agent-claim-required': 'AGENT_CLAIM_REQUIRED',
+  'stack-version-retired': 'STACK_VERSION_RETIRED',
+  'stack-version-unknown': 'STACK_VERSION_UNKNOWN',
+};
 
 /**
  * Determines if a WebSocket close code indicates an authentication error

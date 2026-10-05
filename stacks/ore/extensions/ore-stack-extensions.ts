@@ -51,7 +51,7 @@ export type DeployWithCheckpointInput = DeploySemanticInput & {
 };
 
 export type CheckpointSemanticInput = Omit<PrepareCheckpointInput, 'roundId'> & {
-  roundId?: bigint;
+  roundId?: bigint | undefined;
 };
 
 export type ConfigureAutomationSemanticInput = Omit<

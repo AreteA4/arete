@@ -2,6 +2,245 @@
 
 ## Unreleased
 
+## [0.28.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.27.0...a4-cli-v0.28.0) (2026-09-30)
+
+
+### Features
+
+* **cli:** show agent trial usage ([edc2c12](https://github.com/AreteA4/arete/commit/edc2c1280a2a86a34e1dedc1bd9fc2fc52488705))
+* emit and display account usage identity ([d1ce5ff](https://github.com/AreteA4/arete/commit/d1ce5ffc5e420c990619bb356f3e17e7d2a23e56))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.27.0 to 0.28.0
+    * arete-mcp bumped from 0.27.0 to 0.28.0
+
+## [0.27.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.26.0...a4-cli-v0.27.0) (2026-09-29)
+
+
+### Features
+
+* **cli:** make agent trial signup crash-safe ([551abad](https://github.com/AreteA4/arete/commit/551abad73b376838b38cde37fc24ff0a02116e50))
+* **discovery:** guide agent trials to starter stacks ([97883dc](https://github.com/AreteA4/arete/commit/97883dc21ee328a662befe24c8c3c06aa6a36a52))
+* isolate agent credentials and propagate recovery actions ([cf3716a](https://github.com/AreteA4/arete/commit/cf3716a5bb888a265b05e292bca4ae706844f893))
+
+
+### Bug Fixes
+
+* address agent credential recovery review ([c5cdd56](https://github.com/AreteA4/arete/commit/c5cdd569037701bdfb4a252401c826c9a842f1f4))
+* harden agent signup retries ([6a0ea0b](https://github.com/AreteA4/arete/commit/6a0ea0b6e7dfd050db71adb41b382fea25927c29))
+* preserve replaced agent credentials ([f9d0513](https://github.com/AreteA4/arete/commit/f9d0513c80e08100c9d77544e62ac68f54c1ef8f))
+* satisfy recovery error clippy checks ([04f58c0](https://github.com/AreteA4/arete/commit/04f58c0ebabb3bd5612099f2ea4792d87a218458))
+* scope universal agent repair ([b751ee7](https://github.com/AreteA4/arete/commit/b751ee7eb0b07f6cb282ab25f2df6611f79aa337))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.26.0 to 0.27.0
+    * arete-mcp bumped from 0.26.0 to 0.27.0
+
+## [0.26.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.25.1...a4-cli-v0.26.0) (2026-09-29)
+
+
+### Features
+
+* **explore:** attach curated field descriptions from catalog knowledge ([eaf6313](https://github.com/AreteA4/arete/commit/eaf63137cd5019f777900956df671e520c5ac567))
+* **explore:** attach curated field descriptions from catalog knowledge ([9c38a3a](https://github.com/AreteA4/arete/commit/9c38a3a6a4c6af7bc64b2170d09149fa2c5d7dd9))
+
+
+### Bug Fixes
+
+* **cli:** accept a portable `a4` in project MCP configs ([58e92df](https://github.com/AreteA4/arete/commit/58e92df3ef0f1a3954d338ba989768d935f77f5c))
+* **cli:** accept a portable `a4` in project MCP configs ([4b8eadf](https://github.com/AreteA4/arete/commit/4b8eadf187c5a46f38ac93f67cef21ecf168f106))
+* **cli:** accept the portable a4 only when it resolves on PATH ([bf1a3b7](https://github.com/AreteA4/arete/commit/bf1a3b7574bbf112f0664bc245f45062dd78718f))
+* **cli:** don't select the a4-not-on-PATH warning for --fix ([d4f1619](https://github.com/AreteA4/arete/commit/d4f1619a2034f59b15a9aa4222a71c727786c648))
+* **cli:** don't warn about agents that are only installed on the machine ([4f3e546](https://github.com/AreteA4/arete/commit/4f3e546810bd8fcc64ebff3866c9a2fbaeece22e))
+* **cli:** don't warn about agents that are only installed on the machine ([3050c25](https://github.com/AreteA4/arete/commit/3050c2534881d11b6c01d232788117e81d9ea319))
+* **cli:** keep a portable a4 in project configs when it is not on PATH ([34eeff7](https://github.com/AreteA4/arete/commit/34eeff7c697ee0e1bd1b7c688991b8741eac8e91))
+* **cli:** keep other installs' journals and report a failed staging cleanup ([5fba943](https://github.com/AreteA4/arete/commit/5fba94344b6ffcc406883f55e60a0614e8524770))
+* **cli:** remove the install staging tree when a commit is refused ([10ddb01](https://github.com/AreteA4/arete/commit/10ddb01af4fa9a7bd367ef74f6fb43388f23b7a7))
+* **cli:** remove the install staging tree when a commit is refused ([8f6b6ac](https://github.com/AreteA4/arete/commit/8f6b6ac0a29942c163976adc18bb88c22eedf7a8))
+* **cli:** report home-only agents' context files as information ([2932473](https://github.com/AreteA4/arete/commit/2932473dd5c6e5b82e073123c848a6a41ed1bc0f))
+* **explore:** skip the knowledge lookup where it cannot apply and bound it ([b2666d0](https://github.com/AreteA4/arete/commit/b2666d0f51dc039daef203d281dc67106acd373b))
+* **mcp:** attach schema guidance only for the StackManifest it describes ([cd6e011](https://github.com/AreteA4/arete/commit/cd6e0115add59e92f58acd981673b0f888054e5d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.25.1 to 0.26.0
+    * arete-mcp bumped from 0.25.1 to 0.26.0
+
+## [0.25.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.25.0...a4-cli-v0.25.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* **cli:** let a4 stack compose --install choose the SDK target ([88949db](https://github.com/AreteA4/arete/commit/88949db9f2720bac0798275bb15e7502fc5bdf26))
+* **cli:** let a4 stack compose --install choose the SDK target ([53d7253](https://github.com/AreteA4/arete/commit/53d72537d7a2c1f08842a8146ea2285df38036e7))
+* **cli:** name extension types through their modules in TypeScript entries ([ddfcc54](https://github.com/AreteA4/arete/commit/ddfcc549175506dc021b6f422039e35297b75ba5))
+* **cli:** remove the SDK output a dependency no longer generates ([9e73c41](https://github.com/AreteA4/arete/commit/9e73c411d01937d039e386cdded06d79ed76f2e5))
+* **cli:** suggest an SDK target in the a4 up hint for an uninstalled composed stack ([7aaee28](https://github.com/AreteA4/arete/commit/7aaee28e422c8081a9f7e2449475daa0b95dda7f))
+* **cli:** suggest ES modules only where package.json decides, including inherited tsconfig settings ([ededabe](https://github.com/AreteA4/arete/commit/ededabe9395125695f5fd768897914d03ce6d427))
+* **cli:** tell TypeScript installs into CommonJS packages to use ES modules ([fb7781c](https://github.com/AreteA4/arete/commit/fb7781c7755664f405ece60ce0e379152876c3be))
+* generated TypeScript compiles under tsc --init defaults ([b8aba03](https://github.com/AreteA4/arete/commit/b8aba03d1436be844697ac3d016cdf1e5d894f2d))
+* **interpreter:** let semantic decimals overrides be passed on as undefined ([5976ec2](https://github.com/AreteA4/arete/commit/5976ec232c887c058b677c942d02ce448191a45a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.25.0 to 0.25.1
+    * arete-mcp bumped from 0.25.0 to 0.25.1
+
+## [0.25.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.24.0...a4-cli-v0.25.0) (2026-09-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** ServerFrame::Subscribed gains a whole_entities field.
+* **sdk:** attaching a different program under a key a stack already provides throws PROGRAM_KEY_CONFLICT.
+* **sdk:** attaching a different program under a key a stack already provides raises ProgramKeyConflictError instead of keeping the stack's program with a warning.
+
+### Features
+
+* **cli:** attach program identity after the package extension ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** carry program SDKs in stacks ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** check runtime SDK compatibility ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** compose stacks from registry parts ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** explore one operation, a stack summary or selected views ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** make publishable key creation scriptable ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** report account readiness in a4 doctor and a4 explore ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** report requested, regenerated and shared dependencies on install ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** report the program SDK each program gets on a4 up ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **docs:** rank documentation search by query terms ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **interpreter:** let a consumer request a whole entity from the VM ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **mcp:** summarise explore results and look up one operation ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** add inspect-only wallet adapters ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** add testing helpers ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** drop patches for keys the Rust client does not hold ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** identify program SDKs by package release in Python ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** identify program SDKs by package release in Rust ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** identify program SDKs by package release in TypeScript ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** keep runtime extensions through object spread ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** publish the extension API version ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+
+
+### Bug Fixes
+
+* **cli:** check the extensionApi the registry reports for an extension ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** confine --env-file to the project and replace it atomically ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** keep locks from older a4 releases installable ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** keep the previous composition artifacts until the replacement lands ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** pin the program SDKs of locked composed parts ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** require an older lock to pin exactly the SDK extensions it generates ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **interpreter:** send a requested whole entity with the next batch ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **react:** peer-depend on @usearete/sdk ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** drop patches for keys the Python client does not hold ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** drop patches for keys the TypeScript client does not hold ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** keep a stack's program types when no programs are attached ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** share a same-release program only when it reads the same way ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** keep a resent entity's own position in recency order ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** never serve partial entities and resend evicted entities whole ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** rank entities without a sort value last ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** replace a state subscriber's copy when a missed frame replaced the entity ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** tell created entities from changes instead of trusting eviction memory ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.24.0 to 0.25.0
+    * arete-mcp bumped from 0.24.0 to 0.25.0
+
+## [0.24.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.23.1...a4-cli-v0.24.0) (2026-09-27)
+
+
+### Features
+
+* **cli:** warn about retired hosted stack versions and keep installing them ([5f4b69a](https://github.com/AreteA4/arete/commit/5f4b69ae45762f2eaf0dedf572ae3229428ed7fe))
+* **cli:** warn about retired hosted stack versions and keep installing them ([1c16ee7](https://github.com/AreteA4/arete/commit/1c16ee71bcb8d10cd880edd98baf48ef9eefc2a1))
+
+
+### Bug Fixes
+
+* **cli:** leave stacks on their own deployment out of retirement warnings ([ff3b02e](https://github.com/AreteA4/arete/commit/ff3b02e31baf9fbd3bd77c28079d42e6643448f8))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.23.1 to 0.24.0
+    * arete-mcp bumped from 0.23.1 to 0.24.0
+
+## [0.23.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.23.0...a4-cli-v0.23.1) (2026-09-25)
+
+
+### Miscellaneous Chores
+
+* **a4-cli:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.23.0 to 0.23.1
+    * arete-mcp bumped from 0.23.0 to 0.23.1
+
+## [0.23.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.22.4...a4-cli-v0.23.0) (2026-09-25)
+
+
+### Features
+
+* **cli:** deploy installed stacks with `a4 up <alias>` ([4e681b0](https://github.com/AreteA4/arete/commit/4e681b050a817934234b59cde0b5ef8985b84705))
+* **cli:** deploy installed stacks with `a4 up <alias>` and point their SDK at the deployment ([07e109e](https://github.com/AreteA4/arete/commit/07e109e9d2fb3b4502e0577fb9b56f8f82c55882))
+* **cli:** point an installed stack's SDK at the user's deployment ([904bd98](https://github.com/AreteA4/arete/commit/904bd9827f56bd9efb383f0cf4a6557aaf17cf26))
+* **interpreter:** emit the served stack version in hosted SDKs ([1c8ee5c](https://github.com/AreteA4/arete/commit/1c8ee5cfb759733a37a9340af8d4977ebf29193c))
+* **sdk:** name the served stack version when minting sessions ([aa06836](https://github.com/AreteA4/arete/commit/aa068362d434fb38f2998677fca763f3dba53714))
+
+
+### Bug Fixes
+
+* **cli:** ask for a redeploy when a recorded stack changes version ([64efb7b](https://github.com/AreteA4/arete/commit/64efb7b6fd9f8a55d6b0bdf1cabb9d37304e6633))
+* **cli:** hold installed deploys to their pinned releases ([c56f29e](https://github.com/AreteA4/arete/commit/c56f29e8f93008183c84ad76466987be33f5482e))
+* **cli:** name the authored stack that shadows a redeploy ([e3f8621](https://github.com/AreteA4/arete/commit/e3f862133bb8a931cdeb5cd468308f4e71ea5ae4))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.22.4 to 0.23.0
+    * arete-mcp bumped from 0.22.4 to 0.23.0
+
+## [0.22.4](https://github.com/AreteA4/arete/compare/a4-cli-v0.22.3...a4-cli-v0.22.4) (2026-09-24)
+
+
+### Bug Fixes
+
+* **cli:** generate hosted stack endpoints from the resolver ([2194d16](https://github.com/AreteA4/arete/commit/2194d16dad6da53dd149c59fc824f56f927355b0))
+* **cli:** generate hosted stack endpoints from the resolver ([a4a49ab](https://github.com/AreteA4/arete/commit/a4a49ab4ae47837264ace02683cbae10aafaeece))
+* **cli:** refuse incomplete managed gateway bindings ([b55bbb4](https://github.com/AreteA4/arete/commit/b55bbb48a8b9a9aadf0bf45e2ee5de1913b87032))
+* **cli:** reuse the resolved reference in `a4 explore stack` ([d7cb78a](https://github.com/AreteA4/arete/commit/d7cb78a88c900e36c826181622a6f9f851927134))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.22.3 to 0.22.4
+    * arete-mcp bumped from 0.22.3 to 0.22.4
+
 ## [0.22.3](https://github.com/AreteA4/arete/compare/a4-cli-v0.22.2...a4-cli-v0.22.3) (2026-09-24)
 
 

@@ -1,9 +1,9 @@
 ---
 name: arete-stack-authoring
-description: Design and compile custom Arete stack artifacts from Solana program IDLs using the Rust DSL. Use for app-facing read models, entity keys, cross-account join proof, mappings, aggregations, views, resolvers, and ProgramSpec/LiveSpec/StackManifest generation. Do not deploy or mutate hosted resources; use arete-deploy for that.
+description: Design and compile custom Arete stack artifacts from Solana program IDLs using the Rust DSL, or compose stacks from published live views and program SDKs. Use for app-facing read models, entity keys, cross-account join proof, mappings, aggregations, views, resolvers, stack composition, and ProgramSpec/LiveSpec/StackManifest generation. Do not deploy or mutate hosted resources; use arete-deploy for that.
 metadata:
-  version: "1.0.0"
-  min-cli: ">=0.13.0"
+  version: "1.1.1"
+  min-cli: ">=0.25.1"
 ---
 
 # Author Arete Stack Artifacts
@@ -11,6 +11,39 @@ metadata:
 A good Arete stack is a small, app-facing read model. Do not begin by mirroring every IDL account. Start from what the application needs to read together, choose one canonical entity key, and prove every field and update route back to that key.
 
 This skill ends with validated local artifacts. Hosted publication and deployment are separate, externally mutating work handled by `arete-deploy`.
+
+## Compose From Published Parts First
+
+A stack is a group of live views and program SDKs. When published stacks already serve the views the application needs, and program packages provide the program SDKs, compose a stack from them instead of authoring a new read model. Composition needs no Rust toolchain:
+
+```bash
+a4 stack compose --name ore-plus-token \
+  --live ore \
+  --program spl-token \
+  --selected-view ore=OreRound/latest \
+  --selected-view ore=OreMiner/state
+```
+
+The command resolves the parts, checks that they compose, and writes `[authoring.stacks.<name>]` in `arete.toml`. You can also write the entry yourself:
+
+```toml
+[authoring.stacks.ore-plus-token]
+live.ore = { stack = "ore", version = "^1", views = ["OreRound/latest", "OreMiner/state"] }
+programs = [{ package = "spl-token", version = "^1" }]
+```
+
+- `--live` takes a published stack (`ore`, `ore@^1`, `alias=stack:ore@^1`, or `stack:<stack>#<live alias>` for one of several) or a LiveSpec file (`alias=path`). `--program` takes a program package (`spl-token`, `spl-token@^1`) or a ProgramSpec file.
+- The programs the views index come with them, as the program SDKs their stack includes. A `--program` for the same program replaces that SDK; any other `--program` adds an independent program.
+- Without `--selected-view`, each alias selects every view its stack serves. With it, the `alias=view_id` values are the exact ordered allowlist.
+- A registry part without a version is saved at `^<resolved version>`.
+- `--install` also declares `[dependencies.stacks.<name>]` with `source = { workspace = "<name>" }` and installs it. Pass the SDK target with it (`--install --ts`, `--rust`, or `--python`); it is recorded as the dependency's `targets`, as `a4 install <package> --ts` records it. Without one, the dependency generates every target in `[sdk].targets` (TypeScript and Rust by default). `a4 install` pins every part in `arete.lock` and generates the composed stack's SDK, with each program SDK at `arete.programs.<program>` (take the key from the generated types).
+- A composed stack does not carry a source stack's stack extension, such as its reads. The install output notes each one it leaves out.
+
+A live alias taken from a stack with hosted delivery reads that stack's deployment, so the composed SDK connects without a new deployment. An alias from a definition-only stack or a LiveSpec file has no endpoints until `a4 up <name>` deploys the composed stack to the user's account and records the endpoints. `a4 up <name>` deploys exactly what `arete.lock` pins, and a production deployment lists the program SDK each program carries. Deploying is an external mutation: hand it to `arete-deploy` and require the user's authorization.
+
+Publishing a composition so that other projects can install it by name is not available yet. To reuse a composition built from registry parts in another project, copy its `[authoring.stacks]` entry there.
+
+Author a new LiveSpec only when no published stack serves the read model the application needs.
 
 ## Establish the Local Toolchain
 

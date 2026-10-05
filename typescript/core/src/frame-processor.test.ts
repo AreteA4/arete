@@ -2,9 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import type { EntityFrame, SnapshotFrame, SubscribedFrame } from './frame';
-import { FrameProcessor, ProcessedSlotTimeoutError } from './frame-processor';
+import {
+  FrameProcessor,
+  ProcessedSlotTimeoutError,
+  type FrameValidationDiagnostic,
+} from './frame-processor';
+import { QueryStore } from './query-store';
 import { SortedStorageDecorator } from './storage/sorted-decorator';
 import { MemoryAdapter } from './storage/memory-adapter';
+import type { Subscription, Update } from './types';
 
 const bigintSchema = z
   .union([z.bigint(), z.string(), z.number().int()])
@@ -587,5 +593,201 @@ describe('FrameProcessor', () => {
     // Older than the sequence recorded before the unsequenced write.
     processor.handleFrame(upsert({ v: 'third' }, '50:000000000001'));
     expect(storage.get('Thing/state', 'k')).toEqual({ v: 'second' });
+  });
+
+  it('keeps the tracked version when a frame arrives without one', () => {
+    const storage = new MemoryAdapter();
+    const processor = new FrameProcessor(storage);
+    const frame = (op: 'upsert' | 'patch', data: Record<string, unknown>, seq: string): EntityFrame => ({
+      mode: 'state',
+      entity: 'Thing/state',
+      op,
+      key: 'k',
+      data,
+      seq,
+    } as EntityFrame);
+
+    processor.handleFrame(frame('upsert', { v: 'first', _version: '3f9a2c1d:5' }, '50:000000000009'));
+    // No version: the seq rule decides, and this seq is newer.
+    processor.handleFrame(frame('patch', { w: 'second' }, '51:000000000001'));
+    expect(storage.get('Thing/state', 'k')).toMatchObject({ v: 'first', w: 'second' });
+
+    // The version recorded before the unversioned write still orders frames.
+    processor.handleFrame(frame('patch', { v: 'stale', _version: '3f9a2c1d:4' }, '52:000000000001'));
+    expect(storage.get('Thing/state', 'k')).toMatchObject({ v: 'first', w: 'second' });
+  });
+
+  it('never treats a version it cannot parse as stale', () => {
+    const storage = new MemoryAdapter();
+    const processor = new FrameProcessor(storage);
+    const frame = (data: Record<string, unknown>): EntityFrame => ({
+      mode: 'state',
+      entity: 'Thing/state',
+      op: 'patch',
+      key: 'k',
+      data,
+      seq: '50:000000000001',
+    } as EntityFrame);
+
+    processor.handleFrame({ ...frame({ v: 1, _version: '3f9a2c1d:5' }), op: 'upsert' } as EntityFrame);
+    processor.handleFrame(frame({ v: 2, _version: 'not-a-version' }));
+    expect(storage.get('Thing/state', 'k')).toMatchObject({ v: 2 });
+  });
+});
+
+describe('FrameProcessor patches for keys the client does not hold', () => {
+  const VIEW = 'Round/list';
+
+  function setup(maxEntriesPerView?: number, { wholeEntities = true }: { wholeEntities?: boolean } = {}) {
+    const storage = new MemoryAdapter();
+    const queries = new QueryStore(storage);
+    const diagnostics: FrameValidationDiagnostic[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const processor = new FrameProcessor(storage, {
+      queryStore: queries,
+      onValidationError: (diagnostic) => diagnostics.push(diagnostic),
+      ...(maxEntriesPerView !== undefined ? { maxEntriesPerView } : {}),
+    });
+    const subscription: Subscription = {
+      type: 'subscribe',
+      protocolVersion: 2,
+      subscriptionId: 'rounds',
+      query: { view: VIEW },
+      snapshot: { enabled: false },
+    };
+    queries.register(subscription, 'rounds');
+    const updates: Update<unknown>[] = [];
+    queries.onUpdate('rounds', (update) => updates.push(update));
+    const frame = (op: 'upsert' | 'patch', key: string, data: unknown, seq?: string): EntityFrame => ({
+      subscriptionId: 'rounds',
+      mode: 'list',
+      entity: VIEW,
+      op,
+      key,
+      data,
+      ...(seq ? { seq } : {}),
+    } as EntityFrame);
+    const acknowledge = (guarantee: boolean) => processor.handleFrame({
+      protocolVersion: 2,
+      subscriptionId: 'rounds',
+      op: 'subscribed',
+      query: { view: VIEW },
+      mode: 'list',
+      ...(guarantee ? { wholeEntities: true } : {}),
+    } satisfies SubscribedFrame);
+    acknowledge(wholeEntities);
+    return { storage, queries, processor, diagnostics, updates, frame, warn, acknowledge };
+  }
+
+  it('ignores a patch for a key that was never received', () => {
+    const { storage, queries, processor, diagnostics, updates, frame, warn } = setup();
+
+    processor.handleFrame(frame('patch', '7', { motherlode: 3 }, '100:000000000001'));
+
+    expect(storage.get(VIEW, '7')).toBeNull();
+    expect(queries.getSnapshot('rounds')?.keys).toEqual([]);
+    expect(updates).toEqual([]);
+    expect(diagnostics).toEqual([expect.objectContaining({
+      view: VIEW,
+      key: '7',
+      seq: '100:000000000001',
+      operation: 'patch',
+      reason: 'unknown-key',
+      error: expect.objectContaining({ code: 'PATCH_FOR_UNKNOWN_KEY' }),
+    })]);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('merges patches once a full upsert has arrived', () => {
+    const { storage, queries, processor, frame, warn } = setup();
+
+    processor.handleFrame(frame('patch', '7', { motherlode: 3 }, '100:000000000001'));
+    processor.handleFrame(frame('upsert', '7', { id: '7', motherlode: 1, deployed: 5 }, '101:000000000001'));
+    processor.handleFrame(frame('patch', '7', { motherlode: 4 }, '102:000000000001'));
+
+    expect(storage.get(VIEW, '7')).toEqual({ id: '7', motherlode: 4, deployed: 5 });
+    expect(queries.getSnapshot('rounds')?.keys).toEqual(['7']);
+    warn.mockRestore();
+  });
+
+  it('ignores a patch for a key evicted by maxEntriesPerView, and says so', () => {
+    const { storage, queries, processor, diagnostics, frame, warn } = setup(1);
+
+    processor.handleFrame(frame('upsert', 'old', { id: 'old', value: 1 }, '1:000000000001'));
+    processor.handleFrame(frame('upsert', 'new', { id: 'new', value: 2 }, '2:000000000001'));
+    expect(storage.get(VIEW, 'old')).toBeNull();
+
+    processor.handleFrame(frame('patch', 'old', { value: 3 }, '3:000000000001'));
+    processor.handleFrame(frame('patch', 'old', { value: 3.5 }, '3:000000000002'));
+
+    expect(storage.get(VIEW, 'old')).toBeNull();
+    expect(queries.getSnapshot('rounds')?.keys).toEqual(['new']);
+    expect(diagnostics.map(({ key, reason, error }) => ({
+      key,
+      reason,
+      code: (error as { code?: string }).code,
+    }))).toEqual([
+      { key: 'old', reason: 'evicted-key', code: 'PATCH_FOR_EVICTED_KEY' },
+      { key: 'old', reason: 'evicted-key', code: 'PATCH_FOR_EVICTED_KEY' },
+    ]);
+    // The server still thinks the client holds it, so this is worth one
+    // warning per view.
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // The entity comes back with a full upsert, and later patches merge again.
+    processor.handleFrame(frame('upsert', 'old', { id: 'old', value: 4 }, '4:000000000001'));
+    processor.handleFrame(frame('patch', 'old', { value: 5 }, '5:000000000001'));
+    expect(storage.get(VIEW, 'old')).toEqual({ id: 'old', value: 5 });
+    warn.mockRestore();
+  });
+
+  it('keeps a patch for an unknown key from a server without the guarantee', () => {
+    // An older server may send a key's first change as a patch (after a
+    // truncated or disabled snapshot); that patch is all the client will get.
+    const { storage, queries, processor, diagnostics, frame, warn } = setup(undefined, {
+      wholeEntities: false,
+    });
+
+    processor.handleFrame(frame('patch', '7', { motherlode: 3 }, '100:000000000001'));
+
+    expect(storage.get(VIEW, '7')).toEqual({ motherlode: 3 });
+    expect(queries.getSnapshot('rounds')?.keys).toEqual(['7']);
+    expect(diagnostics).toEqual([]);
+    warn.mockRestore();
+  });
+
+  it('follows the latest acknowledgement, as after a reconnect to another server', () => {
+    const { storage, processor, frame, acknowledge, warn } = setup();
+
+    processor.handleFrame(frame('patch', 'a', { value: 1 }, '1:000000000001'));
+    expect(storage.get(VIEW, 'a')).toBeNull();
+
+    acknowledge(false);
+    processor.handleFrame(frame('patch', 'b', { value: 2 }, '2:000000000001'));
+    expect(storage.get(VIEW, 'b')).toEqual({ value: 2 });
+
+    acknowledge(true);
+    processor.handleFrame(frame('patch', 'c', { value: 3 }, '3:000000000001'));
+    expect(storage.get(VIEW, 'c')).toBeNull();
+    warn.mockRestore();
+  });
+
+  it('still applies replayable append-view records, which are events', () => {
+    const { storage, processor, diagnostics, warn } = setup();
+
+    processor.handleFrame({
+      subscriptionId: 'rounds',
+      mode: 'append',
+      entity: VIEW,
+      op: 'patch',
+      key: 'trade',
+      data: { amount: 100 },
+      offset: 4209,
+    } satisfies EntityFrame);
+
+    expect(storage.get(VIEW, 'trade')).toEqual({ amount: 100 });
+    expect(diagnostics).toEqual([]);
+    warn.mockRestore();
   });
 });

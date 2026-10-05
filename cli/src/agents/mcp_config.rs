@@ -17,6 +17,9 @@ pub const DOCS_SERVER: &str = "arete-docs";
 pub const CODEX_TRUST_WARNING: &str =
     "Codex only loads .codex/config.toml for trusted projects: run `codex` in this directory once and accept the trust prompt (or add it under [projects] in ~/.codex/config.toml).";
 
+/// The `arete` server command that relies on PATH.
+pub const PORTABLE_COMMAND: &str = "a4";
+
 /// Command used for the `arete` server: the absolute installed binary
 /// when a receipt exists (GUI hosts do not inherit shell PATH), else `a4`.
 pub fn command_from_receipt() -> String {
@@ -24,8 +27,26 @@ pub fn command_from_receipt() -> String {
         Ok(Some(receipt)) if receipt.binary.is_absolute() => {
             receipt.binary.to_string_lossy().into_owned()
         }
-        _ => "a4".to_string(),
+        _ => PORTABLE_COMMAND.to_string(),
     }
+}
+
+/// Whether the portable `a4` resolves on this PATH. (A GUI host's own PATH
+/// can't be checked from here.)
+fn portable_resolves(env: &Env) -> bool {
+    env.var("PATH")
+        .and_then(|path| super::find_on_path(std::ffi::OsStr::new(path), PORTABLE_COMMAND))
+        .is_some()
+}
+
+/// Whether a project config's `arete` server runs the portable `a4`. Such a
+/// file is often committed and shared across machines, so it is checked and
+/// rewritten with `a4`, never with this machine's installed path.
+fn runs_portable_command(id: &str, format: Format, content: &str) -> bool {
+    let shapes = acceptable_shapes(id, PORTABLE_COMMAND, Scope::Project, true);
+    let candidates: Vec<&Value> = shapes.iter().map(|shape| &shape.arete).collect();
+    current_entries(format, content, shapes[0].top_key)
+        .is_ok_and(|(arete, _)| entry_matches(arete.as_ref(), &candidates))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,7 +165,7 @@ pub struct Shape {
 }
 
 fn plain(command: &str) -> Value {
-    json!({"command": command, "args": ["mcp"]})
+    json!({"command": command, "args": ["--profile", "agent", "mcp"]})
 }
 
 /// Shape for `id`. `copilot_owned` selects the Copilot-CLI shape (with
@@ -155,29 +176,29 @@ pub fn shape(id: &str, command: &str, copilot_owned: bool) -> Shape {
     let (top_key, arete, docs) = match id {
         "claude-code" => (
             "mcpServers",
-            json!({"type": "stdio", "command": command, "args": ["mcp"]}),
+            json!({"type": "stdio", "command": command, "args": ["--profile", "agent", "mcp"]}),
             json!({"type": "http", "url": url}),
         ),
         "copilot-cli" if copilot_owned => (
             "mcpServers",
-            json!({"type": "local", "command": command, "args": ["mcp"], "tools": ["*"]}),
+            json!({"type": "local", "command": command, "args": ["--profile", "agent", "mcp"], "tools": ["*"]}),
             json!({"type": "http", "url": url, "tools": ["*"]}),
         ),
         "copilot-cli" => (
             "mcpServers",
-            json!({"type": "stdio", "command": command, "args": ["mcp"]}),
+            json!({"type": "stdio", "command": command, "args": ["--profile", "agent", "mcp"]}),
             json!({"type": "http", "url": url}),
         ),
         "cursor" | "kiro" => ("mcpServers", plain(command), json!({"url": url})),
         "vscode" => (
             "servers",
-            json!({"type": "stdio", "command": command, "args": ["mcp"]}),
+            json!({"type": "stdio", "command": command, "args": ["--profile", "agent", "mcp"]}),
             json!({"type": "http", "url": url}),
         ),
         "codex" => ("mcp_servers", plain(command), json!({"url": url})),
         "opencode" => (
             "mcp",
-            json!({"type": "local", "command": [command, "mcp"], "enabled": true}),
+            json!({"type": "local", "command": [command, "--profile", "agent", "mcp"], "enabled": true}),
             json!({"type": "remote", "url": url, "enabled": true}),
         ),
         "gemini-cli" => ("mcpServers", plain(command), json!({"httpUrl": url})),
@@ -196,7 +217,7 @@ pub fn shape(id: &str, command: &str, copilot_owned: bool) -> Shape {
         ),
         "goose" => (
             "extensions",
-            json!({"type": "stdio", "cmd": command, "args": ["mcp"], "enabled": true}),
+            json!({"type": "stdio", "cmd": command, "args": ["--profile", "agent", "mcp"], "enabled": true}),
             json!({"type": "streamable_http", "uri": url, "enabled": true}),
         ),
         _ => ("mcpServers", plain(command), json!({"url": url})),
@@ -353,6 +374,9 @@ pub enum McpState {
     Ok,
     /// File missing or entries absent/different.
     Missing(String),
+    /// A project config runs the portable `a4`, which is not on this PATH.
+    /// The writer leaves it alone: the file is shared.
+    NotOnPath(String),
     Skipped(&'static str),
     Error(String),
 }
@@ -395,6 +419,10 @@ pub fn check(env: &Env, id: &str, scope: Scope, command: &str) -> McpState {
         Ok(None) => return McpState::Missing(format!("{shown} missing")),
         Err(error) => return McpState::Error(format!("{error:#}")),
     };
+    let portable = scope == Scope::Project
+        && command != PORTABLE_COMMAND
+        && runs_portable_command(id, format, &content);
+    let command = if portable { PORTABLE_COMMAND } else { command };
     let shapes = acceptable_shapes(id, command, scope, true);
     let top_key = shapes[0].top_key;
     match current_entries(format, &content, top_key) {
@@ -408,6 +436,11 @@ pub fn check(env: &Env, id: &str, scope: Scope, command: &str) -> McpState {
                 &shapes.iter().map(|s| &s.docs).collect::<Vec<_>>(),
             );
             match (arete_ok, docs_ok) {
+                (true, true) if portable && !portable_resolves(env) => {
+                    McpState::NotOnPath(format!(
+                        "{shown}: `{ARETE_SERVER}` server runs `{PORTABLE_COMMAND}`, which is not on PATH"
+                    ))
+                }
                 (true, true) => McpState::Ok,
                 (false, true) => McpState::Missing(format!(
                     "{shown}: `{ARETE_SERVER}` server missing or different"
@@ -472,6 +505,15 @@ pub fn write(
         }
     };
     let file_exists = existing.is_some();
+    // A project config that runs the portable `a4` keeps it, even when `a4`
+    // is not on this PATH: the file is shared, and this machine's installed
+    // path would dirty it for everyone else.
+    let command = match existing.as_deref() {
+        Some(content) if scope == Scope::Project && runs_portable_command(id, format, content) => {
+            PORTABLE_COMMAND
+        }
+        _ => command,
+    };
     // Already correct in any acceptable shape: leave the file alone.
     if file_exists && check(env, id, scope, command) == McpState::Ok {
         return (ItemResult::new(item, Outcome::Unchanged, Some(shown)), None);
@@ -622,7 +664,7 @@ mod tests {
         assert_eq!(parsed["mcpServers"]["other"]["command"], "x");
         assert_eq!(
             parsed["mcpServers"]["arete"],
-            json!({"type": "stdio", "command": "/opt/a4", "args": ["mcp"]})
+            json!({"type": "stdio", "command": "/opt/a4", "args": ["--profile", "agent", "mcp"]})
         );
         assert_eq!(
             parsed["mcpServers"]["arete-docs"],
@@ -656,6 +698,102 @@ mod tests {
                 .outcome,
             Outcome::Unchanged
         );
+    }
+
+    #[test]
+    fn a_project_config_may_use_the_portable_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let without_a4 = env(dir.path());
+        let bin = dir.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join(PORTABLE_COMMAND), "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                bin.join(PORTABLE_COMMAND),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let path = bin.to_string_lossy().into_owned();
+        let env = Env::new(
+            &without_a4.root,
+            without_a4.home.clone(),
+            &[("PATH", path.as_str())],
+        );
+        for id in ["claude-code", "opencode", "codex"] {
+            let (result, _) = write(&env, id, Scope::Project, PORTABLE_COMMAND, false);
+            assert_eq!(result.outcome, Outcome::Created, "{id}");
+        }
+        let read_all = || -> Vec<String> {
+            [".mcp.json", "opencode.json", ".codex/config.toml"]
+                .iter()
+                .map(|file| fs::read_to_string(env.root.join(file)).unwrap())
+                .collect()
+        };
+        let before = read_all();
+
+        // With an installed binary, doctor accepts the committed `a4` and init
+        // leaves it alone instead of writing a machine-specific path.
+        for id in ["claude-code", "opencode", "codex"] {
+            assert_eq!(
+                check(&env, id, Scope::Project, "/opt/a4"),
+                McpState::Ok,
+                "{id}"
+            );
+            assert_eq!(
+                write(&env, id, Scope::Project, "/opt/a4", false).0.outcome,
+                Outcome::Unchanged,
+                "{id}"
+            );
+        }
+        assert_eq!(read_all(), before);
+
+        // Without `a4` on PATH (say, a4 run by its full path from a shell that
+        // lacks it) the portable entry can't start from here: doctor reports
+        // it, but init still leaves the shared file alone.
+        for id in ["claude-code", "opencode", "codex"] {
+            assert!(
+                matches!(
+                    check(&without_a4, id, Scope::Project, "/opt/a4"),
+                    McpState::NotOnPath(_)
+                ),
+                "{id}"
+            );
+            assert_eq!(
+                write(&without_a4, id, Scope::Project, "/opt/a4", false)
+                    .0
+                    .outcome,
+                Outcome::Unchanged,
+                "{id}"
+            );
+        }
+        assert_eq!(read_all(), before);
+
+        // Repairing the other server keeps the portable command too.
+        let mcp_json = env.root.join(".mcp.json");
+        fs::write(
+            &mcp_json,
+            r#"{ "mcpServers": { "arete": { "type": "stdio", "command": "a4", "args": ["--profile", "agent", "mcp"] } } }"#,
+        )
+        .unwrap();
+        let (result, _) = write(&without_a4, "claude-code", Scope::Project, "/opt/a4", false);
+        assert_eq!(result.outcome, Outcome::Updated);
+        let parsed: Value = serde_json::from_str(&fs::read_to_string(&mcp_json).unwrap()).unwrap();
+        assert_eq!(parsed["mcpServers"]["arete"]["command"], PORTABLE_COMMAND);
+        assert_eq!(
+            parsed["mcpServers"]["arete-docs"],
+            json!({"type": "http", "url": DOCS_MCP_URL})
+        );
+
+        // A user-scope config is not shared, so it still wants the installed
+        // binary: GUI hosts do not inherit the shell PATH.
+        write(&env, "claude-code", Scope::Global, PORTABLE_COMMAND, false);
+        assert!(matches!(
+            check(&env, "claude-code", Scope::Global, "/opt/a4"),
+            McpState::Missing(_)
+        ));
     }
 
     #[test]
@@ -699,7 +837,7 @@ mod tests {
         assert_eq!(parsed["$schema"], "https://opencode.ai/config.json");
         assert_eq!(
             parsed["mcp"]["arete"],
-            json!({"type": "local", "command": ["a4", "mcp"], "enabled": true})
+            json!({"type": "local", "command": ["a4", "--profile", "agent", "mcp"], "enabled": true})
         );
         assert_eq!(
             parsed["mcp"]["arete-docs"],

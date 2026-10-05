@@ -1,5 +1,130 @@
 # Changelog
 
+## [0.28.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.27.0...arete-typescript-v0.28.0) (2026-09-30)
+
+
+### Miscellaneous Chores
+
+* **arete-typescript:** Synchronize arete versions
+
+## [0.27.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.26.0...arete-typescript-v0.27.0) (2026-09-29)
+
+
+### Features
+
+* isolate agent credentials and propagate recovery actions ([cf3716a](https://github.com/AreteA4/arete/commit/cf3716a5bb888a265b05e292bca4ae706844f893))
+
+## [0.26.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.25.1...arete-typescript-v0.26.0) (2026-09-29)
+
+
+### Miscellaneous Chores
+
+* **arete-typescript:** Synchronize arete versions
+
+## [0.25.1](https://github.com/AreteA4/arete/compare/arete-typescript-v0.25.0...arete-typescript-v0.25.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* generated TypeScript compiles under tsc --init defaults ([b8aba03](https://github.com/AreteA4/arete/commit/b8aba03d1436be844697ac3d016cdf1e5d894f2d))
+* **sdk:** accept explicit undefined in extension results and inputs ([70dbc9d](https://github.com/AreteA4/arete/commit/70dbc9df78902f0587119dc82e44cd19e2bd2a53))
+* **sdk:** fail a waiting view get() when the connection fails ([cc5480e](https://github.com/AreteA4/arete/commit/cc5480e742f73bb6b9743b5cfcc762f0862eb08a))
+* **sdk:** wait for the snapshot in view get() and add getOne ([4fe5c3c](https://github.com/AreteA4/arete/commit/4fe5c3ca60cf2381aef2abfc99e89befe64e35ee))
+* **sdk:** wait for the snapshot in view get() and add getOne ([23a40cd](https://github.com/AreteA4/arete/commit/23a40cd8e7f81cdd02722924397e41ef554fea75))
+
+## [0.25.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.24.0...arete-typescript-v0.25.0) (2026-09-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** ServerFrame::Subscribed gains a whole_entities field.
+* **sdk:** attaching a different program under a key a stack already provides throws PROGRAM_KEY_CONFLICT.
+* **sdk:** attaching a different program under a key a stack already provides raises ProgramKeyConflictError instead of keeping the stack's program with a warning.
+
+### Features
+
+* **cli:** attach program identity after the package extension ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** carry program SDKs in stacks ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** check runtime SDK compatibility ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** compose stacks from registry parts ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** explore one operation, a stack summary or selected views ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** make publishable key creation scriptable ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** report account readiness in a4 doctor and a4 explore ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** report requested, regenerated and shared dependencies on install ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** report the program SDK each program gets on a4 up ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **docs:** rank documentation search by query terms ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **interpreter:** let a consumer request a whole entity from the VM ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **mcp:** summarise explore results and look up one operation ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** add inspect-only wallet adapters ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** add testing helpers ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** drop patches for keys the Rust client does not hold ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** identify program SDKs by package release in Python ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** identify program SDKs by package release in Rust ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** identify program SDKs by package release in TypeScript ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** keep runtime extensions through object spread ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** order one key's frames by the server's version ([0b47eaf](https://github.com/AreteA4/arete/commit/0b47eafc0910c9006637a9759848a87203758c3b))
+* **sdk:** publish the extension API version ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+
+
+### Bug Fixes
+
+* **cli:** check the extensionApi the registry reports for an extension ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** confine --env-file to the project and replace it atomically ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** keep locks from older a4 releases installable ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** keep the previous composition artifacts until the replacement lands ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** pin the program SDKs of locked composed parts ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **cli:** require an older lock to pin exactly the SDK extensions it generates ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **interpreter:** send a requested whole entity with the next batch ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **react:** peer-depend on @usearete/sdk ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** drop patches for keys the Python client does not hold ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** drop patches for keys the TypeScript client does not hold ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** keep a stack's program types when no programs are attached ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **sdk:** share a same-release program only when it reads the same way ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** keep a resent entity's own position in recency order ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** never serve partial entities and resend evicted entities whole ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** rank entities without a sort value last ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** replace a state subscriber's copy when a missed frame replaced the entity ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+* **server:** tell created entities from changes instead of trusting eviction memory ([008860b](https://github.com/AreteA4/arete/commit/008860bf55884ba0222f6b6046c16b19337a37f4))
+
+## [0.24.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.23.1...arete-typescript-v0.24.0) (2026-09-27)
+
+
+### Miscellaneous Chores
+
+* **arete-typescript:** Synchronize arete versions
+
+## [0.23.1](https://github.com/AreteA4/arete/compare/arete-typescript-v0.23.0...arete-typescript-v0.23.1) (2026-09-25)
+
+
+### Miscellaneous Chores
+
+* **arete-typescript:** Synchronize arete versions
+
+## [0.23.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.22.4...arete-typescript-v0.23.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** in the Rust SDK, AuthErrorCode gains the StackVersionRetired and StackVersionUnknown variants, and AreteError::AuthRequestFailed gains a stack_version field. Exhaustive matches on AuthErrorCode, and patterns or constructors of AuthRequestFailed without `..`, need updating.
+
+### Features
+
+* **sdk:** name the served stack version when minting sessions ([aa06836](https://github.com/AreteA4/arete/commit/aa068362d434fb38f2998677fca763f3dba53714))
+* **sdk:** name the served stack version when minting sessions ([b4d3587](https://github.com/AreteA4/arete/commit/b4d3587f6adb1cc1722537c572be6f779822c20a))
+
+
+### Bug Fixes
+
+* **sdk:** keep socket issue guidance, unknown codes and close reasons ([8246496](https://github.com/AreteA4/arete/commit/8246496d7e9d1f7966edac4096a361b296c766ad))
+* **sdk:** treat bare and pre-open stack version refusals as terminal ([24c9c42](https://github.com/AreteA4/arete/commit/24c9c4201c40f819f7f57f40fd539d12b181ac84))
+
+## [0.22.4](https://github.com/AreteA4/arete/compare/arete-typescript-v0.22.3...arete-typescript-v0.22.4) (2026-09-24)
+
+
+### Miscellaneous Chores
+
+* **arete-typescript:** Synchronize arete versions
+
 ## [0.22.3](https://github.com/AreteA4/arete/compare/arete-typescript-v0.22.2...arete-typescript-v0.22.3) (2026-09-24)
 
 

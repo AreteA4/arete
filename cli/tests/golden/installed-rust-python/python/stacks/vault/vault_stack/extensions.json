@@ -1,0 +1,10 @@
+{
+  "entry": "extensions.py",
+  "files": [
+    "extensions.py"
+  ],
+  "inputKind": "stack-manifest",
+  "inputHash": "arete:h1:stack-manifest:sha256:53809b392576092808edfbf619ec0b9b4174373a84c2dac843af4a71537fbb72",
+  "sdkRange": null,
+  "language": "python"
+}

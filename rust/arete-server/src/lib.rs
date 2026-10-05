@@ -48,6 +48,7 @@ pub mod program_runtime;
 pub mod projector;
 pub mod runtime;
 pub mod snapshot;
+pub mod solana_gateway_usage;
 pub mod sorted_cache;
 pub mod telemetry;
 pub mod view;
@@ -58,8 +59,8 @@ pub use arete_auth::{
     SolanaGatewayScope, TargetKind, TokenVerifier, VerifyingKey, SCOPE_READ,
     SCOPE_TRANSACTION_INSPECT, SCOPE_TRANSACTION_SEND, SOLANA_GATEWAY_AUDIENCE,
 };
-pub use bus::{BusManager, BusMessage};
-pub use cache::{EntityCache, EntityCacheConfig};
+pub use bus::{BusManager, BusMessage, StateUpdate};
+pub use cache::{CacheWrite, EntityCache, EntityCacheConfig, PatchOrigin};
 pub use config::{
     HealthConfig, HttpHealthConfig, HttpServerConfig, ReconnectionConfig, RuntimePlan,
     ServerConfig, TransactionConfig, WebSocketConfig, WebSocketDeliveryConfig, YellowstoneConfig,
@@ -76,9 +77,12 @@ pub use program_runtime::{
     IdlContentHash, NormalizedIdlHash, ProgramAccountReaderFn, ProgramReleaseHash,
     ProgramRuntimeCatalog, ProgramRuntimeDefinition, ProgramSpecHash,
 };
-pub use projector::Projector;
+pub use projector::{EntityResync, Projector};
 pub use runtime::{ConnectionServer, Runtime, RuntimeHandle};
 pub use snapshot::{SnapshotConfig, SnapshotService};
+pub use solana_gateway_usage::{
+    SolanaGatewayUsageObservation, SolanaGatewayUsageObserver, SolanaGatewayUsageSurface,
+};
 pub use telemetry::{init as init_telemetry, TelemetryConfig};
 #[cfg(feature = "otel")]
 pub use telemetry::{init_with_otel, TelemetryGuard};
@@ -218,6 +222,12 @@ impl SolanaGatewayBuilder {
         self
     }
 
+    /// Observe completed chain and transaction operations.
+    pub fn usage_observer(mut self, observer: Arc<dyn SolanaGatewayUsageObserver>) -> Self {
+        self.inner.solana_gateway_usage_observer = Some(observer);
+        self
+    }
+
     fn finalize(mut self) -> Result<ServerBuilder> {
         if self
             .inner
@@ -258,6 +268,7 @@ pub struct ServerBuilder {
     websocket_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     http_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     websocket_usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    solana_gateway_usage_observer: Option<Arc<dyn SolanaGatewayUsageObserver>>,
     websocket_max_clients: Option<usize>,
     websocket_rate_limit_config: Option<crate::websocket::client_manager::RateLimitConfig>,
     #[cfg(feature = "otel")]
@@ -274,6 +285,7 @@ impl ServerBuilder {
             websocket_auth_plugin: None,
             http_auth_plugin: None,
             websocket_usage_emitter: None,
+            solana_gateway_usage_observer: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
             #[cfg(feature = "otel")]
@@ -556,6 +568,10 @@ impl ServerBuilder {
             runtime = runtime.with_websocket_usage_emitter(emitter);
         }
 
+        if let Some(observer) = self.solana_gateway_usage_observer {
+            runtime = runtime.with_solana_gateway_usage_observer(observer);
+        }
+
         if let Some(max_clients) = self.websocket_max_clients {
             runtime = runtime.with_websocket_max_clients(max_clients);
         }
@@ -790,6 +806,7 @@ mod tests {
         assert!(builder.inner.spec.is_none());
         assert!(builder.inner.views.is_none());
         assert!(builder.inner.materialized_views.is_none());
+        assert!(builder.inner.solana_gateway_usage_observer.is_none());
         assert!(!builder.inner.config.runtime_plan.websocket);
         assert!(!builder.inner.config.runtime_plan.live_runtime_enabled());
         assert!(!builder.inner.config.runtime_plan.stack_queries);

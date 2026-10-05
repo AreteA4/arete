@@ -31,7 +31,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use crate::instruction::BuiltInstruction;
-use crate::operations::TransactionFailureOutcome;
+use crate::operations::{Signer, TransactionFailureOutcome};
 use crate::transactions::TransactionTransport;
 
 /// Confirmation level for transaction processing.
@@ -424,6 +424,13 @@ pub struct TransactionInspectionResult {
 pub struct WalletExecutionContext {
     /// Transaction relay transport supplied by the executing client, if any.
     pub transaction_transport: Option<Arc<dyn TransactionTransport>>,
+    /// Per-send signers (the TS `SendOptions.signers` the executor passes):
+    /// the transaction's own
+    /// [`signers`](crate::operations::PreparedTransactionBody::signers), then
+    /// the signer registry's. An adapter that signs locally uses those that
+    /// [sign](crate::operations::Signer::sign_transaction_message) for a
+    /// required signature it does not own.
+    pub signers: Vec<Arc<dyn Signer>>,
 }
 
 impl WalletExecutionContext {
@@ -431,7 +438,15 @@ impl WalletExecutionContext {
     pub fn new(transaction_transport: Option<Arc<dyn TransactionTransport>>) -> Self {
         Self {
             transaction_transport,
+            signers: Vec::new(),
         }
+    }
+
+    /// This context with the given per-send signers.
+    #[must_use]
+    pub fn with_signers(mut self, signers: Vec<Arc<dyn Signer>>) -> Self {
+        self.signers = signers;
+        self
     }
 }
 
@@ -444,6 +459,14 @@ impl fmt::Debug for WalletExecutionContext {
                     .transaction_transport
                     .as_ref()
                     .map(|_| "TransactionTransport"),
+            )
+            .field(
+                "signers",
+                &self
+                    .signers
+                    .iter()
+                    .map(|signer| signer.address())
+                    .collect::<Vec<_>>(),
             )
             .finish()
     }

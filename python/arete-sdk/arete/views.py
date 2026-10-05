@@ -241,33 +241,43 @@ def _serialize_key_value(value: Any, view: str, field: Optional[str] = None) -> 
 
 
 async def _wait_resolved(
-    lease: QueryLease, timeout: Optional[float], view: str
+    registry: SubscriptionRegistry, lease: QueryLease, timeout: Optional[float], view: str
 ) -> None:
     """Wait until the lease's snapshot has resolved (or its query failed).
 
-    Bounded by ``timeout`` seconds (``None`` waits forever): a socket that
-    never delivers must not hang the caller. Raises
-    :class:`InitialDataTimeoutError` on expiry; the change listener is
-    detached on the timeout and cancellation paths alike.
+    A terminal connection failure raises that failure (``CONNECTION_ERROR``),
+    and a disconnect that clears the subscriptions raises
+    ``CONNECTION_CANCELLED``. Bounded by ``timeout`` seconds (``None`` waits
+    forever): a socket that never delivers must not hang the caller. Raises
+    :class:`InitialDataTimeoutError` on expiry; the listeners are detached on
+    every path, cancellation included.
     """
     result = lease.get_result()
     if result.error is not None:
         raise result.error
     if not result.is_loading:
         return
+    connection_error = registry.get_connection_error()
+    if connection_error is not None:
+        raise connection_error
 
     future: "asyncio.Future[None]" = asyncio.get_running_loop().create_future()
+
+    def fail(error: BaseException) -> None:
+        if not future.done():
+            future.set_exception(error)
 
     def on_change() -> None:
         if future.done():
             return
         state = lease.get_result()
         if state.error is not None:
-            future.set_exception(state.error)
+            fail(state.error)
         elif not state.is_loading:
             future.set_result(None)
 
-    unsubscribe = lease.on_change(on_change)
+    unsubscribe_changes = lease.on_change(on_change)
+    unsubscribe_failures = registry.on_failure(fail)
     try:
         if timeout is None:
             await future
@@ -277,7 +287,8 @@ async def _wait_resolved(
             except asyncio.TimeoutError:
                 raise InitialDataTimeoutError(view, timeout) from None
     finally:
-        unsubscribe()
+        unsubscribe_changes()
+        unsubscribe_failures()
 
 
 def _fail_stream_on_query_error(lease: QueryLease, queue: _StreamQueue) -> Callable[[], None]:
@@ -420,12 +431,13 @@ class ListViewHandle:
     async def get(self, **options: Any) -> List[Any]:
         """Await the snapshot of an equivalent lease, bounded by ``timeout``
         seconds (default: the handle's ``initial_data_timeout``; ``None``
-        waits forever). Raises :class:`InitialDataTimeoutError` on expiry."""
+        waits forever). Raises :class:`InitialDataTimeoutError` on expiry, and
+        the connection's error when it fails before the snapshot arrives."""
         query, snapshot_enabled, parser, opts = self._prepare(options, "get")
         timeout = _resolve_timeout(opts, self._initial_data_timeout)
         lease = self._registry.subscribe(query, snapshot_enabled)
         try:
-            await _wait_resolved(lease, timeout, self._view)
+            await _wait_resolved(self._registry, lease, timeout, self._view)
             data = lease.get_result().data
             return [parser(entity) if parser else entity for entity in data]
         finally:
@@ -514,14 +526,15 @@ class StateViewHandle:
     async def get(self, key: Any = None, **options: Any) -> Optional[Any]:
         """Await the snapshot of an equivalent lease, bounded by ``timeout``
         seconds (default: the handle's ``initial_data_timeout``; ``None``
-        waits forever). Raises :class:`InitialDataTimeoutError` on expiry."""
+        waits forever). Raises :class:`InitialDataTimeoutError` on expiry, and
+        the connection's error when it fails before the snapshot arrives."""
         query, snapshot_enabled, parser, _wire_key, opts = self._prepare(
             key, options, "get"
         )
         timeout = _resolve_timeout(opts, self._initial_data_timeout)
         lease = self._registry.subscribe(query, snapshot_enabled)
         try:
-            await _wait_resolved(lease, timeout, self._view)
+            await _wait_resolved(self._registry, lease, timeout, self._view)
             data = lease.get_result().data
             if not data:
                 return None

@@ -12,6 +12,17 @@ The adapter owns legacy, v0 and transaction-V1 (SIMD-0385) construction, signing
 npm install @usearete/adapter-kit @solana/kit @usearete/sdk
 ```
 
+## Peer dependencies
+
+| Package         | Range             | Required                                                           |
+| --------------- | ----------------- | ------------------------------------------------------------------ |
+| `@usearete/sdk` | same release line | Yes. Install exactly one copy, on the same release as this adapter |
+| `@solana/kit`   | `^8.3`            | Yes                                                                |
+
+Runtime: Node.js 20.18 or newer (the floor Kit 8 declares), or a modern browser. Transactions: `legacy`, `0` (the default) and `1`, with the full resource budget. Address lookup tables are refused for every version.
+
+Browser wallets connect through Wallet Standard with [`createWalletStandardSigner`](#external-wallets-wallet-standard); no wallet-specific adapter packages are needed.
+
 ## Usage
 
 ```ts
@@ -68,6 +79,18 @@ const receipt = await client.execute(prepared, {
 V1's `computeUnitLimit` and `loadedAccountsDataSizeLimit` are always resolved before signing, because an omitted V1 budget requests the *minimum* rather than a default (SIMD-0385) — a message without them could only fail on chain. An explicit value is used verbatim and never raised. An omitted one is measured: the adapter simulates a provisional unsigned message declaring the protocol maxima (1,400,000 CU and 64 MiB) with signature verification off, then derives the budget with 20% compute headroom and one 32 KiB page of loaded-data headroom, bounded by those same maxima. Only a metric the simulation never reports is refused, naming the option to pass instead.
 
 `inspectTransaction` builds that same provisional message, never signs or submits, and returns its `transactionVersion` and applied `resources` alongside the fee and simulation metrics — so its output is what you pin the budgets with.
+
+### Inspect-only wallets
+
+`createInspectOnlyWalletAdapter({ publicKey })` holds only an address, which it uses as the fee payer. Operations prepare against it and `client.inspectOperation()` estimates fees and simulates, but every sign or send throws `KitTransactionExecutionError` with a `not-submitted` (`wallet` phase) outcome whose cause is named `InspectOnlyWalletError`, before anything is built or dispatched. Use it for agents and CI that verify transactions without keys; hosted inspection needs the `transaction:inspect` scope.
+
+```ts
+import { createInspectOnlyWalletAdapter } from '@usearete/adapter-kit';
+
+const wallet = createInspectOnlyWalletAdapter({ publicKey: owner, transport: 'auto' });
+const client = await Arete.connect(MY_STACK, { wallet });
+const inspection = await client.inspectOperation(prepared);
+```
 
 Final wire bytes are checked against 1232 bytes for legacy/v0 and 4096 for V1. The V1 structural caps (12 signatures, 64 accounts, 64 top-level instructions) are enforced by kit's own compiler, one step earlier and equally before signing.
 

@@ -506,7 +506,8 @@ agent-independent set (manifest, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`,
    `arete-programs`, `arete-stack-authoring`, and `arete-deploy` skills hold the
    detailed workflows.
 
-   - Health check first: `a4 doctor --json` (exit 0 = ready). If `a4` is
+   - Health check first: `a4 doctor --json` (ready when top-level `status` is
+     `"ok"`; exit 0 can include warnings). If `a4` is
      missing: `curl -fsSL https://arete.run/install.sh | sh`
    - Start from intent with `a4 know search --query "..." --json`, then inspect
      exact descriptors with `a4 explore stack <ref> --json` or
@@ -515,6 +516,12 @@ agent-independent set (manifest, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`,
      descriptor with `a4 install stack <ref> --ts` or
      `a4 install program <ref> --ts`; use `--rust` or `--python` only when the
      descriptor advertises that target.
+   - A stack includes the program SDKs for the programs its views index, at
+     `arete.programs.<name>`; install a program separately only when no stack
+     you use covers it.
+   - Starting a new app? `a4 create <dir> --template react-ore` scaffolds a
+     working example in a new directory (also `typescript-ore`, `rust-ore`,
+     `python-ore`).
    - Account: `a4 auth signup` (agent) or `a4 auth login --key <a4_ak_…>`.
    - Live data in your loop: the `arete` MCP server (`a4 mcp`) is configured;
      use it for exploration, use generated SDKs for shipped code.

@@ -25,15 +25,14 @@ pub(crate) fn build_manifest(root: &Path, name: Option<String>) -> Result<Manife
                 .into_owned();
             (
                 alias,
-                AuthoringStackV1 {
-                    manifest: artifact,
-                    artifact_roots: vec![if artifact_root.is_empty() {
+                AuthoringStackV1::prebuilt(
+                    artifact,
+                    vec![if artifact_root.is_empty() {
                         ".".into()
                     } else {
                         artifact_root
                     }],
-                    deployment_name: None,
-                },
+                ),
             )
         })
         .collect();

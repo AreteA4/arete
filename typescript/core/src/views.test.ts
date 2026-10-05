@@ -4,8 +4,14 @@ import { MemoryAdapter } from './storage/memory-adapter';
 import { SubscriptionRegistry } from './subscription';
 import type { ConnectionManager } from './connection';
 import { QueryStore } from './query-store';
-import type { TypedViewGroup, ViewDef } from './types';
-import { createTypedStateView, serializeViewKey } from './views';
+import { AreteError } from './types';
+import type { Subscription, TypedViewGroup, ViewDef } from './types';
+import {
+  createTypedListView,
+  createTypedStateView,
+  InitialDataTimeoutError,
+  serializeViewKey,
+} from './views';
 
 type GeneratedRoundViews = TypedViewGroup<{
   state: ViewDef<{ name: string }, 'state', { roundId: bigint }>;
@@ -115,5 +121,183 @@ describe('createTypedStateView', () => {
     }, ['42']);
 
     expect(view.getSync({ roundId: 42n })).toEqual({ name: 'round 42' });
+  });
+});
+
+type Round = { name: string };
+
+function setup() {
+  const storage = new MemoryAdapter();
+  const queryStore = new QueryStore(storage);
+  const subscribed: Subscription[] = [];
+  const unsubscribed: string[] = [];
+  const registry = new SubscriptionRegistry({
+    subscribe: (subscription: Subscription) => { subscribed.push(subscription); },
+    unsubscribe: (subscriptionId: string) => { unsubscribed.push(subscriptionId); },
+    refresh: () => undefined,
+  } as unknown as ConnectionManager, queryStore);
+  const deliver = (subscription: Subscription, entities: Record<string, Round>) => {
+    for (const [key, data] of Object.entries(entities)) {
+      storage.set(subscription.query.view, key, data);
+    }
+    queryStore.stageSnapshot({
+      protocolVersion: 2,
+      subscriptionId: subscription.subscriptionId,
+      snapshotId: `snapshot-${subscription.subscriptionId}`,
+      authoritative: true,
+      mode: subscription.query.key === undefined ? 'list' : 'state',
+      entity: subscription.query.view,
+      op: 'snapshot',
+      data: Object.entries(entities).map(([key, data]) => ({ key, data })),
+      complete: true,
+    }, Object.keys(entities));
+  };
+  const list = createTypedListView<Round>(
+    { mode: 'list', view: 'OreRound/list' },
+    storage,
+    registry
+  );
+  const state = createTypedStateView<Round, { roundId: bigint }>(
+    { mode: 'state', view: 'OreRound/state', keyFields: ['roundId'] },
+    storage,
+    registry
+  );
+  return { queryStore, registry, subscribed, unsubscribed, deliver, list, state };
+}
+
+describe('get', () => {
+  it('opens a subscription, waits for its snapshot, and releases it', async () => {
+    const { subscribed, unsubscribed, deliver, list, registry } = setup();
+
+    const pending = list.get();
+    expect(subscribed).toHaveLength(1);
+    deliver(subscribed[0]!, { a: { name: 'round a' }, b: { name: 'round b' } });
+
+    await expect(pending).resolves.toEqual([{ name: 'round a' }, { name: 'round b' }]);
+    expect(unsubscribed).toEqual([subscribed[0]!.subscriptionId]);
+    expect(registry.getRefCount({ view: 'OreRound/list' })).toBe(0);
+  });
+
+  it('resolves a state view to its entity, or null when absent', async () => {
+    const { subscribed, deliver, state } = setup();
+
+    const present = state.get({ roundId: 42n });
+    deliver(subscribed[0]!, { '42': { name: 'round 42' } });
+    await expect(present).resolves.toEqual({ name: 'round 42' });
+
+    const absent = state.get({ roundId: 7n });
+    expect(subscribed[1]!.query.key).toBe('7');
+    deliver(subscribed[1]!, {});
+    await expect(absent).resolves.toBeNull();
+  });
+
+  it('reuses an active equivalent subscription without waiting or releasing it', async () => {
+    const { subscribed, unsubscribed, deliver, list, registry } = setup();
+    const live = registry.subscribe({ view: 'OreRound/list' });
+    deliver(subscribed[0]!, { a: { name: 'round a' } });
+
+    await expect(list.get()).resolves.toEqual([{ name: 'round a' }]);
+    expect(subscribed).toHaveLength(1);
+    expect(unsubscribed).toEqual([]);
+    expect(registry.getRefCount({ view: 'OreRound/list' })).toBe(1);
+    live.release();
+  });
+
+  it('rejects with InitialDataTimeoutError and releases when no snapshot arrives', async () => {
+    const { subscribed, unsubscribed, list } = setup();
+
+    const error = await list.get({ timeoutMs: 10 }).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(InitialDataTimeoutError);
+    expect(error).toMatchObject({ code: 'INITIAL_DATA_TIMEOUT', view: 'OreRound/list', timeoutMs: 10 });
+    expect(unsubscribed).toEqual([subscribed[0]!.subscriptionId]);
+  });
+
+  it('rejects with the query error when the subscription fails', async () => {
+    const { queryStore, subscribed, list } = setup();
+
+    const pending = list.get();
+    queryStore.failRefresh(
+      subscribed[0]!.subscriptionId,
+      new AreteError('view not found', 'VIEW_NOT_FOUND')
+    );
+    await expect(pending).rejects.toMatchObject({ code: 'VIEW_NOT_FOUND' });
+  });
+
+  it('resolves immediately when the snapshot is disabled', async () => {
+    const { list } = setup();
+    await expect(list.get({ withSnapshot: false })).resolves.toEqual([]);
+  });
+
+  it('keeps timeoutMs out of the wire query and rejects invalid values', async () => {
+    const { subscribed, deliver, list } = setup();
+
+    const pending = list.get({ take: 5, timeoutMs: null });
+    expect(subscribed[0]!.query).toEqual({ view: 'OreRound/list', take: 5 });
+    deliver(subscribed[0]!, {});
+    await expect(pending).resolves.toEqual([]);
+
+    await expect(list.get({ timeoutMs: 0 })).rejects.toBeInstanceOf(RangeError);
+    await expect(list.get({ timeoutMs: Number.POSITIVE_INFINITY })).rejects.toBeInstanceOf(RangeError);
+  });
+});
+
+describe('get when the connection fails', () => {
+  it('rejects with the connection error instead of timing out', async () => {
+    const { registry, subscribed, unsubscribed, list } = setup();
+
+    const pending = list.get({ timeoutMs: null });
+    registry.handleConnectionState('error', 'Authentication refused');
+
+    await expect(pending).rejects.toMatchObject({
+      code: 'CONNECTION_ERROR',
+      message: 'Authentication refused',
+    });
+    expect(unsubscribed).toEqual([subscribed[0]!.subscriptionId]);
+  });
+
+  it('rejects at once while the connection is failed, and waits again once it restarts', async () => {
+    const { registry, subscribed, deliver, list } = setup();
+    registry.handleConnectionState('error', 'Authentication refused');
+
+    await expect(list.get()).rejects.toMatchObject({ code: 'CONNECTION_ERROR' });
+
+    registry.handleConnectionState('connecting');
+    const pending = list.get();
+    deliver(subscribed[1]!, { a: { name: 'round a' } });
+    await expect(pending).resolves.toEqual([{ name: 'round a' }]);
+  });
+
+  it('still reads an active subscription that already has its snapshot', async () => {
+    const { registry, subscribed, deliver, list } = setup();
+    const live = registry.subscribe({ view: 'OreRound/list' });
+    deliver(subscribed[0]!, { a: { name: 'round a' } });
+    registry.handleConnectionState('error', 'Connection lost');
+
+    await expect(list.get()).resolves.toEqual([{ name: 'round a' }]);
+    live.release();
+  });
+
+  it('rejects an unbounded read when a disconnect clears the subscriptions', async () => {
+    const { registry, list } = setup();
+
+    const pending = list.get({ timeoutMs: null });
+    registry.clear();
+
+    await expect(pending).rejects.toMatchObject({ code: 'CONNECTION_CANCELLED' });
+  });
+});
+
+describe('getOne', () => {
+  it('reads the first item through a take: 1 subscription', async () => {
+    const { subscribed, deliver, list } = setup();
+
+    const first = list.getOne();
+    expect(subscribed[0]!.query).toEqual({ view: 'OreRound/list', take: 1 });
+    deliver(subscribed[0]!, { a: { name: 'round a' } });
+    await expect(first).resolves.toEqual({ name: 'round a' });
+
+    const empty = list.getOne();
+    deliver(subscribed[1]!, {});
+    await expect(empty).resolves.toBeNull();
   });
 });

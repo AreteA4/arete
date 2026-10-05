@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "program-spec",
+    "hash": "arete:h1:program-spec:sha256:5469c29441aaeac7da96e8f1ac69a42de33bf7805a76c83c75da9d762213b952"
+  },
+  "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}",
+  "extensions": {
+    "contentSha256": "265cb1b12c59866b438f9d31ba97013c423ab58e0c4cbcd35cb91b42c74af5a4"
+  },
+  "artifacts": [
+    "pyproject.toml",
+    "vault_program/__init__.py",
+    "vault_program/extensions.json",
+    "vault_program/extensions.py",
+    "vault_program/models.py",
+    "vault_program/programs.py",
+    "vault_program/vault_math.py"
+  ]
+}

@@ -86,6 +86,36 @@ __all__ = [
     "OreMiner",
     "ore_miner_from_wire",
     "ore_miner_patch_from_wire",
+    "AutomationConditions",
+    "automation_conditions_from_wire",
+    "automation_conditions_patch_from_wire",
+    "OreAutomation",
+    "ore_automation_from_wire",
+    "ore_automation_patch_from_wire",
+    "AdminConfig",
+    "admin_config_from_wire",
+    "admin_config_patch_from_wire",
+    "ProtocolConfig",
+    "protocol_config_from_wire",
+    "protocol_config_patch_from_wire",
+    "Config",
+    "config_from_wire",
+    "config_patch_from_wire",
+    "Numeric",
+    "numeric_from_wire",
+    "numeric_patch_from_wire",
+    "OreMinerAccount",
+    "ore_miner_account_from_wire",
+    "ore_miner_account_patch_from_wire",
+    "Round",
+    "round_from_wire",
+    "round_patch_from_wire",
+    "OreTreasuryAccount",
+    "ore_treasury_account_from_wire",
+    "ore_treasury_account_patch_from_wire",
+    "Var",
+    "var_from_wire",
+    "var_patch_from_wire",
 ]
 
 def _snake_key(key: str) -> str:
@@ -1163,4 +1193,512 @@ def ore_miner_patch_from_wire(value: Any) -> Dict[str, Any]:
         out["miner_snapshot"] = _convert_capture(data["miner_snapshot"], miner_from_wire)
     if "automation_snapshot" in data:
         out["automation_snapshot"] = _convert_capture(data["automation_snapshot"], automation_from_wire)
+    return out
+
+
+@dataclass
+class AutomationConditions:
+    """IDL type `AutomationConditions` as program reads decode it."""
+
+    max_production_cost: Optional[int] = None
+    min_motherlode: Optional[int] = None
+    max_motherlode: Optional[int] = None
+
+
+def automation_conditions_from_wire(value: Any) -> AutomationConditions:
+    """Converts a wire payload into :class:`AutomationConditions`.
+
+    Raises ``ValueError`` when a required field is absent."""
+    data = _mapping(value, "AutomationConditions")
+    return AutomationConditions(
+        max_production_cost=_to_int(_require(data, "max_production_cost", "AutomationConditions")),
+        min_motherlode=_to_int(_require(data, "min_motherlode", "AutomationConditions")),
+        max_motherlode=_to_int(_require(data, "max_motherlode", "AutomationConditions")),
+    )
+
+
+def automation_conditions_patch_from_wire(value: Any) -> Dict[str, Any]:
+    """Converts a partial `AutomationConditions` patch; only present keys appear."""
+    data = _mapping(value, "AutomationConditions patch")
+    out: Dict[str, Any] = {}
+    if "max_production_cost" in data:
+        out["max_production_cost"] = _to_int(data["max_production_cost"])
+    if "min_motherlode" in data:
+        out["min_motherlode"] = _to_int(data["min_motherlode"])
+    if "max_motherlode" in data:
+        out["max_motherlode"] = _to_int(data["max_motherlode"])
+    return out
+
+
+@dataclass
+class OreAutomation:
+    """Account `Automation` as program reads decode it."""
+
+    amount: Optional[int] = None
+    authority: Optional[str] = None
+    balance: Optional[int] = None
+    executor: Optional[str] = None
+    fee: Optional[int] = None
+    strategy: Optional[int] = None
+    mask: Optional[int] = None
+    reload: Optional[int] = None
+    total_sol_spent: Optional[int] = None
+    total_ore_earned: Optional[int] = None
+    conditions: Optional[AutomationConditions] = None
+
+
+def ore_automation_from_wire(value: Any) -> OreAutomation:
+    """Converts a wire payload into :class:`OreAutomation`.
+
+    Raises ``ValueError`` when a required field is absent."""
+    data = _mapping(value, "OreAutomation")
+    return OreAutomation(
+        amount=_to_int(_require(data, "amount", "OreAutomation")),
+        authority=_require(data, "authority", "OreAutomation"),
+        balance=_to_int(_require(data, "balance", "OreAutomation")),
+        executor=_require(data, "executor", "OreAutomation"),
+        fee=_to_int(_require(data, "fee", "OreAutomation")),
+        strategy=_to_int(_require(data, "strategy", "OreAutomation")),
+        mask=_to_int(_require(data, "mask", "OreAutomation")),
+        reload=_to_int(_require(data, "reload", "OreAutomation")),
+        total_sol_spent=_to_int(_require(data, "total_sol_spent", "OreAutomation")),
+        total_ore_earned=_to_int(_require(data, "total_ore_earned", "OreAutomation")),
+        conditions=_convert(_require(data, "conditions", "OreAutomation"), automation_conditions_from_wire),
+    )
+
+
+def ore_automation_patch_from_wire(value: Any) -> Dict[str, Any]:
+    """Converts a partial `OreAutomation` patch; only present keys appear."""
+    data = _mapping(value, "OreAutomation patch")
+    out: Dict[str, Any] = {}
+    if "amount" in data:
+        out["amount"] = _to_int(data["amount"])
+    if "authority" in data:
+        out["authority"] = data["authority"]
+    if "balance" in data:
+        out["balance"] = _to_int(data["balance"])
+    if "executor" in data:
+        out["executor"] = data["executor"]
+    if "fee" in data:
+        out["fee"] = _to_int(data["fee"])
+    if "strategy" in data:
+        out["strategy"] = _to_int(data["strategy"])
+    if "mask" in data:
+        out["mask"] = _to_int(data["mask"])
+    if "reload" in data:
+        out["reload"] = _to_int(data["reload"])
+    if "total_sol_spent" in data:
+        out["total_sol_spent"] = _to_int(data["total_sol_spent"])
+    if "total_ore_earned" in data:
+        out["total_ore_earned"] = _to_int(data["total_ore_earned"])
+    if "conditions" in data:
+        out["conditions"] = _convert(data["conditions"], automation_conditions_from_wire)
+    return out
+
+
+@dataclass
+class AdminConfig:
+    """IDL type `AdminConfig` as program reads decode it."""
+
+    authority: Optional[str] = None
+    fee_collector: Optional[str] = None
+    fee_rate: Optional[int] = None
+
+
+def admin_config_from_wire(value: Any) -> AdminConfig:
+    """Converts a wire payload into :class:`AdminConfig`.
+
+    Raises ``ValueError`` when a required field is absent."""
+    data = _mapping(value, "AdminConfig")
+    return AdminConfig(
+        authority=_require(data, "authority", "AdminConfig"),
+        fee_collector=_require(data, "fee_collector", "AdminConfig"),
+        fee_rate=_to_int(_require(data, "fee_rate", "AdminConfig")),
+    )
+
+
+def admin_config_patch_from_wire(value: Any) -> Dict[str, Any]:
+    """Converts a partial `AdminConfig` patch; only present keys appear."""
+    data = _mapping(value, "AdminConfig patch")
+    out: Dict[str, Any] = {}
+    if "authority" in data:
+        out["authority"] = data["authority"]
+    if "fee_collector" in data:
+        out["fee_collector"] = data["fee_collector"]
+    if "fee_rate" in data:
+        out["fee_rate"] = _to_int(data["fee_rate"])
+    return out
+
+
+@dataclass
+class ProtocolConfig:
+    """IDL type `ProtocolConfig` as program reads decode it."""
+
+    authority: Optional[str] = None
+    fee_collector: Optional[str] = None
+    fee_rate: Optional[int] = None
+    intermission_slots: Optional[int] = None
+    round_slots: Optional[int] = None
+    entropy_var_address: Optional[str] = None
+    entropy_program_id: Optional[str] = None
+
+
+def protocol_config_from_wire(value: Any) -> ProtocolConfig:
+    """Converts a wire payload into :class:`ProtocolConfig`.
+
+    Raises ``ValueError`` when a required field is absent."""
+    data = _mapping(value, "ProtocolConfig")
+    return ProtocolConfig(
+        authority=_require(data, "authority", "ProtocolConfig"),
+        fee_collector=_require(data, "fee_collector", "ProtocolConfig"),
+        fee_rate=_to_int(_require(data, "fee_rate", "ProtocolConfig")),
+        intermission_slots=_to_int(_require(data, "intermission_slots", "ProtocolConfig")),
+        round_slots=_to_int(_require(data, "round_slots", "ProtocolConfig")),
+        entropy_var_address=_require(data, "entropy_var_address", "ProtocolConfig"),
+        entropy_program_id=_require(data, "entropy_program_id", "ProtocolConfig"),
+    )
+
+
+def protocol_config_patch_from_wire(value: Any) -> Dict[str, Any]:
+    """Converts a partial `ProtocolConfig` patch; only present keys appear."""
+    data = _mapping(value, "ProtocolConfig patch")
+    out: Dict[str, Any] = {}
+    if "authority" in data:
+        out["authority"] = data["authority"]
+    if "fee_collector" in data:
+        out["fee_collector"] = data["fee_collector"]
+    if "fee_rate" in data:
+        out["fee_rate"] = _to_int(data["fee_rate"])
+    if "intermission_slots" in data:
+        out["intermission_slots"] = _to_int(data["intermission_slots"])
+    if "round_slots" in data:
+        out["round_slots"] = _to_int(data["round_slots"])
+    if "entropy_var_address" in data:
+        out["entropy_var_address"] = data["entropy_var_address"]
+    if "entropy_program_id" in data:
+        out["entropy_program_id"] = data["entropy_program_id"]
+    return out
+
+
+@dataclass
+class Config:
+    """Account `Config` as program reads decode it."""
+
+    admin: Optional[AdminConfig] = None
+    protocol: Optional[ProtocolConfig] = None
+
+
+def config_from_wire(value: Any) -> Config:
+    """Converts a wire payload into :class:`Config`.
+
+    Raises ``ValueError`` when a required field is absent."""
+    data = _mapping(value, "Config")
+    return Config(
+        admin=_convert(_require(data, "admin", "Config"), admin_config_from_wire),
+        protocol=_convert(_require(data, "protocol", "Config"), protocol_config_from_wire),
+    )
+
+
+def config_patch_from_wire(value: Any) -> Dict[str, Any]:
+    """Converts a partial `Config` patch; only present keys appear."""
+    data = _mapping(value, "Config patch")
+    out: Dict[str, Any] = {}
+    if "admin" in data:
+        out["admin"] = _convert(data["admin"], admin_config_from_wire)
+    if "protocol" in data:
+        out["protocol"] = _convert(data["protocol"], protocol_config_from_wire)
+    return out
+
+
+@dataclass
+class Numeric:
+    """IDL type `Numeric` as program reads decode it."""
+
+    bits: Optional[List[int]] = None
+
+
+def numeric_from_wire(value: Any) -> Numeric:
+    """Converts a wire payload into :class:`Numeric`.
+
+    Raises ``ValueError`` when a required field is absent."""
+    data = _mapping(value, "Numeric")
+    return Numeric(
+        bits=_to_int_list(_require(data, "bits", "Numeric")),
+    )
+
+
+def numeric_patch_from_wire(value: Any) -> Dict[str, Any]:
+    """Converts a partial `Numeric` patch; only present keys appear."""
+    data = _mapping(value, "Numeric patch")
+    out: Dict[str, Any] = {}
+    if "bits" in data:
+        out["bits"] = _to_int_list(data["bits"])
+    return out
+
+
+@dataclass
+class OreMinerAccount:
+    """Account `Miner` as program reads decode it."""
+
+    authority: Optional[str] = None
+    auto_return: Optional[int] = None
+    checkpoint_id: Optional[int] = None
+    checkpoint_fee: Optional[int] = None
+    deployed: Optional[List[int]] = None
+    mass: Optional[List[int]] = None
+    cumulative: Optional[List[int]] = None
+    round_id: Optional[int] = None
+    rewards_factor: Optional[Numeric] = None
+    rewards_sol: Optional[int] = None
+    refined_ore: Optional[int] = None
+    rewards_ore: Optional[int] = None
+    last_claim_ore_at: Optional[int] = None
+    last_claim_sol_at: Optional[int] = None
+    lifetime_rewards_ore: Optional[int] = None
+    lifetime_deployed: Optional[int] = None
+    lifetime_rewards_sol: Optional[int] = None
+
+
+def ore_miner_account_from_wire(value: Any) -> OreMinerAccount:
+    """Converts a wire payload into :class:`OreMinerAccount`.
+
+    Raises ``ValueError`` when a required field is absent."""
+    data = _mapping(value, "OreMinerAccount")
+    return OreMinerAccount(
+        authority=_require(data, "authority", "OreMinerAccount"),
+        auto_return=_to_int(_require(data, "auto_return", "OreMinerAccount")),
+        checkpoint_id=_to_int(_require(data, "checkpoint_id", "OreMinerAccount")),
+        checkpoint_fee=_to_int(_require(data, "checkpoint_fee", "OreMinerAccount")),
+        deployed=_to_int_list(_require(data, "deployed", "OreMinerAccount")),
+        mass=_to_int_list(_require(data, "mass", "OreMinerAccount")),
+        cumulative=_to_int_list(_require(data, "cumulative", "OreMinerAccount")),
+        round_id=_to_int(_require(data, "round_id", "OreMinerAccount")),
+        rewards_factor=_convert(_require(data, "rewards_factor", "OreMinerAccount"), numeric_from_wire),
+        rewards_sol=_to_int(_require(data, "rewards_sol", "OreMinerAccount")),
+        refined_ore=_to_int(_require(data, "refined_ore", "OreMinerAccount")),
+        rewards_ore=_to_int(_require(data, "rewards_ore", "OreMinerAccount")),
+        last_claim_ore_at=_to_int(_require(data, "last_claim_ore_at", "OreMinerAccount")),
+        last_claim_sol_at=_to_int(_require(data, "last_claim_sol_at", "OreMinerAccount")),
+        lifetime_rewards_ore=_to_int(_require(data, "lifetime_rewards_ore", "OreMinerAccount")),
+        lifetime_deployed=_to_int(_require(data, "lifetime_deployed", "OreMinerAccount")),
+        lifetime_rewards_sol=_to_int(_require(data, "lifetime_rewards_sol", "OreMinerAccount")),
+    )
+
+
+def ore_miner_account_patch_from_wire(value: Any) -> Dict[str, Any]:
+    """Converts a partial `OreMinerAccount` patch; only present keys appear."""
+    data = _mapping(value, "OreMinerAccount patch")
+    out: Dict[str, Any] = {}
+    if "authority" in data:
+        out["authority"] = data["authority"]
+    if "auto_return" in data:
+        out["auto_return"] = _to_int(data["auto_return"])
+    if "checkpoint_id" in data:
+        out["checkpoint_id"] = _to_int(data["checkpoint_id"])
+    if "checkpoint_fee" in data:
+        out["checkpoint_fee"] = _to_int(data["checkpoint_fee"])
+    if "deployed" in data:
+        out["deployed"] = _to_int_list(data["deployed"])
+    if "mass" in data:
+        out["mass"] = _to_int_list(data["mass"])
+    if "cumulative" in data:
+        out["cumulative"] = _to_int_list(data["cumulative"])
+    if "round_id" in data:
+        out["round_id"] = _to_int(data["round_id"])
+    if "rewards_factor" in data:
+        out["rewards_factor"] = _convert(data["rewards_factor"], numeric_from_wire)
+    if "rewards_sol" in data:
+        out["rewards_sol"] = _to_int(data["rewards_sol"])
+    if "refined_ore" in data:
+        out["refined_ore"] = _to_int(data["refined_ore"])
+    if "rewards_ore" in data:
+        out["rewards_ore"] = _to_int(data["rewards_ore"])
+    if "last_claim_ore_at" in data:
+        out["last_claim_ore_at"] = _to_int(data["last_claim_ore_at"])
+    if "last_claim_sol_at" in data:
+        out["last_claim_sol_at"] = _to_int(data["last_claim_sol_at"])
+    if "lifetime_rewards_ore" in data:
+        out["lifetime_rewards_ore"] = _to_int(data["lifetime_rewards_ore"])
+    if "lifetime_deployed" in data:
+        out["lifetime_deployed"] = _to_int(data["lifetime_deployed"])
+    if "lifetime_rewards_sol" in data:
+        out["lifetime_rewards_sol"] = _to_int(data["lifetime_rewards_sol"])
+    return out
+
+
+@dataclass
+class Round:
+    """Account `Round` as program reads decode it."""
+
+    id: Optional[int] = None
+    deployed: Optional[List[int]] = None
+    mass: Optional[List[int]] = None
+    count: Optional[List[int]] = None
+    slot_hash: Optional[List[int]] = None
+    expires_at: Optional[int] = None
+    motherlode: Optional[int] = None
+    rent_payer: Optional[str] = None
+    rewards: Optional[List[int]] = None
+    total_vaulted: Optional[int] = None
+    total_returned_sol: Optional[int] = None
+    total_miners: Optional[int] = None
+    top_miner: Optional[str] = None
+
+
+def round_from_wire(value: Any) -> Round:
+    """Converts a wire payload into :class:`Round`.
+
+    Raises ``ValueError`` when a required field is absent."""
+    data = _mapping(value, "Round")
+    return Round(
+        id=_to_int(_require(data, "id", "Round")),
+        deployed=_to_int_list(_require(data, "deployed", "Round")),
+        mass=_to_int_list(_require(data, "mass", "Round")),
+        count=_to_int_list(_require(data, "count", "Round")),
+        slot_hash=_to_int_list(_require(data, "slot_hash", "Round")),
+        expires_at=_to_int(_require(data, "expires_at", "Round")),
+        motherlode=_to_int(_require(data, "motherlode", "Round")),
+        rent_payer=_require(data, "rent_payer", "Round"),
+        rewards=_to_int_list(_require(data, "rewards", "Round")),
+        total_vaulted=_to_int(_require(data, "total_vaulted", "Round")),
+        total_returned_sol=_to_int(_require(data, "total_returned_sol", "Round")),
+        total_miners=_to_int(_require(data, "total_miners", "Round")),
+        top_miner=_require(data, "top_miner", "Round"),
+    )
+
+
+def round_patch_from_wire(value: Any) -> Dict[str, Any]:
+    """Converts a partial `Round` patch; only present keys appear."""
+    data = _mapping(value, "Round patch")
+    out: Dict[str, Any] = {}
+    if "id" in data:
+        out["id"] = _to_int(data["id"])
+    if "deployed" in data:
+        out["deployed"] = _to_int_list(data["deployed"])
+    if "mass" in data:
+        out["mass"] = _to_int_list(data["mass"])
+    if "count" in data:
+        out["count"] = _to_int_list(data["count"])
+    if "slot_hash" in data:
+        out["slot_hash"] = _to_int_list(data["slot_hash"])
+    if "expires_at" in data:
+        out["expires_at"] = _to_int(data["expires_at"])
+    if "motherlode" in data:
+        out["motherlode"] = _to_int(data["motherlode"])
+    if "rent_payer" in data:
+        out["rent_payer"] = data["rent_payer"]
+    if "rewards" in data:
+        out["rewards"] = _to_int_list(data["rewards"])
+    if "total_vaulted" in data:
+        out["total_vaulted"] = _to_int(data["total_vaulted"])
+    if "total_returned_sol" in data:
+        out["total_returned_sol"] = _to_int(data["total_returned_sol"])
+    if "total_miners" in data:
+        out["total_miners"] = _to_int(data["total_miners"])
+    if "top_miner" in data:
+        out["top_miner"] = data["top_miner"]
+    return out
+
+
+@dataclass
+class OreTreasuryAccount:
+    """Account `Treasury` as program reads decode it."""
+
+    motherlode: Optional[int] = None
+    miner_rewards_factor: Optional[Numeric] = None
+    total_refined: Optional[int] = None
+    total_unclaimed: Optional[int] = None
+
+
+def ore_treasury_account_from_wire(value: Any) -> OreTreasuryAccount:
+    """Converts a wire payload into :class:`OreTreasuryAccount`.
+
+    Raises ``ValueError`` when a required field is absent."""
+    data = _mapping(value, "OreTreasuryAccount")
+    return OreTreasuryAccount(
+        motherlode=_to_int(_require(data, "motherlode", "OreTreasuryAccount")),
+        miner_rewards_factor=_convert(_require(data, "miner_rewards_factor", "OreTreasuryAccount"), numeric_from_wire),
+        total_refined=_to_int(_require(data, "total_refined", "OreTreasuryAccount")),
+        total_unclaimed=_to_int(_require(data, "total_unclaimed", "OreTreasuryAccount")),
+    )
+
+
+def ore_treasury_account_patch_from_wire(value: Any) -> Dict[str, Any]:
+    """Converts a partial `OreTreasuryAccount` patch; only present keys appear."""
+    data = _mapping(value, "OreTreasuryAccount patch")
+    out: Dict[str, Any] = {}
+    if "motherlode" in data:
+        out["motherlode"] = _to_int(data["motherlode"])
+    if "miner_rewards_factor" in data:
+        out["miner_rewards_factor"] = _convert(data["miner_rewards_factor"], numeric_from_wire)
+    if "total_refined" in data:
+        out["total_refined"] = _to_int(data["total_refined"])
+    if "total_unclaimed" in data:
+        out["total_unclaimed"] = _to_int(data["total_unclaimed"])
+    return out
+
+
+@dataclass
+class Var:
+    """Account `Var` as program reads decode it."""
+
+    authority: Optional[str] = None
+    id: Optional[int] = None
+    provider: Optional[str] = None
+    commit: Optional[List[int]] = None
+    seed: Optional[List[int]] = None
+    slot_hash: Optional[List[int]] = None
+    value: Optional[List[int]] = None
+    samples: Optional[int] = None
+    is_auto: Optional[int] = None
+    start_at: Optional[int] = None
+    end_at: Optional[int] = None
+
+
+def var_from_wire(value: Any) -> Var:
+    """Converts a wire payload into :class:`Var`.
+
+    Raises ``ValueError`` when a required field is absent."""
+    data = _mapping(value, "Var")
+    return Var(
+        authority=_require(data, "authority", "Var"),
+        id=_to_int(_require(data, "id", "Var")),
+        provider=_require(data, "provider", "Var"),
+        commit=_to_int_list(_require(data, "commit", "Var")),
+        seed=_to_int_list(_require(data, "seed", "Var")),
+        slot_hash=_to_int_list(_require(data, "slot_hash", "Var")),
+        value=_to_int_list(_require(data, "value", "Var")),
+        samples=_to_int(_require(data, "samples", "Var")),
+        is_auto=_to_int(_require(data, "is_auto", "Var")),
+        start_at=_to_int(_require(data, "start_at", "Var")),
+        end_at=_to_int(_require(data, "end_at", "Var")),
+    )
+
+
+def var_patch_from_wire(value: Any) -> Dict[str, Any]:
+    """Converts a partial `Var` patch; only present keys appear."""
+    data = _mapping(value, "Var patch")
+    out: Dict[str, Any] = {}
+    if "authority" in data:
+        out["authority"] = data["authority"]
+    if "id" in data:
+        out["id"] = _to_int(data["id"])
+    if "provider" in data:
+        out["provider"] = data["provider"]
+    if "commit" in data:
+        out["commit"] = _to_int_list(data["commit"])
+    if "seed" in data:
+        out["seed"] = _to_int_list(data["seed"])
+    if "slot_hash" in data:
+        out["slot_hash"] = _to_int_list(data["slot_hash"])
+    if "value" in data:
+        out["value"] = _to_int_list(data["value"])
+    if "samples" in data:
+        out["samples"] = _to_int(data["samples"])
+    if "is_auto" in data:
+        out["is_auto"] = _to_int(data["is_auto"])
+    if "start_at" in data:
+        out["start_at"] = _to_int(data["start_at"])
+    if "end_at" in data:
+        out["end_at"] = _to_int(data["end_at"])
     return out

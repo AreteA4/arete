@@ -1,9 +1,9 @@
 ---
 name: arete
-description: Discover and install exact Arete stacks or program SDKs for a Solana application. Use for generic Arete setup, capability discovery, choosing between read/build/subscribe coverage, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for Rust stack definitions use arete-stack-authoring; for hosted publication or deployment use arete-deploy.
+description: Discover and install exact Arete stacks or program SDKs for a Solana application. Use for generic Arete setup, capability discovery, choosing between a stack, a standalone program SDK, or a composed stack, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for Rust stack definitions or composing stacks use arete-stack-authoring; for hosted publication or deployment use arete-deploy.
 metadata:
-  version: "1.1.0"
-  min-cli: ">=0.20.4"
+  version: "1.3.1"
+  min-cli: ">=0.25.1"
 ---
 
 # Discover and Install Arete Capabilities
@@ -12,7 +12,14 @@ Use this skill to turn an application intent into an exact, installed Arete depe
 
 ## Platform Model
 
-Arete exposes three capability modes:
+Arete has two building blocks:
+
+- **Live views**: entities and views that a hosted runtime maintains. Query them at a point in time or subscribe to their updates.
+- **Program SDKs**: one program's typed accounts, reads, PDAs, raw instruction builders, and semantic `instructions`, `transactions`, and `flows`.
+
+A **stack** is a named group of live views and program SDKs. A default stack includes the program SDKs for the programs its views index. A composed stack groups views and program SDKs that you choose.
+
+Catalog results describe coverage in three modes:
 
 - `subscribe`: typed point-in-time and live views from a hosted stack.
 - `read`: typed program-account and chain reads.
@@ -46,10 +53,12 @@ Narrow by `--kind program|stack`, `--mode read|build|subscribe`, and
 `--target typescript|rust|python` when the request already determines those
 constraints.
 
-Read each result's coverage modes. Continue with only the relevant branch:
+Read each result's coverage modes, then route by what the application needs:
 
-- `subscribe`: inspect the named stack, then use `arete-streams` for application code.
-- `read` or `build`: inspect the program surface, then use `arete-programs`.
+- **Live views, with or without operations**: a stack. Its program SDKs come with it (see [Stacks include their program SDKs](#stacks-include-their-program-sdks)). Use `arete-streams` for view code and `arete-programs` for the stack's operations.
+- **Reads and operations only**: a program SDK. Use `arete-programs`.
+- **Views and program SDKs that no stack groups**: compose a stack from them (see [Compose a stack](#compose-a-stack)), or install each one and hold them in one session.
+- A stack result without `subscribe` coverage is definition-only. It installs as a typed SDK and a pinned StackManifest, but nothing is hosted. The user can deploy their own copy after installing it (see `arete-deploy`); do not present it as a live stream until then.
 - No suitable hosted capability and the user wants a custom feed: specify the missing read model, then use `arete-stack-authoring`.
 - Publication or hosted lifecycle work: use `arete-deploy`.
 
@@ -67,6 +76,18 @@ forms resolve the same descriptor contract:
 a4 explore stack <stack-ref> --json
 a4 explore program <program-ref> --json
 ```
+
+Keep exploration output small when you only need part of a descriptor:
+
+```bash
+a4 explore stack <stack-ref> --summary --json
+a4 explore stack <stack-ref> --views <Entity>/<view> --json
+a4 explore stack <stack-ref> --operation <operation> --json
+a4 explore program <program-ref> --operation <operation> --json
+a4 explore program <program-ref> --section instructions --json
+```
+
+`--summary` lists a stack's entities with their view ids, its program SDKs, endpoints, and auth requirements. `--operation` takes a semantic path such as `transactions.<group>.<name>`, an operation id, or a raw instruction name. On a stack it searches the stack's program SDKs. Semantic paths need an API key; without one, only raw instruction names resolve.
 
 Catalog contents and capability delivery can change. Do not maintain a static
 list of public programs or stacks, infer an endpoint, or treat a search result
@@ -101,7 +122,32 @@ Choose `--ts`, `--rust`, or `--python` from the existing project language and th
 
 Use `--no-save` only for a genuinely disposable, one-package generation. Do not hand-edit generated SDKs.
 
+A definition-only stack's generated SDK has empty endpoints until the project records a deployment of it. Deploying it with `a4 up <alias>` (an external mutation; see `arete-deploy`) records the deployment in `arete.toml` and regenerates the SDK.
+
 For project dependency configuration, locked installs, updates, removals, and output ownership, read [references/project-dependencies.md](references/project-dependencies.md).
+
+### Stacks include their program SDKs
+
+A default stack includes the program SDKs for the programs its views index. Installing the stack gives you each one at `arete.programs.<name>` (`session.programs.<name>` in a session), using the stack's auth and transaction transport. These are the same SDKs a standalone `a4 install program` produces, from the same program package release, so you do not need a separate program install to get a stack's operations. Take `<name>` from the generated types.
+
+- Install a program on its own when you only need reads and transactions.
+- If no stack groups the views and program SDKs you need, compose one.
+- Installing a stack and the same program standalone is still valid. When both come from the same program package release, the install output lists the program under `Shared`, and at runtime they are one program.
+- Never merge stack and program objects by hand, for example by spreading them into one object. Pass stacks and programs to one session, or use the stack's own `programs`.
+
+To confirm that a stack provides an operation before adding another package for it, run `a4 explore stack <stack-ref> --operation <operation> --json`.
+
+Report the requirements before writing code that sends transactions. The install output lists the stack's auth requirements, and `auth` in `a4 explore stack <stack-ref> --summary --json` gives the same. Browser apps need a publishable key bound to the app's origin. When transactions need an account entitlement, `a4 doctor --json` reports the account's `account.transactions` readiness.
+
+### Compose a stack
+
+When no stack groups the live views and program SDKs you need, compose one from published parts:
+
+```bash
+a4 stack compose --name <name> --live <stack-ref> --program <program-ref> --install --ts
+```
+
+This writes `[authoring.stacks.<name>]` in `arete.toml`, declares the stack as a dependency with the SDK target you pass (`--ts`, `--rust`, or `--python`, as for `a4 install`), and installs it. The programs the views index come with them, as their stack's program SDKs. A composed stack does not carry a source stack's stack extension, such as its `read` functions. For view selection, local files, deployment, and limits, use `arete-stack-authoring`.
 
 ## Source-of-Truth Order
 

@@ -12,10 +12,19 @@ TypeScript, byte-identical round-trip for existing TS manifests). Rust bundles a
 wire into the generated module (`pub mod <stem>;` per file + `pub use <entry>::*;` at the
 stack module root — explicit manifest-driven wiring, no TS-style source regex) → write
 `sdk-provenance.json`. Sync re-reads the output-dir manifest with pins intact (fixing the
-TS silent-unpin sharp edge for the Rust path). Reference bundle: the `OreDevex` trait in
-`examples/ore-rust/src/generated/ore/{devex,extensions}.rs`. Registry gap: hosted Rust
-bundles need a language dimension on the backend `sdk_extension_contents` before the
-hosted resolution rung can match (the CLI already deserializes the field).
+TS silent-unpin sharp edge for the Rust path).
+
+Update (2026-09-30): the Rust bundle contract is canonical §9 ("Rust and Python extension
+bundles"): namespace modules of free functions (no traits, no `async-trait`), program
+context functions taking `&ProgramContext<'_, <Name>Program>` (`a4.programs.<p>.context()`),
+stack `read` functions taking `&Arete<Stack>`, generated items imported through the
+`super::generated` re-export module. The generator also emits `generated` and wires a
+program package's own bundle into a stack crate's `programs::<program>` module (files under
+`programs/<program>/`), so stack SDKs include program extensions. Hosted bundles resolve by
+target from the backend's language dimension; a bundle whose `language` differs from the
+target, or whose bytes do not re-hash to its `contentHash`, is a hard error. Reference
+bundle: `examples/ore-rust/src/generated/ore/{devex,extensions}.rs` (`addresses`, `read`,
+`transactions::mining::deploy_with_checkpoint`).
 
 Companion to `sdk-api-surface.md` (§2 wire formats, §3 TS surface are the contracts).
 Goal: the Rust SDK becomes functionally identical to `@usearete/sdk` using Rust idioms.
@@ -25,8 +34,9 @@ and `wallet/types.ts`.
 
 ## Cross-cutting design decisions (all modules follow these)
 
-- **Async traits**: use the `async-trait` crate for object-safe traits
+- **Async traits**: the SDK uses the `async-trait` crate for its object-safe traits
   (`ChainClient`, `TransactionTransport`, `WalletAdapter`); store as `Arc<dyn …>`.
+  Extension bundles do not: they are async free functions (canonical §9).
 - **Errors**: each module gets a small `thiserror` enum; anything crossing the client
   boundary converts into `AreteError` via `From`. Port the TS transaction outcome model
   exactly: `TransactionOutcome`/`TransactionFailureOutcome` discriminated by status
@@ -94,3 +104,44 @@ first connected member; `set_wallet` fans out; `close()` disconnects all.
 Rust shape: `Session::builder().stack("ore", OreStack).program("spl", …).connect().await`
 returning a struct with typed accessor generics is NOT feasible without codegen — use a
 runtime-keyed API (`session.stack::<OreStack>("ore")`) documented as the Rust idiom.
+
+### Program identity (canonical §9, added 2026-09-25)
+
+The session above never promoted stack-bundled programs: Rust reaches every program by
+a typed path. A stack's bundled programs are fields of its `Programs` struct
+(`client.programs.<field>`, `session.stack::<S>(key)?.programs.<field>`);
+`StackWithPrograms<S, P>` keeps them under `.stack` and puts the attachment under
+`.attached`; a standalone session program is recovered under its own member key with
+`session.program::<P>(key)`. No runtime key is shared between a stack's programs and an
+attached or standalone one, so the canonical `PROGRAM_KEY_CONFLICT` cases (a program
+attached under a key a stack provides, two stacks providing one key) cannot occur, and
+stack-scoped access is always there. That is the idiom; the guarantee the rule exists
+for — one key never resolves silently to one of two different releases — holds by
+construction.
+
+Identity itself is exposed so generated code and callers can apply it:
+`ProgramSdk::package_release_hash() -> Option<&'static str>` (default `None`; the Rust
+generator fills it from the program package release, as it does
+`packageReleaseHash` / `package_release_hash` in TS / Python) and
+`arete_sdk::same_program::<A, B>()` (same generated type, or both hashes present and
+equal).
+
+### No partial entities and unranked sort values (canonical §5, added 2026-09-25)
+
+`SharedStore` discards a `patch` for a key it does not hold — never received, or evicted
+by `max_entries_per_view` — without writing storage, tracking a sequence, granting
+membership or emitting an update, when the subscription's ack carried `wholeEntities:
+true` (`ServerFrame::Subscribed::whole_entities`); against an older server the patch is
+stored as before. Frames carrying an `offset` (tape records) are exempt. A patch dropped
+for a key the store evicted logs a `warn!` (first per view, `debug!` after), since the
+server still counts that key as held. Sorted membership puts entities whose sort field
+is missing or `null` after every ranked entity in both directions.
+
+### Extension API (canonical §9, added 2026-09-25)
+
+`arete_sdk::EXTENSION_API_VERSION: u32 = 1`, recorded as
+`[package.metadata.arete] extension-api = 1` in the crate's `Cargo.toml`; a unit test
+keeps the two in step. `ProgramContext` / `ProgramAccessor` (2026-09-30) are additive:
+`ProgramBuilder` now also carries the client's `ChainClient` and its wallet slot (shared
+with `Arete::set_wallet`), and every generated `<Name>Program` implements
+`ProgramAccessor` and has `context()`.

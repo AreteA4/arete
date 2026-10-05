@@ -15,7 +15,9 @@
 //!
 //! Regenerate with `A4_UPDATE_GOLDEN=1 cargo test -p a4-cli shared_idl_types_golden`.
 //! The TypeScript goldens are type-checked in CI
-//! (`cli/tests/golden/shared-idl-types/tsconfig.json`).
+//! (`cli/tests/golden/shared-idl-types/tsconfig.json`), and with declaration
+//! emit under the options `tsc --init` writes
+//! (`cli/tests/golden/tsconfig.strict.json`).
 
 use super::stack_name_golden::{
     assert_syntax, collect_files, compare_with_golden, local_stack, without_release_version,
@@ -194,6 +196,7 @@ fn generate_all(source: &ResolvedStackSource, output: &Path) -> Result<()> {
         false,
         None,
         None,
+        &[],
     )?;
     generate_python_stack_sdk(
         source,
@@ -203,6 +206,7 @@ fn generate_all(source: &ResolvedStackSource, output: &Path) -> Result<()> {
         false,
         None,
         None,
+        &[],
     )
 }
 

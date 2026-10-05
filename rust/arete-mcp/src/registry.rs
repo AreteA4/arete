@@ -20,12 +20,20 @@
 //! up front with an actionable error (pointing at `a4 auth login`) when no key
 //! resolves, instead of sending a request that can only come back 401.
 //!
-//! Responses are proxied through as raw JSON rather than being reshaped into
-//! local structs. The registry's payloads are the contract the CLI and docs
-//! already describe, and re-modelling them here would add a second place to
-//! update every time the platform grows a field.
+//! Responses are returned as raw JSON rather than being reshaped into local
+//! structs. The registry's payloads are the contract the CLI and docs already
+//! describe, and re-modelling them here would add a second place to update
+//! every time the platform grows a field. The `explore_stack` and
+//! `explore_program` tools cut a summary, sections, views or one operation out
+//! of the full descriptor (see [`crate::descriptor`]) unless the caller asks
+//! for `full: true`, which returns these bytes unchanged. `explore_stack` and
+//! `explore_stack_schema` also attach the curated field descriptions of the
+//! stack's catalog knowledge when it has one (see [`crate::stack_knowledge`]).
 
-use anyhow::{anyhow, Result};
+use std::time::Duration;
+
+use anyhow::{anyhow, Context, Result};
+use arete_sdk::ApiProblemV1;
 use serde_json::Value;
 
 use crate::credentials;
@@ -37,7 +45,12 @@ const ENV_VAR_API_URL: &str = "ARETE_API_URL";
 /// unbounded in principle, and an oversized body would blow up the agent's
 /// context window rather than fail cleanly. Refusing with a pointer to the CLI
 /// is a better outcome than silently truncating JSON into something unparseable.
-const MAX_RESPONSE_BYTES: usize = 512 * 1024;
+pub(crate) const MAX_RESPONSE_BYTES: usize = 512 * 1024;
+
+/// Install descriptors are requested with the managed gateway capability, as
+/// `a4 install` requests them, so a program descriptor carries the chain and
+/// transaction bindings its operations use.
+const INSTALL_CAPABILITIES: &str = "capabilities=managed-solana-gateway-v1";
 
 /// Artifact kinds accepted by `resolve_artifact`, mirroring the three
 /// `/api/registry/artifacts/{kind}/{hash}` routes.
@@ -49,6 +62,24 @@ pub struct RegistryClient {
     http: reqwest::Client,
 }
 
+#[derive(Debug)]
+pub struct RegistryApiError {
+    pub status: reqwest::StatusCode,
+    pub problem: ApiProblemV1,
+}
+
+impl std::fmt::Display for RegistryApiError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "registry returned {}: {}",
+            self.status, self.problem.error
+        )
+    }
+}
+
+impl std::error::Error for RegistryApiError {}
+
 impl Default for RegistryClient {
     fn default() -> Self {
         Self::new()
@@ -56,6 +87,15 @@ impl Default for RegistryClient {
 }
 
 impl RegistryClient {
+    /// A client for `base_url`, for tests against a local server.
+    #[cfg(test)]
+    pub(crate) fn with_base_url(base_url: &str) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            http: reqwest::Client::new(),
+        }
+    }
+
     pub fn new() -> Self {
         let base_url = std::env::var(ENV_VAR_API_URL)
             .ok()
@@ -74,12 +114,29 @@ impl RegistryClient {
         self.get("/api/registry").await
     }
 
+    /// List only explicitly curated starter stacks while keeping discovery on
+    /// the existing registry. Missing `serviceClass` is the legacy `standard`
+    /// default and is therefore never promoted into the trial set.
+    pub async fn list_starter_stacks(&self) -> Result<String> {
+        starter_stacks_response(&self.list_stacks().await?)
+    }
+
     /// The pinned install descriptor for one stack — the exact identities
     /// `a4 install` would consume.
     pub async fn stack_install(&self, stack: &str) -> Result<String> {
+        self.stack_install_within(stack, None).await
+    }
+
+    /// [`RegistryClient::stack_install`], abandoned after `timeout` when one
+    /// is given.
+    pub async fn stack_install_within(
+        &self,
+        stack: &str,
+        timeout: Option<Duration>,
+    ) -> Result<String> {
         let stack = path_segment(stack, "stack")?;
-        self.get(&format!("/api/registry/stacks/{stack}/install"))
-            .await
+        let path = format!("/api/registry/stacks/{stack}/install?{INSTALL_CAPABILITIES}");
+        self.send(&path, self.public_key(), timeout).await
     }
 
     /// Entity and view schema for one stack. This is where an agent gets the
@@ -97,8 +154,10 @@ impl RegistryClient {
     /// The pinned install descriptor for one standalone program.
     pub async fn program_install(&self, program: &str) -> Result<String> {
         let program = path_segment(program, "program")?;
-        self.get(&format!("/api/registry/programs/{program}/install"))
-            .await
+        self.get(&format!(
+            "/api/registry/programs/{program}/install?{INSTALL_CAPABILITIES}"
+        ))
+        .await
     }
 
     /// Fetch a content-addressed artifact by kind and hash.
@@ -145,6 +204,24 @@ impl RegistryClient {
         let slug = path_segment(slug, "slug")?;
         self.get(&format!("/api/registry/v1/catalog/entries/{kind}/{slug}"))
             .await
+    }
+
+    /// The knowledge document an active catalog entry publishes: for a
+    /// stack, entity and view summaries and curated field descriptions.
+    /// Registries that predate the route answer 404, like an entry without
+    /// a document; callers treat every failure as "no knowledge". Abandoned
+    /// after `timeout`, connecting included, because it only ever adds
+    /// context.
+    pub async fn catalog_entry_knowledge(
+        &self,
+        kind: &str,
+        slug: &str,
+        timeout: Duration,
+    ) -> Result<String> {
+        let kind = catalog_kind(kind)?;
+        let slug = path_segment(slug, "slug")?;
+        let path = format!("/api/registry/v1/catalog/entries/{kind}/{slug}/knowledge");
+        self.send(&path, self.public_key(), Some(timeout)).await
     }
 
     /// Concept and category vocabularies of the active catalog snapshot.
@@ -214,6 +291,11 @@ impl RegistryClient {
     /// usefully, and agents comparing a hash-relevant artifact against the CLI
     /// would see a body the platform never sent.
     async fn get(&self, path: &str) -> Result<String> {
+        self.send(path, self.public_key(), None).await
+    }
+
+    /// The key [`RegistryClient::get`] attaches: see there.
+    fn public_key(&self) -> Option<String> {
         // Best-effort auth, but only ever to an Arete origin. `ARETE_API_URL` can
         // point anywhere, and `ARETE_API_KEY` (unlike the credentials file, which
         // is keyed by API URL) is not scoped to a destination — so attaching it
@@ -227,14 +309,13 @@ impl RegistryClient {
         // The empty target passed to `resolve` keeps a missing key non-fatal — it
         // is a hosted *stack* URL that makes absence an error, which is a `connect`
         // concern, not ours.
-        let key = if is_arete_origin(&self.base_url) {
+        if is_arete_origin(&self.base_url) {
             credentials::resolve(None, "")
                 .ok()
                 .and_then(|resolved| resolved.key)
         } else {
             None
-        };
-        self.send(path, key).await
+        }
     }
 
     /// Like [`RegistryClient::get`], but for the knowledge routes, where auth
@@ -249,14 +330,22 @@ impl RegistryClient {
             .ok()
             .and_then(|resolved| resolved.key);
         let key = knowledge_key(&self.base_url, resolved)?;
-        self.send(path, Some(key)).await
+        self.send(path, Some(key), None).await
     }
 
-    async fn send(&self, path: &str, key: Option<String>) -> Result<String> {
+    async fn send(
+        &self,
+        path: &str,
+        key: Option<String>,
+        timeout: Option<Duration>,
+    ) -> Result<String> {
         let url = format!("{}{path}", self.base_url);
         let mut request = self.http.get(&url);
         if let Some(key) = key {
             request = request.bearer_auth(key);
+        }
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
         }
 
         let response = request
@@ -268,18 +357,19 @@ impl RegistryClient {
         let body = read_capped_body(response, path).await?;
 
         if !status.is_success() {
-            // Surface the platform's structured `code` when there is one — those
-            // are stable, the English messages are not.
-            let code = serde_json::from_str::<Value>(&body)
-                .ok()
-                .and_then(|v| v.get("code").and_then(Value::as_str).map(str::to_string));
-            return Err(match code {
-                Some(code) => anyhow!("registry returned {status} ({code}) for {path}"),
-                None => anyhow!(
-                    "registry returned {status} for {path}: {}",
-                    truncate_for_error(&body)
-                ),
-            });
+            let problem =
+                serde_json::from_str::<ApiProblemV1>(&body).unwrap_or_else(|_| ApiProblemV1 {
+                    schema_version: None,
+                    error: truncate_for_error(&body),
+                    code: None,
+                    retryable: status.is_server_error().then_some(true),
+                    request_id: None,
+                    retry_after_seconds: None,
+                    usage: None,
+                    action: None,
+                    extra: std::collections::BTreeMap::new(),
+                });
+            return Err(RegistryApiError { status, problem }.into());
         }
 
         // Parse only to validate: a proxy's HTML error page must not reach the
@@ -289,6 +379,38 @@ impl RegistryClient {
             .map_err(|e| anyhow!("registry returned invalid JSON for {path}: {e}"))?;
         Ok(body)
     }
+}
+
+fn starter_stacks_response(body: &str) -> Result<String> {
+    let stacks = serde_json::from_str::<Value>(body)
+        .map_err(|error| anyhow!("registry returned invalid stack list JSON: {error}"))?;
+    let Value::Array(stacks) = stacks else {
+        return Err(anyhow!("registry stack list must be a JSON array"));
+    };
+    let stacks = stacks
+        .into_iter()
+        .filter(|stack| {
+            stack
+                .get("serviceClass")
+                .and_then(Value::as_str)
+                .unwrap_or("standard")
+                == "starter"
+        })
+        .collect::<Vec<_>>();
+    let response = serde_json::to_string(&serde_json::json!({
+        "schemaVersion": 1,
+        "serviceClass": "starter",
+        "stacks": stacks,
+        "publicStacksRemainAvailable": true,
+        "guidance": "These are trial-eligible authenticated starter stacks. Public stacks remain available through explore_stacks regardless of service class.",
+    }))
+    .context("could not serialize starter stack discovery")?;
+    if response.len() > MAX_RESPONSE_BYTES {
+        return Err(anyhow!(
+            "starter stack discovery exceeded the safe response size limit"
+        ));
+    }
+    Ok(response)
 }
 
 /// Read a response body, aborting as soon as it exceeds [`MAX_RESPONSE_BYTES`].
@@ -628,6 +750,36 @@ fn truncate_for_error(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn starter_discovery_filters_explicit_starters_and_defaults_legacy_items_to_standard() {
+        let response = starter_stacks_response(
+            r#"[
+                {"name":"legacy-public","visibility":"public"},
+                {"name":"public-standard","visibility":"public","serviceClass":"standard"},
+                {"name":"trial-feed","visibility":"global","serviceClass":"starter"}
+            ]"#,
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["serviceClass"], "starter");
+        assert_eq!(value["stacks"].as_array().unwrap().len(), 1);
+        assert_eq!(value["stacks"][0]["name"], "trial-feed");
+        assert_eq!(value["publicStacksRemainAvailable"], true);
+        assert!(value["guidance"]
+            .as_str()
+            .unwrap()
+            .contains("explore_stacks"));
+    }
+
+    #[test]
+    fn starter_discovery_rejects_non_array_registry_responses() {
+        assert!(starter_stacks_response(r#"{"stacks":[]}"#)
+            .unwrap_err()
+            .to_string()
+            .contains("JSON array"));
+    }
 
     #[test]
     fn catalog_search_paths_are_bounded_and_encoded() {
@@ -982,6 +1134,40 @@ mod tests {
     fn absent_declared_length_is_not_a_failure() {
         // Chunked responses declare nothing; the streaming path bounds those.
         assert!(check_size(None, "/x").is_ok());
+    }
+
+    /// A server that accepts every connection and never answers.
+    fn silent_server() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming().flatten() {
+                held.push(stream);
+            }
+        });
+        format!("http://{address}")
+    }
+
+    #[tokio::test]
+    async fn a_timeout_bounds_a_request_to_a_server_that_never_answers() {
+        let client = RegistryClient::with_base_url(&silent_server());
+        let started = std::time::Instant::now();
+        let error = client
+            .send(
+                "/api/registry/v1/catalog/entries/stack/ore/knowledge",
+                None,
+                Some(Duration::from_millis(300)),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(error.contains("failed"), "{error}");
     }
 
     #[tokio::test]

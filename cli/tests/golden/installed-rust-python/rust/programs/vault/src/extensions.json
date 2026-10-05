@@ -1,0 +1,11 @@
+{
+  "entry": "extensions.rs",
+  "files": [
+    "extensions.rs",
+    "vault_math.rs"
+  ],
+  "inputKind": "program-spec",
+  "inputHash": "arete:h1:program-spec:sha256:5469c29441aaeac7da96e8f1ac69a42de33bf7805a76c83c75da9d762213b952",
+  "sdkRange": null,
+  "language": "rust"
+}

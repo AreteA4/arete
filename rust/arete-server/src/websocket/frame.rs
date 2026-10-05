@@ -42,6 +42,12 @@ pub struct SubscribedFrame {
     /// journal. Absent when the view has no retained tape.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replay_window: Option<crate::journal::ReplayWindow>,
+    /// The server sends a key whole (`upsert` or a snapshot row) before any
+    /// `patch` for it, so a client may drop a patch for a key it does not
+    /// hold. Older servers omit it, and clients then keep such a patch. Tape
+    /// records (frames with an `offset`) are events and not covered.
+    #[serde(default)]
+    pub whole_entities: bool,
 }
 
 impl SubscribedFrame {
@@ -59,6 +65,7 @@ impl SubscribedFrame {
             mode,
             sort,
             replay_window: None,
+            whole_entities: true,
         }
     }
 

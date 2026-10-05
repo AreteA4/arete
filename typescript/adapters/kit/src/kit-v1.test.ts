@@ -21,9 +21,11 @@ import {
 import { TransactionTransportError } from '@usearete/sdk';
 import type { BuiltInstruction, TransactionTransport } from '@usearete/sdk';
 import {
+  INSPECT_ONLY_WALLET_ERROR,
   MAX_COMPUTE_UNIT_LIMIT,
   MAX_LOADED_ACCOUNTS_DATA_SIZE,
   KitTransactionExecutionError,
+  createInspectOnlyWalletAdapter,
   createWalletAdapter,
 } from './index';
 
@@ -601,6 +603,37 @@ describe('inspection', () => {
     const inspection = await adapter(transport).inspectTransaction([memo([1])]);
 
     expect(inspection.loadedAccountsDataSize).toBeUndefined();
+  });
+});
+
+describe('createInspectOnlyWalletAdapter', () => {
+  it('inspects for a bare public key with that key as the fee payer', async () => {
+    const { transport, calls, simulated } = fakeTransport();
+    const wallet = createInspectOnlyWalletAdapter({ publicKey: payer.address, transport });
+
+    expect(wallet.publicKey).toBe(payer.address);
+    const inspection = await wallet.inspectTransaction([memo([1, 2, 3], [payer.address])]);
+
+    expect(inspection.feeLamports).toBe(5_000);
+    expect(inspection.transactionVersion).toBe(0);
+    expect(decodeWire(simulated[0]).message.staticAccounts[0]).toBe(payer.address);
+    expect(calls).not.toContain('send');
+  });
+
+  it('refuses every sign or send before anything is built or dispatched', async () => {
+    const { transport, calls } = fakeTransport();
+    const wallet = createInspectOnlyWalletAdapter({ publicKey: payer.address, transport });
+
+    const error = await wallet.signAndSend([memo([1], [payer.address])]).catch((value: unknown) => value);
+
+    expect(error).toBeInstanceOf(KitTransactionExecutionError);
+    expect((error as KitTransactionExecutionError).outcome).toMatchObject({
+      status: 'not-submitted',
+      phase: 'wallet',
+      cause: { name: INSPECT_ONLY_WALLET_ERROR },
+    });
+    expect((error as Error).message).toMatch(/inspect-only wallet adapter .* cannot sign or send/i);
+    expect(calls).toEqual([]);
   });
 });
 

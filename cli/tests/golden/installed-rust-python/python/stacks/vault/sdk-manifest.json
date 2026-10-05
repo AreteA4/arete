@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "stack-manifest",
+    "hash": "arete:h1:stack-manifest:sha256:53809b392576092808edfbf619ec0b9b4174373a84c2dac843af4a71537fbb72"
+  },
+  "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}",
+  "extensions": {
+    "contentSha256": "01d9545dd3beaafe36062c5b5575e114cb26c81f91259cad8ae6964a31bce4de"
+  },
+  "programExtensions": {
+    "vault": {
+      "input": {
+        "kind": "program-spec",
+        "hash": "arete:h1:program-spec:sha256:5469c29441aaeac7da96e8f1ac69a42de33bf7805a76c83c75da9d762213b952"
+      },
+      "contentSha256": "265cb1b12c59866b438f9d31ba97013c423ab58e0c4cbcd35cb91b42c74af5a4"
+    }
+  },
+  "artifacts": [
+    "pyproject.toml",
+    "vault_stack/__init__.py",
+    "vault_stack/extensions.json",
+    "vault_stack/extensions.py",
+    "vault_stack/models.py",
+    "vault_stack/program_sdks/__init__.py",
+    "vault_stack/program_sdks/vault/__init__.py",
+    "vault_stack/program_sdks/vault/extensions.json",
+    "vault_stack/program_sdks/vault/extensions.py",
+    "vault_stack/program_sdks/vault/models.py",
+    "vault_stack/program_sdks/vault/programs.py",
+    "vault_stack/program_sdks/vault/vault_math.py",
+    "vault_stack/programs.py",
+    "vault_stack/views.py"
+  ]
+}

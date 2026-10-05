@@ -2182,8 +2182,9 @@ fn generate_idl_account_artifacts(
     idls: &[IdlSnapshot],
     reserved_type_names: &HashSet<String>,
 ) -> IdlAccountArtifacts {
-    let mut used_type_names = reserved_type_names.clone();
+    let mut used_type_names = IdlTypeNames::new(reserved_type_names);
     let mut emitted_type_names = HashSet::new();
+    let mut declared_type_names = HashSet::new();
     let mut seen_schema_names = HashSet::new();
     let mut interface_blocks = Vec::new();
     let mut schema_blocks = Vec::new();
@@ -2206,8 +2207,12 @@ fn generate_idl_account_artifacts(
         let mut local_name_map = BTreeMap::new();
 
         for account in &idl.accounts {
-            let unique_name =
-                unique_idl_type_name(&account.name, &program_prefix, &mut used_type_names);
+            let unique_name = unique_idl_type_name(
+                &account.name,
+                &program_prefix,
+                IDL_ACCOUNT_ROLE,
+                &mut used_type_names,
+            );
             emitted_type_names.insert(unique_name.clone());
             local_name_map.insert(account.name.clone(), unique_name.clone());
             account_type_names.insert((program_key.clone(), account.name.clone()), unique_name);
@@ -2229,8 +2234,12 @@ fn generate_idl_account_artifacts(
             if local_name_map.contains_key(type_name) {
                 continue;
             }
-            let unique_name =
-                unique_idl_type_name(type_name, &program_prefix, &mut used_type_names);
+            let unique_name = unique_idl_type_name(
+                type_name,
+                &program_prefix,
+                IDL_TYPE_ROLE,
+                &mut used_type_names,
+            );
             emitted_type_names.insert(unique_name.clone());
             local_name_map.insert(type_name.clone(), unique_name);
         }
@@ -2243,6 +2252,7 @@ fn generate_idl_account_artifacts(
                 if let Some((interface_def, schema_name, schema_def)) =
                     generate_type_defs_from_idl_type(type_def, &local_name_map)
                 {
+                    declared_type_names.extend(local_name_map.get(type_name).cloned());
                     interface_blocks.push(interface_def);
                     if seen_schema_names.insert(schema_name.clone()) {
                         schema_names.push(schema_name.clone());
@@ -2257,6 +2267,7 @@ fn generate_idl_account_artifacts(
                 continue;
             };
             let account_fields = resolve_idl_account_fields(account, &type_defs);
+            declared_type_names.insert(type_name.clone());
             interface_blocks.push(generate_interface_from_idl_fields(
                 type_name,
                 account_fields,
@@ -2273,6 +2284,31 @@ fn generate_idl_account_artifacts(
             }
         }
     }
+
+    // Deprecated aliases for the numeric names earlier releases emitted,
+    // after the schemas they point at. The schema alias keeps the old key in
+    // the stack's `schemas` map too.
+    let mut alias_blocks = Vec::new();
+    for (legacy, canonical) in &used_type_names.aliases {
+        if !declared_type_names.contains(canonical) {
+            continue;
+        }
+        let mut block =
+            format!("/** @deprecated Use {canonical}. */\nexport type {legacy} = {canonical};");
+        let canonical_schema = format!("{canonical}Schema");
+        let legacy_schema = format!("{legacy}Schema");
+        if seen_schema_names.contains(&canonical_schema)
+            && seen_schema_names.insert(legacy_schema.clone())
+        {
+            block.push_str(&format!(
+                "\n/** @deprecated Use {canonical_schema}. */\nexport const {legacy_schema} = {canonical_schema};"
+            ));
+            schema_names.push(legacy_schema);
+        }
+        emitted_type_names.insert(legacy.clone());
+        alias_blocks.push(block);
+    }
+    schema_blocks.extend(alias_blocks);
 
     let code = if interface_blocks.is_empty() && schema_blocks.is_empty() {
         String::new()
@@ -2314,7 +2350,66 @@ fn resolve_idl_account_fields<'a>(
     }
 }
 
+/// Role suffixes for IDL types whose plain and program-prefixed names are
+/// both taken (for example by stack entity types).
+const IDL_ACCOUNT_ROLE: &str = "Account";
+const IDL_TYPE_ROLE: &str = "Type";
+
+/// Names claimed by IDL account and defined types, plus the names releases
+/// up to 0.23 gave the same types (a numeric suffix where the role suffix is
+/// now used), kept as deprecated aliases.
+struct IdlTypeNames {
+    used: HashSet<String>,
+    legacy: HashSet<String>,
+    /// `(legacy, canonical)` pairs whose names differ.
+    aliases: Vec<(String, String)>,
+}
+
+impl IdlTypeNames {
+    fn new(reserved: &HashSet<String>) -> Self {
+        Self {
+            used: reserved.clone(),
+            legacy: reserved.clone(),
+            aliases: Vec::new(),
+        }
+    }
+}
+
+/// Name an IDL type: its own name, else the program-prefixed name
+/// (`OreBoard`), else the prefixed name with its role (`OreBoardAccount`,
+/// `OreHeaderType`), numbered only if that is taken too. Where earlier
+/// releases named the type differently (`OreBoard2`), that name is recorded
+/// as a deprecated alias so code written against it keeps compiling.
 fn unique_idl_type_name(
+    raw_name: &str,
+    program_prefix: &str,
+    role: &str,
+    names: &mut IdlTypeNames,
+) -> String {
+    let legacy = numbered_idl_type_name(raw_name, program_prefix, &mut names.legacy);
+    let base_name = to_pascal_case(raw_name);
+    let prefixed = format!("{}{}", program_prefix, base_name);
+    let role_named = format!("{prefixed}{role}");
+    let canonical = [base_name, prefixed]
+        .into_iter()
+        .find(|candidate| names.used.insert(candidate.clone()))
+        .unwrap_or_else(|| {
+            (1..)
+                .map(|index| match index {
+                    1 => role_named.clone(),
+                    index => format!("{role_named}{index}"),
+                })
+                .find(|candidate| names.used.insert(candidate.clone()))
+                .expect("an unused numbered name exists")
+        });
+    if legacy != canonical && names.used.insert(legacy.clone()) {
+        names.aliases.push((legacy, canonical.clone()));
+    }
+    canonical
+}
+
+/// The naming earlier releases used: plain, program-prefixed, then numbered.
+fn numbered_idl_type_name(
     raw_name: &str,
     program_prefix: &str,
     used_type_names: &mut HashSet<String>,
@@ -3307,6 +3402,14 @@ pub struct TypeScriptProgramDefinitionMetadata {
     pub program_spec_hash: String,
     pub idl_content_hash: String,
     pub normalized_idl_hash: String,
+    /// The program package release this program SDK was generated from.
+    /// Registry installs set it; local and path builds leave it unset. It is
+    /// never emitted into the core module: identity describes the finished
+    /// program SDK, so the SDK's entry module stamps it with
+    /// `withProgramIdentity` after applying the package's own extension and
+    /// read descriptor. The core definition, which lacks those, carries no
+    /// identity, and `sdkDefinitionHash` is independent of it.
+    pub package_release_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3346,6 +3449,7 @@ impl From<&arete_hash::OssProgramIdentityV1> for TypeScriptProgramConfig {
                 program_spec_hash: identity.program_spec_hash.to_string(),
                 idl_content_hash: identity.program_spec.idl_content_hash.to_string(),
                 normalized_idl_hash: identity.program_spec.normalized_idl_hash.to_string(),
+                package_release_hash: None,
             },
             release: TypeScriptProgramReleaseReference {
                 program_release_hash: identity.release_hash.to_string(),
@@ -3370,6 +3474,10 @@ pub struct TypeScriptStackConfig {
     pub programs: Option<Vec<TypeScriptProgramConfig>>,
     /// Managed-hosting transports. Local generation leaves this unset.
     pub gateway: Option<serde_json::Value>,
+    /// Served version emitted as the stack definition's `release`. Only
+    /// StackManifest generation for a hosted endpoint sets it; without it the
+    /// generated definition is unchanged.
+    pub release: Option<crate::public_artifacts::StackRelease>,
 }
 
 impl Default for TypeScriptStackConfig {
@@ -3383,6 +3491,7 @@ impl Default for TypeScriptStackConfig {
             extension_import: None,
             programs: None,
             gateway: None,
+            release: None,
         }
     }
 }
@@ -3409,8 +3518,37 @@ pub struct TypeScriptLiveEndpoints {
 pub struct TypeScriptCompositionConfig {
     pub stack: TypeScriptStackConfig,
     pub live_endpoints: BTreeMap<String, TypeScriptLiveEndpoints>,
+    /// The served version of an alias whose endpoint is a deployment of
+    /// another StackManifest, such as a composed stack's alias reading its
+    /// source stack's deployment. Other bound aliases serve their own alias
+    /// of this manifest.
+    pub live_releases: BTreeMap<String, crate::public_artifacts::StackRelease>,
     pub live_module_imports: BTreeMap<String, String>,
     pub program_module_imports: BTreeMap<String, String>,
+    /// Program SDK entry modules keyed by ProgramSpec hash (relative import
+    /// paths such as `./programs/ore/__arete-program.js`). A program with an
+    /// entry module is that module in the session's `programs` and in every
+    /// live stack that bundles it, so the session exposes one program SDK
+    /// surface whichever member it is reached through.
+    pub program_entry_imports: BTreeMap<String, String>,
+    /// A stack-level extension applied to the composition.
+    pub extensions: Option<TypeScriptCompositionExtensions>,
+}
+
+/// A stack-level extension for a composition. A composition has no single
+/// stack, so the extension binds what it extends by name: a
+/// `defineStackExtensions<typeof X.stacks.<alias>>()` export extends that
+/// live alias's stack, and a `defineProgramExtensions<typeof
+/// X.programs.<key>>()` export extends that session program.
+#[derive(Debug, Clone, Default)]
+pub struct TypeScriptCompositionExtensions {
+    /// Relative import of the extension entry module (`./stack-extensions.js`).
+    pub import_path: String,
+    /// `(live alias, export name)` pairs, applied with `extendStack`.
+    pub stack_bindings: Vec<(String, String)>,
+    /// `(session program key, export name)` pairs, applied with
+    /// `extendPrograms`.
+    pub program_bindings: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -3552,6 +3690,7 @@ fn resolve_program_configs(
                 .to_string(),
             idl_content_hash: program_spec.idl_content_hash.to_string(),
             normalized_idl_hash: program_spec.normalized_idl_hash.to_string(),
+            package_release_hash: None,
         });
     }
 
@@ -3874,11 +4013,20 @@ pub fn compile_public_artifacts_v2(
 ) -> Result<TypeScriptStackOutput, String> {
     let stack_spec =
         crate::public_artifacts::stack_spec_from_artifacts_v2(programs, live_spec, manifest)?;
-    compile_stack_spec_with_view_selection(stack_spec, config, true)
+    let mut config = config.unwrap_or_default();
+    // The served version belongs to the stack bound to a WebSocket endpoint.
+    if config.release.is_none() && config.websocket_url.is_some() {
+        config.release = crate::public_artifacts::StackRelease::for_single_live(manifest);
+    }
+    compile_stack_spec_with_view_selection(stack_spec, Some(config), true)
 }
 
 /// Compile each aliased LiveSpec into an independent module and generate a
 /// manifest-level `createSession` definition that preserves exact alias keys.
+///
+/// Each alias bound to a WebSocket endpoint in `live_endpoints` is generated
+/// with its served version (`release`, overridden by `live_releases`);
+/// unbound aliases get none.
 pub fn compile_composed_public_artifacts_v2(
     programs: &[arete_artifacts::ProgramSpecArtifact],
     live_specs: &[(String, arete_artifacts::LiveSpecArtifactV2)],
@@ -3953,6 +4101,7 @@ pub fn compile_composed_public_artifacts_v2(
         let mut program_config = config.stack.clone();
         program_config.websocket_url = None;
         program_config.http_url = None;
+        program_config.release = None;
         program_config.programs =
             subset_program_configs(&program_stack, config.stack.programs.as_deref())?;
         let output =
@@ -3975,6 +4124,19 @@ pub fn compile_composed_public_artifacts_v2(
 
     let mut promoted_programs = Vec::new();
     let mut promoted_hashes = BTreeMap::<String, String>::new();
+    // Session program key -> ProgramSpec hash, for program entry imports.
+    let mut session_program_hashes = independent_programs
+        .iter()
+        .map(|program| {
+            let source = to_camel_case(&program.payload.idl_snapshot.snapshot.name);
+            (
+                composition_program_key(program, &source),
+                program.artifact_hash.to_string(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    // Live alias -> the bundled program keys replaced by an entry module.
+    let mut stack_program_overrides = BTreeMap::<String, Vec<(String, String)>>::new();
     for live in composed.live_specs {
         let mut stack_config = config.stack.clone();
         if let Some(endpoints) = config.live_endpoints.get(&live.alias) {
@@ -3984,6 +4146,15 @@ pub fn compile_composed_public_artifacts_v2(
             stack_config.websocket_url = None;
             stack_config.http_url = None;
         }
+        stack_config.release = stack_config.websocket_url.is_some().then(|| {
+            config
+                .live_releases
+                .get(&live.alias)
+                .cloned()
+                .unwrap_or_else(|| {
+                    crate::public_artifacts::StackRelease::for_alias(manifest, &live.alias)
+                })
+        });
         stack_config.programs =
             subset_program_configs(&live.stack_spec, config.stack.programs.as_deref())?;
         for program in &live.stack_spec.program_specs {
@@ -3992,6 +4163,12 @@ pub fn compile_composed_public_artifacts_v2(
                 .hash()
                 .map_err(|error| error.to_string())?
                 .to_string();
+            if config.program_entry_imports.contains_key(&hash) {
+                stack_program_overrides
+                    .entry(live.alias.clone())
+                    .or_default()
+                    .push((source.clone(), hash.clone()));
+            }
             if let Some(existing_hash) = promoted_hashes.get(&source) {
                 if existing_hash != &hash {
                     return Err(format!(
@@ -4007,6 +4184,7 @@ pub fn compile_composed_public_artifacts_v2(
                     program.idl_snapshot.snapshot.name, program.program_id
                 ),
             )?;
+            session_program_hashes.insert(source.clone(), hash.clone());
             promoted_hashes.insert(source.clone(), hash);
             promoted_programs.push((source.clone(), live.alias.clone(), source));
         }
@@ -4022,15 +4200,33 @@ pub fn compile_composed_public_artifacts_v2(
         });
     }
 
-    let session_definition = generate_session_definition(
-        &composed.name,
-        &outputs,
-        &promoted_programs,
-        program_collection.as_ref(),
-        &config.live_module_imports,
+    let program_entries = resolve_program_entry_imports(
+        &config.program_entry_imports,
+        &session_program_hashes,
         &config.program_module_imports,
-        config.stack.gateway.as_ref(),
-    );
+    )?;
+    if let Some(extensions) = &config.extensions {
+        validate_composition_extensions(
+            extensions,
+            &outputs
+                .iter()
+                .map(|live| live.alias.clone())
+                .collect::<BTreeSet<_>>(),
+            &session_program_hashes,
+        )?;
+    }
+    let session_definition = generate_session_definition(SessionDefinitionInput {
+        manifest_name: &composed.name,
+        live_stacks: &outputs,
+        promoted_programs: &promoted_programs,
+        program_collection: program_collection.as_ref(),
+        live_module_imports: &config.live_module_imports,
+        program_module_imports: &config.program_module_imports,
+        gateway: config.stack.gateway.as_ref(),
+        program_entries: &program_entries,
+        stack_program_overrides: &stack_program_overrides,
+        extensions: config.extensions.as_ref(),
+    });
     ts_ident::check_module_declarations(
         &session_definition,
         &format!("The TypeScript session for stack '{}'", composed.name),
@@ -4043,6 +4239,88 @@ pub fn compile_composed_public_artifacts_v2(
         warnings,
         pda_degradations,
     })
+}
+
+/// Session program key -> program entry import, for every configured entry
+/// module. Every entry module must name a program of the composition, and a
+/// program takes at most one replacement module.
+fn resolve_program_entry_imports(
+    entry_imports: &BTreeMap<String, String>,
+    session_program_hashes: &BTreeMap<String, String>,
+    program_module_imports: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut entries = BTreeMap::new();
+    for (hash, import) in entry_imports {
+        let keys = session_program_hashes
+            .iter()
+            .filter(|(_, program_hash)| *program_hash == hash)
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        if keys.is_empty() {
+            return Err(format!(
+                "composition program entry module '{import}' references unknown ProgramSpec {hash}"
+            ));
+        }
+        for key in keys {
+            if program_module_imports.contains_key(&key) {
+                return Err(format!(
+                    "composition program '{key}' has both a program module import and a program SDK entry module"
+                ));
+            }
+            entries.insert(key, import.clone());
+        }
+    }
+    Ok(entries)
+}
+
+fn validate_composition_extensions(
+    extensions: &TypeScriptCompositionExtensions,
+    live_aliases: &BTreeSet<String>,
+    session_program_hashes: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let mut stacks = BTreeSet::new();
+    for (alias, export) in &extensions.stack_bindings {
+        if !live_aliases.contains(alias) {
+            return Err(format!(
+                "composition stack extension '{export}' extends unknown live alias '{alias}'"
+            ));
+        }
+        if !stacks.insert(alias) {
+            return Err(format!(
+                "composition stack extensions bind live alias '{alias}' more than once"
+            ));
+        }
+    }
+    let mut programs = BTreeSet::new();
+    for (key, export) in &extensions.program_bindings {
+        if !session_program_hashes.contains_key(key) {
+            return Err(format!(
+                "composition program extension '{export}' extends unknown program '{key}'"
+            ));
+        }
+        if !programs.insert(key) {
+            return Err(format!(
+                "composition stack extensions bind program '{key}' more than once"
+            ));
+        }
+    }
+    if stacks.is_empty() && programs.is_empty() {
+        return Err(
+            "composition stack extension declares no per-alias stack or per-program bindings"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// `.key` when `key` is an identifier, otherwise `["key"]`.
+fn typescript_member_access(key: &str) -> String {
+    let property = typescript_property_key(key);
+    if property == key {
+        format!(".{key}")
+    } else {
+        format!("[{property}]")
+    }
 }
 
 fn subset_program_configs(
@@ -4077,19 +4355,50 @@ fn subset_program_configs(
         .map(Some)
 }
 
-fn generate_session_definition(
-    manifest_name: &str,
-    live_stacks: &[TypeScriptAliasedStackOutput],
-    promoted_programs: &[(String, String, String)],
-    program_collection: Option<&TypeScriptProgramCollectionOutput>,
-    live_module_imports: &BTreeMap<String, String>,
-    program_module_imports: &BTreeMap<String, String>,
-    gateway: Option<&serde_json::Value>,
-) -> String {
+struct SessionDefinitionInput<'a> {
+    manifest_name: &'a str,
+    live_stacks: &'a [TypeScriptAliasedStackOutput],
+    promoted_programs: &'a [(String, String, String)],
+    program_collection: Option<&'a TypeScriptProgramCollectionOutput>,
+    live_module_imports: &'a BTreeMap<String, String>,
+    program_module_imports: &'a BTreeMap<String, String>,
+    gateway: Option<&'a serde_json::Value>,
+    /// Session program key -> program SDK entry module import.
+    program_entries: &'a BTreeMap<String, String>,
+    /// Live alias -> `(bundled program key, ProgramSpec hash)` replaced by
+    /// the program's entry module.
+    stack_program_overrides: &'a BTreeMap<String, Vec<(String, String)>>,
+    extensions: Option<&'a TypeScriptCompositionExtensions>,
+}
+
+fn program_entry_binding(key: &str) -> String {
+    format!("{}ProgramSdk", safe_pascal_identifier(key))
+}
+
+fn generate_session_definition(input: SessionDefinitionInput<'_>) -> String {
+    let SessionDefinitionInput {
+        manifest_name,
+        live_stacks,
+        promoted_programs,
+        program_collection,
+        live_module_imports,
+        program_module_imports,
+        gateway,
+        program_entries,
+        stack_program_overrides,
+        extensions,
+    } = input;
     let manifest_pascal = safe_pascal_identifier(manifest_name);
     let manifest_screaming =
         ts_ident::identifier_stem(&manifest_pascal, IdentifierCase::ScreamingSnake);
     let definition_name = format!("{manifest_screaming}_SESSION_DEFINITION");
+    // With a stack-level extension the generated definition is the extension
+    // base, and the exported definition applies the extension to it.
+    let base_name = if extensions.is_some() {
+        format!("{definition_name}_CORE")
+    } else {
+        definition_name.clone()
+    };
     let imports = live_stacks
         .iter()
         .map(|live| {
@@ -4113,17 +4422,33 @@ fn generate_session_definition(
             )
         })
         .unwrap_or_default();
-    let program_module_import_lines = program_module_imports
-        .iter()
-        .map(|(alias, import)| {
-            format!(
-                "import {}Program from '{}';",
-                safe_pascal_identifier(alias),
-                import
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let program_module_import_lines =
+        program_module_imports
+            .iter()
+            .map(|(alias, import)| {
+                format!(
+                    "import {}Program from '{}';",
+                    safe_pascal_identifier(alias),
+                    import
+                )
+            })
+            .chain(program_entries.iter().map(|(key, import)| {
+                format!("import {} from '{import}';", program_entry_binding(key))
+            }))
+            .chain(extensions.map(|extensions| {
+                let names = extensions
+                    .stack_bindings
+                    .iter()
+                    .chain(&extensions.program_bindings)
+                    .map(|(_, export)| export.as_str())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("import {{ {names} }} from '{}';", extensions.import_path)
+            }))
+            .collect::<Vec<_>>()
+            .join("\n");
     let program_members = program_collection
         .map(|programs| {
             let definitions = programs
@@ -4132,6 +4457,8 @@ fn generate_session_definition(
                 .map(|(public, source)| {
                     let value = if program_module_imports.contains_key(public) {
                         format!("{}Program", safe_pascal_identifier(public))
+                    } else if program_entries.contains_key(public) {
+                        program_entry_binding(public)
                     } else {
                         format!(
                             "{manifest_pascal}Programs.programs.{}",
@@ -4160,12 +4487,16 @@ fn generate_session_definition(
     let promoted_definitions = promoted_programs
         .iter()
         .map(|(public, live_alias, source)| {
-            format!(
-                "    {}: {}Stack.programs.{},",
-                typescript_property_key(public),
-                safe_pascal_identifier(live_alias),
-                typescript_property_key(source)
-            )
+            let value = if program_entries.contains_key(public) {
+                program_entry_binding(public)
+            } else {
+                format!(
+                    "{}Stack.programs.{}",
+                    safe_pascal_identifier(live_alias),
+                    typescript_property_key(source)
+                )
+            };
+            format!("    {}: {value},", typescript_property_key(public))
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -4196,24 +4527,79 @@ fn generate_session_definition(
     let members = live_stacks
         .iter()
         .map(|live| {
-            format!(
-                "    {}: {}Stack,",
-                typescript_property_key(&live.alias),
-                safe_pascal_identifier(&live.alias)
-            )
+            let stack = format!("{}Stack", safe_pascal_identifier(&live.alias));
+            let value = match stack_program_overrides.get(&live.alias) {
+                Some(overrides) if !overrides.is_empty() => {
+                    let programs = overrides
+                        .iter()
+                        .map(|(key, _)| {
+                            format!(
+                                "{}: {}",
+                                typescript_property_key(key),
+                                program_entry_binding(key)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{{ ...{stack}, programs: {{ ...{stack}.programs, {programs} }} }}")
+                }
+                _ => stack,
+            };
+            format!("    {}: {value},", typescript_property_key(&live.alias))
         })
         .collect::<Vec<_>>()
         .join("\n");
     let gateway_member = gateway
         .map(|gateway| format!("  gateway: {},", gateway))
         .unwrap_or_default();
+    let mut sdk_imports = vec!["createSession"];
+    let extended_definition = extensions
+        .map(|extensions| {
+            let mut layers = Vec::new();
+            if !extensions.stack_bindings.is_empty() {
+                sdk_imports.push("extendStack");
+                let stacks = extensions
+                    .stack_bindings
+                    .iter()
+                    .map(|(alias, export)| {
+                        format!(
+                            "    {}: extendStack({base_name}.stacks{}, {export}),",
+                            typescript_property_key(alias),
+                            typescript_member_access(alias)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                layers.push(format!(
+                    "  stacks: {{\n    ...{base_name}.stacks,\n{stacks}\n  }},"
+                ));
+            }
+            if !extensions.program_bindings.is_empty() {
+                sdk_imports.push("extendPrograms");
+                let programs = extensions
+                    .program_bindings
+                    .iter()
+                    .map(|(key, export)| format!("    {}: {export},", typescript_property_key(key)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                layers.push(format!(
+                    "  programs: extendPrograms({base_name}.programs, {{\n{programs}\n  }}),"
+                ));
+            }
+            format!(
+                "\nexport const {definition_name} = {{\n  ...{base_name},\n{}\n}} as const;\n",
+                layers.join("\n")
+            )
+        })
+        .unwrap_or_default();
+    sdk_imports.sort_unstable();
     format!(
-        r#"import {{ createSession, type CompositionSessionOptions }} from '@usearete/sdk';
+        r#"import {{ {sdk_imports}, type CompositionSessionOptions }} from '@usearete/sdk';
 {imports}
 {program_import}
 {program_module_import_lines}
 
-export const {definition_name} = {{
+export const {base_name} = {{
   mode: 'composition',
 {gateway_member}
   stacks: {{
@@ -4221,7 +4607,7 @@ export const {definition_name} = {{
   }},
 {program_members}
 }} as const;
-
+{extended_definition}
 export type {manifest_pascal}SessionDefinition = typeof {definition_name};
 export const {manifest_screaming}_SDK = {definition_name};
 export type {manifest_pascal}Sdk = {manifest_pascal}SessionDefinition;
@@ -4232,13 +4618,16 @@ export function create{manifest_pascal}Session(
   return createSession({definition_name}, options);
 }}
 "#,
+        sdk_imports = sdk_imports.join(", "),
         imports = imports,
         program_import = program_import,
         program_module_import_lines = program_module_import_lines,
         definition_name = definition_name,
+        base_name = base_name,
         gateway_member = gateway_member,
         members = members,
         program_members = program_members,
+        extended_definition = extended_definition,
         manifest_pascal = manifest_pascal,
         manifest_screaming = manifest_screaming,
     )
@@ -4546,6 +4935,17 @@ fn generate_stack_definition_multi(
         "  endpoints: {{\n{}\n{}\n  }},",
         websocket_endpoint, http_endpoint
     );
+    let release_block = config
+        .release
+        .as_ref()
+        .map(|release| {
+            format!(
+                "\n  release: {{\n    stackManifestHash: {},\n    liveAlias: {},\n  }},",
+                ts_ident::single_quoted(&release.stack_manifest_hash),
+                ts_ident::single_quoted(&release.live_alias),
+            )
+        })
+        .unwrap_or_default();
     let gateway_block = config
         .gateway
         .as_ref()
@@ -4675,7 +5075,7 @@ fn generate_stack_definition_multi(
     let stack_export = format!(
         r#"export const {core_export_name} = {{
   name: {stack_kebab},
-{endpoints_block}{gateway_block}
+{endpoints_block}{release_block}{gateway_block}
   views: {{
 {views_body}
   }},{schemas_section}{patch_schemas_section}{programs_section}{program_reads_section}{addresses_section}
@@ -4683,6 +5083,7 @@ fn generate_stack_definition_multi(
         core_export_name = core_export_name,
         stack_kebab = ts_ident::single_quoted(stack_kebab),
         endpoints_block = endpoints_block,
+        release_block = release_block,
         gateway_block = gateway_block,
         views_body = views_body,
         schemas_section = schemas_block,
@@ -4772,7 +5173,7 @@ fn program_content_identities(
         programs: &unhashed,
         ..*context
     };
-    let mut identified = unhashed.clone();
+    let mut identified = context.programs.to_vec();
     for (index, program) in identified.iter_mut().enumerate() {
         let (_, sections) =
             generate_single_program_sections(&idls[index], index, &unhashed_context);
@@ -4900,7 +5301,6 @@ fn generate_single_program_sections(
             metadata.definition.normalized_idl_hash
         ),
     ]);
-
     if let Some(gateway) = &metadata.gateway {
         sections.push(format!(
             "      gateway: {},",
@@ -5921,6 +6321,46 @@ mod tests {
         assert!(compile_program_modules(stack_spec, None)
             .unwrap_err()
             .contains("Rebuild the ProgramSpec and StackManifest artifact closure"));
+    }
+
+    #[test]
+    fn program_package_release_stays_out_of_the_core_definition() {
+        let stack_spec = program_only_test_spec(BTreeMap::new(), vec![]);
+        let mut program = TypeScriptProgramConfig::from(
+            &arete_hash::OssProgramIdentityV1::new(stack_spec.program_specs[0].clone()).unwrap(),
+        );
+        let local = compile_program_modules(
+            stack_spec.clone(),
+            Some(TypeScriptStackConfig {
+                programs: Some(vec![program.clone()]),
+                ..TypeScriptStackConfig::default()
+            }),
+        )
+        .unwrap();
+        let release = format!(
+            "arete:registry-package-release:v2:sha256:{}",
+            "7".repeat(64)
+        );
+        program.definition.package_release_hash = Some(release.clone());
+        let registry = compile_program_modules(
+            stack_spec,
+            Some(TypeScriptStackConfig {
+                programs: Some(vec![program]),
+                ..TypeScriptStackConfig::default()
+            }),
+        )
+        .unwrap();
+
+        // The entry module stamps identity after the package's own extension;
+        // the core definition lacks that extension, so it carries none.
+        assert!(!local.stack_definition.contains("packageReleaseHash"));
+        assert!(!registry.stack_definition.contains("packageReleaseHash"));
+        assert_eq!(local.stack_definition, registry.stack_definition);
+        assert_eq!(
+            emitted_definition_hash(&local),
+            emitted_definition_hash(&registry),
+            "the same generated content keeps one definition hash"
+        );
     }
 
     /// Address Lookup Table: `lookup_table` is derived on create only; every
@@ -7384,6 +7824,143 @@ mod tests {
             "missing totalDeposit transform:\n{}",
             artifacts.code
         );
+    }
+
+    #[test]
+    fn reserved_idl_type_names_take_a_role_suffix_and_keep_numeric_aliases() {
+        let field = |name: &str, type_name: &str| IdlFieldSnapshot {
+            name: name.to_string(),
+            type_: IdlTypeSnapshot::Simple(type_name.to_string()),
+            amount_hint: None,
+        };
+        let idl_snapshot = IdlSnapshot {
+            name: "ore".to_string(),
+            program_id: None,
+            version: "0.1.0".to_string(),
+            accounts: vec![
+                IdlAccountSnapshot {
+                    name: "Board".to_string(),
+                    discriminator: vec![1, 0, 0, 0, 0, 0, 0, 0],
+                    docs: vec![],
+                    serialization: None,
+                    fields: vec![field("round_id", "u64")],
+                    type_def: None,
+                },
+                IdlAccountSnapshot {
+                    name: "Config".to_string(),
+                    discriminator: vec![2, 0, 0, 0, 0, 0, 0, 0],
+                    docs: vec![],
+                    serialization: None,
+                    fields: vec![IdlFieldSnapshot {
+                        name: "header".to_string(),
+                        type_: IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                            defined: IdlDefinedInnerSnapshot::Simple("Header".to_string()),
+                        }),
+                        amount_hint: None,
+                    }],
+                    type_def: None,
+                },
+            ],
+            instructions: vec![],
+            types: vec![IdlTypeDefSnapshot {
+                name: "Header".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Struct {
+                    kind: "struct".to_string(),
+                    fields: vec![field("version", "u8")],
+                },
+            }],
+            events: vec![],
+            errors: vec![],
+            discriminant_size: 8,
+        };
+        // Stack entity types already use the plain and prefixed names.
+        let reserved = HashSet::from([
+            "Board".to_string(),
+            "OreBoard".to_string(),
+            "Header".to_string(),
+            "OreHeader".to_string(),
+        ]);
+
+        let artifacts = generate_idl_account_artifacts(&[idl_snapshot], &reserved);
+
+        assert_eq!(
+            artifacts
+                .account_type_names
+                .get(&("ore".to_string(), "Board".to_string()))
+                .map(String::as_str),
+            Some("OreBoardAccount")
+        );
+        assert_eq!(
+            artifacts
+                .account_type_names
+                .get(&("ore".to_string(), "Config".to_string()))
+                .map(String::as_str),
+            Some("Config")
+        );
+        let code = &artifacts.code;
+        assert!(
+            code.contains("export interface OreBoardAccount {"),
+            "{code}"
+        );
+        assert!(
+            code.contains("export const OreBoardAccountSchema = z.object({"),
+            "{code}"
+        );
+        assert!(code.contains("export interface OreHeaderType {"), "{code}");
+        assert!(code.contains("header: OreHeaderType;"), "{code}");
+        assert!(
+            code.contains(
+                "/** @deprecated Use OreBoardAccount. */\nexport type OreBoard2 = OreBoardAccount;\n/** @deprecated Use OreBoardAccountSchema. */\nexport const OreBoard2Schema = OreBoardAccountSchema;"
+            ),
+            "{code}"
+        );
+        assert!(
+            code.contains("export type OreHeader2 = OreHeaderType;")
+                && code.contains("export const OreHeader2Schema = OreHeaderTypeSchema;"),
+            "{code}"
+        );
+        // Aliases follow the schemas they reference.
+        assert!(
+            code.find("export const OreBoard2Schema").unwrap()
+                > code.find("export const OreBoardAccountSchema").unwrap()
+        );
+        for name in [
+            "OreBoardAccount",
+            "OreBoard2",
+            "OreHeaderType",
+            "OreHeader2",
+        ] {
+            assert!(artifacts.type_names.contains(name), "{name}");
+        }
+        for name in [
+            "OreBoardAccountSchema",
+            "OreBoard2Schema",
+            "OreHeader2Schema",
+        ] {
+            assert!(
+                artifacts.schema_names.iter().any(|schema| schema == name),
+                "{name}"
+            );
+        }
+
+        // Without reserved names nothing is renamed or aliased.
+        let unreserved = generate_idl_account_artifacts(
+            &[IdlSnapshot {
+                name: "ore".to_string(),
+                program_id: None,
+                version: "0.1.0".to_string(),
+                accounts: vec![],
+                instructions: vec![],
+                types: vec![],
+                events: vec![],
+                errors: vec![],
+                discriminant_size: 8,
+            }],
+            &HashSet::new(),
+        );
+        assert!(!unreserved.code.contains("@deprecated"));
     }
 
     #[test]

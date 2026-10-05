@@ -38,12 +38,16 @@ impl Ord for SortKey {
             };
         }
 
-        let sort_order = self.sort_value.cmp(&other.sort_value);
+        // An entity with no sort value (missing or `null`) cannot be ranked,
+        // so it sorts after every entity that has one in *both* directions:
+        // it must never take a window slot from a ranked entity. `desc`
+        // reverses only the comparison between two present values.
         let sort_order = match (&self.sort_value, &other.sort_value, self.order) {
-            (SortValue::Null, _, _) | (_, SortValue::Null, _) | (_, _, SortOrder::Asc) => {
-                sort_order
-            }
-            (_, _, SortOrder::Desc) => sort_order.reverse(),
+            (SortValue::Null, SortValue::Null, _) => Ordering::Equal,
+            (SortValue::Null, _, _) => Ordering::Greater,
+            (_, SortValue::Null, _) => Ordering::Less,
+            (_, _, SortOrder::Asc) => self.sort_value.cmp(&other.sort_value),
+            (_, _, SortOrder::Desc) => self.sort_value.cmp(&other.sort_value).reverse(),
         };
 
         match sort_order {
@@ -974,23 +978,47 @@ mod tests {
     }
 
     #[test]
-    fn test_new_entity_with_missing_sort_field_gets_null_position() {
+    fn test_new_entity_with_missing_sort_field_sorts_last() {
+        for order in [SortOrder::Desc, SortOrder::Asc] {
+            let mut cache = SortedViewCache::new(
+                "test/latest".to_string(),
+                vec!["id".to_string(), "round_id".to_string()],
+                order,
+            );
+
+            cache.upsert("100".to_string(), json!({"id": {"round_id": 100}}));
+            cache.upsert("200".to_string(), json!({"id": {"round_id": 200}}));
+            cache.upsert("new".to_string(), json!({"data": "no_sort_field"}));
+            cache.upsert("nil".to_string(), json!({"id": {"round_id": null}}));
+
+            let ranked = match order {
+                SortOrder::Desc => ["200", "100"],
+                SortOrder::Asc => ["100", "200"],
+            };
+            assert_eq!(
+                cache.ordered_keys(),
+                [ranked[0], ranked[1], "new", "nil"],
+                "{order:?}: an entity without a sort value never outranks one with it; \
+                 among themselves they order by key"
+            );
+        }
+    }
+
+    /// The live `latest` failure: a window full of ranked entities must not
+    /// admit an unranked one, since it would evict a real member.
+    #[test]
+    fn a_full_window_does_not_admit_an_entity_without_a_sort_value() {
         let mut cache = SortedViewCache::new(
             "test/latest".to_string(),
             vec!["id".to_string(), "round_id".to_string()],
             SortOrder::Desc,
         );
-
-        cache.upsert("100".to_string(), json!({"id": {"round_id": 100}}));
-        cache.upsert("200".to_string(), json!({"id": {"round_id": 200}}));
-
-        cache.upsert("new".to_string(), json!({"data": "no_sort_field"}));
-
-        let keys = cache.ordered_keys();
-        assert_eq!(
-            keys.first().unwrap(),
-            "new",
-            "New entity without sort field gets Null which sorts first (Null < any value)"
-        );
+        for round in [100, 200, 300] {
+            cache.upsert_bounded(round.to_string(), json!({"id": {"round_id": round}}), 3);
+        }
+        let partial = json!({"metrics": {"checkpoint_count": 7}});
+        assert!(!cache.would_keep("1", &partial, 3));
+        cache.upsert_bounded("1".to_string(), partial, 3);
+        assert_eq!(cache.ordered_keys(), ["300", "200", "100"]);
     }
 }

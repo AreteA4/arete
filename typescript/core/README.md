@@ -335,7 +335,17 @@ Session surface:
 
 Prefer these connected paths in application code. `Arete.connect(STACK, ...)` remains available when a direct single-stack client is more convenient.
 
-If multiple stacks package the same program key, the first stack in the session definition owns the promoted alias and the session emits a warning. Both owner-scoped stack paths remain available. An explicitly declared standalone program always owns its top-level key.
+Programs are matched by identity, not by name (`compareProgramIdentity(a, b)` returns `'same' | 'unproven' | 'different'`). A program SDK's identity is its `packageReleaseHash`, the program package release a registry-installed SDK was generated from; local builds have none.
+
+- Both have one: equal hashes (or the same object) are the same program. A standalone program that a stack also provides is served by that stack's connected instance: one client, no warning. Different hashes throw `AreteError` with code `PROGRAM_KEY_CONFLICT` before anything connects.
+- At least one has none, with the same `programSpecHash`: the explicitly attached program takes the key, with one `console.warn`. A standalone session program takes `session.programs.<key>`, and `session.stacks.<name>.programs.<key>` keeps the stack's. Two stacks with such copies promote the first stack's.
+- Anything else (a different or missing `programSpecHash`) throws `PROGRAM_KEY_CONFLICT`; use `session.stacks.<name>.programs.<key>` or attach the standalone program under another key. Two stacks bundling different programs under one key both stay reachable through their stacks, and reading `session.programs.<key>` throws `PROGRAM_KEY_CONFLICT` naming them.
+
+The same rule applies to `withPrograms`, `ConnectOptions.programs`, a session member's `programs`, and React's `useArete(stack, { programs })`, where the attached program replaces the stack's for that client. `isSameProgramSdk(a, b)` is `compareProgramIdentity(a, b) === 'same'`.
+
+`extendProgram`, `extendPrograms`, and `withProgramRead` drop `packageReleaseHash`, because a program changed outside its generated SDK is no longer provably that SDK. Generated entries stamp it last with `withProgramIdentity(program, { packageReleaseHash })`, after the package's own extension.
+
+Generated stack and program objects carry their runtime extensions under registry symbols, so `{ ...MY_STACK }` keeps `read`, `flows`, program operations and read descriptors, while `Object.keys` and JSON never list them. `EXTENSION_API_VERSION` (also `arete.extensionApi` in this package's `package.json`) versions that extension contract and changes only on a breaking change.
 
 ## Chain Reads
 
@@ -372,7 +382,10 @@ for await (const update of session.stacks.myStack.views.settlementGame.list.watc
 }
 
 const game = await session.stacks.myStack.views.settlementGame.state.get('game-123');
+const latest = await session.stacks.ore.views.OreRound.latest.getOne();
 ```
+
+`get` and `getOne` open (or reuse) an equivalent subscription, wait for its initial snapshot, and release it. They reject with `InitialDataTimeoutError` after `timeoutMs` (5000 by default; `null` waits forever). `getSync` only reads a subscription that is already active and returns `undefined` when there is none.
 
 Every options object is a protocol v2 query with independent ordered membership. Different windows and filters on the same view can run concurrently, while equivalent normalized queries share one reference-counted wire subscription:
 
@@ -445,6 +458,28 @@ type RichUpdate<T> =
 ```
 
 `remove` means an entity left only this query's filter or window. `delete` means the source entity was deleted and is removed from every query for that view.
+
+A `patch` for a key the client holds no entity for (never received, or evicted by `maxEntriesPerView`) is discarded rather than stored as a partial entity; the entity appears with the server's next full `upsert`. Each discard is reported to `onFrameValidationError` with `reason: 'unknown-key'`. Replayable append-view records (frames with an `offset`) are events and are always applied.
+
+## Testing
+
+`@usearete/sdk/testing` provides supported, dependency-light test helpers:
+
+- `createWebSocketHarness()` — a scripted WebSocket server; pass `harness.websocketFactory` as `auth.websocketFactory` and answer subscriptions with `frames.*` builders.
+- `createFrameHarness()` — the store engine without a socket.
+- `createFakeTransactionTransport()` — a recording relay that can fail or stall.
+- `createWalletFixture()` — a recording wallet with scripted outcomes; `createTransactionOutcomeFixtures()` covers every status and phase.
+- `createFetchStub(routes)` — a routed, recording `fetch`.
+
+```ts
+import { createWebSocketHarness, createWalletFixture } from '@usearete/sdk/testing';
+
+const ws = createWebSocketHarness();
+const client = await Arete.connect(MY_STACK, {
+  auth: { websocketFactory: ws.websocketFactory },
+  wallet: createWalletFixture(),
+});
+```
 
 ## Replay cursors
 

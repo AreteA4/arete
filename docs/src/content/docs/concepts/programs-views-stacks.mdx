@@ -1,14 +1,15 @@
 ---
 title: Programs, Views, and Stacks
-description: The three building blocks of Arete, what each one is for, and how they come together in your application.
+description: Arete's two building blocks, Program SDKs and live views, the stacks that group them, and how they come together in your application.
 ---
 
-Arete has three layers that your application works with: programs, views, and
-stacks. They build on each other, and keeping them separate in your head makes
-both the catalog and the generated code much easier to follow.
+Arete has two building blocks: Program SDKs and live views. Stacks group them.
+Keeping the three apart in your head makes both the catalog and the generated
+code much easier to follow.
 
 In short: a **program** is the on-chain app, a **view** is its data arranged
-the way your app wants it, and a **stack** is the bundle you install.
+the way your app wants it, and a **stack** groups views with the Program SDKs
+they use, as one package you install.
 
 ## 1. Programs are the base unit
 
@@ -28,8 +29,9 @@ Program
 ```
 
 A Program SDK is useful on its own. It doesn't need a live deployment or a
-stack. Install one whenever your app needs to read from a program or act
-through it.
+stack. Install one on its own whenever your app needs to read from a program or
+act through it without live views. When your app uses a stack that covers the
+program, the stack already includes its Program SDK.
 
 The exact descriptor has the final say. It lists which account readers,
 operations, hosted connections, and SDK targets are available for that release.
@@ -56,21 +58,41 @@ place to run arbitrary historical SQL.
 An agent can query and subscribe to deployed views through MCP before any
 application code has been generated.
 
-## 3. Stacks are installable compositions
+## 3. Stacks group views and Program SDKs
 
-A **stack** packages everything needed for one useful area of functionality:
+A **stack** is a named group of live views and Program SDKs for one useful area
+of functionality:
 
 ```text
 Stack
 ├── selected live views
-├── one or more Program SDKs
+├── Program SDKs, including one for each program the views read from
 ├── stack-level reads and flows, when defined
 ├── typed addresses, constants, defaults, and math
 └── descriptors for the hosted capabilities it can use
 ```
 
-Installing a stack gives your app the programs and views that package selected.
-A project can install standalone programs alongside it too.
+A Program SDK in a stack is the same one you would install on its own: the same
+program package release that `a4 install program` installs, with the same
+generated surface and identity. Installing a stack therefore gives your app its
+views and the Program SDK for each program they read from. Each one sits under
+the stack's `programs` and uses the stack's authentication and transaction
+transport, so you don't need a separate program install to get a stack's
+operations. `a4 explore stack <ref> --summary` lists the Program SDKs a stack
+includes.
+
+Choose by what your app needs:
+
+- **Live views, with or without operations:** install a stack.
+- **Reads and transactions only:** install a Program SDK on its own.
+- **Views and Program SDKs that no stack groups:**
+  [compose a stack](/building-stacks/configuration/#composed-stacks) from
+  published stacks and program packages, or install each one and use them
+  together in one session.
+
+A project can still install a program standalone next to a stack that includes
+it. The CLI recognizes the shared Program SDK, and at runtime the two are one
+program.
 
 Several live views may happen to run in the same hosted deployment. That says
 nothing about how they relate at the application level. Your client code should
@@ -98,9 +120,16 @@ session.programs.token.accounts;
 session.chain;
 ```
 
-Programs that arrive inside a stack are also reachable through the canonical
-program surface, wherever their identities allow it. The generated types sort
-out any naming clashes, so there is no need to merge program clients by hand.
+Programs that arrive inside a stack are also reachable at
+`session.programs.<key>`. A Program SDK's identity is its program package
+release, so the same program installed standalone and inside a stack is one
+program with one client. Local builds have no release identity: a local
+standalone copy of a stack's program (the same program spec) takes
+`session.programs.<key>` with a warning, and the stack keeps its own at
+`session.stacks.<name>.programs.<key>`. A different program under a key a stack
+already uses is rejected with `PROGRAM_KEY_CONFLICT`, which tells you to use
+`session.stacks.<name>.programs.<key>` or attach the standalone program under
+another key. There is no need to merge program clients by hand.
 
 ## Portable definitions and hosted capabilities
 
@@ -140,6 +169,11 @@ A `StackManifest` does not contain a deployment URL. Generated hosted packages
 attach connection details separately, so the portable content never changes
 silently when infrastructure does.
 
+A `StackManifest` also lists `ProgramSpec`s, not Program SDKs. A stack package
+references each Program SDK by its program package release, next to the
+manifest, so a change to a Program SDK alone never changes the `StackManifest`
+a hosted runtime serves.
+
 ## Availability is not binary
 
 Arete can know about a program or stack before every way of using it is ready.
@@ -158,6 +192,7 @@ writing code.
 
 - [Explore on-chain with MCP](/agent-skills/explore-on-chain/)
 - [Build with a Program SDK](/using-programs/overview/)
+- [Compose a stack from published parts](/building-stacks/configuration/#composed-stacks)
 - [Understand Arete program versions](/concepts/program-versioning/)
 - [Connect to live views](/using-stacks/connect/)
 - [Manage project dependencies](/building-stacks/configuration/)

@@ -7,7 +7,8 @@
 //! Regenerate with `A4_UPDATE_GOLDEN=1 cargo test -p a4-cli stack_name_golden`.
 //!
 //! The TypeScript goldens are type-checked in CI
-//! (`cli/tests/golden/stack-names/tsconfig.json`).
+//! (`cli/tests/golden/stack-names/tsconfig.json`), and with declaration emit
+//! under the options `tsc --init` writes (`cli/tests/golden/tsconfig.strict.json`).
 
 use super::*;
 use arete_artifacts::{
@@ -62,7 +63,7 @@ fn program(name: &str, program_id: &str) -> ProgramSpecArtifact {
     ProgramSpecArtifact::new(spec).expect("golden ProgramSpec artifact")
 }
 
-fn entity(name: &str) -> PortableEntity {
+pub(super) fn entity(name: &str) -> PortableEntity {
     let mut entity = PortableEntity::new(name, "id.address");
     entity.sections = serde_json::from_value(serde_json::json!([
         {
@@ -194,6 +195,7 @@ fn generate_all(name: &str, output: &Path) -> Result<()> {
         false,
         None,
         None,
+        &[],
     )?;
     generate_python_stack_sdk(
         &source,
@@ -203,6 +205,7 @@ fn generate_all(name: &str, output: &Path) -> Result<()> {
         false,
         None,
         None,
+        &[],
     )?;
 
     let composed = composed_stack(name);
@@ -220,6 +223,7 @@ fn generate_all(name: &str, output: &Path) -> Result<()> {
         &none,
         &none,
     )
+    .map(|_| ())
 }
 
 /// Relative path -> contents for every generated file. Provenance manifests
@@ -470,6 +474,7 @@ fn stack_name_collision_after_sanitizing_is_reported() {
         false,
         None,
         None,
+        &[],
     ));
     assert!(error.contains("`MyVaultStack`"), "{error}");
     assert!(error.contains("entity 'MyVaultStack'"), "{error}");
@@ -546,6 +551,7 @@ fn stack_names_that_are_paths_are_rejected() {
             false,
             None,
             None,
+            &[],
         ));
         assert!(
             error.contains("cannot be used as a generated file name"),

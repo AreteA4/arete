@@ -41,7 +41,7 @@ pub mod ore {
         pub mask: u64,
         pub strategy: u8,
         pub reload: u64,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `automation` account.
@@ -130,7 +130,7 @@ pub mod ore {
     /// Typed params for `checkpoint`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct CheckpointParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `authority` account.
@@ -224,7 +224,7 @@ pub mod ore {
     /// Typed params for `claimSol`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct ClaimSolParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `miner` account.
@@ -298,7 +298,7 @@ pub mod ore {
     /// Typed params for `claimOre`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct ClaimOreParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `miner` account.
@@ -419,7 +419,7 @@ pub mod ore {
     /// Typed params for `close`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct CloseParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `rentPayer` account.
@@ -503,7 +503,7 @@ pub mod ore {
     pub struct DeployParams {
         pub amount: u64,
         pub squares: u32,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `authority` account.
@@ -639,7 +639,7 @@ pub mod ore {
     /// Typed params for `log`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct LogParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
     }
@@ -680,7 +680,7 @@ pub mod ore {
     /// Typed params for `reset`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct ResetParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `feeCollector` account.
@@ -863,7 +863,7 @@ pub mod ore {
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct BuryParams {
         pub amount: u64,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `sender` account.
@@ -1213,7 +1213,7 @@ pub mod ore {
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct SetAdminParams {
         pub admin: String,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
     }
@@ -1272,7 +1272,7 @@ pub mod ore {
         pub id: u64,
         pub commit: Vec<u8>,
         pub samples: u64,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `provider` account.
@@ -1420,6 +1420,12 @@ pub mod ore {
             Self { builder }
         }
 
+        /// The context program extension functions take: the client's chain
+        /// reader, its wallet, and this accessor.
+        pub fn context(&self) -> arete_sdk::ProgramContext<'_, OreProgram> {
+            arete_sdk::ProgramContext::new(self)
+        }
+
         pub fn automate(&self, params: AutomateParams) -> Result<BuiltInstruction, InstructionError> {
             automate(params)
         }
@@ -1473,7 +1479,7 @@ pub mod ore {
         }
 
         /// Typed reader for `Automation` accounts (release-addressed HTTP reads).
-        pub fn automation_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Automation>, arete_sdk::AreteError> {
+        pub fn automation_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::OreAutomation>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Automation",
                 std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
@@ -1488,20 +1494,42 @@ pub mod ore {
             ))
         }
 
+        /// Typed reader for `Config` accounts (release-addressed HTTP reads).
+        pub fn config_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Config>, arete_sdk::AreteError> {
+            Ok(arete_sdk::AccountReader::new(
+                "Config",
+                std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
+            ))
+        }
+
         /// Typed reader for `Miner` accounts (release-addressed HTTP reads).
-        pub fn miner_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Miner>, arete_sdk::AreteError> {
+        pub fn miner_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::OreMinerAccount>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Miner",
                 std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
             ))
         }
 
+        /// Typed reader for `Round` accounts (release-addressed HTTP reads).
+        pub fn round_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Round>, arete_sdk::AreteError> {
+            Ok(arete_sdk::AccountReader::new(
+                "Round",
+                std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
+            ))
+        }
+
         /// Typed reader for `Treasury` accounts (release-addressed HTTP reads).
-        pub fn treasury_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Treasury>, arete_sdk::AreteError> {
+        pub fn treasury_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::OreTreasuryAccount>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Treasury",
                 std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
             ))
+        }
+    }
+
+    impl arete_sdk::ProgramAccessor for OreProgram {
+        fn program_builder(&self) -> &arete_sdk::ProgramBuilder {
+            &self.builder
         }
     }
 }
@@ -1539,10 +1567,10 @@ pub mod entropy {
         pub samples: u64,
         #[serde(rename = "endAt")]
         pub end_at: u64,
-        /// Optional address override for the `authority` signer (defaults to the payer).
+        /// Address of the `authority` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub authority: Option<String>,
-        /// Optional address override for the `payer` signer (defaults to the payer).
+        /// Address of the `payer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub payer: Option<String>,
         /// Address of the `provider` account.
@@ -1620,7 +1648,7 @@ pub mod entropy {
     /// Typed params for `close`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct CloseParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `var` account.
@@ -1677,7 +1705,7 @@ pub mod entropy {
     pub struct NextParams {
         #[serde(rename = "endAt")]
         pub end_at: u64,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `var` account.
@@ -1729,7 +1757,7 @@ pub mod entropy {
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct RevealParams {
         pub seed: Vec<u8>,
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `var` account.
@@ -1780,7 +1808,7 @@ pub mod entropy {
     /// Typed params for `sample`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct SampleParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
+        /// Address of the `signer` signer.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
         /// Address of the `var` account.
@@ -1836,7 +1864,6 @@ pub mod entropy {
     /// Program accessor exposed on the stack client's `programs` namespace.
     #[derive(Clone)]
     pub struct EntropyProgram {
-        #[allow(dead_code)]
         builder: arete_sdk::ProgramBuilder,
     }
 
@@ -1844,6 +1871,12 @@ pub mod entropy {
         /// Construct from the connected client's program runtime.
         pub fn from_builder(builder: arete_sdk::ProgramBuilder) -> Self {
             Self { builder }
+        }
+
+        /// The context program extension functions take: the client's chain
+        /// reader, its wallet, and this accessor.
+        pub fn context(&self) -> arete_sdk::ProgramContext<'_, EntropyProgram> {
+            arete_sdk::ProgramContext::new(self)
         }
 
         pub fn open(&self, params: OpenParams) -> Result<BuiltInstruction, InstructionError> {
@@ -1864,6 +1897,20 @@ pub mod entropy {
 
         pub fn sample(&self, params: SampleParams) -> Result<BuiltInstruction, InstructionError> {
             sample(params)
+        }
+
+        /// Typed reader for `Var` accounts (release-addressed HTTP reads).
+        pub fn var_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Var>, arete_sdk::AreteError> {
+            Ok(arete_sdk::AccountReader::new(
+                "Var",
+                std::sync::Arc::new(self.builder.account_transport("entropy", &read_descriptor())?),
+            ))
+        }
+    }
+
+    impl arete_sdk::ProgramAccessor for EntropyProgram {
+        fn program_builder(&self) -> &arete_sdk::ProgramBuilder {
+            &self.builder
         }
     }
 }

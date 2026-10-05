@@ -64,7 +64,7 @@ use solana_hash::Hash;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_message::{v0, v1, Message as LegacyMessage, VersionedMessage};
 use solana_signature::Signature;
-use solana_signer::Signer;
+use solana_signer::{Signer, SignerError};
 use solana_transaction::versioned::VersionedTransaction;
 
 use crate::instruction::BuiltInstruction;
@@ -122,6 +122,72 @@ const LOOKUP_TABLE_KEYS: &[&str] = &[
 /// A signer the adapter owns: a local keypair, a remote signer, anything
 /// implementing upstream [`Signer`].
 pub type SharedSigner = Arc<dyn Signer + Send + Sync>;
+
+/// A Solana signer that travels with a prepared transaction
+/// ([`PreparedTransactionBody::signers`](crate::operations::PreparedTransactionBody::signers),
+/// TypeScript `signers`), such as the keypair of an account the transaction
+/// creates: `prepared.with_signers([Arc::new(SolanaOperationSigner::new(keypair))
+/// as Arc<dyn arete_sdk::Signer>])`. [`SolanaWalletAdapter`] signs with it for a
+/// required signature it does not own, and it can be registered in a
+/// [`SignerRegistry`](crate::operations::SignerRegistry) the same way.
+#[derive(Clone)]
+pub struct SolanaOperationSigner(SharedSigner);
+
+impl SolanaOperationSigner {
+    /// Wrap an upstream signer.
+    pub fn new(signer: SharedSigner) -> Self {
+        Self(signer)
+    }
+
+    /// The wrapped signer.
+    pub fn signer(&self) -> &SharedSigner {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SolanaOperationSigner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("SolanaOperationSigner")
+            .field(&self.0.pubkey().to_string())
+            .finish()
+    }
+}
+
+impl crate::operations::Signer for SolanaOperationSigner {
+    fn address(&self) -> String {
+        self.0.pubkey().to_string()
+    }
+
+    fn sign_transaction_message(&self, message: &[u8]) -> Option<Result<[u8; 64], WalletError>> {
+        Some(
+            self.0
+                .try_sign_message(message)
+                .map(<[u8; 64]>::from)
+                .map_err(|error| WalletError::new(error.to_string())),
+        )
+    }
+}
+
+/// A carried signer's signature over the final message, made before the
+/// transaction is assembled, so it signs like an owned signer.
+struct CarriedSignature {
+    address: Address,
+    signature: Signature,
+}
+
+impl Signer for CarriedSignature {
+    fn try_pubkey(&self) -> Result<Address, SignerError> {
+        Ok(self.address)
+    }
+
+    fn try_sign_message(&self, _message: &[u8]) -> Result<Signature, SignerError> {
+        Ok(self.signature)
+    }
+
+    fn is_interactive(&self) -> bool {
+        false
+    }
+}
 
 /// Which transport an operation runs on, mirroring the TypeScript adapters'
 /// `AdapterTransportSelection = 'auto' | 'direct' | TransactionTransport`.
@@ -484,11 +550,15 @@ impl SolanaWalletAdapter {
         Ok(base64::engine::general_purpose::STANDARD.encode(&wire))
     }
 
-    /// The owned signers matching the message's required-signature prefix, in
+    /// The signers matching the message's required-signature prefix, in
     /// message order — exactly what [`VersionedTransaction::try_new`] expects.
+    /// An owned signer comes first; a required signature the adapter does not
+    /// own is made by a `carried` signer
+    /// ([`WalletExecutionContext::signers`]) for that address that signs.
     fn ordered_signers(
         &self,
         message: &VersionedMessage,
+        carried: &[Arc<dyn crate::operations::Signer>],
     ) -> Result<Vec<SharedSigner>, WalletError> {
         let available: HashMap<Address, SharedSigner> = self
             .owned_signers()
@@ -498,10 +568,39 @@ impl SolanaWalletAdapter {
         let keys = message.static_account_keys();
         let mut ordered = Vec::with_capacity(required);
         let mut missing = Vec::new();
+        let mut message_bytes: Option<Vec<u8>> = None;
         for key in keys.iter().take(required) {
-            match available.get(key) {
-                Some(signer) => ordered.push(signer.clone()),
-                None => missing.push(key.to_string()),
+            if let Some(signer) = available.get(key) {
+                ordered.push(signer.clone());
+                continue;
+            }
+            let address = key.to_string();
+            let mut signature = None;
+            for candidate in carried.iter().filter(|signer| signer.address() == address) {
+                let bytes = message_bytes.get_or_insert_with(|| message.serialize());
+                match candidate.sign_transaction_message(bytes) {
+                    Some(Ok(signed)) => {
+                        signature = Some(Signature::from(signed));
+                        break;
+                    }
+                    Some(Err(error)) => {
+                        return Err(WalletError::from_outcome(
+                            TransactionFailureOutcome::NotSubmitted {
+                                phase: FailurePhase::Wallet,
+                                message: format!("Failed to sign transaction: {error}"),
+                            },
+                        ))
+                    }
+                    // An address-only signer: its key is not here.
+                    None => {}
+                }
+            }
+            match signature {
+                Some(signature) => ordered.push(Arc::new(CarriedSignature {
+                    address: *key,
+                    signature,
+                })),
+                None => missing.push(address),
             }
         }
         if !missing.is_empty() {
@@ -685,7 +784,7 @@ impl WalletAdapter for SolanaWalletAdapter {
             options.resources
         };
         let message = self.compile(version, Stage::Final, &upstream, &resources, blockhash)?;
-        let signers = self.ordered_signers(&message)?;
+        let signers = self.ordered_signers(&message, &context.signers)?;
         let transaction = VersionedTransaction::try_new(message, &signers).map_err(|error| {
             WalletError::from_outcome(TransactionFailureOutcome::NotSubmitted {
                 phase: FailurePhase::Wallet,
