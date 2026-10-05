@@ -109,8 +109,16 @@ CLI (`cli/src/commands/sdk.rs`): `--python` on `a4 sdk create` / `a4 install` /
 `a4 sdk sync`, resolving language the same way `--rust` does. Extensions manifest
 `language: "python"`: flat `.py` bundles, entry `extensions.py` by convention,
 pin-validate → stage verbatim → wire via explicit imports in the generated package
-`__init__.py` (manifest-driven, no source regex) → `sdk-provenance.json`. Same
-registry gap as Rust: hosted bundles need the backend language dimension.
+`__init__.py` (manifest-driven, no source regex) → `sdk-provenance.json`. Since
+2026-09-30 the entry exports `PROGRAM_EXTENSIONS` or `STACK_EXTENSIONS` (canonical §9)
+and the generated `__init__.py` applies it with `extend_program` / `extend_stack`
+(then stamps program identity) instead of star-importing the entry; program extensions
+gain `create_read(ctx)`, surfaced as the connected program's `read`. A stack package
+embeds each program package's own bundle in a `program_sdks/<program>/` subpackage
+(re-export `programs.py` / `models.py` shims, so the bundle's relative imports resolve
+as in the standalone package) and binds the extended program. Hosted bundles resolve
+by target from the backend language dimension; a language mismatch or a content-hash
+mismatch is a hard error.
 
 Example: `examples/ore-python` — generated package + `main.py` demoing views
 streaming, offline instruction build, PDA derivation, and (connectivity-guarded)
@@ -174,7 +182,10 @@ semantics):
   never downgraded to a synthetic `CustomError<code>` when `errors` is empty.
 - **`wallet=` is the reserved signer-fallback option** on raw builders
   (`RawInstruction.build` and generated builders), matching TS `BuildOptions.wallet`.
-  Spelling it `payer=` would shadow the IDL account name `payer`, which must stay
+  Like it, it fills only signers whose `AccountMeta.signer_kind` is `"wallet"` (TS
+  `signerKind: 'wallet'`); generated handlers mark every signer `"provided"`, so the
+  caller passes the signer's address. Spelling it `payer=` would shadow the IDL account
+  name `payer`, which must stay
   reachable as an account override. Reserved set: `wallet`, `accounts`,
   `remaining_accounts`; audited against every IDL in `stacks/**` — `payer` was the only
   collision, and none of the reserved names appear as account or arg names.
@@ -198,6 +209,29 @@ semantics):
   (`ð þ ı ŋ`) fall to the letter band's tail, and contractions beyond a small fold table
   (`ß æ œ ø đ ł ŧ`) are unmodelled. `tests/test_collation.py` re-runs the whole table
   against a live `node` when present, so the captured values cannot rot.
+- **Program identity (canonical §9)** projects as `ProgramDef.package_release_hash`
+  plus `arete.same_program(a, b)` (same object, or equal non-`None` hashes). The
+  conflict is `ProgramKeyConflictError` (`code="PROGRAM_KEY_CONFLICT"`, `details`
+  `{"key", "stacks"}`), raised by `with_programs` / `Arete.connect(programs=…)` / member
+  `programs`, and by `create_session` *before connecting any member* for an explicit
+  program that differs from a stack's program under the same key. An explicit program
+  that *is* a stack's program is served by that stack's connected instance (no second
+  member; `program_options` for it is rejected), as in TS. When two stacks
+  provide different programs under one key the session is created, the key is left out
+  of `session.programs` (`"ore" in session.programs` is false), and reading it raises the
+  same error. It subclasses `AttributeError` too, so `hasattr` and `getattr` defaults keep
+  working on that path — idiom only. The old first-stack-wins / stack-wins warnings are
+  gone.
+- **No partial entities (canonical §5)**: `Store` discards a `patch` for a key it does
+  not hold when the subscription's ack carried `wholeEntities: true`
+  (`SubscribedFrame.whole_entities`), and stores it otherwise (older servers). Python
+  never evicts locally, so "not held" means never received or deleted. Frames with an
+  `offset` are exempt from both that rule and the stale-sequence guard,
+  matching TS and Rust. Sorting puts entities with a missing or `None` sort value last
+  in both directions.
+- **Extension API**: `arete.EXTENSION_API_VERSION` (defined in `arete.extensions`),
+  recorded as `[tool.arete] extension-api` in `pyproject.toml`; a test keeps the two in
+  step.
 - **Wallet-rejection heuristic scope**: TS runs its rejection regex over every thrown
   value; Python skips it for `WalletError` (adapters own their classification, so an
   outcome-less `WalletError` is `not-submitted`/`send` rather than `/wallet`) and applies
@@ -223,6 +257,5 @@ semantics):
    template, provenance (15 new CLI tests; suite 126) + regenerated
    `examples/ore-python` with an offline smoke test.
 7. ✅ Package: pyproject deps/extras (0.4.0), README rewrite, `__init__.py` exports.
-   ☐ Follow-up: `docs/src/content/docs/sdks/python.mdx` public page (docs team);
-   hosted registry `sdk_extension_contents` language dimension (backend — same gap
-   as Rust).
+   ☐ Follow-up: `docs/src/content/docs/sdks/python.mdx` public page (docs team).
+   (The hosted registry `sdk_extension_contents` language dimension has landed.)

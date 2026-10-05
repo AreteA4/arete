@@ -1,0 +1,9 @@
+{
+  "entry": "vault-extensions.ts",
+  "files": [
+    "vault-extensions.ts"
+  ],
+  "inputKind": "program-spec",
+  "inputHash": "arete:h1:program-spec:sha256:7f8377cbaeffdc6a33986144c5abb640d00d000519185ff85ac1ccfe1917b976",
+  "sdkRange": null
+}

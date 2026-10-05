@@ -2,18 +2,26 @@
 
 Python port of ``typescript/core/src/stack-extensions.ts``: author-written
 code attached to a stack (``read``, ``flows``, ``addresses``, ``constants``,
-``defaults``, ``math``) or a program (semantic ``operations``), merged into
-the generated binding data and surfaced on the connected client.
+``defaults``, ``math``) or a program (``read`` and semantic ``operations``),
+merged into the generated binding data and surfaced on the connected client.
 
 Extension namespaces deep-merge (later layers win per key, nested mappings
 merge recursively); ``create_read`` / ``create_flows`` / ``create_operations``
 factories compose (base runs first, extension result merges over it).
+
+Extension bundles (``docs/internal/sdk-core-api.md`` §9) export one mapping
+from their entry module: ``PROGRAM_EXTENSIONS`` (keys
+:data:`PROGRAM_EXTENSION_KEYS`) or ``STACK_EXTENSIONS`` (keys
+:data:`STACK_EXTENSION_KEYS`). Generated packages read it with
+:func:`program_extensions_of` / :func:`stack_extensions_of` and apply it with
+:func:`extend_program` / :func:`extend_stack`.
 """
 
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Callable, Dict, Mapping, Optional
+from types import ModuleType
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from arete.stack import (
     AttrNamespace,
@@ -25,12 +33,49 @@ from arete.stack import (
     normalize_program_operations,
 )
 
+#: Version of the extension-authoring surface (canonical §9 "Extension API
+#: contract"): the extension helpers in this module, program read attachment,
+#: and the instruction helpers generated code imports. Bumped only on a
+#: breaking change; recorded as ``[tool.arete] extension-api`` in
+#: ``pyproject.toml``. The TypeScript and Rust SDKs export the same value.
+EXTENSION_API_VERSION = 1
+
+#: Keys a program bundle's ``PROGRAM_EXTENSIONS`` mapping may carry: the
+#: :func:`extend_program` keyword arguments a bundle provides.
+PROGRAM_EXTENSION_KEYS: Tuple[str, ...] = (
+    "addresses",
+    "constants",
+    "defaults",
+    "math",
+    "pdas",
+    "create_operations",
+    "create_read",
+)
+
+#: Keys a stack bundle's ``STACK_EXTENSIONS`` mapping may carry: the
+#: :func:`extend_stack` keyword arguments.
+STACK_EXTENSION_KEYS: Tuple[str, ...] = (
+    "addresses",
+    "constants",
+    "defaults",
+    "math",
+    "read_arg_counts",
+    "create_read",
+    "create_flows",
+)
+
 __all__ = [
+    "EXTENSION_API_VERSION",
+    "PROGRAM_EXTENSION_KEYS",
+    "STACK_EXTENSION_KEYS",
     "merge_namespace",
     "merge_program_operations",
     "extend_program",
     "extend_programs",
     "extend_stack",
+    "program_extensions_of",
+    "stack_extensions_of",
+    "with_program_identity",
     "apply_connected_stack_extensions",
 ]
 
@@ -83,14 +128,22 @@ def extend_program(
     create_operations: Optional[
         Callable[[ProgramOperationContext], Any]
     ] = None,
+    create_read: Optional[
+        Callable[[ProgramOperationContext], Mapping[str, Any]]
+    ] = None,
 ) -> ProgramDef:
-    """A copy of ``program`` with extension namespaces merged in and operation
-    factories composed (base first, extension merged over it).
+    """A copy of ``program`` with extension namespaces merged in and the
+    ``create_read`` / ``create_operations`` factories composed (base first,
+    extension merged over it; the base result is on the connected program
+    before the extension factory runs, as in TS ``extendProgram``).
 
     The extended definition drops ``sdk_definition_hash`` — it no longer
-    byte-matches the generated artifact.
+    byte-matches the generated artifact — and ``package_release_hash``: a
+    program extended outside its generated SDK is no longer provably that SDK
+    (canonical §9). A generated package stamps identity back with
+    :func:`with_program_identity` after applying its own extension.
     """
-    updates: Dict[str, Any] = {"sdk_definition_hash": None}
+    updates: Dict[str, Any] = {"sdk_definition_hash": None, "package_release_hash": None}
     provided = {
         "pdas": pdas,
         "accounts": accounts,
@@ -117,6 +170,11 @@ def extend_program(
                 if base_factory is not None
                 else None
             )
+            if base_operations is not None:
+                connected = getattr(context, "program", None)
+                _merge_connected(connected, "instructions", base_operations.instructions)
+                _merge_connected(connected, "transactions", base_operations.transactions)
+                _merge_connected(connected, "flows", base_operations.flows)
             extension_operations = (
                 normalize_program_operations(extension_factory(context))
                 if extension_factory is not None
@@ -126,7 +184,107 @@ def extend_program(
 
         updates["create_operations"] = composed
 
+    base_read_factory = program.create_read
+    extension_read_factory = create_read
+    if base_read_factory is not None or extension_read_factory is not None:
+
+        def composed_read(context: ProgramOperationContext) -> Dict[str, Any]:
+            base_read = (
+                base_read_factory(context) if base_read_factory is not None else None
+            )
+            if base_read:
+                _merge_connected(getattr(context, "program", None), "read", base_read)
+            extension_read = (
+                extension_read_factory(context)
+                if extension_read_factory is not None
+                else None
+            )
+            return merge_namespace(dict(base_read or {}), extension_read or {})
+
+        updates["create_read"] = composed_read
+
     return dataclasses.replace(program, **updates)
+
+
+def _merge_connected(program: Any, key: str, entries: Mapping[str, Any]) -> None:
+    """Merge a base factory's result into a connected program's namespace, so
+    the extension factory composed over it sees it (TS ``extendProgram``)."""
+    if program is None or not entries:
+        return
+    existing = getattr(program, key, None)
+    if isinstance(existing, AttrNamespace):
+        label = existing._label
+        base = dict(existing._entries)
+        namespace_type = type(existing)
+    else:
+        label = f"programs.{getattr(program, 'key', '?')}.{key}"
+        base = {}
+        namespace_type = AttrNamespace if key == "read" else OperationNamespace
+    try:
+        setattr(program, key, namespace_type(label, merge_namespace(base, entries)))
+    except AttributeError:
+        pass
+
+
+def _bundle_extensions(
+    module: ModuleType, export: str, allowed: Tuple[str, ...], kind: str
+) -> Dict[str, Any]:
+    name = getattr(module, "__name__", repr(module))
+    try:
+        mapping = getattr(module, export)
+    except AttributeError:
+        raise ImportError(
+            f"{kind} extension bundle entry '{name}' must export "
+            f"{export} = {{...}} with any of the keys {', '.join(allowed)}"
+        ) from None
+    if not isinstance(mapping, Mapping):
+        raise TypeError(
+            f"{name}.{export} must be a mapping, got {type(mapping).__name__}"
+        )
+    unknown = sorted(set(mapping) - set(allowed))
+    if unknown:
+        raise TypeError(
+            f"{name}.{export} has unknown key(s) {', '.join(unknown)} "
+            f"(allowed: {', '.join(allowed)})"
+        )
+    return dict(mapping)
+
+
+def program_extensions_of(module: ModuleType) -> Dict[str, Any]:
+    """The ``PROGRAM_EXTENSIONS`` mapping a program bundle's entry exports,
+    as :func:`extend_program` keyword arguments.
+
+    Raises :class:`ImportError` when the entry does not export it and
+    :class:`TypeError` when it is not a mapping of
+    :data:`PROGRAM_EXTENSION_KEYS`.
+    """
+    return _bundle_extensions(module, "PROGRAM_EXTENSIONS", PROGRAM_EXTENSION_KEYS, "Program")
+
+
+def stack_extensions_of(module: ModuleType) -> Dict[str, Any]:
+    """The ``STACK_EXTENSIONS`` mapping a stack bundle's entry exports, as
+    :func:`extend_stack` keyword arguments.
+
+    Raises :class:`ImportError` when the entry does not export it and
+    :class:`TypeError` when it is not a mapping of
+    :data:`STACK_EXTENSION_KEYS`.
+    """
+    return _bundle_extensions(module, "STACK_EXTENSIONS", STACK_EXTENSION_KEYS, "Stack")
+
+
+def with_program_identity(
+    program: ProgramDef, *, package_release_hash: Optional[str]
+) -> ProgramDef:
+    """A copy of ``program`` carrying the identity of the program SDK it is
+    (TS ``withProgramIdentity``).
+
+    Generated program packages call this last, after their own extension, so
+    the identity describes exactly the generated SDK; :func:`extend_program`
+    drops it again. An empty or ``None`` release removes the identity.
+    """
+    return dataclasses.replace(
+        program, package_release_hash=package_release_hash or None
+    )
 
 
 def extend_programs(

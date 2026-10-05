@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
-use super::manifest::{DependencyKind, InstallTarget, ProjectManifest};
+use super::manifest::{DependencyKind, DependencyV1, InstallTarget, ProjectManifest};
 use super::paths::ProjectPaths;
 
 #[derive(Debug, Clone)]
@@ -28,19 +28,11 @@ impl InstallPlan {
         let mut outputs = Vec::new();
         for (kind, alias, dependency) in manifest.dependencies() {
             for target in dependency.selected_targets(&manifest.document.sdk) {
-                let configured = dependency
-                    .outputs
-                    .get(*target)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| default_output(manifest, kind, alias, *target));
                 outputs.push(PlannedOutput {
                     kind,
                     alias: alias.clone(),
                     target: *target,
-                    path: paths.output(
-                        &configured,
-                        &format!("{kind} dependency '{alias}' {target} output"),
-                    )?,
+                    path: output_path(manifest, &paths, kind, alias, dependency, *target)?,
                 });
             }
         }
@@ -64,6 +56,27 @@ impl InstallPlan {
             .iter()
             .filter(move |output| output.kind == kind && output.alias == alias)
     }
+}
+
+/// Where `dependency` generates its `target` SDK: its configured output for
+/// that target, or the default for its kind and alias.
+pub fn output_path(
+    manifest: &ProjectManifest,
+    paths: &ProjectPaths,
+    kind: DependencyKind,
+    alias: &str,
+    dependency: &DependencyV1,
+    target: InstallTarget,
+) -> Result<PathBuf> {
+    let configured = dependency
+        .outputs
+        .get(target)
+        .map(str::to_owned)
+        .unwrap_or_else(|| default_output(manifest, kind, alias, target));
+    paths.output(
+        &configured,
+        &format!("{kind} dependency '{alias}' {target} output"),
+    )
 }
 
 fn default_output(

@@ -12,6 +12,8 @@
     "reconnect-replacement.json",
     "errors.json",
     "replay-cursors.json",
-    "replay-gaps.json"
+    "replay-gaps.json",
+    "whole-entities.json",
+    "frame-versions.json"
   ]
 }

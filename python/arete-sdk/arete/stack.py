@@ -25,6 +25,7 @@ definition maps with helpful ``AttributeError``\\ s).
 from __future__ import annotations
 
 import inspect as _inspect
+import logging
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -35,6 +36,9 @@ from typing import (
     Tuple,
 )
 
+from arete.errors import ProgramKeyConflictError
+
+logger = logging.getLogger(__name__)
 from arete.instructions import (
     AccountRefSeed,
     ArgRefSeed,
@@ -59,6 +63,7 @@ from arete.views import ViewDef
 
 __all__ = [
     "StackEndpoints",
+    "StackRelease",
     "StackDef",
     "ProgramDef",
     "ProgramOperations",
@@ -74,6 +79,8 @@ __all__ = [
     "PdaFactory",
     "ConnectedProgram",
     "ProgramsNamespace",
+    "compare_program_identity",
+    "same_program",
     "with_programs",
 ]
 
@@ -84,6 +91,28 @@ class StackEndpoints:
 
     ws: str = ""
     http: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class StackRelease:
+    """The exact served version a generated stack was built for: one live
+    alias of one StackManifest.
+
+    Generated only from a hosted StackManifest. It is sent with the WebSocket
+    session request for ``endpoints.ws`` so the session endpoint can route the
+    client to that version.
+    """
+
+    #: ``arete:h1:stack-manifest:sha256:<64 hex>``
+    stack_manifest_hash: str
+    #: The StackManifest live alias this stack serves.
+    live_alias: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.stack_manifest_hash, str) or not self.stack_manifest_hash:
+            raise ValueError("StackRelease.stack_manifest_hash must be a non-empty string")
+        if not isinstance(self.live_alias, str) or not self.live_alias:
+            raise ValueError("StackRelease.live_alias must be a non-empty string")
 
 
 @dataclass
@@ -97,6 +126,11 @@ class ProgramDef:
     connected program) and returns :class:`ProgramOperations` (or a mapping
     with ``instructions`` / ``transactions`` / ``flows`` keys) whose leaves
     are :class:`Operation` values.
+
+    ``create_read`` is the program read factory installed the same way (TS
+    ``createRead``): it receives the same context and returns a mapping of
+    async callables, surfaced as the connected program's ``read`` namespace
+    before ``create_operations`` runs, so operations can use it.
     """
 
     name: str
@@ -113,9 +147,16 @@ class ProgramDef:
     create_operations: Optional[
         Callable[["ProgramOperationContext"], Any]
     ] = None
+    create_read: Optional[
+        Callable[["ProgramOperationContext"], Mapping[str, Any]]
+    ] = None
     # Provenance hashes (pin-validated by the extensions pipeline).
     program_spec_hash: Optional[str] = None
     sdk_definition_hash: Optional[str] = None
+    # Package release this program SDK was generated from, when known. Two
+    # definitions carrying the same one are the same program (see
+    # :func:`same_program`); local builds leave it unset.
+    package_release_hash: Optional[str] = None
     # Managed-hosting transports for standalone program sessions.
     gateway: Optional[HostedSolanaGatewayBindings] = None
 
@@ -129,7 +170,9 @@ class StackDef:
     ``views`` maps entity group name → ``{view_name: ViewDef}`` (the shape
     :class:`arete.views.ViewsNamespace` consumes). ``program_reads`` keys must
     exactly match ``programs`` keys when present. ``gateway`` bindings wire
-    default chain + transaction transports at connect time.
+    default chain + transaction transports at connect time. ``release`` is
+    the served version the stack was generated for (hosted StackManifests
+    only).
     """
 
     name: str
@@ -147,26 +190,111 @@ class StackDef:
     read_arg_counts: Dict[str, Any] = field(default_factory=dict)
     create_read: Optional[Callable[[Any], Mapping[str, Any]]] = None
     create_flows: Optional[Callable[[Any], Mapping[str, Any]]] = None
+    # Served version for the WebSocket session request (hosted only).
+    release: Optional[StackRelease] = None
+
+
+def _non_empty(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) and value else None
+
+
+def compare_program_identity(left: ProgramDef, right: ProgramDef) -> str:
+    """Canonical §9 program identity, never by name (TS
+    ``compareProgramIdentity``):
+
+    - ``"same"``: the same definition object, or both carry a
+      ``package_release_hash`` and the hashes are equal;
+    - ``"unproven"``: at least one has no ``package_release_hash`` (a local
+      build, or a program extended outside its generated SDK) but both carry
+      the same ``program_spec_hash``;
+    - ``"different"``: both carry package releases that differ, or the program
+      specs differ or are missing.
+    """
+    if left is right:
+        return "same"
+    left_release = _non_empty(left.package_release_hash)
+    right_release = _non_empty(right.package_release_hash)
+    if left_release is not None and right_release is not None:
+        return "same" if left_release == right_release else "different"
+    left_spec = _non_empty(left.program_spec_hash)
+    if left_spec is not None and left_spec == _non_empty(right.program_spec_hash):
+        return "unproven"
+    return "different"
+
+
+def same_program(left: ProgramDef, right: ProgramDef) -> bool:
+    """Whether two definitions are provably the same program SDK: the same
+    definition object, or both carry the same ``package_release_hash``.
+    Names never decide it."""
+    return compare_program_identity(left, right) == "same"
+
+
+def program_identity_label(program: ProgramDef) -> str:
+    """How a conflict or warning message names a program's identity."""
+    release = _non_empty(program.package_release_hash)
+    if release is not None:
+        return f"package release {release}"
+    spec = _non_empty(program.program_spec_hash)
+    if spec is not None:
+        return f"program spec {spec}, no package release"
+    return "no program identity"
+
+
+_warned_identity_messages: set = set()
+
+
+def warn_program_identity_once(message: str) -> None:
+    """Log a program identity warning once per distinct message."""
+    if message in _warned_identity_messages:
+        return
+    _warned_identity_messages.add(message)
+    logger.warning("%s", message)
 
 
 def with_programs(
     stack: StackDef, attached: Optional[Mapping[str, ProgramDef]]
 ) -> StackDef:
-    """A copy of ``stack`` with additional program SDKs attached. Keys the
-    stack already defines win (with a warning), mirroring TS
-    ``withPrograms``."""
+    """A copy of ``stack`` with additional program SDKs attached (TS
+    ``withPrograms``), matched by :func:`compare_program_identity` under a key
+    the stack already provides:
+
+    - the same program keeps the stack's definition;
+    - the same program spec without a provable identity match uses the
+      attached program, with one logged warning;
+    - anything else raises :class:`arete.errors.ProgramKeyConflictError`.
+
+    The ``stack`` definition itself is never changed.
+    """
     if not attached:
         return stack
     import copy
-    import warnings
 
     merged: Dict[str, ProgramDef] = dict(attached)
     for name, definition in stack.programs.items():
-        if name in merged:
-            warnings.warn(
-                f"Ignoring attached program '{name}' for stack '{stack.name}' "
-                "because the stack already defines that key",
-                stacklevel=2,
+        other = merged.get(name)
+        if other is None:
+            merged[name] = definition
+            continue
+        match = compare_program_identity(definition, other)
+        if match == "unproven":
+            warn_program_identity_once(
+                f"programs.{name} uses the program attached to stack '{stack.name}': "
+                f"it has the same program spec as the stack's '{name}' program but "
+                "could not be proven identical (stack: "
+                f"{program_identity_label(definition)}; attached: "
+                f"{program_identity_label(other)})."
+            )
+            continue
+        if match == "different":
+            raise ProgramKeyConflictError(
+                f"Program key '{name}' conflicts with stack '{stack.name}': the stack "
+                f"already provides a different '{name}' program SDK (stack: "
+                f"{program_identity_label(definition)}; attached: "
+                f"{program_identity_label(other)}). Use the stack's program at "
+                f"programs.{name}, or attach the other program under a different key, "
+                "one the stack does not use.",
+                key=name,
+                stacks=[stack.name],
             )
         merged[name] = definition
     cloned = copy.copy(stack)
@@ -310,8 +438,8 @@ def normalize_program_operations(value: Any) -> ProgramOperations:
 
 
 class ProgramOperationContext:
-    """Context given to ``create_operations``: chain reads, the live wallet,
-    and the fully connected program."""
+    """Context given to ``create_operations`` and ``create_read``: chain
+    reads, the live wallet, and the fully connected program."""
 
     def __init__(self, client: Any, program: "ConnectedProgram") -> None:
         self._client = client
@@ -337,9 +465,11 @@ class RawInstruction:
 
     Params are IDL wire shape: arg-name keys serialize, account-name keys
     override addresses, ``resolve`` feeds PDA-only seeds; unknown params fail
-    closed. Reserved keyword-only options: ``wallet`` (signer fallback address;
-    defaults to the client wallet's public key), ``accounts`` (unvalidated
-    escape-hatch overrides), ``remaining_accounts``.
+    closed. Reserved keyword-only options: ``wallet`` (the address of
+    ``signer_kind="wallet"`` signers, defaulting to the client wallet's public
+    key; generated signers are caller-provided, as in TypeScript),
+    ``accounts`` (addresses that override the params),
+    ``remaining_accounts``.
 
     The fallback option is named ``wallet`` and not ``payer`` (matching the
     TypeScript ``BuildOptions.wallet``) because ``payer`` is a real IDL account
@@ -494,10 +624,23 @@ class ConnectedProgram:
         self.constants = AttrNamespace(f"{prefix}.constants", definition.constants)
         self.defaults = AttrNamespace(f"{prefix}.defaults", definition.defaults)
         self.math = AttrNamespace(f"{prefix}.math", definition.math)
+        self.read = AttrNamespace(f"{prefix}.read", {})
+        self.instructions = OperationNamespace(f"{prefix}.instructions", {})
+        self.transactions = OperationNamespace(f"{prefix}.transactions", {})
+        self.flows = OperationNamespace(f"{prefix}.flows", {})
 
+        # TS order: the read namespace first, so operations can read through
+        # `context.program.read`.
+        context = ProgramOperationContext(client, self)
+        if definition.create_read is not None:
+            read = definition.create_read(context)
+            if read is not None and not isinstance(read, Mapping):
+                raise TypeError(
+                    f"create_read must return a mapping, got {type(read).__name__}"
+                )
+            self.read = AttrNamespace(f"{prefix}.read", read or {})
         operations = ProgramOperations()
         if definition.create_operations is not None:
-            context = ProgramOperationContext(client, self)
             operations = normalize_program_operations(
                 definition.create_operations(context)
             )

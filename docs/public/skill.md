@@ -102,6 +102,12 @@ a4 install stack <slug> --ts
 a4 install --locked
 ```
 
+A stack includes the program SDKs for the programs its views index, at
+`arete.programs.<name>`, and they are the same SDKs a standalone program install
+gives. Install a stack when the app needs live views, with or without
+transactions; install a program on its own only when no stack you use covers
+it. Never merge stack and program objects by hand.
+
 Use `--rust` or `--python` only when the descriptor lists that target. A saved
 install updates:
 
@@ -112,19 +118,21 @@ install updates:
 Inspect generated exports and types before writing application code. They are
 the authority for names, parameters, and return shapes.
 
-## Authenticate when requested
+## Authenticate during setup
 
-Public catalog discovery does not require an account. When a hosted capability
-reports that authentication is required, use the CLI:
+The canonical agent bootstrap creates or verifies a restricted account before
+hosted discovery. Use the CLI and keep the generated credential in its named
+profile:
 
 ```bash
-a4 auth status
-a4 auth signup
-a4 auth login --key <a4_ak_...>
+a4 --profile agent auth signup --if-missing --json
+a4 --profile agent auth status
+a4 --profile agent auth whoami --json
 ```
 
 Let the CLI store and resolve credentials. Do not implement key or session
-management against platform endpoints.
+management against platform endpoints, and do not request a human `a4_sk_*`
+credential for agent work.
 
 ## Use the installed task skill
 

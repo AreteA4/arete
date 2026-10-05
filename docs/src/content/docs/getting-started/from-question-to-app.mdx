@@ -79,11 +79,22 @@ adding it to application code.
 ## 5. Install what you proved
 
 Once the programs and views are right, add them to the project. Don't copy JSON
-out of an exploration session or hand-write a client:
+out of an exploration session or hand-write a client.
+
+Arete has two building blocks, live views and Program SDKs, and a stack groups
+them. A stack includes the Program SDK for each program its views read from: the
+same one a standalone program install gives you. Choose by what the app needs:
+
+- **Live views, with or without actions:** install the stack. Its Program SDKs
+  come with it, so its operations need no separate program install.
+- **Account reads and actions only:** install the program on its own.
+- **Views and programs that no stack groups:**
+  [compose a stack](/building-stacks/configuration/#composed-stacks), or install
+  each one and bring them together in one session.
 
 ```bash
-a4 install program <program-slug> --ts
 a4 install stack <stack-slug> --ts
+a4 install program <program-slug> --ts
 ```
 
 The CLI records what you asked for in `arete.toml`, resolves it to exact
@@ -96,9 +107,9 @@ target.
 
 ## 6. Build against the generated session
 
-Use standalone programs for account reads and actions. Add stacks when your app
-needs live views or stack-level flows. Bring both together in one session
-instead of creating separate, unrelated clients.
+Use one session for everything the project installed instead of creating
+separate, unrelated clients. A stack's Program SDKs are already on its client
+under `programs`, so don't merge stack and program objects by hand.
 
 The generated code is the authority on names and argument shapes. A typical
 piece of application code moves through these stages:

@@ -23,6 +23,18 @@ npm install @usearete/adapter-web3js @solana/web3.js @usearete/sdk
 
 Node.js 18 or newer is supported. ESM and CommonJS entry points are included. Browser builds do not require an ambient `Buffer` global; the package imports its browser-compatible implementation explicitly.
 
+## Peer dependencies
+
+| Package                          | Range                | Required                                                                                          |
+| -------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------- |
+| `@usearete/sdk`                  | same release line    | Yes. Install exactly one copy, on the same release as this adapter                                |
+| `@solana/web3.js`                | `^1.95`              | Yes                                                                                               |
+| `rpc-websockets`                 | `9.3.4` (exact)      | Yes. Pinned to the Node.js 20-compatible release; npm 7+ installs it automatically                |
+| `@solana/wallet-adapter-react`   | `^0.15`              | Only for the `./react` subpath (`useSolanaWalletAdapter`)                                         |
+| `react`                          | `^18 \|\| ^19`       | Only for the `./react` subpath                                                                    |
+
+Runtime: Node.js 18 or newer, or a modern browser. Transactions: **v0 only** (static account keys; no address lookup tables). An explicit `legacy` or `1` `transactionVersion` and every resource option are rejected before the wallet is prompted. Use `@usearete/adapter-kit` for legacy, V1, or resource budgets.
+
 ## Node Signer
 
 ```ts
@@ -60,9 +72,10 @@ const wallet = createWalletAdapter({
 });
 ```
 
-In a React app using `@solana/wallet-adapter-react`, the `./react` subpath does this bridging for you:
+In a React app, the `./react` subpath does this bridging for you. The recommended wiring targets Wallet Standard wallets only: `WalletProvider` with an empty `wallets` list detects every installed wallet that registers through Wallet Standard, so the app imports no wallet-specific adapters.
 
 ```tsx
+import { WalletProvider } from '@solana/wallet-adapter-react';
 import { useSolanaWalletAdapter } from '@usearete/adapter-web3js/react';
 import { AreteProvider } from '@usearete/react';
 import { APP_STREAM_STACK } from './generated/app-stack';
@@ -70,6 +83,8 @@ import { APP_STREAM_STACK } from './generated/app-stack';
 const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
 if (!publishableKey) throw new Error('VITE_ARETE_PUBLISHABLE_KEY is required');
 
+// useSolanaWalletAdapter reads the wallet context, so AreteProvider sits
+// below WalletProvider.
 function Shell({ children }) {
   const wallet = useSolanaWalletAdapter(); // undefined until a wallet connects
   return (
@@ -82,13 +97,21 @@ function Shell({ children }) {
     </AreteProvider>
   );
 }
+
+export function App({ children }) {
+  return (
+    <WalletProvider wallets={[]} autoConnect>
+      <Shell>{children}</Shell>
+    </WalletProvider>
+  );
+}
 ```
 
 Hosted browser access requires the publishable key even when the app is only reading data. A wallet is required for signed operations, not for read-only viewing. `autoConnect` is omitted because its default is `true`; it controls only the initial connection, while `autoReconnect` independently defaults to `true` for recovery after an established connection is lost.
 
 The wallet must be connected, expose a non-null `PublicKey`, and support transaction version `0`. If `supportedTransactionVersions` is `null` or excludes `0`, the adapter rejects before prompting or sending. If that property is omitted, the supplied `signTransaction` implementation is responsible for accepting v0 transactions.
 
-Raw Wallet Standard `solana:signTransaction` features operate on byte-array request and response objects; they do not directly satisfy this interface. Bridge those feature calls to web3.js `VersionedTransaction` serialization/deserialization, or use a wallet-adapter integration that already exposes `signTransaction`.
+Raw Wallet Standard `solana:signTransaction` features operate on byte-array request and response objects; they do not directly satisfy this interface. In React, `WalletProvider` performs that bridging as shown above. Outside React, use `createWalletStandardSigner` from `@usearete/adapter-kit`.
 
 Address lookup tables are not currently accepted by this adapter. Transactions use a v0 message with static account keys.
 
@@ -111,6 +134,18 @@ console.log(inspection.programError);
 ```
 
 Inspection compiles an unsigned v0 transaction, calls `getFeeForMessage`, and simulates with signature verification disabled. Arete core enriches simulation failures with the prepared operation's IDL error metadata. Multi-transaction flows are rejected by core rather than partially simulated.
+
+### Inspect-only wallets
+
+`createInspectOnlyWalletAdapter({ publicKey })` holds only an address. Operations prepare against it and inspection works as above, but every sign or send is refused with a `not-submitted` (`wallet` phase) outcome whose cause is named `InspectOnlyWalletError`, before anything is built or dispatched. Use it for agents and CI that verify transactions without keys; hosted inspection needs the `transaction:inspect` scope.
+
+```ts
+import { createInspectOnlyWalletAdapter } from '@usearete/adapter-web3js';
+
+const wallet = createInspectOnlyWalletAdapter({ publicKey: owner });
+const client = await Arete.connect(MY_STACK, { wallet });
+const inspection = await client.inspectOperation(await client.programs.app.instructions.deposit.prepare(input));
+```
 
 ## Failure Outcomes
 

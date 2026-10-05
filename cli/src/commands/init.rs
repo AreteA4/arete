@@ -241,6 +241,22 @@ pub fn execute(env: &Env, config_path: &Path, plan: &InitPlan) -> Result<InitRep
         results.push(write_manifest(env, config_path, plan));
     }
 
+    // A project configured for any coding agent defaults to the restricted
+    // agent credential. The file contains no secret and may safely travel
+    // with the repository; a human opts up explicitly with --profile.
+    let existing_auth_profile = crate::config::project_auth_profile_path(&env.root).exists();
+    // Doctor represents detected project agents as an explicit list. A
+    // universal `.agents/` project therefore arrives as an empty list: it
+    // still needs the restricted auth default, but it must not enable the
+    // general fallback that also configures Claude-specific files.
+    let universal_project_repair =
+        detection.universal && matches!(&plan.selection, Selection::List(ids) if ids.is_empty());
+    if !plan.global
+        && (fallback || !selected.is_empty() || existing_auth_profile || universal_project_repair)
+    {
+        results.push(write_auth_profile(env, plan.dry_run));
+    }
+
     if plan.agents_md {
         results.push(agents_md::write_agents_md(env, plan.dry_run));
         if fallback || has("claude-code") {
@@ -297,6 +313,19 @@ pub fn execute(env: &Env, config_path: &Path, plan: &InitPlan) -> Result<InitRep
             "a4 explore --json".to_string(),
         ],
     })
+}
+
+fn write_auth_profile(env: &Env, dry_run: bool) -> ItemResult {
+    let path = crate::config::project_auth_profile_path(&env.root);
+    ItemResult::new(
+        "auth-profile",
+        upsert_file(
+            &path,
+            &crate::config::project_auth_profile_contents(),
+            dry_run,
+        ),
+        Some(display_path(env, &path)),
+    )
 }
 
 /// Writer: `arete.toml` (create; `unchanged` if present; `--force`
@@ -383,6 +412,18 @@ mod tests {
     }
 
     #[test]
+    fn empty_doctor_selection_does_not_select_an_unrelated_agent() {
+        let detection = Detection {
+            agents: Vec::new(),
+            universal: true,
+        };
+        assert_eq!(
+            select(&detection, &Selection::List(Vec::new())),
+            (Vec::new(), false)
+        );
+    }
+
+    #[test]
     fn project_root_is_config_parent() {
         assert_eq!(project_root("arete.toml"), PathBuf::from("."));
         assert_eq!(project_root("sub/dir/arete.toml"), PathBuf::from("sub/dir"));
@@ -421,10 +462,20 @@ mod tests {
         let items: Vec<&str> = report.results.iter().map(|r| r.item.as_str()).collect();
         assert_eq!(
             items,
-            vec!["arete.toml", "agents-md", "claude-md", "mcp:claude-code"]
+            vec![
+                "arete.toml",
+                "auth-profile",
+                "agents-md",
+                "claude-md",
+                "mcp:claude-code"
+            ]
         );
         assert!(report.results.iter().all(|r| r.outcome == Outcome::Created));
         assert!(config.exists());
+        assert_eq!(
+            fs::read_to_string(root.join(".arete/auth.toml")).unwrap(),
+            "default_profile = \"agent\"\n"
+        );
         assert!(root.join(".mcp.json").exists());
         assert_eq!(
             fs::read_to_string(root.join("CLAUDE.md")).unwrap(),

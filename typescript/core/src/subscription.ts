@@ -185,6 +185,8 @@ function refreshError(value: unknown): AreteError {
 export class SubscriptionRegistry {
   private readonly subscriptions = new Map<string, SubscriptionTracker>();
   private readonly subscriptionsById = new Map<string, SubscriptionTracker>();
+  private readonly failureListeners = new Set<(error: AreteError) => void>();
+  private connectionError: AreteError | undefined;
 
   constructor(
     private readonly connection: ConnectionManager,
@@ -265,13 +267,33 @@ export class SubscriptionRegistry {
       : undefined;
   }
 
-  handleConnectionState(state: ConnectionState): void {
+  handleConnectionState(state: ConnectionState, message?: string): void {
     if (state === 'reconnecting') this.queryStore.beginReconnect();
-    if (state === 'error') {
-      this.queryStore.failRefreshing(
-        new AreteError('Connection failed while refreshing subscriptions', 'CONNECTION_ERROR')
-      );
+    if (state !== 'error') {
+      this.connectionError = undefined;
+      return;
     }
+    this.queryStore.failRefreshing(
+      new AreteError('Connection failed while refreshing subscriptions', 'CONNECTION_ERROR')
+    );
+    // Queries still waiting for their first snapshot are not failed above;
+    // one-shot reads learn about the failure here instead of timing out.
+    this.connectionError = new AreteError(message ?? 'Connection failed', 'CONNECTION_ERROR');
+    this.notifyFailure(this.connectionError);
+  }
+
+  /** The terminal connection failure while the connection is in the `error` state. */
+  getConnectionError(): AreteError | undefined {
+    return this.connectionError;
+  }
+
+  /**
+   * Called when pending queries can no longer resolve: the connection failed
+   * terminally, or a disconnect cleared every subscription.
+   */
+  onFailure(callback: (error: AreteError) => void): UnsubscribeFn {
+    this.failureListeners.add(callback);
+    return () => this.failureListeners.delete(callback);
   }
 
   clear(): void {
@@ -286,6 +308,13 @@ export class SubscriptionRegistry {
     }
     this.subscriptions.clear();
     this.subscriptionsById.clear();
+    this.notifyFailure(
+      new AreteError('Subscriptions were cleared by a disconnect', 'CONNECTION_CANCELLED')
+    );
+  }
+
+  private notifyFailure(error: AreteError): void {
+    for (const listener of [...this.failureListeners]) listener(error);
   }
 
   private createLease(tracker: SubscriptionTracker): QueryLease {

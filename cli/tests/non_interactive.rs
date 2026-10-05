@@ -118,6 +118,32 @@ fn auth_login_without_key_fails_fast_and_names_the_key_flag() {
 }
 
 #[test]
+fn auth_status_reports_a_stored_agent_credential_while_offline() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let credentials_dir = home.path().join(".arete");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    std::fs::write(
+        credentials_dir.join("credentials.toml"),
+        "[profiles.agent.keys]\n\"http://127.0.0.1:1\" = \"a4_ak_offline-agent-key\"\n",
+    )
+    .unwrap();
+
+    let mut cmd = a4(home.path());
+    cmd.args(["auth", "status", "--json"])
+        .env("ARETE_API_URL", "http://127.0.0.1:1")
+        .env("ARETE_PROFILE", "agent")
+        .current_dir(home.path());
+    let run = run_with_timeout(cmd, "a4 auth status --json");
+
+    assert_eq!(run.status.code(), Some(0), "stderr:\n{}", run.stderr);
+    let status: serde_json::Value = serde_json::from_str(run.stdout.trim()).unwrap();
+    assert_eq!(status["authenticated"], true);
+    assert_eq!(status["principalKind"], "agent");
+    assert_eq!(status["profile"], "agent");
+    assert!(status["agent"].is_null());
+}
+
+#[test]
 fn init_yes_json_succeeds_in_an_empty_directory_without_a_tty() {
     let home = tempfile::tempdir().expect("tempdir");
     let project = tempfile::tempdir().expect("tempdir");

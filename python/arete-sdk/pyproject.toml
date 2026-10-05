@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arete-sdk"
-version = "0.22.3"
+version = "0.28.0"
 description = "Python SDK for Arete"
 requires-python = ">=3.9"
 authors = [
@@ -49,3 +49,8 @@ Issues = "https://github.com/AreteA4/arete/issues"
 
 [tool.setuptools.packages.find]
 include = ["arete*"]
+
+# Extension API contract version (docs/internal/sdk-core-api.md §9); must equal
+# arete.EXTENSION_API_VERSION.
+[tool.arete]
+extension-api = 1

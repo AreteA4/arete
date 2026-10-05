@@ -1,5 +1,114 @@
 # Changelog
 
+## [0.28.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.27.0...arete-macros-v0.28.0) (2026-09-30)
+
+
+### Miscellaneous Chores
+
+* **arete-macros:** Synchronize arete versions
+
+## [0.27.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.26.0...arete-macros-v0.27.0) (2026-09-29)
+
+
+### Miscellaneous Chores
+
+* **arete-macros:** Synchronize arete versions
+
+## [0.26.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.25.1...arete-macros-v0.26.0) (2026-09-29)
+
+
+### Miscellaneous Chores
+
+* **arete-macros:** Synchronize arete versions
+
+## [0.25.1](https://github.com/AreteA4/arete/compare/arete-macros-v0.25.0...arete-macros-v0.25.1) (2026-09-29)
+
+
+### Miscellaneous Chores
+
+* **arete-macros:** Synchronize arete versions
+
+## [0.25.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.24.0...arete-macros-v0.25.0) (2026-09-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** ServerFrame::Subscribed gains a whole_entities field.
+* **sdk:** attaching a different program under a key a stack already provides throws PROGRAM_KEY_CONFLICT.
+* **sdk:** attaching a different program under a key a stack already provides raises ProgramKeyConflictError instead of keeping the stack's program with a warning.
+
+### Features
+
+* **cli:** attach program identity after the package extension ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **cli:** carry program SDKs in stacks ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **cli:** check runtime SDK compatibility ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **cli:** compose stacks from registry parts ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **cli:** explore one operation, a stack summary or selected views ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **cli:** make publishable key creation scriptable ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **cli:** report account readiness in a4 doctor and a4 explore ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **cli:** report requested, regenerated and shared dependencies on install ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **cli:** report the program SDK each program gets on a4 up ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **docs:** rank documentation search by query terms ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **interpreter:** let a consumer request a whole entity from the VM ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **mcp:** summarise explore results and look up one operation ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **sdk:** add inspect-only wallet adapters ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **sdk:** add testing helpers ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **sdk:** drop patches for keys the Rust client does not hold ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **sdk:** identify program SDKs by package release in Python ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **sdk:** identify program SDKs by package release in Rust ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **sdk:** identify program SDKs by package release in TypeScript ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **sdk:** keep runtime extensions through object spread ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **sdk:** publish the extension API version ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+
+
+### Bug Fixes
+
+* **cli:** check the extensionApi the registry reports for an extension ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **cli:** confine --env-file to the project and replace it atomically ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **cli:** keep locks from older a4 releases installable ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **cli:** keep the previous composition artifacts until the replacement lands ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **cli:** pin the program SDKs of locked composed parts ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **cli:** require an older lock to pin exactly the SDK extensions it generates ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **interpreter:** send a requested whole entity with the next batch ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **react:** peer-depend on @usearete/sdk ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **sdk:** drop patches for keys the Python client does not hold ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **sdk:** drop patches for keys the TypeScript client does not hold ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **sdk:** keep a stack's program types when no programs are attached ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **sdk:** share a same-release program only when it reads the same way ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **server:** keep a resent entity's own position in recency order ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **server:** never serve partial entities and resend evicted entities whole ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **server:** rank entities without a sort value last ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **server:** replace a state subscriber's copy when a missed frame replaced the entity ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+* **server:** tell created entities from changes instead of trusting eviction memory ([d1966c9](https://github.com/AreteA4/arete/commit/d1966c967bf8cec9249710b0def4aedf6ac01342))
+
+## [0.24.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.23.1...arete-macros-v0.24.0) (2026-09-27)
+
+
+### Miscellaneous Chores
+
+* **arete-macros:** Synchronize arete versions
+
+## [0.23.1](https://github.com/AreteA4/arete/compare/arete-macros-v0.23.0...arete-macros-v0.23.1) (2026-09-25)
+
+
+### Miscellaneous Chores
+
+* **arete-macros:** Synchronize arete versions
+
+## [0.23.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.22.4...arete-macros-v0.23.0) (2026-09-25)
+
+
+### Miscellaneous Chores
+
+* **arete-macros:** Synchronize arete versions
+
+## [0.22.4](https://github.com/AreteA4/arete/compare/arete-macros-v0.22.3...arete-macros-v0.22.4) (2026-09-24)
+
+
+### Miscellaneous Chores
+
+* **arete-macros:** Synchronize arete versions
+
 ## [0.22.3](https://github.com/AreteA4/arete/compare/arete-macros-v0.22.2...arete-macros-v0.22.3) (2026-09-24)
 
 

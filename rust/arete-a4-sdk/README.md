@@ -14,7 +14,7 @@ phantom-typed object literals.
 
 ```toml
 [dependencies]
-arete-sdk = { package = "arete-a4-sdk", version = "0.22.3" } # x-release-please-version
+arete-sdk = { package = "arete-a4-sdk", version = "0.28.0" } # x-release-please-version
 ```
 
 By default the SDK uses `rustls` for TLS. Switch to native TLS with
@@ -81,6 +81,14 @@ let mut miner = a4.views.ore_miner.state()
 
 // Rich diffs with before/after values
 let mut diffs = a4.views.ore_round.state().watch_rich("42");
+
+// One-shot reads take the same options as a `GetOptions` value. They fail
+// where TypeScript's `get` rejects: with `ViewError::InitialDataTimeout` when
+// the initial snapshot does not arrive in time, and `ViewError::Subscription`
+// when the read cannot subscribe. `get()` and `get_one()` never fail.
+let open_orders = a4.views.order.list()
+    .get_with(GetOptions::new().filter("state.status", "open").take(10))
+    .await?;
 ```
 
 `listen` yields `T`, `watch` yields `Update<T>`, `watch_rich` yields
@@ -153,7 +161,7 @@ The SDK ships no wallet adapter by default — the core only builds
 dependency graph unless you ask for it:
 
 ```toml
-arete-sdk = { package = "arete-a4-sdk", version = "0.22.3", features = ["solana-adapter"] } # x-release-please-version
+arete-sdk = { package = "arete-a4-sdk", version = "0.28.0", features = ["solana-adapter"] } # x-release-please-version
 ```
 
 ```rust

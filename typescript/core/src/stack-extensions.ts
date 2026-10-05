@@ -9,8 +9,41 @@ import type { ProgramSdkDefinition, StackDefinition } from './types';
 import { PROGRAM_READ_DESCRIPTOR } from './program-sdk';
 import type { WalletAdapter } from './wallet/types';
 
-export const STACK_RUNTIME_EXTENSIONS = '__areteStackRuntimeExtensions' as const;
-export const PROGRAM_OPERATION_EXTENSIONS = '__areteProgramOperationExtensions' as const;
+/**
+ * Version of the extension contract: `defineStackExtensions`,
+ * `defineProgramExtensions`, `extendProgram`, `extendPrograms`, `extendStack`,
+ * `withProgramRead`, and the instruction helpers generated code imports
+ * (`createInstructionHandler`, `buildInstruction`, `instructionOperation`,
+ * `createPreparedInstruction`, the PDA and read helpers, …).
+ *
+ * It only changes on a breaking change to that contract, so generated SDKs and
+ * extensions built for one value keep working with every SDK release that
+ * exports the same value. The same number is published in this package's
+ * `package.json` as `arete.extensionApi` for tools that read `node_modules`.
+ */
+export const EXTENSION_API_VERSION = 1 as const;
+
+/**
+ * Runtime extension carriers live under registry symbols (`Symbol.for`), so
+ * two copies of this module still read each other's definitions. The
+ * properties are enumerable: `{ ...stack }` and `{ ...program }` keep them,
+ * while `Object.keys`, `for…in` and `JSON.stringify` never see a symbol key.
+ *
+ * The constants are typed as their historical property names rather than as
+ * `unique symbol`. Generated program SDKs use them as computed keys inside
+ * object literals, and TypeScript can only name a `unique symbol` key in
+ * emitted declarations from a file that imports it; a string-literal key type
+ * keeps every generated `.d.ts` nameable and identical across module copies.
+ * Always read and write these properties through the constants (or
+ * `getStackRuntimeExtensions` / `getProgramRuntimeExtensions`), never by the
+ * literal name.
+ */
+export const STACK_RUNTIME_EXTENSIONS = Symbol.for(
+  '@usearete/sdk/stack-runtime-extensions',
+) as unknown as '__areteStackRuntimeExtensions';
+export const PROGRAM_OPERATION_EXTENSIONS = Symbol.for(
+  '@usearete/sdk/program-runtime-extensions',
+) as unknown as '__areteProgramOperationExtensions';
 
 type EmptyRecord = Record<string, never>;
 
@@ -48,6 +81,14 @@ type MaybeField<TKey extends string, TValue> = [TValue] extends [never]
 type Field<TValue, TKey extends PropertyKey> = TKey extends keyof TValue
   ? TValue[TKey]
   : never;
+
+/**
+ * A field an extension provides. The helpers skip an extension value that is
+ * `undefined`, so an optional field is never `undefined` on the result either
+ * (which `exactOptionalPropertyTypes` would reject where the result is used as
+ * a `ProgramSdkDefinition`).
+ */
+type ExtensionField<TValue, TKey extends PropertyKey> = Exclude<Field<TValue, TKey>, undefined>;
 
 type DeepMerge<TBase, TExtension> =
   TBase extends Record<string, unknown>
@@ -312,11 +353,11 @@ export function extendProgram<
   extensions: TExtension
 ): ExtendedProgramDefinition<
   TBase,
-  MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
-  MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
-  MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
+  MergeField<Field<TBase, 'addresses'>, ExtensionField<TExtension, 'addresses'>>,
+  MergeField<Field<TBase, 'constants'>, ExtensionField<TExtension, 'constants'>>,
+  MergeField<Field<TBase, 'defaults'>, ExtensionField<TExtension, 'defaults'>>,
   Extract<FactoryReturn<TExtension, 'createOperations'>, AnyProgramOperations>,
-  MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+  MergeField<Field<TBase, 'math'>, ExtensionField<TExtension, 'math'>>,
   FactoryReturn<TExtension, 'createRead'>
 > {
   const base = program as Record<PropertyKey, unknown> & ProgramRuntimeExtensionCarrier;
@@ -325,7 +366,12 @@ export function extendProgram<
   if (readDescriptor) {
     Object.defineProperty(extended, PROGRAM_READ_DESCRIPTOR, readDescriptor);
   }
+  // The extended program is no longer byte-for-byte the generated one, nor
+  // provably the program SDK its package release describes: extensions
+  // applied outside generated code must not borrow that identity. Generated
+  // entries stamp it back with `withProgramIdentity` after their own.
   delete extended.sdkDefinitionHash;
+  delete extended.packageReleaseHash;
 
   for (const key of ['pdas', 'accounts', 'queries', 'addresses', 'constants', 'defaults', 'math'] as const) {
     const extensionValue = extensions[key];
@@ -348,11 +394,11 @@ export function extendProgram<
           context: ProgramOperationContext<
             ExtendedProgramDefinition<
               TBase,
-              MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
-              MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
-              MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
+              MergeField<Field<TBase, 'addresses'>, ExtensionField<TExtension, 'addresses'>>,
+              MergeField<Field<TBase, 'constants'>, ExtensionField<TExtension, 'constants'>>,
+              MergeField<Field<TBase, 'defaults'>, ExtensionField<TExtension, 'defaults'>>,
               ProgramOperations,
-              MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+              MergeField<Field<TBase, 'math'>, ExtensionField<TExtension, 'math'>>,
               FactoryReturn<TExtension, 'createRead'>
             >
           >
@@ -383,11 +429,11 @@ export function extendProgram<
           context: ProgramOperationContext<
             ExtendedProgramDefinition<
               TBase,
-              MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
-              MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
-              MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
+              MergeField<Field<TBase, 'addresses'>, ExtensionField<TExtension, 'addresses'>>,
+              MergeField<Field<TBase, 'constants'>, ExtensionField<TExtension, 'constants'>>,
+              MergeField<Field<TBase, 'defaults'>, ExtensionField<TExtension, 'defaults'>>,
               ProgramOperations,
-              MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+              MergeField<Field<TBase, 'math'>, ExtensionField<TExtension, 'math'>>,
               FactoryReturn<TExtension, 'createRead'>
             >
           >
@@ -403,7 +449,8 @@ export function extendProgram<
           );
         },
       },
-      enumerable: false,
+      // Enumerable so spreading the extended program keeps its operations.
+      enumerable: true,
       configurable: false,
       writable: false,
     });
@@ -411,11 +458,11 @@ export function extendProgram<
 
   return extended as ExtendedProgramDefinition<
     TBase,
-    MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
-    MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
-    MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
+    MergeField<Field<TBase, 'addresses'>, ExtensionField<TExtension, 'addresses'>>,
+    MergeField<Field<TBase, 'constants'>, ExtensionField<TExtension, 'constants'>>,
+    MergeField<Field<TBase, 'defaults'>, ExtensionField<TExtension, 'defaults'>>,
     Extract<FactoryReturn<TExtension, 'createOperations'>, AnyProgramOperations>,
-    MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+    MergeField<Field<TBase, 'math'>, ExtensionField<TExtension, 'math'>>,
     FactoryReturn<TExtension, 'createRead'>
   >;
 }
@@ -579,10 +626,10 @@ export function extendStack<
   extensions: TExtension & ReadArgumentCountRequirement<TExtension>
 ): ExtendedStackDefinition<
   TBase,
-  MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
-  MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
-  MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
-  MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+  MergeField<Field<TBase, 'addresses'>, ExtensionField<TExtension, 'addresses'>>,
+  MergeField<Field<TBase, 'constants'>, ExtensionField<TExtension, 'constants'>>,
+  MergeField<Field<TBase, 'defaults'>, ExtensionField<TExtension, 'defaults'>>,
+  MergeField<Field<TBase, 'math'>, ExtensionField<TExtension, 'math'>>,
   MergeField<StackReadOf<TBase>, FactoryReturn<TExtension, 'createRead'>>,
   Extract<
     MergeField<StackFlowsOf<TBase>, FactoryReturn<TExtension, 'createFlows'>>,
@@ -619,17 +666,18 @@ export function extendStack<
             )
           : extensions.createFlows ?? baseRuntime?.createFlows,
       },
-      enumerable: false,
+      // Enumerable so `{ ...stack }` keeps `read`, `flows` and `readArgCounts`.
+      enumerable: true,
       configurable: false,
       writable: false,
     });
   }
   return extended as ExtendedStackDefinition<
     TBase,
-    MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
-    MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
-    MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
-    MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+    MergeField<Field<TBase, 'addresses'>, ExtensionField<TExtension, 'addresses'>>,
+    MergeField<Field<TBase, 'constants'>, ExtensionField<TExtension, 'constants'>>,
+    MergeField<Field<TBase, 'defaults'>, ExtensionField<TExtension, 'defaults'>>,
+    MergeField<Field<TBase, 'math'>, ExtensionField<TExtension, 'math'>>,
     MergeField<StackReadOf<TBase>, FactoryReturn<TExtension, 'createRead'>>,
     Extract<
       MergeField<StackFlowsOf<TBase>, FactoryReturn<TExtension, 'createFlows'>>,

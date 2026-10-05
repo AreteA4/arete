@@ -9,11 +9,18 @@ Semantics:
 - Snapshot batches sharing a ``snapshotId`` are staged; on the final
   ``complete: true`` batch, ``authoritative: true`` replaces membership,
   ``authoritative: false`` merges.
-- Patches deep-merge with ``append``-path array concatenation.
+- Patches deep-merge with ``append``-path array concatenation. A patch for a
+  key the store does not hold is not an entity and is discarded when the
+  subscription's ``subscribed`` ack carries ``wholeEntities: true``; the
+  entity arrives with the next full ``upsert``. Without it (an older server)
+  such a patch is stored as the entity. Tape records (frames with an
+  ``offset``) are events and are always applied.
 - ``remove`` evicts a key from one query only; ``delete`` removes the entity
   from the source view globally.
 - Ordering follows the server-declared ``sort`` from the ``subscribed`` ack.
-  String comparison and the entity-key tie-break use
+  An entity whose sort field is missing or ``None`` sorts after every entity
+  that has one, in both directions. String comparison and the entity-key
+  tie-break use
   :func:`arete.subscription.locale_compare` — the shared
   ``String.prototype.localeCompare`` equivalent TS uses at ``query-store.ts``
   lines 64 and 387 — so key order matches TS for mixed-case base58 keys.
@@ -40,6 +47,7 @@ from arete.wire import (
     Update,
     compare_seq,
     format_cursor,
+    is_stale_version,
 )
 
 _MISSING = object()
@@ -80,6 +88,8 @@ class _Record:
     #: Tape lifetime the view's offsets belong to, from the ack's replay
     #: window. Without it an offset cannot be turned into a cursor.
     epoch: Optional[str] = None
+    #: Whether the ack promised whole entities (see ``_handle_entity``).
+    whole_entities: bool = False
     staged: Optional[_StagedSnapshot] = None
     refresh_future: Optional["asyncio.Future[None]"] = None
     change_listeners: Set[Callable[[], None]] = field(default_factory=set)
@@ -166,12 +176,21 @@ def _extract_seq(data: Any) -> Optional[str]:
     return None
 
 
+def _extract_version(data: Any) -> Optional[str]:
+    if not isinstance(data, Mapping):
+        return None
+    version = data.get("_version")
+    return version if isinstance(version, str) else None
+
+
 class Store:
     """Internal engine: entity storage + per-subscription query records."""
 
     def __init__(self) -> None:
         self._entities: Dict[str, Dict[str, Any]] = {}
         self._seqs: Dict[str, Dict[str, str]] = {}
+        # The latest ``_version`` applied per view and key; see _handle_entity.
+        self._versions: Dict[str, Dict[str, str]] = {}
         self._records: Dict[str, _Record] = {}
 
     # -- registration ------------------------------------------------------
@@ -267,6 +286,7 @@ class Store:
             return
         record.mode = frame.mode
         record.sort = frame.sort
+        record.whole_entities = frame.whole_entities
         if frame.replay_window is not None:
             record.epoch = frame.replay_window.epoch
         record.error = None
@@ -285,7 +305,10 @@ class Store:
         view = frame.entity
         accepted: List[str] = []
         for entity in frame.data:
-            self._set_entity(view, entity.key, entity.data, _extract_seq(entity.data))
+            self._set_entity(
+                view, entity.key, entity.data,
+                _extract_seq(entity.data), _extract_version(entity.data),
+            )
             accepted.append(entity.key)
         self._stage_snapshot(frame, accepted)
 
@@ -349,11 +372,26 @@ class Store:
         previous = self._entities.get(view, {}).get(frame.key, _MISSING)
         previous_value = None if previous is _MISSING else previous
         previous_seq = self._seqs.get(view, {}).get(frame.key)
-        stale = (
-            frame.seq is not None
-            and previous_seq is not None
-            and compare_seq(frame.seq, previous_seq) <= 0
-        )
+        # A server that stamps ``_version`` orders one key's frames by it.
+        # ``seq`` cannot: every update decoded from one transaction shares one,
+        # and within a slot account updates and instructions number themselves
+        # differently, so a later frame can carry a lower seq. Without a
+        # version (an older server) the seq rule applies. On a tape the offset
+        # is the identity, so neither does (TS frame-processor.ts, Rust
+        # store.rs apply_live).
+        frame_version = _extract_version(frame.data)
+        if frame.offset is not None:
+            stale = False
+        elif frame_version is not None:
+            stale = is_stale_version(
+                frame_version, self._versions.get(view, {}).get(frame.key)
+            )
+        else:
+            stale = (
+                frame.seq is not None
+                and previous_seq is not None
+                and compare_seq(frame.seq, previous_seq) <= 0
+            )
 
         if frame.op == "upsert":
             if frame.data is None:
@@ -366,7 +404,7 @@ class Store:
                 )
                 return
             seq = frame.seq or _extract_seq(frame.data)
-            self._set_entity(view, frame.key, frame.data, seq)
+            self._set_entity(view, frame.key, frame.data, seq, frame_version)
             update = Update(op="upsert", key=frame.key, data=frame.data)
             rich = self._make_rich(frame.key, previous, frame.data)
             self._apply_live(frame.subscription_id, frame.key, update, rich, seq, frame.offset)
@@ -374,6 +412,25 @@ class Store:
 
         if frame.op == "patch":
             if frame.data is None:
+                return
+            record = self._records.get(frame.subscription_id)
+            if (
+                previous is _MISSING
+                and frame.offset is None
+                and record is not None
+                and record.whole_entities
+            ):
+                # A patch for a key this store holds no copy of is not an
+                # entity: treating its few fields as the whole value would
+                # hand consumers a partial entity typed as complete. Drop it
+                # without touching storage, sequence or membership; a server
+                # that acked ``wholeEntities`` sends a full ``upsert``
+                # whenever a key becomes a member, and the entity appears
+                # then. An older server may send a key's first change as a
+                # patch, which is then all there is, so it is kept. Tape
+                # records (frames with an ``offset``) are events and are
+                # always applied — a consumer resuming from a cursor holds
+                # what came before it.
                 return
             if stale and previous is not _MISSING:
                 update = Update(op="patch", key=frame.key, data=frame.data)
@@ -391,7 +448,7 @@ class Store:
                 else frame.data
             )
             seq = frame.seq or _extract_seq(frame.data) or previous_seq
-            self._set_entity(view, frame.key, merged, seq)
+            self._set_entity(view, frame.key, merged, seq, frame_version)
             update = Update(op="patch", key=frame.key, data=frame.data)
             rich = self._make_rich(frame.key, previous, merged, patch=frame.data)
             self._apply_live(
@@ -410,6 +467,7 @@ class Store:
         if frame.op == "delete":
             self._entities.get(view, {}).pop(frame.key, None)
             self._seqs.get(view, {}).pop(frame.key, None)
+            self._versions.get(view, {}).pop(frame.key, None)
             self._delete_global(
                 view,
                 frame.key,
@@ -518,13 +576,23 @@ class Store:
             if sort_field is not None:
                 left = _get_nested(entities.get(left_key), sort_field)
                 right = _get_nested(entities.get(right_key), sort_field)
-                compared = _compare_values(left, right)
             else:
-                compared = _compare_sequences(
-                    record.sequences.get(left_key), record.sequences.get(right_key)
+                left = record.sequences.get(left_key)
+                right = record.sequences.get(right_key)
+            left_unranked = left is None or left is _MISSING
+            right_unranked = right is None or right is _MISSING
+            if left_unranked or right_unranked:
+                # No sort value: after every ranked entity in both
+                # directions (canonical §5); ``desc`` does not flip it.
+                compared = int(left_unranked) - int(right_unranked)
+            else:
+                compared = (
+                    _compare_values(left, right)
+                    if sort_field is not None
+                    else _compare_sequences(left, right)
                 )
-            if order == "desc":
-                compared = -compared
+                if order == "desc":
+                    compared = -compared
             if compared == 0:
                 # TS query-store.ts:387 — leftKey.localeCompare(rightKey).
                 return locale_compare(left_key, right_key)
@@ -571,6 +639,7 @@ class Store:
         self._records.clear()
         self._entities.clear()
         self._seqs.clear()
+        self._versions.clear()
 
     # -- internals ---------------------------------------------------------
 
@@ -581,10 +650,21 @@ class Store:
         record.staged = None
         self._touch(record)
 
-    def _set_entity(self, view: str, key: str, data: Any, seq: Optional[str]) -> None:
+    def _set_entity(
+        self,
+        view: str,
+        key: str,
+        data: Any,
+        seq: Optional[str],
+        version: Optional[str] = None,
+    ) -> None:
         self._entities.setdefault(view, {})[key] = data
+        # An unsequenced or unversioned write keeps what it replaces, so the
+        # guard stays armed for the next frame.
         if seq is not None:
             self._seqs.setdefault(view, {})[key] = seq
+        if version is not None:
+            self._versions.setdefault(view, {})[key] = version
 
     def _make_rich(self, key: str, previous: Any, after: Any, patch: Any = None) -> RichUpdate:
         if previous is _MISSING:

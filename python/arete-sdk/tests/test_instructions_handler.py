@@ -43,7 +43,7 @@ def make_handler():
         program_id=TOKEN_PROGRAM,
         discriminator=bytes([1]),
         accounts=[
-            AccountMeta("authority", True, True, Signer()),
+            AccountMeta("authority", True, True, Signer(), signer_kind="wallet"),
             AccountMeta("mint", False, False, UserProvided()),
             AccountMeta(
                 "state",
@@ -102,7 +102,7 @@ class TestBuild:
             program_id=TOKEN_PROGRAM,
             discriminator=bytes([2]),
             accounts=[
-                AccountMeta("authority", True, True, Signer()),
+                AccountMeta("authority", True, True, Signer(), signer_kind="wallet"),
                 AccountMeta(
                     "proposal",
                     False,
@@ -183,17 +183,70 @@ class TestBuild:
         handler = InstructionHandler(
             program_id=TOKEN_PROGRAM,
             discriminator=bytes([3]),
-            accounts=[AccountMeta("authority", True, True, Signer())],
+            accounts=[AccountMeta("authority", True, True, Signer(), signer_kind="wallet")],
             args=[ArgSchema("maybe", {"option": "u8"})],
         )
         built = handler.build({}, payer=WSOL_MINT)
         assert list(built.data) == [3, 0]
 
-    def test_validates_resolved_addresses_as_pubkeys(self):
-        with pytest.raises(InstructionError, match="Invalid pubkey"):
+    def test_validates_explicit_addresses_as_pubkeys(self):
+        # The TypeScript resolver's messages.
+        with pytest.raises(InstructionError) as excinfo:
             make_handler().build(
                 {"amount": 1, "mint": "not-a-pubkey"}, payer=WSOL_MINT
             )
+        assert str(excinfo.value) == (
+            'Invalid account override for "mint": expected a base58 public key'
+        )
+        with pytest.raises(InstructionError) as excinfo:
+            make_handler().build(
+                {"amount": 1, "mint": SYSTEM_PROGRAM},
+                payer=WSOL_MINT,
+                accounts={"state": "short"},
+            )
+        assert str(excinfo.value) == (
+            'Invalid account override for "state": expected a 32-byte public '
+            "key, got 4 bytes"
+        )
+
+    def test_an_explicit_pda_address_wins_over_its_derivation(self):
+        # `state` is a PDA of `authority`; named in the params or in
+        # `accounts`, it is used as given (TypeScript parity).
+        built = make_handler().build(
+            {"amount": 1, "mint": SYSTEM_PROGRAM, "state": WSOL_MINT},
+            payer=WSOL_MINT,
+        )
+        assert built.accounts[2].pubkey == WSOL_MINT
+        assert built.accounts[2].is_writable is True
+        built = make_handler().build(
+            {"amount": 1, "mint": SYSTEM_PROGRAM},
+            payer=WSOL_MINT,
+            accounts={"state": TOKEN_PROGRAM},
+        )
+        assert built.accounts[2].pubkey == TOKEN_PROGRAM
+
+
+class TestArtifact:
+    def test_to_artifact_is_the_typescript_built_instruction(self):
+        from arete.operations import to_json_value
+
+        built = make_handler().build(
+            {"amount": 100, "mint": SYSTEM_PROGRAM}, payer=WSOL_MINT
+        )
+        artifact = built.to_artifact()
+        assert artifact == {
+            "programId": TOKEN_PROGRAM,
+            "keys": [
+                {"pubkey": WSOL_MINT, "isSigner": True, "isWritable": True},
+                {"pubkey": SYSTEM_PROGRAM, "isSigner": False, "isWritable": False},
+                {"pubkey": STATE_WSOL_PDA, "isSigner": False, "isWritable": True},
+            ],
+            "data": bytes([1, 100, 0, 0, 0, 0, 0, 0, 0]),
+        }
+        # TypeScript's toJsonValue encodes the bytes as byte values.
+        assert to_json_value({"instruction": artifact})["instruction"]["data"] == [
+            1, 100, 0, 0, 0, 0, 0, 0, 0,
+        ]
 
 
 class TestErrorMetadata:

@@ -339,6 +339,31 @@ describe('OreDashboard', () => {
     expect(screen.getByTestId('tile-1')).toHaveTextContent('1.2500');
   });
 
+  it('highlights the winner as soon as the round ends, before winningSquare fills', () => {
+    mocks.round = {
+      id: { roundId: 2n },
+      results: { preRevealWinningSquare: 4n, winningSquare: null },
+    };
+    const { rerender } = render(<OreDashboard />);
+
+    expect(screen.getByTestId('tile-5')).toHaveAttribute('data-winner', 'true');
+    expect(screen.getByTestId('tile-5')).toHaveClass('outline-emerald-500');
+    expect(screen.getAllByTestId(/^tile-/).filter((tile) => tile.hasAttribute('data-winner'))).toHaveLength(1);
+
+    // The on-chain confirmation is the same square.
+    mocks.round = {
+      id: { roundId: 2n },
+      results: { preRevealWinningSquare: 4n, winningSquare: 4n },
+    };
+    rerender(<OreDashboard />);
+    expect(screen.getByTestId('tile-5')).toHaveAttribute('data-winner', 'true');
+
+    // A live round has no winner yet.
+    mocks.round = { id: { roundId: 2n }, results: { preRevealWinningSquare: null, winningSquare: null } };
+    rerender(<OreDashboard />);
+    expect(screen.getAllByTestId(/^tile-/).filter((tile) => tile.hasAttribute('data-winner'))).toHaveLength(0);
+  });
+
   it('prompts wallet connection when disconnected', () => {
     render(<OreDashboard />);
     expect(screen.getByRole('button', { name: 'Connect wallet to continue' })).toBeInTheDocument();
