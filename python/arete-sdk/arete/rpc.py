@@ -40,6 +40,8 @@ from typing import Any, Dict, Optional, Sequence
 import httpx
 
 from arete.transactions import (
+    ConfirmedTransaction,
+    TransactionAccountBalance,
     LatestBlockhashResult,
     TransactionFeeResult,
     TransactionSendResult,
@@ -90,6 +92,19 @@ def _optional_u64(method: str, value: Any, field: str) -> Optional[int]:
     if value is None:
         return None
     return _u64(method, value, field)
+
+
+def _precision_safe_json(value: Any, key: str = "") -> Any:
+    """Match the relay's retained JSON while Python summaries retain native ints."""
+    if isinstance(value, dict):
+        return {name: _precision_safe_json(item, name) for name, item in value.items()}
+    if isinstance(value, list):
+        return [_precision_safe_json(item, key) for item in value]
+    exact = {"fee", "preBalances", "postBalances", "lamports", "postBalance",
+             "computeUnitsConsumed", "costUnits", "loadedAccountsDataSize"}
+    if isinstance(value, int) and not isinstance(value, bool) and (key in exact or abs(value) > 9007199254740991):
+        return str(value)
+    return value
 
 
 class RpcTransactionTransport:
@@ -202,6 +217,63 @@ class RpcTransactionTransport:
         return _u64(method, slot, "context.slot"), result["value"]
 
     # -- reads -------------------------------------------------------------
+
+    async def get(
+        self,
+        signature: str,
+        *,
+        commitment: Optional[str] = None,
+        max_supported_transaction_version: Optional[int] = None,
+    ) -> Optional[ConfirmedTransaction]:
+        if commitment is not None and commitment not in ("confirmed", "finalized"):
+            raise ValueError("get accepts confirmed or finalized")
+        if max_supported_transaction_version is not None and (
+            isinstance(max_supported_transaction_version, bool)
+            or not isinstance(max_supported_transaction_version, int)
+            or not 0 <= max_supported_transaction_version <= 255
+        ):
+            raise ValueError("Invalid maximum transaction version")
+        method = "getTransaction"
+        result = await self._call(method, [signature, _config(
+            encoding="jsonParsed", commitment=commitment or "confirmed",
+            maxSupportedTransactionVersion=max_supported_transaction_version,
+        )])
+        if result is None:
+            return None
+        if not isinstance(result, dict) or not isinstance(result.get("transaction"), dict):
+            raise _invalid(method, "missing transaction")
+        transaction = result["transaction"]
+        meta = result.get("meta")
+        if meta is not None and not isinstance(meta, dict):
+            raise _invalid(method, "meta must be an object or null")
+        keys = transaction.get("message", {}).get("accountKeys", [])
+        accounts = []
+        if meta is not None:
+            pre, post = meta.get("preBalances"), meta.get("postBalances")
+            if not isinstance(pre, list) or not isinstance(post, list) or len(pre) != len(keys) or len(post) != len(keys):
+                raise _invalid(method, "unaligned account balances")
+            for index, key in enumerate(keys):
+                pubkey = key.get("pubkey") if isinstance(key, dict) else key
+                if not isinstance(pubkey, str):
+                    raise _invalid(method, "invalid account key")
+                accounts.append(TransactionAccountBalance(
+                    pubkey, _u64(method, pre[index], "preBalance"),
+                    _u64(method, post[index], "postBalance"),
+                ))
+            for field in ("preTokenBalances", "postTokenBalances"):
+                for token in meta.get(field) or []:
+                    index = token.get("accountIndex")
+                    if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(keys):
+                        raise _invalid(method, "token balance accountIndex is outside resolved keys")
+        block_time = result.get("blockTime")
+        if block_time is not None and (isinstance(block_time, bool) or not isinstance(block_time, int) or not -(1 << 63) <= block_time < (1 << 63)):
+            raise _invalid(method, "invalid blockTime")
+        return ConfirmedTransaction(
+            signature, _u64(method, result.get("slot"), "slot"), block_time,
+            None if meta is None else meta.get("err"), tuple(accounts),
+            _precision_safe_json(transaction), _precision_safe_json(meta),
+            result.get("version"), meta is not None,
+        )
 
     async def get_latest_blockhash(
         self,

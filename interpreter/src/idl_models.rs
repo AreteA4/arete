@@ -6,15 +6,15 @@
 //! every struct, tuple struct and enum reachable from an account gets a
 //! model of its own, and fields reference it by name ([`WireType::Model`]).
 //!
-//! The wire shapes (arete-platform `idl-runtime`, `zero_copy::borsh`) are:
+//! The public Program Read wire shapes are:
 //!
 //! - integers up to 32 bits are JSON numbers; `u64` a number up to 2^53 and a
 //!   decimal string above; `u128`/`i128` always decimal strings;
 //! - a struct is an object keyed by the IDL field names; a tuple struct an
 //!   object keyed `field_0`, `field_1`, ...; an inline tuple an array;
 //! - an enum's unit variant is its name (`"Active"`); a data variant a
-//!   one-key object from its name to its fields (`{"Stable": {"amp": 5}}`),
-//!   tuple fields keyed `field_<index>`;
+//!   one-key object from its name to its payload (`{"Stable": {"amp": 5}}`),
+//!   with tuple payloads represented as arrays;
 //! - options are the value or `null`; vectors and fixed arrays are arrays;
 //!   maps are objects with string keys.
 //!
@@ -132,6 +132,8 @@ impl ModelField {
 pub(crate) struct ModelVariant {
     /// The variant's IDL name, its wire tag.
     pub(crate) name: String,
+    /// Whether the payload is positional rather than named.
+    pub(crate) is_tuple: bool,
     /// Its fields: named ones by name, tuple ones as `field_<index>`.
     pub(crate) fields: Vec<ModelField>,
 }
@@ -175,6 +177,7 @@ impl IdlModel {
                         .iter()
                         .map(|variant| ModelVariant {
                             name: variant.name.clone(),
+                            is_tuple: variant.is_tuple,
                             fields: fields(&variant.fields),
                         })
                         .collect(),
@@ -399,6 +402,9 @@ impl ModelBuilder<'_> {
                         .iter()
                         .map(|variant| ModelVariant {
                             name: variant.name.clone(),
+                            is_tuple: variant.fields.iter().all(|field| {
+                                matches!(field, IdlEnumVariantFieldSnapshot::Tuple(_))
+                            }),
                             fields: {
                                 let fields = variant
                                     .fields
@@ -893,11 +899,13 @@ pub(crate) mod tests {
         assert_eq!(level[0].fields[0].flat.raw_field_name(), "numSignatures");
         assert_eq!(level[0].fields[0].wire_name(), "num_signatures");
 
-        // Tuple variant fields are keyed `field_<index>`.
+        // Tuple variant fields keep their positional wire shape. The
+        // synthetic names are only used while binding their field types.
         let spec = mpl_core_stack();
         let models = ProgramModels::build(&spec.idls[0]);
         let authority = variants(&models.types["UpdateAuthority"]);
         assert_eq!(authority[1].name, "Address");
+        assert!(authority[1].is_tuple);
         assert_eq!(authority[1].fields[0].flat.raw_field_name(), "field_0");
         assert_eq!(authority[1].fields[0].flat.base_type, BaseType::Pubkey);
         // A struct variant keeps its field names.

@@ -4,8 +4,12 @@
 //! in memory with LRU eviction. When a new client subscribes, they receive
 //! cached snapshots immediately rather than waiting for the next live mutation.
 
+use crate::mutation_batch::SlotIndexDomain;
+use arete_interpreter::AccountPosition;
 use lru::LruCache;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -77,6 +81,10 @@ struct ViewEntries {
     /// Whether a source that marks creations writes to this view. Such a
     /// source never consults `evicted`.
     creations_marked: bool,
+    // Recent authoritative account positions and deletion barriers survive
+    // snapshots. They are intentionally separate from entity `_seq`, whose
+    // offset may instead be an instruction txn_index.
+    lifetimes: LruCache<String, EntityLifetimeCheckpoint>,
 }
 
 impl ViewEntries {
@@ -87,6 +95,7 @@ impl ViewEntries {
             entities: LruCache::unbounded(),
             evicted: None,
             creations_marked: false,
+            lifetimes: LruCache::unbounded(),
         }
     }
 
@@ -136,7 +145,142 @@ impl ViewEntries {
             .as_mut()
             .is_some_and(|evicted| evicted.get(key).is_some())
     }
+
+    fn accepts(
+        &self,
+        key: &str,
+        creation: bool,
+        account_position: Option<AccountPosition>,
+        source_seq: Option<&str>,
+        source_domain: Option<SlotIndexDomain>,
+    ) -> bool {
+        if let Some(checkpoint) = self.lifetimes.peek(key) {
+            match (checkpoint.account_position, account_position) {
+                (Some(previous), Some(incoming)) if incoming <= previous => return false,
+                // Once a producer opts into authoritative account ordering it
+                // must carry it on every later account-owned lifetime change.
+                (Some(_), None) if creation || checkpoint.deleted => return false,
+                _ => {}
+            }
+            if checkpoint.deleted && !creation {
+                return false;
+            }
+        }
+
+        if account_position.is_none() && source_domain.is_some() && source_seq.is_some() {
+            return self.accepts_source_ordering(key, source_seq, source_domain, !creation);
+        }
+        true
+    }
+
+    fn latest_source_seq<'a>(
+        &'a self,
+        key: &str,
+        source_domain: Option<SlotIndexDomain>,
+    ) -> Option<&'a str> {
+        let checkpoint = self.lifetimes.peek(key);
+        // An account cursor and an instruction/source cursor are independent.
+        // In particular, do not recover the account update's `_seq` from the
+        // entity and compare its write version with an instruction index.
+        if checkpoint.is_some_and(|checkpoint| checkpoint.account_position.is_some()) {
+            return checkpoint.and_then(|checkpoint| checkpoint.source_seq(source_domain));
+        }
+        let checkpoint = checkpoint.and_then(|checkpoint| checkpoint.source_seq(source_domain));
+        // Only the legacy domain may recover ordering from an entity written
+        // before explicit source domains were recorded. An entity `_seq`
+        // alone cannot say whether its offset is an account write version,
+        // instruction index or resolver counter.
+        if source_domain != Some(SlotIndexDomain::Legacy) {
+            return checkpoint;
+        }
+        let entity = self
+            .entities
+            .peek(key)
+            .and_then(|entity| entity.get("_seq"))
+            .and_then(Value::as_str);
+        match (checkpoint, entity) {
+            (Some(left), Some(right)) if cmp_seq(left, right).is_lt() => Some(right),
+            (Some(left), _) => Some(left),
+            (None, entity) => entity,
+        }
+    }
+
+    fn accepts_source_ordering(
+        &self,
+        key: &str,
+        incoming: Option<&str>,
+        source_domain: Option<SlotIndexDomain>,
+        allow_equal: bool,
+    ) -> bool {
+        match (self.latest_source_seq(key, source_domain), incoming) {
+            (Some(previous), Some(incoming)) => {
+                let ordering = cmp_seq(incoming, previous);
+                ordering.is_gt() || (allow_equal && ordering.is_eq())
+            }
+            // Once a markerless source supplies ordering, an unsequenced
+            // lifetime change cannot prove that it is newer.
+            (Some(_), None) => false,
+            (None, _) => true,
+        }
+    }
+
+    fn trim_lifetimes(&mut self) {
+        while self.lifetimes.len()
+            > self
+                .max_entities
+                .saturating_mul(EVICTED_KEYS_PER_CACHED_ENTITY)
+        {
+            self.lifetimes.pop_lru();
+        }
+    }
 }
+
+/// The authoritative account lifetime known for one projected entity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityLifetimeCheckpoint {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_position: Option<AccountPosition>,
+    /// Ordering for producers that do not carry an authoritative account
+    /// position. This is never compared with `account_position`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_seq: Option<String>,
+    /// Explicit producer-local cursors. Each domain is compared only with
+    /// itself, so resolver counters cannot suppress later instructions.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_sequences: BTreeMap<SlotIndexDomain, String>,
+    pub deleted: bool,
+}
+
+impl EntityLifetimeCheckpoint {
+    fn source_seq(&self, source_domain: Option<SlotIndexDomain>) -> Option<&str> {
+        match source_domain {
+            Some(SlotIndexDomain::Legacy) | None => self
+                .source_sequences
+                .get(&SlotIndexDomain::Legacy)
+                .map(String::as_str)
+                .or(self.source_seq.as_deref()),
+            Some(domain) => self.source_sequences.get(&domain).map(String::as_str),
+        }
+    }
+}
+
+/// `(view, key, checkpoint)` in most-recently-changed order.
+pub type EntityLifetimes = Vec<(String, String, EntityLifetimeCheckpoint)>;
+
+/// Independent ordering metadata attached to one projected cache write.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LifetimeOrdering<'a> {
+    pub account_position: Option<AccountPosition>,
+    pub source_seq: Option<&'a str>,
+    /// The producer-local domain in which `source_seq` is comparable.
+    /// `None` deliberately disables source recency checks.
+    pub source_domain: Option<SlotIndexDomain>,
+}
+
+/// Legacy `(view, key, _seq)` barriers, retained only to restore snapshots
+/// written before account positions had their own ordering domain.
+pub type EntityTombstones = Vec<(String, String, Option<String>)>;
 
 /// Compare two `_seq` values numerically.
 /// `_seq` format is "{slot}:{offset}" where slot is not zero-padded.
@@ -149,6 +293,14 @@ pub fn cmp_seq(a: &str, b: &str) -> std::cmp::Ordering {
         (slot, offset)
     }
     parse(a).cmp(&parse(b))
+}
+
+fn account_position_from_seq(seq: &str) -> Option<AccountPosition> {
+    let mut parts = seq.splitn(2, ':');
+    Some(AccountPosition::new(
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    ))
 }
 
 /// Configuration for the entity cache
@@ -250,6 +402,58 @@ impl EntityCache {
         append_paths: &[String],
         origin: PatchOrigin,
     ) -> CacheWrite {
+        self.upsert_with_lifetime(view_id, key, patch, append_paths, origin, None)
+            .await
+    }
+
+    /// Apply a projected patch with optional authoritative account ordering.
+    /// `_seq` is consulted for lifetime changes only when no account position
+    /// exists; the two ordering domains are never compared.
+    pub async fn upsert_with_lifetime(
+        &self,
+        view_id: &str,
+        key: &str,
+        patch: Value,
+        append_paths: &[String],
+        origin: PatchOrigin,
+        account_position: Option<AccountPosition>,
+    ) -> CacheWrite {
+        let source_seq = patch.get("_seq").and_then(Value::as_str).map(str::to_owned);
+        self.upsert_with_ordering(
+            view_id,
+            key,
+            patch,
+            append_paths,
+            origin,
+            LifetimeOrdering {
+                account_position,
+                source_seq: source_seq.as_deref(),
+                // The convenience path supports markerless lifetime ordering,
+                // but sparse legacy patches may mix account write versions
+                // and instruction indices within one slot.
+                source_domain: (origin == PatchOrigin::Creation).then_some(SlotIndexDomain::Legacy),
+            },
+        )
+        .await
+    }
+
+    /// Apply a projected patch with both ordering domains supplied
+    /// explicitly. Projections may omit `_seq`, so the projector passes its
+    /// source cursor separately here.
+    pub async fn upsert_with_ordering(
+        &self,
+        view_id: &str,
+        key: &str,
+        patch: Value,
+        append_paths: &[String],
+        origin: PatchOrigin,
+        ordering: LifetimeOrdering<'_>,
+    ) -> CacheWrite {
+        let LifetimeOrdering {
+            account_position,
+            source_seq,
+            source_domain,
+        } = ordering;
         let mut caches = self.caches.write().await;
 
         let view = caches
@@ -261,17 +465,90 @@ impl EntityCache {
 
         let max_array_length = self.config.max_array_length;
 
-        if let Some(entity) = view.entities.get_mut(key) {
-            deep_merge_with_append(entity, patch, append_paths, max_array_length);
-            return CacheWrite::Merged;
+        let creation = origin == PatchOrigin::Creation;
+        if !view.accepts(key, creation, account_position, source_seq, source_domain) {
+            return CacheWrite::Refused { patch };
         }
+
+        if let Some(position) = account_position {
+            // Account writes choose the lifetime, but they do not reset the
+            // independent instruction/resolver high-water marks. Keeping
+            // those cursors across deletion and recreation prevents a late
+            // duplicate from the old lifetime from contaminating the new
+            // row. A genuinely newer source event still advances its own
+            // domain normally.
+            let previous = view.lifetimes.peek(key).cloned();
+            view.lifetimes.put(
+                key.to_string(),
+                EntityLifetimeCheckpoint {
+                    account_position: Some(position),
+                    source_seq: previous
+                        .as_ref()
+                        .and_then(|checkpoint| checkpoint.source_seq.clone()),
+                    source_sequences: previous
+                        .map(|checkpoint| checkpoint.source_sequences)
+                        .unwrap_or_default(),
+                    deleted: false,
+                },
+            );
+            view.trim_lifetimes();
+        } else {
+            if let (Some(source_seq), Some(source_domain)) = (source_seq, source_domain) {
+                let mut checkpoint = if creation {
+                    EntityLifetimeCheckpoint {
+                        account_position: None,
+                        source_seq: None,
+                        source_sequences: BTreeMap::new(),
+                        deleted: false,
+                    }
+                } else {
+                    view.lifetimes
+                        .peek(key)
+                        .cloned()
+                        .unwrap_or(EntityLifetimeCheckpoint {
+                            account_position: None,
+                            source_seq: None,
+                            source_sequences: BTreeMap::new(),
+                            deleted: false,
+                        })
+                };
+                checkpoint
+                    .source_sequences
+                    .insert(source_domain, source_seq.to_string());
+                checkpoint.deleted = false;
+                view.lifetimes.put(key.to_string(), checkpoint);
+                view.trim_lifetimes();
+            } else if creation
+                && view.lifetimes.peek(key).is_some_and(|checkpoint| {
+                    checkpoint.source_seq.is_none() && checkpoint.source_sequences.is_empty()
+                })
+            {
+                // An entirely unsequenced source preserves its historical
+                // recreate behavior; there is no ordering evidence to retain.
+                view.lifetimes.pop(key);
+            }
+        }
+
         let whole = match origin {
             PatchOrigin::Creation => true,
-            PatchOrigin::Change => false,
-            PatchOrigin::Unknown => !view.was_evicted(key),
+            PatchOrigin::Change => view.entities.contains(key),
+            PatchOrigin::Unknown => view.entities.contains(key) || !view.was_evicted(key),
         };
         if !whole {
             return CacheWrite::Refused { patch };
+        }
+
+        // A creation is a complete replacement. Deep-merging it would retain
+        // fields from the previous account lifetime.
+        if creation {
+            let new_entity = truncate_arrays_if_needed(patch, max_array_length);
+            view.store(key.to_string(), new_entity);
+            return CacheWrite::Created;
+        }
+
+        if let Some(entity) = view.entities.get_mut(key) {
+            deep_merge_with_append(entity, patch, append_paths, max_array_length);
+            return CacheWrite::Merged;
         }
         let new_entity = truncate_arrays_if_needed(patch, max_array_length);
         view.store(key.to_string(), new_entity);
@@ -281,13 +558,359 @@ impl EntityCache {
     /// Store `entity` as the whole entity for `key`, replacing anything held
     /// and clearing an eviction: the source vouched for it being complete
     /// (see [`arete_interpreter::Mutation::mark_whole_entity`]).
-    pub async fn store_whole(&self, view_id: &str, key: &str, entity: Value) {
+    pub async fn store_whole(&self, view_id: &str, key: &str, entity: Value) -> bool {
+        self.store_whole_for_lifetime(view_id, key, entity, None)
+            .await
+    }
+
+    /// Store a requested whole entity only if the request was made for the
+    /// account lifetime that is still current.
+    pub async fn store_whole_for_lifetime(
+        &self,
+        view_id: &str,
+        key: &str,
+        entity: Value,
+        requested_account_position: Option<AccountPosition>,
+    ) -> bool {
+        self.store_whole_checked(view_id, key, entity, requested_account_position, None)
+            .await
+    }
+
+    pub async fn store_whole_for_ordering(
+        &self,
+        view_id: &str,
+        key: &str,
+        entity: Value,
+        requested_account_position: Option<AccountPosition>,
+        requested_source_seq: Option<&str>,
+    ) -> bool {
+        self.store_whole_for_ordering_in_domain(
+            view_id,
+            key,
+            entity,
+            requested_account_position,
+            requested_source_seq,
+            SlotIndexDomain::Legacy,
+        )
+        .await
+    }
+
+    pub async fn store_whole_for_ordering_in_domain(
+        &self,
+        view_id: &str,
+        key: &str,
+        entity: Value,
+        requested_account_position: Option<AccountPosition>,
+        requested_source_seq: Option<&str>,
+        requested_source_domain: SlotIndexDomain,
+    ) -> bool {
+        self.store_whole_checked(
+            view_id,
+            key,
+            entity,
+            requested_account_position,
+            Some((requested_source_seq, requested_source_domain)),
+        )
+        .await
+    }
+
+    async fn store_whole_checked(
+        &self,
+        view_id: &str,
+        key: &str,
+        entity: Value,
+        requested_account_position: Option<AccountPosition>,
+        requested_source: Option<(Option<&str>, SlotIndexDomain)>,
+    ) -> bool {
         let mut caches = self.caches.write().await;
         let view = caches
             .entry(view_id.to_string())
             .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
         let entity = truncate_arrays_if_needed(entity, self.config.max_array_length);
+        if let Some(checkpoint) = view.lifetimes.peek(key) {
+            if checkpoint.deleted || checkpoint.account_position != requested_account_position {
+                return false;
+            }
+            if let Some((requested_source_seq, requested_source_domain)) = requested_source {
+                if (checkpoint.account_position.is_none()
+                    && checkpoint.source_seq(Some(requested_source_domain)) != requested_source_seq)
+                    || view.entities.contains(key)
+                {
+                    return false;
+                }
+            } else if checkpoint.account_position.is_some() && view.entities.contains(key) {
+                return false;
+            }
+        }
         view.store(key.to_string(), entity);
+        true
+    }
+
+    pub async fn account_position(&self, view_id: &str, key: &str) -> Option<AccountPosition> {
+        self.caches
+            .read()
+            .await
+            .get(view_id)
+            .and_then(|view| view.lifetimes.peek(key))
+            .and_then(|checkpoint| checkpoint.account_position)
+    }
+
+    pub async fn accepts_mutation(
+        &self,
+        view_id: &str,
+        key: &str,
+        _entity: &Value,
+        creation: bool,
+    ) -> bool {
+        self.accepts_lifetime_mutation(view_id, key, creation, None)
+            .await
+    }
+
+    pub async fn accepts_lifetime_mutation(
+        &self,
+        view_id: &str,
+        key: &str,
+        creation: bool,
+        account_position: Option<AccountPosition>,
+    ) -> bool {
+        self.accepts_ordered_lifetime_mutation(view_id, key, creation, account_position, None)
+            .await
+    }
+
+    pub async fn accepts_ordered_lifetime_mutation(
+        &self,
+        view_id: &str,
+        key: &str,
+        creation: bool,
+        account_position: Option<AccountPosition>,
+        source_seq: Option<&str>,
+    ) -> bool {
+        self.accepts_ordered_lifetime_mutation_in_domain(
+            view_id,
+            key,
+            creation,
+            account_position,
+            source_seq,
+            SlotIndexDomain::Legacy,
+        )
+        .await
+    }
+
+    pub async fn accepts_ordered_lifetime_mutation_in_domain(
+        &self,
+        view_id: &str,
+        key: &str,
+        creation: bool,
+        account_position: Option<AccountPosition>,
+        source_seq: Option<&str>,
+        source_domain: SlotIndexDomain,
+    ) -> bool {
+        self.caches.read().await.get(view_id).is_none_or(|view| {
+            view.accepts(
+                key,
+                creation,
+                account_position,
+                source_seq,
+                Some(source_domain),
+            )
+        })
+    }
+
+    /// Apply an ordered source deletion. A delayed deletion never removes a
+    /// newer recreation. Only a newer, explicitly marked creation can restart
+    /// a deleted row; sparse patches and resends cannot resurrect it.
+    pub async fn delete(
+        &self,
+        view_id: &str,
+        key: &str,
+        account_position: Option<AccountPosition>,
+    ) -> bool {
+        match account_position {
+            Some(position) => {
+                self.delete_ordered(view_id, key, Some(position), None)
+                    .await
+            }
+            None => self.delete_current(view_id, key).await,
+        }
+    }
+
+    /// Delete the lifetime currently held by the cache when the producer has
+    /// no cursor to attach. This is an explicit, trusted operation: callers
+    /// with ordering evidence must use [`Self::delete_ordered`] instead.
+    pub async fn delete_current(&self, view_id: &str, key: &str) -> bool {
+        let mut caches = self.caches.write().await;
+        let view = caches
+            .entry(view_id.to_string())
+            .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
+        let checkpoint = view
+            .lifetimes
+            .peek(key)
+            .cloned()
+            .unwrap_or(EntityLifetimeCheckpoint {
+                account_position: None,
+                source_seq: None,
+                source_sequences: BTreeMap::new(),
+                deleted: false,
+            });
+        if checkpoint.deleted {
+            return true;
+        }
+        view.entities.pop(key);
+        view.forget_evicted(key);
+        view.lifetimes.put(
+            key.to_string(),
+            EntityLifetimeCheckpoint {
+                deleted: true,
+                ..checkpoint
+            },
+        );
+        view.trim_lifetimes();
+        true
+    }
+
+    /// Delete using the producer's own `_seq` ordering only when no
+    /// authoritative account position is present.
+    pub async fn delete_ordered(
+        &self,
+        view_id: &str,
+        key: &str,
+        account_position: Option<AccountPosition>,
+        source_seq: Option<&str>,
+    ) -> bool {
+        self.delete_ordered_in_domain(
+            view_id,
+            key,
+            account_position,
+            source_seq,
+            SlotIndexDomain::Legacy,
+        )
+        .await
+    }
+
+    pub async fn delete_ordered_in_domain(
+        &self,
+        view_id: &str,
+        key: &str,
+        account_position: Option<AccountPosition>,
+        source_seq: Option<&str>,
+        source_domain: SlotIndexDomain,
+    ) -> bool {
+        let mut caches = self.caches.write().await;
+        let view = caches
+            .entry(view_id.to_string())
+            .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
+        if let Some(checkpoint) = view.lifetimes.peek(key) {
+            match (checkpoint.account_position, account_position) {
+                (Some(previous), Some(incoming)) if incoming < previous => return false,
+                (Some(previous), Some(incoming)) if incoming == previous => {
+                    return checkpoint.deleted;
+                }
+                _ => {}
+            }
+        }
+        if account_position.is_none()
+            && source_seq.is_some()
+            && !view.accepts_source_ordering(key, source_seq, Some(source_domain), true)
+        {
+            return false;
+        }
+        let previous = view.lifetimes.peek(key).cloned();
+        view.entities.pop(key);
+        view.forget_evicted(key);
+        let mut checkpoint = if account_position.is_some() {
+            let previous = previous.unwrap_or(EntityLifetimeCheckpoint {
+                account_position: None,
+                source_seq: None,
+                source_sequences: BTreeMap::new(),
+                deleted: false,
+            });
+            EntityLifetimeCheckpoint {
+                account_position,
+                source_seq: previous.source_seq,
+                source_sequences: previous.source_sequences,
+                deleted: true,
+            }
+        } else {
+            previous.unwrap_or(EntityLifetimeCheckpoint {
+                account_position: None,
+                source_seq: None,
+                source_sequences: BTreeMap::new(),
+                deleted: false,
+            })
+        };
+        if account_position.is_none() {
+            if let Some(source_seq) = source_seq {
+                checkpoint
+                    .source_sequences
+                    .insert(source_domain, source_seq.to_string());
+            }
+            checkpoint.deleted = true;
+        }
+        view.lifetimes.put(key.to_string(), checkpoint);
+        view.trim_lifetimes();
+        true
+    }
+
+    pub async fn dump_lifetimes(&self) -> EntityLifetimes {
+        self.caches
+            .read()
+            .await
+            .iter()
+            .flat_map(|(id, view)| {
+                view.lifetimes
+                    .iter()
+                    .map(|(key, checkpoint)| (id.clone(), key.clone(), checkpoint.clone()))
+            })
+            .collect()
+    }
+
+    pub async fn hydrate_lifetimes(&self, lifetimes: EntityLifetimes) {
+        let mut caches = self.caches.write().await;
+        for (id, key, checkpoint) in lifetimes.into_iter().rev() {
+            let view = caches
+                .entry(id)
+                .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
+            view.lifetimes.put(key, checkpoint);
+            view.trim_lifetimes();
+        }
+    }
+
+    /// Restore the old `_seq` barriers as account positions. Those barriers
+    /// were written only by authoritative account deletion/recreation paths;
+    /// whether the row exists distinguishes a live recreation from deletion.
+    pub async fn hydrate_legacy_tombstones(&self, tombstones: EntityTombstones) {
+        let mut caches = self.caches.write().await;
+        for (id, key, seq) in tombstones.into_iter().rev() {
+            let view = caches
+                .entry(id)
+                .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
+            let deleted = !view.entities.contains(&key);
+            let account_position = seq.as_deref().and_then(account_position_from_seq);
+            view.lifetimes.put(
+                key,
+                EntityLifetimeCheckpoint {
+                    account_position,
+                    source_seq: None,
+                    source_sequences: BTreeMap::new(),
+                    deleted,
+                },
+            );
+            view.trim_lifetimes();
+        }
+    }
+
+    /// Whether the shared cache says a published delete still represents the
+    /// latest lifetime. Subscription tasks use this without mutating the cache
+    /// a second time after the projector has already applied the delete.
+    pub async fn deletion_is_current(&self, view_id: &str, key: &str) -> bool {
+        let caches = self.caches.read().await;
+        caches.get(view_id).is_none_or(|view| {
+            view.lifetimes
+                .peek(key)
+                .map_or(!view.entities.contains(key), |checkpoint| {
+                    checkpoint.deleted
+                })
+        })
     }
 
     /// Merge a source patch into `base` with this cache's append and array
@@ -458,6 +1081,7 @@ impl EntityCache {
     /// projected entities, not patches.
     pub async fn hydrate(&self, views: Vec<(String, Vec<(String, Value)>)>) {
         let mut caches = self.caches.write().await;
+        caches.clear();
         for (view_id, entries) in views {
             let view = caches
                 .entry(view_id)
@@ -603,6 +1227,615 @@ fn truncate_arrays_if_needed(value: Value, max_array_length: usize) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn same_slot_instruction_activity_cannot_block_authoritative_deletion() {
+        let cache = EntityCache::new();
+        assert_eq!(
+            cache
+                .upsert_with_lifetime(
+                    "v",
+                    "a",
+                    json!({"account":true,"_seq":"100:000000000009"}),
+                    &[],
+                    PatchOrigin::Creation,
+                    Some(AccountPosition::new(100, 9)),
+                )
+                .await,
+            CacheWrite::Created
+        );
+        assert_eq!(
+            cache
+                .upsert_with_append(
+                    "v",
+                    "a",
+                    json!({"instruction":true,"_seq":"100:000000000900"}),
+                    &[],
+                    PatchOrigin::Change
+                )
+                .await,
+            CacheWrite::Merged
+        );
+        assert!(
+            cache
+                .delete("v", "a", Some(AccountPosition::new(100, 10)))
+                .await
+        );
+        assert!(cache.get("v", "a").await.is_none());
+        assert!(cache.deletion_is_current("v", "a").await);
+    }
+
+    #[tokio::test]
+    async fn recreation_has_its_own_ordering_and_replaces_old_fields() {
+        let cache = EntityCache::with_config(EntityCacheConfig {
+            max_entities_per_view: 1,
+            ..Default::default()
+        });
+        assert!(
+            cache
+                .delete("v", "a", Some(AccountPosition::new(100, 1001)))
+                .await
+        );
+        assert_eq!(
+            cache
+                .upsert_with_lifetime(
+                    "v",
+                    "a",
+                    json!({"fresh":true, "_seq":"100:000000001002"}),
+                    &[],
+                    PatchOrigin::Creation,
+                    Some(AccountPosition::new(100, 1002)),
+                )
+                .await,
+            CacheWrite::Created
+        );
+        assert_eq!(
+            cache
+                .upsert_with_append(
+                    "v",
+                    "a",
+                    json!({"instruction":true, "_seq":"100:000000000900"}),
+                    &[],
+                    PatchOrigin::Change
+                )
+                .await,
+            CacheWrite::Merged
+        );
+
+        // Neither a stale authoritative write/tombstone nor a delayed resend
+        // from the deleted lifetime can contaminate the replacement.
+        assert!(matches!(
+            cache
+                .upsert_with_lifetime(
+                    "v",
+                    "a",
+                    json!({"old":true, "_seq":"100:000000001001"}),
+                    &[],
+                    PatchOrigin::Change,
+                    Some(AccountPosition::new(100, 1001)),
+                )
+                .await,
+            CacheWrite::Refused { .. }
+        ));
+        assert!(
+            !cache
+                .delete("v", "a", Some(AccountPosition::new(100, 1001)))
+                .await
+        );
+        assert!(
+            !cache
+                .store_whole("v", "a", json!({"old":true, "_seq":"100:000000000900"}))
+                .await
+        );
+        let row = cache.get("v", "a").await.unwrap();
+        assert_eq!(row["fresh"], true);
+        assert_eq!(row["instruction"], true);
+        assert!(row.get("old").is_none());
+
+        cache
+            .upsert_with_append(
+                "v",
+                "other",
+                json!({"other":true}),
+                &[],
+                PatchOrigin::Creation,
+            )
+            .await;
+        assert!(cache.get("v", "a").await.is_none());
+        assert!(matches!(
+            cache
+                .upsert_with_lifetime(
+                    "v",
+                    "a",
+                    json!({"accountUpdate":true, "_seq":"100:000000001003"}),
+                    &[],
+                    PatchOrigin::Change,
+                    Some(AccountPosition::new(100, 1003)),
+                )
+                .await,
+            CacheWrite::Refused { .. }
+        ));
+        assert!(
+            !cache
+                .store_whole_for_lifetime(
+                    "v",
+                    "a",
+                    row.clone(),
+                    Some(AccountPosition::new(100, 1002)),
+                )
+                .await
+        );
+        let mut current = row;
+        current["accountUpdate"] = Value::Bool(true);
+        current["_seq"] = Value::String("100:000000001003".into());
+        assert!(
+            cache
+                .store_whole_for_lifetime("v", "a", current, Some(AccountPosition::new(100, 1003)),)
+                .await
+        );
+
+        // Current lifetime metadata survives a snapshot and continues to
+        // admit instruction-domain offsets while rejecting stale account data.
+        let restored = EntityCache::new();
+        restored.hydrate(cache.dump().await).await;
+        restored
+            .hydrate_lifetimes(cache.dump_lifetimes().await)
+            .await;
+        assert_eq!(
+            restored
+                .upsert_with_append(
+                    "v",
+                    "a",
+                    json!({"afterRestore":true, "_seq":"100:000000000901"}),
+                    &[],
+                    PatchOrigin::Change,
+                )
+                .await,
+            CacheWrite::Merged
+        );
+        assert!(matches!(
+            restored
+                .upsert_with_lifetime(
+                    "v",
+                    "a",
+                    json!({"old":true, "_seq":"100:000000001001"}),
+                    &[],
+                    PatchOrigin::Change,
+                    Some(AccountPosition::new(100, 1001)),
+                )
+                .await,
+            CacheWrite::Refused { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn recreation_retains_each_source_cursor_as_an_old_lifetime_barrier() {
+        let cache = EntityCache::new();
+        assert_eq!(
+            cache
+                .upsert_with_lifetime(
+                    "v",
+                    "a",
+                    json!({"lifetime":"old"}),
+                    &[],
+                    PatchOrigin::Creation,
+                    Some(AccountPosition::new(100, 9)),
+                )
+                .await,
+            CacheWrite::Created
+        );
+        for (domain, seq, field) in [
+            (
+                SlotIndexDomain::Instruction,
+                "100:000000000800",
+                "oldInstruction",
+            ),
+            (SlotIndexDomain::Resolver, "100:900000000000", "oldResolver"),
+        ] {
+            let mut patch = json!({"_seq":seq});
+            patch[field] = Value::Bool(true);
+            assert_eq!(
+                cache
+                    .upsert_with_ordering(
+                        "v",
+                        "a",
+                        patch,
+                        &[],
+                        PatchOrigin::Change,
+                        LifetimeOrdering {
+                            account_position: None,
+                            source_seq: Some(seq),
+                            source_domain: Some(domain),
+                        },
+                    )
+                    .await,
+                CacheWrite::Merged
+            );
+        }
+
+        assert!(
+            cache
+                .delete("v", "a", Some(AccountPosition::new(100, 10)))
+                .await
+        );
+        assert_eq!(
+            cache
+                .upsert_with_lifetime(
+                    "v",
+                    "a",
+                    json!({"lifetime":"new"}),
+                    &[],
+                    PatchOrigin::Creation,
+                    Some(AccountPosition::new(100, 11)),
+                )
+                .await,
+            CacheWrite::Created
+        );
+
+        // Duplicates delayed across the deletion/recreation boundary retain
+        // their old source positions and cannot change the replacement.
+        for (domain, seq, field) in [
+            (
+                SlotIndexDomain::Instruction,
+                "100:000000000799",
+                "staleInstruction",
+            ),
+            (
+                SlotIndexDomain::Resolver,
+                "100:899999999999",
+                "staleResolver",
+            ),
+        ] {
+            let mut patch = json!({"_seq":seq});
+            patch[field] = Value::Bool(true);
+            assert!(matches!(
+                cache
+                    .upsert_with_ordering(
+                        "v",
+                        "a",
+                        patch,
+                        &[],
+                        PatchOrigin::Change,
+                        LifetimeOrdering {
+                            account_position: None,
+                            source_seq: Some(seq),
+                            source_domain: Some(domain),
+                        },
+                    )
+                    .await,
+                CacheWrite::Refused { .. }
+            ));
+        }
+
+        // A later instruction in the same source domain remains valid even
+        // though its txn index is lower than account write versions.
+        assert_eq!(
+            cache
+                .upsert_with_ordering(
+                    "v",
+                    "a",
+                    json!({"newInstruction":true, "_seq":"100:000000000900"}),
+                    &[],
+                    PatchOrigin::Change,
+                    LifetimeOrdering {
+                        account_position: None,
+                        source_seq: Some("100:000000000900"),
+                        source_domain: Some(SlotIndexDomain::Instruction),
+                    },
+                )
+                .await,
+            CacheWrite::Merged
+        );
+        let row = cache.get("v", "a").await.unwrap();
+        assert_eq!(row["lifetime"], "new");
+        assert_eq!(row["newInstruction"], true);
+        assert!(row.get("oldInstruction").is_none());
+        assert!(row.get("oldResolver").is_none());
+        assert!(row.get("staleInstruction").is_none());
+        assert!(row.get("staleResolver").is_none());
+
+        let restored = EntityCache::new();
+        restored.hydrate(cache.dump().await).await;
+        restored
+            .hydrate_lifetimes(cache.dump_lifetimes().await)
+            .await;
+        assert!(matches!(
+            restored
+                .upsert_with_ordering(
+                    "v",
+                    "a",
+                    json!({"staleAfterRestore":true}),
+                    &[],
+                    PatchOrigin::Change,
+                    LifetimeOrdering {
+                        account_position: None,
+                        source_seq: Some("100:000000000799"),
+                        source_domain: Some(SlotIndexDomain::Instruction),
+                    },
+                )
+                .await,
+            CacheWrite::Refused { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn markerless_sources_keep_seq_ordering_across_recreation_and_restore() {
+        let cache = EntityCache::new();
+        assert_eq!(
+            cache
+                .upsert_with_append(
+                    "v",
+                    "a",
+                    json!({"old":true,"_seq":"100:000000000010"}),
+                    &[],
+                    PatchOrigin::Creation,
+                )
+                .await,
+            CacheWrite::Created
+        );
+        assert!(
+            !cache
+                .delete_ordered("v", "a", None, Some("100:000000000009"))
+                .await
+        );
+        assert!(cache.get("v", "a").await.is_some());
+        assert!(
+            cache
+                .delete_ordered("v", "a", None, Some("100:000000000011"))
+                .await
+        );
+        assert_eq!(
+            cache
+                .upsert_with_append(
+                    "v",
+                    "a",
+                    json!({"fresh":true,"_seq":"100:000000000012"}),
+                    &[],
+                    PatchOrigin::Creation,
+                )
+                .await,
+            CacheWrite::Created
+        );
+        assert!(matches!(
+            cache
+                .upsert_with_append(
+                    "v",
+                    "a",
+                    json!({"stale":true,"_seq":"100:000000000010"}),
+                    &[],
+                    PatchOrigin::Creation,
+                )
+                .await,
+            CacheWrite::Refused { .. }
+        ));
+        assert!(
+            !cache
+                .delete_ordered("v", "a", None, Some("100:000000000011"))
+                .await
+        );
+
+        let restored = EntityCache::new();
+        restored.hydrate(cache.dump().await).await;
+        restored
+            .hydrate_lifetimes(cache.dump_lifetimes().await)
+            .await;
+        assert!(
+            !restored
+                .delete_ordered("v", "a", None, Some("100:000000000011"))
+                .await
+        );
+        let row = restored.get("v", "a").await.unwrap();
+        assert_eq!(row["fresh"], true);
+        assert!(row.get("old").is_none());
+        assert!(row.get("stale").is_none());
+
+        // An evicted row may be filled by a requested whole-entity resend,
+        // but a response requested for the previous lifetime must not do it.
+        let resync_cache = EntityCache::new();
+        resync_cache
+            .hydrate_lifetimes(cache.dump_lifetimes().await)
+            .await;
+        assert!(
+            !resync_cache
+                .store_whole_for_ordering(
+                    "v",
+                    "a",
+                    json!({"stale_resend":true}),
+                    None,
+                    Some("100:000000000010"),
+                )
+                .await
+        );
+        assert!(
+            resync_cache
+                .store_whole_for_ordering(
+                    "v",
+                    "a",
+                    json!({"fresh_resend":true}),
+                    None,
+                    Some("100:000000000012"),
+                )
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn older_source_patch_cannot_replace_newer_row_or_move_its_cursor_back() {
+        let cache = EntityCache::new();
+        assert_eq!(
+            cache
+                .upsert_with_append(
+                    "v",
+                    "a",
+                    json!({"value":"created","_seq":"100:000000000010"}),
+                    &[],
+                    PatchOrigin::Creation,
+                )
+                .await,
+            CacheWrite::Created
+        );
+        assert_eq!(
+            cache
+                .upsert_with_ordering(
+                    "v",
+                    "a",
+                    json!({"value":"newer","_seq":"100:000000000012"}),
+                    &[],
+                    PatchOrigin::Change,
+                    LifetimeOrdering {
+                        account_position: None,
+                        source_seq: Some("100:000000000012"),
+                        source_domain: Some(SlotIndexDomain::Legacy),
+                    },
+                )
+                .await,
+            CacheWrite::Merged
+        );
+        assert!(matches!(
+            cache
+                .upsert_with_ordering(
+                    "v",
+                    "a",
+                    json!({"value":"older","stale":true,"_seq":"100:000000000011"}),
+                    &[],
+                    PatchOrigin::Change,
+                    LifetimeOrdering {
+                        account_position: None,
+                        source_seq: Some("100:000000000011"),
+                        source_domain: Some(SlotIndexDomain::Legacy),
+                    },
+                )
+                .await,
+            CacheWrite::Refused { .. }
+        ));
+        assert!(
+            !cache
+                .delete_ordered("v", "a", None, Some("100:000000000011"))
+                .await
+        );
+        let row = cache.get("v", "a").await.unwrap();
+        assert_eq!(row["value"], "newer");
+        assert_eq!(row["_seq"], "100:000000000012");
+        assert!(row.get("stale").is_none());
+    }
+
+    #[tokio::test]
+    async fn independent_source_recency_domains_survive_snapshot_restore() {
+        let cache = EntityCache::new();
+        cache
+            .upsert_with_lifetime(
+                "v",
+                "a",
+                json!({"value":"created"}),
+                &[],
+                PatchOrigin::Creation,
+                Some(AccountPosition::new(100, 9)),
+            )
+            .await;
+        for (domain, seq, value) in [
+            (SlotIndexDomain::Resolver, "100:900000000000", "resolver"),
+            (
+                SlotIndexDomain::Instruction,
+                "100:000000000900",
+                "instruction",
+            ),
+        ] {
+            assert_eq!(
+                cache
+                    .upsert_with_ordering(
+                        "v",
+                        "a",
+                        json!({"value":value, "_seq":seq}),
+                        &[],
+                        PatchOrigin::Change,
+                        LifetimeOrdering {
+                            account_position: None,
+                            source_seq: Some(seq),
+                            source_domain: Some(domain),
+                        },
+                    )
+                    .await,
+                CacheWrite::Merged
+            );
+        }
+
+        let restored = EntityCache::new();
+        restored.hydrate(cache.dump().await).await;
+        restored
+            .hydrate_lifetimes(cache.dump_lifetimes().await)
+            .await;
+
+        for (domain, seq) in [
+            (SlotIndexDomain::Instruction, "100:000000000899"),
+            (SlotIndexDomain::Resolver, "100:899999999999"),
+        ] {
+            assert!(matches!(
+                restored
+                    .upsert_with_ordering(
+                        "v",
+                        "a",
+                        json!({"stale":true, "_seq":seq}),
+                        &[],
+                        PatchOrigin::Change,
+                        LifetimeOrdering {
+                            account_position: None,
+                            source_seq: Some(seq),
+                            source_domain: Some(domain),
+                        },
+                    )
+                    .await,
+                CacheWrite::Refused { .. }
+            ));
+        }
+        assert_eq!(
+            restored.get("v", "a").await.unwrap()["value"],
+            "instruction"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_current_delete_accepts_a_source_without_position() {
+        let cache = EntityCache::new();
+        cache
+            .upsert_with_append(
+                "v",
+                "a",
+                json!({"value":true,"_seq":"100:000000000010"}),
+                &[],
+                PatchOrigin::Creation,
+            )
+            .await;
+
+        assert!(cache.delete("v", "a", None).await);
+        assert!(cache.get("v", "a").await.is_none());
+        assert!(cache.deletion_is_current("v", "a").await);
+    }
+
+    #[tokio::test]
+    async fn evicted_live_row_does_not_make_an_earlier_delete_current() {
+        let cache = EntityCache::with_config(EntityCacheConfig {
+            max_entities_per_view: 1,
+            ..Default::default()
+        });
+        cache
+            .upsert_with_lifetime(
+                "v",
+                "a",
+                json!({"value":true,"_seq":"100:000000000010"}),
+                &[],
+                PatchOrigin::Creation,
+                Some(AccountPosition::new(100, 10)),
+            )
+            .await;
+        cache
+            .upsert_with_append("v", "b", json!({"value":true}), &[], PatchOrigin::Creation)
+            .await;
+
+        assert!(cache.get("v", "a").await.is_none());
+        assert!(!cache.deletion_is_current("v", "a").await);
+        assert!(cache.delete_current("v", "a").await);
+        assert!(cache.deletion_is_current("v", "a").await);
+    }
 
     #[tokio::test]
     async fn test_basic_upsert_and_get() {
@@ -924,11 +2157,10 @@ mod tests {
         assert_eq!(cache.get("v", "0").await, Some(json!({"id": 0, "n": 2})));
     }
 
-    /// A creation for a key the view still holds (the source dropped the
-    /// entity and started it again) merges like any patch, as it does for the
-    /// clients holding the key.
+    /// A creation for a key the view still holds starts a new lifetime and
+    /// replaces fields that no longer exist.
     #[tokio::test]
-    async fn a_creation_for_a_key_held_merges() {
+    async fn a_creation_for_a_key_held_replaces() {
         let cache = EntityCache::new();
         write(
             &cache,
@@ -945,12 +2177,9 @@ mod tests {
                 PatchOrigin::Creation
             )
             .await,
-            CacheWrite::Merged
+            CacheWrite::Created
         );
-        assert_eq!(
-            cache.get("v", "a").await,
-            Some(json!({"id": "a", "old": 1, "n": 1}))
-        );
+        assert_eq!(cache.get("v", "a").await, Some(json!({"id": "a", "n": 1})));
     }
 
     async fn remembers_evictions(cache: &EntityCache, view_id: &str) -> bool {

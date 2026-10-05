@@ -139,18 +139,16 @@ pub mod runtime {
             }
 
             /// Deserialize a sequence into a fixed-size array.
-            pub fn deserialize<'de, D, T, const N: usize>(
-                deserializer: D,
-            ) -> Result<[T; N], D::Error>
+            pub fn deserialize<'de, D, T, const N: usize>(deserializer: D) -> Result<[T; N], D::Error>
             where
                 D: Deserializer<'de>,
-                T: Deserialize<'de> + Default + Copy,
+                T: Deserialize<'de>,
             {
                 struct ArrayVisitor<T, const N: usize>(PhantomData<T>);
 
                 impl<'de, T, const N: usize> Visitor<'de> for ArrayVisitor<T, N>
                 where
-                    T: Deserialize<'de> + Default + Copy,
+                    T: Deserialize<'de>,
                 {
                     type Value = [T; N];
 
@@ -162,17 +160,18 @@ pub mod runtime {
                     where
                         A: SeqAccess<'de>,
                     {
-                        let mut arr = [T::default(); N];
-                        for (i, elem) in arr.iter_mut().enumerate() {
-                            *elem = seq
-                                .next_element()?
-                                .ok_or_else(|| Error::invalid_length(i, &self))?;
+                        let mut arr = Vec::with_capacity(N);
+                        for i in 0..N {
+                            arr.push(
+                                seq.next_element()?
+                                    .ok_or_else(|| Error::invalid_length(i, &self))?,
+                            );
                         }
                         // Reject oversized sequences to avoid silent data loss
                         if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
                             return Err(Error::invalid_length(N + 1, &self));
                         }
-                        Ok(arr)
+                        arr.try_into().map_err(|_| Error::invalid_length(N, &self))
                     }
                 }
 

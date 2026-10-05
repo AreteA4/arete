@@ -177,6 +177,13 @@ jobs:
             "a4-npm-v$VERSION"
             "arete-mcp-npm-v$VERSION"
           )
+          # Older release sources do not include the contracts crate. When it
+          # exists, validate its release and ancestry before any publishing job
+          # can run or attempt to upload the shared fixture archive.
+          if [[ -f rust/arete-solana-contracts/Cargo.toml ]]; then
+            CONTRACTS_VERSION="$(crate_version arete-solana-contracts)"
+            RELEASE_TAGS+=("arete-solana-contracts-v$CONTRACTS_VERSION")
+          fi
 
           for tag in "${RELEASE_TAGS[@]}"; do
             gh release view "$tag" >/dev/null
@@ -271,6 +278,7 @@ jobs:
       - name: Publish crates in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           ./scripts/publish-crate.sh arete-idl --allow-existing
           ./scripts/publish-crate.sh arete-hash --allow-existing
@@ -278,6 +286,13 @@ jobs:
           ./scripts/publish-crate.sh arete-macros --allow-existing
           ./scripts/publish-crate.sh interpreter --allow-existing
           ./scripts/publish-crate.sh rust/arete-auth --allow-existing
+          if [[ -f rust/arete-solana-contracts/Cargo.toml ]]; then
+            contract_version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "arete-solana-contracts") | .version')"
+            ./scripts/package-managed-solana-fixtures.sh
+            ./scripts/upload-release-asset.sh "arete-solana-contracts-v$contract_version" target/managed-solana-v1.tar.gz
+            ./scripts/upload-release-asset.sh "arete-solana-contracts-v$contract_version" target/managed-solana-v1.tar.gz.sha256
+            ./scripts/publish-crate.sh rust/arete-solana-contracts --allow-existing
+          fi
           ./scripts/publish-crate.sh rust/arete-server --allow-existing
           ./scripts/publish-crate.sh rust/arete-a4-sdk --allow-existing
           ./scripts/publish-crate.sh arete --allow-existing

@@ -112,6 +112,10 @@ export type {
 export { createTransactionTransport, TransactionTransportError } from './transactions';
 export type {
   TransactionTransport,
+  ConfirmedTransaction,
+  TransactionInspectOptions,
+  TransactionAccountBalance,
+  TransactionExecutionMetadata,
   TransactionCommitment,
   TransactionRequestContext,
   LatestBlockhashResult,
@@ -459,3 +463,5 @@ export {
   pda,
   createProgramPdas,
 } from './instructions';
+
+export * from './managed-solana';

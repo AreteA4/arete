@@ -297,7 +297,7 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                     );
                                 }
                             } else {
-                                let slot_context = arete::runtime::arete_server::SlotContext::new(
+                                let slot_context = arete::runtime::arete_server::SlotContext::resolver(
                                     current_slot,
                                     next_async_resolver_slot_index(async_resolver_order.as_ref()),
                                 );
@@ -1114,12 +1114,17 @@ pub fn generate_vm_handler(
                 mutations: Vec<arete::runtime::arete_interpreter::Mutation>,
                 slot: u64,
                 ordering: u64,
+                ordering_domain: arete::runtime::arete_server::SlotIndexDomain,
                 event_context: Option<arete::runtime::arete_server::EventContext>,
                 snapshot_guard: Option<arete::runtime::arete_server::snapshot::SnapshotProcessingGuard>,
                 projector_permit: arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch>,
             ) {
                 if !mutations.is_empty() {
-                    let slot_context = arete::runtime::arete_server::SlotContext::new(slot, ordering);
+                    let slot_context = arete::runtime::arete_server::SlotContext::with_domain(
+                        slot,
+                        ordering,
+                        ordering_domain,
+                    );
                     let mut batch = arete::runtime::arete_server::MutationBatch::with_slot_context(
                         arete::runtime::smallvec::SmallVec::from_vec(mutations),
                         slot_context,
@@ -1365,6 +1370,7 @@ pub fn generate_vm_handler(
                             mutations,
                             slot,
                             write_version,
+                            arete::runtime::arete_server::SlotIndexDomain::Account,
                             Some(event_context),
                             snapshot_guard,
                             projector_permit,
@@ -1607,6 +1613,7 @@ pub fn generate_vm_handler(
                             mutations,
                             slot,
                             txn_index as u64,
+                            arete::runtime::arete_server::SlotIndexDomain::Instruction,
                             Some(event_context),
                             snapshot_guard,
                             projector_permit,
@@ -2218,12 +2225,17 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                 mutations: Vec<arete::runtime::arete_interpreter::Mutation>,
                 slot: u64,
                 ordering: u64,
+                ordering_domain: arete::runtime::arete_server::SlotIndexDomain,
                 event_context: Option<arete::runtime::arete_server::EventContext>,
                 snapshot_guard: Option<arete::runtime::arete_server::snapshot::SnapshotProcessingGuard>,
                 projector_permit: arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch>,
             ) {
                 if !mutations.is_empty() {
-                    let slot_context = arete::runtime::arete_server::SlotContext::new(slot, ordering);
+                    let slot_context = arete::runtime::arete_server::SlotContext::with_domain(
+                        slot,
+                        ordering,
+                        ordering_domain,
+                    );
                     let mut batch = arete::runtime::arete_server::MutationBatch::with_slot_context(
                         arete::runtime::smallvec::SmallVec::from_vec(mutations),
                         slot_context,
@@ -2468,6 +2480,7 @@ pub fn generate_account_handler_impl(
                             mutations,
                             slot,
                             write_version,
+                            arete::runtime::arete_server::SlotIndexDomain::Account,
                             Some(event_context),
                             snapshot_guard,
                             projector_permit,
@@ -2816,6 +2829,7 @@ pub fn generate_instruction_handler_impl(
                             mutations,
                             slot,
                             txn_index as u64,
+                            arete::runtime::arete_server::SlotIndexDomain::Instruction,
                             Some(event_context),
                             snapshot_guard,
                             projector_permit,
@@ -2888,7 +2902,7 @@ fn generate_program_runtime_definitions_fn(pipelines: &[PipelineInfo]) -> TokenS
                 let program_key_lit = program_key.clone();
                 quote! {
                     #account_name_lit => {
-                        let decoded = #parser_mod::#state_enum::try_unpack(data).map_err(|error| {
+                        let decoded = #parser_mod::#state_enum::try_unpack_as(account, data).map_err(|error| {
                             arete::runtime::anyhow::anyhow!(
                                 "Failed to decode {}.{} account bytes: {}",
                                 #program_key_lit,

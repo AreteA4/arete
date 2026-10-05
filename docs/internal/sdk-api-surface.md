@@ -85,6 +85,8 @@ lexicographically.
   `{"items":[{address,status:"ok",value}|{address,status:"missing"}|{address,status:"error",error:{code}}]}`.
 - **Chain routes**: `/chain/exists|lamports|rent-exemption|clock|accounts|mints|token-accounts`
   (GET) and `/chain/native-balance|balances` (POST, u64s as decimal strings).
+  Managed contextual reads and owner enumeration are additive `/chain/v1/*` POST routes;
+  see [managed Solana v1](managed-solana/README.md) for the frozen contracts.
 - **Transaction relay**: `POST <base>/transactions/v1/{latest-blockhash,fee,simulate,send,signature-status,block-height}`.
 - **Auth**: `POST <tokenEndpoint>` `{"websocket_url": "...", "scopes": ["read"]}` (+
   `Authorization: Bearer <publishableKey>`) → `{"token","expires_at"}`; WS token in

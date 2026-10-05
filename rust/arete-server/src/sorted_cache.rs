@@ -359,6 +359,12 @@ impl SortedViewCache {
     }
 
     /// Remove an entity, returns the position it was at
+    pub fn clear(&mut self) {
+        self.sorted.clear();
+        self.entities.clear();
+        self.cache_dirty = true;
+    }
+
     pub fn remove(&mut self, entity_key: &str) -> Option<usize> {
         if let Some((sort_key, _)) = self.entities.remove(entity_key) {
             let position = self.find_position_by_sort_key(&sort_key);

@@ -72,7 +72,7 @@ pub use journal::{EventJournal, JournalConfig, ReplayWindow};
 pub use materialized_view::{MaterializedView, MaterializedViewRegistry, ViewEffect};
 #[cfg(feature = "otel")]
 pub use metrics::Metrics;
-pub use mutation_batch::{EventContext, MutationBatch, SlotContext};
+pub use mutation_batch::{EventContext, MutationBatch, SlotContext, SlotIndexDomain};
 pub use program_runtime::{
     IdlContentHash, NormalizedIdlHash, ProgramAccountReaderFn, ProgramReleaseHash,
     ProgramRuntimeCatalog, ProgramRuntimeDefinition, ProgramSpecHash,
@@ -172,6 +172,8 @@ impl Spec {
 }
 
 /// Main server interface with fluent builder API
+pub mod token_discovery;
+
 pub struct Server;
 
 impl Server {
@@ -223,6 +225,14 @@ impl SolanaGatewayBuilder {
     }
 
     /// Observe completed chain and transaction operations.
+    pub fn owner_token_accounts_provider(
+        mut self,
+        provider: Arc<dyn crate::token_discovery::OwnerTokenAccountsProvider>,
+    ) -> Self {
+        self.inner.token_accounts_provider = Some(provider);
+        self
+    }
+
     pub fn usage_observer(mut self, observer: Arc<dyn SolanaGatewayUsageObserver>) -> Self {
         self.inner.solana_gateway_usage_observer = Some(observer);
         self
@@ -268,6 +278,7 @@ pub struct ServerBuilder {
     websocket_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     http_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     websocket_usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    token_accounts_provider: Option<Arc<dyn crate::token_discovery::OwnerTokenAccountsProvider>>,
     solana_gateway_usage_observer: Option<Arc<dyn SolanaGatewayUsageObserver>>,
     websocket_max_clients: Option<usize>,
     websocket_rate_limit_config: Option<crate::websocket::client_manager::RateLimitConfig>,
@@ -285,6 +296,7 @@ impl ServerBuilder {
             websocket_auth_plugin: None,
             http_auth_plugin: None,
             websocket_usage_emitter: None,
+            token_accounts_provider: None,
             solana_gateway_usage_observer: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
@@ -341,6 +353,14 @@ impl ServerBuilder {
     }
 
     /// Set an async usage emitter for billing-grade websocket usage events.
+    pub fn owner_token_accounts_provider(
+        mut self,
+        provider: Arc<dyn crate::token_discovery::OwnerTokenAccountsProvider>,
+    ) -> Self {
+        self.token_accounts_provider = Some(provider);
+        self
+    }
+
     pub fn websocket_usage_emitter(mut self, emitter: Arc<dyn WebSocketUsageEmitter>) -> Self {
         self.websocket_usage_emitter = Some(emitter);
         self
@@ -566,6 +586,10 @@ impl ServerBuilder {
 
         if let Some(emitter) = self.websocket_usage_emitter {
             runtime = runtime.with_websocket_usage_emitter(emitter);
+        }
+
+        if let Some(provider) = self.token_accounts_provider {
+            runtime = runtime.with_owner_token_accounts_provider(provider);
         }
 
         if let Some(observer) = self.solana_gateway_usage_observer {

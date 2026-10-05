@@ -47,14 +47,54 @@ fn generate_account_parser(idl: &IdlSpec, program_id: &str) -> TokenStream {
         quote! { #variant_name(accounts::#variant_name) }
     });
 
-    let unpack_checks = sorted_accounts.iter().map(|acc| {
-        let variant_name = format_ident!("{}", acc.name);
+    let unpack_checks = sorted_accounts
+        .iter()
+        .filter(|acc| !acc.is_untagged())
+        .map(|acc| {
+            let variant_name = format_ident!("{}", acc.name);
 
+            quote! {
+                if data.starts_with(accounts::#variant_name::DISCRIMINATOR) {
+                    return Ok(#state_enum_name::#variant_name(
+                        accounts::#variant_name::try_from_bytes(data)?
+                    ));
+                }
+            }
+        });
+
+    // Untagged layouts must consume all bytes. Reject ambiguity rather than
+    // letting IDL order select an account type when two layouts both decode.
+    let untagged_accounts: Vec<_> = sorted_accounts
+        .iter()
+        .filter(|acc| acc.is_untagged())
+        .collect();
+    let untagged_fallback = if untagged_accounts.is_empty() {
+        quote! {}
+    } else {
+        let checks = untagged_accounts.iter().map(|acc| {
+            let name = format_ident!("{}", acc.name);
+            quote! {
+                if let Ok(value) = accounts::#name::try_from_bytes_exact(data) {
+                    if decoded.is_some() { return Err("Ambiguous untagged account layout".into()); }
+                    decoded = Some(#state_enum_name::#name(value));
+                }
+            }
+        });
         quote! {
-            if data.starts_with(accounts::#variant_name::DISCRIMINATOR) {
-                return Ok(#state_enum_name::#variant_name(
-                    accounts::#variant_name::try_from_bytes(data)?
-                ));
+            let mut decoded = None;
+            #(#checks)*
+            if let Some(decoded) = decoded { return Ok(decoded); }
+        }
+    };
+    let typed_unpack_arms = idl.accounts.iter().map(|acc| {
+        let name = format_ident!("{}", acc.name);
+        let account_name = &acc.name;
+        let decode = if acc.is_untagged() { quote! { accounts::#name::try_from_bytes_exact(data)? } }
+            else { quote! { accounts::#name::try_from_bytes(data)? } };
+        quote! {
+            #account_name => {
+                if !data.starts_with(accounts::#name::DISCRIMINATOR) { return Err("Discriminator mismatch".into()); }
+                Ok(#state_enum_name::#name(#decode))
             }
         }
     });
@@ -120,9 +160,19 @@ fn generate_account_parser(idl: &IdlSpec, program_id: &str) -> TokenStream {
                 }
 
                 #(#unpack_checks)*
+                #untagged_fallback
 
                 let disc_preview: Vec<u8> = data.iter().take(8).copied().collect();
                 Err(format!("Unknown discriminator: {:?}", disc_preview).into())
+            }
+
+            /// Decode an explicitly addressed account type, including untagged
+            /// layouts whose size alone cannot identify them uniquely.
+            pub fn try_unpack_as(account: &str, data: &[u8]) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+                match account {
+                    #(#typed_unpack_arms,)*
+                    _ => Err("Unknown account type".into()),
+                }
             }
 
             pub fn to_json(&self) -> arete::runtime::serde_json::Value {

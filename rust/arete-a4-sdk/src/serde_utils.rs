@@ -9,6 +9,57 @@
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use std::fmt;
 
+/// Exact IDL integer decoding, including u128/i128, from strings or integral JSON numbers.
+/// Fractional values and overflows fail; account keys and strings never pass through this helper.
+pub fn deserialize_integer<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: fmt::Display,
+{
+    use serde::Deserialize;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let text = match value {
+        serde_json::Value::String(text) => text,
+        serde_json::Value::Number(number) if number.is_u64() || number.is_i64() => {
+            number.to_string()
+        }
+        _ => {
+            return Err(de::Error::custom(
+                "expected an exact integer or decimal string",
+            ))
+        }
+    };
+    text.parse().map_err(de::Error::custom)
+}
+
+pub fn deserialize_integer_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: fmt::Display,
+{
+    use serde::Deserialize;
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(|value| deserialize_integer(value).map_err(de::Error::custom))
+        .collect()
+}
+
+pub fn deserialize_optional_integer<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: fmt::Display,
+{
+    use serde::Deserialize;
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    value
+        .map(|value| deserialize_integer(value).map_err(de::Error::custom))
+        .transpose()
+}
+
 // ─── Core visitors ──────────────────────────────────────────────────────────
 
 struct U64OrStringVisitor;
@@ -645,8 +696,9 @@ pub fn deserialize_option_option_vec_i128<'de, D: Deserializer<'de>>(
 // options, vectors, fixed arrays, tuples and maps (`Vec<Option<u64>>`,
 // `(Pubkey, u128)`, ...). The fixed helpers above cover the flat shapes; for
 // the rest, generated models name the value's shape with the markers in
-// [`wire`] and decode it with [`deserialize_wire_option`] (or
-// [`deserialize_wire_option_option`] for an IDL `Option`):
+// [`wire`] and decode it with [`deserialize_wire`],
+// [`deserialize_wire_option`] (for a patch field), or
+// [`deserialize_wire_option_option`] (for an IDL `Option` patch field):
 //
 // ```ignore
 // #[serde(default, deserialize_with = "serde_utils::deserialize_wire_option::<_, _, serde_utils::wire::List<serde_utils::wire::Opt<serde_utils::wire::Int>>>")]
@@ -799,6 +851,19 @@ pub mod wire {
         (7; T0 M0, T1 M1, T2 M2, T3 M3, T4 M4, T5 M5, T6 M6),
         (8; T0 M0, T1 M1, T2 M2, T3 M3, T4 M4, T5 M5, T6 M6, T7 M7),
     );
+}
+
+/// Deserialize a required `T` whose value has the nested shape `M` (see
+/// [`wire`]). Generated enum payloads use this because their fields are not
+/// patch fields and therefore must not gain an outer `Option`.
+pub fn deserialize_wire<'de, D, T, M>(d: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    M: wire::Decode<T>,
+{
+    use serde::Deserialize;
+    let value = serde_json::Value::deserialize(d)?;
+    M::decode(value).map_err(de::Error::custom)
 }
 
 /// Deserialize `Option<T>` whose value has the nested shape `M` (see
@@ -1281,18 +1346,15 @@ mod tests {
 
     /// Program account enums are externally tagged, the Program Read wire
     /// shape: a unit variant is its name, a data variant a one-key object
-    /// (tuple fields keyed `field_<index>`).
+    /// whose payload keeps its named-object or positional shape.
     #[derive(Deserialize, Debug, PartialEq)]
     enum TestLevel {
         Partial {
-            #[serde(default, deserialize_with = "deserialize_option_u64")]
+            #[serde(deserialize_with = "deserialize_integer")]
             #[serde(alias = "numSignatures")]
-            num_signatures: Option<u64>,
+            num_signatures: u64,
         },
-        Address {
-            #[serde(default)]
-            field_0: Option<String>,
-        },
+        Address(String),
         Full,
     }
 
@@ -1302,15 +1364,11 @@ mod tests {
         assert_eq!(decode(r#""Full""#).unwrap(), TestLevel::Full);
         assert_eq!(
             decode(r#"{"Partial": {"numSignatures": "5"}}"#).unwrap(),
-            TestLevel::Partial {
-                num_signatures: Some(5)
-            }
+            TestLevel::Partial { num_signatures: 5 }
         );
         assert_eq!(
-            decode(r#"{"Address": {"field_0": "key"}}"#).unwrap(),
-            TestLevel::Address {
-                field_0: Some("key".to_string())
-            }
+            decode(r#"{"Address": "key"}"#).unwrap(),
+            TestLevel::Address("key".to_string())
         );
         assert!(decode(r#""Partial""#).is_err());
         assert!(decode("1").is_err());

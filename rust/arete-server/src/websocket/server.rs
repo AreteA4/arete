@@ -1565,7 +1565,14 @@ async fn attach_state_subscription(
                         seen = published;
                         let metadata = source_frame_metadata(&payload);
                         if metadata.op == "delete" {
-                            task_context.entity_cache.remove(&query.view, &key).await;
+                            if !task_context.entity_cache
+                                .deletion_is_current(&query.view, &key)
+                                .await
+                            {
+                                behind = true;
+                                replaced = true;
+                                continue;
+                            }
                             if member && send_membership_frame(
                                 &task_context,
                                 &subscription_id,
@@ -2004,38 +2011,22 @@ async fn apply_collection_source_event(
     if metadata.op != "delete" {
         return;
     }
-    // A slow subscription can observe an old delete after the projector has
-    // already recreated the key. Never let subscriber-local lag erase newer
-    // shared cache state.
-    let current = context
+    // The projector changed the shared cache before publishing this frame.
+    // A slow subscription must inspect that authoritative lifetime state, not
+    // replay the delete against `_seq` and potentially erase a recreation.
+    if !context
         .entity_cache
-        .get(source_view_id, &envelope.key)
-        .await;
-    if source_delete_is_stale(current.as_ref(), metadata.seq.as_deref()) {
+        .deletion_is_current(source_view_id, &envelope.key)
+        .await
+    {
         return;
     }
-    context
-        .entity_cache
-        .remove(source_view_id, &envelope.key)
-        .await;
     if view_spec.is_derived() {
         let caches = context.view_index.sorted_caches();
         let mut guard = caches.write().await;
         if let Some(cache) = guard.get_mut(&query.view) {
             cache.remove(&envelope.key);
         }
-    }
-}
-
-fn source_delete_is_stale(current: Option<&Value>, delete_seq: Option<&str>) -> bool {
-    match (current, delete_seq) {
-        (Some(current), Some(delete_seq)) => current
-            .get("_seq")
-            .and_then(Value::as_str)
-            .is_some_and(|current_seq| {
-                cmp_seq(current_seq, delete_seq) == std::cmp::Ordering::Greater
-            }),
-        _ => false,
     }
 }
 
@@ -2900,13 +2891,30 @@ async fn load_query_entities(
     query: &SubscriptionQuery,
     apply_snapshot_limit: bool,
 ) -> Vec<(String, Value)> {
-    let (entities, preordered) = if let Some(sorted_caches) = sorted_caches {
+    let ordered = if let Some(sorted_caches) = sorted_caches {
         let mut caches = sorted_caches.write().await;
-        let entities = caches
+        caches
             .get_mut(&view_spec.id)
             .map(|cache| cache.get_all_ordered())
-            .unwrap_or_default();
+    } else {
+        None
+    };
+    let (entities, preordered) = if let Some(entities) = ordered {
         (entities, true)
+    } else if view_spec.is_derived() {
+        // Empty and filter-only pipelines have no sorted cache. Evaluate the
+        // source rows, retaining the pipeline predicate before query selection.
+        let mut entities = entity_cache
+            .get_all(view_spec.source_view.as_deref().unwrap_or(&view_spec.id))
+            .await;
+        if let Some(filter) = view_spec
+            .pipeline
+            .as_ref()
+            .and_then(|pipeline| pipeline.filter.as_ref())
+        {
+            entities.retain(|(_, data)| filter.matches(data));
+        }
+        (entities, false)
     } else if view_spec.mode == Mode::State {
         let entity = match query.key.as_deref() {
             Some(key) => entity_cache
@@ -2920,7 +2928,15 @@ async fn load_query_entities(
     } else {
         (entity_cache.get_all(&view_spec.id).await, false)
     };
-    select_query_entities(entities, query, preordered, apply_snapshot_limit)
+    let mut query = query.clone();
+    if let Some(limit) = view_spec
+        .pipeline
+        .as_ref()
+        .and_then(|pipeline| pipeline.limit)
+    {
+        query.take = Some(query.take.unwrap_or(limit).min(limit));
+    }
+    select_query_entities(entities, &query, preordered, apply_snapshot_limit)
 }
 
 fn select_query_entities(
@@ -3364,14 +3380,6 @@ mod tests {
     }
 
     #[test]
-    fn a_delayed_delete_cannot_erase_a_newer_recreated_entity() {
-        let recreated = json!({"balance": 2, "_seq": "10:000004"});
-        assert!(source_delete_is_stale(Some(&recreated), Some("10:000002")));
-        assert!(!source_delete_is_stale(Some(&recreated), Some("10:000004")));
-        assert!(!source_delete_is_stale(Some(&recreated), None));
-    }
-
-    #[test]
     fn a_lagged_snapshotless_subscription_gets_a_fatal_retryable_error() {
         let issue = SocketIssueMessage::subscription_lagged("balances".to_string(), 42);
         assert_eq!(issue.code, "subscription-lagged");
@@ -3581,6 +3589,71 @@ mod tests {
     #[tokio::test]
     async fn derived_source_receiver_is_installed_before_snapshot() {
         assert_list_receiver_precedes_snapshot("Thing/list-source").await;
+    }
+
+    #[tokio::test]
+    async fn unsorted_derived_reads_preserve_filters_order_and_snapshot_window() {
+        use crate::materialized_view::{CompareOp, FilterConfig, ViewPipeline};
+        let cache = EntityCache::new();
+        for id in 1..=6 {
+            cache
+                .upsert(
+                    "Thing/list",
+                    &id.to_string(),
+                    json!({
+                        "_seq": format!("{}:0", id * 10), "active": id != 6,
+                        "owner": "alice", "id": id
+                    }),
+                )
+                .await;
+        }
+        let mut spec = list_spec();
+        spec.id = "Thing/custom".into();
+        spec.source_view = Some("Thing/list".into());
+        spec.pipeline = Some(ViewPipeline::default());
+        let caches = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        let mut query = SubscriptionQuery {
+            view: spec.id.clone(),
+            ..Default::default()
+        };
+        let rows = load_query_entities(&cache, Some(caches.clone()), &spec, &query, false).await;
+        assert_eq!(
+            rows.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
+            ["6", "5", "4", "3", "2", "1"]
+        );
+        spec.pipeline.as_mut().unwrap().filter = Some(FilterConfig {
+            field_path: vec!["active".into()],
+            op: CompareOp::Eq,
+            value: json!(true),
+        });
+        query.filters.insert("owner".into(), json!("alice"));
+        query.skip = Some(1);
+        query.take = Some(3);
+        query.snapshot_limit = Some(1);
+        let rows = load_query_entities(&cache, Some(caches.clone()), &spec, &query, false).await;
+        assert_eq!(
+            rows.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
+            ["4", "3", "2"]
+        );
+        assert_eq!(
+            load_query_entities(&cache, Some(caches.clone()), &spec, &query, true)
+                .await
+                .len(),
+            1
+        );
+        query.skip = None;
+        query.after = Some("20:0".into());
+        let rows = load_query_entities(&cache, Some(caches.clone()), &spec, &query, false).await;
+        assert_eq!(
+            rows.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
+            ["3", "4", "5"]
+        );
+        query.filters.insert("owner".into(), json!("bob"));
+        assert!(
+            load_query_entities(&cache, Some(caches), &spec, &query, false)
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -4217,6 +4290,15 @@ mod tests {
                 self.publish_frame(key, "patch", patch, seq).await;
             }
 
+            /// A complete new lifetime after an explicit source deletion.
+            async fn create(&self, key: &str, mut entity: Value, seq: &str) {
+                entity["_seq"] = Value::String(seq.to_string());
+                self.entity_cache
+                    .upsert_with_append(ROUND, key, entity.clone(), &[], PatchOrigin::Creation)
+                    .await;
+                self.publish_frame(key, "upsert", entity, seq).await;
+            }
+
             /// Publish a frame to the key's bus without touching the cache.
             async fn publish_frame(&self, key: &str, op: &str, data: Value, seq: &str) {
                 let frame = json!({
@@ -4489,7 +4571,7 @@ mod tests {
 
             // Created again: the client holds nothing, so it arrives whole.
             server
-                .publish("7", json!({"id": 7, "third": true}), "103:000000000001")
+                .create("7", json!({"id": 7, "third": true}), "103:000000000001")
                 .await;
             let frame = next_frame(&mut socket).await;
             assert_eq!(frame["op"], "upsert", "unexpected frame: {frame}");
@@ -4642,7 +4724,7 @@ mod tests {
         use super::*;
         use crate::projector::Projector;
         use crate::{MutationBatch, SlotContext};
-        use arete_interpreter::Mutation;
+        use arete_interpreter::{AccountPosition, Mutation};
         use futures_util::{SinkExt, StreamExt};
         use std::time::Duration;
         use tokio::net::{TcpListener, TcpStream};
@@ -4676,7 +4758,15 @@ mod tests {
                 delivery: WebSocketDeliveryConfig,
                 entity_cache: EntityCache,
             ) -> Self {
-                let view_index = Arc::new(thing_index());
+                Self::start_with_index(delivery, entity_cache, thing_index()).await
+            }
+
+            async fn start_with_index(
+                delivery: WebSocketDeliveryConfig,
+                entity_cache: EntityCache,
+                index: ViewIndex,
+            ) -> Self {
+                let view_index = Arc::new(index);
                 let bus_manager = BusManager::new();
                 let (tx, rx) = mpsc::channel::<MutationBatch>(64);
                 // Unconstrained, so Tokio's cooperative budget never makes the
@@ -4728,10 +4818,15 @@ mod tests {
 
             async fn mutate(&self, mutation: Mutation) {
                 let slot = self.slot.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.mutate_with_context(mutation, SlotContext::new(slot, 0))
+                    .await;
+            }
+
+            async fn mutate_with_context(&self, mutation: Mutation, context: SlotContext) {
                 self.tx
                     .send(MutationBatch::with_slot_context(
                         vec![mutation].into_iter().collect(),
-                        SlotContext::new(slot, 0),
+                        context,
                     ))
                     .await
                     .unwrap();
@@ -4816,6 +4911,274 @@ mod tests {
                     .patch(key, json!({"name": format!("thing-{key}"), "count": 1}))
                     .await;
             }
+        }
+
+        fn derived_index() -> ViewIndex {
+            use crate::materialized_view::{
+                CompareOp, FilterConfig, SortConfig, SortOrder, ViewPipeline,
+            };
+            let mut index = thing_index();
+            for name in ["empty", "filtered", "sorted"] {
+                let mut pipeline = ViewPipeline::default();
+                if name != "empty" {
+                    pipeline.filter = Some(FilterConfig {
+                        field_path: vec!["owner".into()],
+                        op: CompareOp::Eq,
+                        value: json!("alice"),
+                    });
+                    pipeline.limit = Some(2);
+                }
+                if name == "sorted" {
+                    pipeline.sort = Some(SortConfig {
+                        field_path: vec!["amount".into()],
+                        order: SortOrder::Desc,
+                    });
+                }
+                index.add_spec(ViewSpec {
+                    id: format!("Thing/{name}"),
+                    source_view: Some("Thing/list".into()),
+                    pipeline: Some(pipeline),
+                    ..list_spec()
+                });
+            }
+            index
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn unsorted_derived_idle_bootstrap_and_reconnect_are_authoritative() {
+            let harness = Harness::start_with_index(
+                WebSocketDeliveryConfig::default(),
+                EntityCache::new(),
+                derived_index(),
+            )
+            .await;
+            harness
+                .patch("a", json!({"owner":"alice", "amount":1}))
+                .await;
+            harness.patch("b", json!({"owner":"bob", "amount":2})).await;
+            harness
+                .patch("c", json!({"owner":"alice", "amount":3}))
+                .await;
+            harness
+                .patch("d", json!({"owner":"alice", "amount":4}))
+                .await;
+            for _ in 0..2 {
+                for (view, expected) in [
+                    ("empty", vec!["d", "c", "b", "a"]),
+                    ("filtered", vec!["d", "c"]),
+                    ("sorted", vec!["d", "c"]),
+                ] {
+                    let mut socket = harness
+                        .subscribe(json!({"view": format!("Thing/{view}"), "take":100}), true)
+                        .await;
+                    assert_eq!(snapshot_keys(&mut socket).await, expected);
+                    socket.close(None).await.unwrap();
+                }
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn source_delete_and_recreation_clear_all_views_across_reconnect() {
+            let harness = Harness::start_with_index(
+                WebSocketDeliveryConfig::default(),
+                EntityCache::new(),
+                derived_index(),
+            )
+            .await;
+            harness
+                .patch("a", json!({"owner":"alice", "amount":1, "oldField":true}))
+                .await;
+            let mut list = harness
+                .subscribe(json!({"view":"Thing/filtered"}), true)
+                .await;
+            assert_eq!(snapshot_keys(&mut list).await, ["a"]);
+            let mut state = harness
+                .subscribe(json!({"view":"Thing/state", "key":"a"}), true)
+                .await;
+            assert_eq!(snapshot_keys(&mut state).await, ["a"]);
+            // Leaving a predicate is view eviction, not chain deletion.
+            harness.patch("a", json!({"owner":"bob"})).await;
+            assert_eq!(next_frame(&mut list).await["op"], "remove");
+            harness.patch("a", json!({"owner":"alice"})).await;
+            assert_eq!(next_frame(&mut list).await["op"], "upsert");
+            let mut deletion = Mutation::delete("Thing", json!("a"));
+            deletion.mark_account_position(AccountPosition::new(100, 1001));
+            harness.mutate(deletion).await;
+            assert_eq!(next_frame(&mut list).await["op"], "delete");
+            // State patches may precede its deletion on the socket.
+            loop {
+                if next_frame(&mut state).await["op"] == "delete" {
+                    break;
+                }
+            }
+            for view in [
+                "Thing/list",
+                "Thing/empty",
+                "Thing/filtered",
+                "Thing/sorted",
+                "Thing/state",
+            ] {
+                let mut socket = harness
+                    .subscribe(json!({"view":view, "key":"a"}), true)
+                    .await;
+                assert!(snapshot_keys(&mut socket).await.is_empty(), "{view}");
+                socket.close(None).await.unwrap();
+            }
+            // A whole resend or sparse change cannot recreate a deleted row.
+            harness
+                .patch("a", json!({"owner":"alice", "oldField":true}))
+                .await;
+            let mut stale = Mutation {
+                export: "Thing".into(),
+                key: json!("a"),
+                patch: json!({"owner":"alice", "oldField":true}),
+                append: vec![],
+            };
+            stale.mark_whole_entity();
+            harness.mutate(stale).await;
+            let mut socket = harness
+                .subscribe(json!({"view":"Thing/filtered"}), true)
+                .await;
+            assert!(snapshot_keys(&mut socket).await.is_empty());
+            socket.close(None).await.unwrap();
+            let mut recreated = Mutation {
+                export: "Thing".into(),
+                key: json!("a"),
+                patch: json!({"owner":"alice", "amount":9}),
+                append: vec![],
+            };
+            recreated.mark_created();
+            recreated.mark_account_position(AccountPosition::new(100, 1002));
+            harness.mutate(recreated).await;
+            for view in [
+                "Thing/list",
+                "Thing/empty",
+                "Thing/filtered",
+                "Thing/sorted",
+                "Thing/state",
+            ] {
+                let mut socket = harness
+                    .subscribe(json!({"view":view, "key":"a"}), true)
+                    .await;
+                let frame = next_frame(&mut socket).await;
+                assert_eq!(frame["data"][0]["key"], "a");
+                assert_eq!(frame["data"][0]["data"]["amount"], 9);
+                assert!(
+                    frame["data"][0]["data"].get("oldField").is_none(),
+                    "{frame}"
+                );
+                socket.close(None).await.unwrap();
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn resolver_offsets_do_not_suppress_later_instruction_updates() {
+            let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
+            let mut created = Mutation {
+                export: "Thing".into(),
+                key: json!("a"),
+                patch: json!({"value":"created"}),
+                append: vec![],
+            };
+            created.mark_created();
+            created.mark_account_position(AccountPosition::new(100, 9));
+            harness
+                .mutate_with_context(created, SlotContext::account(100, 9))
+                .await;
+
+            harness
+                .mutate_with_context(
+                    Mutation {
+                        export: "Thing".into(),
+                        key: json!("a"),
+                        patch: json!({"value":"resolver", "resolved":true}),
+                        append: vec![],
+                    },
+                    SlotContext::resolver(100, 1_u64 << 63),
+                )
+                .await;
+            harness
+                .mutate_with_context(
+                    Mutation {
+                        export: "Thing".into(),
+                        key: json!("a"),
+                        patch: json!({"value":"instruction", "instruction":true}),
+                        append: vec![],
+                    },
+                    SlotContext::instruction(100, 900),
+                )
+                .await;
+
+            let mut socket = harness
+                .subscribe(json!({"view":"Thing/state", "key":"a"}), true)
+                .await;
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "snapshot", "{frame}");
+            let row = &frame["data"][0]["data"];
+            assert_eq!(row["value"], "instruction", "{frame}");
+            assert_eq!(row["resolved"], true, "{frame}");
+            assert_eq!(row["instruction"], true, "{frame}");
+
+            // Recency still applies inside the instruction domain even after
+            // activity from another source domain.
+            harness
+                .mutate_with_context(
+                    Mutation {
+                        export: "Thing".into(),
+                        key: json!("a"),
+                        patch: json!({"value":"stale", "stale":true}),
+                        append: vec![],
+                    },
+                    SlotContext::instruction(100, 899),
+                )
+                .await;
+            let mut reconnected = harness
+                .subscribe(json!({"view":"Thing/state", "key":"a"}), true)
+                .await;
+            let frame = next_frame(&mut reconnected).await;
+            let row = &frame["data"][0]["data"];
+            assert_eq!(row["value"], "instruction", "{frame}");
+            assert!(row.get("stale").is_none(), "{frame}");
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn projected_delete_and_recreation_between_reads_replace_state() {
+            let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
+            harness.patch("a", json!({"old":true})).await;
+            let mut socket = harness
+                .subscribe(json!({"view":"Thing/state", "key":"a"}), true)
+                .await;
+            assert_eq!(snapshot_keys(&mut socket).await, ["a"]);
+            let mut creation = Mutation {
+                export: "Thing".into(),
+                key: json!("a"),
+                patch: json!({"fresh":true}),
+                append: vec![],
+            };
+            creation.mark_created();
+            // Both ready batches run before the watch receiver on this worker.
+            for mutation in [Mutation::delete("Thing", json!("a")), creation] {
+                let slot = harness
+                    .slot
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                harness
+                    .tx
+                    .try_send(MutationBatch::with_slot_context(
+                        vec![mutation].into_iter().collect(),
+                        SlotContext::new(slot, 0),
+                    ))
+                    .unwrap();
+            }
+            let (ack, wait) = oneshot::channel();
+            harness
+                .tx
+                .try_send(MutationBatch::flush_marker(ack))
+                .unwrap();
+            wait.await.unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["op"], "upsert", "{frame}");
+            assert_eq!(frame["data"]["fresh"], true);
+            assert!(frame["data"].get("old").is_none(), "{frame}");
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

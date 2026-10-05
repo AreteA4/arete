@@ -1,0 +1,184 @@
+{
+  "address": "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
+  "metadata": {
+    "name": "tick_fixture",
+    "version": "1.0.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "noop",
+      "discriminator": [
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9
+      ],
+      "accounts": [],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "TickFixture",
+      "discriminator": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ]
+    },
+    {
+      "name": "PayloadAccountFixture",
+      "discriminator": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ]
+    }
+  ],
+  "types": [
+    {
+      "name": "DynamicTick",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Uninitialized"
+          },
+          {
+            "fields": [
+              {
+                "defined": {
+                  "name": "DynamicTickData"
+                }
+              }
+            ],
+            "name": "Initialized"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DynamicTickData",
+      "type": {
+        "fields": [
+          {
+            "name": "liquidity_net",
+            "type": "i128"
+          },
+          {
+            "name": "liquidity_gross",
+            "type": "u128"
+          },
+          {
+            "name": "fee_growth_outside_a",
+            "type": "u128"
+          },
+          {
+            "name": "fee_growth_outside_b",
+            "type": "u128"
+          },
+          {
+            "name": "reward_growths_outside",
+            "type": {
+              "array": [
+                "u128",
+                3
+              ]
+            }
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "TickFixture",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "tick",
+            "type": {
+              "defined": {
+                "name": "DynamicTick"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PayloadFixture",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Empty"
+          },
+          {
+            "name": "Named",
+            "fields": [
+              {
+                "name": "exact_amount",
+                "type": "u64"
+              }
+            ]
+          },
+          {
+            "name": "Tuple",
+            "fields": [
+              "u64",
+              "i64"
+            ]
+          },
+          {
+            "name": "Large",
+            "fields": [
+              {
+                "array": [
+                  "u64",
+                  40
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "PayloadAccountFixture",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "payload",
+            "type": {
+              "defined": {
+                "name": "PayloadFixture"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

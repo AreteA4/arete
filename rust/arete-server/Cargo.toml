@@ -12,6 +12,7 @@ keywords = ["arete", "streaming", "websocket", "server"]
 categories = ["web-programming::websocket"]
 
 [dependencies]
+arete-solana-contracts = { version = "0.1.0", path = "../arete-solana-contracts" }
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = "0.28"
 futures-util = "0.3"

@@ -36,6 +36,9 @@ use tracing::{error, info, warn};
 use crate::websocket::auth::{AuthDecision, AuthDeny, ConnectionAuthRequest, WebSocketAuthPlugin};
 use arete_auth::SCOPE_READ;
 
+use crate::token_discovery::{OwnerTokenAccountsProvider, TokenDiscoveryError};
+use arete_solana_contracts::{Contextual, OwnerTokenAccountsRequest, ReadContext, ReadOptions};
+
 const HTTP_CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Configuration for the HTTP health server
@@ -71,6 +74,7 @@ struct HttpRequestState {
     auth_plugin: Arc<Option<Arc<dyn WebSocketAuthPlugin>>>,
     limit_state: Arc<HttpLimitState>,
     transaction_state: Arc<Option<TransactionState>>,
+    token_accounts_provider: Option<Arc<dyn OwnerTokenAccountsProvider>>,
     solana_gateway_usage_observer: Option<Arc<dyn SolanaGatewayUsageObserver>>,
     solana_gateway_target_id: Arc<Option<String>>,
     program_read_binding_target_id: Arc<Option<String>>,
@@ -87,6 +91,7 @@ pub struct HttpHealthServer {
     program_runtime_catalog: ProgramRuntimeCatalog,
     auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     transaction_config: Option<TransactionConfig>,
+    token_accounts_provider: Option<Arc<dyn OwnerTokenAccountsProvider>>,
     solana_gateway_usage_observer: Option<Arc<dyn SolanaGatewayUsageObserver>>,
     solana_gateway_target_id: Option<String>,
     program_read_binding_target_id: Option<String>,
@@ -105,6 +110,7 @@ impl HttpHealthServer {
             program_runtime_catalog: ProgramRuntimeCatalog::default(),
             auth_plugin: None,
             transaction_config: None,
+            token_accounts_provider: None,
             solana_gateway_usage_observer: None,
             solana_gateway_target_id: None,
             program_read_binding_target_id: None,
@@ -144,6 +150,14 @@ impl HttpHealthServer {
     pub fn with_transaction_config(mut self, config: TransactionConfig) -> Self {
         self.runtime_plan.transactions = config.enabled;
         self.transaction_config = Some(config);
+        self
+    }
+
+    pub fn with_owner_token_accounts_provider(
+        mut self,
+        provider: Arc<dyn OwnerTokenAccountsProvider>,
+    ) -> Self {
+        self.token_accounts_provider = Some(provider);
         self
     }
 
@@ -211,6 +225,7 @@ impl HttpHealthServer {
             auth_plugin: Arc::new(self.auth_plugin),
             limit_state: Arc::new(HttpLimitState::default()),
             transaction_state: Arc::new(transaction_state),
+            token_accounts_provider: self.token_accounts_provider,
             solana_gateway_usage_observer: self.solana_gateway_usage_observer,
             solana_gateway_target_id: Arc::new(self.solana_gateway_target_id),
             program_read_binding_target_id: Arc::new(self.program_read_binding_target_id),
@@ -329,6 +344,7 @@ async fn handle_request_inner(
         auth_plugin,
         limit_state,
         transaction_state,
+        token_accounts_provider,
         solana_gateway_usage_observer,
         solana_gateway_target_id,
         program_read_binding_target_id,
@@ -450,11 +466,14 @@ async fn handle_request_inner(
             Ok(handle_chain_request(
                 req,
                 path.as_str(),
-                rpc_url,
-                rpc_client,
-                auth_context,
-                solana_gateway_usage_observer.as_ref(),
-                solana_gateway_target_id.as_deref(),
+                ChainRequestServices {
+                    rpc_url,
+                    rpc_client,
+                    auth_context,
+                    usage_observer: solana_gateway_usage_observer.as_ref(),
+                    solana_gateway_target_id: solana_gateway_target_id.as_deref(),
+                    provider: token_accounts_provider.as_ref(),
+                },
             )
             .await)
         }
@@ -523,6 +542,220 @@ fn transaction_auth_error(response: Response<Full<Bytes>>, path: &str) -> Respon
         .header("X-Arete-Upstream-Attempted", "false")
         .body(Full::new(Bytes::from(value.to_string())))
         .expect("valid transaction authentication response")
+}
+
+fn capability_error(
+    status: StatusCode,
+    code: &str,
+    message: impl Into<String>,
+) -> Response<Full<Bytes>> {
+    let mut response = json_response(status, json!({ "code": code, "error": message.into() }));
+    response.headers_mut().insert(
+        "X-Error-Code",
+        HeaderValue::from_str(code).expect("static error code"),
+    );
+    response
+}
+
+async fn handle_owner_token_accounts(
+    req: Request<hyper::body::Incoming>,
+    provider: Option<&Arc<dyn OwnerTokenAccountsProvider>>,
+    auth: Option<&crate::websocket::auth::AuthContext>,
+) -> Response<Full<Bytes>> {
+    let request = match read_json_body::<OwnerTokenAccountsRequest>(req).await {
+        Ok(request) => request,
+        Err(_) => {
+            return capability_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "Invalid JSON request",
+            )
+        }
+    };
+    if let Err(error) = request.validate() {
+        return capability_error(StatusCode::BAD_REQUEST, "invalid_request", error);
+    }
+    if request.limit as usize
+        > batch_address_limit(auth, arete_solana_contracts::MAX_PAGE_SIZE as usize)
+    {
+        return capability_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "limit exceeds the session's address limit",
+        );
+    }
+    let Some(provider) = provider else {
+        return capability_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "unsupported_capability",
+            "Owner token discovery is not configured",
+        );
+    };
+    match provider.owner_token_accounts(&request).await {
+        Ok(page) => match page.validate(&request) {
+            Ok(()) => json_response(
+                StatusCode::OK,
+                serde_json::to_value(page).expect("serializable page"),
+            ),
+            Err(error) => {
+                capability_error(StatusCode::BAD_GATEWAY, "invalid_provider_response", error)
+            }
+        },
+        Err(TokenDiscoveryError::InvalidCursor(error)) => {
+            capability_error(StatusCode::BAD_REQUEST, "invalid_cursor", error)
+        }
+        Err(TokenDiscoveryError::Unsupported(error)) => {
+            capability_error(StatusCode::NOT_IMPLEMENTED, "unsupported_capability", error)
+        }
+        Err(TokenDiscoveryError::Unavailable(error)) => {
+            capability_error(StatusCode::BAD_GATEWAY, "provider_unavailable", error)
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContextualAccountBody {
+    address: String,
+    #[serde(default)]
+    options: ReadOptions,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContextualAccountsBody {
+    addresses: Vec<String>,
+    #[serde(default)]
+    options: ReadOptions,
+}
+
+async fn handle_contextual_accounts(
+    req: Request<hyper::body::Incoming>,
+    path: &str,
+    rpc_url: Option<&str>,
+    client: &Client,
+    auth: Option<&crate::websocket::auth::AuthContext>,
+) -> Response<Full<Bytes>> {
+    let single = path == "/chain/v1/account";
+    let (addresses, options) = if single {
+        match read_json_body::<ContextualAccountBody>(req).await {
+            Ok(body) => (vec![body.address], body.options),
+            Err(_) => {
+                return capability_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "Invalid JSON request",
+                )
+            }
+        }
+    } else {
+        match read_json_body::<ContextualAccountsBody>(req).await {
+            Ok(body) => (body.addresses, body.options),
+            Err(_) => {
+                return capability_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "Invalid JSON request",
+                )
+            }
+        }
+    };
+    if addresses.len() > batch_address_limit(auth, MAX_CHAIN_BATCH_ADDRESSES) {
+        return capability_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "addresses exceeds the batch limit",
+        );
+    }
+    for address in &addresses {
+        if let Err(error) = arete_solana_contracts::validate_address(address) {
+            return capability_error(StatusCode::BAD_REQUEST, "invalid_request", error);
+        }
+    }
+    if addresses.is_empty() {
+        return json_response(StatusCode::OK, json!({ "context": null, "value": [] }));
+    }
+    let Some(rpc_url) = rpc_url else {
+        return capability_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "rpc_unavailable",
+            "No RPC URL configured for chain reads",
+        );
+    };
+    let (method, address) = if single {
+        ("getAccountInfo", json!(addresses[0]))
+    } else {
+        ("getMultipleAccounts", json!(addresses))
+    };
+    match rpc_call(
+        client,
+        rpc_url,
+        method,
+        json!([address, options.rpc_config()]),
+    )
+    .await
+    .and_then(|result| contextual_accounts_json(&addresses, single, options, &result))
+    {
+        Ok(value) => json_response(StatusCode::OK, value),
+        Err(error) => capability_error(
+            StatusCode::BAD_GATEWAY,
+            "invalid_upstream_response",
+            error.to_string(),
+        ),
+    }
+}
+
+fn contextual_accounts_json(
+    addresses: &[String],
+    single: bool,
+    options: ReadOptions,
+    result: &Value,
+) -> anyhow::Result<Value> {
+    let slot = result
+        .pointer("/context/slot")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("Missing actual read context"))?;
+    if options.min_context_slot.is_some_and(|min| slot < min) {
+        anyhow::bail!("Read context is below minContextSlot");
+    }
+    let value = result
+        .get("value")
+        .ok_or_else(|| anyhow::anyhow!("Missing account result"))?;
+    let values = if single {
+        vec![value.clone()]
+    } else {
+        value
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("Invalid batch result"))?
+            .clone()
+    };
+    if values.len() != addresses.len() {
+        anyhow::bail!("Account result count does not match addresses");
+    }
+    let mut items = Vec::new();
+    for (address, account) in addresses.iter().zip(values) {
+        if account.is_null() {
+            items.push(Value::Null);
+            continue;
+        }
+        if account.get("lamports").and_then(Value::as_u64).is_none()
+            || account.get("owner").and_then(Value::as_str).is_none()
+            || account.get("executable").and_then(Value::as_bool).is_none()
+            || account.pointer("/data/0").and_then(Value::as_str).is_none()
+            || account.pointer("/data/1").and_then(Value::as_str) != Some("base64")
+        {
+            anyhow::bail!("Malformed raw account result");
+        }
+        items.push(raw_account_json(address, &account));
+    }
+    Ok(serde_json::to_value(Contextual {
+        context: Some(ReadContext { slot }),
+        value: if single {
+            items.remove(0)
+        } else {
+            json!(items)
+        },
+    })?)
 }
 
 #[derive(Debug, Deserialize)]
@@ -733,6 +966,8 @@ enum ChainUsageOperation {
     TokenAccount,
     Accounts,
     Balances,
+    OwnerTokenAccounts,
+    ContextualAccounts,
 }
 
 impl ChainUsageOperation {
@@ -749,6 +984,9 @@ impl ChainUsageOperation {
             ("GET", path) if path.starts_with("/chain/mints/") => Some(Self::Mint),
             ("GET", path) if path.starts_with("/chain/token-accounts/") => Some(Self::TokenAccount),
             ("POST", "/chain/accounts") => Some(Self::Accounts),
+            ("POST", "/chain/v1/account") => Some(Self::Account),
+            ("POST", "/chain/v1/accounts") => Some(Self::ContextualAccounts),
+            ("POST", "/chain/v1/owner-token-accounts") => Some(Self::OwnerTokenAccounts),
             ("POST", "/chain/balances") => Some(Self::Balances),
             _ => None,
         }
@@ -766,6 +1004,8 @@ impl ChainUsageOperation {
             Self::TokenAccount => "token_account",
             Self::Accounts => "accounts",
             Self::Balances => "balances",
+            Self::OwnerTokenAccounts => "owner_token_accounts",
+            Self::ContextualAccounts => "contextual_accounts",
         }
     }
 
@@ -776,6 +1016,21 @@ impl ChainUsageOperation {
         match self {
             Self::RentExemption | Self::Clock => 0,
             Self::Balances => 2,
+            Self::ContextualAccounts | Self::OwnerTokenAccounts => {
+                serde_json::from_slice::<Value>(body)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get(if matches!(self, Self::ContextualAccounts) {
+                                "value"
+                            } else {
+                                "items"
+                            })?
+                            .as_array()
+                            .map(|items| items.len() as u64)
+                    })
+                    .unwrap_or_default()
+            }
             Self::Accounts => serde_json::from_slice::<Value>(body)
                 .ok()
                 .and_then(|value| value.get("items")?.as_array().map(|items| items.len()))
@@ -786,18 +1041,38 @@ impl ChainUsageOperation {
     }
 }
 
-async fn handle_chain_request(
-    req: Request<hyper::body::Incoming>,
-    path: &str,
+struct ChainRequestServices<'a> {
     rpc_url: Arc<Option<String>>,
     rpc_client: Client,
     auth_context: Option<crate::websocket::auth::AuthContext>,
-    usage_observer: Option<&Arc<dyn SolanaGatewayUsageObserver>>,
-    solana_gateway_target_id: Option<&str>,
+    usage_observer: Option<&'a Arc<dyn SolanaGatewayUsageObserver>>,
+    solana_gateway_target_id: Option<&'a str>,
+    provider: Option<&'a Arc<dyn OwnerTokenAccountsProvider>>,
+}
+
+async fn handle_chain_request(
+    req: Request<hyper::body::Incoming>,
+    path: &str,
+    services: ChainRequestServices<'_>,
 ) -> Response<Full<Bytes>> {
+    let ChainRequestServices {
+        rpc_url,
+        rpc_client,
+        auth_context,
+        usage_observer,
+        solana_gateway_target_id,
+        provider,
+    } = services;
     let operation = ChainUsageOperation::from_request(req.method(), path);
-    let response =
-        handle_chain_request_inner(req, path, rpc_url, rpc_client, auth_context.clone()).await;
+    let response = handle_chain_request_inner(
+        req,
+        path,
+        rpc_url,
+        rpc_client,
+        auth_context.clone(),
+        provider,
+    )
+    .await;
     let status = response.status();
     let (parts, body) = response.into_parts();
     let collected = match body.collect().await {
@@ -829,7 +1104,21 @@ async fn handle_chain_request_inner(
     rpc_url: Arc<Option<String>>,
     rpc_client: Client,
     auth_context: Option<crate::websocket::auth::AuthContext>,
+    provider: Option<&Arc<dyn OwnerTokenAccountsProvider>>,
 ) -> Response<Full<Bytes>> {
+    if req.method() == Method::POST && path == "/chain/v1/owner-token-accounts" {
+        return handle_owner_token_accounts(req, provider, auth_context.as_ref()).await;
+    }
+    if req.method() == Method::POST && matches!(path, "/chain/v1/account" | "/chain/v1/accounts") {
+        return handle_contextual_accounts(
+            req,
+            path,
+            rpc_url.as_ref().as_deref(),
+            &rpc_client,
+            auth_context.as_ref(),
+        )
+        .await;
+    }
     let Some(rpc_url) = rpc_url.as_ref() else {
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1055,6 +1344,18 @@ async fn handle_program_account_request(
     ) {
         return with_release_metadata(program_read_error_response(error), &definition, None, None);
     }
+    if matches!(route.operation, ProgramReadOperation::NativeQuery) {
+        return with_release_metadata(
+            capability_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "unsupported_capability",
+                "Native position query requires a platform service for this release/type/filter",
+            ),
+            &definition,
+            None,
+            None,
+        );
+    }
     let Some(rpc_url) = rpc_url.as_ref() else {
         return with_release_metadata(
             program_read_error_response(ProgramReadError::RpcNotConfigured),
@@ -1065,6 +1366,45 @@ async fn handle_program_account_request(
     };
 
     match route.operation {
+        ProgramReadOperation::NativeQuery => unreachable!("handled before RPC admission"),
+        ProgramReadOperation::ContextualFetch { address } => {
+            let options = match read_json_body::<ProgramContextOptionsBody>(req).await {
+                Ok(body) => body.options,
+                Err(_) => return program_read_error_response(ProgramReadError::InvalidRequest),
+            };
+            handle_contextual_program_accounts(
+                &definition,
+                &route.account,
+                ContextualProgramRead {
+                    addresses: vec![address],
+                    single: true,
+                    options,
+                },
+                rpc_url,
+                &rpc_client,
+                auth_context.as_ref(),
+            )
+            .await
+        }
+        ProgramReadOperation::ContextualBatch => {
+            let body = match read_json_body::<ContextualAccountsBody>(req).await {
+                Ok(body) => body,
+                Err(_) => return program_read_error_response(ProgramReadError::InvalidRequest),
+            };
+            handle_contextual_program_accounts(
+                &definition,
+                &route.account,
+                ContextualProgramRead {
+                    addresses: body.addresses,
+                    single: false,
+                    options: body.options,
+                },
+                rpc_url,
+                &rpc_client,
+                auth_context.as_ref(),
+            )
+            .await
+        }
         ProgramReadOperation::Fetch { address } => {
             let account_value = match rpc_get_account_info(&rpc_client, rpc_url, &address).await {
                 Ok(value) => value,
@@ -1208,6 +1548,161 @@ async fn handle_program_account_request(
 }
 
 const MAX_PROGRAM_BATCH_ADDRESSES: usize = 100;
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProgramContextOptionsBody {
+    #[serde(default)]
+    options: ReadOptions,
+}
+
+struct ContextualProgramRead {
+    addresses: Vec<String>,
+    single: bool,
+    options: ReadOptions,
+}
+
+async fn handle_contextual_program_accounts(
+    definition: &ProgramRuntimeDefinition,
+    account: &str,
+    read: ContextualProgramRead,
+    rpc_url: &str,
+    client: &Client,
+    auth: Option<&crate::websocket::auth::AuthContext>,
+) -> Response<Full<Bytes>> {
+    let ContextualProgramRead {
+        addresses,
+        single,
+        options,
+    } = read;
+    if addresses.len() > batch_address_limit(auth, MAX_PROGRAM_BATCH_ADDRESSES) {
+        return with_release_metadata(
+            program_read_error_response(ProgramReadError::BatchLimitExceeded),
+            definition,
+            None,
+            None,
+        );
+    }
+    for address in &addresses {
+        if arete_solana_contracts::validate_address(address).is_err() {
+            return program_read_error_response(ProgramReadError::InvalidRequest);
+        }
+    }
+    if addresses.is_empty() {
+        return with_release_metadata(
+            json_response(
+                StatusCode::OK,
+                json!({ "context": null, "value": { "items": [] } }),
+            ),
+            definition,
+            None,
+            None,
+        );
+    }
+    let method = if single {
+        "getAccountInfo"
+    } else {
+        "getMultipleAccounts"
+    };
+    let input = if single {
+        json!(addresses[0])
+    } else {
+        json!(addresses)
+    };
+    let result = match rpc_call(
+        client,
+        rpc_url,
+        method,
+        json!([input, options.rpc_config()]),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            return with_release_metadata(
+                program_read_error_response(ProgramReadError::RpcFailed),
+                definition,
+                None,
+                None,
+            )
+        }
+    };
+    let context = match result.pointer("/context/slot").and_then(Value::as_u64) {
+        Some(slot) if options.min_context_slot.is_none_or(|min| slot >= min) => {
+            ReadContext { slot }
+        }
+        _ => {
+            return with_release_metadata(
+                program_read_error_response(ProgramReadError::RpcResponseInvalid),
+                definition,
+                None,
+                None,
+            )
+        }
+    };
+    let values = match result.get("value") {
+        Some(value) if single => vec![value.clone()],
+        Some(Value::Array(values)) if values.len() == addresses.len() => values.clone(),
+        _ => {
+            return with_release_metadata(
+                program_read_error_response(ProgramReadError::RpcResponseInvalid),
+                definition,
+                None,
+                None,
+            )
+        }
+    };
+    let outcomes = futures_util::future::join_all(
+        values
+            .iter()
+            .map(|value| decode_release_account(definition, account, value)),
+    )
+    .await;
+    let mut items = Vec::new();
+    for (address, outcome) in addresses.iter().zip(outcomes) {
+        if single {
+            let (value, exists) = match outcome {
+                AccountReadOutcome::Missing => (Value::Null, false),
+                AccountReadOutcome::Value(value) => (value, true),
+                AccountReadOutcome::Error(error) => {
+                    return with_release_metadata(
+                        program_read_error_response(error),
+                        definition,
+                        Some(address),
+                        Some(true),
+                    )
+                }
+            };
+            return with_release_metadata(
+                json_response(
+                    StatusCode::OK,
+                    json!({ "context": context, "value": value }),
+                ),
+                definition,
+                Some(address),
+                Some(exists),
+            );
+        }
+        items.push(match outcome {
+            AccountReadOutcome::Missing => json!({ "address": address, "status": "missing" }),
+            AccountReadOutcome::Value(value) => {
+                json!({ "address": address, "status": "ok", "value": value })
+            }
+            AccountReadOutcome::Error(error) => {
+                json!({ "address": address, "status": "error", "error": { "code": error.code() } })
+            }
+        });
+    }
+    with_release_metadata(
+        json_response(
+            StatusCode::OK,
+            json!({ "context": context, "value": { "items": items } }),
+        ),
+        definition,
+        None,
+        None,
+    )
+}
+
 const MAX_PROGRAM_ACCOUNT_BYTES: usize = 10 * 1024 * 1024;
 const PROGRAM_DECODE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -1315,6 +1810,9 @@ struct ProgramReadRoute {
 
 #[derive(Debug)]
 enum ProgramReadOperation {
+    ContextualFetch { address: String },
+    ContextualBatch,
+    NativeQuery,
     Fetch { address: String },
     Batch,
     Exists { address: String },
@@ -1334,6 +1832,13 @@ impl ProgramReadRoute {
         }
         let operation = match (method, segments.as_slice()) {
             (&Method::POST, [_, _, _, _, _]) => ProgramReadOperation::Batch,
+            (&Method::POST, [_, _, _, _, _, "query"]) => ProgramReadOperation::NativeQuery,
+            (&Method::POST, [_, _, _, _, _, "context"]) => ProgramReadOperation::ContextualBatch,
+            (&Method::POST, [_, _, _, _, _, address, "context"]) if !address.is_empty() => {
+                ProgramReadOperation::ContextualFetch {
+                    address: (*address).to_string(),
+                }
+            }
             (&Method::GET, [_, _, _, _, _, address]) if !address.is_empty() => {
                 ProgramReadOperation::Fetch {
                     address: (*address).to_string(),

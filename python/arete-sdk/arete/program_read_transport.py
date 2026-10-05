@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Mapping, Optional, Tuple, Union
 from urllib.parse import quote, urlsplit
 
+from arete.managed_solana import ReadOptions
 from arete.http import AuthTokenTarget
 from arete.read import (
     READ_SCOPES,
@@ -303,7 +304,13 @@ def request_path(release: ProgramReleaseReference, request: ProgramReadRequest) 
     root = f"/v1/releases/{release_hash}/accounts/{_encode_uri_component(request.account)}"
     if request.operation == "fetch_many":
         return root
+    if request.operation == "fetch_many_with_context":
+        return f"{root}/context"
+    if request.operation == "native_query":
+        return f"{root}/query"
     address_path = f"{root.rstrip('/')}/{_encode_uri_component(request.address or '')}"
+    if request.operation == "fetch_with_context":
+        return f"{address_path}/context"
     return f"{address_path}/exists" if request.operation == "exists" else address_path
 
 
@@ -422,7 +429,20 @@ class HttpProgramReadTransport:
         """
         path = request_path(self._release, request)
         url = _append_url(self._endpoint, path)
-        if request.operation == "fetch_many":
+        if request.addresses is not None and len(request.addresses) > 100:
+            raise ValueError("addresses exceeds the 100-address limit")
+        if request.operation == "native_query":
+            if request.query is None:
+                raise ValueError("Native query is required")
+            method = "POST"
+            json_body = request.query.to_wire()
+        elif request.operation == "fetch_with_context":
+            method = "POST"
+            json_body = {"options": (request.options or ReadOptions()).to_wire()}
+        elif request.operation == "fetch_many_with_context":
+            method = "POST"
+            json_body = {"addresses": list(request.addresses or ()), "options": (request.options or ReadOptions()).to_wire()}
+        elif request.operation == "fetch_many":
             method = "POST"
             json_body: Any = {"addresses": list(request.addresses or ())}
         else:

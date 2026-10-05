@@ -1,3 +1,4 @@
+import { managedAddress, managedContext, managedDiscovery, managedPage, type Contextual, type ManagedReadOptions, type NativePositionQuery, type NativePositionPage } from './managed-solana';
 import type {
   ConnectionState,
   StackDefinition,
@@ -477,6 +478,9 @@ export interface TypedInstruction<TParams, TError> {
 }
 
 export interface TypedAccountReader<T> {
+  fetchWithContext(address: string, options?: ManagedReadOptions): Promise<Contextual<T | null>>;
+  fetchManyWithContext(addresses: readonly string[], options?: ManagedReadOptions): Promise<Contextual<ProgramAccountBatchResult<T>>>;
+  queryPositions(query: NativePositionQuery): Promise<NativePositionPage>;
   fetch(address: string): Promise<T | null>;
   fetchMany(addresses: readonly string[]): Promise<ProgramAccountBatchResult<T>>;
   exists(address: string): Promise<boolean>;
@@ -831,7 +835,30 @@ export class Arete<TStack extends StackDefinition> {
     definition: ProgramAccountReadDefinition<T>,
     transport: ProgramReadTransport
   ): TypedAccountReader<T> {
+    const parseBatch = (result: ProgramAccountBatchResult<unknown>, addresses: readonly string[]): ProgramAccountBatchResult<T> => {
+      if (!Array.isArray(result?.items) || result.items.length !== addresses.length || result.items.some((item, i) => item.address !== addresses[i] || !['ok', 'missing', 'error'].includes(item.status) || (item.status === 'error' && typeof item.error?.code !== 'string'))) throw new TypeError('Program account results are not aligned');
+      return { items: result.items.map((item) => item.status === 'ok' ? { ...item, value: parseProgramAccountValue(definition, item.value) } : item) };
+    };
     return {
+      fetchWithContext: async (address, options = {}) => {
+        const result = await transport.read<{ context: unknown; value: unknown }>({ operation: 'fetchWithContext', account: definition.account, address, options });
+        if (result.value === undefined) throw new TypeError('Missing contextual account value');
+        return { context: managedContext(result.context, options, true), value: result.value === null ? null : parseProgramAccountValue(definition, result.value) };
+      },
+      fetchManyWithContext: async (addresses, options = {}) => {
+        const requested = [...addresses];
+        if (requested.length > 100) throw new RangeError('addresses exceeds the 100-address limit');
+        if (!requested.length) return { context: null, value: { items: [] } };
+        const result = await transport.read<{ context: unknown; value: ProgramAccountBatchResult<unknown> }>({ operation: 'fetchManyWithContext', account: definition.account, addresses: requested, options });
+        return { context: managedContext(result.context, options, true), value: parseBatch(result.value, requested) };
+      },
+      queryPositions: async (query) => {
+        const result = await transport.read<{ addresses: string[]; nextCursor: string | null; discovery: Record<string, unknown> }>({ operation: 'nativeQuery', account: definition.account, query });
+        managedPage(query.limit, result.nextCursor);
+        if (!Array.isArray(result.addresses) || result.addresses.length > (query.limit ?? 100) || result.nextCursor === undefined) throw new TypeError('Invalid native discovery page');
+        for (const address of result.addresses) managedAddress(address);
+        return { addresses: result.addresses, nextCursor: result.nextCursor, discovery: managedDiscovery(result.discovery) };
+      },
       fetch: async (address: string): Promise<T | null> => {
         const result = await transport.read<T | null>({
           operation: 'fetch',
@@ -841,16 +868,13 @@ export class Arete<TStack extends StackDefinition> {
         return result === null ? null : parseProgramAccountValue(definition, result);
       },
       fetchMany: async (addresses: readonly string[]): Promise<ProgramAccountBatchResult<T>> => {
+        addresses = [...addresses];
         const result = await transport.read<ProgramAccountBatchResult<unknown>>({
           operation: 'fetchMany',
           account: definition.account,
           addresses,
         });
-        return {
-          items: result.items.map((item) => item.status === 'ok'
-            ? { ...item, value: parseProgramAccountValue(definition, item.value) }
-            : item),
-        };
+        return parseBatch(result, addresses);
       },
       exists: async (address: string): Promise<boolean> => {
         const result = await transport.read<{ exists: boolean }>({

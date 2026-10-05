@@ -1,0 +1,53 @@
+{
+  "contract": "managed-solana/v1",
+  "sdkBaseline": "0.28.0",
+  "batchLimit": 100,
+  "pageLimit": 100,
+  "cursorMaxBytes": 2048,
+  "exactIntegerEncoding": "decimal-string",
+  "readOptions": [
+    "commitment",
+    "minContextSlot"
+  ],
+  "operations": {
+    "ownerTokenAccounts": {
+      "route": "/chain/v1/owner-token-accounts",
+      "scope": "read",
+      "availability": "requires-provider"
+    },
+    "contextualRawReads": {
+      "routes": [
+        "/chain/v1/account",
+        "/chain/v1/accounts"
+      ],
+      "scope": "read",
+      "availability": "shared-server"
+    },
+    "contextualTypedReads": {
+      "route": "/v1/releases/{release}/accounts/{type}/{address?}/context",
+      "scope": "read",
+      "availability": "shared-server-with-release-decoder"
+    },
+    "nativePositionQuery": {
+      "route": "/v1/releases/{release}/accounts/{type}/query",
+      "scope": "read",
+      "availability": "platform-capability",
+      "sharedServer": "unsupported_capability"
+    },
+    "fullTransaction": {
+      "route": "/transactions/v1/get",
+      "scope": "transaction:inspect",
+      "availability": "shared-server"
+    }
+  },
+  "layouts": {
+    "enumPayloads": [
+      "unit",
+      "named",
+      "tuple"
+    ],
+    "strictDecoder": "try_from_bytes_exact",
+    "extendedMeteoraPositions": "unsupported",
+    "pythonTypedIdlOnlyAccountModels": "unsupported-use-raw-or-explicit-parser"
+  }
+}

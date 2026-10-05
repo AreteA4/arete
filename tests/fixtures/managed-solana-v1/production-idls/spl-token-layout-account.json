@@ -1,0 +1,30 @@
+{
+  "contract": "managed-solana/v1",
+  "accountType": "Account",
+  "data": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgEAAAAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEAAAA4thYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "encoding": "base64",
+  "expected": {
+    "mint": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+    "owner": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+    "amount": "9007199254740993",
+    "delegate": {
+      "tag": 0,
+      "value": "11111111111111111111111111111111"
+    },
+    "state": "Initialized",
+    "is_native": {
+      "tag": 1,
+      "value": "1488440"
+    },
+    "delegated_amount": "0",
+    "close_authority": {
+      "tag": 0,
+      "value": "11111111111111111111111111111111"
+    }
+  },
+  "provenance": {
+    "kind": "constructed",
+    "definition": "spl-token.source.json",
+    "description": "Independently packed using the public 165-byte SPL Token layout; no captured account data"
+  }
+}

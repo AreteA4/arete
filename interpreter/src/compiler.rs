@@ -2508,6 +2508,153 @@ mod tests {
     }
 
     #[test]
+    fn source_deletion_cancels_resync_and_recreates_a_fresh_vm_row() {
+        let bytecode = pool_bytecode();
+        let (mut vm, requests) = linked_vm(Default::default());
+        let first = process(&mut vm, &bytecode, pool_event(1, 10));
+        let key = &first[0].key;
+        let target = crate::vm::ResolverTarget {
+            state_id: 0,
+            entity_name: "Pool".into(),
+            primary_key: key.clone(),
+            extracts: vec![],
+        };
+        vm.enqueue_resolver_request(
+            "ignored".into(),
+            crate::ast::ResolverType::Token,
+            json!("mint"),
+            target.clone(),
+        );
+        let old_request = vm.take_resolver_requests().pop().unwrap();
+        vm.get_state_table_mut(0).unwrap().deferred_when_ops.insert(
+            ("sig".into(), "instruction".into()),
+            vec![crate::vm::DeferredWhenOperation {
+                entity_name: "Pool".into(),
+                primary_key: key.clone(),
+                field_path: "old".into(),
+                field_value: json!(true),
+                when_instruction: "instruction".into(),
+                signature: "sig".into(),
+                slot: 1,
+                deferred_at: 1,
+                emit: true,
+            }],
+        );
+        requests.request("Pool", key);
+        let deletion = vm.delete_entity(&bytecode, "Pool", key).unwrap();
+        assert!(deletion.is_delete());
+        assert!(
+            serde_json::from_value::<Mutation>(serde_json::to_value(&deletion).unwrap())
+                .unwrap()
+                .is_delete()
+        );
+        assert!(!requests.is_requested("Pool", key));
+        assert!(vm.get_entity_state(0, key).is_none());
+        assert!(vm.snapshot_state_table(0).is_empty());
+        assert!(vm
+            .get_state_table_mut(0)
+            .unwrap()
+            .deferred_when_ops
+            .is_empty());
+        assert!(vm.delete_entity(&bytecode, "Unknown", key).is_none());
+        let mut next = process(&mut vm, &bytecode, pool_event(9, 90));
+        vm.enqueue_resolver_request(
+            "ignored".into(),
+            crate::ast::ResolverType::Token,
+            json!("mint"),
+            target,
+        );
+        let new_request = vm.take_resolver_requests().pop().unwrap();
+        assert_ne!(old_request.cache_key, new_request.cache_key);
+        assert!(vm
+            .apply_resolver_result(&bytecode, &old_request.cache_key, json!({"stale":true}))
+            .unwrap()
+            .is_empty());
+        assert_eq!(next[0].take_whole_entity_mark(), Some(WholeEntity::Created));
+        assert_eq!(next[0].patch["state"]["fills"], json!([90]));
+    }
+
+    #[test]
+    fn deletion_preserves_unrelated_resolver_sharing_and_isolates_recreation() {
+        let bytecode = pool_bytecode();
+        let (mut vm, _) = linked_vm(Default::default());
+        let key = process(&mut vm, &bytecode, pool_event(1, 10))[0]
+            .key
+            .clone();
+        let late_joiner = process(&mut vm, &bytecode, pool_event_for("pool_2", 2, 20))[0]
+            .key
+            .clone();
+        let target = |primary_key| crate::vm::ResolverTarget {
+            state_id: 0,
+            entity_name: "Pool".into(),
+            primary_key,
+            extracts: vec![crate::ast::ResolverExtractSpec {
+                target_path: "resolved".into(),
+                source_path: Some("value".into()),
+                transform: None,
+            }],
+        };
+        let enqueue = |vm: &mut VmContext, key| {
+            vm.enqueue_resolver_request(
+                "ignored".into(),
+                crate::ast::ResolverType::Token,
+                json!("shared-mint"),
+                target(key),
+            )
+        };
+        enqueue(&mut vm, key.clone());
+        enqueue(&mut vm, json!("unrelated"));
+        let old = vm.take_resolver_requests();
+        assert_eq!(old.len(), 1);
+        vm.delete_entity(&bytecode, "Pool", &key).unwrap();
+        enqueue(&mut vm, json!("unrelated"));
+        enqueue(&mut vm, json!("another-unrelated"));
+        assert!(
+            vm.take_resolver_requests().is_empty(),
+            "unaffected targets reuse the old pending call"
+        );
+        enqueue(&mut vm, key.clone());
+        let fresh = vm.take_resolver_requests();
+        assert_eq!(fresh.len(), 1);
+        assert_ne!(fresh[0].cache_key, old[0].cache_key);
+        // This entity never joined the old shared call. Deleting and
+        // recreating it must still keep it off that pre-deletion result.
+        vm.delete_entity(&bytecode, "Pool", &late_joiner).unwrap();
+        process(&mut vm, &bytecode, pool_event_for("pool_2", 3, 30));
+        enqueue(&mut vm, late_joiner.clone());
+        let late_joiner_fresh = vm.take_resolver_requests();
+        assert_eq!(late_joiner_fresh.len(), 1);
+        assert_ne!(late_joiner_fresh[0].cache_key, old[0].cache_key);
+        enqueue(&mut vm, json!("unrelated"));
+        enqueue(&mut vm, json!("another-unrelated"));
+        enqueue(&mut vm, key.clone());
+        assert!(
+            vm.take_resolver_requests().is_empty(),
+            "unaffected targets reuse pending calls"
+        );
+        let old_mutations = vm
+            .apply_resolver_result(&bytecode, &old[0].cache_key, json!({"value":"old"}))
+            .unwrap();
+        assert_eq!(old_mutations.len(), 2);
+        assert!(old_mutations.iter().all(|mutation| mutation.key != key));
+        assert!(vm.get_entity_state(0, &key).is_none());
+        let fresh_mutations = vm
+            .apply_resolver_result(&bytecode, &fresh[0].cache_key, json!({"value":"fresh"}))
+            .unwrap();
+        assert_eq!(fresh_mutations.len(), 1);
+        assert_eq!(fresh_mutations[0].key, key);
+        let late_joiner_mutations = vm
+            .apply_resolver_result(
+                &bytecode,
+                &late_joiner_fresh[0].cache_key,
+                json!({"value":"fresh-late-joiner"}),
+            )
+            .unwrap();
+        assert_eq!(late_joiner_mutations.len(), 1);
+        assert_eq!(late_joiner_mutations[0].key, late_joiner);
+    }
+
+    #[test]
     fn a_requested_entity_is_emitted_whole_once() {
         let bytecode = pool_bytecode();
         let (mut vm, requests) = linked_vm(Default::default());

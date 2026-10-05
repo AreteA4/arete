@@ -9,6 +9,9 @@
 
 use std::sync::Arc;
 
+pub use arete_solana_contracts::{
+    Contextual, OwnerTokenAccountsPage, OwnerTokenAccountsRequest, ReadOptions,
+};
 use async_trait::async_trait;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -66,6 +69,24 @@ impl From<ChainError> for AreteError {
                 AreteError::Serialization(format!("Invalid chain response for '{path}': {message}"))
             }
             ChainError::Sdk(inner) => inner,
+        }
+    }
+}
+
+impl ChainError {
+    /// Preserve service capability/cursor codes independently of authentication error enums.
+    pub fn server_error_code(&self) -> Option<String> {
+        match self {
+            Self::Request { body, .. } => serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("code")
+                        .or_else(|| value.pointer("/error/code"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                }),
+            _ => None,
         }
     }
 }
@@ -168,6 +189,39 @@ pub struct RawAccountInfo {
 /// Read access to Solana chain state through the stack's `/chain/*` routes.
 #[async_trait]
 pub trait ChainClient: Send + Sync {
+    /// Paginated indexed discovery. Verify selected account amounts with contextual chain reads.
+    async fn owner_token_accounts(
+        &self,
+        _request: &OwnerTokenAccountsRequest,
+    ) -> Result<OwnerTokenAccountsPage, ChainError> {
+        Err(ChainError::InvalidResponse {
+            path: "/chain/v1/owner-token-accounts".into(),
+            message: "unsupported_capability".into(),
+        })
+    }
+
+    async fn account_with_context(
+        &self,
+        _address: &str,
+        _options: ReadOptions,
+    ) -> Result<Contextual<Option<RawAccountInfo>>, ChainError> {
+        Err(ChainError::InvalidResponse {
+            path: "/chain/v1/account".into(),
+            message: "unsupported_capability".into(),
+        })
+    }
+
+    async fn accounts_with_context(
+        &self,
+        _addresses: &[String],
+        _options: ReadOptions,
+    ) -> Result<Contextual<Vec<Option<RawAccountInfo>>>, ChainError> {
+        Err(ChainError::InvalidResponse {
+            path: "/chain/v1/accounts".into(),
+            message: "unsupported_capability".into(),
+        })
+    }
+
     /// `GET /chain/exists/<address>` — whether the account exists.
     async fn exists(&self, address: &str) -> Result<bool, ChainError>;
 
@@ -203,7 +257,7 @@ pub trait ChainClient: Send + Sync {
     /// `GET /chain/token-accounts/<address>` — token account summary.
     async fn token_account(&self, address: &str) -> Result<Option<TokenAccountInfo>, ChainError>;
 
-    /// `POST /chain/balances` — token balance for an owner + mint.
+    /// `POST /chain/balances` — balance of one selected matching account, not total wallet inventory.
     async fn balance(
         &self,
         input: &TokenBalanceInput,
@@ -354,6 +408,25 @@ impl HttpChainClient {
     }
 }
 
+fn validate_read_context(
+    context: &Option<arete_solana_contracts::ReadContext>,
+    options: ReadOptions,
+    required: bool,
+    path: &str,
+) -> Result<(), ChainError> {
+    if (required && context.is_none())
+        || context
+            .as_ref()
+            .is_some_and(|ctx| options.min_context_slot.is_some_and(|min| ctx.slot < min))
+    {
+        return Err(ChainError::InvalidResponse {
+            path: path.into(),
+            message: "Missing context or response slot below minContextSlot".into(),
+        });
+    }
+    Ok(())
+}
+
 fn with_context_slot(
     mut body: serde_json::Value,
     options: ContextSlotOptions,
@@ -444,6 +517,117 @@ struct TokenBalanceWire {
 
 #[async_trait]
 impl ChainClient for HttpChainClient {
+    async fn owner_token_accounts(
+        &self,
+        request: &OwnerTokenAccountsRequest,
+    ) -> Result<OwnerTokenAccountsPage, ChainError> {
+        let path = "/chain/v1/owner-token-accounts";
+        request
+            .validate()
+            .map_err(|message| ChainError::InvalidResponse {
+                path: path.into(),
+                message,
+            })?;
+        let page: OwnerTokenAccountsPage = self.post(path, json!(request)).await?;
+        page.validate(request)
+            .map_err(|message| ChainError::InvalidResponse {
+                path: path.into(),
+                message,
+            })?;
+        Ok(page)
+    }
+
+    async fn account_with_context(
+        &self,
+        address: &str,
+        options: ReadOptions,
+    ) -> Result<Contextual<Option<RawAccountInfo>>, ChainError> {
+        let path = "/chain/v1/account";
+        arete_solana_contracts::validate_address(address).map_err(|message| {
+            ChainError::InvalidResponse {
+                path: path.into(),
+                message,
+            }
+        })?;
+        let wire: Contextual<Option<RawAccountWire>> = self
+            .post(path, json!({ "address": address, "options": options }))
+            .await?;
+        validate_read_context(&wire.context, options, true, path)?;
+        let value = wire
+            .value
+            .map(|value| decode_raw_account(value, path))
+            .transpose()?;
+        if value.as_ref().is_some_and(|value| value.address != address) {
+            return Err(ChainError::InvalidResponse {
+                path: path.into(),
+                message: "Account address does not match request".into(),
+            });
+        }
+        Ok(Contextual {
+            context: wire.context,
+            value,
+        })
+    }
+
+    async fn accounts_with_context(
+        &self,
+        addresses: &[String],
+        options: ReadOptions,
+    ) -> Result<Contextual<Vec<Option<RawAccountInfo>>>, ChainError> {
+        let path = "/chain/v1/accounts";
+        if addresses.len() > MAX_BATCH_ADDRESSES {
+            return Err(ChainError::InvalidResponse {
+                path: path.into(),
+                message: "addresses exceeds the 100-address limit".into(),
+            });
+        }
+        for address in addresses {
+            arete_solana_contracts::validate_address(address).map_err(|message| {
+                ChainError::InvalidResponse {
+                    path: path.into(),
+                    message,
+                }
+            })?;
+        }
+        if addresses.is_empty() {
+            return Ok(Contextual {
+                context: None,
+                value: vec![],
+            });
+        }
+        let wire: Contextual<Vec<Option<RawAccountWire>>> = self
+            .post(path, json!({ "addresses": addresses, "options": options }))
+            .await?;
+        validate_read_context(&wire.context, options, true, path)?;
+        if wire.value.len() != addresses.len() {
+            return Err(ChainError::InvalidResponse {
+                path: path.into(),
+                message: "Account result count does not match addresses".into(),
+            });
+        }
+        let value = wire
+            .value
+            .into_iter()
+            .zip(addresses)
+            .map(|(item, address)| {
+                let item = item
+                    .map(|value| decode_raw_account(value, path))
+                    .transpose()?;
+                if item.as_ref().is_some_and(|value| value.address != *address) {
+                    return Err(ChainError::InvalidResponse {
+                        path: path.into(),
+                        message: "Account results are not aligned".into(),
+                    });
+                }
+                Ok(item)
+            })
+            .collect::<Result<Vec<_>, ChainError>>()?;
+        Ok(Contextual {
+            context: wire.context,
+            value,
+        })
+    }
+
     async fn exists(&self, address: &str) -> Result<bool, ChainError> {
         let path = format!("/chain/exists/{}", encode_uri_component(address));
         let body: ExistsResponse = self.get(&path).await?;
