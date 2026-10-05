@@ -158,9 +158,10 @@ pub fn lookup_instruction_field<'a>(
     field_name: &str,
 ) -> Result<InstructionFieldLookup<'a>, IdlSearchError> {
     let instruction = lookup_instruction(idl, instruction_name)?;
+    // A nested account group is not a wire account; its flattened leaves are.
+    let accounts = instruction.flattened_accounts();
     // Use case-insensitive matching to stay consistent with lookup_instruction.
-    if instruction
-        .accounts
+    if accounts
         .iter()
         .any(|account| account.name.eq_ignore_ascii_case(field_name))
     {
@@ -181,11 +182,7 @@ pub fn lookup_instruction_field<'a>(
         });
     }
 
-    let mut available: Vec<String> = instruction
-        .accounts
-        .iter()
-        .map(|acc| acc.name.clone())
-        .collect();
+    let mut available: Vec<String> = accounts.into_iter().map(|acc| acc.name).collect();
     available.extend(instruction.args.iter().map(|arg| arg.name.clone()));
     Err(build_not_found_error(
         field_name,
@@ -455,6 +452,41 @@ mod tests {
             }
             other => panic!("expected NotFound, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn nested_account_groups_resolve_to_their_wire_leaves() {
+        use crate::parse::parse_idl_content;
+
+        let idl = parse_idl_content(
+            r#"{
+                "name": "fake",
+                "instructions": [{
+                    "name": "deposit",
+                    "discriminator": [1],
+                    "accounts": [
+                        { "name": "authority", "accounts": [
+                            { "name": "payer", "signer": true },
+                            { "name": "vault", "writable": true }
+                        ]},
+                        { "name": "systemProgram" }
+                    ],
+                    "args": []
+                }],
+                "accounts": [], "types": [], "events": [], "errors": []
+            }"#,
+        )
+        .expect("test IDL should parse");
+
+        for leaf in ["authorityPayer", "authorityVault", "systemProgram"] {
+            let lookup = lookup_instruction_field(&idl, "deposit", leaf)
+                .unwrap_or_else(|e| panic!("{leaf} is a wire account: {e:?}"));
+            assert!(matches!(lookup.kind, InstructionFieldKind::Account));
+        }
+        assert!(
+            lookup_instruction_field(&idl, "deposit", "authority").is_err(),
+            "a group is not a wire account"
+        );
     }
 
     #[test]
