@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.29.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.28.0...arete-interpreter-v0.29.0) (2026-10-05)
+
+
+### Features
+
+* **interpreter:** type Rust and Python program SDKs and embed program extensions ([341fae7](https://github.com/AreteA4/arete/commit/341fae795e5fb8bdafb3853c7a74e824d1f315ac))
+* **runtime:** support ordered entity deletion and fresh recreation ([368501e](https://github.com/AreteA4/arete/commit/368501e86c5d0d1f7d038ef8c14f73ee089d6dfd))
+* Rust and Python SDK extensions with full TypeScript parity ([f70a9f4](https://github.com/AreteA4/arete/commit/f70a9f4a124182a3c9503f8c878c12cb641bc325))
+* **solana:** add contextual reads, discovery, and account lifecycle support ([4dbffb7](https://github.com/AreteA4/arete/commit/4dbffb777db78fac5ff5b321b2b84d7e3e073eb9))
+
+
+### Bug Fixes
+
+* **codegen:** preserve positional enum payloads ([ce8ebe6](https://github.com/AreteA4/arete/commit/ce8ebe6adbe1e66bfc32b6ff155c25e2951ac9ab))
+* **codegen:** retain typed enum payloads in generated account models ([bd49ded](https://github.com/AreteA4/arete/commit/bd49ded60d0cbd58f241752eadfaf130fdd5e9bf))
+* **codegen:** scope account models and include enum payload dependencies ([fdc314f](https://github.com/AreteA4/arete/commit/fdc314fbedecce76a1b44249b720d79a7eda714c))
+* **codegen:** support public Orca and native SPL account definitions ([a4496f9](https://github.com/AreteA4/arete/commit/a4496f9f74e2d3ff4f6942016f11072fca3c9949))
+* **interpreter:** give Python error metadata TypeScript's single-line messages ([ad96570](https://github.com/AreteA4/arete/commit/ad96570c02e0c2325312d61074e000d66ed835ed))
+* **interpreter:** give Rust error metadata TypeScript's single-line messages ([c841796](https://github.com/AreteA4/arete/commit/c8417963dca42db3bce56bec9bf0d649e55f64fb))
+* **interpreter:** import only the instruction schema items a Rust program module emits ([d5115ea](https://github.com/AreteA4/arete/commit/d5115ea02afde4cdaa03d8d6919c241d16f50351))
+* **interpreter:** keep code indentation inside Rust doc comment fences ([c8b60fd](https://github.com/AreteA4/arete/commit/c8b60fde9ae12fc14f38edcb8047ebb4db69c322))
+* **interpreter:** rename Rust instruction params that collide with an IDL type ([e07a463](https://github.com/AreteA4/arete/commit/e07a46308af53a3b0844d58f08203cb64a2a3759))
+* **interpreter:** render Rust doc comments that clippy's doc lints accept ([6b3ca61](https://github.com/AreteA4/arete/commit/6b3ca61d8dfe34fbdd8b0890575f13be660a2480))
+* **interpreter:** suffix Rust handler and reader names from the unescaped stem ([44cfc0f](https://github.com/AreteA4/arete/commit/44cfc0f2469df2feb975bab496fa8ed2b4172faa))
+* **python:** fill only wallet signers from the build's wallet ([6c101a8](https://github.com/AreteA4/arete/commit/6c101a8100dfc28ce5f39bcc99c5097842c65cf1))
+* **python:** honour an explicit address for every instruction account ([c200c4b](https://github.com/AreteA4/arete/commit/c200c4bc591cf70d028a5df46a6951fa1e3dd846))
+* **runtime:** isolate entity lifetime ordering ([7929910](https://github.com/AreteA4/arete/commit/7929910d4312630a733bef61f5f7605fcf66e3cb))
+* **runtime:** isolate resolver lifetimes and reject stale recreation patches ([3cec9fd](https://github.com/AreteA4/arete/commit/3cec9fd710adbf48ef380d46bb8d7b0b31fbcd46))
+* **runtime:** separate account lifetime ordering ([e7b1a5e](https://github.com/AreteA4/arete/commit/e7b1a5ebeb31ae0dd4c1b975f7a44982ea058ba1))
+* **sdk:** fill only wallet signers from the Rust build payer ([2880a17](https://github.com/AreteA4/arete/commit/2880a1742d047f5d69ff6613c0b7dc8f23da2565))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.28.0 to 0.29.0
+    * arete-idl bumped from 0.6.0 to 0.7.0
+    * arete-hash bumped from 0.5.0 to 0.5.1
+    * arete-artifacts bumped from 0.3.3 to 0.3.4
+
 ## [0.28.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.27.0...arete-interpreter-v0.28.0) (2026-09-30)
 
 

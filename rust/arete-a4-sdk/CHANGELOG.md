@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.29.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.28.0...arete-sdk-v0.29.0) (2026-10-05)
+
+
+### Features
+
+* Rust and Python SDK extensions with full TypeScript parity ([f70a9f4](https://github.com/AreteA4/arete/commit/f70a9f4a124182a3c9503f8c878c12cb641bc325))
+* **rust-sdk:** add managed Solana discovery and contextual reads ([1292235](https://github.com/AreteA4/arete/commit/129223523593e98a038952f01151e5e0a9c3a3b9))
+* **sdk:** add AreteError::InvalidInput for extension input errors ([80940be](https://github.com/AreteA4/arete/commit/80940be25518edcb3beb7cf45f7866fbb9515a5d))
+* **sdk:** add BuiltInstruction::to_artifact for TypeScript instruction artifacts ([aca9316](https://github.com/AreteA4/arete/commit/aca9316aa63899214e17b0900c123a1ae28cba36))
+* **sdk:** add keccak256, sha256 and base58 helpers ([2e36595](https://github.com/AreteA4/arete/commit/2e365951910cf502c0eceac6cd448b039bc708a0))
+* **sdk:** add one-shot Rust view reads with query options ([67707e7](https://github.com/AreteA4/arete/commit/67707e764e29128ed79fda4ca392d37e121bdd25))
+* **sdk:** carry signer material on Rust prepared transactions ([2909ece](https://github.com/AreteA4/arete/commit/2909ecea84bdbb0ec26bb3a12ff17bf58033beef))
+* **sdk:** deserialize AmountInput from the TypeScript shapes ([41100db](https://github.com/AreteA4/arete/commit/41100db2de940c505da1f87bcd9d476b9c8d57f9))
+* **sdk:** give Rust program extensions a ProgramContext ([ea1b0b8](https://github.com/AreteA4/arete/commit/ea1b0b8f20f1db4a3b90587b2b22f08704fdb5ad))
+* **sdk:** serialize ChainClock as the TypeScript clock ([6a08283](https://github.com/AreteA4/arete/commit/6a08283b95b46ee90f73dd5a3ad1e8f4523c90f8))
+* **solana:** add contextual reads, discovery, and account lifecycle support ([4dbffb7](https://github.com/AreteA4/arete/commit/4dbffb777db78fac5ff5b321b2b84d7e3e073eb9))
+
+
+### Bug Fixes
+
+* **codegen:** preserve positional enum payloads ([ce8ebe6](https://github.com/AreteA4/arete/commit/ce8ebe6adbe1e66bfc32b6ff155c25e2951ac9ab))
+* **rust-sdk:** preserve transactions with unavailable metadata ([52e679b](https://github.com/AreteA4/arete/commit/52e679b8eb4816b27beb25aca3acf80b291ad3ac))
+* **sdk:** fail Rust one-shot view reads that time out or cannot subscribe ([5f8d284](https://github.com/AreteA4/arete/commit/5f8d284193f8d75e8b70910fcb8fe37ca70b98a8))
+* **sdk:** fill only wallet signers from the Rust build payer ([2880a17](https://github.com/AreteA4/arete/commit/2880a1742d047f5d69ff6613c0b7dc8f23da2565))
+* **sdk:** honour an explicit address for every Rust instruction account ([51a1e52](https://github.com/AreteA4/arete/commit/51a1e52fc2d15552151456e03077d244d6f7a06c))
+* **sdk:** report TypeScript's messages for invalid ATA seed addresses ([f697a95](https://github.com/AreteA4/arete/commit/f697a9576625b2f00b5230f709e8aff743011768))
+* **sdk:** subscribe to readiness before checking it in one-shot view reads ([9c5930c](https://github.com/AreteA4/arete/commit/9c5930c75a81c97ebcb339f3fc0448ea6fd375b9))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-solana-contracts bumped from 0.1.0 to 0.2.0
+
 ## [0.28.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.27.0...arete-sdk-v0.28.0) (2026-09-30)
 
 

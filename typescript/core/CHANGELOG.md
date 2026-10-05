@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.29.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.28.0...arete-typescript-v0.29.0) (2026-10-05)
+
+
+### Features
+
+* **contracts:** freeze public managed Solana v1 lifecycle contracts ([e14af8a](https://github.com/AreteA4/arete/commit/e14af8a7fc1282c33d90a29cc9aa838a08ff64cf))
+* **solana:** add contextual reads, discovery, and account lifecycle support ([4dbffb7](https://github.com/AreteA4/arete/commit/4dbffb777db78fac5ff5b321b2b84d7e3e073eb9))
+* **typescript-sdk:** support managed Solana capability contracts ([5fd9ff0](https://github.com/AreteA4/arete/commit/5fd9ff0b411f04ab03eb13b18a2570a556811c79))
+
 ## [0.28.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.27.0...arete-typescript-v0.28.0) (2026-09-30)
 
 

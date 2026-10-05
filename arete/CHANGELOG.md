@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.29.0](https://github.com/AreteA4/arete/compare/arete-v0.28.0...arete-v0.29.0) (2026-10-05)
+
+
+### Features
+
+* **solana:** add contextual reads, discovery, and account lifecycle support ([4dbffb7](https://github.com/AreteA4/arete/commit/4dbffb777db78fac5ff5b321b2b84d7e3e073eb9))
+
+
+### Bug Fixes
+
+* **codegen:** support public Orca and native SPL account definitions ([a4496f9](https://github.com/AreteA4/arete/commit/a4496f9f74e2d3ff4f6942016f11072fca3c9949))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.28.0 to 0.29.0
+    * arete-macros bumped from 0.28.0 to 0.29.0
+    * arete-server bumped from 0.28.0 to 0.29.0
+
 ## [0.28.0](https://github.com/AreteA4/arete/compare/arete-v0.27.0...arete-v0.28.0) (2026-09-30)
 
 

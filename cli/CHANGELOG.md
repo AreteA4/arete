@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+## [0.29.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.28.0...a4-cli-v0.29.0) (2026-10-05)
+
+
+### Features
+
+* **cli:** ship program extensions in Rust and Python stack SDKs ([143ebf0](https://github.com/AreteA4/arete/commit/143ebf090c968c277f123580a36bfea2d80b22c7))
+* Rust and Python SDK extensions with full TypeScript parity ([f70a9f4](https://github.com/AreteA4/arete/commit/f70a9f4a124182a3c9503f8c878c12cb641bc325))
+
+
+### Bug Fixes
+
+* **auth:** stabilize agent trial bootstrap (A4-210) ([ed8046a](https://github.com/AreteA4/arete/commit/ed8046af9dd1ce404d7de3bd37cdcfe0b67dca00))
+* **auth:** tolerate expiry rounding both ways (A4-210) ([aa4acce](https://github.com/AreteA4/arete/commit/aa4acced84aadd872d13e9ddbc9703c7a626bc44))
+* **cli:** accept a Python export that follows a `;` on its module-level line ([e96dcfc](https://github.com/AreteA4/arete/commit/e96dcfcbb1f2fc4ab7267eaafee089831fed2c7e))
+* **cli:** check every Rust and Python bundle before writing an SDK ([860ba0a](https://github.com/AreteA4/arete/commit/860ba0af46d57e0f3157e02a38608ead63f6726b))
+* **cli:** require a module-level assignment for a Python bundle's export ([1f2269a](https://github.com/AreteA4/arete/commit/1f2269a89a9378ab87606f2162a859ca29b655fa))
+* **codegen:** scope account models and include enum payload dependencies ([fdc314f](https://github.com/AreteA4/arete/commit/fdc314fbedecce76a1b44249b720d79a7eda714c))
+* **interpreter:** import only the instruction schema items a Rust program module emits ([d5115ea](https://github.com/AreteA4/arete/commit/d5115ea02afde4cdaa03d8d6919c241d16f50351))
+* **onboarding:** make agent trial bootstrap production-safe ([e9b42c0](https://github.com/AreteA4/arete/commit/e9b42c061e4565aa4166b1d9007eb2b1d29497db))
+* **python:** fill only wallet signers from the build's wallet ([6c101a8](https://github.com/AreteA4/arete/commit/6c101a8100dfc28ce5f39bcc99c5097842c65cf1))
+* **python:** honour an explicit address for every instruction account ([c200c4b](https://github.com/AreteA4/arete/commit/c200c4bc591cf70d028a5df46a6951fa1e3dd846))
+* **sdk:** fill only wallet signers from the Rust build payer ([2880a17](https://github.com/AreteA4/arete/commit/2880a1742d047f5d69ff6613c0b7dc8f23da2565))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.28.0 to 0.29.0
+    * arete-artifacts bumped from 0.3.3 to 0.3.4
+    * arete-idl bumped from 0.6.0 to 0.7.0
+    * arete-hash bumped from 0.5.0 to 0.5.1
+    * arete-mcp bumped from 0.28.0 to 0.29.0
+  * build-dependencies
+    * arete-hash bumped from 0.5.0 to 0.5.1
+
 ## [0.28.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.27.0...a4-cli-v0.28.0) (2026-09-30)
 
 
