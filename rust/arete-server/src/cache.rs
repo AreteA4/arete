@@ -150,6 +150,7 @@ impl ViewEntries {
         creation: bool,
         account_position: Option<AccountPosition>,
         source_seq: Option<&str>,
+        source_seq_is_ordered: bool,
     ) -> bool {
         if let Some(checkpoint) = self.lifetimes.peek(key) {
             match (checkpoint.account_position, account_position) {
@@ -164,17 +165,21 @@ impl ViewEntries {
             }
         }
 
-        if creation && account_position.is_none() {
-            return self.accepts_source_lifetime_change(key, source_seq);
+        if account_position.is_none() && source_seq_is_ordered && source_seq.is_some() {
+            return self.accepts_source_ordering(key, source_seq, !creation);
         }
         true
     }
 
     fn latest_source_seq<'a>(&'a self, key: &str) -> Option<&'a str> {
-        let checkpoint = self
-            .lifetimes
-            .peek(key)
-            .and_then(|checkpoint| checkpoint.source_seq.as_deref());
+        let checkpoint = self.lifetimes.peek(key);
+        // An account cursor and an instruction/source cursor are independent.
+        // In particular, do not recover the account update's `_seq` from the
+        // entity and compare its write version with an instruction index.
+        if checkpoint.is_some_and(|checkpoint| checkpoint.account_position.is_some()) {
+            return checkpoint.and_then(|checkpoint| checkpoint.source_seq.as_deref());
+        }
+        let checkpoint = checkpoint.and_then(|checkpoint| checkpoint.source_seq.as_deref());
         let entity = self
             .entities
             .peek(key)
@@ -187,9 +192,17 @@ impl ViewEntries {
         }
     }
 
-    fn accepts_source_lifetime_change(&self, key: &str, incoming: Option<&str>) -> bool {
+    fn accepts_source_ordering(
+        &self,
+        key: &str,
+        incoming: Option<&str>,
+        allow_equal: bool,
+    ) -> bool {
         match (self.latest_source_seq(key), incoming) {
-            (Some(previous), Some(incoming)) => cmp_seq(incoming, previous).is_gt(),
+            (Some(previous), Some(incoming)) => {
+                let ordering = cmp_seq(incoming, previous);
+                ordering.is_gt() || (allow_equal && ordering.is_eq())
+            }
             // Once a markerless source supplies ordering, an unsequenced
             // lifetime change cannot prove that it is newer.
             (Some(_), None) => false,
@@ -229,6 +242,9 @@ pub type EntityLifetimes = Vec<(String, String, EntityLifetimeCheckpoint)>;
 pub struct LifetimeOrdering<'a> {
     pub account_position: Option<AccountPosition>,
     pub source_seq: Option<&'a str>,
+    /// Whether `source_seq` belongs to one comparable recency domain. Legacy
+    /// callers that can mix account and instruction offsets leave this false.
+    pub source_seq_is_ordered: bool,
 }
 
 /// Legacy `(view, key, _seq)` barriers, retained only to restore snapshots
@@ -381,6 +397,10 @@ impl EntityCache {
             LifetimeOrdering {
                 account_position,
                 source_seq: source_seq.as_deref(),
+                // The convenience path supports markerless lifetime ordering,
+                // but sparse legacy patches may mix account write versions
+                // and instruction indices within one slot.
+                source_seq_is_ordered: origin == PatchOrigin::Creation,
             },
         )
         .await
@@ -401,6 +421,7 @@ impl EntityCache {
         let LifetimeOrdering {
             account_position,
             source_seq,
+            source_seq_is_ordered,
         } = ordering;
         let mut caches = self.caches.write().await;
 
@@ -414,30 +435,43 @@ impl EntityCache {
         let max_array_length = self.config.max_array_length;
 
         let creation = origin == PatchOrigin::Creation;
-        if !view.accepts(key, creation, account_position, source_seq) {
+        if !view.accepts(
+            key,
+            creation,
+            account_position,
+            source_seq,
+            source_seq_is_ordered,
+        ) {
             return CacheWrite::Refused { patch };
         }
 
         if let Some(position) = account_position {
+            let source_seq = (!creation)
+                .then(|| {
+                    view.lifetimes
+                        .peek(key)
+                        .and_then(|checkpoint| checkpoint.source_seq.clone())
+                })
+                .flatten();
             view.lifetimes.put(
                 key.to_string(),
                 EntityLifetimeCheckpoint {
                     account_position: Some(position),
-                    source_seq: None,
+                    source_seq,
                     deleted: false,
                 },
             );
             view.trim_lifetimes();
-        } else if view
-            .lifetimes
-            .peek(key)
-            .is_none_or(|checkpoint| checkpoint.account_position.is_none())
-        {
-            if let Some(source_seq) = source_seq {
+        } else {
+            if let Some(source_seq) = source_seq.filter(|_| source_seq_is_ordered) {
+                let account_position = view
+                    .lifetimes
+                    .peek(key)
+                    .and_then(|checkpoint| checkpoint.account_position);
                 view.lifetimes.put(
                     key.to_string(),
                     EntityLifetimeCheckpoint {
-                        account_position: None,
+                        account_position,
                         source_seq: Some(source_seq.to_string()),
                         deleted: false,
                     },
@@ -595,7 +629,7 @@ impl EntityCache {
             .read()
             .await
             .get(view_id)
-            .is_none_or(|view| view.accepts(key, creation, account_position, source_seq))
+            .is_none_or(|view| view.accepts(key, creation, account_position, source_seq, true))
     }
 
     /// Apply an ordered source deletion. A delayed deletion never removes a
@@ -607,8 +641,46 @@ impl EntityCache {
         key: &str,
         account_position: Option<AccountPosition>,
     ) -> bool {
-        self.delete_ordered(view_id, key, account_position, None)
-            .await
+        match account_position {
+            Some(position) => {
+                self.delete_ordered(view_id, key, Some(position), None)
+                    .await
+            }
+            None => self.delete_current(view_id, key).await,
+        }
+    }
+
+    /// Delete the lifetime currently held by the cache when the producer has
+    /// no cursor to attach. This is an explicit, trusted operation: callers
+    /// with ordering evidence must use [`Self::delete_ordered`] instead.
+    pub async fn delete_current(&self, view_id: &str, key: &str) -> bool {
+        let mut caches = self.caches.write().await;
+        let view = caches
+            .entry(view_id.to_string())
+            .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
+        let checkpoint = view
+            .lifetimes
+            .peek(key)
+            .cloned()
+            .unwrap_or(EntityLifetimeCheckpoint {
+                account_position: None,
+                source_seq: None,
+                deleted: false,
+            });
+        if checkpoint.deleted {
+            return true;
+        }
+        view.entities.pop(key);
+        view.forget_evicted(key);
+        view.lifetimes.put(
+            key.to_string(),
+            EntityLifetimeCheckpoint {
+                deleted: true,
+                ..checkpoint
+            },
+        );
+        view.trim_lifetimes();
+        true
     }
 
     /// Delete using the producer's own `_seq` ordering only when no
@@ -630,29 +702,32 @@ impl EntityCache {
                 (Some(previous), Some(incoming)) if incoming == previous => {
                     return checkpoint.deleted;
                 }
-                (Some(_), None) => return false,
                 _ => {}
             }
         }
         if account_position.is_none()
-            && view
-                .lifetimes
-                .peek(key)
-                .is_none_or(|checkpoint| checkpoint.account_position.is_none())
-            && !view.accepts_source_lifetime_change(key, source_seq)
+            && source_seq.is_some()
+            && !view.accepts_source_ordering(key, source_seq, true)
         {
             return false;
         }
+        let previous = view.lifetimes.peek(key).cloned();
         view.entities.pop(key);
         view.forget_evicted(key);
         view.lifetimes.put(
             key.to_string(),
             EntityLifetimeCheckpoint {
-                account_position,
-                source_seq: if account_position.is_none() {
-                    source_seq.map(str::to_owned)
-                } else {
+                account_position: account_position.or_else(|| {
+                    previous
+                        .as_ref()
+                        .and_then(|checkpoint| checkpoint.account_position)
+                }),
+                source_seq: if account_position.is_some() {
                     None
+                } else {
+                    source_seq
+                        .map(str::to_owned)
+                        .or_else(|| previous.and_then(|checkpoint| checkpoint.source_seq))
                 },
                 deleted: true,
             },
@@ -718,7 +793,6 @@ impl EntityCache {
                 .peek(key)
                 .map_or(!view.entities.contains(key), |checkpoint| {
                     checkpoint.deleted
-                        || (checkpoint.account_position.is_none() && !view.entities.contains(key))
                 })
         })
     }
@@ -1317,6 +1391,110 @@ mod tests {
                 )
                 .await
         );
+    }
+
+    #[tokio::test]
+    async fn older_source_patch_cannot_replace_newer_row_or_move_its_cursor_back() {
+        let cache = EntityCache::new();
+        assert_eq!(
+            cache
+                .upsert_with_append(
+                    "v",
+                    "a",
+                    json!({"value":"created","_seq":"100:000000000010"}),
+                    &[],
+                    PatchOrigin::Creation,
+                )
+                .await,
+            CacheWrite::Created
+        );
+        assert_eq!(
+            cache
+                .upsert_with_ordering(
+                    "v",
+                    "a",
+                    json!({"value":"newer","_seq":"100:000000000012"}),
+                    &[],
+                    PatchOrigin::Change,
+                    LifetimeOrdering {
+                        account_position: None,
+                        source_seq: Some("100:000000000012"),
+                        source_seq_is_ordered: true,
+                    },
+                )
+                .await,
+            CacheWrite::Merged
+        );
+        assert!(matches!(
+            cache
+                .upsert_with_ordering(
+                    "v",
+                    "a",
+                    json!({"value":"older","stale":true,"_seq":"100:000000000011"}),
+                    &[],
+                    PatchOrigin::Change,
+                    LifetimeOrdering {
+                        account_position: None,
+                        source_seq: Some("100:000000000011"),
+                        source_seq_is_ordered: true,
+                    },
+                )
+                .await,
+            CacheWrite::Refused { .. }
+        ));
+        assert!(
+            !cache
+                .delete_ordered("v", "a", None, Some("100:000000000011"))
+                .await
+        );
+        let row = cache.get("v", "a").await.unwrap();
+        assert_eq!(row["value"], "newer");
+        assert_eq!(row["_seq"], "100:000000000012");
+        assert!(row.get("stale").is_none());
+    }
+
+    #[tokio::test]
+    async fn explicit_current_delete_accepts_a_source_without_position() {
+        let cache = EntityCache::new();
+        cache
+            .upsert_with_append(
+                "v",
+                "a",
+                json!({"value":true,"_seq":"100:000000000010"}),
+                &[],
+                PatchOrigin::Creation,
+            )
+            .await;
+
+        assert!(cache.delete("v", "a", None).await);
+        assert!(cache.get("v", "a").await.is_none());
+        assert!(cache.deletion_is_current("v", "a").await);
+    }
+
+    #[tokio::test]
+    async fn evicted_live_row_does_not_make_an_earlier_delete_current() {
+        let cache = EntityCache::with_config(EntityCacheConfig {
+            max_entities_per_view: 1,
+            ..Default::default()
+        });
+        cache
+            .upsert_with_lifetime(
+                "v",
+                "a",
+                json!({"value":true,"_seq":"100:000000000010"}),
+                &[],
+                PatchOrigin::Creation,
+                Some(AccountPosition::new(100, 10)),
+            )
+            .await;
+        cache
+            .upsert_with_append("v", "b", json!({"value":true}), &[], PatchOrigin::Creation)
+            .await;
+
+        assert!(cache.get("v", "a").await.is_none());
+        assert!(!cache.deletion_is_current("v", "a").await);
+        assert!(cache.delete_current("v", "a").await);
+        assert!(cache.deletion_is_current("v", "a").await);
     }
 
     #[tokio::test]
