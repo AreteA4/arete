@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "arete-artifacts"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "arete-hash",
  "arete-idl",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "arete-hash"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "arete-idl",
  "bs58",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "arete-idl"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bs58",
  "serde",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "arete-solana-contracts"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bs58",
  "chrono",

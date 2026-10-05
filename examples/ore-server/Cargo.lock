@@ -142,6 +142,7 @@ name = "arete-a4-sdk"
 version = "0.29.0"
 dependencies = [
  "anyhow",
+ "arete-solana-contracts",
  "async-trait",
  "base64 0.22.1",
  "bs58",
@@ -151,6 +152,8 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
+ "sha3",
  "solana-pubkey 2.4.0",
  "thiserror 1.0.69",
  "tokio",
@@ -164,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "arete-artifacts"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "arete-hash",
  "arete-idl",
@@ -194,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "arete-hash"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "arete-idl",
  "bs58",
@@ -208,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "arete-idl"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bs58",
  "serde",
@@ -272,6 +275,7 @@ dependencies = [
  "arete-auth",
  "arete-hash",
  "arete-interpreter",
+ "arete-solana-contracts",
  "async-trait",
  "base64 0.22.1",
  "bs58",
@@ -299,6 +303,16 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "zstd",
+]
+
+[[package]]
+name = "arete-solana-contracts"
+version = "0.2.0"
+dependencies = [
+ "bs58",
+ "chrono",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
