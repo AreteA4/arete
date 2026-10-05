@@ -784,13 +784,14 @@ impl ClientManager {
     /// Update the auth context for a client.
     ///
     /// Used for in-band auth refresh without reconnecting.
-    pub fn update_client_auth(&self, client_id: Uuid, auth_context: AuthContext) -> bool {
+    pub async fn update_client_auth(&self, client_id: Uuid, auth_context: AuthContext) -> bool {
         self.try_update_client_auth(client_id, auth_context)
+            .await
             .unwrap_or(false)
     }
 
     #[allow(clippy::result_large_err)]
-    pub(crate) fn try_update_client_auth(
+    pub(crate) async fn try_update_client_auth(
         &self,
         client_id: Uuid,
         auth_context: AuthContext,
@@ -802,12 +803,7 @@ impl ClientManager {
         else {
             return Ok(false);
         };
-        let _lifecycle = lifecycle.try_lock().map_err(|_| {
-            AuthDeny::new(
-                AuthErrorCode::InternalError,
-                "Subscription admission is busy",
-            )
-        })?;
+        let _lifecycle = lifecycle.lock().await;
 
         let (subscriptions, current_permit) = {
             let Some(client) = self.clients.get(&client_id) else {
@@ -821,12 +817,7 @@ impl ClientManager {
                 client.admission_permit.clone(),
             )
         };
-        let subscriptions = subscriptions.try_read().map_err(|_| {
-            AuthDeny::new(
-                AuthErrorCode::InternalError,
-                "Subscription admission is busy",
-            )
-        })?;
+        let subscriptions = subscriptions.read().await;
         let active_subscriptions = subscriptions.keys().cloned().collect::<Vec<_>>();
         drop(subscriptions);
 
