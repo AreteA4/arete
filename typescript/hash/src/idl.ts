@@ -1215,9 +1215,12 @@ function normalizeIdlSnapshotV1(idl: ParsedIdl): IdlSnapshotV1 {
     version: idl.version ?? idl.metadata?.version ?? "0.1.0",
     accounts: idl.accounts.map((account) => {
       const matchingType = idl.types.find((type) => type.name === account.name);
+      // Match Rust IdlAccount::is_untagged; explicit discriminator bytes still win.
+      const untagged = account.discriminator.length === 0 &&
+        account.docs.some((doc) => doc.trim() === "arete.account_untagged=true");
       const output: JsonObject = {
         name: account.name,
-        discriminator: discriminator(account.discriminator, `account:${account.name}`),
+        discriminator: untagged ? [] : discriminator(account.discriminator, `account:${account.name}`),
         docs: account.docs,
         serialization: matchingType?.serialization ?? null,
         fields:
