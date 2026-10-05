@@ -403,6 +403,95 @@ async fn snapshot_waits_for_vm_updates_to_reach_the_projector() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The slot scheduler stamps its batches with the live slot tip, which runs
+/// ahead of the parser. If that stamp advanced the resume watermark, a restart
+/// would resume at the tip and never deliver the slots in between.
+#[tokio::test]
+async fn a_scheduler_batch_at_the_tip_does_not_move_the_resume_point() {
+    let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let dir = temp_dir("scheduler-tip");
+    let config = config_for(&dir);
+    let spec = make_spec("Token");
+    let view_index = make_view_index();
+    let entity_cache = EntityCache::new();
+    let (tx, projector) = make_projector(&view_index, &entity_cache);
+    let service = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        entity_cache,
+        &view_index,
+        test_journal(),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    tokio::spawn(projector.with_snapshot_runtime(service.runtime()).run());
+
+    // The slot subscription has observed 500; the parser is far behind it.
+    let tip = SlotTracker::new();
+    tip.record(500);
+    service
+        .runtime()
+        .register_runtime(Arc::new(StdMutex::new(VmContext::new())), tip);
+
+    tx.send(token_batch("mint1", 10, 100)).await.unwrap();
+    tx.send(token_batch("mint2", 20, 110)).await.unwrap();
+    // A scheduled callback fires at the tip and rewrites an entity the parser
+    // already wrote, then the parser carries on below the tip.
+    let scheduled = MutationBatch::scheduled(
+        token_batch("mint1", 99, 500).mutations,
+        SlotContext::new(500, 1 << 63),
+    );
+    tx.send(scheduled).await.unwrap();
+    tx.send(token_batch("mint3", 30, 120)).await.unwrap();
+    flush_projector(&tx).await;
+
+    assert!(service
+        .snapshot_now(SnapshotTrigger::Shutdown)
+        .await
+        .unwrap());
+
+    // --- Simulated restart ---
+    let restored_view = make_view_index();
+    let restored_cache = EntityCache::new();
+    let (restored_tx, _) = make_projector(&restored_view, &restored_cache);
+    let restored_service = SnapshotService::initialize(
+        config,
+        &spec,
+        restored_cache.clone(),
+        &restored_view,
+        test_journal(),
+        restored_tx,
+    )
+    .await
+    .unwrap();
+
+    // The scheduled update was applied and survives the restart...
+    let mut entities = restored_cache.get_all("Token/list").await;
+    entities.sort_by(|a, b| a.0.cmp(&b.0));
+    let prices: Vec<_> = entities
+        .iter()
+        .map(|(key, value)| (key.as_str(), value["price"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(prices, vec![("mint1", 99), ("mint2", 20), ("mint3", 30)]);
+
+    // ...but the stream resumes where the parser stopped, not at the tip.
+    let restored = restored_service
+        .runtime()
+        .take_restored()
+        .expect("VM snapshot stashed");
+    assert_eq!(restored.resume_watermark, Some(120));
+    // The generated runtime seeds its processed tracker with the watermark.
+    let processed = restored.resume_watermark.unwrap_or(0);
+    assert_eq!(
+        snapshot::select_reconnect_from_slot(restored.resume_watermark, processed, 0, Some(3)),
+        snapshot::ReconnectPosition::Slot(120)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn mismatched_bytecode_and_corrupt_blobs_cold_start() {
     let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
