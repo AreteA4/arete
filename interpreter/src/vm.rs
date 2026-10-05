@@ -653,6 +653,10 @@ pub struct VmContext {
     resolver_pending: HashMap<String, PendingResolverEntry>,
     // Distinguish requests scheduled after a deletion from in-flight old results.
     resolver_epoch: u64,
+    // The earliest resolver epoch a recreated entity may join. Entries only
+    // live while an older pending call could still return, so this cannot grow
+    // with historical entity lifetimes.
+    resolver_target_epochs: HashMap<(u32, Value), u64>,
     resolver_cache: LruCache<String, ResolverCacheEntry>,
     pub resolver_cache_hits: u64,
     pub resolver_cache_misses: u64,
@@ -1048,6 +1052,7 @@ pub struct ResolverTarget {
 pub struct PendingResolverEntry {
     pub resolver: ResolverType,
     pub input: Value,
+    epoch: u64,
     pub targets: Vec<ResolverTarget>,
     // Lifetimes removed while this call was in flight cannot rejoin it.
     invalidated_targets: HashSet<(u32, Value)>,
@@ -1619,6 +1624,7 @@ impl VmContext {
             resolver_requests: VecDeque::new(),
             resolver_pending: HashMap::new(),
             resolver_epoch: 0,
+            resolver_target_epochs: HashMap::new(),
             resolver_cache: LruCache::new(resolver_cache_capacity()),
             resolver_cache_hits: 0,
             resolver_cache_misses: 0,
@@ -1828,6 +1834,7 @@ impl VmContext {
             resolver_requests: VecDeque::new(),
             resolver_pending: HashMap::new(),
             resolver_epoch: 0,
+            resolver_target_epochs: HashMap::new(),
             resolver_cache: LruCache::new(resolver_cache_capacity()),
             resolver_cache_hits: 0,
             resolver_cache_misses: 0,
@@ -1861,6 +1868,7 @@ impl VmContext {
             resolver_requests: VecDeque::new(),
             resolver_pending: HashMap::new(),
             resolver_epoch: 0,
+            resolver_target_epochs: HashMap::new(),
             resolver_cache: LruCache::new(resolver_cache_capacity()),
             resolver_cache_hits: 0,
             resolver_cache_misses: 0,
@@ -1997,6 +2005,8 @@ impl VmContext {
             .resolver_epoch
             .checked_add(1)
             .expect("resolver epoch overflow");
+        self.resolver_target_epochs
+            .insert((state_id, key.clone()), self.resolver_epoch);
         self.resolver_pending.retain(|_, entry| {
             if entry
                 .targets
@@ -2012,6 +2022,7 @@ impl VmContext {
         });
         self.resolver_requests
             .retain(|request| self.resolver_pending.contains_key(&request.cache_key));
+        self.prune_resolver_target_epochs();
         self.scheduled_callbacks
             .retain(|(_, target)| target.state_id != state_id || &target.primary_key != key);
         Some(Mutation::delete(export, key.clone()))
@@ -2233,7 +2244,23 @@ impl VmContext {
         &mut self,
         cache_key: &str,
     ) -> Option<PendingResolverEntry> {
-        self.resolver_pending.remove(cache_key)
+        let removed = self.resolver_pending.remove(cache_key);
+        self.prune_resolver_target_epochs();
+        removed
+    }
+
+    fn prune_resolver_target_epochs(&mut self) {
+        let oldest_pending_epoch = self
+            .resolver_pending
+            .values()
+            .map(|entry| entry.epoch)
+            .min();
+        match oldest_pending_epoch {
+            Some(oldest) => self
+                .resolver_target_epochs
+                .retain(|_, minimum| oldest < *minimum),
+            None => self.resolver_target_epochs.clear(),
+        }
     }
 
     pub fn apply_resolver_result(
@@ -2258,6 +2285,7 @@ impl VmContext {
             Some(entry) => entry,
             None => return Ok(Vec::new()),
         };
+        self.prune_resolver_target_epochs();
 
         self.cache_resolver_value(&entry.resolver, &entry.input, &resolved_value);
 
@@ -2379,6 +2407,11 @@ impl VmContext {
         // Invalidations live only with that pending call, not in an unbounded
         // per-entity generation table.
         let identity = (target.state_id, target.primary_key.clone());
+        let minimum_epoch = self
+            .resolver_target_epochs
+            .get(&identity)
+            .copied()
+            .unwrap_or_default();
         let cache_key = if self.resolver_epoch == 0 {
             new_key
         } else {
@@ -2387,13 +2420,17 @@ impl VmContext {
                 .filter(|(_, entry)| {
                     entry.resolver == resolver
                         && entry.input == input
+                        && entry.epoch >= minimum_epoch
                         && !entry.invalidated_targets.contains(&identity)
                 })
                 .max_by_key(|(_, entry)| {
-                    entry.targets.iter().any(|existing| {
-                        existing.state_id == target.state_id
-                            && existing.primary_key == target.primary_key
-                    })
+                    (
+                        entry.targets.iter().any(|existing| {
+                            existing.state_id == target.state_id
+                                && existing.primary_key == target.primary_key
+                        }),
+                        entry.epoch,
+                    )
                 })
                 .map(|(key, _)| key.clone())
                 .unwrap_or(new_key)
@@ -2422,6 +2459,7 @@ impl VmContext {
             PendingResolverEntry {
                 resolver: resolver.clone(),
                 input: input.clone(),
+                epoch: self.resolver_epoch,
                 targets: vec![target],
                 invalidated_targets: HashSet::new(),
                 queued_at,

@@ -1,5 +1,5 @@
 use crate::bus::{BusManager, BusMessage};
-use crate::cache::{CacheWrite, EntityCache, PatchOrigin};
+use crate::cache::{CacheWrite, EntityCache, LifetimeOrdering, PatchOrigin};
 use crate::mutation_batch::{MutationBatch, SlotContext};
 use crate::view::{ViewIndex, ViewSpec};
 use crate::websocket::frame::{apply_wire_format, Mode, SourceFrame};
@@ -455,7 +455,7 @@ impl Projector {
             for spec in specs.iter().filter(|spec| spec.filters.matches(&key)) {
                 if !self
                     .entity_cache
-                    .delete(&spec.id, &key, account_position)
+                    .delete_ordered(&spec.id, &key, account_position, seq.as_deref())
                     .await
                 {
                     continue;
@@ -520,6 +520,7 @@ impl Projector {
         } else {
             None
         };
+        let requested_resend = remembered.is_some();
         let seq = if whole {
             remembered
                 .as_ref()
@@ -555,11 +556,12 @@ impl Projector {
             if !whole
                 && !self
                     .entity_cache
-                    .accepts_lifetime_mutation(
+                    .accepts_ordered_lifetime_mutation(
                         &spec.id,
                         &key,
                         origin == PatchOrigin::Creation,
                         account_position,
+                        seq.as_deref(),
                     )
                     .await
             {
@@ -589,10 +591,13 @@ impl Projector {
                         &key,
                         projected,
                         wire_data,
-                        RememberedChange {
-                            seq,
-                            account_position: resend_account_position,
-                        },
+                        (
+                            RememberedChange {
+                                seq,
+                                account_position: resend_account_position,
+                            },
+                            requested_resend,
+                        ),
                         json_buffer,
                     )
                     .await?;
@@ -650,13 +655,16 @@ impl Projector {
 
             let write = self
                 .entity_cache
-                .upsert_with_lifetime(
+                .upsert_with_ordering(
                     &spec.id,
                     &key,
                     projected,
                     &frame.append,
                     origin,
-                    account_position,
+                    LifetimeOrdering {
+                        account_position,
+                        source_seq: frame.seq.as_deref(),
+                    },
                 )
                 .await;
 
@@ -720,14 +728,32 @@ impl Projector {
         key: &str,
         projected: Value,
         wire_data: Value,
-        position: RememberedChange,
+        resend: (RememberedChange, bool),
         json_buffer: &mut Vec<u8>,
     ) -> anyhow::Result<u32> {
-        if !self
-            .entity_cache
-            .store_whole_for_lifetime(&spec.id, key, projected, position.account_position)
-            .await
-        {
+        let (position, requested_resend) = resend;
+        let stored = if requested_resend {
+            self.entity_cache
+                .store_whole_for_ordering(
+                    &spec.id,
+                    key,
+                    projected,
+                    position.account_position,
+                    position.seq.as_deref(),
+                )
+                .await
+        } else if self.resync.is_linked() {
+            // A delete cancels its outstanding request. A late whole result
+            // with no matching request therefore belongs to an old lifetime.
+            false
+        } else {
+            // Sources without a linked VM may still explicitly vouch that a
+            // mutation is whole; there is no asynchronous request to match.
+            self.entity_cache
+                .store_whole_for_lifetime(&spec.id, key, projected, position.account_position)
+                .await
+        };
+        if !stored {
             return Ok(0);
         }
         match spec.mode {

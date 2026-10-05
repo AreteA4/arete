@@ -159,6 +159,7 @@ mod tests {
                         9_007_199_254_740_993,
                         u64::MAX,
                     )),
+                    source_seq: None,
                     deleted: false,
                 },
             )]),
@@ -184,7 +185,8 @@ mod tests {
         let decoded_payload = decode_payload(&bytes).unwrap();
         assert_eq!(decoded_payload.entity_cache.len(), 1);
         assert_eq!(decoded_payload.entity_cache[0].0, "tokens/list");
-        let checkpoint = decoded_payload.entity_lifetimes.unwrap()[0].2;
+        let lifetimes = decoded_payload.entity_lifetimes.unwrap();
+        let checkpoint = &lifetimes[0].2;
         assert_eq!(
             checkpoint.account_position,
             Some(arete_interpreter::AccountPosition::new(
