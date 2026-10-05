@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.29.0](https://github.com/AreteA4/arete/compare/arete-server-v0.28.0...arete-server-v0.29.0) (2026-10-05)
+
+
+### Features
+
+* **contracts:** freeze public managed Solana v1 lifecycle contracts ([e14af8a](https://github.com/AreteA4/arete/commit/e14af8a7fc1282c33d90a29cc9aa838a08ff64cf))
+* **gateway:** serve managed Solana reads and execution metadata ([ce38ad5](https://github.com/AreteA4/arete/commit/ce38ad532b88f5ac270cb5ca8af3405fce21833e))
+* **runtime:** support ordered entity deletion and fresh recreation ([368501e](https://github.com/AreteA4/arete/commit/368501e86c5d0d1f7d038ef8c14f73ee089d6dfd))
+* **solana:** add contextual reads, discovery, and account lifecycle support ([4dbffb7](https://github.com/AreteA4/arete/commit/4dbffb777db78fac5ff5b321b2b84d7e3e073eb9))
+
+
+### Bug Fixes
+
+* **runtime:** isolate entity lifetime ordering ([7929910](https://github.com/AreteA4/arete/commit/7929910d4312630a733bef61f5f7605fcf66e3cb))
+* **runtime:** isolate resolver lifetimes and reject stale recreation patches ([3cec9fd](https://github.com/AreteA4/arete/commit/3cec9fd710adbf48ef380d46bb8d7b0b31fbcd46))
+* **runtime:** separate account lifetime ordering ([e7b1a5e](https://github.com/AreteA4/arete/commit/e7b1a5ebeb31ae0dd4c1b975f7a44982ea058ba1))
+* **server:** await admission lifecycle refresh ([2a49622](https://github.com/AreteA4/arete/commit/2a4962282038d9b45f19db5020afcbcd375a3833))
+* **server:** bootstrap unsorted derived views from source rows ([599a572](https://github.com/AreteA4/arete/commit/599a572d320960d64212dbe103998bd277531205))
+* **server:** close cache ordering review gaps ([14c1778](https://github.com/AreteA4/arete/commit/14c1778b3e1ae52fb2d72f835208862210a831b6))
+* **server:** expose retryable sync auth refresh ([92fc15d](https://github.com/AreteA4/arete/commit/92fc15d15133a0e029c067e30371cdd43ef70d60))
+* **server:** isolate source recency domains ([618e986](https://github.com/AreteA4/arete/commit/618e98692681204b684289825ca3b2ddb5299e64))
+* **server:** preserve sync auth refresh API ([cf47cf0](https://github.com/AreteA4/arete/commit/cf47cf0b60f4db5450b318fdf620a0b1aa94a759))
+* **server:** retain source barriers across lifetimes ([72045f1](https://github.com/AreteA4/arete/commit/72045f197a2528a64c84c2374e73c6329d01dea3))
+* **server:** serialize admission lifecycle updates ([433f5a3](https://github.com/AreteA4/arete/commit/433f5a3066a79831d1796d48a3e77793ba78834b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-solana-contracts bumped from 0.1.0 to 0.2.0
+    * arete-interpreter bumped from 0.28.0 to 0.29.0
+    * arete-hash bumped from 0.5.0 to 0.5.1
+
 ## [0.28.0](https://github.com/AreteA4/arete/compare/arete-server-v0.27.0...arete-server-v0.28.0) (2026-09-30)
 
 

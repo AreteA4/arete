@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.29.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.28.0...arete-mcp-v0.29.0) (2026-10-05)
+
+
+### Bug Fixes
+
+* **auth:** stabilize agent trial bootstrap (A4-210) ([ed8046a](https://github.com/AreteA4/arete/commit/ed8046af9dd1ce404d7de3bd37cdcfe0b67dca00))
+* **onboarding:** make agent trial bootstrap production-safe ([e9b42c0](https://github.com/AreteA4/arete/commit/e9b42c061e4565aa4166b1d9007eb2b1d29497db))
+
 ## [0.28.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.27.0...arete-mcp-v0.28.0) (2026-09-30)
 
 

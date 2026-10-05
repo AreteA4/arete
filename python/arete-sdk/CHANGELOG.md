@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.29.0](https://github.com/AreteA4/arete/compare/arete-python-v0.28.0...arete-python-v0.29.0) (2026-10-05)
+
+
+### Features
+
+* **contracts:** freeze public managed Solana v1 lifecycle contracts ([e14af8a](https://github.com/AreteA4/arete/commit/e14af8a7fc1282c33d90a29cc9aa838a08ff64cf))
+* **python-sdk:** support managed Solana capability contracts ([c97379d](https://github.com/AreteA4/arete/commit/c97379dc650ae8ae11ad1d9d7ad198a5e944f268))
+* **python:** add BuiltInstruction.to_artifact for TypeScript instruction artifacts ([f8a1143](https://github.com/AreteA4/arete/commit/f8a1143aeda23e4d513aa7b4f451e414c821edf6))
+* **python:** add keccak256, sha256 and base58 helpers to arete ([b8e8545](https://github.com/AreteA4/arete/commit/b8e8545e41a43d975c520f34c46c9280dc1af5d7))
+* **python:** apply PROGRAM_EXTENSIONS and STACK_EXTENSIONS, add program create_read ([da23d51](https://github.com/AreteA4/arete/commit/da23d510098691a9ee9badebf430e3f50ebde736))
+* **python:** carry signer material on prepared transactions ([c8007fe](https://github.com/AreteA4/arete/commit/c8007fe9a31223b868cca040dd2a92fbcb2a4e9d))
+* **python:** decode TypeScript AmountInput shapes ([586bb23](https://github.com/AreteA4/arete/commit/586bb23762ef56f4807f59fa67f4d036cf27069a))
+* Rust and Python SDK extensions with full TypeScript parity ([f70a9f4](https://github.com/AreteA4/arete/commit/f70a9f4a124182a3c9503f8c878c12cb641bc325))
+* **solana:** add contextual reads, discovery, and account lifecycle support ([4dbffb7](https://github.com/AreteA4/arete/commit/4dbffb777db78fac5ff5b321b2b84d7e3e073eb9))
+
+
+### Bug Fixes
+
+* **python:** default the ATA token program on None and raise TypeScript's messages ([572f41f](https://github.com/AreteA4/arete/commit/572f41ffefeab782d4810efe2bc9faa112fe945e))
+* **python:** fill only wallet signers from the build's wallet ([6c101a8](https://github.com/AreteA4/arete/commit/6c101a8100dfc28ce5f39bcc99c5097842c65cf1))
+* **python:** honour an explicit address for every instruction account ([c200c4b](https://github.com/AreteA4/arete/commit/c200c4bc591cf70d028a5df46a6951fa1e3dd846))
+
 ## [0.28.0](https://github.com/AreteA4/arete/compare/arete-python-v0.27.0...arete-python-v0.28.0) (2026-09-30)
 
 

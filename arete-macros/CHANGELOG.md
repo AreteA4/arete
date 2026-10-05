@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.29.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.28.0...arete-macros-v0.29.0) (2026-10-05)
+
+
+### Features
+
+* **solana:** add contextual reads, discovery, and account lifecycle support ([4dbffb7](https://github.com/AreteA4/arete/commit/4dbffb777db78fac5ff5b321b2b84d7e3e073eb9))
+
+
+### Bug Fixes
+
+* **codegen:** support public Orca and native SPL account definitions ([a4496f9](https://github.com/AreteA4/arete/commit/a4496f9f74e2d3ff4f6942016f11072fca3c9949))
+* **decoder:** preserve enum payloads and expose strict account reads ([fddcfae](https://github.com/AreteA4/arete/commit/fddcfaebceaa2993b46cd8509fac06a65f81bbd4))
+* **server:** isolate source recency domains ([618e986](https://github.com/AreteA4/arete/commit/618e98692681204b684289825ca3b2ddb5299e64))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-idl bumped from 0.6.0 to 0.7.0
+    * arete-hash bumped from 0.5.0 to 0.5.1
+    * arete-artifacts bumped from 0.3.3 to 0.3.4
+
 ## [0.28.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.27.0...arete-macros-v0.28.0) (2026-09-30)
 
 

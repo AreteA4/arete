@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/AreteA4/arete/compare/arete-idl-v0.6.0...arete-idl-v0.7.0) (2026-10-05)
+
+
+### Features
+
+* **solana:** add contextual reads, discovery, and account lifecycle support ([4dbffb7](https://github.com/AreteA4/arete/commit/4dbffb777db78fac5ff5b321b2b84d7e3e073eb9))
+
+
+### Bug Fixes
+
+* **codegen:** support public Orca and native SPL account definitions ([a4496f9](https://github.com/AreteA4/arete/commit/a4496f9f74e2d3ff4f6942016f11072fca3c9949))
+
 ## [0.6.0](https://github.com/AreteA4/arete/compare/arete-idl-v0.5.0...arete-idl-v0.6.0) (2026-09-06)
 
 
