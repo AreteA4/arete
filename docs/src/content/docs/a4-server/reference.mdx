@@ -105,14 +105,15 @@ for: the program stream, its reconnects and snapshot resumes, and the slot
 subscription that drives scheduling and readiness. Accepted values are
 `processed`, `confirmed` and `finalized` (case-insensitive). Unset means
 `processed`, the level every existing deployment already ingests at. An empty or
-unrecognised value stops the runtime at startup instead of falling back.
+unrecognised value stops a live runtime at startup instead of falling back.
 
 `processed` delivers first but can include slots the cluster later drops;
 `finalized` delivers only rooted data, about 32 slots (roughly 13 seconds) behind
 the tip.
-`confirmed` sits between them. The runtime logs the level it resolved at startup and a live runtime reports it
-as `yellowstone_commitment` on `/status`. Runtimes without live ingestion
-(`http`, `program_reads`, the Solana gateway) report `null` there.
+`confirmed` sits between them. A live runtime logs the level it resolved at
+startup and reports it as `yellowstone_commitment` on `/status`. Runtimes
+without live ingestion (`http`, `program_reads`, the Solana gateway) ignore the
+variable and report `null` there.
 
 To set it per runtime rather than per process, use the builder:
 

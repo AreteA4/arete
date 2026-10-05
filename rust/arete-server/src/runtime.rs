@@ -222,14 +222,18 @@ impl Runtime {
         if plan.live_runtime_enabled() && !load_env_files() {
             warn!("No .env file found. Make sure environment variables are set.");
         }
-        // Resolved before anything starts: an invalid value must stop the
+        // Resolved before anything starts: an invalid value must stop a live
         // runtime, not leave it serving from a stream at a level nobody asked
-        // for.
+        // for. Only a live runtime ingests from Yellowstone, so only it reads
+        // the setting; every other plan carries the unused default.
         let commitment = match self.config.commitment {
             Some(commitment) => commitment,
-            None => crate::Commitment::from_env()?,
+            None if plan.live_runtime_enabled() => crate::Commitment::from_env()?,
+            None => crate::Commitment::default(),
         };
-        info!(yellowstone_commitment = %commitment, "Ingesting at Yellowstone commitment");
+        if plan.live_runtime_enabled() {
+            info!(yellowstone_commitment = %commitment, "Ingesting at Yellowstone commitment");
+        }
         let transaction_config = if plan.transactions {
             match self.config.transactions.clone() {
                 Some(config) => config,
