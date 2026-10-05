@@ -721,7 +721,7 @@ fn resolve_instruction_type(
     let mut fields = Vec::new();
 
     // Add account fields
-    for account in &instruction.accounts {
+    for account in &instruction.flattened_accounts() {
         fields.push(ResolvedField {
             field_name: account.name.clone(),
             raw_name: Some(account.name.clone()),

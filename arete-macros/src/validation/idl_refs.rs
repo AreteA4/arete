@@ -147,8 +147,8 @@ pub fn validate_event_field_spec(
     let mut accounts: Vec<String> = idl
         .instructions
         .iter()
-        .flat_map(|instruction| instruction.accounts.iter())
-        .map(|account| account.name.clone())
+        .flat_map(|instruction| instruction.flattened_accounts())
+        .map(|account| account.name)
         .collect();
     if accounts.contains(&field_name) {
         return Ok(());

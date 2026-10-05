@@ -361,11 +361,13 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
     let to_value_with_accounts_arms = idl.instructions.iter().map(|ix| {
         let variant_name = format_ident!("{}", to_pascal_case(&ix.name));
         let ix_name = &ix.name;
-        let account_names: Vec<_> = ix.accounts.iter().map(|acc| &acc.name).collect();
+        // Wire order is the flattened order: a nested group contributes its leaves, not itself.
+        let flat_accounts = ix.flattened_accounts();
+        let account_names: Vec<_> = flat_accounts.iter().map(|acc| &acc.name).collect();
         let declared_count = account_names.len();
         // Declaration order matters, not just the count: which accounts were omitted decides
         // whether the positional mapping below still lines up.
-        let optional_flags: Vec<_> = ix.accounts.iter().map(|acc| acc.optional).collect();
+        let optional_flags: Vec<_> = flat_accounts.iter().map(|acc| acc.optional).collect();
 
         quote! {
             #ix_enum_name::#variant_name(data) => {
@@ -605,6 +607,38 @@ mod tests {
             !code.contains("let discriminator = & data [0 .. 8]"),
             "account parser should not hard-code 8-byte discriminator slices, got: {}",
             code
+        );
+    }
+
+    /// Accounts are paired with names by wire position, so a nested group must contribute its
+    /// leaves; naming the group would shift every later account onto the wrong key.
+    #[test]
+    fn instruction_accounts_are_named_by_their_flattened_wire_order() {
+        let json = r#"{
+            "name": "grouped",
+            "instructions": [{
+                "name": "deposit",
+                "discriminator": [1],
+                "accounts": [
+                    { "name": "authority", "accounts": [
+                        { "name": "payer", "signer": true },
+                        { "name": "vault", "writable": true }
+                    ]},
+                    { "name": "systemProgram" }
+                ],
+                "args": []
+            }],
+            "accounts": [], "types": [], "events": [], "errors": []
+        }"#;
+
+        let idl = parse_idl_content(json).expect("test IDL should parse");
+        let code = generate_instruction_parser(&idl, "11111111111111111111111111111111")
+            .to_string()
+            .replace(' ', "");
+
+        assert!(
+            code.contains(r#"vec!["authorityPayer","authorityVault","systemProgram"]"#),
+            "accounts must be named in flattened wire order, got: {code}"
         );
     }
 }
