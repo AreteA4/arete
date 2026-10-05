@@ -310,7 +310,7 @@ async fn handle_refresh_auth(
         Ok(new_context) => {
             let expires_at = new_context.expires_at;
             match client_manager
-                .try_update_client_auth(client_id, new_context)
+                .try_update_client_auth_async(client_id, new_context)
                 .await
             {
                 Ok(true) => RefreshAuthResponse {
