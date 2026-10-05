@@ -99,6 +99,11 @@ pub enum ServerFrame {
         /// which have no per-event identity.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         replay_window: Option<ReplayWindow>,
+        /// The server sends every key whole (`upsert` or a snapshot row)
+        /// before any `patch` for it, so a patch for a key the client does not
+        /// hold can be dropped. Older servers omit it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        whole_entities: bool,
     },
     Unsubscribed {
         protocol_version: u8,
@@ -275,6 +280,36 @@ pub(crate) fn compare_seq(left: &str, right: &str) -> Ordering {
     left_index.cmp(right_index)
 }
 
+/// `(epoch, counter)` from a frame's `_version`, or `None` if it does not
+/// parse.
+fn parse_version(version: &str) -> Option<(&str, u64)> {
+    let (epoch, counter) = version.rsplit_once(':')?;
+    if epoch.is_empty() || counter.is_empty() || !is_ascii_digits(counter) {
+        return None;
+    }
+    Some((epoch, counter.parse().ok()?))
+}
+
+/// Whether a frame at version `incoming` was already applied, or is older.
+///
+/// Mirrors `isStaleVersion` (`typescript/core/src/frame-processor.ts`) and
+/// `is_stale_version` (`python/arete-sdk/arete/wire.py`). A version is
+/// `{epoch}:{counter}`, and counters compare only within an epoch: a server
+/// restart or a reloaded stack starts a new one, whose first frame is newer
+/// than anything from the old one. A version that does not parse cannot be
+/// ordered and is never stale.
+pub(crate) fn is_stale_version(incoming: &str, held: Option<&str>) -> bool {
+    let Some(held) = held else {
+        return false;
+    };
+    match (parse_version(incoming), parse_version(held)) {
+        (Some((epoch, next)), Some((held_epoch, current))) if epoch == held_epoch => {
+            next <= current
+        }
+        _ => false,
+    }
+}
+
 /// Unknown fields are ignored; see [`ServerFrame`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -290,11 +325,15 @@ pub struct ProtocolErrorFrame {
     pub code: String,
     #[serde(default)]
     pub retryable: bool,
-    #[serde(default)]
+    #[serde(default, alias = "retry_after")]
     pub retry_after: Option<u64>,
     #[serde(default)]
-    pub suggested_action: Option<String>,
+    pub usage: Option<crate::error::UsageLimit>,
     #[serde(default)]
+    pub action: Option<crate::error::RecoveryAction>,
+    #[serde(default, alias = "suggested_action")]
+    pub suggested_action: Option<String>,
+    #[serde(default, alias = "docs_url")]
     pub docs_url: Option<String>,
     #[serde(default)]
     pub fatal: bool,
@@ -467,6 +506,24 @@ mod tests {
             compare_seq("99999999999999999999999:a", "100000000000000000000000:a"),
             Ordering::Less
         );
+    }
+
+    #[test]
+    fn versions_order_frames_within_an_epoch() {
+        assert!(is_stale_version("3f9a2c1d:4", Some("3f9a2c1d:5")));
+        assert!(is_stale_version("3f9a2c1d:5", Some("3f9a2c1d:5")));
+        assert!(!is_stale_version("3f9a2c1d:6", Some("3f9a2c1d:5")));
+        // Numeric, not lexicographic.
+        assert!(!is_stale_version("3f9a2c1d:10", Some("3f9a2c1d:9")));
+    }
+
+    #[test]
+    fn another_epoch_nothing_held_or_an_unparsable_version_is_never_stale() {
+        assert!(!is_stale_version("a1b2c3d4:1", Some("3f9a2c1d:500")));
+        assert!(!is_stale_version("3f9a2c1d:1", None));
+        assert!(!is_stale_version("garbage", Some("3f9a2c1d:5")));
+        assert!(!is_stale_version("3f9a2c1d:x", Some("3f9a2c1d:5")));
+        assert!(!is_stale_version("3f9a2c1d:1", Some("garbage")));
     }
 
     #[test]

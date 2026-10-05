@@ -1,6 +1,7 @@
 import type { SortConfig } from '../frame';
 import type { StorageAdapter, UpdateCallback, RichUpdateCallback, ViewSortConfig } from './adapter';
 import type { Update, RichUpdate } from '../types';
+import { compareSortOrder } from '../sort-order';
 
 function getNestedValue(obj: unknown, path: string[]): unknown {
   let current: unknown = obj;
@@ -10,33 +11,6 @@ function getNestedValue(obj: unknown, path: string[]): unknown {
     current = (current as Record<string, unknown>)[segment];
   }
   return current;
-}
-
-function compareSortValues(a: unknown, b: unknown): number {
-  if (a === b) return 0;
-  if (a === undefined || a === null) return -1;
-  if (b === undefined || b === null) return 1;
-
-  if (typeof a === 'bigint' && typeof b === 'bigint') {
-    return a < b ? -1 : 1;
-  }
-  if (typeof a === 'number' && typeof b === 'number') {
-    return a - b;
-  }
-  if (typeof a === 'bigint' && typeof b === 'number' && Number.isInteger(b)) {
-    return a < BigInt(b) ? -1 : 1;
-  }
-  if (typeof a === 'number' && typeof b === 'bigint' && Number.isInteger(a)) {
-    return BigInt(a) < b ? -1 : 1;
-  }
-  if (typeof a === 'string' && typeof b === 'string') {
-    return a.localeCompare(b);
-  }
-  if (typeof a === 'boolean' && typeof b === 'boolean') {
-    return (a ? 1 : 0) - (b ? 1 : 0);
-  }
-
-  return String(a).localeCompare(String(b));
 }
 
 export class SortedStorageDecorator implements StorageAdapter {
@@ -185,7 +159,6 @@ export class SortedStorageDecorator implements StorageAdapter {
     newValue: unknown
   ): number {
     const newSortValue = getNestedValue(newValue, sortConfig.field);
-    const isDesc = sortConfig.order === 'desc';
     let low = 0;
     let high = sortedKeys.length;
 
@@ -195,8 +168,8 @@ export class SortedStorageDecorator implements StorageAdapter {
       const midEntity = this.inner.get(viewPath, midKey);
       const midValue = getNestedValue(midEntity, sortConfig.field);
 
-      let cmp = compareSortValues(newSortValue, midValue);
-      if (isDesc) cmp = -cmp;
+      // Unranked (missing or null) values sort last in both directions.
+      let cmp = compareSortOrder(newSortValue, midValue, sortConfig.order);
 
       if (cmp === 0) {
         cmp = newKey.localeCompare(midKey);
@@ -216,14 +189,12 @@ export class SortedStorageDecorator implements StorageAdapter {
     const allKeys = this.inner.keys(viewPath);
     if (allKeys.length === 0) return;
 
-    const isDesc = sortConfig.order === 'desc';
     const entries = allKeys.map(k => [k, this.inner.get(viewPath, k)] as [string, unknown]);
 
     entries.sort((a, b) => {
       const aValue = getNestedValue(a[1], sortConfig.field);
       const bValue = getNestedValue(b[1], sortConfig.field);
-      let cmp = compareSortValues(aValue, bValue);
-      if (isDesc) cmp = -cmp;
+      let cmp = compareSortOrder(aValue, bValue, sortConfig.order);
       if (cmp === 0) {
         cmp = a[0].localeCompare(b[0]);
       }

@@ -13,6 +13,8 @@ import reconnect from '../../../tests/fixtures/websocket-v2/reconnect-replacemen
 import errors from '../../../tests/fixtures/websocket-v2/errors.json';
 import replayCursors from '../../../tests/fixtures/websocket-v2/replay-cursors.json';
 import replayGaps from '../../../tests/fixtures/websocket-v2/replay-gaps.json';
+import wholeEntities from '../../../tests/fixtures/websocket-v2/whole-entities.json';
+import frameVersions from '../../../tests/fixtures/websocket-v2/frame-versions.json';
 import { parseFrame } from './frame';
 import { FrameProcessor } from './frame-processor';
 import { QueryStore } from './query-store';
@@ -59,6 +61,8 @@ describe('shared WebSocket protocol v2 fixtures', () => {
       'errors.json',
       'replay-cursors.json',
       'replay-gaps.json',
+      'whole-entities.json',
+      'frame-versions.json',
     ]);
     expect(parseFrame(JSON.stringify({
       protocolVersion: 2,
@@ -70,6 +74,36 @@ describe('shared WebSocket protocol v2 fixtures', () => {
       subscriptionId: ' things:all',
       op: 'unsubscribed',
     }))).toThrow(/Invalid WebSocket protocol v2 frame/);
+  });
+
+  it('drops a patch for an unheld key only when the server guarantees whole entities', () => {
+    const { storage, register, process } = harness();
+    for (const request of wholeEntities.client) {
+      register(request.subscriptionId, request.query);
+    }
+    wholeEntities.server.forEach(process);
+
+    for (const [view, entities] of Object.entries(wholeEntities.expected)) {
+      expect(storage.keys(view).sort()).toEqual(Object.keys(entities).sort());
+      for (const [key, entity] of Object.entries(entities)) {
+        expect(storage.get(view, key)).toMatchObject(entity);
+      }
+    }
+  });
+
+  it('orders one key\'s frames by _version, and by seq without one', () => {
+    const { storage, register, process } = harness();
+    for (const request of frameVersions.client) {
+      register(request.subscriptionId, request.query);
+    }
+    frameVersions.server.forEach(process);
+
+    for (const [view, entities] of Object.entries(frameVersions.expected)) {
+      expect(storage.keys(view).sort()).toEqual(Object.keys(entities).sort());
+      for (const [key, entity] of Object.entries(entities)) {
+        expect(storage.get(view, key)).toMatchObject(entity);
+      }
+    }
   });
 
   it('applies keyed state snapshots and patches to only their query', () => {

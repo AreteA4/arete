@@ -79,33 +79,36 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 
 ## Quick Reference
 
-| Command                               | Description                                    |
-| ------------------------------------- | ---------------------------------------------- |
-| `a4 create [name]`                    | Scaffold a new app from a template             |
-| `a4 init`                             | Set up the project for Arete and coding agents |
-| `a4 doctor`                           | Check install, project, auth, agents           |
-| `a4 self install`                     | Finish installing the `a4` binary              |
-| `a4 self update` / `a4 upgrade`       | Update `a4` in place                           |
-| `a4 self uninstall`                   | Remove `a4`                                    |
-| `a4 mcp`                              | Run the stream MCP server (stdio)              |
-| `a4 auth signup`                      | Register an agent account                      |
-| `a4 program build <idl>`              | Build a portable ProgramSpec                   |
-| `a4 stack compose`                    | Compose ProgramSpecs and aliased LiveSpecs     |
-| `a4 sdk create --manifest ... --ts`   | Generate a TypeScript SDK from a StackManifest |
-| `a4 sdk create --manifest ... --rust` | Generate a Rust SDK from a StackManifest       |
-| `a4 up <manifest>`                    | Deploy one exact StackManifest                 |
-| `a4 status`                           | Show project overview                          |
-| `a4 stack list`                       | List deployed stacks                           |
-| `a4 telemetry status`                 | Show telemetry status                          |
-| `a4 explore`                          | Discover installable stacks                    |
-| `a4 explore programs`                 | Discover installable standalone programs       |
-| `a4 explore stack <ref>`              | Inspect an exact stack install descriptor      |
-| `a4 explore program <ref>`            | Inspect an exact program install descriptor    |
-| `a4 know search --query <intent>`     | Search the knowledge layer by intent           |
-| `a4 know protocol <slug>`             | Curated knowledge for one protocol             |
-| `a4 know program <slug>`              | Curated annotations for one program            |
-| `a4 know recipe <slug>`               | One cross-protocol recipe                      |
-| `a4 know concepts`                    | Concept and category vocabularies              |
+| Command                                                                       | Description                                                      |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `a4 create [name]`                                                            | Scaffold a new app from a template                               |
+| `a4 init`                                                                     | Set up the project for Arete and coding agents                   |
+| `a4 doctor`                                                                   | Check install, project, auth, agents                             |
+| `a4 self install`                                                             | Finish installing the `a4` binary                                |
+| `a4 self update` / `a4 upgrade`                                               | Update `a4` in place                                             |
+| `a4 self uninstall`                                                           | Remove `a4`                                                      |
+| `a4 mcp`                                                                      | Run the stream MCP server (stdio)                                |
+| `a4 auth signup`                                                              | Register an agent account                                        |
+| `a4 program build <idl>`                                                      | Build a portable ProgramSpec                                     |
+| `a4 stack compose`                                                            | Compose live views and program SDKs                              |
+| `a4 sdk create --manifest ... --ts`                                           | Generate a TypeScript SDK from a StackManifest                   |
+| `a4 sdk create --manifest ... --rust`                                         | Generate a Rust SDK from a StackManifest                         |
+| `a4 sdk create --program-spec ... --rust`                                     | Generate a Rust (or `--python`) program SDK from a ProgramSpec   |
+| `a4 sdk create --manifest ... --rust --program-extensions <program>=<bundle>` | Embed a program's own bundle in a Rust (or `--python`) stack SDK |
+| `a4 up <manifest>`                                                            | Deploy one exact StackManifest                                   |
+| `a4 up <alias>`                                                               | Deploy an installed stack                                        |
+| `a4 status`                                                                   | Show project overview                                            |
+| `a4 stack list`                                                               | List deployed stacks                                             |
+| `a4 telemetry status`                                                         | Show telemetry status                                            |
+| `a4 explore`                                                                  | Discover installable stacks                                      |
+| `a4 explore programs`                                                         | Discover installable standalone programs                         |
+| `a4 explore stack <ref>`                                                      | Inspect an exact stack install descriptor                        |
+| `a4 explore program <ref>`                                                    | Inspect an exact program install descriptor                      |
+| `a4 know search --query <intent>`                                             | Search the knowledge layer by intent                             |
+| `a4 know protocol <slug>`                                                     | Curated knowledge for one protocol                               |
+| `a4 know program <slug>`                                                      | Curated annotations for one program                              |
+| `a4 know recipe <slug>`                                                       | One cross-protocol recipe                                        |
+| `a4 know concepts`                                                            | Concept and category vocabularies                                |
 
 :::note[One binary]
 Every install route (`install.sh`, `install.ps1`, `npx @usearete/a4 install`) puts the same prebuilt binary at `~/.local/bin/a4`. `npx @usearete/a4 <command>` runs that binary too, installing it first if needed.
@@ -171,6 +174,7 @@ a4 init -y --no-skills --no-mcp  # manifest and AGENTS.md only
 | Item               | Path                                                 | Notes                                                                                                                                                  |
 | ------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Manifest           | `arete.toml`                                         | Created if absent; left untouched if present unless `--force`, which rewrites only `[project]`. Name from `--name` or the directory basename           |
+| Auth profile       | `.arete/auth.toml`                                   | Project scope only. Non-secret default selecting only the restricted `agent` profile; a repository cannot select `human`                               |
 | Agent guidance     | `AGENTS.md`                                          | A managed block between `<!-- BEGIN:arete v2 -->` and `<!-- END:arete -->`; content outside the markers is never touched                               |
 | Claude Code bridge | `CLAUDE.md`                                          | Created as `@AGENTS.md`, or that line is inserted first if the file exists                                                                             |
 | Gemini context     | `.gemini/settings.json`                              | `context.fileName` gains `AGENTS.md` (Gemini CLI only)                                                                                                 |
@@ -245,26 +249,30 @@ a4 doctor --json
 a4 doctor --fix      # re-run the init writers for every agents.* warning, then re-check
 ```
 
-| Check id                | What it verifies                                                       | On failure                                           |
-| ----------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------- |
-| `cli.version`           | Install receipt present; current version vs latest (2 s timeout)       | `warn`: `a4 self update` (`info` when offline)       |
-| `cli.install`           | Receipt binary is the running executable; no `a4` shadowing it on PATH | `warn` with the shadowing path                       |
-| `cli.path`              | Install directory is on PATH                                           | `warn`: prints the `export PATH=…` line              |
-| `project.manifest`      | `arete.toml` parses                                                    | `fail`: `a4 init` / `a4 config validate`             |
-| `project.lock`          | `arete.lock` is fresh                                                  | `warn`: `a4 install`                                 |
-| `auth.credentials`      | Key present for the active API URL                                     | `info`: `a4 auth signup` (not needed to explore)     |
-| `auth.whoami`           | Credentials are accepted by the server                                 | `fail`: `a4 auth login --key …`                      |
-| `net.api`               | `https://api.arete.run` reachable                                      | `fail`                                               |
-| `net.docs-mcp`          | `https://docs.arete.run/mcp` reachable                                 | `warn`                                               |
-| `tools.node`            | `npx` on PATH (skills only)                                            | `info`                                               |
-| `tools.rust`            | `cargo` on PATH (authoring only)                                       | `info`; `warn` if `arete.toml` has `[authoring]`     |
-| `agents.detected`       | Detected agents                                                        | `info`                                               |
-| `agents.<id>.mcp`       | Both MCP servers present with the expected shape                       | `warn`: `a4 doctor --fix`                            |
-| `agents.<id>.skills`    | All five Arete workflow skills installed for that agent                | `warn`: `npx skills add AreteA4/skills --agent <id>` |
-| `agents.agents-md`      | `AGENTS.md` block present and current (`v2`)                           | `warn`: `a4 doctor --fix`                            |
-| `agents.claude-md`      | `CLAUDE.md` imports `@AGENTS.md` (Claude Code only)                    | `warn`                                               |
-| `agents.gemini-context` | Gemini `context.fileName` includes `AGENTS.md` (Gemini CLI only)       | `warn`                                               |
-| `agents.codex-trust`    | Project trusted in `~/.codex/config.toml` (Codex only)                 | `info`                                               |
+| Check id                | What it verifies                                                                      | On failure                                                                                    |
+| ----------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `cli.version`           | Install receipt present; current version vs latest (2 s timeout)                      | `warn`: `a4 self update` (`info` when offline)                                                |
+| `cli.install`           | Receipt binary is the running executable; no `a4` shadowing it on PATH                | `warn` with the shadowing path                                                                |
+| `cli.path`              | Install directory is on PATH                                                          | `warn`: prints the `export PATH=…` line                                                       |
+| `project.manifest`      | `arete.toml` parses                                                                   | `fail`: `a4 init` / `a4 config validate`                                                      |
+| `project.lock`          | `arete.lock` is fresh                                                                 | `warn`: `a4 install`                                                                          |
+| `project.auth-profile`  | `.arete/auth.toml` selects only the restricted `agent` profile                        | `warn`/`fail`: `a4 doctor --fix`                                                              |
+| `sdk.runtime`           | Installed TypeScript runtime matches the generated SDKs (see below)                   | `warn` with an `npm install` line; `fail` only for an `extensionApi` mismatch                 |
+| `auth.credentials`      | Key present for the active API URL                                                    | `info`: `a4 auth signup` (not needed to explore)                                              |
+| `auth.whoami`           | Credentials are accepted by the server                                                | `fail`: `a4 auth login --key …`                                                               |
+| `account.transactions`  | Account can inspect and send transactions (`transaction_inspect`, `transaction_send`) | `info`, naming the missing capabilities; `unknown` when the server cannot say                 |
+| `account.deploy`        | Account can deploy stacks with `a4 up` (`create_deployment`)                          | `info`; `warn` if `arete.toml` has `[authoring]` stacks; `unknown` when the server cannot say |
+| `net.api`               | `https://api.arete.run` reachable                                                     | `fail`                                                                                        |
+| `net.docs-mcp`          | `https://docs.arete.run/mcp` reachable                                                | `warn`                                                                                        |
+| `tools.node`            | `npx` on PATH (skills only)                                                           | `info`                                                                                        |
+| `tools.rust`            | `cargo` on PATH (authoring only)                                                      | `info`; `warn` if `arete.toml` has `[authoring]`                                              |
+| `agents.detected`       | Detected agents                                                                       | `info`                                                                                        |
+| `agents.<id>.mcp`       | Both MCP servers present with the expected shape                                      | `warn`: `a4 doctor --fix`                                                                     |
+| `agents.<id>.skills`    | All five Arete workflow skills installed for that agent                               | `warn`: `npx skills add AreteA4/skills --agent <id>`                                          |
+| `agents.agents-md`      | `AGENTS.md` block present and current (`v2`)                                          | `warn`: `a4 doctor --fix`                                                                     |
+| `agents.claude-md`      | `CLAUDE.md` imports `@AGENTS.md` (Claude Code only)                                   | `warn`                                                                                        |
+| `agents.gemini-context` | Gemini `context.fileName` includes `AGENTS.md` (Gemini CLI only)                      | `warn`                                                                                        |
+| `agents.codex-trust`    | Project trusted in `~/.codex/config.toml` (Codex only)                                | `info`                                                                                        |
 
 **`--json` output:**
 
@@ -276,7 +284,11 @@ a4 doctor --fix      # re-run the init writers for every agents.* warning, then 
 }
 ```
 
-`status` is `ok`, `warn`, or `fail`; each check is `ok | warn | fail | info`. Exit 0 for `ok` and `warn`, 1 for `fail`. `--fix` never touches auth, network, or tool checks. Human output is one line per check followed by the list of fixes.
+`status` is `ok`, `warn`, or `fail`; each check is `ok | warn | fail | info | unknown`. `unknown` means the check could not be decided (for example, the API does not report account capabilities) and, like `info`, never changes the overall status. Exit 0 for `ok` and `warn`, 1 for `fail`. `--fix` never touches auth, account, network, or tool checks. Human output is one line per check followed by the list of fixes.
+
+The `account.*` checks read your account's capabilities from `GET /api/auth/me` with the stored key, and are skipped when no key is configured. A missing capability is reported, not failed: reads and subscriptions work without transaction access.
+
+`sdk.runtime` reads the `@usearete/*` packages that each TypeScript output of `arete.toml` resolves from `node_modules`. It warns when `@usearete/sdk`, `@usearete/react`, and the adapters are not all one version, when more than one copy of `@usearete/sdk` is installed (for example `node_modules/@usearete/react/node_modules/@usearete/sdk`), when `@usearete/sdk` is missing, and when the installed runtime differs from the `a4` version that generated the code. It fails only when a generated extension declares an `extensionApi` that differs from the installed `@usearete/sdk`'s, because that code cannot run. It is `info` (not applicable) when the project has no TypeScript outputs or no `node_modules`.
 
 ### a4 config validate
 
@@ -350,13 +362,16 @@ a4 mcp
 ```json
 {
   "mcpServers": {
-    "arete": { "type": "stdio", "command": "a4", "args": ["mcp"] },
+    "arete": { "type": "stdio", "command": "a4", "args": ["--profile", "agent", "mcp"] },
     "arete-docs": { "type": "http", "url": "https://docs.arete.run/mcp" }
   }
 }
 ```
 
-Credentials resolve from `ARETE_API_KEY`, then `~/.arete/credentials.toml`. The npm package `@usearete/mcp` is deprecated in favour of this command. Tools and per-host shapes: [MCP Server](/agent-skills/mcp/).
+Generated MCP config explicitly selects the `agent` profile. That profile is
+resolved from `~/.arete/credentials.toml` before any ambient `ARETE_API_KEY`, so
+a human key cannot accidentally override it. The npm package `@usearete/mcp` is
+deprecated in favour of this command. Tools and per-host shapes: [MCP Server](/agent-skills/mcp/).
 
 ### a4 config validate
 
@@ -370,7 +385,11 @@ a4 config validate
 
 ## Authentication
 
-Exploring and installing public SDKs needs no account. Deploying and the knowledge layer do. Agents register themselves with `a4 auth signup`; humans get keys from [arete.run/keys](https://arete.run/keys) and use `a4 auth login --key`.
+Exploring and installing public SDKs needs no account. Hosted global stacks and
+the knowledge layer do. Agents create or verify their restricted credential with
+`a4 --profile agent auth signup --if-missing`; humans get keys from
+[arete.run/keys](https://arete.run/keys) and use
+`a4 auth login --profile human --key`.
 
 ### a4 auth signup
 
@@ -379,28 +398,36 @@ Register a new agent account and store its key.
 ```bash
 a4 auth signup                 # server picks a display name
 a4 auth signup my-agent        # explicit display name
-a4 auth signup --json
+a4 --profile agent auth signup --if-missing --json # safe, idempotent bootstrap
 a4 auth signup --force         # replace credentials that already exist for this API URL
 ```
 
-Calls `POST /api/agents/signup`, saves the key to `~/.arete/credentials.toml`, and prints the agent slug and the credentials path. The key itself is never printed in human mode.
+Calls `POST /api/agents/signup/v2`, saves the `a4_ak_*` key under the `agent`
+profile in `~/.arete/credentials.toml`, and prints non-secret registration
+metadata. The key itself is never printed.
 
 **Options:**
 
-| Flag      | Description                                                                                                   |
-| --------- | ------------------------------------------------------------------------------------------------------------- |
-| `[name]`  | Display name (optional)                                                                                       |
-| `--force` | Overwrite existing credentials for this API URL; otherwise the command refuses and points at `a4 auth status` |
+| Flag           | Description                                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------------------------- |
+| `[name]`       | Display name (optional)                                                                                       |
+| `--if-missing` | Verify and reuse a valid agent credential; sign up only when one is absent                                    |
+| `--force`      | Overwrite existing credentials for this API URL; otherwise the command refuses and points at `a4 auth status` |
+
+`--if-missing` and `--force` are mutually exclusive. If verification finds an
+invalid or disabled stored key, `--if-missing` leaves it untouched and tells the
+operator how to replace it explicitly.
 
 **`--json` output:**
 
 ```json
-{ "schemaVersion": 1, "slug": "agt_7k2m9q1r", "displayName": "my-agent", "credentialsPath": "/home/x/.arete/credentials.toml", "apiKey": "a4_ak_…" }
+{ "schemaVersion": 1, "slug": "agt_7k2m9q1r", "displayName": "my-agent", "credentialStored": true, "credentialPathKind": "default", "profile": "agent", "accountStatus": "active", "plan": "agent_trial", "trialAccessEnabled": true, "created": true }
 ```
 
-`apiKey` is a secret. It is included so an agent can pass it as `ARETE_API_KEY` to a sub-process; do not log it or commit it.
+The response confirms storage but deliberately omits the secret.
 
-Rate limit: 5 signups per hour per IP. On `429` the command prints `Signup limit reached (5 per hour per IP). Retry later, or use a key from https://arete.run/keys: a4 auth login --key <a4_ak_…>`.
+Rate limit: 5 signups per hour per IP. On `429` the command points the user at
+the human flow: `a4 auth login --profile human --key <a4_sk_…>`.
 
 ### a4 auth login
 
@@ -411,7 +438,7 @@ Save a human-issued API key.
 a4 auth login
 
 # Pass directly (required when non-interactive)
-a4 auth login --key <a4_ak_...>
+a4 auth login --profile human --key <a4_sk_...>
 ```
 
 **Options:**
@@ -444,7 +471,75 @@ Verify authentication with server.
 a4 auth whoami
 ```
 
-**Credentials location:** `~/.arete/credentials.toml`
+**Credentials location:** `~/.arete/credentials.toml`. Named profiles keep the
+restricted `agent` key separate from the broader `human` key. Inside a project
+initialized by `a4 init`, CLI calls default to `agent`. Humans can opt in with
+`a4 --profile human <command>`; `alias a4h='a4 --profile human'` is a convenient
+human-only shortcut. Inside an initialized repository the safe project default
+outranks inherited `ARETE_PROFILE`; only `--profile` opts up. The environment
+variable remains useful outside initialized repositories.
+
+### a4 auth keys
+
+List your API keys, or create a publishable key for browser code.
+
+```bash
+a4 auth keys list [--json]
+
+a4 auth keys create-publishable --origin http://localhost:5173
+a4 auth keys create-publishable --origin https://app.example.com --name web --env-file .env.local
+a4 auth keys create-publishable --origin http://localhost:5173 --json
+```
+
+A publishable key is safe in browser code, but **each key allows exactly one
+origin** (`scheme://host[:port]`, no path or trailing slash). Create one key per
+origin, for example one for `http://localhost:5173` and one for production.
+
+**`create-publishable` options:**
+
+| Flag                    | Description                                                                                                                                                            |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--origin, -o <origin>` | The one origin the key allows (required)                                                                                                                               |
+| `--name, -n <name>`     | Key name (optional)                                                                                                                                                    |
+| `--expiry-days, -e <n>` | Days until the key expires (default 365)                                                                                                                               |
+| `--env-file <path>`     | Write or update only the key's environment variable in this file, creating it if needed. Relative paths must stay inside the project; absolute paths are used as given |
+
+The command prints the environment variable to set for the framework it
+detects in the project directory (the directory holding `arete.toml`):
+
+| Detected                                               | Variable                            |
+| ------------------------------------------------------ | ----------------------------------- |
+| Next.js (`next.config.*`, or `next` in `package.json`) | `NEXT_PUBLIC_ARETE_PUBLISHABLE_KEY` |
+| Vite (`vite.config.*`, or `vite` in `package.json`)    | `VITE_ARETE_PUBLISHABLE_KEY`        |
+| Anything else                                          | `ARETE_PUBLISHABLE_KEY`             |
+
+`--env-file` changes no other line in the file and never prints its contents.
+It replaces the file atomically and keeps its permissions. A relative path may
+not leave the project through a symlinked directory or name a symlink.
+The path is checked before the key is created. The command never prompts, so
+it is safe to script, and exits non-zero when the API call fails (as does
+`list`).
+
+**`--json` output:**
+
+```json
+{
+  "schemaVersion": 1,
+  "id": 42,
+  "name": "web",
+  "keyClass": "publishable",
+  "origins": ["http://localhost:5173"],
+  "expiresAt": "2027-09-25T00:00:00Z",
+  "key": "hspk_…",
+  "framework": "vite",
+  "envVar": "VITE_ARETE_PUBLISHABLE_KEY",
+  "envFile": "/home/x/app/.env.local",
+  "envFileChange": "replaced"
+}
+```
+
+`envFile` and `envFileChange` (`created`, `appended`, `replaced` or
+`unchanged`) are `null` without `--env-file`. The key is shown only once.
 
 ---
 
@@ -509,25 +604,98 @@ a4 explore programs --json
 a4 explore stack <stack-ref> --json
 a4 explore program spl-token --json
 a4 explore <stack-ref> <Entity> --json
+
+# Just what you need
+a4 explore stack ore --summary --json
+a4 explore stack ore --views OreRound/latest,OreMiner/state --json
+a4 explore program ore --operation transactions.mining.deployWithCheckpoint --json
+a4 explore program ore --operation deploy --json
+a4 explore program ore --section accounts,types --json
+a4 explore stack ore --operation transactions.mining.deployWithCheckpoint --json
 ```
 
 **Arguments:**
 
-| Argument        | Description                                                                   |
-| --------------- | ----------------------------------------------------------------------------- |
-| `<stack-ref>`   | Hosted stack deployment/install reference                                     |
-| `<program-ref>` | Program install name or program ID                                            |
-| `[entity]`      | Optional exact-LiveSpec entity drill-down (`alias:entity` resolves ambiguity) |
+| Argument        | Description                                                                              |
+| --------------- | ---------------------------------------------------------------------------------------- |
+| `<stack-ref>`   | Hosted stack deployment/install reference, or a stack dependency alias from `arete.toml` |
+| `<program-ref>` | Program install name or program ID                                                       |
+| `[entity]`      | Optional exact-LiveSpec entity drill-down (`alias:entity` resolves ambiguity)            |
+
+**Options:**
+
+| Flag               | Applies to         | Description                                                                                                                                            |
+| ------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--summary`        | `stack`            | Entities with their view ids, program SDKs, endpoints, and auth requirements; no artifact bodies                                                       |
+| `--views <ids>`    | `stack`            | Only these selected views, each with its entity's field schema. Comma-separated; prefix `alias:` when several LiveSpecs select the same id             |
+| `--operation <id>` | `program`, `stack` | One operation, by semantic path (`transactions.mining.deployWithCheckpoint`), full operation id, generated binding, or raw instruction name (`deploy`) |
+| `--section <name>` | `program`          | Only `accounts`, `events`, `instructions` (with error codes), `operations`, or `types`. Repeat the flag or comma-separate                              |
 
 **Output varies by specificity:**
 
-| Command                       | Shows                                                                                       |
-| ----------------------------- | ------------------------------------------------------------------------------------------- |
-| `a4 explore`                  | Available stacks                                                                            |
-| `a4 explore programs`         | Complete promoted Program Release + Program Read installations                              |
-| `a4 explore stack <ref>`      | Exact identities, aliases, selected views, programs, auth, SDK targets, and install command |
-| `a4 explore program <ref>`    | Program identity, accounts, instructions, events, types, Program Read, and install command  |
-| `a4 explore <stack> [entity]` | Legacy syntax routed through descriptor-backed stack exploration                            |
+| Command                                | Shows                                                                                                                                     |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `a4 explore`                           | Available stacks                                                                                                                          |
+| `a4 explore programs`                  | Complete promoted Program Release + Program Read installations                                                                            |
+| `a4 explore stack <ref>`               | Exact identities, aliases, selected views, programs, auth and auth requirements, SDK targets, the endpoints the SDK uses, install command |
+| `a4 explore stack <ref> --summary`     | A compact stack summary                                                                                                                   |
+| `a4 explore stack <ref> --views …`     | The named views' schemas and endpoints                                                                                                    |
+| `a4 explore program <ref>`             | Program identity, accounts, instructions, events, types, Program Read, and install command                                                |
+| `a4 explore program <ref> --operation` | One operation: generated paths, input type, required and derived accounts, signers, transaction count, errors, transport, usage           |
+| `a4 explore program <ref> --section`   | The named sections in detail                                                                                                              |
+| `a4 explore <stack> [entity]`          | Legacy syntax routed through descriptor-backed stack exploration                                                                          |
+
+Everything is cut from the same pinned install descriptor on the client, so
+the compact forms agree with the full one. One operation or a stack summary is
+a few KB.
+
+**Operations.** Semantic operations (`transactions.*`, `instructions.*`,
+`read.*`) and their generated paths come from the knowledge layer's SDK
+surface, so they need an API key (`a4 auth login` or `a4 auth signup`).
+Without one, `--operation` still resolves raw IDL instruction names. An
+operation reports only what the descriptor and surface carry. Anything else,
+such as reads made while preparing, is listed under `notReported` rather than
+guessed. `--operation` on a stack searches the stack's program SDKs.
+
+**Auth requirements.** Stack output includes `authRequirements` (in
+`--summary`, `auth`). For each surface (stream, query, chain, transaction and
+Program Read) it lists the accepted key classes and scopes, and whether a
+transaction entitlement is required. `browser` appears when publishable keys
+are accepted; each one is bound to exactly one origin. When the stack's
+transactions need an entitlement, `account.transactions` says whether your
+account has transaction access: `ready`, `not-ready` with the missing
+capabilities, or `unknown` (for example when you are not logged in).
+
+**Field descriptions.** When the stack is published in the catalog, explore
+attaches the curated field descriptions from the stack's catalog knowledge.
+They say how to use a field, for example which of two similar fields a live UI
+should show, so read them before choosing fields. The entity drill-down
+(`a4 explore stack <ref> <Entity>`) and `--views` add `description` to each
+described field and `summary` to the entity and its views. `--summary` adds
+`summary` to entities and views and lists the described fields as
+`fieldDescriptions`. The full output adds `summary` to `selectedViews` and a
+`knowledge` block with each described entity. Human output prints a
+description under its field. `knowledge` names the source document (`slug`,
+`documentHash`). Descriptions are attached only when the knowledge was
+published for the exact StackManifest being explored. Stacks without a catalog
+entry, such as private or local stacks, print as before. Explore skips the
+lookup for private stacks and gives up on it after 2 seconds.
+
+```json
+{
+  "path": "results.pre_reveal_winning_square",
+  "rustType": "Option<u8>",
+  "nullable": true,
+  "section": "results",
+  "description": "preRevealRng modulo 25, the winning square before reveal."
+}
+```
+
+**Endpoints inside a project.** When `arete.toml` declares the stack as a
+dependency, `sdkEndpoints` shows which stream endpoints the generated SDK
+reads. Endpoints that `a4 up` recorded in `arete.toml` take precedence over the
+registry's hosted endpoints. The set in use is `used`, and the other is
+labelled "not used". You can pass the dependency alias as `<stack-ref>`.
 
 Every JSON response includes `schemaVersion`. Exploration never selects a
 latest AST independently and never falls back when an install descriptor is
@@ -590,7 +758,11 @@ is not evidence that it is unsupported — fall back to `a4 explore` and
 
 ### a4 up \<manifest\>
 
-Deploy the exact composition described by a local StackManifest. The control
+Deploy the exact composition described by a local StackManifest, an
+`[authoring.stacks]` entry, or an installed stack
+([Deploying an installed stack](#deploying-an-installed-stack)). A composed
+`[authoring.stacks]` entry deploys exactly what `arete.lock` pins for it
+([Composed stacks](#composed-stacks)). The control
 plane resolves every ProgramSpec to an immutable hosted Program Release,
 prepares each aliased LiveSpec independently, then returns deployment and
 endpoint bindings. Those operational bindings are not part of the portable
@@ -608,6 +780,9 @@ a4 up .arete/MyStack.stack-manifest.json --preview
 
 # Preview what would be deployed (no actual deployment)
 a4 up .arete/MyStack.stack-manifest.json --dry-run
+
+# Deploy the stack installed as `raydium-amm`
+a4 up raydium-amm
 ```
 
 **Options:**
@@ -617,6 +792,28 @@ a4 up .arete/MyStack.stack-manifest.json --dry-run
 | `--branch, -b <name>` | Deploy to named branch                        |
 | `--preview`           | Create preview deployment                     |
 | `--dry-run`           | Show what would be deployed without deploying |
+
+**Program SDKs.** When `arete.lock` pins a program SDK release for a program
+of the deployed stack (an installed or composed stack), `a4 up` asks for that
+program to carry it. A production deployment then lists the program SDK each
+program carries:
+
+```text
+Program SDKs:
+  ore → ore@1.0.2 (from arete.lock)
+  entropy: core SDK only — <reason>
+```
+
+`(catalog)` marks the program's published program SDK, and
+`(your program package)` one of your own program packages. `core SDK only`
+means the program carries no program SDK, and says why. `--json` output
+includes the same report as `programSdks`. Branch and preview deployments are
+not published, so they have no report.
+
+If a program SDK that `arete.lock` pins no longer fits its program, `a4 up`
+stops before anything is built. Run `a4 update stack <alias>`, then deploy
+again. When the registry doesn't report program SDKs, `a4 up` notes that and
+deploys without the report.
 
 ### a4 status
 
@@ -650,7 +847,55 @@ decoder release or Program Read endpoint.
 
 ### a4 stack compose
 
-Compose portable ProgramSpec and aliased LiveSpec artifacts into a StackManifest.
+Compose a stack from live views and program SDKs. Parts come from published
+stacks and program packages, or from local LiveSpec and ProgramSpec files.
+
+Without `--output`, the command writes or updates `[authoring.stacks.<name>]`
+in `arete.toml` ([Composed stacks](#composed-stacks)). It first resolves the
+registry parts and checks that they compose. A part without a version is saved
+at `^<resolved version>`, the way `a4 install` saves a package. Other keys of
+an existing entry, such as `deployment_name`, are kept.
+
+```bash
+# ORE's round and miner views, plus the spl-token program SDK
+a4 stack compose --name ore-plus-token \
+  --live ore \
+  --program spl-token@^1 \
+  --selected-view ore=OreRound/latest \
+  --selected-view ore=OreMiner/state
+
+# Also declare it under [dependencies.stacks] and install its TypeScript SDK
+a4 stack compose --name ore-plus-token --live ore --program spl-token@^1 --install --ts
+```
+
+`--install` also declares the composed stack as `[dependencies.stacks.<name>]`
+(`source = { workspace = "<name>" }`) and installs it. `--ts`, `--rust`, or
+`--python` choose the SDK it generates and are recorded as the dependency's
+`targets`, as `a4 install stack <ref> --ts` records them. Without one, the
+dependency uses `[sdk].targets` (TypeScript and Rust unless set). Composing
+again keeps a declared dependency as written; a flag replaces only its
+`targets`. The flags require `--install`.
+
+| Value                                      | Part                                                                 |
+| ------------------------------------------ | -------------------------------------------------------------------- |
+| `--live <stack>[@<version>]`               | A published stack's live views, under an alias derived from its name |
+| `--live <alias>=stack:<stack>[@<version>]` | The same, under an explicit alias                                    |
+| `--live [<alias>=]stack:<stack>#<live>`    | One live alias of a stack that has several                           |
+| `--live <alias>=<path>`                    | A LiveSpec file                                                      |
+| `--program <package>[@<version>]`          | A program package's program SDK (`program:<package>` forces this)    |
+| `--program <path>.json`                    | A ProgramSpec file                                                   |
+
+The programs a stack's views index come with them, as that stack's program
+SDKs. A `--program` for the same program replaces the one the stack brings;
+any other `--program` is an independent program. A LiveSpec file's programs
+come from `--program`, from a composed stack, or from a ProgramSpec found under
+`--artifact-dir`. `--artifact-dir` also searches the registry cache layout
+(`program-spec/<hash>.json`, `live-spec/<hash>.json`). Without
+`--selected-view`, each alias selects every view its stack serves, or every
+view of its LiveSpec file. With it, the `alias=view_id` values are the exact
+allowlist, in command-line order.
+
+With `--output`, the command writes a StackManifest instead, as it always has:
 
 ```bash
 a4 stack compose --name jurassic \
@@ -664,14 +909,16 @@ a4 stack compose --name jurassic \
 ```
 
 Repeat `--program`, `--live`, and `--artifact-dir` as needed. Each `--live`
-requires a stable `alias=path` pair, so multiple LiveSpecs can expose the same
-entity or program names without losing ownership. When `--selected-view` is
-omitted, all views from every supplied LiveSpec are selected. When present, its
-`alias=view_id` values form the exact allowlist in command-line order.
+file requires a stable `alias=path` pair, so multiple LiveSpecs can expose the
+same entity or program names without losing ownership.
 
 A StackManifest composes portable identities only. It contains no WebSocket,
 Program Read, chain, or transaction endpoint and does not require those
-transports to be co-located.
+transports to be co-located. It lists ProgramSpecs, not program SDKs, so
+compose into `arete.toml` when you want each program's SDK generated.
+
+Publishing a composed stack to the registry, so that other projects can
+install it by name, is not available yet.
 
 ### a4 stack list
 
@@ -788,11 +1035,196 @@ prunes its lock entry, and deletes only generated output whose provenance
 matches that project dependency. It refuses output containing unowned files;
 `--keep-output` removes only the manifest and lock entries.
 
+When a dependency stops generating an SDK because its `targets` or
+`[sdk].targets` changed (for example `a4 install stack ore --rust` after
+`--ts`), or because `a4 install <package> -o` moved its output, `a4 install`
+removes the output it no longer writes, but only when that output's provenance
+shows it is the dependency's generated SDK and its files are unchanged.
+Otherwise it keeps the directory and prints a note naming it. `arete.lock` does
+not record output paths, so after you change `outputs` in `arete.toml` by hand,
+delete the old directory yourself.
+
 `a4 sdk list` reports normalized manifest dependencies and lock status.
 Low-level `a4 sdk create` accepts explicit `--manifest` or
 `--program-spec` artifact inputs and hosted exact descriptors. It is a
 compatibility/direct-descriptor tool: it never writes `arete.toml` or
 `arete.lock`, and `a4 install` never falls back to it.
+
+`a4 sdk create --program-spec <file>` generates a standalone program SDK
+offline for any target: a TypeScript module (`--ts`), a Rust crate
+(`--rust`, named `<program>-program` unless `--crate-name` is given) or a
+Python package (`--python`, `--package-name`). `--extensions <dir>` applies the
+program package's own extension bundle for that language, exactly as
+`a4 install program <package> --rust` (or `--python`) applies the published
+one; `--module` writes a Rust `mod.rs` module or a plain Python package
+directory. `--program-only --idl <file>` does the same from a raw IDL.
+
+```bash
+a4 sdk create --rust --program-spec ./.arete/ore.program-spec.json \
+  --extensions ./sdks/programs/ore/rust --output ./generated/ore-program
+a4 sdk create --python --program-spec ./.arete/ore.program-spec.json \
+  --extensions ./sdks/programs/ore/python --output ./generated/ore-program-py
+```
+
+A standalone program SDK reads every account its ProgramSpec declares: Rust
+`<account>_accounts()` on the program accessor and Python
+`accounts.<account>` return a typed reader (`fetch`, `fetch_many`, `exists`)
+over the account's generated model, and `pdas` derives every ProgramSpec PDA.
+Every IDL struct and enum an account's fields use gets a generated model too
+(for ORE, `Config.admin` reads as an `AdminConfig` whose `fee_rate` is an
+integer), so nested values are typed like the account's own fields.
+A stack SDK's program module (Rust `programs::<program>`, Python
+`programs.<program>`) exposes the same, so a program package's extension bundle
+works unchanged in both.
+
+`a4 sdk create --rust|--python --manifest <file>` generates a stack SDK
+offline. `--extensions <dir>` applies the stack's own bundle, and
+`--program-extensions <program>=<bundle>` embeds a stack program's own
+package bundle (a directory holding `extensions.json`, or that file), staged
+exactly as `a4 install stack <package> --rust` (or `--python`) stages the
+published one. `<program>` is the program's key in the stack SDK
+(`programs.<program>`), its IDL name, or its program ID. Repeat the flag per
+program; a program without one gets no extension. Each bundle's
+`extensions.json` must declare `"language": "rust"` (or `"python"`) and pin
+`"inputKind": "program-spec"` with the `inputHash` of that program's
+ProgramSpec in the StackManifest; anything else stops generation.
+
+```bash
+a4 sdk create --rust --manifest ./.arete/OreStream.stack-manifest.json \
+  --extensions ./sdks/ore/rust \
+  --program-extensions ore=./sdks/programs/ore/rust \
+  --output ./generated/ore-stack
+```
+
+Every install regenerates the whole project, and its summary says why each
+dependency was generated:
+
+```text
+Installed 2 dependencies and wrote /app/arete.lock
+Requested:   program ore@1.0.2
+Regenerated: stack ore@1.0.1 (inputs unchanged)
+Shared:      program ore@1.0.2 is also provided by stack ore (the same program SDK release, generated identically in both)
+Runtime:     the generated TypeScript needs these packages (a4 does not change package.json):
+             npm install @usearete/sdk@0.23.0 @usearete/react@0.23.0 "zod@^3.24.1"
+Auth for stack ore:
+  Live views: signed_session
+  Chain reads: anonymous, publishable, secret keys; scopes read
+  Transactions: publishable, secret keys; scopes transaction:inspect, transaction:send; the account needs the transaction entitlement
+  Browser apps need a publishable key bound to the app's origin.
+  Run `a4 doctor` to check this account's readiness.
+```
+
+`Requested` lists what the command asked for (a package add, `--no-save`, or
+the dependencies `a4 update` advanced). `Regenerated` lists every other
+dependency with a reason such as `inputs unchanged`, `newly locked`, or
+`resolved 1.0.2, was 1.0.1`. The auth block summarizes the requirements in a
+hosted stack's install descriptor: after a stack add it covers that stack, and
+after a plain `a4 install` every hosted stack. With the global `--json` flag,
+stdout carries one JSON document with `requested`, `regenerated[]` (`kind`,
+`alias`, `version`, `reason`), `shared[]`, `auth[]`, `runtime[]`, `notes[]`,
+and `warnings[]` (see [When a hosted stack version is retired](#when-a-hosted-stack-version-is-retired)),
+and progress moves to stderr.
+
+When the project generates TypeScript, `Runtime` lists the packages the
+generated code imports, as one `npm install` line. `@usearete/*` packages are
+released together with `a4`, so they are pinned to the CLI's own version:
+`@usearete/sdk` always, `@usearete/react` when the nearest `package.json`
+depends on `react`, `@usearete/adapter-web3js` when it depends on
+`@solana/web3.js` or a `@solana/wallet-adapter-*` package, and
+`@usearete/adapter-kit` when it depends on `@solana/kit`. `zod` uses the range
+`@usearete/sdk` declares. `a4` never edits `package.json` or runs a package
+manager; run the line with the package manager you use. In `--json` output the
+same set is `runtime[]`, each entry a `{ "package", "version" }` pair.
+
+Generated TypeScript is ES module source (`import`/`export` with `.js`
+specifiers). A project whose nearest `package.json` is not `"type": "module"`
+(`npm init` writes `"commonjs"`) and whose `tsconfig.json` sets
+`verbatimModuleSyntax` with a `module` setting that follows `package.json`
+(`nodenext`, `node16`, `node18` or `node20`), directly or through `extends`, as
+`tsc --init` does, makes `tsc` reject every `import` in the project, its own
+files' as well as the generated SDK's.
+The summary then adds a `Module type` line with the fix:
+
+```text
+Module type: package.json is CommonJS and tsconfig.json sets verbatimModuleSyntax, so tsc rejects every import (yours and the generated SDK's, which is ES modules). Make the package ES modules:
+             npm pkg set type=module
+```
+
+In `--json` output it is `moduleType`, with `packageJson`, `required`
+(`"module"`) and `command`; it is absent when the project compiles ES modules.
+
+### SDK extension compatibility
+
+An SDK extension's `extensions.json` can declare `extensionApi`, a positive
+integer naming the extension contract it was written against. Each SDK
+records its own value: `arete.extensionApi` in the `@usearete/sdk`
+`package.json`, `[package.metadata.arete] extension-api` in the
+`arete-a4-sdk` crate, and `EXTENSION_API_VERSION` in the `arete-sdk` Python
+package. When an extension declares `extensionApi` and the SDK is already
+installed where the output is generated, the two must match: `a4` stops with
+an error that names both values and a fix. An installed SDK that does not
+record the value yet produces a warning. The Rust SDK is read from a path
+dependency or `[patch]` entry, or from Cargo's source cache for the release
+`Cargo.lock` pins; the Python SDK is read from the active virtual environment
+or a `.venv` / `venv` directory above the output.
+
+Without `extensionApi`, the older `sdkRange` field is compared with the
+installed SDK version and a mismatch is only a warning, since published
+ranges are often older than the SDK releases they work with.
+
+### Program SDKs in stacks
+
+A stack is a group of live views and program SDKs. When a stack references a
+program package release for one of its programs, `a4 install` generates that
+program's SDK, including its SDK extension, under
+`stacks/<alias>/programs/<program>/`, and `arete.lock` records the release as
+the program's `package_release_hash`. Every generated program definition
+carries the same identity: `packageReleaseHash` in TypeScript,
+`PACKAGE_RELEASE_HASH` in Rust, and `<PROGRAM>_PACKAGE_RELEASE_HASH` in
+Python. Local and path builds carry none.
+
+Installing the same program on its own is fine. When the standalone
+dependency (under its default alias) and the stack reference the same program
+package release, both outputs contain byte-identical program SDK files (in
+the stack, the entry module is named `__arete-program.ts`), and the summary
+reports the program as `Shared`. When the releases differ, both are generated and the
+summary notes the difference. A stack whose programs have no program package
+release keeps generating their core program SDKs.
+
+`a4 install --locked` fails if a locked stack release would resolve a
+different program package release than `arete.lock` records; nothing is
+changed. A lock written by an older `a4`, which records no program package
+releases, still installs with `--locked` if it records exactly the program SDK
+extensions generated for the project's targets; otherwise run `a4 install`
+once to record the program SDK pins.
+
+Rust and Python stack SDKs include each program's SDK extension for their
+language, so a stack installs the same program surface as the program installed
+on its own:
+
+- **Rust**: the program's bundle is staged under `src/programs/<program>/`
+  (`programs/<program>/` in `--module` output) and wired into that program's
+  module in `programs.rs`. Its bindings resolve under `programs::<program>`,
+  where a standalone program crate has them at the crate root.
+- **Python**: the program's bundle is staged in a `program_sdks/<program>/`
+  subpackage laid out like the standalone program package, and the stack's
+  `PROGRAMS` (and its `StackDef`) carry the extended program.
+
+A stack with several live views cannot include Rust or Python program SDK
+extensions yet: installing one for Rust or Python fails with a message rather
+than generating a smaller surface.
+
+A hosted Rust or Python SDK extension must declare the language it is served
+for, and its files must hash to the content hash the registry resolved;
+otherwise the install fails and nothing is generated or locked.
+
+A stack with several live views applies a stack extension by name, because it
+has no single stack for a default export to extend. Export
+`defineStackExtensions<typeof X.stacks.<alias>>()` bindings for live aliases
+and `defineProgramExtensions<typeof X.programs.<key>>()` bindings for session
+programs, where `X` is the generated `<NAME>_SESSION_DEFINITION_CORE`. A stack
+extension cannot also extend a program whose SDK brings its own extension; the
+install fails rather than applying that extension twice.
 
 A StackManifest `name` may contain any characters, for example
 `token-balances` or `my.stack`. Generated file names keep the name as written
@@ -811,6 +1243,129 @@ keep generating exactly the names they always have. If two names generate the
 same identifier, for example a stack `my-vault` and an entity `MyVaultStack`,
 or programs `token-2022` and `token_2022`, generation fails with an error that
 names both. Rename one of them.
+
+### When a hosted stack version is retired
+
+A hosted stack keeps serving the version each SDK was generated for, until
+that version is retired. `a4 install` tells you when this affects a
+dependency, and names the command that installs the version served now:
+
+- **Being retired.** The version is still served, and `a4 install` warns with
+  the date it is served until.
+- **Retired.** `a4 install` still installs it: `arete.lock` is unchanged, and
+  the SDK is generated as before. Its connection, however, is refused with an
+  error that names the served version.
+
+To move to the served version, run the command `a4 install` prints, for
+example `a4 install stack ore@1.1.0`, then rebuild your application. When the
+warning names only the served version, install that version the same way
+(`a4 install stack <name>@<version>`). When it names neither, run
+`a4 update stack <alias>` to move to the newest version your requirement
+allows.
+
+A stack whose `endpoints` in `arete.toml` point at your own deployment does
+not use the hosted version, so none of this affects its SDK.
+
+A composed stack reads the hosted versions of the stacks it takes live views
+from, so it gets the same warnings, naming the composed stack. A live view from
+a retired version keeps its endpoints and is refused the same way. Its version
+comes from the `version` requirement of that `live` entry in
+`[authoring.stacks]`: change it to allow the served version, then run
+`a4 install`.
+
+With `--json`, these warnings are also in the document's `warnings[]`, and
+go to stderr instead of stdout.
+
+### Deploying an installed stack
+
+A catalog stack without a hosted stream (a definition-only package) installs
+as an SDK whose endpoints are empty. Deploy it to your own account by its
+alias:
+
+```bash
+a4 install stack raydium-amm --ts
+a4 up raydium-amm
+```
+
+`a4 up <alias>` deploys exactly the StackManifest, LiveSpecs, and ProgramSpecs
+`arete.lock` pins for that stack. `a4 install` keeps them in the registry cache
+(`~/.arete/cache/registry/v1`); each cached file must still hash to its locked
+identity, and a missing entry is fetched again at the locked release.
+`--dry-run --local-only` never fetches, so it asks you to run `a4 install`
+instead. The alias names the deployment unless an `[authoring.stacks]` entry
+has the same name, which takes precedence.
+
+After the deployment is healthy, `a4 up` points the generated SDK at it: it
+records the deployment's endpoints for the stack in `arete.toml` and runs
+`a4 install`, so the SDK connects without a URL:
+
+```toml
+[dependencies.stacks.raydium-amm]
+source = { registry = "raydium-amm" }
+version = "^1.0.0"
+endpoints = { live = { websocket = "wss://raydium-amm.stack.arete.run", query = "https://raydium-amm.stack.arete.run" } }
+```
+
+`endpoints` names every LiveSpec of the StackManifest by alias. For a hosted
+stack they replace the managed stream endpoints (its managed gateway for chain
+reads and transactions stays); remove them to use the stack's own endpoints
+again. When `a4 update` or a new version requirement moves the stack to a
+different StackManifest, `a4 install` notes that the recorded deployment still
+serves the previous one; redeploy it with `a4 up <alias>`. `--branch`,
+`--preview`, and `--json` deployments leave `arete.toml` unchanged; pass their
+endpoints to the client instead, for example `useArete(stack, { url, httpUrl })`
+in TypeScript.
+
+### Composed stacks
+
+A composed `[authoring.stacks]` entry groups live views and program SDKs from
+published stacks, program packages, and local files. `a4 stack compose` writes
+it (and with `--install --ts` the dependency below), or you can write it
+yourself:
+
+```toml
+[authoring.stacks.ore-plus-token]
+live.ore = { stack = "ore", version = "^1", views = ["OreRound/latest", "OreMiner/state"] }
+programs = [{ package = "spl-token", version = "^1" }]
+
+[dependencies.stacks.ore-plus-token]
+source = { workspace = "ore-plus-token" }
+targets = ["typescript"]
+```
+
+`a4 install` resolves the parts and generates the composed stack like any
+other stack dependency:
+
+```tsx
+const arete = useArete(ORE_PLUS_TOKEN_STACK);
+arete.views.OreRound.latest.use();
+arete.programs.ore;   // the program SDK the ore stack references
+arete.programs.token; // the spl-token program SDK
+```
+
+- **Program SDKs.** Every program uses its program SDK. For programs the views
+  index, that is the program SDK their stack references, so `programs.ore`
+  has the same operations as `a4 install program ore`. A `programs` entry for
+  the same program replaces it, and the install output says so; the entry must
+  have the ProgramSpec the views index.
+- **Delivery.** A live alias from a stack with hosted delivery reads that
+  stack's deployment. The generated SDK uses its endpoints, and its sessions
+  name the version that deployment serves, exactly as the stack's own SDK
+  does. The install output lists the account requirements. An alias from a
+  definition-only stack or a LiveSpec file has no endpoints. `a4 up <name>`
+  deploys the composed stack to your account and points the dependency's SDK
+  at it by recording `endpoints`, as it does for an installed stack.
+- **Lock.** `arete.lock` pins every part: stack and program package releases,
+  LiveSpecs, each program's program SDK release and extensions, and the
+  composed StackManifest. `a4 install --locked` fails if any of them would
+  change, and `a4 update stack <alias>` advances them.
+- **Stack extensions.** A composed stack does not include a source stack's
+  stack extension (for example its extra reads). The install output notes
+  each one it leaves out.
+
+`a4 install` also writes the composed StackManifest and its artifacts to
+`.arete/compositions/<name>/`. `a4 up <name>` deploys them only while they
+match `arete.lock`.
 
 ### Private programs and stacks
 
@@ -867,10 +1422,17 @@ package = "@my-org/arete-generated"
 [dependencies.stacks.ore]
 source = { registry = "ore" }
 version = "^1.4.0"
+# Optional: read the stack from your own deployment (`a4 up ore` writes this)
+# endpoints = { live = { websocket = "wss://...", query = "https://..." } }
 
 [authoring.stacks.local]
 manifest = "./.arete/MyStack.stack-manifest.json"
 artifact_roots = ["./.arete"]
+
+# A composed stack (`a4 stack compose` writes this; see Composed stacks)
+[authoring.stacks.ore-plus-token]
+live.ore = { stack = "ore", version = "^1.0.0", views = ["OreRound/latest"] }
+programs = [{ package = "spl-token", version = "^1.0.0" }]
 ```
 
 Default output paths are kind-scoped. TypeScript uses
@@ -926,7 +1488,7 @@ a4 explore --json
 
 # Only when deploying or using the knowledge layer
 a4 auth signup                     # agent
-a4 auth login --key <a4_ak_...>    # human-issued key
+a4 auth login --profile human --key <a4_sk_...> # human-issued key
 ```
 
 ### Development Cycle
@@ -987,19 +1549,20 @@ a4 telemetry disable
 
 ## Environment Variables
 
-| Variable                     | Description                                                                  |
-| ---------------------------- | ---------------------------------------------------------------------------- |
-| `ARETE_API_URL`              | Override API endpoint                                                        |
-| `ARETE_API_KEY`              | API key; takes precedence over the credentials file                          |
-| `ARETE_CREDENTIALS_PATH`     | Override the credentials file                                                |
-| `A4_INSTALL_DIR`             | Install directory for `a4 self install` and the bootstrappers                |
-| `A4_NO_MODIFY_PATH=1`        | Do not edit shell profiles or the Windows PATH on install                    |
-| `A4_NO_UPDATE_CHECK=1`       | Disable the once-per-day "update available" notice                           |
-| `A4_NON_INTERACTIVE=1`       | Never prompt (same as `--non-interactive`)                                   |
-| `A4_VERSION`                 | Version for `install.sh` / `install.ps1` to install                          |
-| `CI`                         | When set: never prompt, no PATH edits, no update notice, no telemetry banner |
-| `DO_NOT_TRACK=1`             | Disable telemetry (standard)                                                 |
-| `ARETE_TELEMETRY_DISABLED=1` | Disable telemetry (Arete-specific)                                           |
+| Variable                     | Description                                                                             |
+| ---------------------------- | --------------------------------------------------------------------------------------- |
+| `ARETE_API_URL`              | Override API endpoint                                                                   |
+| `ARETE_PROFILE`              | Named credential profile outside initialized repos; `.arete/auth.toml` wins inside them |
+| `ARETE_API_KEY`              | Legacy direct key override, used only when no profile is selected                       |
+| `ARETE_CREDENTIALS_PATH`     | Override the credentials file                                                           |
+| `A4_INSTALL_DIR`             | Install directory for `a4 self install` and the bootstrappers                           |
+| `A4_NO_MODIFY_PATH=1`        | Do not edit shell profiles or the Windows PATH on install                               |
+| `A4_NO_UPDATE_CHECK=1`       | Disable the once-per-day "update available" notice                                      |
+| `A4_NON_INTERACTIVE=1`       | Never prompt (same as `--non-interactive`)                                              |
+| `A4_VERSION`                 | Version for `install.sh` / `install.ps1` to install                                     |
+| `CI`                         | When set: never prompt, no PATH edits, no update notice, no telemetry banner            |
+| `DO_NOT_TRACK=1`             | Disable telemetry (standard)                                                            |
+| `ARETE_TELEMETRY_DISABLED=1` | Disable telemetry (Arete-specific)                                                      |
 
 ---
 
@@ -1007,7 +1570,7 @@ a4 telemetry disable
 
 | Error                                         | Solution                                                                                                                           |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `Not authenticated`                           | Run `a4 auth signup` (or `a4 auth login --key <a4_ak_…>`)                                                                          |
+| `Not authenticated`                           | Run `a4 auth signup` (agent) or `a4 auth login --profile human --key <a4_sk_…>`                                                    |
 | `a4: command not found`                       | Run `export PATH="$HOME/.local/bin:$PATH"` or use the `A4_BIN=` path the installer printed; `a4 doctor` reports this as `cli.path` |
 | `a4 was not installed by the Arete installer` | Reinstall with `curl -fsSL https://arete.run/install.sh \| sh`; Cargo builds must use `cargo install a4-cli --force`               |
 | `Stack not found`                             | Check `a4 stack list` for available stacks                                                                                         |

@@ -107,6 +107,11 @@ When an auth plugin is configured, the gateway also requires the stable
 `arete:solana-gateway` audience, `solana-gateway-binding` target kind, and the
 exact target ID passed to `Server::solana_gateway`.
 
+Embedders that need operation accounting can attach a
+`SolanaGatewayUsageObserver` with `usage_observer`. The callback receives the
+verified auth context and neutral operation facts; persistence, delivery, and
+billing policy remain the embedder's responsibility.
+
 ### Transaction Relay
 
 The complete self-hosting and operations guide is available in

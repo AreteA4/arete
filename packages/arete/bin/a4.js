@@ -8,7 +8,9 @@
 //     minisign signature, then run `<tmp>/a4 self install --source npm ...`.
 //   npx @usearete/a4 <anything else>
 //     Run the binary recorded in ~/.arete/receipt.json (installing silently
-//     first when there is no receipt) with the given argv.
+//     first when there is no receipt) with the given argv. This includes
+//     project installs such as `install stack ore --ts`: `install` followed
+//     by anything other than `a4 self install` options.
 //
 // No lifecycle scripts, no dependencies, no network access at `npm install`.
 // Design: docs/internal/agent-first-onboarding.md (WP3).
@@ -294,6 +296,31 @@ async function runInstall(passthrough = [], options = {}) {
 // ---------------------------------------------------------------------------
 // Launcher
 
+// Options `a4 self install` accepts from the caller (the launcher passes
+// --source, --checksums and --signature itself).
+const SELF_INSTALL_FLAGS = new Set(["--no-modify-path", "--force", "--json", "--verbose", "-y", "--yes", "--non-interactive", "-h", "--help"]);
+const SELF_INSTALL_VALUE_OPTIONS = new Set(["--install-dir", "-c", "--config", "--api-url"]);
+
+// `install` installs the CLI itself only when every following argument is a
+// self-install option. Anything else (`install stack ore --ts`,
+// `install --locked`) is a project install, which `a4 self install` would
+// reject, so it goes to the installed binary.
+function isSelfInstall(argv) {
+  if (argv[0] !== "install") return false;
+  for (let i = 1; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (SELF_INSTALL_FLAGS.has(arg)) continue;
+    if (SELF_INSTALL_VALUE_OPTIONS.has(arg)) {
+      i += 1;
+      continue;
+    }
+    const eq = arg.indexOf("=");
+    if (arg.startsWith("--") && eq > 0 && SELF_INSTALL_VALUE_OPTIONS.has(arg.slice(0, eq))) continue;
+    return false;
+  }
+  return true;
+}
+
 function runBinary(binary, argv, { env = process.env, stdio = "inherit" } = {}) {
   const result = spawnSync(binary, argv, { stdio, env: { ...env, [RECURSION_SENTINEL]: "1" }, encoding: "utf8" });
   if (result.error) {
@@ -310,7 +337,7 @@ async function launch(argv, options = {}) {
     log("Refusing to recursively launch the Arete CLI shim.");
     return 1;
   }
-  if (argv[0] === "install") {
+  if (isSelfInstall(argv)) {
     return (await runInstall(argv.slice(1), { ...options, env, log })).status;
   }
 
@@ -346,6 +373,7 @@ module.exports = {
   RECURSION_SENTINEL,
   areteHome,
   downloadRelease,
+  isSelfInstall,
   launch,
   parseChecksums,
   parseMinisignPublicKey,

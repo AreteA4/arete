@@ -74,7 +74,7 @@ import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Set, Tuple
 
 from arete.errors import AreteConnectionError, AreteError, SubscriptionError
 from arete.wire import (
@@ -415,6 +415,8 @@ class SubscriptionRegistry:
         self._store = store
         self._by_key: Dict[str, _Tracker] = {}
         self._by_id: Dict[str, _Tracker] = {}
+        self._failure_listeners: Set[Callable[[AreteError], None]] = set()
+        self._connection_error: Optional[AreteConnectionError] = None
 
     def subscribe(self, query: Mapping[str, Any], snapshot_enabled: bool = True) -> QueryLease:
         normalized = normalize_query(query)
@@ -482,13 +484,43 @@ class SubscriptionRegistry:
             return None
         return self._store.get_result(tracker.subscription.subscription_id)
 
-    def handle_connection_state(self, state: str) -> None:
+    def handle_connection_state(
+        self,
+        state: str,
+        message: Optional[str] = None,
+        cause: Optional[AreteError] = None,
+    ) -> None:
         if state == "reconnecting":
             self._store.begin_reconnect()
-        if state == "error":
-            self._store.fail_refreshing(AreteConnectionError(
-                "Connection failed while refreshing subscriptions", "CONNECTION_ERROR"
-            ))
+        if state != "error":
+            self._connection_error = None
+            return
+        self._store.fail_refreshing(AreteConnectionError(
+            "Connection failed while refreshing subscriptions", "CONNECTION_ERROR"
+        ))
+        # Queries still waiting for their first snapshot are not failed above;
+        # one-shot reads learn about the failure here instead of timing out.
+        # ``message`` is str(cause) when the connection raised the failure
+        # itself, which already carries this code; a server's text is kept
+        # as sent.
+        if cause is not None and cause.code == "CONNECTION_ERROR":
+            message = cause.message
+        self._connection_error = AreteConnectionError(
+            message or "Connection failed", "CONNECTION_ERROR"
+        )
+        self._notify_failure(self._connection_error)
+
+    def get_connection_error(self) -> Optional[AreteConnectionError]:
+        """The terminal connection failure while the connection is in the
+        ``error`` state, or ``None``."""
+        return self._connection_error
+
+    def on_failure(self, callback: Callable[[AreteError], None]) -> Callable[[], None]:
+        """Call ``callback`` when pending queries can no longer resolve: the
+        connection failed terminally, or a disconnect cleared every
+        subscription. Returns the unsubscribe function."""
+        self._failure_listeners.add(callback)
+        return lambda: self._failure_listeners.discard(callback)
 
     def clear(self) -> None:
         for tracker in list(self._by_key.values()):
@@ -500,8 +532,15 @@ class SubscriptionRegistry:
                 self._store.unregister(tracker.subscription.subscription_id)
         self._by_key.clear()
         self._by_id.clear()
+        self._notify_failure(AreteConnectionError(
+            "Subscriptions were cleared by a disconnect", "CONNECTION_CANCELLED"
+        ))
 
     # -- internal ----------------------------------------------------------
+
+    def _notify_failure(self, error: AreteError) -> None:
+        for listener in list(self._failure_listeners):
+            listener(error)
 
     def _get_tracker(
         self, query: Mapping[str, Any], snapshot_enabled: bool

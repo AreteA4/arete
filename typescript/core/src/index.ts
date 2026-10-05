@@ -8,7 +8,8 @@ import { createSession } from './session';
 const Arete = Object.assign(BaseArete, { session: createSession });
 
 export { Arete, withPrograms, createSession, validateProgramReadDescriptor };
-export { withProgramRead } from './program-sdk';
+export { withProgramIdentity, withProgramRead } from './program-sdk';
+export type { ProgramSdkIdentity } from './program-sdk';
 export type {
   ConnectOptions,
   AreteOptionsWithStorage,
@@ -27,7 +28,11 @@ export type {
   StackWithAttachedPrograms,
 } from './client';
 
+export { PROGRAM_KEY_CONFLICT, compareProgramIdentity, isSameProgramSdk } from './program-identity';
+export type { ProgramIdentityMatch } from './program-identity';
+
 export {
+  EXTENSION_API_VERSION,
   PROGRAM_OPERATION_EXTENSIONS,
   STACK_RUNTIME_EXTENSIONS,
   extendStack,
@@ -221,6 +226,8 @@ export {
   createTypedListView,
   createTypedViews,
   serializeViewKey,
+  DEFAULT_INITIAL_DATA_TIMEOUT_MS,
+  InitialDataTimeoutError,
 } from './views';
 
 export type {
@@ -233,6 +240,8 @@ export type {
   DefaultViewKey,
   StackDefinition,
   StackEndpoints,
+  StackRelease,
+  StackVersionRefusal,
   ReadTransportMethod,
   ProgramAccountReadDefinition,
   ProgramAccountBatchItem,
@@ -263,6 +272,7 @@ export type {
   Schema,
   SchemaResult,
   WatchOptions,
+  GetOptions,
   AreteOptions,
   AreteConfig,
   AuthConfig,
@@ -282,13 +292,24 @@ export type {
   SocketIssue,
   SocketIssueCallback,
   ReplayErrorCode,
+  UsageLimit,
+  RecoveryAction,
+  ApiProblemV1,
+  ReadyRecoveryAction,
+  ReadyRecoveryActionV1,
 } from './types';
 
 export {
   DEFAULT_CONFIG,
   DEFAULT_MAX_ENTRIES_PER_VIEW,
+  API_PROBLEM_SCHEMA_VERSION,
+  CLAIM_AGENT_MATERIALIZER_PATH,
   AreteError,
+  isClaimAgentRecoveryAction,
   isReplayErrorCode,
+  isSafeClaimActionUrl,
+  isStackVersionRefusalCode,
+  parseApiProblem,
 } from './types';
 
 export type {

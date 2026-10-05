@@ -34,8 +34,24 @@ impl ProjectLock {
         let path = path.as_ref();
         let source = fs::read_to_string(path)
             .with_context(|| format!("Failed to read lockfile {}", path.display()))?;
-        let mut lock: Self = toml::from_str(&source)
-            .with_context(|| format!("Failed to decode strict lockfile {}", path.display()))?;
+        // The version is read before the strict decode, so a lock a newer a4
+        // wrote in a newer format says so instead of naming a field.
+        if let Some(version) = toml::from_str::<toml::Value>(&source)
+            .ok()
+            .and_then(|value| value.get("lock_version")?.as_integer())
+            .filter(|version| *version > i64::from(LOCK_VERSION))
+        {
+            bail!(
+                "{} has lock_version {version}, written by a newer a4; this a4 reads lock_version {LOCK_VERSION}. Upgrade a4 (`a4 self update`)",
+                path.display()
+            );
+        }
+        let mut lock: Self = toml::from_str(&source).with_context(|| {
+            format!(
+                "Failed to decode strict lockfile {} (if a newer a4 wrote it, upgrade a4 with `a4 self update`)",
+                path.display()
+            )
+        })?;
         lock.normalize_and_validate()?;
         Ok(lock)
     }
@@ -165,6 +181,12 @@ pub struct LockedDependency {
     pub live_specs: Vec<LockedLiveSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub programs: Vec<LockedProgram>,
+    /// The parts a composed stack was composed from: each published stack
+    /// and program package at its exact release, and each local file by its
+    /// artifact hash. Empty for every other dependency, so their entries are
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<LockedPart>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sdk_extension_hashes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -228,11 +250,131 @@ impl LockedDependency {
             (left.program_id.as_str(), left.program_spec_hash.as_str())
                 .cmp(&(right.program_id.as_str(), right.program_spec_hash.as_str()))
         });
+        // A composed stack is local, but the program SDKs it composes are
+        // published program package releases.
+        let composed = !self.parts.is_empty();
+        if composed && (registry || self.kind != DependencyKind::Stack) {
+            bail!(
+                "dependency '{}' locks composed parts, which only a composed stack has",
+                self.alias
+            );
+        }
+        for program in &mut self.programs {
+            if !registry && !composed && program.package_release_hash.is_some() {
+                bail!(
+                    "local dependency '{}' locks a program package release",
+                    self.alias
+                );
+            }
+            program.sdk_extension_hashes.sort();
+            program.sdk_extension_hashes.dedup();
+        }
+        for part in &mut self.parts {
+            part.normalize_and_validate(&self.alias)?;
+        }
+        self.parts
+            .sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
         self.sdk_extension_hashes.sort();
         self.sdk_extension_hashes.dedup();
         self.targets.sort();
         self.targets.dedup();
         Ok(())
+    }
+}
+
+/// One part of a composed stack, as resolved.
+///
+/// A `stack` part provides the composed live alias `live`: the LiveSpec
+/// `artifact_hash`, which is `live_alias` of the published stack release
+/// `package_release_hash` (StackManifest `stack_manifest_hash`), or a local
+/// LiveSpec file. A `program` part is a program package release or a local
+/// ProgramSpec file (`artifact_hash`). Delivery is transport state and is
+/// never locked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LockedPart {
+    pub kind: DependencyKind,
+    /// `registry:<package>` or `path:<manifest-relative file>`.
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirement: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_release_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_manifest_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_id: Option<String>,
+    pub artifact_hash: String,
+}
+
+impl LockedPart {
+    fn sort_key(&self) -> (DependencyKind, &str, &str, &str) {
+        (
+            self.kind,
+            self.live.as_deref().unwrap_or_default(),
+            self.source.as_str(),
+            self.artifact_hash.as_str(),
+        )
+    }
+
+    fn normalize_and_validate(&self, alias: &str) -> Result<()> {
+        let registry = self.source.starts_with("registry:");
+        if !registry && !self.source.starts_with("path:") {
+            bail!(
+                "composed stack '{alias}' locks a part with unsupported source '{}'",
+                self.source
+            );
+        }
+        if self.artifact_hash.is_empty() {
+            bail!("composed stack '{alias}' locks a part without an artifact hash");
+        }
+        if registry
+            && (self.requirement.is_none()
+                || self.version.is_none()
+                || self.package_release_hash.is_none())
+        {
+            bail!(
+                "composed stack '{alias}' part '{}' lacks a requirement, version, or package release hash",
+                self.source
+            );
+        }
+        if !registry
+            && (self.requirement.is_some()
+                || self.version.is_some()
+                || self.package_release_hash.is_some()
+                || self.stack_manifest_hash.is_some()
+                || self.live_alias.is_some())
+        {
+            bail!(
+                "composed stack '{alias}' part '{}' is a local file but locks registry fields",
+                self.source
+            );
+        }
+        match self.kind {
+            DependencyKind::Stack if self.live.is_none() => bail!(
+                "composed stack '{alias}' part '{}' does not name the live alias it provides",
+                self.source
+            ),
+            DependencyKind::Stack
+                if registry && (self.stack_manifest_hash.is_none() || self.live_alias.is_none()) =>
+            {
+                bail!(
+                    "composed stack '{alias}' part '{}' lacks its source StackManifest or live alias",
+                    self.source
+                )
+            }
+            DependencyKind::Program if self.live.is_some() || self.program_id.is_none() => bail!(
+                "composed stack '{alias}' program part '{}' must name its program ID and no live alias",
+                self.source
+            ),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -250,6 +392,11 @@ pub struct LockedProgram {
     pub program_spec_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program_release_hash: Option<String>,
+    /// The program package release (program SDK identity) the stack
+    /// references for this program. Absent when the stack embeds the core
+    /// program only, so locks written before it existed are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_release_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sdk_extension_hashes: Vec<String>,
 }
@@ -272,6 +419,7 @@ mod tests {
             program_release_hash: None,
             live_specs: Vec::new(),
             programs: Vec::new(),
+            parts: Vec::new(),
             sdk_extension_hashes: Vec::new(),
             targets: vec![InstallTarget::TypeScript],
             generator_contract: GENERATOR_CONTRACT.into(),
@@ -299,6 +447,267 @@ mod tests {
             "alpha"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn registry_stack(programs: Vec<LockedProgram>) -> LockedDependency {
+        LockedDependency {
+            kind: DependencyKind::Stack,
+            alias: "ore".into(),
+            source: "registry:ore".into(),
+            requirement: Some("^1.0.0".into()),
+            version: Some("1.0.1".into()),
+            package_release_hash: Some(format!(
+                "arete:registry-package-release:v2:sha256:{}",
+                "5".repeat(64)
+            )),
+            stack_manifest_hash: Some("stack-manifest-hash".into()),
+            program_id: None,
+            program_spec_hash: None,
+            program_release_hash: None,
+            live_specs: Vec::new(),
+            programs,
+            parts: Vec::new(),
+            sdk_extension_hashes: Vec::new(),
+            targets: vec![InstallTarget::TypeScript],
+            generator_contract: GENERATOR_CONTRACT.into(),
+        }
+    }
+
+    #[test]
+    fn program_sdk_releases_round_trip_and_older_locks_still_load() {
+        let release = format!(
+            "arete:registry-package-release:v2:sha256:{}",
+            "7".repeat(64)
+        );
+        let mut lock = ProjectLock::empty(format!("arete-manifest-v1:{:064x}", 4));
+        lock.dependencies = vec![registry_stack(vec![
+            LockedProgram {
+                program_id: "ore111".into(),
+                program_spec_hash: "spec-ore".into(),
+                program_release_hash: Some("release-ore".into()),
+                package_release_hash: Some(release.clone()),
+                sdk_extension_hashes: vec!["b".repeat(64), "a".repeat(64)],
+            },
+            LockedProgram {
+                program_id: "entropy111".into(),
+                program_spec_hash: "spec-entropy".into(),
+                program_release_hash: Some("release-entropy".into()),
+                package_release_hash: None,
+                sdk_extension_hashes: Vec::new(),
+            },
+        ])];
+        let text = lock.canonical_toml().unwrap();
+        assert!(text.contains(&format!("package_release_hash = \"{release}\"")));
+        let mut reloaded: ProjectLock = toml::from_str(&text).unwrap();
+        reloaded.normalize_and_validate().unwrap();
+        lock.normalize_and_validate().unwrap();
+        assert_eq!(reloaded, lock);
+        let ore = &reloaded.dependencies[0].programs[1];
+        assert_eq!(ore.program_id, "ore111");
+        assert_eq!(ore.package_release_hash.as_deref(), Some(release.as_str()));
+        assert_eq!(
+            ore.sdk_extension_hashes,
+            vec!["a".repeat(64), "b".repeat(64)]
+        );
+
+        // A lock written before program SDK releases were recorded loads
+        // unchanged and serializes byte-for-byte as before.
+        let older = text
+            .lines()
+            .filter(|line| {
+                !line.starts_with(
+                    "package_release_hash = \"arete:registry-package-release:v2:sha256:7",
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let mut older_lock: ProjectLock = toml::from_str(&older).unwrap();
+        older_lock.normalize_and_validate().unwrap();
+        assert!(older_lock.dependencies[0]
+            .programs
+            .iter()
+            .all(|program| program.package_release_hash.is_none()));
+        assert_eq!(older_lock.canonical_toml().unwrap(), older);
+    }
+
+    fn composed_stack() -> LockedDependency {
+        let mut stack = registry_stack(vec![LockedProgram {
+            program_id: "token111".into(),
+            program_spec_hash: "spec-token".into(),
+            program_release_hash: Some("release-token".into()),
+            package_release_hash: Some(format!(
+                "arete:registry-package-release:v2:sha256:{}",
+                "8".repeat(64)
+            )),
+            sdk_extension_hashes: Vec::new(),
+        }]);
+        stack.alias = "ore-plus-token".into();
+        stack.source = "workspace:ore-plus-token".into();
+        stack.requirement = None;
+        stack.version = None;
+        stack.package_release_hash = None;
+        stack.parts = vec![
+            LockedPart {
+                kind: DependencyKind::Program,
+                source: "registry:spl-token".into(),
+                live: None,
+                requirement: Some("^4".into()),
+                version: Some("4.0.1".into()),
+                package_release_hash: Some(format!(
+                    "arete:registry-package-release:v2:sha256:{}",
+                    "8".repeat(64)
+                )),
+                stack_manifest_hash: None,
+                live_alias: None,
+                program_id: Some("token111".into()),
+                artifact_hash: "spec-token".into(),
+            },
+            LockedPart {
+                kind: DependencyKind::Stack,
+                source: "registry:ore".into(),
+                live: Some("ore".into()),
+                requirement: Some("^1".into()),
+                version: Some("1.0.2".into()),
+                package_release_hash: Some(format!(
+                    "arete:registry-package-release:v2:sha256:{}",
+                    "5".repeat(64)
+                )),
+                stack_manifest_hash: Some("source-stack-manifest".into()),
+                live_alias: Some("live".into()),
+                program_id: None,
+                artifact_hash: "live-spec-ore".into(),
+            },
+            LockedPart {
+                kind: DependencyKind::Stack,
+                source: "path:artifacts/local.live-spec.json".into(),
+                live: Some("local".into()),
+                requirement: None,
+                version: None,
+                package_release_hash: None,
+                stack_manifest_hash: None,
+                live_alias: None,
+                program_id: None,
+                artifact_hash: "live-spec-local".into(),
+            },
+        ];
+        stack
+    }
+
+    #[test]
+    fn a_composed_stack_locks_its_parts_and_program_sdk_releases() {
+        let mut lock = ProjectLock::empty(format!("arete-manifest-v1:{:064x}", 6));
+        lock.dependencies = vec![composed_stack()];
+        let text = lock.canonical_toml().unwrap();
+        assert!(text.contains("[[dependency.parts]]"), "{text}");
+        assert!(text.contains("source = \"registry:spl-token\""), "{text}");
+        assert!(text.contains("live_alias = \"live\""), "{text}");
+        let mut reloaded: ProjectLock = toml::from_str(&text).unwrap();
+        reloaded.normalize_and_validate().unwrap();
+        lock.normalize_and_validate().unwrap();
+        assert_eq!(reloaded, lock);
+        // Parts are ordered stacks (by live alias) before programs.
+        let parts = &reloaded.dependencies[0].parts;
+        assert_eq!(parts[0].live.as_deref(), Some("local"));
+        assert_eq!(parts[1].live.as_deref(), Some("ore"));
+        assert_eq!(parts[2].kind, DependencyKind::Program);
+    }
+
+    #[test]
+    fn composed_parts_must_carry_their_identities() {
+        let invalid = |edit: fn(&mut LockedDependency), expected: &str| {
+            let mut stack = composed_stack();
+            edit(&mut stack);
+            let mut lock = ProjectLock::empty(format!("arete-manifest-v1:{:064x}", 7));
+            lock.dependencies = vec![stack];
+            let error = lock.normalize_and_validate().unwrap_err().to_string();
+            assert!(error.contains(expected), "{expected}: {error}");
+        };
+        invalid(
+            |stack| stack.parts[0].package_release_hash = None,
+            "lacks a requirement, version, or package release hash",
+        );
+        invalid(
+            |stack| stack.parts[1].live_alias = None,
+            "lacks its source StackManifest or live alias",
+        );
+        invalid(
+            |stack| stack.parts[2].version = Some("1.0.0".into()),
+            "is a local file but locks registry fields",
+        );
+        invalid(
+            |stack| stack.parts[1].live = None,
+            "does not name the live alias",
+        );
+        invalid(
+            |stack| stack.parts[0].source = "workspace:other".into(),
+            "unsupported source",
+        );
+        invalid(
+            |stack| {
+                stack.source = "registry:ore-plus-token".into();
+                stack.requirement = Some("^1".into());
+                stack.version = Some("1.0.0".into());
+                stack.package_release_hash = Some("release".into());
+            },
+            "only a composed stack has",
+        );
+    }
+
+    #[test]
+    fn a_lock_from_a_newer_format_says_to_upgrade() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("arete.lock");
+        std::fs::write(
+            &path,
+            format!(
+                "lock_version = 2\nmanifest_hash = \"arete-manifest-v1:{:064x}\"\nresolver_contract = \"{RESOLVER_CONTRACT}\"\nfuture_field = true\n",
+                8
+            ),
+        )
+        .unwrap();
+        let error = format!("{:#}", ProjectLock::load(&path).unwrap_err());
+        assert!(
+            error.contains("lock_version 2, written by a newer a4"),
+            "{error}"
+        );
+        assert!(error.contains("a4 self update"), "{error}");
+
+        // A current-version lock with a field this a4 does not know points at
+        // the same fix.
+        std::fs::write(
+            &path,
+            format!(
+                "lock_version = 1\nmanifest_hash = \"arete-manifest-v1:{:064x}\"\nresolver_contract = \"{RESOLVER_CONTRACT}\"\nfuture_field = true\n",
+                8
+            ),
+        )
+        .unwrap();
+        let error = format!("{:#}", ProjectLock::load(&path).unwrap_err());
+        assert!(error.contains("unknown field `future_field`"), "{error}");
+        assert!(error.contains("a4 self update"), "{error}");
+    }
+
+    #[test]
+    fn a_local_stack_cannot_lock_a_program_sdk_release() {
+        let mut stack = registry_stack(vec![LockedProgram {
+            program_id: "ore111".into(),
+            program_spec_hash: "spec-ore".into(),
+            program_release_hash: None,
+            package_release_hash: Some("release".into()),
+            sdk_extension_hashes: Vec::new(),
+        }]);
+        stack.source = "path:ore.stack-manifest.json".into();
+        stack.requirement = None;
+        stack.version = None;
+        stack.package_release_hash = None;
+        let mut lock = ProjectLock::empty(format!("arete-manifest-v1:{:064x}", 5));
+        lock.dependencies = vec![stack];
+        assert!(lock
+            .normalize_and_validate()
+            .unwrap_err()
+            .to_string()
+            .contains("locks a program package release"));
     }
 
     #[test]

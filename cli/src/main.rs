@@ -66,6 +66,10 @@ struct Cli {
     #[arg(long, global = true, env = "ARETE_API_URL")]
     api_url: Option<String>,
 
+    /// Credential profile to use (overrides the repository's safe agent default)
+    #[arg(long, global = true)]
+    profile: Option<String>,
+
     /// Assume "yes" for every prompt and never wait on stdin
     #[arg(short = 'y', long, global = true)]
     yes: bool,
@@ -121,7 +125,8 @@ enum Commands {
 
     /// Deploy a stack: push, build, and watch until completion
     Up {
-        /// Name of specific stack to deploy (deploys all if not specified)
+        /// An [authoring.stacks] name, an installed stack's alias, or a
+        /// .stack-manifest.json path (deploys every authored stack if not specified)
         stack_name: Option<String>,
 
         /// Deploy to a specific branch (creates {stack-name}-{branch}.stack.arete.run)
@@ -194,6 +199,39 @@ enum Commands {
         /// Print the catalog concept and category vocabularies
         #[arg(long)]
         vocabulary: bool,
+
+        /// Root stack list: filter registry entries to `starter` or `standard`
+        #[arg(long, value_parser = ["starter", "standard"])]
+        service_class: Option<String>,
+
+        /// Program or stack: one operation, by semantic path
+        /// (`transactions.mining.deployWithCheckpoint`), operation id, or raw instruction name
+        #[arg(long, value_name = "ID")]
+        operation: Option<String>,
+
+        /// Program: only these sections (`accounts`, `events`, `instructions`, `operations`,
+        /// `types`); repeat the flag or separate with commas
+        #[arg(
+            long = "section",
+            value_name = "NAME",
+            value_delimiter = ',',
+            conflicts_with = "operation"
+        )]
+        sections: Vec<String>,
+
+        /// Stack: compact summary of entities, views, program SDKs, endpoints and auth
+        #[arg(long, conflicts_with_all = ["operation", "views"])]
+        summary: bool,
+
+        /// Stack: only these views with their entity schemas (`OreRound/latest,OreMiner/list`;
+        /// prefix `alias:` when several LiveSpecs select the same id)
+        #[arg(
+            long,
+            value_name = "VIEWS",
+            value_delimiter = ',',
+            conflicts_with = "operation"
+        )]
+        views: Vec<String>,
     },
 
     /// Query the curated knowledge layer: protocols, programs, recipes, concepts
@@ -208,17 +246,8 @@ enum Commands {
         /// Program install identifier when using `a4 install program <program>`
         install_name: Option<String>,
 
-        /// Generate a TypeScript SDK
-        #[arg(long, conflicts_with_all = ["rust", "python"])]
-        ts: bool,
-
-        /// Generate a Rust SDK
-        #[arg(long, conflicts_with_all = ["ts", "python"])]
-        rust: bool,
-
-        /// Generate a Python SDK
-        #[arg(long, conflicts_with_all = ["ts", "rust"])]
-        python: bool,
+        #[command(flatten)]
+        sdk_target: SdkTargetArgs,
 
         /// Output path (file for TypeScript, directory for Rust or Python)
         #[arg(short, long)]
@@ -347,6 +376,35 @@ enum SdkCommands {
     List,
 }
 
+// The one SDK target a saved dependency generates, recorded as its
+// `targets`. Without a flag the dependency uses `[sdk].targets`.
+#[derive(Args)]
+struct SdkTargetArgs {
+    /// Generate a TypeScript SDK
+    #[arg(long, conflicts_with_all = ["rust", "python"])]
+    ts: bool,
+
+    /// Generate a Rust SDK
+    #[arg(long, conflicts_with_all = ["ts", "python"])]
+    rust: bool,
+
+    /// Generate a Python SDK
+    #[arg(long, conflicts_with_all = ["ts", "rust"])]
+    python: bool,
+}
+
+impl SdkTargetArgs {
+    fn target(&self) -> Option<project::manifest::InstallTarget> {
+        match (self.ts, self.rust, self.python) {
+            (true, false, false) => Some(project::manifest::InstallTarget::TypeScript),
+            (false, true, false) => Some(project::manifest::InstallTarget::Rust),
+            (false, false, true) => Some(project::manifest::InstallTarget::Python),
+            (false, false, false) => None,
+            _ => unreachable!("clap rejects conflicting target flags"),
+        }
+    }
+}
+
 #[derive(Args)]
 struct SdkCreateArgs {
     /// Name of the stack to generate SDK for
@@ -392,7 +450,7 @@ struct SdkCreateArgs {
     #[arg(long)]
     extensions: Option<String>,
 
-    /// Raw IDL file to generate a standalone program SDK from (TypeScript + --program-only only)
+    /// Raw IDL file to generate a standalone program SDK from (with --program-only)
     #[arg(
         long,
         requires = "program_only",
@@ -401,11 +459,9 @@ struct SdkCreateArgs {
     idl: Option<String>,
 
     /// Local ProgramSpec artifact to generate a standalone program SDK from
-    #[arg(
-        long,
-        requires = "program_only",
-        conflicts_with_all = ["stack_name", "idl", "manifest"]
-    )]
+    /// (TypeScript module, Rust crate or Python package, with --extensions
+    /// applied)
+    #[arg(long, conflicts_with_all = ["stack_name", "idl", "manifest"])]
     program_spec: Option<String>,
 
     /// Local StackManifest artifact; dependencies default to its directory
@@ -427,9 +483,19 @@ struct SdkCreateArgs {
     #[arg(long, requires = "manifest")]
     program_module: Vec<String>,
 
-    /// Emit a standalone program-SDK module (pdas/accounts/instructions, no
-    /// views or stack const). TypeScript only.
-    #[arg(long, conflicts_with_all = ["rust", "python"])]
+    /// A stack program's own extension bundle (`<program>=<bundle dir or
+    /// extensions.json>`), embedded in a Rust or Python stack SDK as a
+    /// registry install embeds the published one; repeat per program
+    #[arg(
+        long = "program-extensions",
+        value_name = "PROGRAM=BUNDLE",
+        requires = "manifest"
+    )]
+    program_extensions: Vec<String>,
+
+    /// Emit a standalone program SDK (pdas/accounts/instructions, no views or
+    /// stack const). Rust and Python program SDKs need --program-spec or --idl.
+    #[arg(long)]
     program_only: bool,
 }
 
@@ -514,14 +580,18 @@ enum AuthCommands {
         key: Option<String>,
     },
 
-    /// Register this machine as an agent and store the issued API key
+    /// Register this machine as an agent using a locally generated API key
     Signup {
         /// Display name for the agent account (optional)
         name: Option<String>,
 
         /// Replace credentials that already exist for the active API URL
-        #[arg(long)]
+        #[arg(long, conflicts_with = "if_missing")]
         force: bool,
+
+        /// Verify and reuse an active agent credential; sign up only if absent
+        #[arg(long, conflicts_with = "force")]
+        if_missing: bool,
     },
 
     /// Logout (remove stored credentials for current environment)
@@ -535,6 +605,9 @@ enum AuthCommands {
 
     /// Verify authentication and show user info
     Whoami,
+
+    /// Create a short-lived link for a human to claim this agent
+    ClaimLink,
 
     /// Manage API keys for browser/client use
     #[command(subcommand)]
@@ -552,30 +625,40 @@ enum KeysCommands {
         #[arg(short, long)]
         name: Option<String>,
 
-        /// Allowed origins (e.g., https://example.com or http://localhost:5173)
-        /// Can specify multiple: --origin https://app.com --origin https://www.app.com
-        #[arg(short, long, required = true, num_args = 1..)]
+        /// The one origin the key allows, as scheme://host[:port]
+        /// (e.g. https://example.com or http://localhost:5173). Each key
+        /// allows exactly one origin; create one key per origin.
+        #[arg(short, long, required = true)]
         origin: Vec<String>,
 
         /// Number of days until the key expires (default: 365)
         #[arg(short, long)]
         expiry_days: Option<i64>,
+
+        /// Write (or update) only the key's environment variable in this file,
+        /// e.g. .env.local. Relative paths must stay inside the project; pass
+        /// an absolute path to write elsewhere
+        #[arg(long, value_name = "PATH")]
+        env_file: Option<String>,
     },
 }
 
 #[derive(Subcommand)]
 enum StackCommands {
-    /// Compose ProgramSpecs and LiveSpecs into a portable StackManifest
+    /// Compose live views and program SDKs into a stack: an
+    /// [authoring.stacks] entry in arete.toml, or with -o a StackManifest
     Compose {
-        /// Client-facing stack name
+        /// Stack name: the [authoring.stacks] entry, or with -o the StackManifest name
         #[arg(long)]
         name: String,
 
-        /// ProgramSpec artifact path; repeat for each program
+        /// Program SDK: a program package (`spl-token`, `spl-token@^4`,
+        /// `program:<package>[@<version>]`) or a ProgramSpec file (`*.json`); repeat
         #[arg(long = "program")]
         programs: Vec<String>,
 
-        /// Aliased LiveSpec artifact (`alias=path`); repeat to compose live packages
+        /// Live views: a published stack (`ore`, `ore@^1`, `alias=stack:ore@^1`,
+        /// `stack:multi#<live alias>`) or a LiveSpec file (`alias=path`); repeat
         #[arg(long = "live")]
         live_specs: Vec<String>,
 
@@ -587,9 +670,17 @@ enum StackCommands {
         #[arg(long = "selected-view")]
         selected_views: Vec<String>,
 
-        /// StackManifest output path
+        /// Write a StackManifest here instead of the [authoring.stacks] entry
         #[arg(short, long)]
-        output: String,
+        output: Option<String>,
+
+        /// Also declare the composed stack under [dependencies.stacks] and install it
+        #[arg(long, conflicts_with = "output")]
+        install: bool,
+
+        // With --install, the dependency's `targets`, as `a4 install` records them.
+        #[command(flatten)]
+        sdk_target: SdkTargetArgs,
     },
 
     /// List all stacks with their deployment status
@@ -760,6 +851,33 @@ fn main() {
         std::env::set_var("ARETE_API_URL", api_url);
     }
 
+    let inherited_profile = std::env::var(arete_mcp::credentials::ENV_VAR_PROFILE).ok();
+    let selected_profile = config::resolve_auth_profile(
+        cli.profile.as_deref(),
+        &cli.config,
+        inherited_profile.as_deref(),
+    );
+    match selected_profile {
+        Ok(Some(profile)) => std::env::set_var("ARETE_PROFILE", profile),
+        Ok(None) => {}
+        Err(error)
+            if matches!(
+                &cli.command,
+                Some(Commands::Init(_)) | Some(Commands::Doctor(_))
+            ) =>
+        {
+            eprintln!(
+                "{} {} (continuing so this command can repair it)",
+                "Warning:".yellow().bold(),
+                error
+            );
+        }
+        Err(error) => {
+            eprintln!("{} {}", "Error:".red().bold(), error);
+            process::exit(2);
+        }
+    }
+
     // Mirror the interactivity flags into the environment so ui::interactive()
     // and child processes (npx skills, package managers) see them.
     if cli.yes {
@@ -777,6 +895,7 @@ fn main() {
 
     let cmd_name = cli.command.as_ref().map(command_name).unwrap_or("help");
     let json = cli.json;
+    project::installer::set_json_output(json);
 
     // `a4 mcp` owns stdout for MCP frames and must stay silent otherwise.
     if cmd_name != "mcp" {
@@ -805,6 +924,64 @@ fn main() {
     if let Err(e) = result {
         if let Some(ui::ExitCode(code)) = e.downcast_ref::<ui::ExitCode>() {
             process::exit(*code);
+        }
+        if let Some(api_error) = e.downcast_ref::<api_client::ApiClientError>() {
+            let has_claim_action = api_error
+                .recovery_action()
+                .is_some_and(|action| action.is_claim_agent_materializer());
+
+            if json {
+                match serde_json::to_string(&api_error.problem) {
+                    Ok(problem) => println!("{problem}"),
+                    Err(_) => println!(
+                        "{{\"schemaVersion\":1,\"error\":\"Request failed\",\"code\":\"request-failed\",\"retryable\":false}}"
+                    ),
+                }
+                eprintln!("Error: request failed ({})", api_error.status);
+            } else {
+                eprintln!("{} {}", "Error:".red().bold(), api_error);
+                if has_claim_action && ui::interactive() {
+                    match api_client::ApiClient::new()
+                        .and_then(|client| client.agent_claim_link())
+                        .and_then(|ready| {
+                            let origin = api_client::ApiClient::configured_claim_app_origin()?;
+                            if ready.action.is_safe_claim_url_for_origin(&origin) {
+                                Ok(ready)
+                            } else {
+                                anyhow::bail!("server returned an unsafe claim URL")
+                            }
+                        }) {
+                        Ok(ready) => {
+                            eprintln!();
+                            eprintln!("A human owner must open this link:");
+                            eprintln!("{}", ready.action.url);
+                            eprintln!("Expires: {}", ready.action.expires_at);
+                            eprintln!("The agent must not open or complete this link itself.");
+                        }
+                        Err(materialization_error) => eprintln!(
+                            "Could not create a claim link: {materialization_error}. Run `a4 auth claim-link`."
+                        ),
+                    }
+                } else if has_claim_action {
+                    eprintln!("Run `a4 auth claim-link --json` to create a human handoff URL.");
+                } else if let Some(seconds) = api_error.retry_after_seconds() {
+                    eprintln!("Retry after {seconds} seconds.");
+                }
+            }
+
+            let exit_code = if has_claim_action {
+                20
+            } else if api_error.status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                75
+            } else if matches!(
+                api_error.status,
+                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+            ) {
+                77
+            } else {
+                1
+            };
+            process::exit(exit_code);
         }
         eprintln!("{} {}", "Error:".red().bold(), e);
         process::exit(1);
@@ -905,7 +1082,53 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             limit,
             cursor,
             vocabulary,
+            service_class,
+            operation,
+            sections,
+            summary,
+            views,
         } => {
+            // `a4 explore stack <ref> [entity]`, or legacy `a4 explore <stack> [entity]`.
+            let stack_form = match target.as_deref() {
+                Some("stack") => reference.is_some(),
+                Some("catalog" | "programs" | "program") | None => false,
+                Some(_) => true,
+            };
+            let program_form =
+                target.as_deref() == Some("program") && reference.is_some();
+            if !sections.is_empty() && !program_form {
+                return Err(anyhow::anyhow!(
+                    "--section applies only to `a4 explore program <ref>`"
+                ));
+            }
+            if (summary || !views.is_empty()) && !stack_form {
+                return Err(anyhow::anyhow!(
+                    "--summary and --views apply only to `a4 explore stack <ref>`"
+                ));
+            }
+            if operation.is_some() && !(program_form || stack_form) {
+                return Err(anyhow::anyhow!(
+                    "--operation applies only to `a4 explore program <ref>` or `a4 explore stack <ref>`"
+                ));
+            }
+            let stack_detail = summary || !views.is_empty() || operation.is_some();
+            let entity_form = match target.as_deref() {
+                Some("stack") => entity.is_some(),
+                Some("catalog" | "programs" | "program") | None => false,
+                Some(_) => reference.is_some(),
+            };
+            if stack_detail && entity_form {
+                return Err(anyhow::anyhow!(
+                    "--summary, --views and --operation cannot be combined with an entity drill-down"
+                ));
+            }
+            let stack_options = commands::explore::StackOptions {
+                entity: None,
+                summary,
+                views,
+                operation: operation.as_deref(),
+                config_path: &cli.config,
+            };
             let search_options = query.is_some()
                 || concept.is_some()
                 || category.is_some()
@@ -923,6 +1146,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             if search_options && vocabulary {
                 return Err(anyhow::anyhow!(
                     "--vocabulary cannot be combined with catalog search options"
+                ));
+            }
+            let is_stack_list = target.is_none() && reference.is_none() && entity.is_none();
+            if service_class.is_some() && !is_stack_list {
+                return Err(anyhow::anyhow!(
+                    "--service-class applies only to the root `a4 explore` stack list"
                 ));
             }
             match (target.as_deref(), reference.as_deref(), entity.as_deref()) {
@@ -948,23 +1177,38 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             (Some("catalog"), Some(_), None) => Err(anyhow::anyhow!(
                 "Usage: a4 explore catalog <program|stack> <slug>"
             )),
-            (None, None, None) => commands::explore::list(cli.json),
+            (None, None, None) => commands::explore::list(cli.json, service_class.as_deref()),
             (Some("programs"), None, None) => commands::explore::list_programs(cli.json),
-            (Some("program"), Some(reference), None) => {
-                commands::explore::show_program(reference, cli.json)
-            }
-            (Some("stack"), Some(reference), entity) => {
-                commands::explore::show_stack(reference, entity, cli.json)
-            }
+            (Some("program"), Some(reference), None) => commands::explore::show_program(
+                reference,
+                commands::explore::ProgramOptions {
+                    operation: operation.as_deref(),
+                    sections,
+                },
+                cli.json,
+            ),
+            (Some("stack"), Some(reference), entity) => commands::explore::show_stack(
+                reference,
+                commands::explore::StackOptions {
+                    entity,
+                    ..stack_options
+                },
+                cli.json,
+            ),
             (Some("program"), None, None) => Err(anyhow::anyhow!(
                 "Program reference required. Usage: a4 explore program <ref>"
             )),
             (Some("stack"), None, None) => Err(anyhow::anyhow!(
                 "Stack reference required. Usage: a4 explore stack <ref>"
             )),
-            (Some(stack), entity, None) => {
-                commands::explore::show_stack(stack, entity, cli.json)
-            }
+            (Some(stack), entity, None) => commands::explore::show_stack(
+                stack,
+                commands::explore::StackOptions {
+                    entity,
+                    ..stack_options
+                },
+                cli.json,
+            ),
             _ => Err(anyhow::anyhow!(
                 "Invalid explore arguments. Use `a4 explore`, `a4 explore catalog --query <intent>`, `a4 explore catalog <kind> <slug>`, `a4 explore programs`, `a4 explore stack <ref>`, or `a4 explore program <ref>`."
             )),
@@ -993,9 +1237,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Install {
             target,
             install_name,
-            ts,
-            rust,
-            python,
+            sdk_target,
             output,
             package_name,
             crate_name,
@@ -1011,9 +1253,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         } => match target.as_deref() {
             None
                 if install_name.is_some()
-                    || ts
-                    || rust
-                    || python
+                    || sdk_target.target().is_some()
                     || output.is_some()
                     || package_name.is_some()
                     || crate_name.is_some()
@@ -1065,15 +1305,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                             ));
                         }
                     };
-                    let selected_target = match (ts, rust, python) {
-                        (true, false, false) => {
-                            Some(project::manifest::InstallTarget::TypeScript)
-                        }
-                        (false, true, false) => Some(project::manifest::InstallTarget::Rust),
-                        (false, false, true) => Some(project::manifest::InstallTarget::Python),
-                        (false, false, false) => None,
-                        _ => unreachable!("clap rejects conflicting target flags"),
-                    };
+                    let selected_target = sdk_target.target();
                     if no_save {
                         if exact || allow_outside_project {
                             return Err(anyhow::anyhow!(
@@ -1180,6 +1412,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 create_args.artifact_dir,
                 create_args.live_module,
                 create_args.program_module,
+                create_args.program_extensions,
                 create_args.program_only,
             ),
             SdkCommands::Sync(sync_args) => commands::sdk::sync(
@@ -1195,19 +1428,36 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             ConfigCommands::Validate => commands::config::validate(&cli.config),
         },
         Commands::Auth(auth_cmd) => match auth_cmd {
-            AuthCommands::Login { key } => commands::auth::login(key),
-            AuthCommands::Signup { name, force } => commands::auth::signup(name, force, cli.json),
+            AuthCommands::Login { key } => commands::auth::login(key, cli.profile.as_deref()),
+            AuthCommands::Signup {
+                name,
+                force,
+                if_missing,
+            } => {
+                commands::auth::signup(name, force, if_missing, cli.json, cli.profile.as_deref())
+            }
             AuthCommands::Logout => commands::auth::logout(),
             AuthCommands::LogoutAll => commands::auth::logout_all(),
-            AuthCommands::Status => commands::auth::status(),
-            AuthCommands::Whoami => commands::auth::whoami(),
+            AuthCommands::Status => commands::auth::status(cli.json),
+            AuthCommands::Whoami => commands::auth::whoami(cli.json),
+            AuthCommands::ClaimLink => commands::auth::claim_link(cli.json),
             AuthCommands::Keys(keys_cmd) => match keys_cmd {
-                KeysCommands::List => commands::auth::list_keys(),
+                KeysCommands::List => commands::auth::list_keys(cli.json),
                 KeysCommands::CreatePublishable {
                     name,
                     origin,
                     expiry_days,
-                } => commands::auth::create_publishable_key(name, origin, expiry_days),
+                    env_file,
+                } => commands::auth::create_publishable_key(
+                    commands::auth::CreatePublishableArgs {
+                        name,
+                        origins: origin,
+                        expiry_days,
+                        env_file,
+                    },
+                    &cli.config,
+                    cli.json,
+                ),
             },
         },
         Commands::Stack(stack_cmd) => match stack_cmd {
@@ -1218,14 +1468,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 artifact_dirs,
                 selected_views,
                 output,
-            } => commands::public_artifacts::compose_stack(
-                &name,
-                &programs,
-                &live_specs,
-                &artifact_dirs,
-                &selected_views,
-                &output,
-            ),
+                install,
+                sdk_target,
+            } => commands::public_artifacts::compose(commands::public_artifacts::ComposeArgs {
+                config_path: &cli.config,
+                name: &name,
+                programs: &programs,
+                lives: &live_specs,
+                artifact_dirs: &artifact_dirs,
+                selected_views: &selected_views,
+                output: output.as_deref(),
+                install,
+                target: sdk_target.target(),
+            }),
             StackCommands::List => commands::stack::list(cli.json),
             StackCommands::Show {
                 stack_name,
@@ -1380,14 +1635,76 @@ mod tests {
             Some(Commands::Install {
                 target,
                 install_name,
-                ts,
+                sdk_target,
                 ..
             }) => {
                 assert_eq!(target.as_deref(), Some("program"));
                 assert_eq!(install_name.as_deref(), Some("spl-token"));
-                assert!(ts);
+                assert_eq!(
+                    sdk_target.target(),
+                    Some(project::manifest::InstallTarget::TypeScript)
+                );
             }
             _ => panic!("expected install command"),
+        }
+    }
+
+    #[test]
+    fn parse_stack_compose_install_target() {
+        for (flag, expected) in [
+            ("--ts", project::manifest::InstallTarget::TypeScript),
+            ("--rust", project::manifest::InstallTarget::Rust),
+            ("--python", project::manifest::InstallTarget::Python),
+        ] {
+            let cli = Cli::try_parse_from([
+                "a4",
+                "stack",
+                "compose",
+                "--name",
+                "ore-transfers",
+                "--live",
+                "ore",
+                "--program",
+                "spl-token",
+                "--install",
+                flag,
+            ])
+            .expect("cli should parse");
+            match cli.command {
+                Some(Commands::Stack(StackCommands::Compose {
+                    install,
+                    sdk_target,
+                    ..
+                })) => {
+                    assert!(install);
+                    assert_eq!(sdk_target.target(), Some(expected), "{flag}");
+                }
+                _ => panic!("expected stack compose command"),
+            }
+        }
+
+        let cli = Cli::try_parse_from(["a4", "stack", "compose", "--name", "x", "--install"])
+            .expect("cli should parse");
+        match cli.command {
+            Some(Commands::Stack(StackCommands::Compose { sdk_target, .. })) => {
+                assert_eq!(sdk_target.target(), None);
+            }
+            _ => panic!("expected stack compose command"),
+        }
+
+        // One target, as `a4 install` accepts.
+        for command in [
+            &["a4", "stack", "compose", "--name", "x", "--install"][..],
+            &["a4", "install", "stack", "ore"][..],
+        ] {
+            let error = Cli::try_parse_from(command.iter().chain(&["--ts", "--rust"]))
+                .err()
+                .expect("conflicting targets are refused");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{command:?}"
+            );
         }
     }
 
@@ -1409,6 +1726,20 @@ mod tests {
             }
             _ => panic!("expected explore command"),
         }
+    }
+
+    #[test]
+    fn starter_filter_is_scoped_to_the_root_stack_list() {
+        let cli = Cli::try_parse_from(["a4", "explore", "--service-class", "starter"])
+            .expect("starter list should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Explore {
+                service_class: Some(ref class),
+                ..
+            }) if class == "starter"
+        ));
+        assert!(Cli::try_parse_from(["a4", "explore", "--service-class", "fast"]).is_err());
     }
 
     #[test]
@@ -1581,13 +1912,41 @@ mod tests {
 
         let cli = Cli::try_parse_from(["a4", "auth", "signup", "bot", "--json"])
             .expect("signup should parse");
+        assert!(cli.json);
         match cli.command {
-            Some(Commands::Auth(AuthCommands::Signup { name, force })) => {
+            Some(Commands::Auth(AuthCommands::Signup {
+                name,
+                force,
+                if_missing,
+            })) => {
                 assert_eq!(name.as_deref(), Some("bot"));
                 assert!(!force);
+                assert!(!if_missing);
             }
             _ => panic!("expected auth signup"),
         }
+
+        let cli = Cli::try_parse_from(["a4", "auth", "signup", "--if-missing"])
+            .expect("idempotent signup should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Auth(AuthCommands::Signup {
+                if_missing: true,
+                ..
+            }))
+        ));
+        assert!(
+            Cli::try_parse_from(["a4", "auth", "signup", "--if-missing", "--force"]).is_err(),
+            "safe reuse and replacement must be mutually exclusive"
+        );
+
+        let cli = Cli::try_parse_from(["a4", "auth", "login", "--profile", "human"])
+            .expect("global --profile should parse after nested subcommands");
+        assert_eq!(cli.profile.as_deref(), Some("human"));
+
+        let cli = Cli::try_parse_from(["a4", "--profile", "agent", "mcp"])
+            .expect("generated MCP command should parse");
+        assert_eq!(cli.profile.as_deref(), Some("agent"));
 
         let cli = Cli::try_parse_from(["a4", "mcp", "--stdio"]).expect("mcp should parse");
         assert!(matches!(cli.command, Some(Commands::Mcp(_))));
@@ -1614,6 +1973,163 @@ mod tests {
                 assert!(entity.is_none());
             }
             _ => panic!("expected explore command"),
+        }
+    }
+
+    #[test]
+    fn parse_selective_explore_flags() {
+        let cli = Cli::try_parse_from([
+            "a4",
+            "explore",
+            "program",
+            "ore",
+            "--section",
+            "accounts,types",
+            "--section",
+            "operations",
+        ])
+        .expect("sections parse");
+        match cli.command {
+            Some(Commands::Explore { sections, .. }) => {
+                assert_eq!(sections, vec!["accounts", "types", "operations"]);
+            }
+            _ => panic!("expected explore command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "a4",
+            "explore",
+            "stack",
+            "ore",
+            "--views",
+            "OreRound/latest,OreMiner/state",
+            "--json",
+        ])
+        .expect("views parse");
+        match cli.command {
+            Some(Commands::Explore { views, summary, .. }) => {
+                assert_eq!(views, vec!["OreRound/latest", "OreMiner/state"]);
+                assert!(!summary);
+            }
+            _ => panic!("expected explore command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "a4",
+            "explore",
+            "program",
+            "ore",
+            "--operation",
+            "transactions.mining.deployWithCheckpoint",
+        ])
+        .expect("operation parses");
+        match cli.command {
+            Some(Commands::Explore { operation, .. }) => assert_eq!(
+                operation.as_deref(),
+                Some("transactions.mining.deployWithCheckpoint")
+            ),
+            _ => panic!("expected explore command"),
+        }
+
+        for conflicting in [
+            &[
+                "a4",
+                "explore",
+                "stack",
+                "ore",
+                "--summary",
+                "--views",
+                "A/b",
+            ][..],
+            &[
+                "a4",
+                "explore",
+                "stack",
+                "ore",
+                "--summary",
+                "--operation",
+                "x",
+            ][..],
+            &[
+                "a4",
+                "explore",
+                "program",
+                "ore",
+                "--section",
+                "types",
+                "--operation",
+                "x",
+            ][..],
+        ] {
+            assert!(
+                Cli::try_parse_from(conflicting).is_err(),
+                "{conflicting:?} should conflict"
+            );
+        }
+    }
+
+    #[test]
+    fn selective_explore_flags_are_refused_on_other_targets() {
+        for (args, expected) in [
+            (
+                &["a4", "explore", "stack", "ore", "--section", "types"][..],
+                "--section applies only",
+            ),
+            (
+                &["a4", "explore", "program", "ore", "--summary"][..],
+                "--summary and --views apply only",
+            ),
+            (
+                &["a4", "explore", "catalog", "--operation", "x"][..],
+                "--operation applies only",
+            ),
+            (
+                &["a4", "explore", "stack", "ore", "Position", "--summary"][..],
+                "entity drill-down",
+            ),
+            (
+                &[
+                    "a4",
+                    "explore",
+                    "stack",
+                    "ore",
+                    "--service-class",
+                    "starter",
+                ][..],
+                "--service-class applies only",
+            ),
+        ] {
+            let cli = Cli::try_parse_from(args).expect("parses");
+            let error = run(cli).expect_err("refused").to_string();
+            assert!(error.contains(expected), "{args:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn create_publishable_accepts_an_env_file() {
+        let cli = Cli::try_parse_from([
+            "a4",
+            "auth",
+            "keys",
+            "create-publishable",
+            "--origin",
+            "http://localhost:5173",
+            "--env-file",
+            ".env.local",
+            "--json",
+        ])
+        .expect("create-publishable parses");
+        assert!(cli.json);
+        match cli.command {
+            Some(Commands::Auth(AuthCommands::Keys(KeysCommands::CreatePublishable {
+                origin,
+                env_file,
+                ..
+            }))) => {
+                assert_eq!(origin, vec!["http://localhost:5173"]);
+                assert_eq!(env_file.as_deref(), Some(".env.local"));
+            }
+            _ => panic!("expected create-publishable"),
         }
     }
 }

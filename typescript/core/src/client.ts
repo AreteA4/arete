@@ -68,6 +68,11 @@ import {
 } from './program-read-transport';
 import { getProgramReadDescriptor } from './program-sdk';
 import {
+  attachedProgramKeyConflict,
+  compareProgramIdentity,
+  warnUnprovenAttachedProgram,
+} from './program-identity';
+import {
   createTransactionTransport,
   type TransactionAuthScope,
   type TransactionTransport,
@@ -77,9 +82,29 @@ type ProgramMap = Record<string, ProgramSdkDefinition>;
 
 type NormalizeProgramMap<TPrograms> = TPrograms extends ProgramMap ? TPrograms : Record<string, never>;
 
+/**
+ * The keys a program map names, leaving out an index signature. `keyof` of
+ * `Record<string, never>` (nothing attached) or of a wide
+ * `Record<string, ProgramSdkDefinition>` is `string`, which would omit every
+ * program a stack provides.
+ */
+type NamedProgramKeys<TPrograms> = keyof {
+  [K in keyof TPrograms as string extends K ? never : number extends K ? never : K]: unknown;
+};
+
+/**
+ * A stack's programs with attached programs added. An attached program under a
+ * key the stack provides takes that key: it is either the same program SDK
+ * (identical at runtime) or one with the same program spec that could not be
+ * proven identical, which the runtime uses in place of the stack's. Keys the
+ * attached map does not name keep the stack's program types.
+ */
 export type MergeProgramMaps<TStackPrograms, TAttachedPrograms> =
-  Omit<NormalizeProgramMap<TAttachedPrograms>, keyof NormalizeProgramMap<TStackPrograms>>
-  & NormalizeProgramMap<TStackPrograms>;
+  Omit<
+    NormalizeProgramMap<TStackPrograms>,
+    NamedProgramKeys<NormalizeProgramMap<TAttachedPrograms>>
+  >
+  & NormalizeProgramMap<TAttachedPrograms>;
 
 export type StackWithAttachedPrograms<
   TStack extends StackDefinition,
@@ -259,6 +284,17 @@ function hasProgramAccountReads(definition: ProgramSdkDefinition): boolean {
   return Object.keys(definition.accounts ?? {}).length > 0;
 }
 
+/**
+ * Attach programs next to a stack's own, matching a key the stack already
+ * provides by program identity (see `compareProgramIdentity`):
+ *
+ * - the same program SDK (same object, or equal `packageReleaseHash`) resolves
+ *   to the stack's definition;
+ * - the same `programSpecHash` without a provable identity match (at least one
+ *   side has no `packageReleaseHash`) uses the attached program, with one
+ *   warning;
+ * - anything else throws `PROGRAM_KEY_CONFLICT`.
+ */
 function mergeAttachedPrograms<
   TStack extends StackDefinition,
   TAttachedPrograms extends ProgramMap | undefined,
@@ -269,12 +305,24 @@ function mergeAttachedPrograms<
   const merged: ProgramMap = { ...(attachedPrograms ?? {}) };
 
   for (const [name, definition] of Object.entries(stack.programs ?? {})) {
-    if (name in merged) {
-      console.warn(
-        `Ignoring attached program '${name}' for stack '${stack.name}' because the stack already defines that key`
-      );
+    const attached = attachedPrograms && Object.prototype.hasOwnProperty.call(attachedPrograms, name)
+      ? attachedPrograms[name]
+      : undefined;
+    if (attached === undefined) {
+      merged[name] = definition;
+      continue;
     }
-    merged[name] = definition;
+    switch (compareProgramIdentity(definition, attached)) {
+      case 'same':
+        merged[name] = definition;
+        break;
+      case 'unproven':
+        warnUnprovenAttachedProgram(stack.name, name, definition, attached);
+        merged[name] = attached;
+        break;
+      case 'different':
+        throw attachedProgramKeyConflict(stack.name, name, definition, attached);
+    }
   }
 
   return merged as MergeProgramMaps<TStack['programs'], TAttachedPrograms>;
@@ -374,7 +422,13 @@ export interface ConnectOptions<
   wallet?: WalletAdapter;
   /** Optional fetch implementation for HTTP point reads. */
   fetch?: typeof fetch;
-  /** Additional program SDKs exposed under client.programs.<key>. */
+  /**
+   * Additional program SDKs exposed under client.programs.<key>. Under a key
+   * the stack already provides, the same program SDK (the same object or the
+   * same `packageReleaseHash`) resolves to the stack's; a program with the
+   * same `programSpecHash` that cannot be proven identical replaces it, with a
+   * warning; anything else throws `PROGRAM_KEY_CONFLICT`.
+   */
   programs?: TPrograms;
   /** Per-program complete descriptor replacements. */
   programReads?: ProgramReadOverrides<MergeProgramMaps<TStackPrograms, TPrograms>>;
@@ -596,6 +650,9 @@ export class Arete<TStack extends StackDefinition> {
       maxReconnectAttempts: options.maxReconnectAttempts,
       auth: options.auth,
       fetch: this.fetchImpl,
+      // The release names the version served at the generated endpoint. A
+      // different `url` points somewhere the generator knew nothing about.
+      release: url !== null && url === this.stack.endpoints.ws ? this.stack.release : undefined,
     });
     this.processor.useCursorTracker(this.connection.cursors);
     this.subscriptionRegistry = new SubscriptionRegistry(this.connection, this.queryStore);
@@ -603,8 +660,8 @@ export class Arete<TStack extends StackDefinition> {
     this.connection.onFrame((frame: Frame) => {
       this.processor.handleFrame(frame);
     });
-    this.connection.onStateChange((state) => {
-      this.subscriptionRegistry.handleConnectionState(state);
+    this.connection.onStateChange((state, error) => {
+      this.subscriptionRegistry.handleConnectionState(state, error);
     });
 
     this._views = createTypedViews(this.stack, this.storage, this.subscriptionRegistry);

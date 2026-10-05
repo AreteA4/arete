@@ -1,0 +1,9 @@
+{
+  "entry": "vault-stack-extensions.ts",
+  "files": [
+    "vault-stack-extensions.ts"
+  ],
+  "inputKind": "stack-manifest",
+  "inputHash": "arete:h1:stack-manifest:sha256:7b3b5a825854a0e561c1a7eeff95e5871be702009b8952b606d07b66a8641b2a",
+  "sdkRange": null
+}

@@ -57,6 +57,14 @@ async def main():
 Generated names depend on the installed stack. Inspect its package rather than
 copying identifiers from another example.
 
+`get()` and `get_one()` open a subscription for the query (or reuse an
+equivalent active one), wait for its initial snapshot, and release it. A query
+that fails raises its error. So does a read cut short by the connection: a
+terminal connection failure raises `AreteConnectionError` with code
+`CONNECTION_ERROR`, and a disconnect raises code `CONNECTION_CANCELLED`. If no
+snapshot arrives within `timeout` seconds (5 by default), they raise
+`InitialDataTimeoutError`; pass `timeout=None` to wait indefinitely.
+
 ## Program reads and builders
 
 ```python

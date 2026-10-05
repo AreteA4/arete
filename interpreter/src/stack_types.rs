@@ -24,11 +24,13 @@
 //! what they did before.
 
 use crate::ast::{
-    IdlArrayElementSnapshot, IdlDefinedInnerSnapshot, IdlEnumVariantFieldSnapshot, IdlSnapshot,
-    IdlTypeDefKindSnapshot, IdlTypeDefSnapshot, IdlTypeSnapshot, ResolvedStructType,
+    BaseType, IdlAccountSnapshot, IdlArrayElementSnapshot, IdlDefinedInnerSnapshot,
+    IdlEnumVariantFieldSnapshot, IdlFieldSnapshot, IdlSnapshot, IdlTypeDefKindSnapshot,
+    IdlTypeDefSnapshot, IdlTypeSnapshot, IntegerKind, ResolvedField, ResolvedStructType,
     SerializableStreamSpec,
 };
 use crate::identifiers::{typescript as ts_ident, IdentifierCase};
+use crate::idl_models::{DeclaredModel, IdlModel};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// How an entity refers to one of its resolved types.
@@ -77,6 +79,12 @@ impl StackResolvedTypes {
 
     pub(crate) fn is_declared(&self, name: &str) -> bool {
         self.declared.contains_key(name)
+    }
+
+    /// Whether the module already declares `name`, for a resolved type or
+    /// anything else.
+    pub(crate) fn is_taken(&self, name: &str) -> bool {
+        self.declared.contains_key(name) || self.reserved.contains(name)
     }
 
     /// Record that the module declares `resolved` as `name`. The first
@@ -189,20 +197,159 @@ pub(crate) fn entity_idl<'a>(
 ///
 /// A program's account type is read into the model the program's own
 /// entities map it to; that may be a renamed model when another program
-/// defines a different type with the same name. Account types none of the
-/// program's entities map fall back to the first model generated for the name.
+/// defines a different type with the same name.
+///
+/// Every account of a program's IDL gets a model
+/// ([`crate::idl_models::bind_idl_models`]): the one its entities already
+/// map when that declares the same fields, else a model derived from the
+/// IDL. So does every defined type those models reach. Each also has a
+/// *stable name*, the name the program's standalone SDK gives it
+/// ([`stable_account_model_names`]), which a program package extension
+/// bundle uses in either SDK.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AccountModels {
     /// `(program, account type)` -> model the program's entities use.
     by_program: BTreeMap<(String, String), String>,
-    /// Account type -> the first model generated for it.
-    first: BTreeMap<String, String>,
+    /// Declared model name -> its definition (first declaration).
+    models: BTreeMap<String, DeclaredModel>,
+    /// Names declared models occupy besides their own (the variant classes
+    /// of a Python enum model).
+    occupied: BTreeSet<String>,
+    /// Program -> `(account, model, stable name)` for every IDL account, in
+    /// IDL order.
+    programs: BTreeMap<String, Vec<ProgramAccountModel>>,
+    /// Program -> `(defined type, model, stable name)` for every defined
+    /// type its account models reach, in declaration order.
+    types: BTreeMap<String, Vec<ProgramTypeModel>>,
+}
+
+/// One IDL account of a program and the model it reads into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProgramAccountModel {
+    /// The account's IDL name.
+    pub(crate) account: String,
+    /// The model declared in the SDK's shared types module (`types.rs` /
+    /// `models.py`); `None` for an account read as raw JSON (enum layouts).
+    pub(crate) model: Option<String>,
+    /// The name the program's standalone SDK declares the model under.
+    pub(crate) stable: String,
+}
+
+/// One IDL defined type a program's account models reach, and its model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProgramTypeModel {
+    /// The type's IDL name.
+    pub(crate) type_name: String,
+    /// The model declared in the SDK's shared types module.
+    pub(crate) model: String,
+    /// The name the program's standalone SDK declares the model under.
+    pub(crate) stable: String,
 }
 
 impl AccountModels {
-    /// The stack-wide account type -> first generated model map.
-    pub(crate) fn first_mut(&mut self) -> &mut BTreeMap<String, String> {
-        &mut self.first
+    /// Record that the SDK declares `resolved` as `name` (first wins).
+    pub(crate) fn declare_model(&mut self, name: &str, resolved: &ResolvedStructType) {
+        self.models
+            .entry(name.to_string())
+            .or_insert_with(|| DeclaredModel::Resolved(resolved.clone()));
+    }
+
+    /// Record that the SDK declares the IDL-derived `model` as `name`,
+    /// occupying the `extra` names too (first wins).
+    pub(crate) fn declare_idl_model(&mut self, name: &str, model: &IdlModel, extra: Vec<String>) {
+        self.models
+            .entry(name.to_string())
+            .or_insert_with(|| DeclaredModel::Idl(model.clone()));
+        self.occupied.extend(extra);
+    }
+
+    /// The definition declared as `name`.
+    pub(crate) fn model(&self, name: &str) -> Option<&DeclaredModel> {
+        self.models.get(name)
+    }
+
+    /// Whether a declared model occupies `name` besides its own.
+    pub(crate) fn is_occupied(&self, name: &str) -> bool {
+        self.occupied.contains(name)
+    }
+
+    /// The model `program`'s own entities map `account` to, if any (no
+    /// cross-program fallback).
+    pub(crate) fn own(&self, program: &str, account: &str) -> Option<&String> {
+        self.by_program
+            .get(&(program.to_string(), account.to_string()))
+            .or_else(|| {
+                self.by_program
+                    .iter()
+                    .find(|((owner, name), _)| {
+                        owner == program && name.eq_ignore_ascii_case(account)
+                    })
+                    .map(|(_, model)| model)
+            })
+    }
+
+    /// Bind `program`'s `account` to `model` under its stable name.
+    pub(crate) fn bind(&mut self, program: &str, account: &str, model: Option<&str>, stable: &str) {
+        if let Some(model) = model {
+            self.by_program.insert(
+                (program.to_string(), account.to_string()),
+                model.to_string(),
+            );
+        }
+        self.programs
+            .entry(program.to_string())
+            .or_default()
+            .push(ProgramAccountModel {
+                account: account.to_string(),
+                model: model.map(str::to_string),
+                stable: stable.to_string(),
+            });
+    }
+
+    /// Bind `program`'s defined type `type_name` to `model` under its stable
+    /// name.
+    pub(crate) fn bind_type(&mut self, program: &str, type_name: &str, model: &str, stable: &str) {
+        self.types
+            .entry(program.to_string())
+            .or_default()
+            .push(ProgramTypeModel {
+                type_name: type_name.to_string(),
+                model: model.to_string(),
+                stable: stable.to_string(),
+            });
+    }
+
+    /// Every IDL account of `program` with its model, in IDL order.
+    pub(crate) fn program_accounts(&self, program: &str) -> &[ProgramAccountModel] {
+        self.programs
+            .get(program)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// Every defined type `program`'s account models reach, with its model.
+    pub(crate) fn program_types(&self, program: &str) -> &[ProgramTypeModel] {
+        self.types
+            .get(program)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// `(stable name, declared model)` for every model of `program` (its
+    /// accounts', then its defined types'), each stable name once. These are
+    /// the names its standalone SDK declares.
+    pub(crate) fn program_model_names(&self, program: &str) -> Vec<(String, String)> {
+        let mut seen = HashSet::new();
+        self.program_accounts(program)
+            .iter()
+            .filter_map(|account| Some((account.stable.clone(), account.model.clone()?)))
+            .chain(
+                self.program_types(program)
+                    .iter()
+                    .map(|model| (model.stable.clone(), model.model.clone())),
+            )
+            .filter(|(stable, _)| seen.insert(stable.clone()))
+            .collect()
     }
 
     /// Record that an entity of `program` maps `account_type` to `model`.
@@ -213,29 +360,289 @@ impl AccountModels {
                 .or_insert_with(|| model.to_string());
         }
     }
+}
 
-    /// The model `program`'s `account` accounts are read into (account
-    /// names match case-insensitively when no model has the exact name).
-    pub(crate) fn get(&self, program: Option<&str>, account: &str) -> Option<&String> {
-        let own = program.and_then(|program| {
-            self.by_program
-                .get(&(program.to_string(), account.to_string()))
-                .or_else(|| {
-                    self.by_program
-                        .iter()
-                        .find(|((owner, name), _)| {
-                            owner == program && name.eq_ignore_ascii_case(account)
-                        })
-                        .map(|(_, model)| model)
-                })
-        });
-        own.or_else(|| self.first.get(account)).or_else(|| {
-            self.first
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case(account))
-                .map(|(_, model)| model)
-        })
+/// The fields an IDL account's data decodes into: its own fields, else the
+/// struct (or tuple struct) the IDL declares under the account's name, the
+/// shape Anchor IDLs use. `None` for an account whose layout is an enum.
+pub(crate) fn idl_account_field_snapshots(
+    idl: &IdlSnapshot,
+    account: &IdlAccountSnapshot,
+) -> Option<Vec<IdlFieldSnapshot>> {
+    if !account.fields.is_empty() {
+        return Some(account.fields.clone());
     }
+    let type_def = idl
+        .types
+        .iter()
+        .find(|type_def| type_def.name == account.name)
+        .or_else(|| {
+            idl.types
+                .iter()
+                .find(|type_def| type_def.name.eq_ignore_ascii_case(&account.name))
+        });
+    match type_def.map(|type_def| &type_def.type_def) {
+        None => Some(Vec::new()),
+        Some(IdlTypeDefKindSnapshot::Struct { fields, .. }) => Some(fields.clone()),
+        Some(IdlTypeDefKindSnapshot::TupleStruct { fields, .. }) => Some(
+            fields
+                .iter()
+                .enumerate()
+                .map(|(index, type_)| IdlFieldSnapshot {
+                    name: format!("_{index}"),
+                    type_: type_.clone(),
+                    amount_hint: None,
+                })
+                .collect(),
+        ),
+        Some(IdlTypeDefKindSnapshot::Enum { .. }) => None,
+    }
+}
+
+/// An IDL account in the flat convention the stack generators use for the
+/// accounts entities capture (the resolved types `arete-macros` records):
+/// scalars keep their integer kind, fixed arrays and vectors their element
+/// type, and nested defined types, tuples and maps stay JSON values. Tests
+/// use it as an entity's captured type; account readers decode into the
+/// typed [`crate::idl_models::IdlModel`] instead. `None` for an enum layout.
+#[cfg(test)]
+pub(crate) fn idl_account_model(
+    idl: &IdlSnapshot,
+    account: &IdlAccountSnapshot,
+) -> Option<ResolvedStructType> {
+    Some(ResolvedStructType {
+        type_name: account.name.clone(),
+        fields: idl_account_field_snapshots(idl, account)?
+            .iter()
+            .map(resolved_idl_field)
+            .collect(),
+        is_instruction: false,
+        is_account: true,
+        is_event: false,
+        is_enum: false,
+        enum_variants: Vec::new(),
+    })
+}
+
+pub(crate) fn resolved_idl_field(field: &IdlFieldSnapshot) -> ResolvedField {
+    let shape = idl_field_shape(&field.type_);
+    ResolvedField {
+        field_name: field.name.clone(),
+        raw_name: Some(field.name.clone()),
+        canonical_name: Some(crate::ast::to_camel_case_owned(&field.name)),
+        field_type: shape.field_type,
+        base_type: shape.base_type,
+        integer_kind: shape.integer_kind,
+        is_optional: shape.is_optional,
+        is_array: shape.is_array,
+    }
+}
+
+struct IdlFieldShape {
+    field_type: String,
+    base_type: BaseType,
+    integer_kind: Option<IntegerKind>,
+    is_optional: bool,
+    is_array: bool,
+}
+
+fn simple_idl_base_type(name: &str) -> (BaseType, Option<IntegerKind>) {
+    if let Some(kind) = IntegerKind::from_rust_type(name) {
+        return (BaseType::Integer, Some(kind));
+    }
+    let base_type = match name {
+        "f32" | "f64" => BaseType::Float,
+        "bool" => BaseType::Boolean,
+        "string" | "String" => BaseType::String,
+        "publicKey" | "pubkey" | "Pubkey" => BaseType::Pubkey,
+        "bytes" => BaseType::Binary,
+        _ => BaseType::Object,
+    };
+    (base_type, None)
+}
+
+/// Mirror of `arete-macros`' `analyze_idl_type_with_resolution`, except that
+/// a map is a JSON value (the macro types it as its value type).
+fn idl_field_shape(idl_type: &IdlTypeSnapshot) -> IdlFieldShape {
+    match idl_type {
+        IdlTypeSnapshot::Simple(name) => {
+            let (base_type, integer_kind) = simple_idl_base_type(name);
+            IdlFieldShape {
+                field_type: name.clone(),
+                base_type,
+                integer_kind,
+                is_optional: false,
+                is_array: false,
+            }
+        }
+        IdlTypeSnapshot::Option(option) => {
+            let inner = idl_field_shape(&option.option);
+            IdlFieldShape {
+                field_type: format!("Option<{}>", inner.field_type),
+                is_optional: true,
+                ..inner
+            }
+        }
+        IdlTypeSnapshot::Vec(vec) => {
+            let inner = idl_field_shape(&vec.vec);
+            IdlFieldShape {
+                field_type: format!("Vec<{}>", inner.field_type),
+                is_array: true,
+                ..inner
+            }
+        }
+        IdlTypeSnapshot::Array(array) if array.array.len() >= 2 => {
+            let element = match &array.array[0] {
+                IdlArrayElementSnapshot::Type(IdlTypeSnapshot::Simple(name))
+                | IdlArrayElementSnapshot::TypeName(name) => {
+                    let (base_type, integer_kind) = simple_idl_base_type(name);
+                    Some(IdlFieldShape {
+                        field_type: name.clone(),
+                        base_type,
+                        integer_kind,
+                        is_optional: false,
+                        is_array: false,
+                    })
+                }
+                IdlArrayElementSnapshot::Type(nested) => Some(idl_field_shape(nested)),
+                IdlArrayElementSnapshot::Size(_) => None,
+            };
+            match element {
+                Some(element) => IdlFieldShape {
+                    field_type: format!("[{}]", element.field_type),
+                    is_array: true,
+                    ..element
+                },
+                None => json_array_shape(),
+            }
+        }
+        IdlTypeSnapshot::Array(_) => json_array_shape(),
+        IdlTypeSnapshot::Defined(defined) => IdlFieldShape {
+            field_type: match &defined.defined {
+                IdlDefinedInnerSnapshot::Named { name } => name.clone(),
+                IdlDefinedInnerSnapshot::Simple(name) => name.clone(),
+            },
+            base_type: BaseType::Object,
+            integer_kind: None,
+            is_optional: false,
+            is_array: false,
+        },
+        IdlTypeSnapshot::HashMap(map) => IdlFieldShape {
+            field_type: format!(
+                "HashMap<{}, {}>",
+                idl_field_shape(&map.hash_map.0).field_type,
+                idl_field_shape(&map.hash_map.1).field_type
+            ),
+            base_type: BaseType::Object,
+            integer_kind: None,
+            is_optional: false,
+            is_array: false,
+        },
+        IdlTypeSnapshot::Tuple(tuple) => IdlFieldShape {
+            field_type: format!(
+                "({})",
+                tuple
+                    .tuple
+                    .iter()
+                    .map(|element| idl_field_shape(element).field_type)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            base_type: BaseType::Object,
+            integer_kind: None,
+            is_optional: false,
+            is_array: false,
+        },
+    }
+}
+
+fn json_array_shape() -> IdlFieldShape {
+    IdlFieldShape {
+        field_type: "Array".to_string(),
+        base_type: BaseType::Array,
+        integer_kind: None,
+        is_optional: false,
+        is_array: true,
+    }
+}
+
+/// The name a program's standalone SDK gives each IDL account's model, by
+/// account name: the account name in `PascalCase`, else with an `Account`
+/// suffix (then numbered) when that is `reserved` or another account of the
+/// program already has it. It depends on the program's IDL alone, so a stack
+/// SDK can alias every embedded program's models under the same names.
+pub(crate) fn stable_account_model_names(
+    idl: &IdlSnapshot,
+    pascal: impl Fn(&str) -> String,
+    reserved: &[&str],
+) -> BTreeMap<String, String> {
+    let mut used = reserved
+        .iter()
+        .map(|name| name.to_string())
+        .collect::<HashSet<_>>();
+    let mut names = BTreeMap::new();
+    for account in &idl.accounts {
+        if names.contains_key(&account.name) {
+            continue;
+        }
+        let base = pascal(&account.name);
+        let name = std::iter::once(base.clone())
+            .chain(std::iter::once(format!("{base}Account")))
+            .chain((2usize..).map(|index| format!("{base}Account{index}")))
+            .find(|candidate| used.insert(candidate.clone()))
+            .expect("the numbered candidates are unbounded");
+        names.insert(account.name.clone(), name);
+    }
+    names
+}
+
+/// The names the shared types module tries for a program's account model,
+/// most preferred first: its stable name, then prefixed with the program
+/// name, then with an `Account` role suffix, then numbered (the TypeScript
+/// generator's order for IDL account types).
+pub(crate) fn account_model_candidates(
+    stable: &str,
+    program_name: &str,
+) -> impl Iterator<Item = String> {
+    let prefixed = format!(
+        "{}{stable}",
+        ts_ident::identifier_stem(program_name, IdentifierCase::Pascal)
+    );
+    let role = format!("{prefixed}Account");
+    [stable.to_string(), prefixed, role.clone()]
+        .into_iter()
+        .chain((2usize..).map(move |index| format!("{role}{index}")))
+}
+
+/// The programs (by IDL name) whose generated module gets typed account
+/// readers: every program the SDK emits a module for (`include_idl_only`:
+/// every IDL; else every program an instruction targets) that has a program
+/// read layer.
+pub(crate) fn account_reader_programs(
+    idls: &[IdlSnapshot],
+    program_ids: &[String],
+    instructions: &[crate::ast::InstructionDef],
+    include_idl_only: bool,
+    has_read_layer: impl Fn(&str) -> bool,
+) -> HashSet<String> {
+    if instructions.is_empty() && !include_idl_only {
+        return HashSet::new();
+    }
+    let default_program_id = program_ids.first().map(String::as_str);
+    idls.iter()
+        .enumerate()
+        .filter_map(|(index, idl)| {
+            let program_id = idl
+                .program_id
+                .as_deref()
+                .or_else(|| program_ids.get(index).map(String::as_str))?;
+            let emitted = include_idl_only
+                || instructions.iter().any(|instruction| {
+                    instruction.program_id.as_deref().or(default_program_id) == Some(program_id)
+                });
+            (emitted && has_read_layer(program_id)).then(|| idl.name.clone())
+        })
+        .collect()
 }
 
 /// The prefixes that disambiguate an entity's resolved type from a

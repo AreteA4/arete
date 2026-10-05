@@ -1,21 +1,19 @@
-//! API key resolution for the `connect` tool.
+//! Shared API-key resolution for the MCP server and `a4` CLI.
 //!
 //! Agents should never have to paste API keys into tool calls — the key would
 //! end up in the model's context window, chat transcript, and JSON-RPC wire.
 //! Instead, `connect` resolves its api key through the following precedence:
 //!
 //! 1. **Explicit `api_key` argument** on the `connect` tool call (override,
-//!    still supported for testing and multi-stack scenarios).
-//! 2. **`ARETE_API_KEY` environment variable**, set once when launching
-//!    the MCP server (e.g. in `.vscode/mcp.json`'s `env` block or via
-//!    `claude mcp add -e ARETE_API_KEY=...`).
-//! 3. **`~/.arete/credentials.toml`**, the file managed by
-//!    `a4 auth login`. Two schemas are supported:
-//!    - **New format:** `[keys]` table keyed by API URL
-//!      (`https://api.arete.run`). Honors `ARETE_API_URL` for
-//!      the lookup key.
-//!    - **Legacy format:** a top-level `api_key = "..."` key. This is what
-//!      older `a4 auth login` versions wrote and what many users still have.
+//!    still supported for testing and multi-stack scenarios, but constrained
+//!    to the selected built-in profile when one is set).
+//! 2. When `ARETE_PROFILE` is selected, that named profile in the credentials
+//!    file. A selected profile deliberately outranks `ARETE_API_KEY`, so an
+//!    ambient human key cannot override an MCP pinned to the agent profile.
+//! 3. Without a selected profile, **`ARETE_API_KEY`**.
+//! 4. **`~/.arete/credentials.toml`** (or `ARETE_CREDENTIALS_PATH`). Named
+//!    `[profiles.<name>.keys]`, URL-keyed `[keys]`, and legacy top-level
+//!    `api_key` schemas are supported.
 //!
 //! If none of the three produces a key **and** the target WebSocket URL is a
 //! hosted Arete stack (ends in `.stack.arete.run`), this module
@@ -35,9 +33,13 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 
-const DEFAULT_API_URL: &str = "https://api.arete.run";
-const ENV_VAR_API_KEY: &str = "ARETE_API_KEY";
+pub const DEFAULT_API_URL: &str = "https://api.arete.run";
+pub const AGENT_PROFILE: &str = "agent";
+pub const HUMAN_PROFILE: &str = "human";
+pub const ENV_VAR_API_KEY: &str = "ARETE_API_KEY";
 const ENV_VAR_API_URL: &str = "ARETE_API_URL";
+pub const ENV_VAR_PROFILE: &str = "ARETE_PROFILE";
+pub const ENV_VAR_CREDENTIALS_PATH: &str = "ARETE_CREDENTIALS_PATH";
 
 /// Ambient environment the resolver reads from. Production code uses
 /// [`SystemEnv`]; tests construct an inline struct implementing this trait.
@@ -73,7 +75,61 @@ impl Env for SystemEnv {
 }
 
 fn system_credentials_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(ENV_VAR_CREDENTIALS_PATH) {
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
     dirs::home_dir().map(|h| h.join(".arete").join("credentials.toml"))
+}
+
+/// One profile-aware lookup from a parsed credentials document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialLookup {
+    pub key: Option<String>,
+    /// The named profile used. `None` means a legacy `[keys]`/`api_key` entry.
+    pub profile: Option<String>,
+}
+
+/// Validate a profile name accepted on the CLI and in credentials files.
+pub fn validate_profile_name(profile: &str) -> Result<&str> {
+    let profile = profile.trim();
+    if profile.is_empty()
+        || profile.len() > 64
+        || !profile
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(anyhow!(
+            "invalid Arete profile `{profile}`; use 1-64 letters, numbers, hyphens, or underscores"
+        ));
+    }
+    Ok(profile)
+}
+
+/// Infer the safe built-in profile from a key prefix.
+pub fn inferred_profile_for_key(key: &str) -> &'static str {
+    if key.trim().starts_with("a4_ak_") {
+        AGENT_PROFILE
+    } else {
+        HUMAN_PROFILE
+    }
+}
+
+/// Ensure reserved profiles cannot accidentally contain the other principal's
+/// credential. Custom profiles remain available for advanced use.
+pub fn validate_key_for_profile(profile: &str, key: &str) -> Result<()> {
+    let profile = validate_profile_name(profile)?;
+    let is_agent_key = key.trim().starts_with("a4_ak_");
+    match profile {
+        AGENT_PROFILE if !is_agent_key => Err(anyhow!(
+            "profile `agent` requires an a4_ak_* agent credential"
+        )),
+        HUMAN_PROFILE if is_agent_key => Err(anyhow!(
+            "profile `human` cannot contain an a4_ak_* agent credential"
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Describes where a resolved api key came from. Useful for log lines and the
@@ -115,57 +171,82 @@ pub fn resolve(explicit: Option<String>, url: &str) -> Result<ResolvedKey> {
 /// Generic resolver parametrized over the ambient environment. Tests use this
 /// directly with a `TestEnv` to avoid touching process-global state.
 pub fn resolve_with<E: Env>(env: &E, explicit: Option<String>, url: &str) -> Result<ResolvedKey> {
+    let selected_profile = env
+        .var(ENV_VAR_PROFILE)
+        .map(|profile| validate_profile_name(&profile).map(str::to_string))
+        .transpose()?;
+
     // 1. Explicit argument wins. Trim to protect against accidental whitespace.
     if let Some(k) = explicit
         .as_ref()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
     {
+        if let Some(profile) = selected_profile.as_deref() {
+            validate_key_for_profile(profile, k)?;
+        }
         return Ok(ResolvedKey {
             key: Some(k.to_string()),
             source: KeySource::Explicit,
         });
     }
 
-    // 2. Environment variable.
-    if let Some(k) = env.var(ENV_VAR_API_KEY) {
-        let k = k.trim().to_string();
-        if !k.is_empty() {
+    // 2. A selected profile is fail-closed and deliberately wins over an
+    // ambient ARETE_API_KEY. Generated MCP config always selects `agent`.
+    if let (Some(profile), Some(content)) = (selected_profile.as_deref(), env.credentials_file()) {
+        let api_url = selected_api_url(env);
+        let lookup = lookup_credentials(&content, &api_url, Some(profile))?;
+        if let Some(key) = lookup.key {
             return Ok(ResolvedKey {
-                key: Some(k),
-                source: KeySource::EnvVar,
+                key: Some(key),
+                source: KeySource::CredentialsFile,
             });
         }
     }
 
-    // 3. Credentials file. The lookup URL mirrors `RegistryClient::new`
+    // 3. The legacy environment override is used only when no profile was
+    // selected. This preserves compatibility without allowing a human key to
+    // override an explicitly agent-scoped process.
+    if selected_profile.is_none() {
+        if let Some(k) = env.var(ENV_VAR_API_KEY) {
+            let k = k.trim().to_string();
+            if !k.is_empty() {
+                return Ok(ResolvedKey {
+                    key: Some(k),
+                    source: KeySource::EnvVar,
+                });
+            }
+        }
+    }
+
+    // 4. Credentials file. The lookup URL mirrors `RegistryClient::new`
     // exactly: trim, strip trailing slashes, and fall back to the default
     // when the env var is effectively empty — otherwise an
     // `ARETE_API_URL` of whitespace/slashes would send requests to the
     // default host while looking up credentials under an empty key.
-    if let Some(content) = env.credentials_file() {
-        let api_url = env
-            .var(ENV_VAR_API_URL)
-            .map(|u| normalize_api_url(&u))
-            .filter(|u| !u.is_empty())
-            .unwrap_or_else(|| DEFAULT_API_URL.to_string());
-        if let Some(k) = parse_credentials_content(&content, &api_url) {
-            return Ok(ResolvedKey {
-                key: Some(k),
-                source: KeySource::CredentialsFile,
-            });
+    if selected_profile.is_none() {
+        if let Some(content) = env.credentials_file() {
+            let api_url = selected_api_url(env);
+            if let Some(k) = lookup_credentials(&content, &api_url, None)?.key {
+                return Ok(ResolvedKey {
+                    key: Some(k),
+                    source: KeySource::CredentialsFile,
+                });
+            }
         }
     }
 
     // Nothing found. Decide whether that's fatal.
     if is_hosted_websocket_url(url) {
         let file = env.credentials_file_path_display();
+        let profile_hint = selected_profile
+            .as_deref()
+            .map(|profile| format!(" for profile `{profile}`"))
+            .unwrap_or_default();
         Err(anyhow!(
-            "no Arete api key found for hosted stack `{url}`. \
-             Tried: explicit `api_key` argument, `{ENV_VAR_API_KEY}` env var, and {file}. \
-             Fix: run `a4 auth login`, or set `{ENV_VAR_API_KEY}=a4_sk_...` (or legacy `hsk_...`) in your MCP \
-             server environment (e.g. `.vscode/mcp.json` `env` block), or pass \
-             `api_key` explicitly on the connect call."
+            "no Arete api key found{profile_hint} for hosted stack `{url}`. \
+             Checked {file}. Run `a4 auth signup` for an agent credential or \
+             `a4 auth login --profile human` for a human credential."
         ))
     } else {
         Ok(ResolvedKey {
@@ -173,6 +254,98 @@ pub fn resolve_with<E: Env>(env: &E, explicit: Option<String>, url: &str) -> Res
             source: KeySource::None,
         })
     }
+}
+
+fn selected_api_url<E: Env>(env: &E) -> String {
+    env.var(ENV_VAR_API_URL)
+        .map(|u| normalize_api_url(&u))
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| DEFAULT_API_URL.to_string())
+}
+
+/// Parse a credentials document with optional named-profile selection.
+///
+/// When no profile is requested, exactly one matching named profile is used.
+/// Multiple matches are rejected instead of silently choosing a potentially
+/// more privileged credential. Legacy URL-keyed credentials remain supported.
+pub fn lookup_credentials(
+    content: &str,
+    api_url: &str,
+    requested_profile: Option<&str>,
+) -> Result<CredentialLookup> {
+    let parsed: CredentialsFile = toml::from_str(content)
+        .map_err(|error| anyhow!("failed to parse credentials file: {error}"))?;
+
+    if let Some(profile) = requested_profile {
+        let profile = validate_profile_name(profile)?;
+        if let Some(key) = parsed
+            .profiles
+            .as_ref()
+            .and_then(|profiles| profiles.get(profile))
+            .and_then(|profile| find_url_key(&profile.keys, api_url))
+        {
+            validate_key_for_profile(profile, &key)?;
+            return Ok(CredentialLookup {
+                key: Some(key),
+                profile: Some(profile.to_string()),
+            });
+        }
+
+        if let Some(key) = legacy_url_key(&parsed, api_url) {
+            let compatible = match profile {
+                AGENT_PROFILE => key.starts_with("a4_ak_"),
+                HUMAN_PROFILE => !key.starts_with("a4_ak_"),
+                _ => false,
+            };
+            if compatible {
+                return Ok(CredentialLookup {
+                    key: Some(key),
+                    profile: None,
+                });
+            }
+        }
+
+        return Ok(CredentialLookup {
+            key: None,
+            profile: Some(profile.to_string()),
+        });
+    }
+
+    let mut matches = parsed
+        .profiles
+        .as_ref()
+        .into_iter()
+        .flat_map(|profiles| profiles.iter())
+        .filter_map(|(name, profile)| {
+            find_url_key(&profile.keys, api_url).map(|key| (name.clone(), key))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| left.0.cmp(&right.0));
+    match matches.as_slice() {
+        [] => {}
+        [(profile, key)] => {
+            validate_key_for_profile(profile, key)?;
+            return Ok(CredentialLookup {
+                key: Some(key.clone()),
+                profile: Some(profile.clone()),
+            });
+        }
+        _ => {
+            let profiles = matches
+                .iter()
+                .map(|(profile, _)| profile.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(anyhow!(
+                "multiple Arete profiles match {api_url}: {profiles}; set {ENV_VAR_PROFILE} or pass --profile"
+            ));
+        }
+    }
+
+    Ok(CredentialLookup {
+        key: legacy_url_key(&parsed, api_url),
+        profile: None,
+    })
 }
 
 /// Whether the URL points at a Arete-hosted WebSocket endpoint.
@@ -201,7 +374,7 @@ fn is_hosted_websocket_url(url: &str) -> bool {
 /// untouched — they are case-sensitive. Both sides of the `[keys]` match
 /// go through this so `ARETE_API_URL="https://api.arete.run/"` still finds
 /// the key stored under `"https://api.arete.run"` and vice versa.
-fn normalize_api_url(url: &str) -> String {
+pub fn normalize_api_url(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/');
     let (scheme, rest) = match trimmed.split_once("://") {
         Some((scheme, rest)) => (scheme.to_ascii_lowercase(), rest),
@@ -238,57 +411,61 @@ fn normalize_api_url(url: &str) -> String {
     out
 }
 
-fn parse_credentials_content(content: &str, api_url: &str) -> Option<String> {
+fn find_url_key(keys: &std::collections::HashMap<String, String>, api_url: &str) -> Option<String> {
     let wanted = normalize_api_url(api_url);
-    // Try the new format first. An exact spelling match wins outright; only
-    // then are other spellings that normalize to the same destination
-    // considered, in sorted raw-key order — `HashMap` iteration order varies
-    // per process, and the chosen key must not change between launches.
-    if let Ok(parsed) = toml::from_str::<NewFormat>(content) {
-        if let Some(keys) = parsed.keys {
-            let exact = keys
-                .get(api_url)
-                .or_else(|| keys.get(wanted.as_str()))
-                .map(|key| key.trim())
-                .filter(|k| !k.is_empty());
-            let matched = exact.or_else(|| {
-                let mut candidates: Vec<(&String, &String)> = keys
-                    .iter()
-                    .filter(|(url, _)| normalize_api_url(url) == wanted)
-                    .collect();
-                candidates.sort_by_key(|(url, _)| url.as_str());
-                candidates
-                    .into_iter()
-                    .map(|(_, key)| key.trim())
-                    .find(|k| !k.is_empty())
-            });
-            if let Some(k) = matched {
-                return Some(k.to_string());
-            }
-        }
-    }
-
-    // Fall back to legacy top-level `api_key = "..."`.
-    if let Ok(parsed) = toml::from_str::<LegacyFormat>(content) {
-        if let Some(k) = parsed.api_key {
-            let k = k.trim().to_string();
-            if !k.is_empty() {
-                return Some(k);
-            }
-        }
-    }
-
-    None
+    let exact = keys
+        .get(api_url)
+        .or_else(|| keys.get(wanted.as_str()))
+        .map(|key| key.trim())
+        .filter(|key| !key.is_empty());
+    exact.map(str::to_string).or_else(|| {
+        let mut candidates = keys
+            .iter()
+            .filter(|(url, _)| normalize_api_url(url) == wanted)
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(url, _)| url.as_str());
+        candidates
+            .into_iter()
+            .map(|(_, key)| key.trim())
+            .find(|key| !key.is_empty())
+            .map(str::to_string)
+    })
 }
 
-#[derive(Deserialize)]
-struct NewFormat {
+fn legacy_url_key(parsed: &CredentialsFile, api_url: &str) -> Option<String> {
+    if let Some(key) = parsed
+        .keys
+        .as_ref()
+        .and_then(|keys| find_url_key(keys, api_url))
+    {
+        return Some(key);
+    }
+    parsed
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+fn parse_credentials_content(content: &str, api_url: &str) -> Option<String> {
+    lookup_credentials(content, api_url, None)
+        .ok()
+        .and_then(|lookup| lookup.key)
+}
+
+#[derive(Default, Deserialize)]
+struct CredentialsFile {
+    profiles: Option<std::collections::HashMap<String, CredentialProfile>>,
     keys: Option<std::collections::HashMap<String, String>>,
+    api_key: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct LegacyFormat {
-    api_key: Option<String>,
+#[derive(Default, Deserialize)]
+struct CredentialProfile {
+    #[serde(default)]
+    keys: std::collections::HashMap<String, String>,
 }
 
 #[cfg(test)]
@@ -353,6 +530,47 @@ mod tests {
         let r = resolve_with(&env, None, "wss://foo.stack.arete.run").unwrap();
         assert_eq!(r.source, KeySource::EnvVar);
         assert_eq!(r.key.as_deref(), Some("a4_sk_from_env"));
+    }
+
+    #[test]
+    fn selected_agent_profile_wins_over_ambient_human_key() {
+        let env = TestEnv::default()
+            .with_var(ENV_VAR_PROFILE, AGENT_PROFILE)
+            .with_var(ENV_VAR_API_KEY, "a4_sk_human")
+            .with_credentials(
+                "[profiles.agent.keys]\n\
+                 \"https://api.arete.run\" = \"a4_ak_agent\"\n\
+                 [profiles.human.keys]\n\
+                 \"https://api.arete.run\" = \"a4_sk_human_file\"",
+            );
+        let resolved = resolve_with(&env, None, "wss://foo.stack.arete.run").unwrap();
+        assert_eq!(resolved.source, KeySource::CredentialsFile);
+        assert_eq!(resolved.key.as_deref(), Some("a4_ak_agent"));
+    }
+
+    #[test]
+    fn selected_agent_profile_does_not_fall_back_to_human_credentials() {
+        let env = TestEnv::default()
+            .with_var(ENV_VAR_PROFILE, AGENT_PROFILE)
+            .with_var(ENV_VAR_API_KEY, "a4_sk_human")
+            .with_credentials(
+                "[profiles.human.keys]\n\
+                 \"https://api.arete.run\" = \"a4_sk_human_file\"",
+            );
+        let error = resolve_with(&env, None, "wss://foo.stack.arete.run").unwrap_err();
+        assert!(error.to_string().contains("profile `agent`"));
+    }
+
+    #[test]
+    fn selected_agent_profile_rejects_explicit_human_key() {
+        let env = TestEnv::default().with_var(ENV_VAR_PROFILE, AGENT_PROFILE);
+        let error = resolve_with(
+            &env,
+            Some("a4_sk_human".to_string()),
+            "wss://foo.stack.arete.run",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("requires an a4_ak_*"));
     }
 
     #[test]
@@ -567,6 +785,39 @@ mod tests {
     }
 
     #[test]
+    fn named_profiles_require_selection_when_more_than_one_matches() {
+        let content = "[profiles.agent.keys]\n\
+                       \"https://api.arete.run\" = \"a4_ak_agent\"\n\
+                       [profiles.human.keys]\n\
+                       \"https://api.arete.run\" = \"a4_sk_human\"";
+        let error = lookup_credentials(content, DEFAULT_API_URL, None).unwrap_err();
+        assert!(error.to_string().contains("multiple Arete profiles"));
+        assert!(error.to_string().contains("ARETE_PROFILE"));
+    }
+
+    #[test]
+    fn named_profile_selection_returns_only_requested_principal() {
+        let content = "[profiles.agent.keys]\n\
+                       \"https://api.arete.run\" = \"a4_ak_agent\"\n\
+                       [profiles.human.keys]\n\
+                       \"https://api.arete.run\" = \"a4_sk_human\"";
+        let agent = lookup_credentials(content, DEFAULT_API_URL, Some(AGENT_PROFILE)).unwrap();
+        let human = lookup_credentials(content, DEFAULT_API_URL, Some(HUMAN_PROFILE)).unwrap();
+        assert_eq!(agent.key.as_deref(), Some("a4_ak_agent"));
+        assert_eq!(agent.profile.as_deref(), Some(AGENT_PROFILE));
+        assert_eq!(human.key.as_deref(), Some("a4_sk_human"));
+        assert_eq!(human.profile.as_deref(), Some(HUMAN_PROFILE));
+    }
+
+    #[test]
+    fn reserved_profiles_reject_the_wrong_key_kind() {
+        let content = "[profiles.agent.keys]\n\
+                       \"https://api.arete.run\" = \"a4_sk_human\"";
+        let error = lookup_credentials(content, DEFAULT_API_URL, Some(AGENT_PROFILE)).unwrap_err();
+        assert!(error.to_string().contains("requires an a4_ak_*"));
+    }
+
+    #[test]
     fn env_api_url_overrides_default_lookup() {
         let env = TestEnv::default()
             .with_var(ENV_VAR_API_URL, "http://localhost:3000")
@@ -588,10 +839,12 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_file_returns_none() {
+    fn unparseable_file_is_an_error() {
         let env = TestEnv::default().with_credentials("not valid toml {{{");
-        let r = resolve_with(&env, None, "wss://self.hosted.example").unwrap();
-        assert_eq!(r.source, KeySource::None);
+        let error = resolve_with(&env, None, "wss://self.hosted.example").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("failed to parse credentials file"));
     }
 
     // ── Hosted vs self-hosted failure modes ─────────────────────────────────
@@ -603,7 +856,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("no Arete api key"), "{msg}");
         assert!(msg.contains("a4 auth login"), "{msg}");
-        assert!(msg.contains("ARETE_API_KEY"), "{msg}");
+        assert!(msg.contains("a4 auth signup"), "{msg}");
         // Should include the test env's display path, not a real $HOME.
         assert!(msg.contains("<test:"), "{msg}");
     }

@@ -108,9 +108,9 @@ export interface CreatePreparedInstructionInput<TArtifacts> {
   name: string;
   instruction: BuiltInstruction;
   artifacts: TArtifacts;
-  requiredSignerAddresses?: readonly string[];
-  signers?: readonly unknown[];
-  errors?: readonly ErrorMetadata[];
+  requiredSignerAddresses?: readonly string[] | undefined;
+  signers?: readonly unknown[] | undefined;
+  errors?: readonly ErrorMetadata[] | undefined;
 }
 
 export type PreparedTransactionInstruction =
@@ -132,9 +132,9 @@ function isPreparedInstruction(
 interface CreatePreparedTransactionBaseInput<TArtifacts> {
   name: string;
   artifacts: TArtifacts;
-  requiredSignerAddresses?: readonly string[];
-  signers?: readonly unknown[];
-  errors?: readonly ErrorMetadata[];
+  requiredSignerAddresses?: readonly string[] | undefined;
+  signers?: readonly unknown[] | undefined;
+  errors?: readonly ErrorMetadata[] | undefined;
 }
 
 export type CreatePreparedTransactionInput<TArtifacts> =
@@ -177,9 +177,9 @@ function inferSignerAddresses(instructions: readonly BuiltInstruction[]): string
 export function createPreparedTransactionBody(input: {
   name: string;
   instructions: readonly BuiltInstruction[];
-  requiredSignerAddresses?: readonly string[];
-  signers?: readonly unknown[];
-  errors?: readonly ErrorMetadata[];
+  requiredSignerAddresses?: readonly string[] | undefined;
+  signers?: readonly unknown[] | undefined;
+  errors?: readonly ErrorMetadata[] | undefined;
 }): PreparedTransactionBody {
   const instructions = nonEmpty(input.instructions, `Transaction '${input.name}'`);
   return {

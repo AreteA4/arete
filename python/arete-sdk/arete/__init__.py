@@ -42,6 +42,7 @@ from arete.errors import (  # noqa: E402
     AuthError,
     HttpRequestError,
     ProcessedSlotTimeoutError,
+    ProgramKeyConflictError,
     SubscriptionError,
 )
 from arete.auth import (  # noqa: E402
@@ -81,6 +82,8 @@ from arete.gateway import (  # noqa: E402
     create_hosted_solana_gateway_transports,
 )
 from arete.amounts import (  # noqa: E402
+    AmountInput,
+    decode_amount_input,
     format_raw_to_ui,
     get_mint_decimals,
     parse_ui_amount_to_raw,
@@ -88,6 +91,12 @@ from arete.amounts import (  # noqa: E402
     resolve_amount_to_raw,
     resolve_amounts_to_raw,
     to_raw_amount,
+)
+from arete.encoding import (  # noqa: E402
+    decode_base58,
+    encode_base58,
+    keccak256,
+    sha256,
 )
 from arete.spl import (  # noqa: E402
     ASSOCIATED_TOKEN_PROGRAM_ADDRESS,
@@ -180,16 +189,25 @@ from arete.stack import (  # noqa: E402
     ProgramOperations,
     StackDef,
     StackEndpoints,
+    StackRelease,
     flow_operation,
     instruction_operation,
+    compare_program_identity,
+    same_program,
     transaction_operation,
     with_programs,
 )
 from arete.extensions import (  # noqa: E402
+    EXTENSION_API_VERSION,
+    PROGRAM_EXTENSION_KEYS,
+    STACK_EXTENSION_KEYS,
     apply_connected_stack_extensions,
     extend_program,
     extend_programs,
     extend_stack,
+    program_extensions_of,
+    stack_extensions_of,
+    with_program_identity,
 )
 from arete.client import Arete  # noqa: E402
 from arete.session import Session, SessionError, create_session  # noqa: E402
@@ -213,6 +231,7 @@ __all__ = [
     "OperationCallbackError",
     "OperationExecutionError",
     "ProcessedSlotTimeoutError",
+    "ProgramKeyConflictError",
     "ReadRequestError",
     "SubscriptionError",
     "TransactionExecutionError",
@@ -234,15 +253,24 @@ __all__ = [
     # stack binding model
     "StackDef",
     "StackEndpoints",
+    "StackRelease",
     "ProgramDef",
     "ProgramOperations",
     "ProgramOperationContext",
     "ConnectedProgram",
+    "compare_program_identity",
+    "same_program",
     "with_programs",
     # extensions
+    "EXTENSION_API_VERSION",
+    "PROGRAM_EXTENSION_KEYS",
+    "STACK_EXTENSION_KEYS",
     "extend_stack",
     "extend_program",
     "extend_programs",
+    "program_extensions_of",
+    "stack_extensions_of",
+    "with_program_identity",
     "apply_connected_stack_extensions",
     "Operation",
     "instruction_operation",
@@ -306,6 +334,8 @@ __all__ = [
     "HostedSolanaGatewayBindings",
     "create_hosted_solana_gateway_transports",
     # amounts & SPL
+    "AmountInput",
+    "decode_amount_input",
     "parse_ui_amount_to_raw",
     "format_raw_to_ui",
     "to_raw_amount",
@@ -319,6 +349,11 @@ __all__ = [
     "SYSTEM_PROGRAM_ADDRESS",
     "derive_associated_token_account",
     "resolve_token_program_address",
+    # hashing & base58
+    "keccak256",
+    "sha256",
+    "encode_base58",
+    "decode_base58",
     # instruction runtime
     "InstructionHandler",
     "BuiltInstruction",

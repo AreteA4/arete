@@ -1,4 +1,4 @@
-use crate::auth::{AuthConfig, AuthToken, TokenTransport};
+use crate::auth::{AuthConfig, AuthToken, StackRelease, TokenTransport};
 use crate::chain::{derive_http_endpoint, ChainClient, ChainError, HttpChainClient};
 use crate::config::{AreteConfig, ConnectionConfig};
 use crate::connection::{ConnectionManager, ConnectionState};
@@ -111,17 +111,32 @@ impl std::fmt::Debug for OperationInspectionOptions {
 /// Chain client used when the client has no HTTP endpoint: every call fails
 /// with a clear configuration error (mirror of the TS
 /// `authenticatedStackFetch` INVALID_CONFIG throw).
-struct UnconfiguredChainClient {
-    stack: &'static str,
+pub(crate) struct UnconfiguredChainClient {
+    message: String,
 }
 
 impl UnconfiguredChainClient {
+    /// A connected stack client without an HTTP endpoint.
+    pub(crate) fn for_stack(stack: &str) -> Self {
+        Self {
+            message: format!(
+                "Stack '{stack}' has no HTTP endpoint; chain reads require AreteBuilder::http_url \
+                 or a WebSocket URL to derive it from"
+            ),
+        }
+    }
+
+    /// A program accessor built outside a connected client.
+    pub(crate) fn detached() -> Self {
+        Self {
+            message: "This program accessor is not connected to a client, so it has no chain \
+                      reader; connect it through Arete/Session or pass ProgramBuilder::with_chain"
+                .to_string(),
+        }
+    }
+
     fn error(&self) -> ChainError {
-        ChainError::Sdk(AreteError::InvalidConfig(format!(
-            "Stack '{}' has no HTTP endpoint; chain reads require AreteBuilder::http_url or a \
-             WebSocket URL to derive it from",
-            self.stack
-        )))
+        ChainError::Sdk(AreteError::InvalidConfig(self.message.clone()))
     }
 }
 
@@ -296,7 +311,9 @@ pub struct Arete<S: Stack> {
     auth_client: Arc<HttpAuthClient>,
     chain: Arc<dyn ChainClient>,
     transactions: Arc<dyn TransactionTransport>,
-    wallet: RwLock<Option<Arc<dyn WalletAdapter>>>,
+    /// Shared with the program accessors' [`ProgramBuilder`](crate::ProgramBuilder),
+    /// so a [`ProgramContext`](crate::ProgramContext) sees the current wallet.
+    wallet: crate::program::WalletSlot,
     signer_registry: Arc<SignerRegistry>,
     pub views: S::Views,
     pub programs: S::Programs,
@@ -707,7 +724,7 @@ impl<S: Stack> AreteBuilder<S> {
             url,
             http_url,
             transport,
-            config,
+            mut config,
             wallet,
             chain,
             transactions,
@@ -717,6 +734,15 @@ impl<S: Stack> AreteBuilder<S> {
 
         if transport == Transport::WebSocket && url.is_empty() {
             return Err(AreteError::MissingUrl);
+        }
+
+        // The generated release names the version served at the generated
+        // URL; a different URL points somewhere the generator knew nothing
+        // about, so its session request stays unversioned.
+        if url == S::url() {
+            config.auth = config
+                .auth
+                .map(|auth| auth.with_stack_release(StackRelease::of::<S>()));
         }
 
         // Effective HTTP base: explicit builder URL > generated
@@ -765,7 +791,7 @@ impl<S: Stack> AreteBuilder<S> {
                     auth_client.clone() as Arc<dyn TokenSource>,
                     http.clone(),
                 )),
-                None => Arc::new(UnconfiguredChainClient { stack: S::name() }),
+                None => Arc::new(UnconfiguredChainClient::for_stack(S::name())),
             },
         };
         let transactions: Arc<dyn TransactionTransport> = match transactions {
@@ -798,12 +824,14 @@ impl<S: Stack> AreteBuilder<S> {
             config.initial_data_timeout,
         );
         let views = S::Views::from_builder(view_builder);
+        let wallet: crate::program::WalletSlot = Arc::new(RwLock::new(wallet));
         let program_builder = crate::program::ProgramBuilder::for_client(
             http,
             http_base_url.clone(),
             Some(auth_client.clone()),
             config.auth.clone(),
-        );
+        )
+        .with_client_runtime(chain.clone(), wallet.clone());
         let programs = S::Programs::from_builder(program_builder);
 
         Ok(Arete {
@@ -815,7 +843,7 @@ impl<S: Stack> AreteBuilder<S> {
             auth_client,
             chain,
             transactions,
-            wallet: RwLock::new(wallet),
+            wallet,
             signer_registry: signer_registry.unwrap_or_default(),
             views,
             programs,

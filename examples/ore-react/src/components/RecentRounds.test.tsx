@@ -71,5 +71,17 @@ describe('RecentRounds', () => {
     expect(screen.getByText('Round 42')).toBeInTheDocument();
     expect(screen.getByText('Square 4 won')).toBeInTheDocument();
     expect(screen.getByText('1.50 SOL')).toBeInTheDocument();
+
+    // A round that just ended shows its winner before `winningSquare` fills.
+    mocks.result = {
+      ...mocks.result,
+      data: [{
+        id: { roundId: 43n },
+        results: { preRevealWinningSquare: 6n, winningSquare: null },
+        state: { totalDeployed: 2 },
+      }],
+    };
+    rerender(<RecentRounds />);
+    expect(screen.getByText('Square 7 won')).toBeInTheDocument();
   });
 });

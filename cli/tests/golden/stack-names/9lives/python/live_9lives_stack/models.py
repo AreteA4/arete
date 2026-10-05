@@ -29,6 +29,9 @@ __all__ = [
     "Vault",
     "vault_from_wire",
     "vault_patch_from_wire",
+    "VaultVault",
+    "vault_vault_from_wire",
+    "vault_vault_patch_from_wire",
 ]
 
 def _snake_key(key: str) -> str:
@@ -242,4 +245,34 @@ def vault_patch_from_wire(value: Any) -> Dict[str, Any]:
         out["id"] = vault_id_patch_from_wire(data["id"] or {})
     if "balance" in data:
         out["balance"] = vault_balance_patch_from_wire(data["balance"] or {})
+    return out
+
+
+@dataclass
+class VaultVault:
+    """Account `Vault` as program reads decode it."""
+
+    authority: Optional[str] = None
+    balance: Optional[int] = None
+
+
+def vault_vault_from_wire(value: Any) -> VaultVault:
+    """Converts a wire payload into :class:`VaultVault`.
+
+    Raises ``ValueError`` when a required field is absent."""
+    data = _mapping(value, "VaultVault")
+    return VaultVault(
+        authority=_require(data, "authority", "VaultVault"),
+        balance=_to_int(_require(data, "balance", "VaultVault")),
+    )
+
+
+def vault_vault_patch_from_wire(value: Any) -> Dict[str, Any]:
+    """Converts a partial `VaultVault` patch; only present keys appear."""
+    data = _mapping(value, "VaultVault patch")
+    out: Dict[str, Any] = {}
+    if "authority" in data:
+        out["authority"] = data["authority"]
+    if "balance" in data:
+        out["balance"] = _to_int(data["balance"])
     return out

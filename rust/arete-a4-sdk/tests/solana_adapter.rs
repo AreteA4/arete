@@ -12,15 +12,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arete_a4_sdk::adapters::solana::{
-    AdapterTransportSelection, SharedSigner, SolanaAdapterConfig, SolanaWalletAdapter,
-    MAX_LEGACY_TRANSACTION_BYTES, MAX_V1_TRANSACTION_BYTES, PROVISIONAL_COMPUTE_UNIT_LIMIT,
-    PROVISIONAL_LOADED_ACCOUNTS_DATA_SIZE,
+    AdapterTransportSelection, SharedSigner, SolanaAdapterConfig, SolanaOperationSigner,
+    SolanaWalletAdapter, MAX_LEGACY_TRANSACTION_BYTES, MAX_V1_TRANSACTION_BYTES,
+    PROVISIONAL_COMPUTE_UNIT_LIMIT, PROVISIONAL_LOADED_ACCOUNTS_DATA_SIZE,
 };
 use arete_a4_sdk::instruction::{BuiltAccountMeta, BuiltInstruction};
 use arete_a4_sdk::operations::{
-    create_prepared_transaction_body, execute_prepared_operation, inspect_prepared_operation,
-    ExecuteOptions, ExecutionHost, FailurePhase, PreparedOperation, PreparedTransaction,
-    TransactionFailureOutcome,
+    create_prepared_instruction, create_prepared_transaction_body, execute_prepared_operation,
+    inspect_prepared_operation, ExecuteOptions, ExecutionHost, FailurePhase, PreparedOperation,
+    PreparedTransaction, Signer as OperationSigner, TransactionFailureOutcome,
 };
 use arete_a4_sdk::rpc::RpcTransactionTransport;
 use arete_a4_sdk::transactions::{
@@ -782,6 +782,91 @@ async fn a_missing_signer_is_refused_before_signing() {
         )
         .await
         .expect_err("a transaction we cannot sign is refused");
+
+    assert!(matches!(
+        outcome(error),
+        TransactionFailureOutcome::NotSubmitted {
+            phase: FailurePhase::Build,
+            ref message,
+        } if message.contains(&stranger.to_string())
+    ));
+    assert!(transport.log().sent.is_empty());
+}
+
+/// A prepared transaction's signer material (TypeScript `signers`), such as
+/// a new account's keypair, signs the signature the adapter does not own.
+#[tokio::test]
+async fn a_carried_signer_signs_a_signature_the_adapter_does_not_own() {
+    let transport = Arc::new(FakeTransport::confirmed_at(1));
+    let payer = Arc::new(fixture_keypair(1));
+    let new_account = Arc::new(fixture_keypair(2));
+    let adapter = SolanaWalletAdapter::with_config(payer.clone(), fast_config(transport.clone()));
+    let carried: Arc<dyn OperationSigner> =
+        Arc::new(SolanaOperationSigner::new(new_account.clone()));
+    assert_eq!(carried.address(), new_account.pubkey().to_string());
+
+    let operation: PreparedOperation = create_prepared_instruction(
+        "create",
+        built_memo(
+            vec![9],
+            &[
+                Pubkey::new_from_array(payer.pubkey().to_bytes()),
+                Pubkey::new_from_array(new_account.pubkey().to_bytes()),
+            ],
+        ),
+        Value::Null,
+        None,
+        None,
+    )
+    .with_signers([carried])
+    .into();
+    let host = ExecutionHost {
+        wallet: Some(&adapter),
+        ..ExecutionHost::default()
+    };
+    let options = ExecuteOptions {
+        send: v1_send_options(full_v1_resources()),
+        ..ExecuteOptions::default()
+    };
+    execute_prepared_operation(&host, &operation, &options)
+        .await
+        .expect("the carried signer completes the signatures");
+
+    let sent = transport.sent_transaction();
+    let signed_bytes = sent.message.serialize();
+    assert_eq!(sent.signatures[0], payer.sign_message(&signed_bytes));
+    assert_eq!(sent.signatures[1], new_account.sign_message(&signed_bytes));
+}
+
+struct AddressOnly(String);
+
+impl OperationSigner for AddressOnly {
+    fn address(&self) -> String {
+        self.0.clone()
+    }
+}
+
+/// A carried signer without key material counts toward validation, but the
+/// adapter cannot sign with it.
+#[tokio::test]
+async fn an_address_only_carried_signer_leaves_the_signature_missing() {
+    let transport = Arc::new(FakeTransport::confirmed_at(1));
+    let stranger = Pubkey::new_from_array([5; 32]);
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        fast_config(transport.clone()),
+    );
+    let context = WalletExecutionContext::default()
+        .with_signers(vec![Arc::new(AddressOnly(stranger.to_string()))]);
+
+    let error = adapter
+        .sign_and_send(
+            &[built_memo(vec![1], &[stranger])],
+            &v1_send_options(full_v1_resources()),
+            &context,
+        )
+        .await
+        .expect_err("an address-only signer cannot sign");
 
     assert!(matches!(
         outcome(error),

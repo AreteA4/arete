@@ -1,0 +1,5 @@
+{
+  "//": "Generated TypeScript is ES modules: tsconfig.strict.json compiles these goldens as an ES module package, as `module: nodenext` requires.",
+  "private": true,
+  "type": "module"
+}

@@ -62,7 +62,8 @@ run `a4 self update`.
 :::note[Two different installs]
 `npx @usearete/a4 install` installs the **CLI itself**. Once you have `a4`, the
 command `a4 install` does a different job: it resolves and generates your
-**project's Arete dependencies**.
+**project's Arete dependencies**. With a package argument,
+`npx @usearete/a4 install stack ore --ts` runs that project install.
 :::
 
 ## 2. Initialize the project
@@ -171,10 +172,11 @@ suitable subscribe-ready view, say so and show me the nearest read-ready
 programs instead.
 </CopyPrompt>
 
-Curated knowledge and live connections may require an account:
+The bootstrap creates or verifies a restricted agent account for curated
+knowledge and hosted global stacks:
 
 ```bash
-a4 auth signup
+a4 --profile agent auth signup --if-missing --json
 ```
 
 Your agent should treat the catalog as a live source and check it each time. No
