@@ -25,7 +25,7 @@ pub mod ore_stream {
         }
     }
 
-    #[entity(name = "OreRound")]
+    #[entity(name = "OreRound", program = "ore")]
     #[view(name = "latest", sort_by = "id.round_id", order = "desc")]
     pub struct OreRound {
         pub id: RoundId,
