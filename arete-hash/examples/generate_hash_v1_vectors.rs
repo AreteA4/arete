@@ -926,6 +926,7 @@ impl Generator {
         let string_pda_seed = bonkswap_string_seed_idl();
         let inline_tuple = mpl_core_tuple_idl();
         let codama_root = subscriptions_codama_idl();
+        let untagged_accounts = untagged_accounts_idl();
 
         let primary_document =
             CanonicalIdlDocument::parse(primary.as_bytes(), None).expect("primary IDL parses");
@@ -1007,6 +1008,22 @@ impl Generator {
                 codama_root,
                 None,
                 json!({"fixtureSource": "trimmed Subscriptions Codama rootNode"}),
+            ),
+            (
+                "idl-untagged-account-discriminators",
+                untagged_accounts,
+                None,
+                json!({
+                    "fixtureSource": "untagged account marker and discriminator precedence cases",
+                    "cases": [
+                        "explicit marker",
+                        "trimmed marker",
+                        "omitted discriminator bytes",
+                        "explicit discriminator bytes override marker",
+                        "unmarked empty discriminator",
+                        "false marker",
+                    ],
+                }),
             ),
         ] {
             let document = CanonicalIdlDocument::parse(source.as_bytes(), explicit_program_id)
@@ -2133,6 +2150,24 @@ fn optional_account_idl() -> String {
   "types": [],
   "events": [],
   "errors": []
+}"#
+    .to_string()
+}
+
+fn untagged_accounts_idl() -> String {
+    r#"{
+  "address": "11111111111111111111111111111111",
+  "name": "untagged_accounts_fixture",
+  "version": "0.1.0",
+  "instructions": [],
+  "accounts": [
+    {"name": "Native", "discriminator": [], "docs": ["arete.account_untagged=true"]},
+    {"name": "TrimmedNative", "discriminator": [], "docs": ["  arete.account_untagged=true\n"]},
+    {"name": "OmittedNative", "docs": ["arete.account_untagged=true"]},
+    {"name": "ExplicitTagged", "discriminator": [9], "docs": ["arete.account_untagged=true"]},
+    {"name": "AnchorAccount", "discriminator": [], "docs": []},
+    {"name": "FalseMarker", "discriminator": [], "docs": ["arete.account_untagged=false"]}
+  ]
 }"#
     .to_string()
 }
