@@ -471,9 +471,13 @@ impl EntityCache {
         }
 
         if let Some(position) = account_position {
-            let previous = (!creation)
-                .then(|| view.lifetimes.peek(key).cloned())
-                .flatten();
+            // Account writes choose the lifetime, but they do not reset the
+            // independent instruction/resolver high-water marks. Keeping
+            // those cursors across deletion and recreation prevents a late
+            // duplicate from the old lifetime from contaminating the new
+            // row. A genuinely newer source event still advances its own
+            // domain normally.
+            let previous = view.lifetimes.peek(key).cloned();
             view.lifetimes.put(
                 key.to_string(),
                 EntityLifetimeCheckpoint {
@@ -814,10 +818,16 @@ impl EntityCache {
         view.entities.pop(key);
         view.forget_evicted(key);
         let mut checkpoint = if account_position.is_some() {
-            EntityLifetimeCheckpoint {
-                account_position,
+            let previous = previous.unwrap_or(EntityLifetimeCheckpoint {
+                account_position: None,
                 source_seq: None,
                 source_sequences: BTreeMap::new(),
+                deleted: false,
+            });
+            EntityLifetimeCheckpoint {
+                account_position,
+                source_seq: previous.source_seq,
+                source_sequences: previous.source_sequences,
                 deleted: true,
             }
         } else {
@@ -1392,6 +1402,156 @@ mod tests {
                     &[],
                     PatchOrigin::Change,
                     Some(AccountPosition::new(100, 1001)),
+                )
+                .await,
+            CacheWrite::Refused { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn recreation_retains_each_source_cursor_as_an_old_lifetime_barrier() {
+        let cache = EntityCache::new();
+        assert_eq!(
+            cache
+                .upsert_with_lifetime(
+                    "v",
+                    "a",
+                    json!({"lifetime":"old"}),
+                    &[],
+                    PatchOrigin::Creation,
+                    Some(AccountPosition::new(100, 9)),
+                )
+                .await,
+            CacheWrite::Created
+        );
+        for (domain, seq, field) in [
+            (
+                SlotIndexDomain::Instruction,
+                "100:000000000800",
+                "oldInstruction",
+            ),
+            (SlotIndexDomain::Resolver, "100:900000000000", "oldResolver"),
+        ] {
+            let mut patch = json!({"_seq":seq});
+            patch[field] = Value::Bool(true);
+            assert_eq!(
+                cache
+                    .upsert_with_ordering(
+                        "v",
+                        "a",
+                        patch,
+                        &[],
+                        PatchOrigin::Change,
+                        LifetimeOrdering {
+                            account_position: None,
+                            source_seq: Some(seq),
+                            source_domain: Some(domain),
+                        },
+                    )
+                    .await,
+                CacheWrite::Merged
+            );
+        }
+
+        assert!(
+            cache
+                .delete("v", "a", Some(AccountPosition::new(100, 10)))
+                .await
+        );
+        assert_eq!(
+            cache
+                .upsert_with_lifetime(
+                    "v",
+                    "a",
+                    json!({"lifetime":"new"}),
+                    &[],
+                    PatchOrigin::Creation,
+                    Some(AccountPosition::new(100, 11)),
+                )
+                .await,
+            CacheWrite::Created
+        );
+
+        // Duplicates delayed across the deletion/recreation boundary retain
+        // their old source positions and cannot change the replacement.
+        for (domain, seq, field) in [
+            (
+                SlotIndexDomain::Instruction,
+                "100:000000000799",
+                "staleInstruction",
+            ),
+            (
+                SlotIndexDomain::Resolver,
+                "100:899999999999",
+                "staleResolver",
+            ),
+        ] {
+            let mut patch = json!({"_seq":seq});
+            patch[field] = Value::Bool(true);
+            assert!(matches!(
+                cache
+                    .upsert_with_ordering(
+                        "v",
+                        "a",
+                        patch,
+                        &[],
+                        PatchOrigin::Change,
+                        LifetimeOrdering {
+                            account_position: None,
+                            source_seq: Some(seq),
+                            source_domain: Some(domain),
+                        },
+                    )
+                    .await,
+                CacheWrite::Refused { .. }
+            ));
+        }
+
+        // A later instruction in the same source domain remains valid even
+        // though its txn index is lower than account write versions.
+        assert_eq!(
+            cache
+                .upsert_with_ordering(
+                    "v",
+                    "a",
+                    json!({"newInstruction":true, "_seq":"100:000000000900"}),
+                    &[],
+                    PatchOrigin::Change,
+                    LifetimeOrdering {
+                        account_position: None,
+                        source_seq: Some("100:000000000900"),
+                        source_domain: Some(SlotIndexDomain::Instruction),
+                    },
+                )
+                .await,
+            CacheWrite::Merged
+        );
+        let row = cache.get("v", "a").await.unwrap();
+        assert_eq!(row["lifetime"], "new");
+        assert_eq!(row["newInstruction"], true);
+        assert!(row.get("oldInstruction").is_none());
+        assert!(row.get("oldResolver").is_none());
+        assert!(row.get("staleInstruction").is_none());
+        assert!(row.get("staleResolver").is_none());
+
+        let restored = EntityCache::new();
+        restored.hydrate(cache.dump().await).await;
+        restored
+            .hydrate_lifetimes(cache.dump_lifetimes().await)
+            .await;
+        assert!(matches!(
+            restored
+                .upsert_with_ordering(
+                    "v",
+                    "a",
+                    json!({"staleAfterRestore":true}),
+                    &[],
+                    PatchOrigin::Change,
+                    LifetimeOrdering {
+                        account_position: None,
+                        source_seq: Some("100:000000000799"),
+                        source_domain: Some(SlotIndexDomain::Instruction),
+                    },
                 )
                 .await,
             CacheWrite::Refused { .. }
