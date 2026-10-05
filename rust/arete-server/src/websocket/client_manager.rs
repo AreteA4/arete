@@ -789,8 +789,16 @@ impl ClientManager {
             .unwrap_or(false)
     }
 
+    /// Attempt a synchronous auth refresh without waiting for an in-flight
+    /// subscription admission change.
+    ///
+    /// Unlike [`Self::update_client_auth`], this preserves the reason a
+    /// refresh was not applied. Embedding hosts can retry an
+    /// [`AuthErrorCode::InternalError`] whose reason is `Subscription
+    /// admission is busy`, or use [`Self::update_client_auth_async`] when an
+    /// async call site can wait for the lifecycle lock.
     #[allow(clippy::result_large_err)]
-    pub(crate) fn try_update_client_auth(
+    pub fn try_update_client_auth(
         &self,
         client_id: Uuid,
         auth_context: AuthContext,

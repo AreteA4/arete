@@ -284,6 +284,38 @@ async fn public_sync_refresh_keeps_its_bool_contract() {
     );
 }
 
+#[tokio::test]
+async fn public_try_refresh_reports_busy_so_a_host_can_retry() {
+    let provider = Arc::new(FakeAdmission::default());
+    let manager = ClientManager::new().with_admission_provider(Arc::new(provider.clone()));
+    let client_id = insert_client(&manager, &provider, context("actor:old"));
+    let lifecycle = manager
+        .clients
+        .get(&client_id)
+        .unwrap()
+        .admission_lifecycle
+        .clone();
+    let _busy = lifecycle.lock().await;
+
+    let error = manager
+        .try_update_client_auth(client_id, context("actor:new"))
+        .unwrap_err();
+
+    assert_eq!(error.code, AuthErrorCode::InternalError);
+    assert_eq!(error.reason, "Subscription admission is busy");
+    assert_eq!(
+        manager
+            .clients
+            .get(&client_id)
+            .unwrap()
+            .auth_context
+            .as_ref()
+            .unwrap()
+            .subject,
+        "actor:old"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_serializes_subscription_changes_without_holding_the_registry() {
     let provider = Arc::new(FakeAdmission::default());
