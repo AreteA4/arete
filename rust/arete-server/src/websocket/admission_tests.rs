@@ -245,7 +245,7 @@ async fn rejected_refresh_preserves_the_existing_context_and_permit() {
     provider.deny_refresh.store(true, Ordering::Relaxed);
 
     assert!(manager
-        .try_update_client_auth(client_id, context("actor:new"))
+        .try_update_client_auth_async(client_id, context("actor:new"))
         .await
         .is_err());
     assert_eq!(
@@ -262,6 +262,28 @@ async fn rejected_refresh_preserves_the_existing_context_and_permit() {
     assert_eq!(provider.reservation_count(), 1);
 }
 
+#[tokio::test]
+async fn public_sync_refresh_keeps_its_bool_contract() {
+    let provider = Arc::new(FakeAdmission::default());
+    let manager = ClientManager::new().with_admission_provider(Arc::new(provider.clone()));
+    let client_id = insert_client(&manager, &provider, context("actor:old"));
+
+    let refreshed: bool = manager.update_client_auth(client_id, context("actor:new"));
+
+    assert!(refreshed);
+    assert_eq!(
+        manager
+            .clients
+            .get(&client_id)
+            .unwrap()
+            .auth_context
+            .as_ref()
+            .unwrap()
+            .subject,
+        "actor:new"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_serializes_subscription_changes_without_holding_the_registry() {
     let provider = Arc::new(FakeAdmission::default());
@@ -275,7 +297,7 @@ async fn refresh_serializes_subscription_changes_without_holding_the_registry() 
     let refresh_manager = manager.clone();
     let refresh = tokio::spawn(async move {
         refresh_manager
-            .try_update_client_auth(client_id, context("actor:new"))
+            .try_update_client_auth_async(client_id, context("actor:new"))
             .await
     });
     tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(1)))
@@ -336,7 +358,7 @@ async fn refresh_waits_for_an_in_progress_subscription_change() {
     let refresh_manager = manager.clone();
     let mut refresh = tokio::spawn(async move {
         refresh_manager
-            .try_update_client_auth(client_id, context("actor:new"))
+            .try_update_client_auth_async(client_id, context("actor:new"))
             .await
     });
     assert!(

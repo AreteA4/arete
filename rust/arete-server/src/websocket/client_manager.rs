@@ -784,14 +784,86 @@ impl ClientManager {
     /// Update the auth context for a client.
     ///
     /// Used for in-band auth refresh without reconnecting.
-    pub async fn update_client_auth(&self, client_id: Uuid, auth_context: AuthContext) -> bool {
+    pub fn update_client_auth(&self, client_id: Uuid, auth_context: AuthContext) -> bool {
         self.try_update_client_auth(client_id, auth_context)
+            .unwrap_or(false)
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn try_update_client_auth(
+        &self,
+        client_id: Uuid,
+        auth_context: AuthContext,
+    ) -> Result<bool, AuthDeny> {
+        let Some(lifecycle) = self
+            .clients
+            .get(&client_id)
+            .map(|client| client.admission_lifecycle.clone())
+        else {
+            return Ok(false);
+        };
+        let _lifecycle = lifecycle.try_lock().map_err(|_| {
+            AuthDeny::new(
+                AuthErrorCode::InternalError,
+                "Subscription admission is busy",
+            )
+        })?;
+
+        let (subscriptions, current_permit) = {
+            let Some(client) = self.clients.get(&client_id) else {
+                return Ok(false);
+            };
+            if !Arc::ptr_eq(&client.admission_lifecycle, &lifecycle) {
+                return Ok(false);
+            }
+            (
+                client.subscriptions.clone(),
+                client.admission_permit.clone(),
+            )
+        };
+        let subscriptions = subscriptions.try_read().map_err(|_| {
+            AuthDeny::new(
+                AuthErrorCode::InternalError,
+                "Subscription admission is busy",
+            )
+        })?;
+        let active_subscriptions = subscriptions.keys().cloned().collect::<Vec<_>>();
+        drop(subscriptions);
+
+        let permit = match &self.admission_provider {
+            Some(provider) => {
+                provider.refresh_connection(current_permit, &auth_context, &active_subscriptions)?
+            }
+            None => current_permit,
+        };
+
+        let Some(mut client) = self.clients.get_mut(&client_id) else {
+            return Ok(false);
+        };
+        if !Arc::ptr_eq(&client.admission_lifecycle, &lifecycle) {
+            return Ok(false);
+        }
+        client.admission_permit = permit;
+        client.auth_context = Some(auth_context);
+        debug!("Updated auth context for client {}", client_id);
+        Ok(true)
+    }
+
+    /// Wait for an in-flight subscription admission change before refreshing
+    /// authentication. The synchronous [`Self::update_client_auth`] remains
+    /// available for embedding hosts that need its original non-blocking API.
+    pub async fn update_client_auth_async(
+        &self,
+        client_id: Uuid,
+        auth_context: AuthContext,
+    ) -> bool {
+        self.try_update_client_auth_async(client_id, auth_context)
             .await
             .unwrap_or(false)
     }
 
     #[allow(clippy::result_large_err)]
-    pub(crate) async fn try_update_client_auth(
+    pub(crate) async fn try_update_client_auth_async(
         &self,
         client_id: Uuid,
         auth_context: AuthContext,
