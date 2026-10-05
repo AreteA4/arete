@@ -26,6 +26,8 @@ pub trait WebSocketConnectionPermit: Debug + Send + Sync {
 /// Implementations must make `refresh_connection` transactional: an error
 /// leaves the existing permit and its policy unchanged. When it returns a new
 /// permit, dropping the previous permit must not release the new reservation.
+/// The server serializes refresh and subscription callbacks for each
+/// connection and invokes them without holding its client-registry locks.
 #[allow(clippy::result_large_err)]
 pub trait WebSocketAdmissionProvider: Debug + Send + Sync {
     /// Reserve a newly authenticated connection.
