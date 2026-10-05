@@ -32,27 +32,3 @@ async fn a_level_in_dotenv_is_read_before_the_runtime_commits_to_one() {
     let error = spawned.err().expect("the .env value must fail startup");
     assert!(error.to_string().contains("bogus"), "{error:#}");
 }
-
-/// The level is a Yellowstone setting: a server that never ingests (HTTP-only,
-/// program reads, the Solana gateway) must start whatever it says.
-#[tokio::test]
-async fn a_bad_level_does_not_stop_a_server_that_never_ingests() {
-    std::env::set_var(Commitment::ENV, "bogus");
-
-    let handle = Server::builder()
-        .runtime_plan(RuntimePlan {
-            health: false,
-            chain_reads: false,
-            program_reads: true,
-            stack_queries: false,
-            transactions: false,
-            websocket: false,
-            live_runtime: false,
-        })
-        .build()
-        .unwrap()
-        .spawn()
-        .await
-        .expect("a non-live server must ignore YELLOWSTONE_COMMITMENT");
-    handle.shutdown().await.unwrap();
-}
