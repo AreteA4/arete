@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex as AsyncMutex, RwLock};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
@@ -200,6 +200,9 @@ pub struct ClientInfo {
     /// lose it.
     close_frame: Arc<std::sync::OnceLock<CloseFrame>>,
     admission_permit: Option<Arc<dyn WebSocketConnectionPermit>>,
+    /// Serializes permit refreshes with subscription lifecycle callbacks for
+    /// this connection. Host callbacks run without a client-registry guard.
+    admission_lifecycle: Arc<AsyncMutex<()>>,
 }
 
 impl ClientInfo {
@@ -220,6 +223,7 @@ impl ClientInfo {
             message_rate_tracker: std::sync::Mutex::new(MessageRateTracker::new()),
             close_frame: Arc::new(std::sync::OnceLock::new()),
             admission_permit: None,
+            admission_lifecycle: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -273,6 +277,7 @@ impl ClientInfo {
         subscription_id: String,
         token: CancellationToken,
     ) -> bool {
+        let _lifecycle = self.admission_lifecycle.lock().await;
         let mut subs = self.subscriptions.write().await;
         match subs.entry(subscription_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
@@ -284,6 +289,7 @@ impl ClientInfo {
     }
 
     pub async fn remove_subscription(&self, subscription_id: &str) -> bool {
+        let _lifecycle = self.admission_lifecycle.lock().await;
         let mut subs = self.subscriptions.write().await;
         if let Some(token) = subs.remove(subscription_id) {
             token.cancel();
@@ -299,6 +305,7 @@ impl ClientInfo {
     }
 
     pub async fn cancel_all_subscriptions(&self) {
+        let _lifecycle = self.admission_lifecycle.lock().await;
         let subs = self.subscriptions.read().await;
         for (subscription_id, token) in subs.iter() {
             token.cancel();
@@ -712,25 +719,21 @@ impl ClientManager {
     /// Spawns a dedicated sender task for this client that reads from its mpsc channel
     /// and writes to the WebSocket. If the WebSocket write fails, the client is automatically
     /// removed from the registry.
+    #[allow(clippy::result_large_err)]
     pub fn add_client(
         &self,
         client_id: Uuid,
         ws_sender: WebSocketSender,
         auth_context: Option<AuthContext>,
         remote_addr: SocketAddr,
-    ) {
+    ) -> Result<(), AuthDeny> {
         let permit = if let Some(context) = auth_context.as_ref() {
-            match self.reserve_connection_admission(context) {
-                Ok(permit) => permit,
-                Err(deny) => {
-                    warn!(reason = %deny.reason, "connection admission denied");
-                    return;
-                }
-            }
+            self.reserve_connection_admission(context)?
         } else {
             None
         };
         self.add_client_with_admission(client_id, ws_sender, auth_context, remote_addr, permit);
+        Ok(())
     }
 
     pub(crate) fn add_client_with_admission(
@@ -792,30 +795,58 @@ impl ClientManager {
         client_id: Uuid,
         auth_context: AuthContext,
     ) -> Result<bool, AuthDeny> {
-        if let Some(mut client) = self.clients.get_mut(&client_id) {
-            if let Some(provider) = &self.admission_provider {
-                let subscriptions = client.subscriptions.try_read().map_err(|_| {
-                    AuthDeny::new(
-                        AuthErrorCode::InternalError,
-                        "Subscription admission is busy",
-                    )
-                })?;
-                let active_subscriptions = subscriptions.keys().cloned().collect::<Vec<_>>();
-                drop(subscriptions);
-                let current_permit = client.admission_permit.clone();
-                let permit = provider.refresh_connection(
-                    current_permit,
-                    &auth_context,
-                    &active_subscriptions,
-                )?;
-                client.admission_permit = permit;
+        let Some(lifecycle) = self
+            .clients
+            .get(&client_id)
+            .map(|client| client.admission_lifecycle.clone())
+        else {
+            return Ok(false);
+        };
+        let _lifecycle = lifecycle.try_lock().map_err(|_| {
+            AuthDeny::new(
+                AuthErrorCode::InternalError,
+                "Subscription admission is busy",
+            )
+        })?;
+
+        let (subscriptions, current_permit) = {
+            let Some(client) = self.clients.get(&client_id) else {
+                return Ok(false);
+            };
+            if !Arc::ptr_eq(&client.admission_lifecycle, &lifecycle) {
+                return Ok(false);
             }
-            client.auth_context = Some(auth_context);
-            debug!("Updated auth context for client {}", client_id);
-            Ok(true)
-        } else {
-            Ok(false)
+            (
+                client.subscriptions.clone(),
+                client.admission_permit.clone(),
+            )
+        };
+        let subscriptions = subscriptions.try_read().map_err(|_| {
+            AuthDeny::new(
+                AuthErrorCode::InternalError,
+                "Subscription admission is busy",
+            )
+        })?;
+        let active_subscriptions = subscriptions.keys().cloned().collect::<Vec<_>>();
+        drop(subscriptions);
+
+        let permit = match &self.admission_provider {
+            Some(provider) => {
+                provider.refresh_connection(current_permit, &auth_context, &active_subscriptions)?
+            }
+            None => current_permit,
+        };
+
+        let Some(mut client) = self.clients.get_mut(&client_id) else {
+            return Ok(false);
+        };
+        if !Arc::ptr_eq(&client.admission_lifecycle, &lifecycle) {
+            return Ok(false);
         }
+        client.admission_permit = permit;
+        client.auth_context = Some(auth_context);
+        debug!("Updated auth context for client {}", client_id);
+        Ok(true)
     }
 
     /// Check if a client's token has expired.
@@ -1053,14 +1084,10 @@ impl ClientManager {
 
         if connection_ok && account_ok {
             if let (Some(provider), Some(permit_id)) = (&self.admission_provider, permit_id) {
-                if let Err(deny) = provider.check_inbound_message(permit_id) {
-                    self.clients.remove(&client_id);
-                    return Err(deny);
-                }
+                provider.check_inbound_message(permit_id)?;
             }
             return Ok(());
         }
-        self.clients.remove(&client_id);
         let scope = if connection_ok {
             "inbound account websocket messages"
         } else {
@@ -1096,40 +1123,79 @@ impl ClientManager {
         subscription_id: String,
         token: CancellationToken,
     ) -> Result<bool, AuthDeny> {
-        let Some((subscriptions, permit_id)) = self.clients.get(&client_id).map(|client| {
-            (
-                client.subscriptions.clone(),
-                client.admission_permit.as_ref().map(|permit| permit.id()),
-            )
+        let Some(lifecycle) = self
+            .clients
+            .get(&client_id)
+            .map(|client| client.admission_lifecycle.clone())
+        else {
+            return Ok(false);
+        };
+        let _lifecycle = lifecycle.lock().await;
+        let Some((subscriptions, permit)) = self.clients.get(&client_id).and_then(|client| {
+            Arc::ptr_eq(&client.admission_lifecycle, &lifecycle).then(|| {
+                (
+                    client.subscriptions.clone(),
+                    client.admission_permit.clone(),
+                )
+            })
         }) else {
             return Ok(false);
         };
+        let permit_id = permit.as_ref().map(|permit| permit.id());
         if let (Some(provider), Some(permit_id)) = (&self.admission_provider, permit_id) {
             if !provider.add_subscription(permit_id, &subscription_id)? {
                 return Ok(false);
             }
         }
         let mut subscriptions = subscriptions.write().await;
-        if subscriptions.contains_key(&subscription_id) {
+        let client = self.clients.get(&client_id);
+        let registered = client
+            .as_ref()
+            .is_some_and(|client| Arc::ptr_eq(&client.admission_lifecycle, &lifecycle));
+        if !registered || subscriptions.contains_key(&subscription_id) {
+            drop(client);
+            drop(subscriptions);
             if let (Some(provider), Some(permit_id)) = (&self.admission_provider, permit_id) {
                 provider.remove_subscription(permit_id, &subscription_id);
             }
             return Ok(false);
         }
         subscriptions.insert(subscription_id, token);
+        drop(client);
         Ok(true)
     }
 
     pub async fn remove_client_subscription(&self, client_id: Uuid, subscription_id: &str) -> bool {
-        let Some((subscriptions, permit_id)) = self.clients.get(&client_id).map(|client| {
-            (
-                client.subscriptions.clone(),
-                client.admission_permit.as_ref().map(|permit| permit.id()),
-            )
+        let Some(lifecycle) = self
+            .clients
+            .get(&client_id)
+            .map(|client| client.admission_lifecycle.clone())
+        else {
+            return false;
+        };
+        let _lifecycle = lifecycle.lock().await;
+        let Some((subscriptions, permit)) = self.clients.get(&client_id).and_then(|client| {
+            Arc::ptr_eq(&client.admission_lifecycle, &lifecycle).then(|| {
+                (
+                    client.subscriptions.clone(),
+                    client.admission_permit.clone(),
+                )
+            })
         }) else {
             return false;
         };
-        let token = subscriptions.write().await.remove(subscription_id);
+        let permit_id = permit.as_ref().map(|permit| permit.id());
+        let mut subscriptions = subscriptions.write().await;
+        let client = self.clients.get(&client_id);
+        if !client
+            .as_ref()
+            .is_some_and(|client| Arc::ptr_eq(&client.admission_lifecycle, &lifecycle))
+        {
+            return false;
+        }
+        let token = subscriptions.remove(subscription_id);
+        drop(client);
+        drop(subscriptions);
         if let Some(token) = token {
             token.cancel();
             if let (Some(provider), Some(permit_id)) = (&self.admission_provider, permit_id) {
@@ -1142,8 +1208,24 @@ impl ClientManager {
     }
 
     pub async fn cancel_all_client_subscriptions(&self, client_id: Uuid) {
-        if let Some(client) = self.clients.get(&client_id) {
-            client.cancel_all_subscriptions().await;
+        let Some(lifecycle) = self
+            .clients
+            .get(&client_id)
+            .map(|client| client.admission_lifecycle.clone())
+        else {
+            return;
+        };
+        let _lifecycle = lifecycle.lock().await;
+        let Some(subscriptions) = self.clients.get(&client_id).and_then(|client| {
+            Arc::ptr_eq(&client.admission_lifecycle, &lifecycle)
+                .then(|| client.subscriptions.clone())
+        }) else {
+            return;
+        };
+        let subscriptions = subscriptions.read().await;
+        for (subscription_id, token) in subscriptions.iter() {
+            token.cancel();
+            debug!("Cancelled subscription on disconnect: {}", subscription_id);
         }
     }
 
