@@ -1,6 +1,6 @@
 use crate::bus::{BusManager, BusMessage};
 use crate::cache::{CacheWrite, EntityCache, LifetimeOrdering, PatchOrigin};
-use crate::mutation_batch::{MutationBatch, SlotContext};
+use crate::mutation_batch::{MutationBatch, SlotContext, SlotIndexDomain};
 use crate::view::{ViewIndex, ViewSpec};
 use crate::websocket::frame::{apply_wire_format, Mode, SourceFrame};
 use arete_interpreter::vm::{VmContext, WholeEntityRequests};
@@ -27,6 +27,7 @@ const WHOLE_ENTITY_REQUEST_CAPACITY: usize = 4_096;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RememberedChange {
     seq: Option<String>,
+    source_domain: Option<SlotIndexDomain>,
     account_position: Option<AccountPosition>,
 }
 
@@ -144,6 +145,7 @@ impl EntityResync {
         export: &str,
         key: &str,
         seq: &Option<String>,
+        source_domain: Option<SlotIndexDomain>,
         account_position: Option<AccountPosition>,
         refused: bool,
     ) {
@@ -156,6 +158,7 @@ impl EntityResync {
                 (export.to_string(), key.to_string()),
                 RememberedChange {
                     seq: seq.clone(),
+                    source_domain,
                     account_position,
                 },
             );
@@ -165,6 +168,7 @@ impl EntityResync {
         } else if !last_changes.is_empty() {
             if let Some(last) = last_changes.get_mut(&(export.to_string(), key.to_string())) {
                 last.seq = seq.clone();
+                last.source_domain = source_domain;
                 if account_position.is_some() {
                     last.account_position = account_position;
                 }
@@ -450,15 +454,31 @@ impl Projector {
         if mutation.is_delete() {
             let key = Self::extract_key(&mutation.key);
             let seq = slot_context.map(|ctx| ctx.to_seq_string());
+            let source_domain = slot_context.map(|ctx| ctx.slot_index_domain);
             self.resync.cancel(&mutation.export, &mutation.key, &key);
             let mut published = 0;
             for spec in specs.iter().filter(|spec| spec.filters.matches(&key)) {
                 let deleted = if account_position.is_none() && seq.is_none() {
                     self.entity_cache.delete_current(&spec.id, &key).await
                 } else {
-                    self.entity_cache
-                        .delete_ordered(&spec.id, &key, account_position, seq.as_deref())
-                        .await
+                    match source_domain {
+                        Some(source_domain) => {
+                            self.entity_cache
+                                .delete_ordered_in_domain(
+                                    &spec.id,
+                                    &key,
+                                    account_position,
+                                    seq.as_deref(),
+                                    source_domain,
+                                )
+                                .await
+                        }
+                        None => {
+                            self.entity_cache
+                                .delete_ordered(&spec.id, &key, account_position, seq.as_deref())
+                                .await
+                        }
+                    }
                 };
                 if !deleted {
                     continue;
@@ -518,6 +538,7 @@ impl Projector {
         // The position (`_seq`) recency order sorts by: the batch's for a
         // change, the latest change's for a resend (see `EntityResync`).
         let batch_seq = slot_context.map(|ctx| ctx.to_seq_string());
+        let batch_source_domain = slot_context.map(|ctx| ctx.slot_index_domain);
         let remembered = if whole {
             self.resync.take_last_change(&export, &key)
         } else {
@@ -531,6 +552,14 @@ impl Projector {
                 .unwrap_or(batch_seq)
         } else {
             batch_seq
+        };
+        let source_domain = if whole {
+            remembered
+                .as_ref()
+                .and_then(|change| change.source_domain)
+                .or(batch_source_domain)
+        } else {
+            batch_source_domain
         };
         let resend_account_position = remembered.and_then(|change| change.account_position);
         if let (Some(seq), Value::Object(map)) = (&seq, &mut patch) {
@@ -556,19 +585,34 @@ impl Projector {
         let mut refused = false;
 
         for (i, spec) in matching_specs.into_iter().enumerate() {
-            if !whole
-                && !self
-                    .entity_cache
-                    .accepts_ordered_lifetime_mutation(
-                        &spec.id,
-                        &key,
-                        origin == PatchOrigin::Creation,
-                        account_position,
-                        seq.as_deref(),
-                    )
-                    .await
-            {
-                continue;
+            if !whole {
+                let accepted = match source_domain {
+                    Some(source_domain) => {
+                        self.entity_cache
+                            .accepts_ordered_lifetime_mutation_in_domain(
+                                &spec.id,
+                                &key,
+                                origin == PatchOrigin::Creation,
+                                account_position,
+                                seq.as_deref(),
+                                source_domain,
+                            )
+                            .await
+                    }
+                    None => {
+                        self.entity_cache
+                            .accepts_lifetime_mutation(
+                                &spec.id,
+                                &key,
+                                origin == PatchOrigin::Creation,
+                                account_position,
+                            )
+                            .await
+                    }
+                };
+                if !accepted {
+                    continue;
+                }
             }
             let is_last = i == match_count - 1;
             let patch_data = if is_last {
@@ -597,6 +641,7 @@ impl Projector {
                         (
                             RememberedChange {
                                 seq,
+                                source_domain,
                                 account_position: resend_account_position,
                             },
                             requested_resend,
@@ -668,9 +713,13 @@ impl Projector {
                         account_position,
                         source_seq: frame.seq.as_deref(),
                         // Account mutations carry their authoritative
-                        // position. Unmarked projected mutations use the
-                        // independent instruction/source recency domain.
-                        source_seq_is_ordered: account_position.is_none(),
+                        // position. Every other source keeps its own recency
+                        // cursor; instruction and resolver offsets are never
+                        // compared with one another.
+                        source_domain: account_position
+                            .is_none()
+                            .then_some(source_domain)
+                            .flatten(),
                     },
                 )
                 .await;
@@ -711,8 +760,14 @@ impl Projector {
         }
 
         if !whole {
-            self.resync
-                .note_change(&export, &key, &seq, change_account_position, refused);
+            self.resync.note_change(
+                &export,
+                &key,
+                &seq,
+                source_domain,
+                change_account_position,
+                refused,
+            );
         }
         if refused && !arriving_whole.contains(&(export.clone(), key.clone())) {
             self.resync.request(&export, &source_key);
@@ -741,12 +796,13 @@ impl Projector {
         let (position, requested_resend) = resend;
         let stored = if requested_resend {
             self.entity_cache
-                .store_whole_for_ordering(
+                .store_whole_for_ordering_in_domain(
                     &spec.id,
                     key,
                     projected,
                     position.account_position,
                     position.seq.as_deref(),
+                    position.source_domain.unwrap_or(SlotIndexDomain::Legacy),
                 )
                 .await
         } else if self.resync.is_linked() {
@@ -959,15 +1015,44 @@ mod tests {
     fn a_resend_keeps_the_latest_change_seen_before_it() {
         let resync = linked();
         let lifetime = Some(AccountPosition::new(4, 3));
-        resync.note_change("Round", "1", &seq(5), lifetime, true);
-        resync.note_change("Round", "1", &seq(6), lifetime, true);
-        resync.note_change("Round", "2", &seq(7), None, false);
+        resync.note_change(
+            "Round",
+            "1",
+            &seq(5),
+            Some(SlotIndexDomain::Legacy),
+            lifetime,
+            true,
+        );
+        resync.note_change(
+            "Round",
+            "1",
+            &seq(6),
+            Some(SlotIndexDomain::Legacy),
+            lifetime,
+            true,
+        );
+        resync.note_change(
+            "Round",
+            "2",
+            &seq(7),
+            Some(SlotIndexDomain::Legacy),
+            None,
+            false,
+        );
         assert_eq!(resync.take_last_change("Round", "2"), None, "never refused");
-        resync.note_change("Round", "1", &seq(8), None, false);
+        resync.note_change(
+            "Round",
+            "1",
+            &seq(8),
+            Some(SlotIndexDomain::Legacy),
+            None,
+            false,
+        );
         assert_eq!(
             resync.take_last_change("Round", "1"),
             Some(RememberedChange {
                 seq: seq(8),
+                source_domain: Some(SlotIndexDomain::Legacy),
                 account_position: lifetime,
             })
         );
@@ -978,7 +1063,14 @@ mod tests {
     fn remembered_positions_are_bounded_like_requests() {
         let resync = linked();
         for key in 0..=WHOLE_ENTITY_REQUEST_CAPACITY {
-            resync.note_change("Round", &key.to_string(), &seq(key as u64), None, true);
+            resync.note_change(
+                "Round",
+                &key.to_string(),
+                &seq(key as u64),
+                Some(SlotIndexDomain::Legacy),
+                None,
+                true,
+            );
         }
         assert_eq!(
             resync.take_last_change("Round", "0"),
@@ -990,6 +1082,7 @@ mod tests {
             resync.take_last_change("Round", &newest.to_string()),
             Some(RememberedChange {
                 seq: seq(newest as u64),
+                source_domain: Some(SlotIndexDomain::Legacy),
                 account_position: None,
             })
         );
@@ -1000,7 +1093,14 @@ mod tests {
     #[test]
     fn nothing_is_remembered_without_a_vm() {
         let resync = EntityResync::new();
-        resync.note_change("Round", "1", &seq(5), None, true);
+        resync.note_change(
+            "Round",
+            "1",
+            &seq(5),
+            Some(SlotIndexDomain::Legacy),
+            None,
+            true,
+        );
         assert_eq!(resync.take_last_change("Round", "1"), None);
     }
 }

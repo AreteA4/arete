@@ -160,6 +160,7 @@ mod tests {
                         u64::MAX,
                     )),
                     source_seq: None,
+                    source_sequences: Default::default(),
                     deleted: false,
                 },
             )]),

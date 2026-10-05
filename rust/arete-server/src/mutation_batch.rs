@@ -1,8 +1,25 @@
 //! MutationBatch - Envelope type for propagating trace context across async boundaries.
 
 use arete_interpreter::Mutation;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use tracing::Span;
+
+/// The producer-local meaning of [`SlotContext::slot_index`].
+///
+/// Values from different domains are deliberately incomparable. In
+/// particular, an async resolver counter must never make a later instruction
+/// transaction index look stale within the same slot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SlotIndexDomain {
+    /// Backward-compatible domain for callers of [`SlotContext::new`].
+    #[default]
+    Legacy,
+    Account,
+    Instruction,
+    Resolver,
+}
 
 /// Slot context for ordering mutations by blockchain position.
 /// Used to derive `_seq` field for default recency sorting.
@@ -12,11 +29,37 @@ pub struct SlotContext {
     pub slot: u64,
     /// Index within the slot (write_version for accounts, txn_index for instructions)
     pub slot_index: u64,
+    /// The producer-local domain in which `slot_index` is ordered.
+    pub slot_index_domain: SlotIndexDomain,
 }
 
 impl SlotContext {
+    pub fn with_domain(slot: u64, slot_index: u64, slot_index_domain: SlotIndexDomain) -> Self {
+        Self {
+            slot,
+            slot_index,
+            slot_index_domain,
+        }
+    }
+
+    /// Construct a context in the legacy generic domain.
+    ///
+    /// Generated ingestion uses the explicit constructors below so account,
+    /// instruction and resolver offsets are never compared accidentally.
     pub fn new(slot: u64, slot_index: u64) -> Self {
-        Self { slot, slot_index }
+        Self::with_domain(slot, slot_index, SlotIndexDomain::Legacy)
+    }
+
+    pub fn account(slot: u64, write_version: u64) -> Self {
+        Self::with_domain(slot, write_version, SlotIndexDomain::Account)
+    }
+
+    pub fn instruction(slot: u64, txn_index: u64) -> Self {
+        Self::with_domain(slot, txn_index, SlotIndexDomain::Instruction)
+    }
+
+    pub fn resolver(slot: u64, resolver_index: u64) -> Self {
+        Self::with_domain(slot, resolver_index, SlotIndexDomain::Resolver)
     }
 
     /// Compute a monotonic sequence number for sorting.
