@@ -10,6 +10,13 @@
   `catalog-bundle`, `catalog-publication-set`) with shared Rust/TypeScript
   vectors; no existing identity changes
 
+## [0.5.2](https://github.com/AreteA4/arete/compare/arete-hash-v0.5.1...arete-hash-v0.5.2) (2026-10-06)
+
+
+### Bug Fixes
+
+* **hash:** honor explicitly untagged IDL accounts ([2f97c77](https://github.com/AreteA4/arete/commit/2f97c778203706faa348ba034f98c928a2637292))
+
 ## [0.5.1](https://github.com/AreteA4/arete/compare/arete-hash-v0.5.0...arete-hash-v0.5.1) (2026-10-05)
 
 
