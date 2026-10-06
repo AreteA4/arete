@@ -101,8 +101,9 @@ guarantee.
 A snapshot embeds a fingerprint of the compiled stack bytecode. If you deploy
 a build whose stack logic changed, the old snapshot is discarded and the
 server cold-starts (today's behavior) with a clear log line. The same applies
-to snapshots with a different format version, mismatched program ids, or
-corrupt/truncated blobs — restore problems never block startup.
+to snapshots with a different format version, mismatched program ids, a
+[commitment](/a4-server/reference/#yellowstone-commitment) weaker than the
+runtime's, or corrupt/truncated blobs — restore problems never block startup.
 
 ## Staleness and fallbacks
 

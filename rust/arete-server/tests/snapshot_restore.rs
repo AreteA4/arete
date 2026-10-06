@@ -13,8 +13,8 @@ use arete_server::journal::{Cursor, EventJournal, JournalConfig, ReplayError};
 use arete_server::materialized_view::{SortConfig, SortOrder, ViewPipeline};
 use arete_server::snapshot::{self, SnapshotConfig, SnapshotService, SnapshotTrigger};
 use arete_server::{
-    BusManager, Delivery, EntityCache, Filters, Mode, MutationBatch, Projection, Projector,
-    SlotContext, SlotTracker, Spec, ViewIndex, ViewSpec,
+    BusManager, Commitment, Delivery, EntityCache, Filters, Mode, MutationBatch, Projection,
+    Projector, SlotContext, SlotTracker, Spec, ViewIndex, ViewSpec,
 };
 use serde_json::json;
 use std::path::PathBuf;
@@ -491,6 +491,80 @@ async fn mismatched_bytecode_and_corrupt_blobs_cold_start() {
     .unwrap();
     tokio::spawn(projector3.with_snapshot_runtime(service3.runtime()).run());
     assert!(service3.runtime().take_restored().is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Restart at `configured` against the snapshot already in `dir`; true when
+/// the snapshot's state was restored.
+async fn restores_at(dir: &std::path::Path, configured: Commitment) -> bool {
+    let entity_cache = EntityCache::new();
+    let view_index = make_view_index();
+    let (tx, projector) = make_projector(&view_index, &entity_cache);
+    let service = SnapshotService::initialize(
+        SnapshotConfig {
+            commitment: configured,
+            ..config_for(dir)
+        },
+        &make_spec("Token"),
+        entity_cache.clone(),
+        &view_index,
+        test_journal(),
+        tx,
+    )
+    .await
+    .unwrap();
+    tokio::spawn(projector.with_snapshot_runtime(service.runtime()).run());
+    let restored = service.runtime().take_restored().is_some();
+    assert_eq!(
+        restored,
+        !entity_cache.get_all("Token/list").await.is_empty(),
+        "the VM and the caches must restore together"
+    );
+    restored
+}
+
+#[tokio::test]
+async fn a_snapshot_never_resumes_into_a_stronger_commitment() {
+    let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let dir = temp_dir("commitment");
+    let view_index = make_view_index();
+    let entity_cache = EntityCache::new();
+    let (tx, projector) = make_projector(&view_index, &entity_cache);
+    let service = SnapshotService::initialize(
+        SnapshotConfig {
+            commitment: Commitment::Confirmed,
+            ..config_for(&dir)
+        },
+        &make_spec("Token"),
+        entity_cache.clone(),
+        &view_index,
+        test_journal(),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    tokio::spawn(projector.with_snapshot_runtime(service.runtime()).run());
+    let vm = Arc::new(StdMutex::new(VmContext::new()));
+    vm.lock()
+        .unwrap()
+        .get_state_table_mut(0)
+        .unwrap()
+        .insert_with_eviction(json!("mint1"), json!({"id": "mint1"}));
+    service.runtime().register_runtime(vm, SlotTracker::new());
+    tx.send(token_batch("mint1", 10, 100)).await.unwrap();
+    flush_projector(&tx).await;
+    assert!(service
+        .snapshot_now(SnapshotTrigger::Shutdown)
+        .await
+        .unwrap());
+
+    // Confirmed state may hold slots finalized later forks out; a finalized
+    // runtime must not inherit them.
+    assert!(!restores_at(&dir, Commitment::Finalized).await);
+    assert!(restores_at(&dir, Commitment::Confirmed).await);
+    assert!(restores_at(&dir, Commitment::Processed).await);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -77,6 +77,20 @@ pub struct Runtime {
     metrics: Option<Arc<Metrics>>,
 }
 
+/// Load `.env.local`, else `.env`, else the nearest `.env` up the tree, into
+/// the process environment without overriding variables already set. True
+/// when a file was loaded.
+///
+/// A live runtime does this before it reads any setting, so a value that lives
+/// only in one of these files — `YELLOWSTONE_COMMITMENT`, the snapshot
+/// settings — is seen by every reader, not just the ones that run after the
+/// parser starts.
+pub fn load_env_files() -> bool {
+    dotenvy::from_filename(".env.local").is_ok()
+        || dotenvy::from_filename(".env").is_ok()
+        || dotenvy::dotenv().is_ok()
+}
+
 impl Runtime {
     #[cfg(feature = "otel")]
     pub fn new(config: ServerConfig, view_index: ViewIndex, metrics: Option<Arc<Metrics>>) -> Self {
@@ -227,6 +241,21 @@ impl Runtime {
         info!("Starting Arete runtime");
 
         let plan = self.config.runtime_plan;
+        if plan.live_runtime_enabled() && !load_env_files() {
+            warn!("No .env file found. Make sure environment variables are set.");
+        }
+        // Resolved before anything starts: an invalid value must stop a live
+        // runtime, not leave it serving from a stream at a level nobody asked
+        // for. Only a live runtime ingests from Yellowstone, so only it reads
+        // the setting; every other plan carries the unused default.
+        let commitment = match self.config.commitment {
+            Some(commitment) => commitment,
+            None if plan.live_runtime_enabled() => crate::Commitment::from_env()?,
+            None => crate::Commitment::default(),
+        };
+        if plan.live_runtime_enabled() {
+            info!(yellowstone_commitment = %commitment, "Ingesting at Yellowstone commitment");
+        }
         let transaction_config = if plan.transactions {
             match self.config.transactions.clone() {
                 Some(config) => config,
@@ -325,7 +354,11 @@ impl Runtime {
                         }
                     },
                 };
-                if let Some(snapshot_config) = snapshot_config.filter(|c| c.enabled) {
+                if let Some(mut snapshot_config) = snapshot_config.filter(|c| c.enabled) {
+                    // The runtime's level, whatever the snapshot config carried:
+                    // a snapshot records the level it was taken at and restore
+                    // compares against this one.
+                    snapshot_config.commitment = commitment;
                     match crate::snapshot::SnapshotService::initialize(
                         snapshot_config,
                         spec,
@@ -481,8 +514,8 @@ impl Runtime {
                         // The tape is in scope even with snapshots off, so
                         // a runtime that abandons its checkpoint can still
                         // mark the hole it just created.
-                        let result = parser_entity_resync
-                            .scope(parser_journal.scope(scoped))
+                        let result = commitment
+                            .scope(parser_entity_resync.scope(parser_journal.scope(scoped)))
                             .await;
                         if let Err(e) = result {
                             error!(%program_id, "Vixen parser runtime error: {}", e);
@@ -545,6 +578,9 @@ impl Runtime {
             }
             if let Some(target_id) = self.config.solana_gateway_target_id.clone() {
                 http_server = http_server.with_solana_gateway_target(target_id);
+            }
+            if plan.live_runtime_enabled() {
+                http_server = http_server.with_commitment(commitment);
             }
             if let Some(monitor) = health_monitor.clone() {
                 http_server = http_server.with_health_monitor(monitor);
