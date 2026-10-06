@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "arete-a4-sdk"
-version = "0.29.1"
+version = "0.29.0"
 dependencies = [
  "anyhow",
  "arete-solana-contracts",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "arete-artifacts"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "arete-hash",
  "arete-idl",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "arete-hash"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "arete-idl",
  "bs58",
