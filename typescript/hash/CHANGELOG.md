@@ -6,6 +6,14 @@
 
 * add strict hosted-private Program Release V3 identity and shared vectors
 
+## [0.6.1](https://github.com/AreteA4/arete/compare/arete-hash-npm-v0.6.0...arete-hash-npm-v0.6.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **hash:** honor explicitly untagged IDL accounts ([2f97c77](https://github.com/AreteA4/arete/commit/2f97c778203706faa348ba034f98c928a2637292))
+* **hash:** honor explicitly untagged IDL accounts ([bf9ec75](https://github.com/AreteA4/arete/commit/bf9ec7538e0d93033482b59220ac01eb9baa6956))
+
 ## [0.6.0](https://github.com/AreteA4/arete/compare/arete-hash-npm-v0.5.0...arete-hash-npm-v0.6.0) (2026-09-14)
 
 

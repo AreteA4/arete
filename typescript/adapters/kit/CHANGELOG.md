@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.29.1](https://github.com/AreteA4/arete/compare/arete-adapter-kit-v0.29.0...arete-adapter-kit-v0.29.1) (2026-10-06)
+
+### Dependencies
+
+* Align all linked Arete packages at 0.29.1 after the hash dependency update.
+
 ## [0.29.0](https://github.com/AreteA4/arete/compare/arete-adapter-kit-v0.28.0...arete-adapter-kit-v0.29.0) (2026-10-05)
 
 

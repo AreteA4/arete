@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.29.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.29.0...arete-interpreter-v0.29.1) (2026-10-06)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.29.0 to 0.29.1
+    * arete-hash bumped from 0.5.1 to 0.5.2
+    * arete-artifacts bumped from 0.3.4 to 0.3.5
+
 ## [0.29.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.28.0...arete-interpreter-v0.29.0) (2026-10-05)
 
 

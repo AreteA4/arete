@@ -130,6 +130,23 @@ for (const relativeLock of trackedFiles('*package-lock.json')) {
   const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
   const lockRoot = lock.packages?.[''];
   if (!lockRoot) throw new Error(`Missing packages[""] in ${relativeLock}`);
+  lock.name = lockRoot.name = manifest.name;
+  lock.version = lockRoot.version = manifest.version;
+
+  for (const entry of Object.values(lock.packages)) {
+    if (!entry.link) continue;
+    const linkedManifestPath = path.resolve(path.dirname(lockPath), entry.resolved, 'package.json');
+    if (!fs.existsSync(linkedManifestPath)) continue;
+    const linkedManifest = JSON.parse(fs.readFileSync(linkedManifestPath, 'utf8'));
+    const linkedPackage = lock.packages[entry.resolved];
+    if (!linkedPackage) throw new Error(`Missing linked package ${entry.resolved} in ${relativeLock}`);
+    linkedPackage.name = linkedManifest.name;
+    linkedPackage.version = linkedManifest.version;
+    for (const section of dependencySections) {
+      if (linkedManifest[section]) linkedPackage[section] = linkedManifest[section];
+      else delete linkedPackage[section];
+    }
+  }
 
   for (const section of dependencySections) {
     if (manifest[section]) {

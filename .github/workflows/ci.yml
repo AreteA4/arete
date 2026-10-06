@@ -89,7 +89,7 @@ jobs:
           node-version: "20"
 
       - name: Test linked release validation
-        run: node --test ./scripts/check-linked-release-versions.test.mjs
+        run: node --test ./scripts/check-linked-release-versions.test.mjs ./scripts/sync-release-artifacts.test.mjs
 
       - name: Test example template release conversion
         run: bash ./scripts/test-update-example-versions.sh

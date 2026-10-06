@@ -133,6 +133,7 @@ jobs:
           git switch --detach "origin/$RELEASE_BRANCH"
 
           bash ./scripts/sync-release-artifacts.sh
+          node ./scripts/check-linked-release-versions.mjs
 
           if git diff --quiet; then
             echo "Release artifacts are already synchronized"
