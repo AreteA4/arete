@@ -1172,6 +1172,10 @@ pub struct VmCacheStats {
     /// Entries in the state's instruction deduplication cache; zero for a
     /// state whose table does not exist yet.
     pub instruction_dedup_entries: usize,
+    /// Heap bytes of the state's entity rows, which the table keeps packed
+    /// (see [`StateTable`]). Counts the rows alone, not their keys or the
+    /// table's bookkeeping.
+    pub state_table_row_bytes: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1323,6 +1327,11 @@ impl StateTable {
 
     pub fn contains_key(&self, key: &Value) -> bool {
         self.data.contains_key(key)
+    }
+
+    /// Heap bytes of the packed rows.
+    pub fn row_bytes(&self) -> usize {
+        self.data.iter().map(|entry| entry.value().len()).sum()
     }
 
     /// A copy of the entity at `key`, without marking it used.
@@ -6100,6 +6109,7 @@ impl VmContext {
                 .states
                 .get(&state_id)
                 .map_or(0, |state| state.instruction_dedup_cache.len()),
+            state_table_row_bytes: self.states.get(&state_id).map_or(0, StateTable::row_bytes),
         }
     }
 
@@ -9325,6 +9335,7 @@ mod snapshot_tests {
             resolver_cache_capacity().get()
         );
         assert_eq!(empty.instruction_dedup_entries, 0);
+        assert_eq!(empty.state_table_row_bytes, 0);
 
         let resolver = ResolverType::Token;
         vm.cache_resolver_value(&resolver, &json!("mint1"), &json!({"symbol": "T"}));
@@ -9334,15 +9345,19 @@ mod snapshot_tests {
         assert!(!table.is_duplicate_instruction(&json!("key-2"), "Buy", 10, 1, None));
         // An exact duplicate is not recorded again.
         assert!(table.is_duplicate_instruction(&json!("key-1"), "Buy", 10, 0, None));
+        let row = json!({"mint": "mint1", "supply": "1000000000"});
+        table.insert_with_eviction(json!("mint1"), &row);
 
         let stats = vm.get_cache_stats(0);
         assert_eq!(stats.resolver_cache_entries, 2);
         assert_eq!(stats.instruction_dedup_entries, 2);
+        assert!(stats.state_table_row_bytes > 0);
         // The resolver cache is VM-wide; a state with no table has no dedup
         // entries.
         let missing = vm.get_cache_stats(99);
         assert_eq!(missing.resolver_cache_entries, 2);
         assert_eq!(missing.instruction_dedup_entries, 0);
+        assert_eq!(missing.state_table_row_bytes, 0);
     }
 
     #[test]

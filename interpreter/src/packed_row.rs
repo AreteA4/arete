@@ -92,6 +92,11 @@ impl PackedRow {
         let mut reader = Reader::new(&self.0);
         reader.value()
     }
+
+    /// Heap bytes the row takes.
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 impl std::fmt::Debug for PackedRow {
