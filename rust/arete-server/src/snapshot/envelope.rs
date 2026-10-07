@@ -3,11 +3,13 @@
 //!
 //! Layout: `b"ARSNAP01" | u32-le header_len | header JSON | zstd(payload JSON)`.
 
+use crate::shared_entity::SharedEntity;
 use anyhow::{bail, Context, Result};
 use arete_interpreter::snapshot::VmSnapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::io::Write as _;
 
 const MAGIC: &[u8; 8] = b"ARSNAP01";
 const ZSTD_LEVEL: i32 = 3;
@@ -75,11 +77,42 @@ pub struct SnapshotPayload {
     pub journal: crate::journal::JournalSnapshot,
 }
 
+/// What the snapshot writer serializes as a [`SnapshotPayload`]: the same
+/// fields, in the same order, with the cached entities shared with the
+/// entity cache rather than copied. It serializes to the same JSON.
+#[derive(Serialize)]
+pub(crate) struct SharedSnapshotPayload {
+    pub vm: VmSnapshot,
+    pub entity_cache: Vec<(String, Vec<(String, SharedEntity)>)>,
+    pub entity_lifetimes: Option<crate::cache::EntityLifetimes>,
+    pub entity_tombstones: crate::cache::EntityTombstones,
+    pub journal: crate::journal::JournalSnapshot,
+}
+
 pub fn encode(header: &SnapshotHeader, payload: &SnapshotPayload) -> Result<Vec<u8>> {
+    encode_serialized(header, payload)
+}
+
+/// [`encode`] for the writer's [`SharedSnapshotPayload`].
+pub(crate) fn encode_shared(
+    header: &SnapshotHeader,
+    payload: &SharedSnapshotPayload,
+) -> Result<Vec<u8>> {
+    encode_serialized(header, payload)
+}
+
+fn encode_serialized(header: &SnapshotHeader, payload: &impl Serialize) -> Result<Vec<u8>> {
     let header_json = serde_json::to_vec(header).context("serialize snapshot header")?;
-    let payload_json = serde_json::to_vec(payload).context("serialize snapshot payload")?;
-    let compressed =
-        zstd::encode_all(payload_json.as_slice(), ZSTD_LEVEL).context("compress snapshot")?;
+    // The payload JSON goes straight into the compressor rather than into a
+    // buffer of its own first.
+    let mut compressor =
+        zstd::Encoder::new(Vec::new(), ZSTD_LEVEL).context("start snapshot compression")?;
+    {
+        let mut writer = std::io::BufWriter::with_capacity(64 * 1024, &mut compressor);
+        serde_json::to_writer(&mut writer, payload).context("serialize snapshot payload")?;
+        writer.flush().context("compress snapshot")?;
+    }
+    let compressed = compressor.finish().context("compress snapshot")?;
 
     let mut bytes = Vec::with_capacity(MAGIC.len() + 4 + header_json.len() + compressed.len());
     bytes.extend_from_slice(MAGIC);
@@ -194,6 +227,47 @@ mod tests {
                 9_007_199_254_740_993,
                 u64::MAX
             ))
+        );
+    }
+
+    /// A payload holding shared entities writes the JSON the copies would.
+    #[test]
+    fn shared_entities_encode_as_their_copies() {
+        let (header, payload) = sample();
+        let entity = serde_json::json!({"id": 1, "_version": "e:3", "trades": [{"a": 1}]});
+        let copies = SnapshotPayload {
+            entity_cache: vec![(
+                "tokens/list".to_string(),
+                vec![("key1".to_string(), entity.clone())],
+            )],
+            ..payload
+        };
+        // Every field, so a field added to one payload must be added to both.
+        let SnapshotPayload {
+            vm,
+            entity_cache: _,
+            entity_lifetimes,
+            entity_tombstones,
+            journal,
+        } = copies.clone();
+        let shared = SharedSnapshotPayload {
+            vm,
+            entity_cache: vec![(
+                "tokens/list".to_string(),
+                vec![("key1".to_string(), SharedEntity::new(entity))],
+            )],
+            entity_lifetimes,
+            entity_tombstones,
+            journal,
+        };
+        assert_eq!(
+            serde_json::to_vec(&shared).unwrap(),
+            serde_json::to_vec(&copies).unwrap()
+        );
+        let decoded = decode_payload(&encode_shared(&header, &shared).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&decoded).unwrap(),
+            serde_json::to_vec(&copies).unwrap()
         );
     }
 
