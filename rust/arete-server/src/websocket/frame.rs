@@ -1,5 +1,8 @@
-use serde::{Deserialize, Serialize};
+use serde::ser::{SerializeMap as _, SerializeSeq as _};
+use serde::{Deserialize, Serialize, Serializer};
+use smallvec::SmallVec;
 
+use crate::shared_entity::SharedEntity;
 use crate::websocket::subscription::{SubscriptionQuery, PROTOCOL_VERSION};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -185,6 +188,138 @@ pub struct SnapshotFrame {
     pub complete: bool,
 }
 
+/// An entity as a view puts it on the wire: serialized with the view's
+/// [`WireFormat`] applied, byte for byte as [`apply_wire_format`] on a copy of
+/// it would serialize, without making the copy.
+pub(crate) struct WireEntity<'a> {
+    pub entity: &'a SharedEntity,
+    pub wire_format: &'a WireFormat,
+}
+
+impl Serialize for WireEntity<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let wire = WirePaths::new(self.wire_format.wide_int_paths.iter().map(Vec::as_slice));
+        if wire.is_noop() {
+            return self.entity.serialize(serializer);
+        }
+        self.entity.serialize_with(
+            serializer,
+            |key, value| FieldWire {
+                value,
+                wire: wire.field(key),
+            },
+            |value| WireValue { value, wire: &wire },
+        )
+    }
+}
+
+/// A top-level field and the paths that reach it.
+struct FieldWire<'a> {
+    value: &'a serde_json::Value,
+    wire: WirePaths<'a>,
+}
+
+impl Serialize for FieldWire<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        WireValue {
+            value: self.value,
+            wire: &self.wire,
+        }
+        .serialize(serializer)
+    }
+}
+
+/// The wide-int paths that reach one node of a value, as
+/// [`stringify_value_at_path`] walks them: `terminal` when one ends here.
+#[derive(Clone)]
+struct WirePaths<'a> {
+    terminal: bool,
+    /// The rest of every path that continues below this node.
+    paths: SmallVec<[&'a [String]; 4]>,
+}
+
+impl<'a> WirePaths<'a> {
+    fn new(paths: impl Iterator<Item = &'a [String]>) -> Self {
+        let mut terminal = false;
+        let mut rest = SmallVec::new();
+        for path in paths {
+            if path.is_empty() {
+                terminal = true;
+            } else {
+                rest.push(path);
+            }
+        }
+        Self {
+            terminal,
+            paths: rest,
+        }
+    }
+
+    /// The paths reaching an object's field. A path ending at the object does
+    /// not reach into its fields.
+    fn field(&self, key: &str) -> Self {
+        Self::new(
+            self.paths
+                .iter()
+                .filter(|path| path[0] == key)
+                .map(|path| &path[1..]),
+        )
+    }
+
+    fn is_noop(&self) -> bool {
+        !self.terminal && self.paths.is_empty()
+    }
+}
+
+struct WireValue<'a, 'w> {
+    value: &'a serde_json::Value,
+    wire: &'w WirePaths<'a>,
+}
+
+impl Serialize for WireValue<'_, '_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde_json::Value;
+        if self.wire.is_noop() {
+            return self.value.serialize(serializer);
+        }
+        match self.value {
+            Value::Number(number) if self.wire.terminal => {
+                if let Some(unsigned) = number.as_u64() {
+                    serializer.serialize_str(&unsigned.to_string())
+                } else if let Some(signed) = number.as_i64() {
+                    serializer.serialize_str(&signed.to_string())
+                } else {
+                    number.serialize(serializer)
+                }
+            }
+            // Paths and a path's end both reach every element of an array.
+            Value::Array(values) => {
+                let mut sequence = serializer.serialize_seq(Some(values.len()))?;
+                for value in values {
+                    sequence.serialize_element(&WireValue {
+                        value,
+                        wire: self.wire,
+                    })?;
+                }
+                sequence.end()
+            }
+            Value::Object(fields) => {
+                let mut map = serializer.serialize_map(Some(fields.len()))?;
+                for (key, value) in fields {
+                    let wire = self.wire.field(key);
+                    if wire.is_noop() {
+                        map.serialize_entry(key, value)?;
+                    } else {
+                        map.serialize_entry(key, &WireValue { value, wire: &wire })?;
+                    }
+                }
+                map.end()
+            }
+            other => other.serialize(serializer),
+        }
+    }
+}
+
 pub fn apply_wire_format(value: &mut serde_json::Value, wire_format: &WireFormat) {
     for path in &wire_format.wide_int_paths {
         stringify_value_at_path(value, path);
@@ -270,6 +405,75 @@ mod tests {
         assert_eq!(value["snapshotId"], "snapshot-1");
         assert_eq!(value["authoritative"], true);
         assert_eq!(value["complete"], true);
+    }
+
+    /// Serializing a shared entity with a wire format writes the bytes that
+    /// applying the format to a copy and serializing the copy writes.
+    #[test]
+    fn a_wire_entity_serializes_as_the_formatted_copy() {
+        let entity = json!({
+            "_version": "e:7",
+            "_seq": "10:000000000001",
+            "amount": 42,
+            "negative": -42,
+            "max": u64::MAX,
+            "ratio": 1.5,
+            "label": "7",
+            "small": 5,
+            "nested": {"amount": 9, "deeper": {"amount": [1, -2, [3, 4.5]]}},
+            "positions": [{"liquidity": 9}, {"liquidity": [11, 12]}, 13, {"other": 1}],
+            "matrix": [[1, 2], [3, {"x": 4}]],
+            "empty": {},
+        });
+        let paths = |paths: &[&[&str]]| WireFormat {
+            wide_int_paths: paths
+                .iter()
+                .map(|path| path.iter().map(|segment| segment.to_string()).collect())
+                .collect(),
+        };
+        let formats = [
+            paths(&[]),
+            paths(&[&["amount"]]),
+            paths(&[&["negative"], &["max"], &["ratio"], &["label"]]),
+            paths(&[&["positions", "liquidity"]]),
+            paths(&[&["positions"]]),
+            paths(&[
+                &["nested"],
+                &["nested", "amount"],
+                &["nested", "deeper", "amount"],
+            ]),
+            paths(&[&["matrix"], &["matrix", "x"]]),
+            paths(&[
+                &["_version"],
+                &["_seq"],
+                &["missing", "path"],
+                &["empty", "x"],
+            ]),
+            paths(&[&["amount"], &["amount"]]),
+            paths(&[&[]]),
+        ];
+        for format in formats {
+            for whole in [
+                entity.clone(),
+                json!([1, {"amount": 2}]),
+                json!(3),
+                json!(null),
+            ] {
+                let shared = SharedEntity::new(whole.clone());
+                let mut copy = whole.clone();
+                apply_wire_format(&mut copy, &format);
+                assert_eq!(
+                    serde_json::to_string(&WireEntity {
+                        entity: &shared,
+                        wire_format: &format,
+                    })
+                    .unwrap(),
+                    serde_json::to_string(&copy).unwrap(),
+                    "{whole} with {:?}",
+                    format.wide_int_paths
+                );
+            }
+        }
     }
 
     #[test]
