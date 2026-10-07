@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::filter::{self, Filter};
 use super::output::{self, OutputMode};
-use super::session::{Notice, SessionHandler, StreamEnd, StreamSession};
+use super::session::{Notice, ReconnectPolicy, SessionHandler, StreamEnd, StreamSession};
 use super::snapshot::{SnapshotPlayer, SnapshotRecorder};
 use super::store::EntityStore;
 use super::token;
@@ -95,10 +95,22 @@ pub async fn stream(
     view: &str,
     args: &StreamArgs,
 ) -> Result<()> {
+    let policy = super::reconnect_policy(args);
+    stream_with_policy(url, refresh, view, args, policy).await
+}
+
+async fn stream_with_policy(
+    url: String,
+    refresh: Option<token::SessionRefresh>,
+    view: &str,
+    args: &StreamArgs,
+    policy: ReconnectPolicy,
+) -> Result<()> {
     // Validate args and build state before connecting (fails fast on bad --where regex etc.)
     let mut state = build_state(args, view, &url)?;
 
-    let mut session = StreamSession::new(url, refresh, super::build_subscription(view, args))?;
+    let mut session =
+        StreamSession::new(url, refresh, super::build_subscription(view, args), policy)?;
     let socket = session.connect().await?;
 
     eprintln!("Connected.");
@@ -115,7 +127,8 @@ pub async fn stream(
         )?;
     }
 
-    // Ctrl+C, or --duration (as a select! arm for precise timing)
+    // Ctrl+C, or --duration (as a select! arm for precise timing). The
+    // session polls this across reconnects, so --duration is wall time.
     let duration = args.duration;
     let stop = async move {
         let duration_elapsed = async {
@@ -197,21 +210,57 @@ impl SessionHandler for Output<'_> {
     }
 
     fn on_notice(&mut self, notice: Notice<'_>) {
-        match notice {
-            Notice::Unparsed { binary, error } => eprintln!(
+        let line = match notice {
+            Notice::Unparsed { binary, error } => format!(
                 "Warning: failed to parse {} frame: {}",
                 if binary { "binary" } else { "text" },
                 error
             ),
-            Notice::RefreshRefused(reason) => eprintln!(
+            Notice::RefreshRefused(reason) => format!(
                 "Warning: the server refused the refreshed session token ({}); \
                  the stream ends when the current token expires.",
                 reason.unwrap_or("no reason given")
             ),
             Notice::RefreshFailed(error) => {
-                eprintln!("Warning: could not refresh the session token, retrying: {error:#}")
+                format!("Warning: could not refresh the session token, retrying: {error:#}")
             }
+            Notice::Reconnecting(reconnecting) => reconnecting.to_string(),
+        };
+        self.print_notice(&line);
+    }
+
+    fn on_reconnected(&mut self, url: &str) -> Result<()> {
+        // The new subscription starts over with its own snapshot. Entities
+        // merged from the old connection, or a snapshot it left half
+        // delivered, would otherwise mix stale state into the output.
+        self.state.entities.clear();
+        self.state.entity_count = 0;
+        self.state.pending_snapshot = None;
+        self.snapshot_complete = false;
+
+        self.print_notice(&format!("Reconnected; resubscribed to {}", self.view));
+        if let OutputMode::NoDna = self.state.output_mode {
+            output::emit_no_dna_event(
+                &mut self.state.out,
+                "reconnected",
+                self.view,
+                &serde_json::json!({"url": url}),
+                self.state.update_count,
+                self.state.entity_count,
+            )?;
         }
+        Ok(())
+    }
+}
+
+impl Output<'_> {
+    /// Print a line to stderr, below the running count when --count is
+    /// drawing one there.
+    fn print_notice(&mut self, line: &str) {
+        if self.state.count_only && self.state.last_count_render.take().is_some() {
+            output::finalize_count();
+        }
+        eprintln!("{line}");
     }
 }
 
@@ -740,6 +789,49 @@ mod tests {
         assert!(state.entities.is_empty());
     }
 
+    #[test]
+    fn a_reconnect_drops_state_from_the_old_connection() {
+        let mut state = state();
+        process_frame(
+            snapshot("initial", true, true, &["1", "2"]),
+            "Thing/list",
+            &mut state,
+        )
+        .unwrap();
+        // The old connection drops halfway through another snapshot.
+        process_frame(
+            snapshot("recovery", true, false, &["3"]),
+            "Thing/list",
+            &mut state,
+        )
+        .unwrap();
+        let mut output = Output {
+            state: &mut state,
+            view: "Thing/list",
+            no_snapshot: false,
+            snapshot_complete: true,
+        };
+
+        output.on_reconnected("ws://localhost/").unwrap();
+
+        assert!(!output.snapshot_complete);
+        assert!(state.entities.is_empty());
+        assert_eq!(state.entity_count, 0);
+        assert!(state.pending_snapshot.is_none());
+
+        // The new connection's snapshot is staged on its own.
+        process_frame(
+            snapshot("fresh", false, true, &["4"]),
+            "Thing/list",
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(
+            state.entities.keys().cloned().collect::<Vec<_>>(),
+            vec!["4".to_string()]
+        );
+    }
+
     /// A hosted stream against a local server standing in for the stack.
     mod over_a_socket {
         use super::*;
@@ -747,19 +839,68 @@ mod tests {
         use futures_util::{SinkExt, StreamExt};
         use serde_json::{json, Value};
         use tokio::net::TcpListener;
+        use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
         use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
         use tokio_tungstenite::tungstenite::protocol::CloseFrame;
         use tokio_tungstenite::tungstenite::Message;
+        use tokio_tungstenite::WebSocketStream;
+
+        use crate::commands::stream::session::tests::upsert;
 
         fn stream_args(view: &str) -> StreamArgs {
+            stream_args_from(&[view])
+        }
+
+        fn stream_args_from(args: &[&str]) -> StreamArgs {
             #[derive(clap::Parser)]
             struct Cli {
                 #[command(flatten)]
                 args: StreamArgs,
             }
-            <Cli as clap::Parser>::try_parse_from(["a4", view])
+            <Cli as clap::Parser>::try_parse_from(std::iter::once("a4").chain(args.iter().copied()))
                 .expect("stream args parse")
                 .args
+        }
+
+        /// The policy `args` ask for, with waits short enough for a test.
+        fn quick(args: &StreamArgs) -> ReconnectPolicy {
+            ReconnectPolicy {
+                initial_delay: Duration::from_millis(10),
+                max_delay: Duration::from_millis(50),
+                ..crate::commands::stream::reconnect_policy(args)
+            }
+        }
+
+        type ServerSocket = WebSocketStream<tokio::net::TcpStream>;
+
+        /// Accept the next connection, returning it with the path and query
+        /// it was opened with.
+        // The handshake callback's error type is tungstenite's, not ours.
+        #[allow(clippy::result_large_err)]
+        async fn accept(listener: &TcpListener) -> (ServerSocket, String) {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut target = String::new();
+            let socket = tokio_tungstenite::accept_hdr_async(
+                tcp,
+                |request: &Request, response: Response| {
+                    target = request.uri().to_string();
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            (socket, target)
+        }
+
+        /// The next text message the client sends, as JSON.
+        async fn next_json(socket: &mut ServerSocket) -> Value {
+            loop {
+                match socket.next().await {
+                    Some(Ok(Message::Text(text))) => return serde_json::from_str(&text).unwrap(),
+                    Some(Ok(_)) => continue,
+                    other => panic!("the client went away: {other:?}"),
+                }
+            }
         }
 
         fn unix_now() -> u64 {
@@ -834,7 +975,7 @@ mod tests {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        async fn a_plain_close_still_ends_the_stream_cleanly() {
+        async fn without_reconnect_a_plain_close_ends_the_stream_cleanly() {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("ws://{}/", listener.local_addr().unwrap());
             let server = tokio::spawn(async move {
@@ -844,7 +985,7 @@ mod tests {
                 socket.close(None).await.unwrap();
             });
 
-            let args = stream_args("Ore/list");
+            let args = stream_args_from(&["Ore/list", "--no-reconnect"]);
             let result = tokio::time::timeout(
                 Duration::from_secs(10),
                 stream(url, None, "Ore/list", &args),
@@ -853,6 +994,160 @@ mod tests {
             .expect("the stream ends within the timeout");
 
             assert!(result.is_ok(), "{result:?}");
+            server.await.unwrap();
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_dropped_connection_reconnects_and_resubscribes() {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}/", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = accept(&listener).await;
+                let first = next_json(&mut socket).await;
+                let id = first["subscriptionId"].as_str().unwrap().to_string();
+                socket.send(upsert(&id, "1")).await.unwrap();
+                // Go away the way a crashed server does: no close frame.
+                drop(socket);
+
+                let (mut socket, _) = accept(&listener).await;
+                let second = next_json(&mut socket).await;
+                socket.send(upsert(&id, "2")).await.unwrap();
+                // Wait for the client to leave.
+                while let Some(Ok(_)) = socket.next().await {}
+                (first, second)
+            });
+
+            // Only the entity sent after the reconnect ends the stream.
+            let args = stream_args_from(&["Ore/list", "--first", "--where", "id=2", "--take", "5"]);
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                stream_with_policy(url, None, "Ore/list", &args, quick(&args)),
+            )
+            .await
+            .expect("the stream ends within the timeout");
+
+            assert!(result.is_ok(), "{result:?}");
+            let (first, second) = server.await.unwrap();
+            assert_eq!(first["type"], "subscribe");
+            assert_eq!(first["query"]["take"], 5);
+            assert_eq!(second, first, "the same subscription is sent again");
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_hosted_stream_mints_a_new_token_to_reconnect() {
+            let mint = MockServer::json(
+                200,
+                &json!({"token": "second", "expires_at": unix_now() + 3_600}).to_string(),
+            );
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base_url = format!("ws://{}/", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut socket, first_target) = accept(&listener).await;
+                let first = next_json(&mut socket).await;
+                let id = first["subscriptionId"].as_str().unwrap().to_string();
+                drop(socket);
+
+                let (mut socket, second_target) = accept(&listener).await;
+                let _second = next_json(&mut socket).await;
+                socket.send(upsert(&id, "1")).await.unwrap();
+                while let Some(Ok(_)) = socket.next().await {}
+                (first_target, second_target)
+            });
+
+            // The first token is far from expiry, so only the reconnect mints.
+            let refresh = token::SessionRefresh::for_test(
+                format!("{}/ws/sessions", mint.base_url()),
+                &base_url,
+                unix_now() + 3_600,
+            );
+            let args = stream_args_from(&["Ore/list", "--first"]);
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                stream_with_policy(
+                    format!("{base_url}?hs_token=first"),
+                    Some(refresh),
+                    "Ore/list",
+                    &args,
+                    quick(&args),
+                ),
+            )
+            .await
+            .expect("the stream ends within the timeout");
+
+            assert!(result.is_ok(), "{result:?}");
+            let (first_target, second_target) = server.await.unwrap();
+            assert_eq!(first_target, "/?hs_token=first");
+            assert_eq!(second_target, "/?hs_token=second");
+            assert_eq!(
+                serde_json::from_str::<Value>(&mint.request().body).unwrap(),
+                json!({"websocket_url": base_url})
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_policy_close_is_not_retried() {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}/", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = accept(&listener).await;
+                let _subscribe = next_json(&mut socket).await;
+                socket
+                    .close(Some(CloseFrame {
+                        code: CloseCode::Policy,
+                        reason: "token-expired: Authentication token expired".into(),
+                    }))
+                    .await
+                    .unwrap();
+                // Any reconnect would arrive well within this.
+                tokio::time::timeout(Duration::from_millis(500), listener.accept())
+                    .await
+                    .is_ok()
+            });
+
+            let args = stream_args("Ore/list");
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                stream_with_policy(url, None, "Ore/list", &args, quick(&args)),
+            )
+            .await
+            .expect("the stream ends within the timeout");
+
+            let error = result.expect_err("a policy close fails the stream");
+            assert!(format!("{error:#}").contains("token-expired"), "{error:#}");
+            assert!(!server.await.unwrap(), "the client did not reconnect");
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn the_stream_gives_up_after_max_reconnects() {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}/", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = accept(&listener).await;
+                let _subscribe = next_json(&mut socket).await;
+                // The server goes away for good: every reconnect is refused.
+                drop(socket);
+                drop(listener);
+            });
+
+            let args = stream_args_from(&["Ore/list", "--max-reconnects", "2"]);
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                stream_with_policy(url, None, "Ore/list", &args, quick(&args)),
+            )
+            .await
+            .expect("the stream ends within the timeout");
+
+            let error = result.expect_err("giving up fails the stream");
+            let message = format!("{error:#}");
+            assert!(
+                message.starts_with("gave up after 2 reconnect attempts: could not connect: "),
+                "{message}"
+            );
+            assert_eq!(
+                message.matches("refused").count(),
+                1,
+                "the cause is named once: {message}"
+            );
             server.await.unwrap();
         }
     }

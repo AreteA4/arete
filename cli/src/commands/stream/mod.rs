@@ -112,6 +112,37 @@ pub struct StreamArgs {
     /// Interactive TUI mode
     #[arg(long, short = 'i')]
     pub tui: bool,
+
+    /// End the stream when the connection drops instead of reconnecting
+    #[arg(long, conflicts_with = "max_reconnects")]
+    pub no_reconnect: bool,
+
+    /// Give up after N reconnect attempts in a row [default: no limit].
+    /// A connection that stays up for 30 seconds starts the count again
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    pub max_reconnects: Option<u32>,
+}
+
+/// How `a4 stream` handles a dropped connection, for `a4 stream --help`.
+pub const RECONNECT_HELP: &str = "\
+Reconnecting:
+  When the connection drops (the server restarts, or the connection is reset
+  without a close frame), the stream reconnects. It waits up to 0.5s before
+  the first attempt and twice as long before each further one, up to 30s.
+  Each attempt mints a fresh session token for hosted stacks and resubscribes
+  to the same view with the same options. The new subscription takes a fresh
+  snapshot and the stream's entity state is rebuilt from it; updates sent
+  while disconnected are not replayed. With --no-snapshot no snapshot is
+  taken on reconnect either, and the stream continues with live updates only.
+
+  --duration counts wall time across reconnects. A policy close from the
+  server, such as an expired or refused session, is not retried and exits
+  with an error, as does giving up after --max-reconnects attempts. Use
+  --no-reconnect to end the stream on the first drop instead.";
+
+/// The reconnect behaviour `args` ask for.
+pub fn reconnect_policy(args: &StreamArgs) -> session::ReconnectPolicy {
+    session::ReconnectPolicy::new(!args.no_reconnect, args.max_reconnects)
 }
 
 pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {

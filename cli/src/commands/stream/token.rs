@@ -235,15 +235,39 @@ pub fn ensure_hosted_ws_token(url: String) -> Result<(String, Option<SessionRefr
     let endpoint = format!("{}/ws/sessions", base.trim_end_matches('/'));
     let minted = mint_session_token(&endpoint, api_key.as_deref(), &url)?;
 
-    let mut u = Url::parse(&url).context("Invalid WebSocket URL")?;
-    u.query_pairs_mut().append_pair("hs_token", &minted.token);
+    let connect_url = url_with_token(&url, &minted.token)?;
     let refresh = SessionRefresh {
         endpoint,
         api_key,
         websocket_url: url,
         expires_at: minted.expires_at,
     };
-    Ok((u.to_string(), Some(refresh)))
+    Ok((connect_url, Some(refresh)))
+}
+
+impl SessionRefresh {
+    /// Mint a token for a new connection, the way the first one was minted,
+    /// and return the URL to connect with.
+    pub async fn renew(&mut self) -> Result<String> {
+        let (endpoint, api_key, websocket_url) = (
+            self.endpoint.clone(),
+            self.api_key.clone(),
+            self.websocket_url.clone(),
+        );
+        let minted = tokio::task::spawn_blocking(move || {
+            mint_session_token(&endpoint, api_key.as_deref(), &websocket_url)
+        })
+        .await
+        .context("token mint task failed")??;
+        self.expires_at = minted.expires_at;
+        url_with_token(&self.websocket_url, &minted.token)
+    }
+}
+
+fn url_with_token(url: &str, token: &str) -> Result<String> {
+    let mut u = Url::parse(url).context("Invalid WebSocket URL")?;
+    u.query_pairs_mut().append_pair("hs_token", token);
+    Ok(u.to_string())
 }
 
 fn mint_session_token(
@@ -398,6 +422,31 @@ mod tests {
             panic!("the mint should fail");
         };
         assert!(format!("{error:#}").contains("500"), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn renewing_mints_a_token_for_a_new_connection() {
+        let expires_at = unix_now() + 3_600;
+        let mint = MockServer::json(
+            200,
+            &serde_json::json!({"token": "fresh", "expires_at": expires_at}).to_string(),
+        );
+        let mut refresh = SessionRefresh::for_test(
+            format!("{}/ws/sessions", mint.base_url()),
+            "wss://ore.stack.arete.run/?region=eu",
+            unix_now() + 10,
+        );
+
+        let url = refresh.renew().await.expect("the mint succeeds");
+
+        assert_eq!(url, "wss://ore.stack.arete.run/?region=eu&hs_token=fresh");
+        assert_eq!(refresh.expires_at, Some(expires_at));
+        let request = mint.request();
+        assert_eq!(request.header("authorization"), Some("Bearer a4_ak_test"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&request.body).unwrap(),
+            serde_json::json!({"websocket_url": "wss://ore.stack.arete.run/?region=eu"})
+        );
     }
 
     #[tokio::test]

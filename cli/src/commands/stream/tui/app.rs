@@ -148,6 +148,9 @@ pub struct App {
     pub disconnected: bool,
     /// What the status bar keeps showing once the stream is disconnected.
     disconnect_message: Option<String>,
+    /// What the status bar keeps showing while a dropped connection is being
+    /// replaced.
+    reconnect_message: Option<String>,
     pub filter_input_active: bool,
     pub filter_text: String,
     pub status_message: String,
@@ -167,6 +170,11 @@ pub struct App {
     pub dropped_frames: std::sync::Arc<std::sync::atomic::AtomicU64>,
     filtered_cache: Option<Vec<String>>,
     pending_snapshot: Option<PendingSnapshot>,
+    /// The connection the last frame arrived on.
+    connection: u64,
+    /// Set when frames from a new connection begin: its first complete
+    /// snapshot replaces the entity list, as the first connection's did.
+    resync: bool,
 }
 
 struct PendingSnapshot {
@@ -195,6 +203,7 @@ impl App {
             paused: false,
             disconnected: false,
             disconnect_message: None,
+            reconnect_message: None,
             filter_input_active: false,
             filter_text: String::new(),
             status_message: "Connected".to_string(),
@@ -214,6 +223,8 @@ impl App {
             dropped_frames,
             filtered_cache: None,
             pending_snapshot: None,
+            connection: 0,
+            resync: false,
         }
     }
 
@@ -263,6 +274,20 @@ impl App {
         self.scroll_offset = 0;
     }
 
+    /// Apply a frame that arrived on connection `connection`.
+    ///
+    /// The first frame from a new connection drops whatever the old one left
+    /// half delivered: a snapshot it never completed would otherwise mix
+    /// with the new one's batches.
+    pub fn apply_connection_frame(&mut self, connection: u64, frame: Frame) {
+        if connection != self.connection {
+            self.connection = connection;
+            self.pending_snapshot = None;
+            self.resync = true;
+        }
+        self.apply_frame(frame);
+    }
+
     pub fn apply_frame(&mut self, frame: Frame) {
         // Invalidation is cheap (sets to None). The cache is only rebuilt once per
         // render tick in ensure_filtered_cache(), not per-frame, since we drain all
@@ -310,7 +335,10 @@ impl App {
                         }
                         return;
                     };
-                    if snapshot.authoritative {
+                    // After a reconnect the snapshot replaces the list even
+                    // when it is incremental, as the first one did.
+                    let resync = std::mem::take(&mut self.resync);
+                    if snapshot.authoritative || resync {
                         let retained: HashSet<&str> =
                             snapshot.rows.iter().map(|row| row.key.as_str()).collect();
                         let removed: Vec<String> = self
@@ -785,6 +813,8 @@ impl App {
             &self.status_message
         } else if let Some(message) = &self.disconnect_message {
             message
+        } else if let Some(message) = &self.reconnect_message {
+            message
         } else if self.paused {
             "PAUSED"
         } else {
@@ -801,12 +831,29 @@ impl App {
     /// one. The message stays in the status bar from then on.
     pub fn set_disconnected(&mut self, reason: Option<&str>) {
         self.disconnected = true;
+        self.reconnect_message = None;
         let message = match reason {
             Some(reason) => format!("Disconnected: {reason}"),
             None => "Disconnected".to_string(),
         };
         self.set_status(&message);
         self.disconnect_message = Some(message);
+    }
+
+    /// Show that the connection dropped and is being replaced, until
+    /// [`set_reconnected`](Self::set_reconnected).
+    pub fn set_reconnecting(&mut self, message: &str) {
+        self.set_status(message);
+        self.reconnect_message = Some(message.to_string());
+    }
+
+    pub fn set_reconnected(&mut self) {
+        self.reconnect_message = None;
+        self.set_status("Reconnected; resubscribed");
+    }
+
+    pub fn is_reconnecting(&self) -> bool {
+        self.reconnect_message.is_some()
     }
 
     /// Returns cached filtered keys.
@@ -972,5 +1019,62 @@ mod tests {
         let_status_expire(&mut app);
 
         assert_eq!(app.status(), "Disconnected");
+    }
+
+    fn snapshot(id: &str, authoritative: bool, complete: bool, keys: &[&str]) -> Frame {
+        Frame::Snapshot {
+            protocol_version: 2,
+            subscription_id: "cli:test".to_string(),
+            snapshot_id: id.to_string(),
+            authoritative,
+            mode: arete_sdk::Mode::List,
+            entity: "Ore/list".to_string(),
+            key: None,
+            data: keys
+                .iter()
+                .map(|key| SnapshotEntity {
+                    key: (*key).to_string(),
+                    data: serde_json::json!({ "id": key }),
+                })
+                .collect(),
+            complete,
+        }
+    }
+
+    #[test]
+    fn a_new_connections_snapshot_replaces_the_entity_list() {
+        let mut app = app();
+        app.apply_connection_frame(0, snapshot("first", true, true, &["a", "b"]));
+        // The old connection drops halfway through a second snapshot.
+        app.apply_connection_frame(0, snapshot("recovery", true, false, &["z"]));
+
+        // An incremental snapshot on the new connection still replaces the
+        // list, and the half-delivered one is gone.
+        app.apply_connection_frame(1, snapshot("second", false, true, &["b", "c"]));
+
+        assert_eq!(app.entity_keys, vec!["b".to_string(), "c".to_string()]);
+        assert_ne!(app.status(), "Invalid snapshot batch sequence");
+
+        // Later incremental snapshots on the same connection merge as before.
+        app.apply_connection_frame(1, snapshot("third", false, true, &["d"]));
+        assert_eq!(app.entity_keys.len(), 3);
+    }
+
+    #[test]
+    fn the_reconnect_message_stays_until_reconnected() {
+        let mut app = app();
+        app.set_reconnecting(
+            "Connection lost (connection ended); reconnecting in 0.5s (attempt 1)...",
+        );
+        let_status_expire(&mut app);
+
+        assert!(app.is_reconnecting());
+        assert!(app.status().starts_with("Connection lost"));
+
+        app.set_reconnected();
+        let_status_expire(&mut app);
+
+        assert!(!app.is_reconnecting());
+        assert_eq!(app.status(), "Streaming");
     }
 }

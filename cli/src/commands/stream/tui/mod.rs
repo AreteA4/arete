@@ -30,6 +30,7 @@ pub async fn run_tui(
         url,
         refresh,
         crate::commands::stream::build_subscription(view, args),
+        crate::commands::stream::reconnect_policy(args),
     )?;
     let socket = session.connect().await?;
     let display_url = session.display_url();
@@ -37,7 +38,8 @@ pub async fn run_tui(
     // Channel for frames from WS task
     // 10k buffer accommodates large snapshot batches during pause. Overflow
     // frames are dropped and counted in the "Dropped: N" header indicator.
-    let (frame_tx, mut frame_rx) = mpsc::channel::<Frame>(10_000);
+    // Each frame carries the number of the connection it arrived on.
+    let (frame_tx, mut frame_rx) = mpsc::channel::<(u64, Frame)>(10_000);
 
     // Shutdown signal for graceful WebSocket close
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -48,7 +50,7 @@ pub async fn run_tui(
 
     // Warnings for the status bar; the TUI owns the terminal, so nothing is
     // printed.
-    let (notice_tx, mut notice_rx) = mpsc::unbounded_channel::<String>();
+    let (notice_tx, mut notice_rx) = mpsc::unbounded_channel::<SocketNotice>();
     // Set when the stream fails rather than ends, such as when the server
     // closes the socket on a policy (an expired or refused session).
     let failure = Arc::new(OnceLock::<StreamFailure>::new());
@@ -60,6 +62,7 @@ pub async fn run_tui(
             frames: frame_tx,
             dropped_frames: dropped_frames_ws,
             notices: notice_tx,
+            connection: 0,
         };
         let stop = async {
             let _ = shutdown_rx.await;
@@ -143,15 +146,31 @@ pub async fn run_tui(
 
 /// Where the socket task hands what it reads to the UI.
 struct SocketOutputs {
-    frames: mpsc::Sender<Frame>,
+    frames: mpsc::Sender<(u64, Frame)>,
     dropped_frames: Arc<AtomicU64>,
-    notices: mpsc::UnboundedSender<String>,
+    notices: mpsc::UnboundedSender<SocketNotice>,
+    /// Which connection frames are arriving on, counting from 0. Frames are
+    /// tagged with it so the UI resets its state at the exact frame where a
+    /// new connection's data begins, even if frames were dropped or are
+    /// still queued while paused.
+    connection: u64,
+}
+
+/// What the socket task tells the UI besides frames.
+#[derive(Debug, PartialEq)]
+enum SocketNotice {
+    /// A message for the status bar.
+    Status(String),
+    /// The connection dropped; shown until it is replaced.
+    Reconnecting(String),
+    /// A new connection replaced the dropped one.
+    Reconnected,
 }
 
 impl SessionHandler for SocketOutputs {
     fn on_message(&mut self, message: ServerMessage) -> Result<bool> {
         if let ServerMessage::Frame(frame) = message {
-            if self.frames.try_send(frame).is_err() {
+            if self.frames.try_send((self.connection, frame)).is_err() {
                 self.dropped_frames.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -161,23 +180,32 @@ impl SessionHandler for SocketOutputs {
     fn on_notice(&mut self, notice: Notice<'_>) {
         let notice = match notice {
             Notice::Unparsed { .. } => return,
-            Notice::RefreshRefused(reason) => format!(
+            Notice::RefreshRefused(reason) => SocketNotice::Status(format!(
                 "Session refresh refused ({}); the stream ends when the current token expires",
                 reason.unwrap_or("no reason given")
-            ),
-            Notice::RefreshFailed(error) => {
-                format!("Could not refresh the session token, retrying: {error:#}")
+            )),
+            Notice::RefreshFailed(error) => SocketNotice::Status(format!(
+                "Could not refresh the session token, retrying: {error:#}"
+            )),
+            Notice::Reconnecting(reconnecting) => {
+                SocketNotice::Reconnecting(reconnecting.to_string())
             }
         };
         let _ = self.notices.send(notice);
+    }
+
+    fn on_reconnected(&mut self, _url: &str) -> Result<()> {
+        self.connection += 1;
+        let _ = self.notices.send(SocketNotice::Reconnected);
+        Ok(())
     }
 }
 
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
-    frame_rx: &mut mpsc::Receiver<Frame>,
-    notice_rx: &mut mpsc::UnboundedReceiver<String>,
+    frame_rx: &mut mpsc::Receiver<(u64, Frame)>,
+    notice_rx: &mut mpsc::UnboundedReceiver<SocketNotice>,
     failure: &OnceLock<StreamFailure>,
     tick_rate: std::time::Duration,
 ) -> Result<()> {
@@ -195,7 +223,7 @@ async fn run_loop(
         if !app.paused {
             loop {
                 match frame_rx.try_recv() {
-                    Ok(frame) => app.apply_frame(frame),
+                    Ok((connection, frame)) => app.apply_connection_frame(connection, frame),
                     Err(mpsc::error::TryRecvError::Disconnected) => {
                         // The socket task records a failure before it exits
                         // and drops the frame sender.
@@ -208,7 +236,11 @@ async fn run_loop(
             }
         }
         while let Ok(notice) = notice_rx.try_recv() {
-            app.set_status(&notice);
+            match notice {
+                SocketNotice::Status(message) => app.set_status(&message),
+                SocketNotice::Reconnecting(message) => app.set_reconnecting(&message),
+                SocketNotice::Reconnected => app.set_reconnected(),
+            }
         }
 
         // Poll for terminal events with timeout
@@ -371,8 +403,8 @@ mod tests {
 
     fn outputs() -> (
         SocketOutputs,
-        mpsc::Receiver<Frame>,
-        mpsc::UnboundedReceiver<String>,
+        mpsc::Receiver<(u64, Frame)>,
+        mpsc::UnboundedReceiver<SocketNotice>,
     ) {
         let (frames, frame_rx) = mpsc::channel(1);
         let (notices, notice_rx) = mpsc::unbounded_channel();
@@ -380,8 +412,16 @@ mod tests {
             frames,
             dropped_frames: Arc::new(AtomicU64::new(0)),
             notices,
+            connection: 0,
         };
         (out, frame_rx, notice_rx)
+    }
+
+    fn unsubscribed() -> ServerMessage {
+        ServerMessage::Frame(Frame::Unsubscribed {
+            protocol_version: 2,
+            subscription_id: "cli:test".to_string(),
+        })
     }
 
     #[test]
@@ -391,7 +431,10 @@ mod tests {
         out.on_notice(Notice::RefreshRefused(Some("token-invalid")));
 
         let notice = notices.try_recv().expect("the refused refresh is reported");
-        assert!(notice.contains("token-invalid"), "{notice}");
+        assert!(
+            matches!(&notice, SocketNotice::Status(message) if message.contains("token-invalid")),
+            "{notice:?}"
+        );
     }
 
     #[test]
@@ -401,23 +444,46 @@ mod tests {
         out.on_notice(Notice::RefreshFailed(&anyhow::anyhow!("mint returned 500")));
 
         let notice = notices.try_recv().expect("the failed refresh is reported");
-        assert!(notice.contains("Could not refresh"), "{notice}");
+        assert!(
+            matches!(&notice, SocketNotice::Status(message) if message.contains("Could not refresh")),
+            "{notice:?}"
+        );
     }
 
     #[test]
     fn frames_past_the_buffer_are_counted_as_dropped() {
         let (mut out, mut frames, _notices) = outputs();
-        let frame = || {
-            ServerMessage::Frame(Frame::Unsubscribed {
-                protocol_version: 2,
-                subscription_id: "cli:test".to_string(),
-            })
-        };
 
-        assert!(!out.on_message(frame()).unwrap());
-        assert!(!out.on_message(frame()).unwrap());
+        assert!(!out.on_message(unsubscribed()).unwrap());
+        assert!(!out.on_message(unsubscribed()).unwrap());
 
         assert!(frames.try_recv().is_ok());
         assert_eq!(out.dropped_frames.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn frames_after_a_reconnect_carry_the_new_connection() {
+        let (mut out, mut frames, mut notices) = outputs();
+
+        out.on_message(unsubscribed()).unwrap();
+        out.on_notice(Notice::Reconnecting(
+            crate::commands::stream::session::Reconnecting {
+                reason: "connection ended",
+                retry: false,
+                attempt: 1,
+                max_attempts: None,
+                delay: std::time::Duration::from_millis(500),
+            },
+        ));
+        out.on_reconnected("ws://localhost/").unwrap();
+        assert_eq!(frames.try_recv().unwrap().0, 0);
+        out.on_message(unsubscribed()).unwrap();
+
+        assert_eq!(frames.try_recv().unwrap().0, 1);
+        assert!(matches!(
+            notices.try_recv().unwrap(),
+            SocketNotice::Reconnecting(message) if message.starts_with("Connection lost (connection ended)")
+        ));
+        assert_eq!(notices.try_recv().unwrap(), SocketNotice::Reconnected);
     }
 }

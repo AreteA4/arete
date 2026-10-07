@@ -360,6 +360,7 @@ enum Commands {
     Idl(commands::idl::IdlArgs),
 
     /// Stream live entity data from a deployed stack via WebSocket
+    #[command(after_long_help = commands::stream::RECONNECT_HELP)]
     Stream(commands::stream::StreamArgs),
 }
 
