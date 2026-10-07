@@ -9,8 +9,8 @@ use crate::websocket::auth::{
 };
 use crate::websocket::client_manager::{ClientManager, RateLimitConfig};
 use crate::websocket::frame::{
-    apply_wire_format, Frame, Mode, SortConfig, SortOrder, SubscribedFrame, UnsubscribedFrame,
-    WireEntity, WireFormat,
+    apply_wire_format, Frame, Mode, SortConfig, SortOrder, SourceFields, SubscribedFrame,
+    UnsubscribedFrame, WireEntity, WireFormat,
 };
 use crate::websocket::subscription::{
     ClientMessage, RefreshAuthRequest, RefreshAuthResponse, SocketIssueMessage, Subscription,
@@ -2512,12 +2512,10 @@ fn live_frame_matches(query: &SubscriptionQuery, key: &str, payload: &[u8]) -> b
     if query.partition.is_none() && query.filters.is_empty() {
         return true;
     }
-    let Ok(frame) = serde_json::from_slice::<Value>(payload) else {
+    let Some(data) = source_frame_data(payload) else {
         return false;
     };
-    let Some(data) = frame.get("data") else {
-        return false;
-    };
+    let data = &data;
     if let Some(partition) = &query.partition {
         if value_at_dot_path(data, "_partition").as_deref()
             != Some(&Value::String(partition.clone()))
@@ -2539,16 +2537,7 @@ async fn send_scoped_source_payload_async(
     view_id: &str,
     payload: Arc<Bytes>,
 ) -> Result<()> {
-    let mut value: Value = serde_json::from_slice(&payload)?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("source frame is not an object"))?;
-    object.insert("protocolVersion".to_string(), Value::from(PROTOCOL_VERSION));
-    object.insert(
-        "subscriptionId".to_string(),
-        Value::String(subscription_id.to_string()),
-    );
-    let json = serde_json::to_vec(&value)?;
+    let json = SourceFields::scoped(&payload, subscription_id)?;
     let compressed = maybe_compress(&json);
     let bytes = compressed.as_bytes().len();
     context
@@ -2574,25 +2563,30 @@ struct SourceFrameMetadata {
     offset: Option<u64>,
 }
 
+/// A source frame's `op`, `seq` and `offset`, read without building its
+/// `data`.
 fn source_frame_metadata(payload: &[u8]) -> SourceFrameMetadata {
-    serde_json::from_slice::<Value>(payload)
-        .ok()
-        .map(|value| SourceFrameMetadata {
-            op: value
-                .get("op")
+    SourceFields::parse(payload)
+        .map(|fields| SourceFrameMetadata {
+            op: fields
+                .value("op")
+                .as_ref()
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
-            seq: value.get("seq").and_then(Value::as_str).map(str::to_string),
-            offset: value.get("offset").and_then(Value::as_u64),
+            seq: fields
+                .value("seq")
+                .as_ref()
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            offset: fields.value("offset").as_ref().and_then(Value::as_u64),
         })
         .unwrap_or_default()
 }
 
 /// The `data` of a source frame, as a client receives it.
 fn source_frame_data(payload: &[u8]) -> Option<Value> {
-    let mut frame: Value = serde_json::from_slice(payload).ok()?;
-    frame.get_mut("data").map(Value::take)
+    SourceFields::parse(payload)?.value("data")
 }
 
 /// What a state subscriber last received whole, which a catch-up is
@@ -2704,16 +2698,10 @@ fn send_scoped_source_payload(
     view_id: &str,
     payload: Arc<Bytes>,
 ) -> Result<()> {
-    let mut value: Value = serde_json::from_slice(&payload)?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("source frame is not an object"))?;
-    object.insert("protocolVersion".to_string(), Value::from(PROTOCOL_VERSION));
-    object.insert(
-        "subscriptionId".to_string(),
-        Value::String(subscription_id.to_string()),
-    );
-    let encoded = Arc::new(Bytes::from(serde_json::to_vec(&value)?));
+    let encoded = Arc::new(Bytes::from(SourceFields::scoped(
+        &payload,
+        subscription_id,
+    )?));
     let bytes = encoded.len();
     context
         .client_manager

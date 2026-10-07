@@ -178,7 +178,7 @@ impl<'de> Deserialize<'de> for SharedEntity {
 /// than in insertion order (its `preserve_order` feature). Rebuilding an
 /// entity inserts `_version` last, which lands it in key order in the first
 /// case and at the end in the second.
-fn maps_sort_keys() -> bool {
+pub(crate) fn maps_sort_keys() -> bool {
     static SORTED: OnceLock<bool> = OnceLock::new();
     *SORTED.get_or_init(|| {
         let mut map = serde_json::Map::new();
