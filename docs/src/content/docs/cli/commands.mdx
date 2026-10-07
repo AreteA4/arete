@@ -1239,16 +1239,18 @@ every character other than a letter, digit, or `_` as a word boundary:
 | `my.stack`       | `MY_STACK_STACK`, `MyStackStack`             | `MyStackStack`, crate `my-stack-stack`             | `MY_STACK_STACK`       |
 | `9lives`         | `A9LIVES_STACK`, `A9livesStack`              | `A9livesStack`, crate `a9lives-stack`              | `VALUE_9LIVES_STACK`   |
 
-Type names are always UpperCamelCase. Only a stack name that is already
-UpperCamelCase, such as `OreStream`, keeps generating exactly the type names it
-always has. Any other name now generates UpperCamelCase type names:
-`token_balances`, which used to generate `token_balancesStack`, generates the
-Rust types `TokenBalancesStack`, `TokenBalancesStackViews` and
-`TokenBalancesStackPrograms`, and the TypeScript types `TokenBalancesStack`,
-`TokenBalancesCoreStack`, `TokenBalancesEntity` and `TokenBalancesPrograms`.
-After regenerating such an SDK, update code that names the old types. Constants
-(`TOKEN_BALANCES_STACK`), file names, crate names and Python names do not
-change.
+Type names are always UpperCamelCase. Most stack names already generated
+UpperCamelCase type names and keep generating exactly the same ones: names that
+are UpperCamelCase (`OreStream`) and names with `-`, `.` or other separators
+(`token-balances`, `my.stack`). Only a name that was kept as written but is not
+UpperCamelCase, such as snake_case `token_balances` or all-lowercase
+`orestream`, changes: `token_balances`, which used to generate
+`token_balancesStack`, generates the Rust types `TokenBalancesStack`,
+`TokenBalancesStackViews` and `TokenBalancesStackPrograms`, and the TypeScript
+types `TokenBalancesStack`, `TokenBalancesCoreStack`, `TokenBalancesEntity` and
+`TokenBalancesPrograms`. After regenerating such an SDK, update code that names
+the old types. Constants (`TOKEN_BALANCES_STACK`), file names, crate names and
+Python names do not change.
 
 If two names generate the same identifier, for example a stack `my-vault` and
 an entity `MyVaultStack`, or programs `token-2022` and `token_2022`, generation
