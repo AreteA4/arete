@@ -1,6 +1,7 @@
 mod client;
 mod filter;
 mod output;
+mod session;
 mod snapshot;
 mod store;
 mod token;

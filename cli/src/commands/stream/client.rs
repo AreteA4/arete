@@ -1,16 +1,11 @@
-use anyhow::{Context, Result};
-use arete_sdk::{
-    deep_merge_with_append, parse_server_message, ClientMessage, Frame, ServerMessage,
-    SnapshotEntity,
-};
-use futures_util::{SinkExt, StreamExt};
+use anyhow::Result;
+use arete_sdk::{deep_merge_with_append, Frame, ServerMessage, SnapshotEntity};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::filter::{self, Filter};
 use super::output::{self, OutputMode};
+use super::session::{Notice, SessionHandler, StreamEnd, StreamSession};
 use super::snapshot::{SnapshotPlayer, SnapshotRecorder};
 use super::store::EntityStore;
 use super::token;
@@ -103,16 +98,8 @@ pub async fn stream(
     // Validate args and build state before connecting (fails fast on bad --where regex etc.)
     let mut state = build_state(args, view, &url)?;
 
-    let (ws, _) = connect_async(&url).await.map_err(|err| {
-        let redacted = token::redact_hs_token_for_display(&url);
-        let hint = if token::is_hosted_arete_cloud_url(&url) {
-            "\nHint: hosted stacks need a valid `hs_token` (the CLI adds one after `a4 auth login`). \
-             On some systems, TLS uses the OS trust store — if this persists, report the error above."
-        } else {
-            ""
-        };
-        anyhow::anyhow!("Failed to connect to {}: {}{}", redacted, err, hint)
-    })?;
+    let mut session = StreamSession::new(url, refresh, super::build_subscription(view, args))?;
+    let socket = session.connect().await?;
 
     eprintln!("Connected.");
 
@@ -122,147 +109,42 @@ pub async fn stream(
             &mut state.out,
             "connected",
             view,
-            &serde_json::json!({"url": token::redact_hs_token_for_display(&url)}),
+            &serde_json::json!({"url": session.display_url()}),
             0,
             0,
         )?;
     }
 
-    let (mut ws_tx, mut ws_rx) = ws.split();
-
-    // Build and send subscription
-    let sub = super::build_subscription(view, args);
-    let msg = serde_json::to_string(&ClientMessage::Subscribe(sub))
-        .context("Failed to serialize subscribe message")?;
-    ws_tx
-        .send(Message::Text(msg))
-        .await
-        .context("Failed to send subscribe message")?;
-
-    // Ping interval
-    let ping_period = std::time::Duration::from_secs(30);
-    let mut ping_interval =
-        tokio::time::interval_at(tokio::time::Instant::now() + ping_period, ping_period);
-
-    // Duration timer for --save --duration (as a select! arm for precise timing)
-    let duration_future = async {
-        if let Some(secs) = args.duration {
-            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
-        } else {
-            std::future::pending::<()>().await;
+    // Ctrl+C, or --duration (as a select! arm for precise timing)
+    let duration = args.duration;
+    let stop = async move {
+        let duration_elapsed = async {
+            match duration {
+                Some(secs) => tokio::time::sleep(Duration::from_secs(secs)).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            () = duration_elapsed => eprintln!("Duration reached, stopping..."),
+            _ = tokio::signal::ctrl_c() => eprintln!("\nDisconnecting..."),
         }
     };
-    tokio::pin!(duration_future);
+    tokio::pin!(stop);
 
-    // Handle Ctrl+C
-    let shutdown = tokio::signal::ctrl_c();
-    tokio::pin!(shutdown);
-
-    let mut snapshot_complete = false;
-    let mut refresher = token::SessionRefresher::start(refresh);
-    // Set when the server closes the socket on a policy (an expired or
-    // refused session): the stream failed rather than ended.
-    let mut policy_close: Option<String> = None;
-
-    loop {
-        tokio::select! {
-            msg = ws_rx.next() => {
-                match msg {
-                    Some(Ok(Message::Binary(bytes))) => {
-                        match parse_server_message(&bytes) {
-                            Ok(message) => {
-                                if handle_server_message(
-                                    message,
-                                    view,
-                                    &mut state,
-                                    &mut snapshot_complete,
-                                    args.no_snapshot,
-                                )? {
-                                    break;
-                                }
-                            }
-                            Err(e) => eprintln!("Warning: failed to parse binary frame: {}", e),
-                        }
-                    }
-                    Some(Ok(Message::Text(text))) => {
-                        if let Some(response) = token::parse_refresh_response(&text) {
-                            if !response.success {
-                                eprintln!(
-                                    "Warning: the server refused the refreshed session token ({}); \
-                                     the stream ends when the current token expires.",
-                                    response.error.as_deref().unwrap_or("no reason given")
-                                );
-                            }
-                            continue;
-                        }
-                        match parse_server_message(text.as_bytes()) {
-                            Ok(message) => {
-                                if handle_server_message(
-                                    message,
-                                    view,
-                                    &mut state,
-                                    &mut snapshot_complete,
-                                    args.no_snapshot,
-                                )? {
-                                    break;
-                                }
-                            }
-                            Err(e) => eprintln!("Warning: failed to parse text frame: {}", e),
-                        }
-                    }
-                    Some(Ok(Message::Ping(payload))) => {
-                        let _ = ws_tx.send(Message::Pong(payload)).await;
-                    }
-                    Some(Ok(Message::Close(frame))) => {
-                        match frame {
-                            Some(frame) if frame.code == CloseCode::Policy => {
-                                policy_close = Some(frame.reason.into_owned());
-                            }
-                            Some(frame) if !frame.reason.is_empty() => {
-                                eprintln!("Connection closed by server: {}", frame.reason);
-                            }
-                            _ => eprintln!("Connection closed by server."),
-                        }
-                        break;
-                    }
-                    Some(Err(e)) => {
-                        eprintln!("WebSocket error: {}", e);
-                        break;
-                    }
-                    None => {
-                        eprintln!("Connection closed.");
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            _ = ping_interval.tick() => {
-                if let Ok(msg) = serde_json::to_string(&ClientMessage::Ping) {
-                    let _ = ws_tx.send(Message::Text(msg)).await;
-                }
-            }
-            event = refresher.next() => match event {
-                token::RefreshEvent::Token(token) => {
-                    if let Ok(msg) = serde_json::to_string(&ClientMessage::RefreshAuth { token }) {
-                        let _ = ws_tx.send(Message::Text(msg)).await;
-                    }
-                }
-                token::RefreshEvent::Failed(error) => {
-                    eprintln!("Warning: could not refresh the session token, retrying: {error:#}");
-                }
-            },
-            _ = &mut duration_future => {
-                eprintln!("Duration reached, stopping...");
-                let _ = ws_tx.close().await;
-                break;
-            }
-            _ = &mut shutdown => {
-                eprintln!("\nDisconnecting...");
-                let _ = ws_tx.close().await;
-                break;
-            }
+    let mut handler = Output {
+        state: &mut state,
+        view,
+        no_snapshot: args.no_snapshot,
+        snapshot_complete: false,
+    };
+    let failure = match session.run(socket, &mut handler, stop).await? {
+        StreamEnd::Stopped | StreamEnd::Finished => None,
+        StreamEnd::Lost(loss) => {
+            eprintln!("{loss}");
+            None
         }
-    }
+        StreamEnd::Failed(failure) => Some(failure),
+    };
 
     // Save snapshot if --save was specified
     if let (Some(save_path), Some(recorder)) = (&args.save, &state.recorder) {
@@ -288,10 +170,49 @@ pub async fn stream(
     // Output history/at/diff after stream ends (for non-interactive agent use)
     output_history_if_requested(&state, args)?;
 
-    if let Some(reason) = policy_close {
-        anyhow::bail!("the server closed the stream: {reason}");
+    if let Some(failure) = failure {
+        anyhow::bail!("{failure}");
     }
     Ok(())
+}
+
+/// Where a live stream's messages go: the merged/raw/NO_DNA output on stdout,
+/// warnings on stderr.
+struct Output<'a> {
+    state: &'a mut StreamState,
+    view: &'a str,
+    no_snapshot: bool,
+    snapshot_complete: bool,
+}
+
+impl SessionHandler for Output<'_> {
+    fn on_message(&mut self, message: ServerMessage) -> Result<bool> {
+        handle_server_message(
+            message,
+            self.view,
+            self.state,
+            &mut self.snapshot_complete,
+            self.no_snapshot,
+        )
+    }
+
+    fn on_notice(&mut self, notice: Notice<'_>) {
+        match notice {
+            Notice::Unparsed { binary, error } => eprintln!(
+                "Warning: failed to parse {} frame: {}",
+                if binary { "binary" } else { "text" },
+                error
+            ),
+            Notice::RefreshRefused(reason) => eprintln!(
+                "Warning: the server refused the refreshed session token ({}); \
+                 the stream ends when the current token expires.",
+                reason.unwrap_or("no reason given")
+            ),
+            Notice::RefreshFailed(error) => {
+                eprintln!("Warning: could not refresh the session token, retrying: {error:#}")
+            }
+        }
+    }
 }
 
 /// Replay frames from a saved snapshot file through the same processing pipeline.
@@ -823,9 +744,12 @@ mod tests {
     mod over_a_socket {
         use super::*;
         use crate::api_client::test_support::MockServer;
+        use futures_util::{SinkExt, StreamExt};
         use serde_json::{json, Value};
         use tokio::net::TcpListener;
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
         use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        use tokio_tungstenite::tungstenite::Message;
 
         fn stream_args(view: &str) -> StreamArgs {
             #[derive(clap::Parser)]
