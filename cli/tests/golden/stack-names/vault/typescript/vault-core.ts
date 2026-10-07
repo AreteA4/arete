@@ -210,10 +210,10 @@ export const VAULT_STACK_CORE = {
 } as const;
 
 /** Type alias for the core stack */
-export type vaultCoreStack = typeof VAULT_STACK_CORE;
+export type VaultCoreStack = typeof VAULT_STACK_CORE;
 
 /** Entity types in this stack */
-export type vaultEntity = Vault;
+export type VaultEntity = Vault;
 
 /** Default export for convenience */
 export default VAULT_STACK_CORE;

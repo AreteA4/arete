@@ -34,7 +34,7 @@
 //!    (`TOKEN_BALANCES` + `_STACK`), which is never reserved as a whole, so
 //!    they leave reserved words alone.
 //!
-//! # Rust stack type names
+//! # Stack type names
 //!
 //! The Rust types generated for a stack (`<Stack>Stack`, `<Stack>StackViews`,
 //! `<Stack>StackPrograms`, and a program-only crate's `<Stack>Programs`) are
@@ -44,6 +44,13 @@
 //! the stack name, so `token_balances`, `token-balances` and `Token_Balances`
 //! all become `TokenBalances`, while names that are already UpperCamelCase,
 //! such as `OreStream`, are kept byte for byte.
+//!
+//! The TypeScript type aliases named after a stack (`<Stack>Stack`,
+//! `<Stack>CoreStack`, `<Stack>Entity`, `<Stack>Programs`) follow the same
+//! rule through [`typescript::stack_type_stem`], matching the TypeScript
+//! names that were already PascalCase (`<Stack>ProgramError`,
+//! `<Stack>SessionDefinition`, the program-collection core's
+//! `<Stack>Programs`).
 //!
 //! # Python
 //!
@@ -305,6 +312,15 @@ pub mod typescript {
             identifier.push('_');
         }
         identifier
+    }
+
+    /// The PascalCase stem of the TypeScript type aliases named after a
+    /// stack (`TokenBalances` in `TokenBalancesStack`,
+    /// `TokenBalancesCoreStack`, `TokenBalancesEntity` and
+    /// `TokenBalancesPrograms`); see "Stack type names" in the module
+    /// documentation.
+    pub fn stack_type_stem(stack_name: &str) -> String {
+        identifier_stem(stack_name, IdentifierCase::Pascal)
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -944,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_stack_type_stems_are_upper_camel_case() {
+    fn stack_type_stems_are_upper_camel_case() {
         let cases = [
             // snake_case
             ("token_balances", "TokenBalances"),
@@ -978,6 +994,7 @@ mod tests {
         ];
         for (raw, expected) in cases {
             assert_eq!(rust::stack_type_stem(raw), expected, "{raw}");
+            assert_eq!(typescript::stack_type_stem(raw), expected, "{raw}");
             for suffix in ["Stack", "StackViews", "StackPrograms", "Programs"] {
                 let name = format!("{expected}{suffix}");
                 assert!(rust::is_identifier(&name), "{raw} -> {name}");
@@ -1043,6 +1060,7 @@ mod tests {
         ];
         for name in names {
             assert_eq!(rust::stack_type_stem(name), name);
+            assert_eq!(typescript::stack_type_stem(name), name);
             assert!(is_upper_camel_case(&format!("{name}Stack")), "{name}");
         }
     }

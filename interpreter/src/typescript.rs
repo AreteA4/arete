@@ -4993,7 +4993,7 @@ fn generate_stack_definition_multi(
         config.export_const_name
     );
     let core_export_name = format!("{}_CORE", export_name);
-    let stack_type_prefix = ts_ident::identifier_stem(stack_name, IdentifierCase::Preserve);
+    let stack_type_prefix = ts_ident::stack_type_stem(stack_name);
 
     let view_helpers = generate_view_helpers_static();
 
