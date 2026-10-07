@@ -9,8 +9,8 @@ use crate::websocket::auth::{
 };
 use crate::websocket::client_manager::{ClientManager, RateLimitConfig};
 use crate::websocket::frame::{
-    apply_wire_format, Frame, Mode, SnapshotEntity, SnapshotFrame, SortConfig, SortOrder,
-    SubscribedFrame, UnsubscribedFrame,
+    apply_wire_format, Frame, Mode, SortConfig, SortOrder, SourceFields, SubscribedFrame,
+    UnsubscribedFrame, WireEntity, WireFormat,
 };
 use crate::websocket::subscription::{
     ClientMessage, RefreshAuthRequest, RefreshAuthResponse, SocketIssueMessage, Subscription,
@@ -1281,64 +1281,115 @@ impl SnapshotPurpose {
     }
 }
 
-fn create_snapshot_batches(
-    entities: &[SnapshotEntity],
-    metadata: SnapshotMetadata<'_>,
+/// One snapshot frame, serialized straight from the cached entities it
+/// carries: the same JSON as a [`SnapshotFrame`] of
+/// [`SnapshotEntity`](crate::websocket::frame::SnapshotEntity) rows with the
+/// view's wire format applied, without building those rows.
+///
+/// [`SnapshotFrame`]: crate::websocket::frame::SnapshotFrame
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SnapshotBatch<'a> {
+    protocol_version: u8,
+    subscription_id: &'a str,
+    snapshot_id: &'a str,
+    authoritative: bool,
+    mode: Mode,
+    #[serde(rename = "entity")]
+    export: &'a str,
+    op: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key: Option<&'a str>,
+    data: SnapshotRows<'a>,
+    complete: bool,
+}
+
+struct SnapshotRows<'a> {
+    rows: &'a [(String, SharedEntity)],
+    wire_format: &'a WireFormat,
+}
+
+impl Serialize for SnapshotRows<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq as _;
+        let mut rows = serializer.serialize_seq(Some(self.rows.len()))?;
+        for (key, entity) in self.rows {
+            rows.serialize_element(&SnapshotRow {
+                key,
+                data: WireEntity {
+                    entity,
+                    wire_format: self.wire_format,
+                },
+            })?;
+        }
+        rows.end()
+    }
+}
+
+#[derive(Serialize)]
+struct SnapshotRow<'a> {
+    key: &'a str,
+    data: WireEntity<'a>,
+}
+
+/// Split `rows` into the snapshot's frames: the first batch for a fast first
+/// render, then larger ones. An empty snapshot is one empty, complete frame.
+fn create_snapshot_batches<'a>(
+    rows: &'a [(String, SharedEntity)],
+    wire_format: &'a WireFormat,
+    metadata: SnapshotMetadata<'a>,
     batch_config: &SnapshotBatchConfig,
-) -> Vec<SnapshotFrame> {
-    if entities.is_empty() {
-        return vec![SnapshotFrame {
-            protocol_version: PROTOCOL_VERSION,
-            subscription_id: metadata.subscription_id.to_string(),
-            snapshot_id: metadata.snapshot_id.to_string(),
-            authoritative: metadata.authoritative,
-            mode: metadata.mode,
-            export: metadata.view_id.to_string(),
-            op: "snapshot",
-            key: metadata.key.map(str::to_string),
-            data: vec![],
-            complete: true,
-        }];
+) -> Vec<SnapshotBatch<'a>> {
+    let batch = |data: &'a [(String, SharedEntity)], complete: bool| SnapshotBatch {
+        protocol_version: PROTOCOL_VERSION,
+        subscription_id: metadata.subscription_id,
+        snapshot_id: metadata.snapshot_id,
+        authoritative: metadata.authoritative,
+        mode: metadata.mode,
+        export: metadata.view_id,
+        op: "snapshot",
+        key: metadata.key,
+        data: SnapshotRows {
+            rows: data,
+            wire_format,
+        },
+        complete,
+    };
+    if rows.is_empty() {
+        return vec![batch(&[], true)];
     }
 
     let mut batches = Vec::new();
     let mut offset = 0;
-    while offset < entities.len() {
+    while offset < rows.len() {
         let configured_size = if offset == 0 {
             batch_config.initial_batch_size
         } else {
             batch_config.subsequent_batch_size
         };
-        let end = (offset + configured_size.max(1)).min(entities.len());
-        batches.push(SnapshotFrame {
-            protocol_version: PROTOCOL_VERSION,
-            subscription_id: metadata.subscription_id.to_string(),
-            snapshot_id: metadata.snapshot_id.to_string(),
-            authoritative: metadata.authoritative,
-            mode: metadata.mode,
-            export: metadata.view_id.to_string(),
-            op: "snapshot",
-            key: metadata.key.map(str::to_string),
-            data: entities[offset..end].to_vec(),
-            complete: end == entities.len(),
-        });
+        let end = (offset + configured_size.max(1)).min(rows.len());
+        batches.push(batch(&rows[offset..end], end == rows.len()));
         offset = end;
     }
     batches
 }
 
+/// Send `rows` as one snapshot, serializing each frame from the cached
+/// entities as it goes: no row is copied.
 async fn send_snapshot_batches(
     context: &SubscriptionContext,
     subscription: &Subscription,
-    entities: &[SnapshotEntity],
-    mode: Mode,
+    rows: &[(String, SharedEntity)],
+    view_spec: &ViewSpec,
     purpose: SnapshotPurpose,
     batch_config: &SnapshotBatchConfig,
 ) -> Result<()> {
     let snapshot_id = Uuid::new_v4().to_string();
     let authoritative = purpose.authoritative(subscription);
+    let mode = view_spec.mode;
     let frames = create_snapshot_batches(
-        entities,
+        rows,
+        &view_spec.wire_format,
         SnapshotMetadata {
             subscription_id: &subscription.subscription_id,
             snapshot_id: &snapshot_id,
@@ -1351,7 +1402,7 @@ async fn send_snapshot_batches(
     );
 
     for frame in frames {
-        let rows = frame.data.len() as u32;
+        let rows = frame.data.rows.len() as u32;
         let json = serde_json::to_vec(&frame)?;
         let payload = maybe_compress(&json);
         let bytes = payload.as_bytes().len() as u64;
@@ -1548,11 +1599,12 @@ async fn attach_state_subscription(
     // without a copy, so its first change must be a full `upsert`: a patch
     // would have nothing to merge into.
     let delivered = subscription.snapshot.enabled && !snapshot_entities.is_empty();
-    let snapshot_rows = to_wire_snapshot_entities(snapshot_entities, &view_spec);
     // The entity as the client last received it whole, which a catch-up is
     // measured against.
     let synced = if delivered {
-        snapshot_rows.first().map(|row| row.data.clone())
+        snapshot_entities
+            .first()
+            .map(|(_, entity)| Synced::Entity(entity.clone()))
     } else {
         None
     };
@@ -1560,8 +1612,8 @@ async fn attach_state_subscription(
         send_snapshot_batches(
             context,
             &subscription,
-            &snapshot_rows,
-            view_spec.mode,
+            &snapshot_entities,
+            &view_spec,
             SnapshotPurpose::Initial,
             &context.entity_cache.snapshot_config(),
         )
@@ -1579,7 +1631,7 @@ async fn attach_state_subscription(
             // Whether the client holds this key, not whether it exists.
             let mut member = delivered;
             // The entity as the client last received it whole (its snapshot
-            // row, an upsert or the last catch-up), in wire format. A catch-up
+            // row, an upsert or the last catch-up; see `Synced`). A catch-up
             // sends what changed since, and every field a patch forwarded in
             // between set (`touched`, see `mark_fields`): the entity may have
             // set it back, and a client may have dropped the patch.
@@ -1701,41 +1753,57 @@ async fn attach_state_subscription(
                             // number themselves differently, so the latest
                             // patch's seq can sort below one already delivered.
                             (true, Some((entity_key, data))) => {
-                                let mut current = data.into_value();
-                                apply_wire_format(&mut current, &view_spec_task.wire_format);
-                                let body = match (&synced, replace) {
-                                    (Some(base), false) => changed_fields(base, &current, &touched),
-                                    _ => Some(current.clone()),
-                                };
-                                synced = Some(current);
-                                touched = Value::Null;
-                                match body {
-                                    Some(body) => send_membership_frame(
+                                let wire_format = &view_spec_task.wire_format;
+                                let base = synced
+                                    .as_ref()
+                                    .filter(|_| !replace)
+                                    .and_then(|synced| synced.wire(wire_format));
+                                let result = match base {
+                                    Some(base) => match changed_fields(
+                                        &base,
+                                        &wire_value(&data, wire_format),
+                                        &touched,
+                                    ) {
+                                        Some(body) => send_membership_frame(
+                                            &task_context,
+                                            &subscription_id,
+                                            &view_spec_task,
+                                            "patch",
+                                            &entity_key,
+                                            body,
+                                            None,
+                                        ),
+                                        None => Ok(()),
+                                    },
+                                    // Nothing to measure against: the whole
+                                    // entity, straight from the cache.
+                                    None => send_entity_frame(
                                         &task_context,
                                         &subscription_id,
                                         &view_spec_task,
                                         if replace { "upsert" } else { "patch" },
                                         &entity_key,
-                                        body,
+                                        &data,
                                         None,
                                     ),
-                                    None => Ok(()),
-                                }
+                                };
+                                synced = Some(Synced::Entity(data));
+                                touched = Value::Null;
+                                result
                             }
                             (false, Some((entity_key, data))) => {
-                                let mut current = data.into_value();
-                                apply_wire_format(&mut current, &view_spec_task.wire_format);
-                                synced = Some(current.clone());
-                                touched = Value::Null;
-                                send_membership_frame(
+                                let result = send_entity_frame(
                                     &task_context,
                                     &subscription_id,
                                     &view_spec_task,
                                     "upsert",
                                     &entity_key,
-                                    current,
-                                    metadata.seq,
-                                )
+                                    &data,
+                                    metadata.seq.as_deref(),
+                                );
+                                synced = Some(Synced::Entity(data));
+                                touched = Value::Null;
+                                result
                             }
                             (true, None) => {
                                 synced = None;
@@ -1808,8 +1876,8 @@ async fn attach_collection_subscription(
         send_snapshot_batches(
             context,
             &subscription,
-            &to_wire_snapshot_entities(snapshot_entities, &view_spec),
-            view_spec.mode,
+            &snapshot_entities,
+            &view_spec,
             SnapshotPurpose::Initial,
             &context.entity_cache.snapshot_config(),
         )
@@ -2047,8 +2115,8 @@ async fn recover_collection_subscription(
     send_snapshot_batches(
         context,
         subscription,
-        &to_wire_snapshot_entities(membership.clone(), view_spec),
-        view_spec.mode,
+        &membership,
+        view_spec,
         SnapshotPurpose::Recovery,
         &context.entity_cache.snapshot_config(),
     )
@@ -2444,12 +2512,10 @@ fn live_frame_matches(query: &SubscriptionQuery, key: &str, payload: &[u8]) -> b
     if query.partition.is_none() && query.filters.is_empty() {
         return true;
     }
-    let Ok(frame) = serde_json::from_slice::<Value>(payload) else {
+    let Some(data) = source_frame_data(payload) else {
         return false;
     };
-    let Some(data) = frame.get("data") else {
-        return false;
-    };
+    let data = &data;
     if let Some(partition) = &query.partition {
         if value_at_dot_path(data, "_partition").as_deref()
             != Some(&Value::String(partition.clone()))
@@ -2471,16 +2537,7 @@ async fn send_scoped_source_payload_async(
     view_id: &str,
     payload: Arc<Bytes>,
 ) -> Result<()> {
-    let mut value: Value = serde_json::from_slice(&payload)?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("source frame is not an object"))?;
-    object.insert("protocolVersion".to_string(), Value::from(PROTOCOL_VERSION));
-    object.insert(
-        "subscriptionId".to_string(),
-        Value::String(subscription_id.to_string()),
-    );
-    let json = serde_json::to_vec(&value)?;
+    let json = SourceFields::scoped(&payload, subscription_id)?;
     let compressed = maybe_compress(&json);
     let bytes = compressed.as_bytes().len();
     context
@@ -2506,36 +2563,67 @@ struct SourceFrameMetadata {
     offset: Option<u64>,
 }
 
+/// A source frame's `op`, `seq` and `offset`, read without building its
+/// `data`.
 fn source_frame_metadata(payload: &[u8]) -> SourceFrameMetadata {
-    serde_json::from_slice::<Value>(payload)
-        .ok()
-        .map(|value| SourceFrameMetadata {
-            op: value
-                .get("op")
+    SourceFields::parse(payload)
+        .map(|fields| SourceFrameMetadata {
+            op: fields
+                .value("op")
+                .as_ref()
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
-            seq: value.get("seq").and_then(Value::as_str).map(str::to_string),
-            offset: value.get("offset").and_then(Value::as_u64),
+            seq: fields
+                .value("seq")
+                .as_ref()
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            offset: fields.value("offset").as_ref().and_then(Value::as_u64),
         })
         .unwrap_or_default()
 }
 
 /// The `data` of a source frame, as a client receives it.
 fn source_frame_data(payload: &[u8]) -> Option<Value> {
-    let mut frame: Value = serde_json::from_slice(payload).ok()?;
-    frame.get_mut("data").map(Value::take)
+    SourceFields::parse(payload)?.value("data")
+}
+
+/// What a state subscriber last received whole, which a catch-up is
+/// measured against. Both kinds are shared, with the entity cache or the bus,
+/// so a subscriber keeps no copy of its own. A subscriber does keep the
+/// version it was sent alive while the cache moves on; subscribers sent the
+/// same version share it.
+enum Synced {
+    /// The cached entity, as sent in a snapshot row, an upsert or a catch-up.
+    Entity(SharedEntity),
+    /// A forwarded `upsert` source frame, whose `data` the client holds.
+    Frame(Arc<Bytes>),
+}
+
+impl Synced {
+    /// What the client holds, as it received it: in wire format.
+    fn wire(&self, wire_format: &WireFormat) -> Option<Value> {
+        match self {
+            Synced::Entity(entity) => Some(wire_value(entity, wire_format)),
+            Synced::Frame(frame) => source_frame_data(frame),
+        }
+    }
 }
 
 /// Tracks what a client holds after a frame forwarded to it as published. An
 /// upsert hands it the entity whole, which a catch-up is then measured
 /// against; a patch sets fields (see [`mark_fields`]).
-fn record_forwarded(payload: &[u8], op: &str, synced: &mut Option<Value>, touched: &mut Value) {
-    let data = source_frame_data(payload);
+fn record_forwarded(
+    payload: &Arc<Bytes>,
+    op: &str,
+    synced: &mut Option<Synced>,
+    touched: &mut Value,
+) {
     if op == "upsert" {
-        *synced = data;
+        *synced = Some(Synced::Frame(payload.clone()));
         *touched = Value::Null;
-    } else if let Some(data) = data {
+    } else if let Some(data) = source_frame_data(payload) {
         mark_fields(touched, &data);
     }
 }
@@ -2610,16 +2698,10 @@ fn send_scoped_source_payload(
     view_id: &str,
     payload: Arc<Bytes>,
 ) -> Result<()> {
-    let mut value: Value = serde_json::from_slice(&payload)?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("source frame is not an object"))?;
-    object.insert("protocolVersion".to_string(), Value::from(PROTOCOL_VERSION));
-    object.insert(
-        "subscriptionId".to_string(),
-        Value::String(subscription_id.to_string()),
-    );
-    let encoded = Arc::new(Bytes::from(serde_json::to_vec(&value)?));
+    let encoded = Arc::new(Bytes::from(SourceFields::scoped(
+        &payload,
+        subscription_id,
+    )?));
     let bytes = encoded.len();
     context
         .client_manager
@@ -2655,7 +2737,58 @@ fn send_membership_frame(
         data,
         seq,
     );
-    let encoded = Arc::new(Bytes::from(serde_json::to_vec(&frame)?));
+    send_membership_json(context, view_spec, serde_json::to_vec(&frame)?)
+}
+
+/// A scoped frame whose data is a cached entity, serialized straight from
+/// it: the same JSON as [`Frame::scoped`] with a formatted copy of the entity.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScopedEntityFrame<'a> {
+    protocol_version: u8,
+    subscription_id: &'a str,
+    mode: Mode,
+    #[serde(rename = "entity")]
+    export: &'a str,
+    op: &'a str,
+    key: &'a str,
+    data: WireEntity<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seq: Option<&'a str>,
+}
+
+/// [`send_membership_frame`] for a cached entity, without copying it.
+fn send_entity_frame(
+    context: &SubscriptionContext,
+    subscription_id: &str,
+    view_spec: &ViewSpec,
+    op: &str,
+    key: &str,
+    entity: &SharedEntity,
+    seq: Option<&str>,
+) -> Result<()> {
+    let frame = ScopedEntityFrame {
+        protocol_version: PROTOCOL_VERSION,
+        subscription_id,
+        mode: view_spec.mode,
+        export: &view_spec.id,
+        op,
+        key,
+        data: WireEntity {
+            entity,
+            wire_format: &view_spec.wire_format,
+        },
+        seq,
+    };
+    send_membership_json(context, view_spec, serde_json::to_vec(&frame)?)
+}
+
+fn send_membership_json(
+    context: &SubscriptionContext,
+    view_spec: &ViewSpec,
+    json: Vec<u8>,
+) -> Result<()> {
+    let encoded = Arc::new(Bytes::from(json));
     let bytes = encoded.len();
     context
         .client_manager
@@ -2731,18 +2864,17 @@ fn emit_collection_delta(
                 envelope.payload.clone(),
             )?,
             MemberAction::Upsert => {
-                let seq = metadata.seq.clone().or_else(|| {
-                    data.field("_seq")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                });
-                send_membership_frame(
+                let seq = metadata
+                    .seq
+                    .as_deref()
+                    .or_else(|| data.field("_seq").and_then(Value::as_str));
+                send_entity_frame(
                     context,
                     subscription_id,
                     view_spec,
                     "upsert",
                     key,
-                    data.to_value(),
+                    data,
                     seq,
                 )?;
                 undelivered.remove(key);
@@ -2774,15 +2906,26 @@ fn emit_coalesced_collection_delta(
         if change.op == "upsert" {
             undelivered.remove(&change.key);
         }
-        send_membership_frame(
-            context,
-            subscription_id,
-            view_spec,
-            change.op,
-            &change.key,
-            change.data,
-            change.seq,
-        )?;
+        match &change.data {
+            Some(entity) => send_entity_frame(
+                context,
+                subscription_id,
+                view_spec,
+                change.op,
+                &change.key,
+                entity,
+                change.seq.as_deref(),
+            )?,
+            None => send_membership_frame(
+                context,
+                subscription_id,
+                view_spec,
+                change.op,
+                &change.key,
+                Value::Null,
+                change.seq,
+            )?,
+        }
     }
     Ok(())
 }
@@ -2791,7 +2934,8 @@ fn emit_coalesced_collection_delta(
 struct CollectionChange {
     op: &'static str,
     key: String,
-    data: Value,
+    /// The entity an `upsert` sends; `None` for a `remove` or `delete`.
+    data: Option<SharedEntity>,
     seq: Option<String>,
 }
 
@@ -2836,7 +2980,7 @@ fn plan_coalesced_collection_delta(
         changes.push(CollectionChange {
             op,
             key: key.clone(),
-            data: Value::Null,
+            data: None,
             seq,
         });
     }
@@ -2861,7 +3005,7 @@ fn plan_coalesced_collection_delta(
         changes.push(CollectionChange {
             op: "upsert",
             key: key.clone(),
-            data: data.to_value(),
+            data: Some(data.clone()),
             seq,
         });
     }
@@ -2928,18 +3072,12 @@ fn member_action(
     }
 }
 
-fn to_wire_snapshot_entities(
-    entities: Vec<(String, SharedEntity)>,
-    view_spec: &ViewSpec,
-) -> Vec<SnapshotEntity> {
-    entities
-        .into_iter()
-        .map(|(key, entity)| {
-            let mut data = entity.into_value();
-            apply_wire_format(&mut data, &view_spec.wire_format);
-            SnapshotEntity { key, data }
-        })
-        .collect()
+/// A copy of `entity` with the view's wire format applied, for code that
+/// needs it as a value (a catch-up diff) rather than serialized.
+fn wire_value(entity: &SharedEntity, wire_format: &WireFormat) -> Value {
+    let mut value = entity.to_value();
+    apply_wire_format(&mut value, wire_format);
+    value
 }
 
 async fn load_query_entities(
@@ -3304,7 +3442,7 @@ mod tests {
             vec![CollectionChange {
                 op: "upsert",
                 key: "unsent".to_string(),
-                data: json!({"count": 2, "_seq": "10:000003"}),
+                data: Some(SharedEntity::new(json!({"count": 2, "_seq": "10:000003"}))),
                 seq: Some("10:000003".to_string()),
             }]
         );
@@ -3445,19 +3583,19 @@ mod tests {
                 CollectionChange {
                     op: "delete",
                     key: "b".to_string(),
-                    data: Value::Null,
+                    data: None,
                     seq: Some("10:000002".to_string()),
                 },
                 CollectionChange {
                     op: "upsert",
                     key: "a".to_string(),
-                    data: json!({"count": 3, "_seq": "10:000004"}),
+                    data: Some(SharedEntity::new(json!({"count": 3, "_seq": "10:000004"}))),
                     seq: Some("10:000004".to_string()),
                 },
                 CollectionChange {
                     op: "upsert",
                     key: "c".to_string(),
-                    data: json!({"count": 1, "_seq": "10:000003"}),
+                    data: Some(SharedEntity::new(json!({"count": 1, "_seq": "10:000003"}))),
                     seq: Some("10:000003".to_string()),
                 },
             ]
@@ -3483,12 +3621,12 @@ mod tests {
 
     #[test]
     fn snapshot_batches_share_identity_and_completion() {
-        let entities = ["one", "two", "three"].map(|key| SnapshotEntity {
-            key: key.to_string(),
-            data: json!({"key": key}),
-        });
+        let entities = ["one", "two", "three"]
+            .map(|key| (key.to_string(), SharedEntity::new(json!({"key": key}))));
+        let wire_format = WireFormat::default();
         let batches = create_snapshot_batches(
             &entities,
+            &wire_format,
             SnapshotMetadata {
                 subscription_id: "sub-1",
                 snapshot_id: "snapshot-1",
@@ -3514,8 +3652,10 @@ mod tests {
 
     #[test]
     fn empty_incremental_snapshot_is_explicitly_non_authoritative() {
+        let wire_format = WireFormat::default();
         let batches = create_snapshot_batches(
             &[],
+            &wire_format,
             SnapshotMetadata {
                 subscription_id: "sub-1",
                 snapshot_id: "snapshot-1",
@@ -3532,7 +3672,128 @@ mod tests {
         assert_eq!(batches.len(), 1);
         assert!(!batches[0].authoritative);
         assert!(batches[0].complete);
-        assert_eq!(batches[0].key.as_deref(), Some("missing"));
+        assert_eq!(batches[0].key, Some("missing"));
+    }
+
+    fn wide_ints() -> WireFormat {
+        WireFormat {
+            wide_int_paths: vec![
+                vec!["amount".to_string()],
+                vec!["trades".to_string(), "price".to_string()],
+            ],
+        }
+    }
+
+    fn sample_rows() -> Vec<(String, SharedEntity)> {
+        (0..7)
+            .map(|index| {
+                (
+                    index.to_string(),
+                    SharedEntity::new(json!({
+                        "_seq": format!("10:{index:012}"),
+                        "_version": format!("e:{index}"),
+                        "amount": u64::MAX - index,
+                        "label": "π \"quoted\" \n",
+                        "trades": [{"price": index, "side": "buy"}, {"price": -1}],
+                    })),
+                )
+            })
+            .collect()
+    }
+
+    /// Snapshot frames serialized from shared rows are byte for byte the
+    /// frames built from formatted copies of the rows.
+    #[test]
+    fn snapshot_batches_serialize_as_frames_of_formatted_copies() {
+        use crate::websocket::frame::{SnapshotEntity, SnapshotFrame};
+        let rows = sample_rows();
+        for (rows, key, wire_format, (initial, subsequent)) in [
+            (&rows[..], None, wide_ints(), (2, 3)),
+            (&rows[..], Some("3"), WireFormat::default(), (50, 100)),
+            (&rows[..1], Some("0"), wide_ints(), (1, 1)),
+            (&rows[..0], None, wide_ints(), (2, 3)),
+        ] {
+            let metadata = SnapshotMetadata {
+                subscription_id: "sub-1",
+                snapshot_id: "snapshot-1",
+                authoritative: true,
+                mode: Mode::List,
+                view_id: "Thing/list",
+                key,
+            };
+            let config = SnapshotBatchConfig {
+                initial_batch_size: initial,
+                subsequent_batch_size: subsequent,
+            };
+            let batches = create_snapshot_batches(rows, &wire_format, metadata, &config);
+            let mut offset = 0;
+            for batch in &batches {
+                let copies = rows[offset..offset + batch.data.rows.len()]
+                    .iter()
+                    .map(|(key, entity)| SnapshotEntity {
+                        key: key.clone(),
+                        data: wire_value(entity, &wire_format),
+                    })
+                    .collect();
+                offset += batch.data.rows.len();
+                let frame = SnapshotFrame {
+                    protocol_version: PROTOCOL_VERSION,
+                    subscription_id: "sub-1".to_string(),
+                    snapshot_id: "snapshot-1".to_string(),
+                    authoritative: true,
+                    mode: Mode::List,
+                    export: "Thing/list".to_string(),
+                    op: "snapshot",
+                    key: key.map(str::to_string),
+                    data: copies,
+                    complete: batch.complete,
+                };
+                assert_eq!(
+                    serde_json::to_string(batch).unwrap(),
+                    serde_json::to_string(&frame).unwrap()
+                );
+            }
+            assert_eq!(offset, rows.len());
+        }
+    }
+
+    /// A membership frame serialized from a shared entity is byte for byte
+    /// the frame built from a formatted copy of it.
+    #[test]
+    fn entity_frames_serialize_as_frames_of_formatted_copies() {
+        for (_, entity) in sample_rows() {
+            for (wire_format, seq) in [
+                (wide_ints(), Some("10:000000000001")),
+                (WireFormat::default(), None),
+            ] {
+                let frame = ScopedEntityFrame {
+                    protocol_version: PROTOCOL_VERSION,
+                    subscription_id: "sub-1",
+                    mode: Mode::List,
+                    export: "Thing/latest",
+                    op: "upsert",
+                    key: "7",
+                    data: WireEntity {
+                        entity: &entity,
+                        wire_format: &wire_format,
+                    },
+                    seq,
+                };
+                let copy = Frame::scoped(
+                    "sub-1",
+                    Mode::List,
+                    "Thing/latest",
+                    "upsert",
+                    "7",
+                    wire_value(&entity, &wire_format),
+                    seq.map(str::to_string),
+                );
+                assert_eq!(
+                    serde_json::to_string(&frame).unwrap(),
+                    serde_json::to_string(&copy).unwrap()
+                );
+            }
+        }
     }
 
     #[test]
@@ -4565,6 +4826,79 @@ mod tests {
                 "`b` came with the whole entity, so it is not sent again"
             );
             socket.close(None).await.ok();
+        }
+
+        /// Holders of the cached entity's fields beyond the cache and the
+        /// copy this reads.
+        async fn holders(server: &StateServer, key: &str) -> usize {
+            let entity = server.entity_cache.get_shared(ROUND, key).await.unwrap();
+            Arc::strong_count(entity.fields()) - 2
+        }
+
+        /// Wait until `held` reports `expected`: a subscription's task takes
+        /// over what it holds just after its snapshot reaches the client.
+        async fn settle(mut held: impl AsyncFnMut() -> usize, expected: usize) {
+            for _ in 0..200 {
+                if held().await == expected {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            assert_eq!(held().await, expected);
+        }
+
+        /// What a state subscriber keeps to measure catch-ups against is the
+        /// cached entity it was sent, or the frame the bus forwarded: shared,
+        /// never a copy of its own.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn state_subscribers_share_what_they_were_sent() {
+            let server = StateServer::start().await;
+            server
+                .create(
+                    "7",
+                    json!({"id": 7, "detail": {"a": 1}}),
+                    "100:000000000001",
+                )
+                .await;
+            let mut sockets = Vec::new();
+            for _ in 0..3 {
+                sockets.push(server.subscribe("7").await);
+            }
+            settle(|| holders(&server, "7"), 3).await;
+
+            // A whole entity forwarded from the bus: each subscriber keeps the
+            // frame the bus holds, not the entity it carries.
+            let sent = server.entity_cache.get_shared(ROUND, "7").await.unwrap();
+            let whole = json!({"id": 7, "detail": {"b": 2}, "_seq": "101:000000000001"});
+            server
+                .entity_cache
+                .store_whole(ROUND, "7", whole.clone())
+                .await;
+            let frame = Arc::new(Bytes::from(
+                json!({
+                    "mode": "state",
+                    "entity": ROUND,
+                    "op": "upsert",
+                    "key": "7",
+                    "data": whole,
+                    "seq": "101:000000000001",
+                })
+                .to_string(),
+            ));
+            server
+                .bus_manager
+                .publish_state(ROUND, "7", frame.clone())
+                .await;
+            for socket in &mut sockets {
+                assert_eq!(next_frame(socket).await["op"], "upsert");
+            }
+            // This test's handle, the bus's, and one per subscriber.
+            settle(async || Arc::strong_count(&frame), 2 + sockets.len()).await;
+            // Only this test still holds the entity they were sent before.
+            settle(async || Arc::strong_count(sent.fields()), 1).await;
+            for mut socket in sockets {
+                socket.close(None).await.ok();
+            }
         }
 
         /// A catch-up resends a field a forwarded patch set even when the

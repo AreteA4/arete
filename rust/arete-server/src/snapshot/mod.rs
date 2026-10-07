@@ -841,7 +841,8 @@ impl SnapshotService {
         };
         let vm_lock_held = dump_started.elapsed();
         let observed_slot = registration.slot_tracker.get();
-        let entity_cache_dump = self.entity_cache.dump().await;
+        // Shares the cached entities' fields; encoding writes them out.
+        let entity_cache_dump = self.entity_cache.dump_shared().await;
         // Dumped inside the same consistency guard as the cache, so a restore
         // can never leave the cache ahead of the tape.
         let journal_dump = self.journal.dump().await;
@@ -880,14 +881,14 @@ impl SnapshotService {
                 )
                 .collect(),
         };
-        let payload = SnapshotPayload {
+        let payload = envelope::SharedSnapshotPayload {
             entity_lifetimes: Some(self.entity_cache.dump_lifetimes().await),
             entity_tombstones: Default::default(),
             vm: vm_snapshot,
             entity_cache: entity_cache_dump,
             journal: journal_dump,
         };
-        let bytes = tokio::task::spawn_blocking(move || envelope::encode(&header, &payload))
+        let bytes = tokio::task::spawn_blocking(move || envelope::encode_shared(&header, &payload))
             .await
             .context("snapshot encode task panicked")??;
 

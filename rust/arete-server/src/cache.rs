@@ -1324,8 +1324,27 @@ impl EntityCache {
     /// Dump every view's entities for a state snapshot.
     ///
     /// Entries are ordered most-recently-used first; [`Self::hydrate`] relies
-    /// on that to reconstruct LRU eviction order.
+    /// on that to reconstruct LRU eviction order. Each is a copy;
+    /// [`Self::dump_shared`] returns the cached entities themselves.
     pub async fn dump(&self) -> Vec<(String, Vec<(String, Value)>)> {
+        self.dump_shared()
+            .await
+            .into_iter()
+            .map(|(view_id, entries)| {
+                (
+                    view_id,
+                    entries
+                        .into_iter()
+                        .map(|(key, entity)| (key, entity.into_value()))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// [`Self::dump`], sharing the entities' fields with the cache rather
+    /// than copying them. They serialize exactly as the copies would.
+    pub async fn dump_shared(&self) -> Vec<(String, Vec<(String, SharedEntity)>)> {
         let caches = self.caches.read().await;
         caches
             .iter()
@@ -1334,7 +1353,7 @@ impl EntityCache {
                     view_id.clone(),
                     view.entities
                         .iter()
-                        .map(|(key, entity)| (key.clone(), entity.to_value()))
+                        .map(|(key, entity)| (key.clone(), entity.clone()))
                         .collect(),
                 )
             })
