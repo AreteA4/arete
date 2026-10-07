@@ -1,16 +1,11 @@
-use anyhow::{Context, Result};
-use arete_sdk::{
-    deep_merge_with_append, parse_server_message, ClientMessage, Frame, ServerMessage,
-    SnapshotEntity,
-};
-use futures_util::{SinkExt, StreamExt};
+use anyhow::Result;
+use arete_sdk::{deep_merge_with_append, Frame, ServerMessage, SnapshotEntity};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::filter::{self, Filter};
 use super::output::{self, OutputMode};
+use super::session::{Notice, ReconnectPolicy, SessionHandler, StreamEnd, StreamSession};
 use super::snapshot::{SnapshotPlayer, SnapshotRecorder};
 use super::store::EntityStore;
 use super::token;
@@ -100,19 +95,23 @@ pub async fn stream(
     view: &str,
     args: &StreamArgs,
 ) -> Result<()> {
+    let policy = super::reconnect_policy(args);
+    stream_with_policy(url, refresh, view, args, policy).await
+}
+
+async fn stream_with_policy(
+    url: String,
+    refresh: Option<token::SessionRefresh>,
+    view: &str,
+    args: &StreamArgs,
+    policy: ReconnectPolicy,
+) -> Result<()> {
     // Validate args and build state before connecting (fails fast on bad --where regex etc.)
     let mut state = build_state(args, view, &url)?;
 
-    let (ws, _) = connect_async(&url).await.map_err(|err| {
-        let redacted = token::redact_hs_token_for_display(&url);
-        let hint = if token::is_hosted_arete_cloud_url(&url) {
-            "\nHint: hosted stacks need a valid `hs_token` (the CLI adds one after `a4 auth login`). \
-             On some systems, TLS uses the OS trust store — if this persists, report the error above."
-        } else {
-            ""
-        };
-        anyhow::anyhow!("Failed to connect to {}: {}{}", redacted, err, hint)
-    })?;
+    let mut session =
+        StreamSession::new(url, refresh, super::build_subscription(view, args), policy)?;
+    let socket = session.connect().await?;
 
     eprintln!("Connected.");
 
@@ -122,147 +121,43 @@ pub async fn stream(
             &mut state.out,
             "connected",
             view,
-            &serde_json::json!({"url": token::redact_hs_token_for_display(&url)}),
+            &serde_json::json!({"url": session.display_url()}),
             0,
             0,
         )?;
     }
 
-    let (mut ws_tx, mut ws_rx) = ws.split();
-
-    // Build and send subscription
-    let sub = super::build_subscription(view, args);
-    let msg = serde_json::to_string(&ClientMessage::Subscribe(sub))
-        .context("Failed to serialize subscribe message")?;
-    ws_tx
-        .send(Message::Text(msg))
-        .await
-        .context("Failed to send subscribe message")?;
-
-    // Ping interval
-    let ping_period = std::time::Duration::from_secs(30);
-    let mut ping_interval =
-        tokio::time::interval_at(tokio::time::Instant::now() + ping_period, ping_period);
-
-    // Duration timer for --save --duration (as a select! arm for precise timing)
-    let duration_future = async {
-        if let Some(secs) = args.duration {
-            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
-        } else {
-            std::future::pending::<()>().await;
+    // Ctrl+C, or --duration (as a select! arm for precise timing). The
+    // session polls this across reconnects, so --duration is wall time.
+    let duration = args.duration;
+    let stop = async move {
+        let duration_elapsed = async {
+            match duration {
+                Some(secs) => tokio::time::sleep(Duration::from_secs(secs)).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            () = duration_elapsed => eprintln!("Duration reached, stopping..."),
+            _ = tokio::signal::ctrl_c() => eprintln!("\nDisconnecting..."),
         }
     };
-    tokio::pin!(duration_future);
+    tokio::pin!(stop);
 
-    // Handle Ctrl+C
-    let shutdown = tokio::signal::ctrl_c();
-    tokio::pin!(shutdown);
-
-    let mut snapshot_complete = false;
-    let mut refresher = token::SessionRefresher::start(refresh);
-    // Set when the server closes the socket on a policy (an expired or
-    // refused session): the stream failed rather than ended.
-    let mut policy_close: Option<String> = None;
-
-    loop {
-        tokio::select! {
-            msg = ws_rx.next() => {
-                match msg {
-                    Some(Ok(Message::Binary(bytes))) => {
-                        match parse_server_message(&bytes) {
-                            Ok(message) => {
-                                if handle_server_message(
-                                    message,
-                                    view,
-                                    &mut state,
-                                    &mut snapshot_complete,
-                                    args.no_snapshot,
-                                )? {
-                                    break;
-                                }
-                            }
-                            Err(e) => eprintln!("Warning: failed to parse binary frame: {}", e),
-                        }
-                    }
-                    Some(Ok(Message::Text(text))) => {
-                        if let Some(response) = token::parse_refresh_response(&text) {
-                            if !response.success {
-                                eprintln!(
-                                    "Warning: the server refused the refreshed session token ({}); \
-                                     the stream ends when the current token expires.",
-                                    response.error.as_deref().unwrap_or("no reason given")
-                                );
-                            }
-                            continue;
-                        }
-                        match parse_server_message(text.as_bytes()) {
-                            Ok(message) => {
-                                if handle_server_message(
-                                    message,
-                                    view,
-                                    &mut state,
-                                    &mut snapshot_complete,
-                                    args.no_snapshot,
-                                )? {
-                                    break;
-                                }
-                            }
-                            Err(e) => eprintln!("Warning: failed to parse text frame: {}", e),
-                        }
-                    }
-                    Some(Ok(Message::Ping(payload))) => {
-                        let _ = ws_tx.send(Message::Pong(payload)).await;
-                    }
-                    Some(Ok(Message::Close(frame))) => {
-                        match frame {
-                            Some(frame) if frame.code == CloseCode::Policy => {
-                                policy_close = Some(frame.reason.into_owned());
-                            }
-                            Some(frame) if !frame.reason.is_empty() => {
-                                eprintln!("Connection closed by server: {}", frame.reason);
-                            }
-                            _ => eprintln!("Connection closed by server."),
-                        }
-                        break;
-                    }
-                    Some(Err(e)) => {
-                        eprintln!("WebSocket error: {}", e);
-                        break;
-                    }
-                    None => {
-                        eprintln!("Connection closed.");
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            _ = ping_interval.tick() => {
-                if let Ok(msg) = serde_json::to_string(&ClientMessage::Ping) {
-                    let _ = ws_tx.send(Message::Text(msg)).await;
-                }
-            }
-            event = refresher.next() => match event {
-                token::RefreshEvent::Token(token) => {
-                    if let Ok(msg) = serde_json::to_string(&ClientMessage::RefreshAuth { token }) {
-                        let _ = ws_tx.send(Message::Text(msg)).await;
-                    }
-                }
-                token::RefreshEvent::Failed(error) => {
-                    eprintln!("Warning: could not refresh the session token, retrying: {error:#}");
-                }
-            },
-            _ = &mut duration_future => {
-                eprintln!("Duration reached, stopping...");
-                let _ = ws_tx.close().await;
-                break;
-            }
-            _ = &mut shutdown => {
-                eprintln!("\nDisconnecting...");
-                let _ = ws_tx.close().await;
-                break;
-            }
+    let mut handler = Output {
+        state: &mut state,
+        view,
+        no_snapshot: args.no_snapshot,
+        snapshot_complete: false,
+    };
+    let failure = match session.run(socket, &mut handler, stop).await? {
+        StreamEnd::Stopped | StreamEnd::Finished => None,
+        StreamEnd::Lost(loss) => {
+            eprintln!("{loss}");
+            None
         }
-    }
+        StreamEnd::Failed(failure) => Some(failure),
+    };
 
     // Save snapshot if --save was specified
     if let (Some(save_path), Some(recorder)) = (&args.save, &state.recorder) {
@@ -288,10 +183,100 @@ pub async fn stream(
     // Output history/at/diff after stream ends (for non-interactive agent use)
     output_history_if_requested(&state, args)?;
 
-    if let Some(reason) = policy_close {
-        anyhow::bail!("the server closed the stream: {reason}");
+    if let Some(failure) = failure {
+        anyhow::bail!("{failure}");
     }
     Ok(())
+}
+
+/// Where a live stream's messages go: the merged/raw/NO_DNA output on stdout,
+/// warnings on stderr.
+struct Output<'a> {
+    state: &'a mut StreamState,
+    view: &'a str,
+    no_snapshot: bool,
+    snapshot_complete: bool,
+}
+
+impl SessionHandler for Output<'_> {
+    fn on_message(&mut self, message: ServerMessage) -> Result<bool> {
+        handle_server_message(
+            message,
+            self.view,
+            self.state,
+            &mut self.snapshot_complete,
+            self.no_snapshot,
+        )
+    }
+
+    fn on_notice(&mut self, notice: Notice<'_>) {
+        let line = match notice {
+            Notice::Unparsed { binary, error } => format!(
+                "Warning: failed to parse {} frame: {}",
+                if binary { "binary" } else { "text" },
+                error
+            ),
+            Notice::RefreshRefused(reason) => format!(
+                "Warning: the server refused the refreshed session token ({}); \
+                 the stream ends when the current token expires.",
+                reason.unwrap_or("no reason given")
+            ),
+            Notice::RefreshFailed(error) => {
+                format!("Warning: could not refresh the session token, retrying: {error:#}")
+            }
+            Notice::Reconnecting(reconnecting) => reconnecting.to_string(),
+        };
+        self.print_notice(&line);
+    }
+
+    fn on_reconnected(&mut self, url: &str) -> Result<()> {
+        self.print_notice(&format!("Reconnected; resubscribed to {}", self.view));
+        self.begin_new_connection(&serde_json::json!({"url": url}))
+    }
+}
+
+impl Output<'_> {
+    /// Start over for a new connection that replaced a lost one, live or in
+    /// a replay of a recording that spans the reconnect.
+    ///
+    /// The new subscription starts again with its own snapshot, or with
+    /// --no-snapshot with nothing at all. Entities merged from the old
+    /// connection, or a snapshot it left half delivered, would otherwise mix
+    /// stale state into the output, and patches would merge into fields the
+    /// server may have dropped. Update history is kept.
+    fn begin_new_connection(&mut self, payload: &serde_json::Value) -> Result<()> {
+        if let Some(recorder) = &mut self.state.recorder {
+            recorder.record_reconnect();
+        }
+        self.state.entities.clear();
+        self.state.entity_count = 0;
+        self.state.pending_snapshot = None;
+        if let Some(store) = &mut self.state.store {
+            store.reset_current_state();
+        }
+        self.snapshot_complete = false;
+
+        if let OutputMode::NoDna = self.state.output_mode {
+            output::emit_no_dna_event(
+                &mut self.state.out,
+                "reconnected",
+                self.view,
+                payload,
+                self.state.update_count,
+                self.state.entity_count,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Print a line to stderr, below the running count when --count is
+    /// drawing one there.
+    fn print_notice(&mut self, line: &str) {
+        if self.state.count_only && self.state.last_count_render.take().is_some() {
+            output::finalize_count();
+        }
+        eprintln!("{line}");
+    }
 }
 
 /// Replay frames from a saved snapshot file through the same processing pipeline.
@@ -310,19 +295,13 @@ pub async fn replay(player: SnapshotPlayer, view: &str, args: &StreamArgs) -> Re
         )?;
     }
 
-    let mut snapshot_complete = false;
-
-    for snapshot_frame in &player.frames {
-        if handle_server_message(
-            ServerMessage::Frame(snapshot_frame.frame.clone()),
-            view,
-            &mut state,
-            &mut snapshot_complete,
-            args.no_snapshot,
-        )? {
-            break;
-        }
-    }
+    let mut output = Output {
+        state: &mut state,
+        view,
+        no_snapshot: args.no_snapshot,
+        snapshot_complete: false,
+    };
+    play(&player, &mut output)?;
 
     if state.count_only {
         finalize_count(&mut state)?;
@@ -342,6 +321,30 @@ pub async fn replay(player: SnapshotPlayer, view: &str, args: &StreamArgs) -> Re
     output_history_if_requested(&state, args)?;
 
     eprintln!("Replay complete: {} updates processed.", state.update_count);
+    Ok(())
+}
+
+/// Feed a recording's frames through `output`, starting over wherever the
+/// recorded stream reconnected, as the live stream did.
+fn play(player: &SnapshotPlayer, output: &mut Output<'_>) -> Result<()> {
+    let reconnected = serde_json::json!({"url": player.header.url, "source": "replay"});
+    let mut reconnects = player
+        .reconnects
+        .iter()
+        .map(|reconnect| reconnect.at_frame)
+        .peekable();
+    for (index, recorded) in player.frames.iter().enumerate() {
+        while reconnects.next_if(|&at| at <= index as u64).is_some() {
+            output.begin_new_connection(&reconnected)?;
+        }
+        if output.on_message(ServerMessage::Frame(recorded.frame.clone()))? {
+            return Ok(());
+        }
+    }
+    // A reconnect after the last frame still left the stream empty.
+    for _ in reconnects {
+        output.begin_new_connection(&reconnected)?;
+    }
     Ok(())
 }
 
@@ -819,23 +822,243 @@ mod tests {
         assert!(state.entities.is_empty());
     }
 
+    #[test]
+    fn a_reconnect_drops_state_from_the_old_connection() {
+        let mut state = state();
+        process_frame(
+            snapshot("initial", true, true, &["1", "2"]),
+            "Thing/list",
+            &mut state,
+        )
+        .unwrap();
+        // The old connection drops halfway through another snapshot.
+        process_frame(
+            snapshot("recovery", true, false, &["3"]),
+            "Thing/list",
+            &mut state,
+        )
+        .unwrap();
+        let mut output = Output {
+            state: &mut state,
+            view: "Thing/list",
+            no_snapshot: false,
+            snapshot_complete: true,
+        };
+
+        output.on_reconnected("ws://localhost/").unwrap();
+
+        assert!(!output.snapshot_complete);
+        assert!(state.entities.is_empty());
+        assert_eq!(state.entity_count, 0);
+        assert!(state.pending_snapshot.is_none());
+
+        // The new connection's snapshot is staged on its own.
+        process_frame(
+            snapshot("fresh", false, true, &["4"]),
+            "Thing/list",
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(
+            state.entities.keys().cloned().collect::<Vec<_>>(),
+            vec!["4".to_string()]
+        );
+    }
+
+    fn patch(key: &str, data: serde_json::Value) -> Frame {
+        Frame::Patch {
+            protocol_version: 2,
+            subscription_id: "cli:test".to_string(),
+            mode: Mode::List,
+            entity: "Thing/list".to_string(),
+            key: key.to_string(),
+            data,
+            append: Vec::new(),
+            seq: None,
+            offset: None,
+        }
+    }
+
+    type Entities = HashMap<String, serde_json::Value>;
+
+    /// Stream `before`, reconnect, stream `after`, recording all of it; then
+    /// replay the recording. Returns the entities each run ended with, and
+    /// what a replay that ignored the reconnect would have produced.
+    fn live_and_replayed(
+        no_snapshot: bool,
+        before: Vec<Frame>,
+        after: Vec<Frame>,
+    ) -> (Entities, Entities, Result<Entities>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recording.json");
+        let path = path.to_str().unwrap();
+
+        let mut live = state();
+        live.recorder = Some(SnapshotRecorder::new("Thing/list", "ws://localhost/"));
+        let mut output = Output {
+            state: &mut live,
+            view: "Thing/list",
+            no_snapshot,
+            snapshot_complete: false,
+        };
+        for frame in before {
+            output.on_message(ServerMessage::Frame(frame)).unwrap();
+        }
+        output.on_reconnected("ws://localhost/").unwrap();
+        for frame in after {
+            output.on_message(ServerMessage::Frame(frame)).unwrap();
+        }
+        live.recorder.as_ref().unwrap().save(path).unwrap();
+
+        let replay = |player: &SnapshotPlayer| -> Result<Entities> {
+            let mut replayed = state();
+            let mut output = Output {
+                state: &mut replayed,
+                view: "Thing/list",
+                no_snapshot,
+                snapshot_complete: false,
+            };
+            play(player, &mut output)?;
+            Ok(replayed.entities)
+        };
+        let mut player = SnapshotPlayer::load(path).unwrap();
+        let replayed = replay(&player).unwrap();
+        player.reconnects.clear();
+        let unmarked = replay(&player);
+        (live.entities, replayed, unmarked)
+    }
+
+    #[test]
+    fn a_replay_starts_over_where_a_snapshot_stream_reconnected() {
+        let (live, replayed, unmarked) = live_and_replayed(
+            false,
+            vec![
+                snapshot("initial", true, true, &["1", "2"]),
+                patch("1", serde_json::json!({"old": true})),
+                // The connection drops halfway through a later snapshot.
+                snapshot("recovery", true, false, &["1"]),
+            ],
+            // The new snapshot is incremental (as with --after), and "2" went
+            // away while the connection was down.
+            vec![
+                snapshot("again", false, true, &["1"]),
+                patch("1", serde_json::json!({"new": true})),
+            ],
+        );
+
+        assert_eq!(
+            live,
+            HashMap::from([("1".to_string(), serde_json::json!({"id": "1", "new": true}))])
+        );
+        assert_eq!(replayed, live);
+        // Without the marker the replay would fail on the mixed snapshot.
+        assert!(unmarked.is_err(), "{unmarked:?}");
+    }
+
+    #[test]
+    fn a_replay_starts_over_where_a_stream_without_snapshots_reconnected() {
+        let (live, replayed, unmarked) = live_and_replayed(
+            true,
+            vec![
+                patch("1", serde_json::json!({"id": "1", "old": true})),
+                patch("2", serde_json::json!({"id": "2"})),
+            ],
+            vec![patch("1", serde_json::json!({"new": true}))],
+        );
+
+        assert_eq!(
+            live,
+            HashMap::from([("1".to_string(), serde_json::json!({"new": true}))])
+        );
+        assert_eq!(replayed, live);
+        assert_ne!(
+            unmarked.unwrap(),
+            live,
+            "the marker is what makes them agree"
+        );
+    }
+
+    #[test]
+    fn a_replay_honours_a_reconnect_after_the_last_frame() {
+        let (live, replayed, _) = live_and_replayed(
+            true,
+            vec![patch("1", serde_json::json!({"id": "1"}))],
+            Vec::new(),
+        );
+
+        assert!(live.is_empty());
+        assert_eq!(replayed, live);
+    }
+
     /// A hosted stream against a local server standing in for the stack.
     mod over_a_socket {
         use super::*;
         use crate::api_client::test_support::MockServer;
+        use futures_util::{SinkExt, StreamExt};
         use serde_json::{json, Value};
         use tokio::net::TcpListener;
+        use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
         use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        use tokio_tungstenite::tungstenite::Message;
+        use tokio_tungstenite::WebSocketStream;
+
+        use crate::commands::stream::session::tests::upsert;
 
         fn stream_args(view: &str) -> StreamArgs {
+            stream_args_from(&[view])
+        }
+
+        fn stream_args_from(args: &[&str]) -> StreamArgs {
             #[derive(clap::Parser)]
             struct Cli {
                 #[command(flatten)]
                 args: StreamArgs,
             }
-            <Cli as clap::Parser>::try_parse_from(["a4", view])
+            <Cli as clap::Parser>::try_parse_from(std::iter::once("a4").chain(args.iter().copied()))
                 .expect("stream args parse")
                 .args
+        }
+
+        /// The policy `args` ask for, with waits short enough for a test.
+        fn quick(args: &StreamArgs) -> ReconnectPolicy {
+            ReconnectPolicy {
+                initial_delay: Duration::from_millis(10),
+                max_delay: Duration::from_millis(50),
+                ..crate::commands::stream::reconnect_policy(args)
+            }
+        }
+
+        type ServerSocket = WebSocketStream<tokio::net::TcpStream>;
+
+        /// Accept the next connection, returning it with the path and query
+        /// it was opened with.
+        // The handshake callback's error type is tungstenite's, not ours.
+        #[allow(clippy::result_large_err)]
+        async fn accept(listener: &TcpListener) -> (ServerSocket, String) {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut target = String::new();
+            let socket = tokio_tungstenite::accept_hdr_async(
+                tcp,
+                |request: &Request, response: Response| {
+                    target = request.uri().to_string();
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            (socket, target)
+        }
+
+        /// The next text message the client sends, as JSON.
+        async fn next_json(socket: &mut ServerSocket) -> Value {
+            loop {
+                match socket.next().await {
+                    Some(Ok(Message::Text(text))) => return serde_json::from_str(&text).unwrap(),
+                    Some(Ok(_)) => continue,
+                    other => panic!("the client went away: {other:?}"),
+                }
+            }
         }
 
         fn unix_now() -> u64 {
@@ -910,7 +1133,7 @@ mod tests {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        async fn a_plain_close_still_ends_the_stream_cleanly() {
+        async fn without_reconnect_a_plain_close_ends_the_stream_cleanly() {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("ws://{}/", listener.local_addr().unwrap());
             let server = tokio::spawn(async move {
@@ -920,7 +1143,7 @@ mod tests {
                 socket.close(None).await.unwrap();
             });
 
-            let args = stream_args("Ore/list");
+            let args = stream_args_from(&["Ore/list", "--no-reconnect"]);
             let result = tokio::time::timeout(
                 Duration::from_secs(10),
                 stream(url, None, "Ore/list", &args),
@@ -929,6 +1152,160 @@ mod tests {
             .expect("the stream ends within the timeout");
 
             assert!(result.is_ok(), "{result:?}");
+            server.await.unwrap();
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_dropped_connection_reconnects_and_resubscribes() {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}/", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = accept(&listener).await;
+                let first = next_json(&mut socket).await;
+                let id = first["subscriptionId"].as_str().unwrap().to_string();
+                socket.send(upsert(&id, "1")).await.unwrap();
+                // Go away the way a crashed server does: no close frame.
+                drop(socket);
+
+                let (mut socket, _) = accept(&listener).await;
+                let second = next_json(&mut socket).await;
+                socket.send(upsert(&id, "2")).await.unwrap();
+                // Wait for the client to leave.
+                while let Some(Ok(_)) = socket.next().await {}
+                (first, second)
+            });
+
+            // Only the entity sent after the reconnect ends the stream.
+            let args = stream_args_from(&["Ore/list", "--first", "--where", "id=2", "--take", "5"]);
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                stream_with_policy(url, None, "Ore/list", &args, quick(&args)),
+            )
+            .await
+            .expect("the stream ends within the timeout");
+
+            assert!(result.is_ok(), "{result:?}");
+            let (first, second) = server.await.unwrap();
+            assert_eq!(first["type"], "subscribe");
+            assert_eq!(first["query"]["take"], 5);
+            assert_eq!(second, first, "the same subscription is sent again");
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_hosted_stream_mints_a_new_token_to_reconnect() {
+            let mint = MockServer::json(
+                200,
+                &json!({"token": "second", "expires_at": unix_now() + 3_600}).to_string(),
+            );
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base_url = format!("ws://{}/", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut socket, first_target) = accept(&listener).await;
+                let first = next_json(&mut socket).await;
+                let id = first["subscriptionId"].as_str().unwrap().to_string();
+                drop(socket);
+
+                let (mut socket, second_target) = accept(&listener).await;
+                let _second = next_json(&mut socket).await;
+                socket.send(upsert(&id, "1")).await.unwrap();
+                while let Some(Ok(_)) = socket.next().await {}
+                (first_target, second_target)
+            });
+
+            // The first token is far from expiry, so only the reconnect mints.
+            let refresh = token::SessionRefresh::for_test(
+                format!("{}/ws/sessions", mint.base_url()),
+                &base_url,
+                unix_now() + 3_600,
+            );
+            let args = stream_args_from(&["Ore/list", "--first"]);
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                stream_with_policy(
+                    format!("{base_url}?hs_token=first"),
+                    Some(refresh),
+                    "Ore/list",
+                    &args,
+                    quick(&args),
+                ),
+            )
+            .await
+            .expect("the stream ends within the timeout");
+
+            assert!(result.is_ok(), "{result:?}");
+            let (first_target, second_target) = server.await.unwrap();
+            assert_eq!(first_target, "/?hs_token=first");
+            assert_eq!(second_target, "/?hs_token=second");
+            assert_eq!(
+                serde_json::from_str::<Value>(&mint.request().body).unwrap(),
+                json!({"websocket_url": base_url})
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_policy_close_is_not_retried() {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}/", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = accept(&listener).await;
+                let _subscribe = next_json(&mut socket).await;
+                socket
+                    .close(Some(CloseFrame {
+                        code: CloseCode::Policy,
+                        reason: "token-expired: Authentication token expired".into(),
+                    }))
+                    .await
+                    .unwrap();
+                // Any reconnect would arrive well within this.
+                tokio::time::timeout(Duration::from_millis(500), listener.accept())
+                    .await
+                    .is_ok()
+            });
+
+            let args = stream_args("Ore/list");
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                stream_with_policy(url, None, "Ore/list", &args, quick(&args)),
+            )
+            .await
+            .expect("the stream ends within the timeout");
+
+            let error = result.expect_err("a policy close fails the stream");
+            assert!(format!("{error:#}").contains("token-expired"), "{error:#}");
+            assert!(!server.await.unwrap(), "the client did not reconnect");
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn the_stream_gives_up_after_max_reconnects() {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}/", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = accept(&listener).await;
+                let _subscribe = next_json(&mut socket).await;
+                // The server goes away for good: every reconnect is refused.
+                drop(socket);
+                drop(listener);
+            });
+
+            let args = stream_args_from(&["Ore/list", "--max-reconnects", "2"]);
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                stream_with_policy(url, None, "Ore/list", &args, quick(&args)),
+            )
+            .await
+            .expect("the stream ends within the timeout");
+
+            let error = result.expect_err("giving up fails the stream");
+            let message = format!("{error:#}");
+            assert!(
+                message.starts_with("gave up after 2 reconnect attempts: could not connect: "),
+                "{message}"
+            );
+            assert_eq!(
+                message.matches("refused").count(),
+                1,
+                "the cause is named once: {message}"
+            );
             server.await.unwrap();
         }
     }

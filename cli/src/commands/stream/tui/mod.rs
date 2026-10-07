@@ -2,23 +2,20 @@ mod app;
 mod ui;
 
 use anyhow::Result;
-use arete_sdk::{parse_server_message, ClientMessage, Frame, ServerMessage};
+use arete_sdk::{Frame, ServerMessage};
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::tungstenite::Error as WsError;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use self::app::{App, TuiAction, ViewMode};
+use super::session::{Notice, SessionHandler, StreamEnd, StreamFailure, StreamSession};
 use super::token;
 use super::StreamArgs;
 
@@ -28,29 +25,21 @@ pub async fn run_tui(
     view: &str,
     args: &StreamArgs,
 ) -> Result<()> {
-    // Connect WebSocket
-    let (ws, _) = connect_async(&url).await.map_err(|err| {
-        let redacted = token::redact_hs_token_for_display(&url);
-        let hint = if token::is_hosted_arete_cloud_url(&url) {
-            "\nHint: hosted stacks need a valid `hs_token` (the CLI adds one after `a4 auth login`). \
-             On some systems, TLS uses the OS trust store — if this persists, report the error above."
-        } else {
-            ""
-        };
-        anyhow::anyhow!("Failed to connect to {}: {}{}", redacted, err, hint)
-    })?;
-
-    let (mut ws_tx, ws_rx) = ws.split();
-
-    // Subscribe
-    let sub = crate::commands::stream::build_subscription(view, args);
-    let msg = serde_json::to_string(&ClientMessage::Subscribe(sub))?;
-    ws_tx.send(Message::Text(msg)).await?;
+    // Connect and subscribe
+    let mut session = StreamSession::new(
+        url,
+        refresh,
+        crate::commands::stream::build_subscription(view, args),
+        crate::commands::stream::reconnect_policy(args),
+    )?;
+    let socket = session.connect().await?;
+    let display_url = session.display_url();
 
     // Channel for frames from WS task
     // 10k buffer accommodates large snapshot batches during pause. Overflow
     // frames are dropped and counted in the "Dropped: N" header indicator.
-    let (frame_tx, mut frame_rx) = mpsc::channel::<Frame>(10_000);
+    // Each frame carries the number of the connection it arrived on.
+    let (frame_tx, mut frame_rx) = mpsc::channel::<(u64, Frame)>(10_000);
 
     // Shutdown signal for graceful WebSocket close
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -59,28 +48,31 @@ pub async fn run_tui(
     let dropped_frames = Arc::new(AtomicU64::new(0));
     let dropped_frames_ws = Arc::clone(&dropped_frames);
 
-    let refresher = token::SessionRefresher::start(refresh);
     // Warnings for the status bar; the TUI owns the terminal, so nothing is
     // printed.
-    let (notice_tx, mut notice_rx) = mpsc::unbounded_channel::<String>();
-    // Set when the server closes the socket on a policy (an expired or
-    // refused session): the stream failed rather than ended.
-    let policy_close = Arc::new(OnceLock::<String>::new());
-    let policy_close_ws = Arc::clone(&policy_close);
+    let (notice_tx, mut notice_rx) = mpsc::unbounded_channel::<SocketNotice>();
+    // Set when the stream fails rather than ends, such as when the server
+    // closes the socket on a policy (an expired or refused session).
+    let failure = Arc::new(OnceLock::<StreamFailure>::new());
+    let failure_ws = Arc::clone(&failure);
 
     // Spawn WS reader task
-    let ws_handle = tokio::spawn(pump_socket(
-        ws_tx,
-        ws_rx,
-        shutdown_rx,
-        refresher,
-        SocketOutputs {
+    let ws_handle = tokio::spawn(async move {
+        let mut outputs = SocketOutputs {
             frames: frame_tx,
             dropped_frames: dropped_frames_ws,
             notices: notice_tx,
-            policy_close: policy_close_ws,
-        },
-    ));
+            connection: 0,
+        };
+        let stop = async {
+            let _ = shutdown_rx.await;
+        };
+        tokio::pin!(stop);
+        if let Ok(StreamEnd::Failed(stream_failure)) = session.run(socket, &mut outputs, stop).await
+        {
+            let _ = failure_ws.set(stream_failure);
+        }
+    });
 
     // Setup terminal with panic hook to restore on crash.
     // We store the original hook in a Mutex so we can reclaim it on normal exit.
@@ -112,11 +104,8 @@ pub async fn run_tui(
         }
     };
 
-    let mut app = App::new(
-        view.to_string(),
-        token::redact_hs_token_for_display(&url),
-        Arc::clone(&dropped_frames),
-    );
+    let mut app = App::new(view.to_string(), display_url, Arc::clone(&dropped_frames))
+        .with_snapshots(!args.no_snapshot);
 
     // Main loop: poll terminal events + receive frames
     let tick_rate = std::time::Duration::from_millis(50);
@@ -125,7 +114,7 @@ pub async fn run_tui(
         &mut app,
         &mut frame_rx,
         &mut notice_rx,
-        &policy_close,
+        &failure,
         tick_rate,
     )
     .await;
@@ -150,109 +139,75 @@ pub async fn run_tui(
     }
 
     result?;
-    if let Some(reason) = policy_close.get() {
-        anyhow::bail!("the server closed the stream: {reason}");
+    if let Some(failure) = failure.get() {
+        anyhow::bail!("{failure}");
     }
     Ok(())
 }
 
 /// Where the socket task hands what it reads to the UI.
 struct SocketOutputs {
-    frames: mpsc::Sender<Frame>,
+    frames: mpsc::Sender<(u64, Frame)>,
     dropped_frames: Arc<AtomicU64>,
-    notices: mpsc::UnboundedSender<String>,
-    policy_close: Arc<OnceLock<String>>,
+    notices: mpsc::UnboundedSender<SocketNotice>,
+    /// Which connection frames are arriving on, counting from 0. Frames are
+    /// tagged with it so the UI resets its state at the exact frame where a
+    /// new connection's data begins, even if frames were dropped or are
+    /// still queued while paused.
+    connection: u64,
 }
 
-/// Read the socket until it closes or `shutdown` fires, keeping the session
-/// token fresh on the way.
-async fn pump_socket<S, R>(
-    mut ws_tx: S,
-    mut ws_rx: R,
-    mut shutdown: tokio::sync::oneshot::Receiver<()>,
-    mut refresher: token::SessionRefresher,
-    out: SocketOutputs,
-) where
-    S: Sink<Message> + Unpin,
-    R: Stream<Item = Result<Message, WsError>> + Unpin,
-{
-    let ping_period = std::time::Duration::from_secs(30);
-    let mut ping_interval =
-        tokio::time::interval_at(tokio::time::Instant::now() + ping_period, ping_period);
-    loop {
-        tokio::select! {
-            _ = &mut shutdown => {
-                let _ = ws_tx.close().await;
-                break;
+/// What the socket task tells the UI besides frames.
+#[derive(Debug, PartialEq)]
+enum SocketNotice {
+    /// A message for the status bar.
+    Status(String),
+    /// The connection dropped; shown until it is replaced.
+    Reconnecting(String),
+    /// A new connection replaced the dropped one.
+    Reconnected,
+}
+
+impl SessionHandler for SocketOutputs {
+    fn on_message(&mut self, message: ServerMessage) -> Result<bool> {
+        if let ServerMessage::Frame(frame) = message {
+            if self.frames.try_send((self.connection, frame)).is_err() {
+                self.dropped_frames.fetch_add(1, Ordering::Relaxed);
             }
-            msg = ws_rx.next() => {
-                match msg {
-                    Some(Ok(Message::Binary(bytes))) => {
-                        match parse_server_message(&bytes) {
-                            Ok(ServerMessage::Frame(frame)) => {
-                                if out.frames.try_send(frame).is_err() {
-                                    out.dropped_frames.fetch_add(1, Ordering::Relaxed);
-                                }
-                            }
-                            Ok(ServerMessage::Error(_)) | Err(_) => {}
-                        }
-                    }
-                    Some(Ok(Message::Text(text))) => {
-                        if let Some(response) = token::parse_refresh_response(&text) {
-                            if !response.success {
-                                let _ = out.notices.send(format!(
-                                    "Session refresh refused ({}); the stream ends when the current token expires",
-                                    response.error.as_deref().unwrap_or("no reason given")
-                                ));
-                            }
-                            continue;
-                        }
-                        if let Ok(ServerMessage::Frame(frame)) =
-                            parse_server_message(text.as_bytes())
-                        {
-                            if out.frames.try_send(frame).is_err() {
-                                out.dropped_frames.fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-                    }
-                    Some(Ok(Message::Ping(payload))) => {
-                        let _ = ws_tx.send(Message::Pong(payload)).await;
-                    }
-                    Some(Ok(Message::Close(Some(frame)))) if frame.code == CloseCode::Policy => {
-                        let _ = out.policy_close.set(frame.reason.into_owned());
-                        break;
-                    }
-                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                    _ => {}
-                }
-            }
-            _ = ping_interval.tick() => {
-                if let Ok(msg) = serde_json::to_string(&ClientMessage::Ping) {
-                    let _ = ws_tx.send(Message::Text(msg)).await;
-                }
-            }
-            event = refresher.next() => match event {
-                token::RefreshEvent::Token(token) => {
-                    if let Ok(msg) = serde_json::to_string(&ClientMessage::RefreshAuth { token }) {
-                        let _ = ws_tx.send(Message::Text(msg)).await;
-                    }
-                }
-                token::RefreshEvent::Failed(error) => {
-                    let _ = out.notices.send(format!(
-                        "Could not refresh the session token, retrying: {error:#}"
-                    ));
-                }
-            },
         }
+        Ok(false)
+    }
+
+    fn on_notice(&mut self, notice: Notice<'_>) {
+        let notice = match notice {
+            Notice::Unparsed { .. } => return,
+            Notice::RefreshRefused(reason) => SocketNotice::Status(format!(
+                "Session refresh refused ({}); the stream ends when the current token expires",
+                reason.unwrap_or("no reason given")
+            )),
+            Notice::RefreshFailed(error) => SocketNotice::Status(format!(
+                "Could not refresh the session token, retrying: {error:#}"
+            )),
+            Notice::Reconnecting(reconnecting) => {
+                SocketNotice::Reconnecting(reconnecting.to_string())
+            }
+        };
+        let _ = self.notices.send(notice);
+    }
+
+    fn on_reconnected(&mut self, _url: &str) -> Result<()> {
+        self.connection += 1;
+        let _ = self.notices.send(SocketNotice::Reconnected);
+        Ok(())
     }
 }
 
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
-    frame_rx: &mut mpsc::Receiver<Frame>,
-    notice_rx: &mut mpsc::UnboundedReceiver<String>,
-    policy_close: &OnceLock<String>,
+    frame_rx: &mut mpsc::Receiver<(u64, Frame)>,
+    notice_rx: &mut mpsc::UnboundedReceiver<SocketNotice>,
+    failure: &OnceLock<StreamFailure>,
     tick_rate: std::time::Duration,
 ) -> Result<()> {
     loop {
@@ -269,11 +224,12 @@ async fn run_loop(
         if !app.paused {
             loop {
                 match frame_rx.try_recv() {
-                    Ok(frame) => app.apply_frame(frame),
+                    Ok((connection, frame)) => app.apply_connection_frame(connection, frame),
                     Err(mpsc::error::TryRecvError::Disconnected) => {
-                        // The socket task records a policy close before it
-                        // exits and drops the frame sender.
-                        app.set_disconnected(policy_close.get().map(String::as_str));
+                        // The socket task records a failure before it exits
+                        // and drops the frame sender.
+                        let status = failure.get().map(StreamFailure::status);
+                        app.set_disconnected(status.as_deref());
                         break;
                     }
                     Err(mpsc::error::TryRecvError::Empty) => break,
@@ -281,7 +237,11 @@ async fn run_loop(
             }
         }
         while let Ok(notice) = notice_rx.try_recv() {
-            app.set_status(&notice);
+            match notice {
+                SocketNotice::Status(message) => app.set_status(&message),
+                SocketNotice::Reconnecting(message) => app.set_reconnecting(&message),
+                SocketNotice::Reconnected => app.set_reconnected(),
+            }
         }
 
         // Poll for terminal events with timeout
@@ -441,106 +401,90 @@ async fn run_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api_client::test_support::MockServer;
-    use futures_util::{sink, stream};
-    use std::time::Duration;
-    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
     fn outputs() -> (
         SocketOutputs,
-        mpsc::UnboundedReceiver<String>,
-        Arc<OnceLock<String>>,
+        mpsc::Receiver<(u64, Frame)>,
+        mpsc::UnboundedReceiver<SocketNotice>,
     ) {
-        let (frames, _) = mpsc::channel(16);
+        let (frames, frame_rx) = mpsc::channel(1);
         let (notices, notice_rx) = mpsc::unbounded_channel();
-        let policy_close = Arc::new(OnceLock::new());
         let out = SocketOutputs {
             frames,
             dropped_frames: Arc::new(AtomicU64::new(0)),
             notices,
-            policy_close: Arc::clone(&policy_close),
+            connection: 0,
         };
-        (out, notice_rx, policy_close)
+        (out, frame_rx, notice_rx)
     }
 
-    #[tokio::test]
-    async fn a_refused_refresh_and_a_policy_close_reach_the_ui() {
-        let (out, mut notices, policy_close) = outputs();
-        let (_shutdown_tx, shutdown) = tokio::sync::oneshot::channel();
-        let socket = stream::iter(vec![
-            Ok(Message::Text(
-                r#"{"success":false,"error":"token-invalid"}"#.to_string(),
-            )),
-            Ok(Message::Close(Some(CloseFrame {
-                code: CloseCode::Policy,
-                reason: "token-expired: Authentication token expired".into(),
-            }))),
-        ]);
+    fn unsubscribed() -> ServerMessage {
+        ServerMessage::Frame(Frame::Unsubscribed {
+            protocol_version: 2,
+            subscription_id: "cli:test".to_string(),
+        })
+    }
 
-        pump_socket(
-            sink::drain(),
-            socket,
-            shutdown,
-            token::SessionRefresher::start(None),
-            out,
-        )
-        .await;
+    #[test]
+    fn a_refused_refresh_reaches_the_status_bar() {
+        let (mut out, _frames, mut notices) = outputs();
+
+        out.on_notice(Notice::RefreshRefused(Some("token-invalid")));
 
         let notice = notices.try_recv().expect("the refused refresh is reported");
-        assert!(notice.contains("token-invalid"), "{notice}");
-        assert_eq!(
-            policy_close.get().map(String::as_str),
-            Some("token-expired: Authentication token expired")
+        assert!(
+            matches!(&notice, SocketNotice::Status(message) if message.contains("token-invalid")),
+            "{notice:?}"
         );
     }
 
-    #[tokio::test]
-    async fn a_plain_close_is_not_a_failure() {
-        let (out, _notices, policy_close) = outputs();
-        let (_shutdown_tx, shutdown) = tokio::sync::oneshot::channel();
+    #[test]
+    fn a_failed_refresh_reaches_the_status_bar() {
+        let (mut out, _frames, mut notices) = outputs();
 
-        pump_socket(
-            sink::drain(),
-            stream::iter(vec![Ok(Message::Close(None))]),
-            shutdown,
-            token::SessionRefresher::start(None),
-            out,
-        )
-        .await;
+        out.on_notice(Notice::RefreshFailed(&anyhow::anyhow!("mint returned 500")));
 
-        assert!(policy_close.get().is_none());
+        let notice = notices.try_recv().expect("the failed refresh is reported");
+        assert!(
+            matches!(&notice, SocketNotice::Status(message) if message.contains("Could not refresh")),
+            "{notice:?}"
+        );
     }
 
-    #[tokio::test]
-    async fn a_failed_refresh_is_reported() {
-        let mint = MockServer::json(500, r#"{"error":"unavailable"}"#);
-        let expires_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 2;
-        let refresher = token::SessionRefresher::start(Some(token::SessionRefresh::for_test(
-            format!("{}/ws/sessions", mint.base_url()),
-            "wss://ore.stack.arete.run",
-            expires_at,
-        )));
-        let (out, mut notices, _) = outputs();
-        let (shutdown_tx, shutdown) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(pump_socket(
-            sink::drain(),
-            stream::pending::<Result<Message, WsError>>(),
-            shutdown,
-            refresher,
-            out,
+    #[test]
+    fn frames_past_the_buffer_are_counted_as_dropped() {
+        let (mut out, mut frames, _notices) = outputs();
+
+        assert!(!out.on_message(unsubscribed()).unwrap());
+        assert!(!out.on_message(unsubscribed()).unwrap());
+
+        assert!(frames.try_recv().is_ok());
+        assert_eq!(out.dropped_frames.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn frames_after_a_reconnect_carry_the_new_connection() {
+        let (mut out, mut frames, mut notices) = outputs();
+
+        out.on_message(unsubscribed()).unwrap();
+        out.on_notice(Notice::Reconnecting(
+            crate::commands::stream::session::Reconnecting {
+                reason: "connection ended",
+                retry: false,
+                attempt: 1,
+                max_attempts: None,
+                delay: std::time::Duration::from_millis(500),
+            },
         ));
+        out.on_reconnected("ws://localhost/").unwrap();
+        assert_eq!(frames.try_recv().unwrap().0, 0);
+        out.on_message(unsubscribed()).unwrap();
 
-        let notice = tokio::time::timeout(Duration::from_secs(10), notices.recv())
-            .await
-            .expect("a refresh attempt within the timeout")
-            .expect("the socket task is still running");
-        assert!(notice.contains("Could not refresh"), "{notice}");
-
-        let _ = shutdown_tx.send(());
-        task.await.unwrap();
+        assert_eq!(frames.try_recv().unwrap().0, 1);
+        assert!(matches!(
+            notices.try_recv().unwrap(),
+            SocketNotice::Reconnecting(message) if message.starts_with("Connection lost (connection ended)")
+        ));
+        assert_eq!(notices.try_recv().unwrap(), SocketNotice::Reconnected);
     }
 }

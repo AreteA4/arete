@@ -22,8 +22,24 @@ pub struct SnapshotFrame {
     pub frame: Frame,
 }
 
+/// Where the recorded stream reconnected.
+///
+/// A reconnect drops the stream's entity state, so replay has to drop it at
+/// the same point to end up where the live stream did. Recordings list
+/// these in an optional top-level `reconnects` array, separate from
+/// `frames`: recordings without one replay as before, and a CLI that does
+/// not know the field still reads the frames.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotReconnect {
+    /// How many frames were recorded before the new connection; replay
+    /// starts over before the frame at this index.
+    pub at_frame: u64,
+    pub ts: u64,
+}
+
 pub struct SnapshotRecorder {
     frames: Vec<SnapshotFrame>,
+    reconnects: Vec<SnapshotReconnect>,
     view: String,
     url: String,
     start_time: std::time::Instant,
@@ -35,6 +51,7 @@ impl SnapshotRecorder {
     pub fn new(view: &str, url: &str) -> Self {
         Self {
             frames: Vec::new(),
+            reconnects: Vec::new(),
             view: view.to_string(),
             url: token::redact_hs_token_for_display(url),
             start_time: std::time::Instant::now(),
@@ -61,6 +78,19 @@ impl SnapshotRecorder {
         self.frames.push(SnapshotFrame {
             ts,
             frame: frame.clone(),
+        });
+    }
+
+    /// Note that the stream reconnected after the frames recorded so far.
+    pub fn record_reconnect(&mut self) {
+        let ts = self.start_time.elapsed().as_millis() as u64;
+        self.record_reconnect_with_ts(ts);
+    }
+
+    pub fn record_reconnect_with_ts(&mut self, ts_ms: u64) {
+        self.reconnects.push(SnapshotReconnect {
+            at_frame: self.frames.len() as u64,
+            ts: ts_ms,
         });
     }
 
@@ -124,6 +154,14 @@ impl SnapshotRecorder {
             )?;
             writeln!(writer, "  \"duration_ms\": {},", header.duration_ms)?;
             writeln!(writer, "  \"frame_count\": {},", header.frame_count)?;
+            // Only recordings that span a reconnect carry the field.
+            if !self.reconnects.is_empty() {
+                writeln!(
+                    writer,
+                    "  \"reconnects\": {},",
+                    serde_json::to_string(&self.reconnects)?
+                )?;
+            }
 
             // Stream frames array one entry at a time
             writeln!(writer, "  \"frames\": [")?;
@@ -164,6 +202,8 @@ impl SnapshotRecorder {
 pub struct SnapshotPlayer {
     pub header: SnapshotHeader,
     pub frames: Vec<SnapshotFrame>,
+    /// In frame order. Empty for a recording that never reconnected.
+    pub reconnects: Vec<SnapshotReconnect>,
 }
 
 /// Combined struct for single-pass deserialization (avoids cloning the entire JSON)
@@ -173,6 +213,8 @@ struct SnapshotFile {
     header: SnapshotHeader,
     #[serde(default)]
     frames: Vec<SnapshotFrame>,
+    #[serde(default)]
+    reconnects: Vec<SnapshotReconnect>,
 }
 
 impl SnapshotPlayer {
@@ -198,10 +240,17 @@ impl SnapshotPlayer {
             );
         }
         let frames = file.frames;
+        let mut reconnects = file.reconnects;
+        reconnects.sort_by_key(|reconnect| reconnect.at_frame);
 
         eprintln!(
-            "Loaded snapshot: {} frames, {:.1}s, view={}, captured={}",
+            "Loaded snapshot: {} frames{}, {:.1}s, view={}, captured={}",
             frames.len(),
+            match reconnects.len() {
+                0 => String::new(),
+                1 => ", 1 reconnect".to_string(),
+                n => format!(", {n} reconnects"),
+            },
             file.header.duration_ms as f64 / 1000.0,
             file.header.view,
             file.header.captured_at,
@@ -210,6 +259,77 @@ impl SnapshotPlayer {
         Ok(Self {
             header: file.header,
             frames,
+            reconnects,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arete_sdk::Mode;
+
+    fn upsert(key: &str) -> Frame {
+        Frame::Upsert {
+            protocol_version: 2,
+            subscription_id: "cli:test".to_string(),
+            mode: Mode::List,
+            entity: "Ore/list".to_string(),
+            key: key.to_string(),
+            data: serde_json::json!({ "id": key }),
+            append: Vec::new(),
+            seq: None,
+            offset: None,
+        }
+    }
+
+    #[test]
+    fn reconnects_are_saved_beside_the_frames_and_loaded_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recording.json");
+        let path = path.to_str().unwrap();
+        let mut recorder = SnapshotRecorder::new("Ore/list", "ws://localhost/");
+        recorder.record(&upsert("1"));
+        recorder.record_reconnect();
+        recorder.record(&upsert("2"));
+        recorder.record_reconnect();
+        recorder.save(path).unwrap();
+
+        let player = SnapshotPlayer::load(path).unwrap();
+        assert_eq!(player.frames.len(), 2);
+        assert_eq!(
+            player
+                .reconnects
+                .iter()
+                .map(|reconnect| reconnect.at_frame)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        // The frames array keeps its shape, so a reader that predates the
+        // field still loads them.
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(file["version"], 2);
+        for frame in file["frames"].as_array().unwrap() {
+            let mut fields: Vec<_> = frame.as_object().unwrap().keys().cloned().collect();
+            fields.sort();
+            assert_eq!(fields, vec!["frame", "ts"]);
+        }
+    }
+
+    #[test]
+    fn a_recording_without_reconnects_is_written_and_read_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recording.json");
+        let path = path.to_str().unwrap();
+        let mut recorder = SnapshotRecorder::new("Ore/list", "ws://localhost/");
+        recorder.record(&upsert("1"));
+        recorder.save(path).unwrap();
+
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert!(file.get("reconnects").is_none(), "{file}");
+        assert!(SnapshotPlayer::load(path).unwrap().reconnects.is_empty());
     }
 }

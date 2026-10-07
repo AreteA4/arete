@@ -37,6 +37,13 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             " DISCONNECTED ",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )
+    } else if app.is_reconnecting() {
+        Span::styled(
+            " RECONNECTING ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
     } else if app.paused {
         Span::styled(
             " PAUSED ",

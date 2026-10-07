@@ -148,6 +148,9 @@ pub struct App {
     pub disconnected: bool,
     /// What the status bar keeps showing once the stream is disconnected.
     disconnect_message: Option<String>,
+    /// What the status bar keeps showing while a dropped connection is being
+    /// replaced.
+    reconnect_message: Option<String>,
     pub filter_input_active: bool,
     pub filter_text: String,
     pub status_message: String,
@@ -162,11 +165,19 @@ pub struct App {
     pub pending_g: bool,
     pub list_state: ListState,
     store: EntityStore,
-    raw_frames: VecDeque<(std::time::Instant, Frame)>,
+    /// Recent frames with when they arrived and on which connection.
+    raw_frames: VecDeque<(std::time::Instant, u64, Frame)>,
     stream_start: std::time::Instant,
     pub dropped_frames: std::sync::Arc<std::sync::atomic::AtomicU64>,
     filtered_cache: Option<Vec<String>>,
     pending_snapshot: Option<PendingSnapshot>,
+    /// The connection the last frame arrived on.
+    connection: u64,
+    /// Set when frames from a new connection begin: its first complete
+    /// snapshot replaces the entity list, as the first connection's did.
+    resync: bool,
+    /// Whether the subscription asks for a snapshot (not `--no-snapshot`).
+    snapshots: bool,
 }
 
 struct PendingSnapshot {
@@ -195,6 +206,7 @@ impl App {
             paused: false,
             disconnected: false,
             disconnect_message: None,
+            reconnect_message: None,
             filter_input_active: false,
             filter_text: String::new(),
             status_message: "Connected".to_string(),
@@ -214,7 +226,17 @@ impl App {
             dropped_frames,
             filtered_cache: None,
             pending_snapshot: None,
+            connection: 0,
+            resync: false,
+            snapshots: true,
         }
+    }
+
+    /// Whether the subscription asks for snapshots. Without them, nothing
+    /// replaces the entity list after a reconnect, so it starts over empty.
+    pub fn with_snapshots(mut self, snapshots: bool) -> Self {
+        self.snapshots = snapshots;
+        self
     }
 
     fn invalidate_filter_cache(&mut self) {
@@ -263,6 +285,37 @@ impl App {
         self.scroll_offset = 0;
     }
 
+    /// Apply a frame that arrived on connection `connection`.
+    ///
+    /// The first frame from a new connection drops whatever the old one left
+    /// half delivered: a snapshot it never completed would otherwise mix
+    /// with the new one's batches. With snapshots, the new connection's first
+    /// one then replaces the entity list. Without them nothing would, so the
+    /// list starts over empty here, and patches build on empty entities as
+    /// they did when the stream started rather than on state the server may
+    /// have changed while the connection was down. History is kept.
+    pub fn apply_connection_frame(&mut self, connection: u64, frame: Frame) {
+        if connection != self.connection {
+            self.connection = connection;
+            self.pending_snapshot = None;
+            if self.snapshots {
+                self.resync = true;
+            } else {
+                self.start_over();
+            }
+        }
+        self.apply_frame(frame);
+    }
+
+    /// Drop the entity list and the state built on it.
+    fn start_over(&mut self) {
+        self.entity_keys.clear();
+        self.entity_key_set.clear();
+        self.store.reset_current_state();
+        self.invalidate_filter_cache();
+        self.clamp_selection();
+    }
+
     pub fn apply_frame(&mut self, frame: Frame) {
         // Invalidation is cheap (sets to None). The cache is only rebuilt once per
         // render tick in ensure_filtered_cache(), not per-frame, since we drain all
@@ -303,14 +356,20 @@ impl App {
 
                 if complete {
                     let Some(snapshot) = self.pending_snapshot.take() else {
-                        self.raw_frames
-                            .push_back((std::time::Instant::now(), raw_frame.clone()));
+                        self.raw_frames.push_back((
+                            std::time::Instant::now(),
+                            self.connection,
+                            raw_frame.clone(),
+                        ));
                         while self.raw_frames.len() > 1000 {
                             self.raw_frames.pop_front();
                         }
                         return;
                     };
-                    if snapshot.authoritative {
+                    // After a reconnect the snapshot replaces the list even
+                    // when it is incremental, as the first one did.
+                    let resync = std::mem::take(&mut self.resync);
+                    if snapshot.authoritative || resync {
                         let retained: HashSet<&str> =
                             snapshot.rows.iter().map(|row| row.key.as_str()).collect();
                         let removed: Vec<String> = self
@@ -376,7 +435,7 @@ impl App {
         }
 
         self.raw_frames
-            .push_back((std::time::Instant::now(), raw_frame));
+            .push_back((std::time::Instant::now(), self.connection, raw_frame));
         while self.raw_frames.len() > 1000 {
             self.raw_frames.pop_front();
         }
@@ -575,11 +634,7 @@ impl App {
                 // Note: this does synchronous file I/O on the runtime thread. Acceptable
                 // because raw_frames is capped at 1000 entries. For larger caps, consider
                 // spawning onto a blocking thread.
-                let mut recorder = SnapshotRecorder::new(&self.view, &self.url);
-                for (arrival_time, frame) in &self.raw_frames {
-                    let ts_ms = arrival_time.duration_since(self.stream_start).as_millis() as u64;
-                    recorder.record_with_ts(frame, ts_ms);
-                }
+                let recorder = self.recording();
                 let filename = format!(
                     "a4-stream-{}.json",
                     chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f")
@@ -698,6 +753,22 @@ impl App {
         }
     }
 
+    /// The recent frames as a recording, marking where a new connection
+    /// began so a replay starts over there as the stream did.
+    fn recording(&self) -> SnapshotRecorder {
+        let mut recorder = SnapshotRecorder::new(&self.view, &self.url);
+        let mut previous_connection = None;
+        for (arrival_time, connection, frame) in &self.raw_frames {
+            let ts_ms = arrival_time.duration_since(self.stream_start).as_millis() as u64;
+            if previous_connection.is_some_and(|previous| previous != *connection) {
+                recorder.record_reconnect_with_ts(ts_ms);
+            }
+            previous_connection = Some(*connection);
+            recorder.record_with_ts(frame, ts_ms);
+        }
+        recorder
+    }
+
     pub fn selected_key(&self) -> Option<String> {
         let keys = self.filtered_keys();
         keys.get(self.selected_index).map(|s| s.to_string())
@@ -708,14 +779,19 @@ impl App {
 
         // Raw mode: show the most recent raw frame containing this entity key.
         if self.show_raw {
-            if let Some((_, raw)) = self.raw_frames.iter().rev().find(|(_, frame)| match frame {
-                Frame::Snapshot { data, .. } => data.iter().any(|row| row.key == key),
-                Frame::Upsert { key: frame_key, .. }
-                | Frame::Patch { key: frame_key, .. }
-                | Frame::Remove { key: frame_key, .. }
-                | Frame::Delete { key: frame_key, .. } => frame_key == &key,
-                Frame::Subscribed { .. } | Frame::Unsubscribed { .. } => false,
-            }) {
+            if let Some((_, _, raw)) =
+                self.raw_frames
+                    .iter()
+                    .rev()
+                    .find(|(_, _, frame)| match frame {
+                        Frame::Snapshot { data, .. } => data.iter().any(|row| row.key == key),
+                        Frame::Upsert { key: frame_key, .. }
+                        | Frame::Patch { key: frame_key, .. }
+                        | Frame::Remove { key: frame_key, .. }
+                        | Frame::Delete { key: frame_key, .. } => frame_key == &key,
+                        Frame::Subscribed { .. } | Frame::Unsubscribed { .. } => false,
+                    })
+            {
                 return Some(serde_json::to_string_pretty(raw).unwrap_or_default());
             }
             let record = self.store.get(&key)?;
@@ -785,6 +861,8 @@ impl App {
             &self.status_message
         } else if let Some(message) = &self.disconnect_message {
             message
+        } else if let Some(message) = &self.reconnect_message {
+            message
         } else if self.paused {
             "PAUSED"
         } else {
@@ -801,12 +879,29 @@ impl App {
     /// one. The message stays in the status bar from then on.
     pub fn set_disconnected(&mut self, reason: Option<&str>) {
         self.disconnected = true;
+        self.reconnect_message = None;
         let message = match reason {
             Some(reason) => format!("Disconnected: {reason}"),
             None => "Disconnected".to_string(),
         };
         self.set_status(&message);
         self.disconnect_message = Some(message);
+    }
+
+    /// Show that the connection dropped and is being replaced, until
+    /// [`set_reconnected`](Self::set_reconnected).
+    pub fn set_reconnecting(&mut self, message: &str) {
+        self.set_status(message);
+        self.reconnect_message = Some(message.to_string());
+    }
+
+    pub fn set_reconnected(&mut self) {
+        self.reconnect_message = None;
+        self.set_status("Reconnected; resubscribed");
+    }
+
+    pub fn is_reconnecting(&self) -> bool {
+        self.reconnect_message.is_some()
     }
 
     /// Returns cached filtered keys.
@@ -972,5 +1067,133 @@ mod tests {
         let_status_expire(&mut app);
 
         assert_eq!(app.status(), "Disconnected");
+    }
+
+    fn snapshot(id: &str, authoritative: bool, complete: bool, keys: &[&str]) -> Frame {
+        Frame::Snapshot {
+            protocol_version: 2,
+            subscription_id: "cli:test".to_string(),
+            snapshot_id: id.to_string(),
+            authoritative,
+            mode: arete_sdk::Mode::List,
+            entity: "Ore/list".to_string(),
+            key: None,
+            data: keys
+                .iter()
+                .map(|key| SnapshotEntity {
+                    key: (*key).to_string(),
+                    data: serde_json::json!({ "id": key }),
+                })
+                .collect(),
+            complete,
+        }
+    }
+
+    #[test]
+    fn a_new_connections_snapshot_replaces_the_entity_list() {
+        let mut app = app();
+        app.apply_connection_frame(0, snapshot("first", true, true, &["a", "b"]));
+        // The old connection drops halfway through a second snapshot.
+        app.apply_connection_frame(0, snapshot("recovery", true, false, &["z"]));
+
+        // An incremental snapshot on the new connection still replaces the
+        // list, and the half-delivered one is gone.
+        app.apply_connection_frame(1, snapshot("second", false, true, &["b", "c"]));
+
+        assert_eq!(app.entity_keys, vec!["b".to_string(), "c".to_string()]);
+        assert_ne!(app.status(), "Invalid snapshot batch sequence");
+
+        // Later incremental snapshots on the same connection merge as before.
+        app.apply_connection_frame(1, snapshot("third", false, true, &["d"]));
+        assert_eq!(app.entity_keys.len(), 3);
+    }
+
+    fn patch(key: &str, data: serde_json::Value) -> Frame {
+        Frame::Patch {
+            protocol_version: 2,
+            subscription_id: "cli:test".to_string(),
+            mode: arete_sdk::Mode::List,
+            entity: "Ore/list".to_string(),
+            key: key.to_string(),
+            data,
+            append: Vec::new(),
+            seq: None,
+            offset: None,
+        }
+    }
+
+    #[test]
+    fn without_snapshots_a_new_connection_starts_the_list_over() {
+        let mut app = app().with_snapshots(false);
+        app.apply_connection_frame(0, patch("a", serde_json::json!({"id": "a", "old": 1})));
+        app.apply_connection_frame(0, patch("b", serde_json::json!({"id": "b"})));
+        app.handle_action(TuiAction::NextEntity);
+        assert_eq!(app.selected_key().as_deref(), Some("b"));
+
+        app.apply_connection_frame(1, patch("a", serde_json::json!({"new": 2})));
+
+        // Only what the new connection sent is listed, and the patch did not
+        // merge into the state from before the reconnect.
+        assert_eq!(app.entity_keys, vec!["a".to_string()]);
+        app.ensure_filtered_cache();
+        assert_eq!(app.selected_key().as_deref(), Some("a"));
+        assert_eq!(
+            app.store.get("a").map(|record| &record.current),
+            Some(&serde_json::json!({"new": 2}))
+        );
+        // History from before the reconnect is kept.
+        assert_eq!(app.store.history_len("a"), 2);
+    }
+
+    #[test]
+    fn with_snapshots_a_new_connection_keeps_the_list_until_its_snapshot() {
+        let mut app = app();
+        app.apply_connection_frame(0, snapshot("first", true, true, &["a", "b"]));
+
+        app.apply_connection_frame(1, patch("a", serde_json::json!({"new": 2})));
+
+        assert_eq!(app.entity_keys, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn a_saved_recording_marks_where_a_new_connection_began() {
+        let mut app = app();
+        app.apply_connection_frame(0, snapshot("first", true, true, &["a"]));
+        app.apply_connection_frame(0, patch("a", serde_json::json!({"n": 1})));
+        app.apply_connection_frame(1, snapshot("second", true, true, &["b"]));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recording.json");
+        let path = path.to_str().unwrap();
+
+        app.recording().save(path).unwrap();
+
+        let player = crate::commands::stream::snapshot::SnapshotPlayer::load(path).unwrap();
+        assert_eq!(player.frames.len(), 3);
+        assert_eq!(
+            player
+                .reconnects
+                .iter()
+                .map(|reconnect| reconnect.at_frame)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn the_reconnect_message_stays_until_reconnected() {
+        let mut app = app();
+        app.set_reconnecting(
+            "Connection lost (connection ended); reconnecting in 0.5s (attempt 1)...",
+        );
+        let_status_expire(&mut app);
+
+        assert!(app.is_reconnecting());
+        assert!(app.status().starts_with("Connection lost"));
+
+        app.set_reconnected();
+        let_status_expire(&mut app);
+
+        assert!(!app.is_reconnecting());
+        assert_eq!(app.status(), "Streaming");
     }
 }

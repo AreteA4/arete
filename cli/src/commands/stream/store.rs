@@ -97,6 +97,16 @@ impl EntityStore {
         &record.current
     }
 
+    /// Forget every entity's current state, keeping its history, so the next
+    /// patch builds on an empty entity as it would at the start of a stream.
+    /// Used when a new connection replaces one whose state is no longer
+    /// trusted.
+    pub fn reset_current_state(&mut self) {
+        for record in self.entities.values_mut() {
+            record.current = serde_json::json!({});
+        }
+    }
+
     /// Mark an entity as removed from the active query, retaining its history.
     pub fn remove(&mut self, key: &str, op: &str, seq: Option<String>) {
         if let Some(record) = self.entities.get_mut(key) {
