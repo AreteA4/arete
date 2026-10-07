@@ -2823,4 +2823,287 @@ mod tests {
 
         assert!(after.is_empty());
     }
+
+    fn versions<'a>(views: &[(&'a str, &str)]) -> Vec<ViewVersion<'a>> {
+        views
+            .iter()
+            .map(|(view_id, version)| ViewVersion {
+                view_id,
+                version: Some(json!(version)),
+            })
+            .collect()
+    }
+
+    const VIEWS: [&str; 3] = ["t/list", "t/state", "t/append"];
+
+    async fn shared(cache: &EntityCache, key: &str) -> Vec<SharedEntity> {
+        let mut entities = Vec::new();
+        for view in VIEWS {
+            entities.push(cache.get_shared(view, key).await.unwrap());
+        }
+        entities
+    }
+
+    async fn write_all(
+        cache: &EntityCache,
+        key: &str,
+        patch: Value,
+        stamps: [&str; 3],
+        origin: PatchOrigin,
+    ) -> Vec<CacheWrite> {
+        let views: Vec<_> = VIEWS.into_iter().zip(stamps).collect();
+        cache
+            .upsert_views(
+                key,
+                patch,
+                &versions(&views),
+                &["events".to_string()],
+                origin,
+                LifetimeOrdering::default(),
+            )
+            .await
+    }
+
+    /// Views written together hold one copy of the entity's fields, each
+    /// under its own `_version`, and every view still reads as the whole
+    /// entity its frames describe.
+    #[tokio::test]
+    async fn views_written_together_share_one_copy() {
+        let cache = EntityCache::new();
+        let writes = write_all(
+            &cache,
+            "a",
+            json!({"id": "a", "events": [1]}),
+            ["e:1", "e:2", "e:3"],
+            PatchOrigin::Creation,
+        )
+        .await;
+        assert_eq!(writes, vec![CacheWrite::Created; 3]);
+        let [list, state, append] =
+            <[SharedEntity; 3]>::try_from(shared(&cache, "a").await).unwrap();
+        assert!(list.shares_fields_with(&state) && list.shares_fields_with(&append));
+        // Three views and the three copies just read.
+        assert_eq!(Arc::strong_count(list.fields()), 6);
+        assert_eq!(
+            cache.get("t/state", "a").await,
+            Some(json!({"id": "a", "events": [1], "_version": "e:2"}))
+        );
+
+        let writes = write_all(
+            &cache,
+            "a",
+            json!({"n": 1, "events": [2]}),
+            ["e:4", "e:5", "e:6"],
+            PatchOrigin::Unknown,
+        )
+        .await;
+        assert_eq!(writes, vec![CacheWrite::Merged; 3]);
+        let merged = shared(&cache, "a").await;
+        assert!(
+            merged[0].shares_fields_with(&merged[1]) && merged[0].shares_fields_with(&merged[2])
+        );
+        for (view, version) in VIEWS.into_iter().zip(["e:4", "e:5", "e:6"]) {
+            assert_eq!(
+                cache.get(view, "a").await,
+                Some(json!({"id": "a", "n": 1, "events": [1, 2], "_version": version})),
+                "{view}"
+            );
+        }
+        // The copies read before the merge still hold what they held.
+        assert_eq!(
+            list.to_value(),
+            json!({"id": "a", "events": [1], "_version": "e:1"})
+        );
+        assert!(!list.shares_fields_with(&merged[0]));
+    }
+
+    /// Nothing else holds the views' shared fields, so the merge writes them
+    /// in place instead of copying them.
+    #[tokio::test]
+    async fn a_merge_nobody_else_holds_happens_in_place() {
+        let cache = EntityCache::new();
+        write_all(
+            &cache,
+            "a",
+            json!({"id": "a"}),
+            ["e:1", "e:2", "e:3"],
+            PatchOrigin::Creation,
+        )
+        .await;
+        let before = Arc::as_ptr(cache.get_shared("t/list", "a").await.unwrap().fields());
+        write_all(
+            &cache,
+            "a",
+            json!({"n": 1}),
+            ["e:4", "e:5", "e:6"],
+            PatchOrigin::Unknown,
+        )
+        .await;
+        let after = cache.get_shared("t/list", "a").await.unwrap();
+        // Had the merge copied the fields, the copy would have been made
+        // while the original was still allocated, at another address.
+        assert_eq!(Arc::as_ptr(after.fields()), before);
+        assert_eq!(Arc::strong_count(after.fields()), 4);
+        assert_eq!(after["n"], 1);
+    }
+
+    /// A patch written to one view leaves another view's copy as it was,
+    /// even though the two shared their fields until then.
+    #[tokio::test]
+    async fn a_patch_to_one_view_does_not_reach_another() {
+        let cache = EntityCache::new();
+        write_all(
+            &cache,
+            "a",
+            json!({"id": "a", "nested": {"n": 0}}),
+            ["e:1", "e:2", "e:3"],
+            PatchOrigin::Creation,
+        )
+        .await;
+        assert_eq!(
+            cache
+                .upsert_with_append(
+                    "t/list",
+                    "a",
+                    json!({"nested": {"n": 1}, "_version": "e:4"}),
+                    &[],
+                    PatchOrigin::Unknown,
+                )
+                .await,
+            CacheWrite::Merged
+        );
+        assert_eq!(
+            cache.get("t/list", "a").await,
+            Some(json!({"id": "a", "nested": {"n": 1}, "_version": "e:4"}))
+        );
+        for (view, version) in [("t/state", "e:2"), ("t/append", "e:3")] {
+            assert_eq!(
+                cache.get(view, "a").await,
+                Some(json!({"id": "a", "nested": {"n": 0}, "_version": version})),
+                "{view}"
+            );
+        }
+        let [list, state, append] =
+            <[SharedEntity; 3]>::try_from(shared(&cache, "a").await).unwrap();
+        assert!(!list.shares_fields_with(&state));
+        assert!(state.shares_fields_with(&append));
+    }
+
+    /// A view that refuses a patch keeps its copy while the views that take
+    /// it move on to a new one.
+    #[tokio::test]
+    async fn a_view_that_refuses_a_patch_keeps_its_copy() {
+        let cache = EntityCache::new();
+        write_all(
+            &cache,
+            "a",
+            json!({"id": "a", "n": 0}),
+            ["e:1", "e:2", "e:3"],
+            PatchOrigin::Creation,
+        )
+        .await;
+        // Only the state view saw the entity's deletion.
+        assert!(cache.delete_current("t/state", "a").await);
+        let writes = write_all(
+            &cache,
+            "a",
+            json!({"n": 1}),
+            ["e:4", "e:5", "e:6"],
+            PatchOrigin::Change,
+        )
+        .await;
+        assert_eq!(writes[0], CacheWrite::Merged);
+        assert_eq!(
+            writes[1],
+            CacheWrite::Refused {
+                patch: json!({"n": 1, "_version": "e:5"})
+            }
+        );
+        assert_eq!(writes[2], CacheWrite::Merged);
+        assert_eq!(cache.get("t/state", "a").await, None);
+        let list = cache.get_shared("t/list", "a").await.unwrap();
+        let append = cache.get_shared("t/append", "a").await.unwrap();
+        assert!(list.shares_fields_with(&append));
+        assert_eq!(
+            append.to_value(),
+            json!({"id": "a", "n": 1, "_version": "e:6"})
+        );
+    }
+
+    /// A snapshot saves each view's copy of an entity on its own; restoring
+    /// it shares the fields again and keeps every view's `_version`.
+    #[tokio::test]
+    async fn a_restore_shares_the_copies_it_saved_per_view() {
+        let cache = EntityCache::new();
+        write_all(
+            &cache,
+            "a",
+            json!({"id": "a", "events": [1, 2]}),
+            ["e:1", "e:2", "e:3"],
+            PatchOrigin::Creation,
+        )
+        .await;
+        let mut dump = cache.dump().await;
+        dump.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let restored = EntityCache::new();
+        restored.hydrate(dump.clone()).await;
+        let copies = shared(&restored, "a").await;
+        assert!(
+            copies[0].shares_fields_with(&copies[1]) && copies[0].shares_fields_with(&copies[2])
+        );
+        let mut again = restored.dump().await;
+        again.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(again, dump);
+    }
+
+    /// A whole entity stored in several views at once is one copy.
+    #[tokio::test]
+    async fn a_whole_entity_stored_in_several_views_is_one_copy() {
+        let cache = EntityCache::new();
+        let views = versions(&[("t/list", "e:1"), ("t/state", "e:2"), ("t/append", "e:3")]);
+        let stored = cache
+            .store_whole_views("a", json!({"id": "a"}), &views, None, None)
+            .await;
+        assert_eq!(stored, vec![true; 3]);
+        let copies = shared(&cache, "a").await;
+        assert!(
+            copies[0].shares_fields_with(&copies[1]) && copies[0].shares_fields_with(&copies[2])
+        );
+        assert_eq!(
+            cache.get("t/append", "a").await,
+            Some(json!({"id": "a", "_version": "e:3"}))
+        );
+    }
+
+    /// Merging into a shared copy that is not an object (or with a patch that
+    /// is not one) still follows the whole-value merge rules.
+    #[test]
+    fn a_shared_merge_matches_the_whole_value_merge() {
+        let cases = [
+            (
+                json!({"a": 1, "_version": "e:1"}),
+                json!({"b": 2, "_version": "e:2"}),
+            ),
+            (json!({"a": 1, "_version": "e:1"}), json!({"b": 2})),
+            (json!({"a": 1, "_version": "e:1"}), json!([1, 2])),
+            (json!([1, 2]), json!([3])),
+            (json!([1, 2]), json!({"a": 1, "_version": "e:2"})),
+            (json!("text"), json!(5)),
+            (
+                json!({"_version": "e:1", "list": [1]}),
+                json!({"list": [2, 3, 4]}),
+            ),
+        ];
+        for (base, patch) in cases {
+            let append = ["list".to_string()];
+            let mut expected = base.clone();
+            deep_merge_with_append(&mut expected, patch.clone(), &append, 2);
+            let mut entity = SharedEntity::new(base.clone());
+            let other = entity.clone();
+            merge_shared(&mut entity, patch.clone(), &append, 2);
+            assert_eq!(entity.to_value(), expected, "{base} <- {patch}");
+            assert_eq!(other.to_value(), base, "the other holder's copy");
+        }
+    }
 }

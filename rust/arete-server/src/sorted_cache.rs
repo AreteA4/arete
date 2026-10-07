@@ -1081,4 +1081,68 @@ mod tests {
         cache.upsert_bounded("1".to_string(), partial, 3);
         assert_eq!(cache.ordered_keys(), ["300", "200", "100"]);
     }
+
+    /// A whole entity, holding every field the cached copy has, is kept as
+    /// given: the cache shares its fields instead of copying them.
+    #[test]
+    fn a_whole_update_shares_the_given_entity() {
+        let mut cache = SortedViewCache::new(
+            "test/top".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+        cache.upsert(
+            "a".to_string(),
+            json!({"score": 1, "name": "a", "_version": "e:1"}),
+        );
+        let update =
+            SharedEntity::new(json!({"score": 2, "name": "a", "extra": true, "_version": "e:2"}));
+        cache.upsert("a".to_string(), update.clone());
+        let held = cache.get("a").unwrap();
+        assert!(held.shares_fields_with(&update));
+        assert_eq!(*held, update);
+    }
+
+    /// An update that lacks a field the cached copy has keeps that field, in
+    /// a copy of its own: the entity it was given is left as it was.
+    #[test]
+    fn an_update_lacking_held_fields_merges_into_its_own_copy() {
+        let mut cache = SortedViewCache::new(
+            "test/top".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+        cache.upsert(
+            "a".to_string(),
+            json!({"score": 1, "nested": {"x": 1, "y": 1}, "_version": "e:1"}),
+        );
+        let update = SharedEntity::new(json!({"score": 2, "nested": {"x": 2}}));
+        cache.upsert("a".to_string(), update.clone());
+        let held = cache.get("a").unwrap();
+        assert!(!held.shares_fields_with(&update));
+        assert_eq!(
+            held.to_value(),
+            json!({"score": 2, "nested": {"x": 2, "y": 1}, "_version": "e:1"})
+        );
+        assert_eq!(update.to_value(), json!({"score": 2, "nested": {"x": 2}}));
+    }
+
+    /// `_version` sorts like any other field, though copies keep it apart
+    /// from the fields they share.
+    #[test]
+    fn a_version_sort_reads_each_copys_own_version() {
+        let mut cache = SortedViewCache::new(
+            "test/versions".to_string(),
+            vec!["_version".to_string()],
+            SortOrder::Desc,
+        );
+        let first = SharedEntity::new(json!({"id": 1, "_version": "e:1"}));
+        let (fields, _) = first.clone().into_parts();
+        cache.upsert("a".to_string(), first);
+        cache.upsert(
+            "b".to_string(),
+            SharedEntity::from_parts(fields, Some(json!("e:2"))),
+        );
+        assert_eq!(cache.ordered_keys(), ["b", "a"]);
+    }
 }
