@@ -4828,6 +4828,79 @@ mod tests {
             socket.close(None).await.ok();
         }
 
+        /// Holders of the cached entity's fields beyond the cache and the
+        /// copy this reads.
+        async fn holders(server: &StateServer, key: &str) -> usize {
+            let entity = server.entity_cache.get_shared(ROUND, key).await.unwrap();
+            Arc::strong_count(entity.fields()) - 2
+        }
+
+        /// Wait until `held` reports `expected`: a subscription's task takes
+        /// over what it holds just after its snapshot reaches the client.
+        async fn settle(mut held: impl AsyncFnMut() -> usize, expected: usize) {
+            for _ in 0..200 {
+                if held().await == expected {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            assert_eq!(held().await, expected);
+        }
+
+        /// What a state subscriber keeps to measure catch-ups against is the
+        /// cached entity it was sent, or the frame the bus forwarded: shared,
+        /// never a copy of its own.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn state_subscribers_share_what_they_were_sent() {
+            let server = StateServer::start().await;
+            server
+                .create(
+                    "7",
+                    json!({"id": 7, "detail": {"a": 1}}),
+                    "100:000000000001",
+                )
+                .await;
+            let mut sockets = Vec::new();
+            for _ in 0..3 {
+                sockets.push(server.subscribe("7").await);
+            }
+            settle(|| holders(&server, "7"), 3).await;
+
+            // A whole entity forwarded from the bus: each subscriber keeps the
+            // frame the bus holds, not the entity it carries.
+            let sent = server.entity_cache.get_shared(ROUND, "7").await.unwrap();
+            let whole = json!({"id": 7, "detail": {"b": 2}, "_seq": "101:000000000001"});
+            server
+                .entity_cache
+                .store_whole(ROUND, "7", whole.clone())
+                .await;
+            let frame = Arc::new(Bytes::from(
+                json!({
+                    "mode": "state",
+                    "entity": ROUND,
+                    "op": "upsert",
+                    "key": "7",
+                    "data": whole,
+                    "seq": "101:000000000001",
+                })
+                .to_string(),
+            ));
+            server
+                .bus_manager
+                .publish_state(ROUND, "7", frame.clone())
+                .await;
+            for socket in &mut sockets {
+                assert_eq!(next_frame(socket).await["op"], "upsert");
+            }
+            // This test's handle, the bus's, and one per subscriber.
+            settle(async || Arc::strong_count(&frame), 2 + sockets.len()).await;
+            // Only this test still holds the entity they were sent before.
+            settle(async || Arc::strong_count(sent.fields()), 1).await;
+            for mut socket in sockets {
+                socket.close(None).await.ok();
+            }
+        }
+
         /// A catch-up resends a field a forwarded patch set even when the
         /// entity has set it back to the value the client last received
         /// whole: the client still holds the forwarded value.
