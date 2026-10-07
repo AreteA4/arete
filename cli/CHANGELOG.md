@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## [0.30.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.29.1...a4-cli-v0.30.0) (2026-10-07)
+
+
+### Features
+
+* **cli:** reconnect a4 stream when the connection drops ([4c37890](https://github.com/AreteA4/arete/commit/4c378906a0708e790ab45c3f432018b444caafe6))
+* **cli:** reconnect a4 stream when the connection drops ([f797b3e](https://github.com/AreteA4/arete/commit/f797b3e8883603b1913ecf6183ca6fbbe643db5a))
+
+
+### Bug Fixes
+
+* **cli:** replay recordings across a reconnect the way the stream ran ([9d11d87](https://github.com/AreteA4/arete/commit/9d11d874599527158d3992c22f807675ab9afed0))
+* **cli:** start the TUI entity list over after a reconnect without snapshots ([4fc21dc](https://github.com/AreteA4/arete/commit/4fc21dcdd2bab2391a096e0ea9ff03f7eba4c26c))
+* **sdk:** generate UpperCamelCase Rust stack type names ([239c6d7](https://github.com/AreteA4/arete/commit/239c6d763013a3e3198fd32fa3e8e4abd73f7339))
+* **sdk:** generate UpperCamelCase stack type names ([8c21afb](https://github.com/AreteA4/arete/commit/8c21afbf9e59fb9ba3e4bfdd2ba77762f6454698))
+* **sdk:** PascalCase TypeScript stack type aliases ([5624d1f](https://github.com/AreteA4/arete/commit/5624d1f25bc6ab68cd087e2eb84cd6e2ed9a327c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.29.1 to 0.30.0
+    * arete-mcp bumped from 0.29.1 to 0.30.0
+
 ## [0.29.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.29.0...a4-cli-v0.29.1) (2026-10-06)
 
 

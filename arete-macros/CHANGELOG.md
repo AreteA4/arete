@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.30.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.29.1...arete-macros-v0.30.0) (2026-10-07)
+
+
+### Bug Fixes
+
+* **vm:** replay queued account updates with their own timestamp ([81af3f7](https://github.com/AreteA4/arete/commit/81af3f7df3d14a8b5bfd13aa079ee4fc67b5e953))
+* **vm:** stamp events and captures with the update's timestamp ([a4a9035](https://github.com/AreteA4/arete/commit/a4a90350cadb7dd5d45f42bb3b598e8aeb4820e5))
+
 ## [0.29.1](https://github.com/AreteA4/arete/compare/arete-macros-v0.29.0...arete-macros-v0.29.1) (2026-10-06)
 
 

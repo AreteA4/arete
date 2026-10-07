@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.30.0](https://github.com/AreteA4/arete/compare/arete-server-v0.29.1...arete-server-v0.30.0) (2026-10-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **server:** `SortedViewCache::get` returns `&SharedEntity` instead of `&Value`. Indexing a field (`entity["field"]`) still works;
+
+### Performance Improvements
+
+* **server:** compare restored copies only within one export ([89d413f](https://github.com/AreteA4/arete/commit/89d413f1e233a83497c0ad9775709a6000b01d55))
+* **server:** read cached entities without copying them ([8891e9b](https://github.com/AreteA4/arete/commit/8891e9b6e022d0dbfb3ad09ee41a39bbc0981874))
+* **server:** share cached entities across views instead of copying them per view ([2c69455](https://github.com/AreteA4/arete/commit/2c69455b8fcc74bf7d874bd73f76ce64ecc05a33))
+* **server:** share one entity copy across an export's views ([44e9d0b](https://github.com/AreteA4/arete/commit/44e9d0bce44a0867c4b45071b10dcb3d4a097610))
+
+
+### Code Refactoring
+
+* **server:** hold cached entities as shared values ([121fd40](https://github.com/AreteA4/arete/commit/121fd40ea983a775e616dc816ca184a93e21deaf))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.29.1 to 0.30.0
+
 ## [0.29.1](https://github.com/AreteA4/arete/compare/arete-server-v0.29.0...arete-server-v0.29.1) (2026-10-06)
 
 

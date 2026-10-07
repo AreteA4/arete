@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.0](https://github.com/AreteA4/arete/compare/arete-python-v0.29.1...arete-python-v0.30.0) (2026-10-07)
+
+
+### Miscellaneous Chores
+
+* **arete-python:** Synchronize arete versions
+
 ## [0.29.1](https://github.com/AreteA4/arete/compare/arete-python-v0.29.0...arete-python-v0.29.1) (2026-10-06)
 
 ### Dependencies
