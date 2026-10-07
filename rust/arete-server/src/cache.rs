@@ -1345,19 +1345,21 @@ impl EntityCache {
     ///
     /// Entities are inserted as-is (no merge): a snapshot holds fully
     /// projected entities, not patches. A snapshot saves each view's copy of
-    /// an entity on its own, so views whose copies have the same fields (all
-    /// but `_version`) share them again, as they did when saved.
+    /// an entity on its own, so views of one export (`{export}/{mode}`) whose
+    /// copies have the same fields (all but `_version`) share them again, as
+    /// they did when saved. Only copies of one export are compared.
     pub async fn hydrate(&self, views: Vec<(String, Vec<(String, Value)>)>) {
         let mut caches = self.caches.write().await;
         caches.clear();
-        let mut restored: HashMap<String, Vec<Arc<Value>>> = HashMap::new();
+        let mut restored: HashMap<(String, String), Vec<Arc<Value>>> = HashMap::new();
         for (view_id, entries) in views {
+            let export = view_id.split('/').next().unwrap_or_default().to_string();
             let view = caches
                 .entry(view_id)
                 .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
             for (key, entity) in entries.into_iter().rev() {
                 let (fields, version) = SharedEntity::new(entity).into_parts();
-                let seen = restored.entry(key.clone()).or_default();
+                let seen = restored.entry((export.clone(), key.clone())).or_default();
                 let fields = match seen.iter().find(|held| **held == fields) {
                     Some(held) => held.clone(),
                     None => {
@@ -3044,11 +3046,19 @@ mod tests {
         )
         .await;
         let mut dump = cache.dump().await;
+        // Another export's entity under the same key is not compared, even
+        // when it happens to have the same fields.
+        dump.push((
+            "other/list".to_string(),
+            vec![("a".to_string(), json!({"id": "a", "events": [1, 2]}))],
+        ));
         dump.sort_by(|left, right| left.0.cmp(&right.0));
 
         let restored = EntityCache::new();
         restored.hydrate(dump.clone()).await;
+        let other = restored.get_shared("other/list", "a").await.unwrap();
         let copies = shared(&restored, "a").await;
+        assert!(!other.shares_fields_with(&copies[0]));
         assert!(
             copies[0].shares_fields_with(&copies[1]) && copies[0].shares_fields_with(&copies[2])
         );
