@@ -104,7 +104,8 @@ pub async fn run_tui(
         }
     };
 
-    let mut app = App::new(view.to_string(), display_url, Arc::clone(&dropped_frames));
+    let mut app = App::new(view.to_string(), display_url, Arc::clone(&dropped_frames))
+        .with_snapshots(!args.no_snapshot);
 
     // Main loop: poll terminal events + receive frames
     let tick_rate = std::time::Duration::from_millis(50);
