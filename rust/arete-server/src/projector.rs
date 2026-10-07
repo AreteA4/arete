@@ -1,7 +1,8 @@
 use crate::bus::{BusManager, BusMessage};
-use crate::cache::{CacheWrite, EntityCache, LifetimeOrdering, PatchOrigin};
+use crate::cache::{CacheWrite, EntityCache, LifetimeOrdering, PatchOrigin, ViewVersion};
 use crate::mutation_batch::{MutationBatch, SlotContext, SlotIndexDomain};
-use crate::view::{ViewIndex, ViewSpec};
+use crate::shared_entity::{split_version, with_version, SharedEntity};
+use crate::view::{Projection, ViewIndex, ViewSpec};
 use crate::websocket::frame::{apply_wire_format, Mode, SourceFrame};
 use arete_interpreter::vm::{VmContext, WholeEntityRequests};
 use arete_interpreter::{AccountPosition, CanonicalLog, WholeEntity};
@@ -242,19 +243,35 @@ impl FrameVersions {
         }
     }
 
-    /// Stamp the next version into `data`. Mutations are objects; anything
-    /// else has nowhere to carry one and goes out unversioned.
-    fn stamp(&self, data: &mut Value) {
-        let Value::Object(map) = data else {
+    /// The next version, for a frame whose data is `data`. Mutations are
+    /// objects; anything else has nowhere to carry one and goes out
+    /// unversioned.
+    fn next(&self, data: &Value) -> Option<Value> {
+        if !data.is_object() {
             debug!("mutation is not an object; publishing it without a version");
-            return;
-        };
+            return None;
+        }
         let counter = self.last.fetch_add(1, Ordering::Relaxed) + 1;
-        map.insert(
-            "_version".to_string(),
-            Value::String(format!("{}:{counter}", self.epoch)),
-        );
+        Some(Value::String(format!("{}:{counter}", self.epoch)))
     }
+}
+
+/// One view's frame for a mutation, built before any view's cache write.
+struct PendingFrame<'a> {
+    spec: &'a ViewSpec,
+    /// Which of the mutation's distinct projections the view keeps.
+    projection: usize,
+    /// The `_version` stamped for this view.
+    version: Option<Value>,
+    output: FrameOutput,
+}
+
+enum FrameOutput {
+    /// A change's frame, serialized (and, for a replayable append view,
+    /// already on the journal).
+    Change(Arc<Bytes>),
+    /// A resent whole entity's data, published only if the cache stores it.
+    Whole(Value),
 }
 
 pub struct Projector {
@@ -584,9 +601,14 @@ impl Projector {
         let mut frames_published = 0u32;
         let mut refused = false;
 
-        for (i, spec) in matching_specs.into_iter().enumerate() {
+        // The views this mutation reaches. A whole entity is checked when it
+        // is stored; a change must first pass each view's lifetime ordering.
+        // Each view's ordering is its own, so checking every view before any
+        // of them is written decides exactly what checking each in turn would.
+        let mut accepted: SmallVec<[&ViewSpec; 4]> = SmallVec::new();
+        for spec in matching_specs {
             if !whole {
-                let accepted = match source_domain {
+                let accepts = match source_domain {
                     Some(source_domain) => {
                         self.entity_cache
                             .accepts_ordered_lifetime_mutation_in_domain(
@@ -610,45 +632,56 @@ impl Projector {
                             .await
                     }
                 };
-                if !accepted {
+                if !accepts {
                     continue;
                 }
             }
-            let is_last = i == match_count - 1;
-            let patch_data = if is_last {
+            accepted.push(spec);
+        }
+
+        // Views that keep the same fields get the same projected patch, which
+        // the cache then stores (or merges) once for all of them. A `_version`
+        // the patch carries is dropped: each view's frame stamps its own.
+        let mut projections: SmallVec<[(&Projection, Value); 1]> = SmallVec::new();
+        for spec in &accepted {
+            if !projections
+                .iter()
+                .any(|(projection, _)| projection.fields == spec.projection.fields)
+            {
+                projections.push((&spec.projection, Value::Null));
+            }
+        }
+        let distinct = projections.len();
+        for (index, (projection, projected)) in projections.iter_mut().enumerate() {
+            let source = if index + 1 == distinct {
                 std::mem::take(&mut patch)
             } else {
                 patch.clone()
             };
+            *projected = split_version(projection.apply(source)).0;
+        }
 
+        let mut pending: SmallVec<[PendingFrame<'_>; 4]> = SmallVec::new();
+        for spec in accepted {
+            let projection = projections
+                .iter()
+                .position(|(projection, _)| projection.fields == spec.projection.fields)
+                .unwrap_or_default();
+            let fields = &projections[projection].1;
             // Stamped after projection, which a field list could otherwise
-            // strip it from, and before the cache merge and the frame, so
+            // strip it from, and before the cache write and the frame, so
             // both carry it.
-            let mut projected = spec.projection.apply(patch_data);
-            self.versions.stamp(&mut projected);
-            let mut wire_data = projected.clone();
+            let version = self.versions.next(fields);
+            let mut wire_data = with_version(fields.clone(), version.clone());
             apply_wire_format(&mut wire_data, &spec.wire_format);
 
-            let seq = seq.clone();
-
             if whole {
-                frames_published += self
-                    .apply_whole_entity(
-                        spec,
-                        &key,
-                        projected,
-                        wire_data,
-                        (
-                            RememberedChange {
-                                seq,
-                                source_domain,
-                                account_position: resend_account_position,
-                            },
-                            requested_resend,
-                        ),
-                        json_buffer,
-                    )
-                    .await?;
+                pending.push(PendingFrame {
+                    spec,
+                    projection,
+                    version,
+                    output: FrameOutput::Whole(wire_data),
+                });
                 continue;
             }
 
@@ -672,7 +705,7 @@ impl Projector {
                 key: key.clone(),
                 data: wire_data,
                 append: append.clone(),
-                seq,
+                seq: seq.clone(),
                 offset: None,
             };
 
@@ -700,62 +733,108 @@ impl Projector {
                     Arc::new(Bytes::copy_from_slice(json_buffer))
                 }
             };
+            pending.push(PendingFrame {
+                spec,
+                projection,
+                version,
+                output: FrameOutput::Change(payload),
+            });
+        }
 
-            let write = self
-                .entity_cache
-                .upsert_with_ordering(
-                    &spec.id,
+        if whole {
+            frames_published += self
+                .apply_whole_entity(
                     &key,
-                    projected,
-                    &frame.append,
-                    origin,
-                    LifetimeOrdering {
-                        account_position,
-                        source_seq: frame.seq.as_deref(),
-                        // Account mutations carry their authoritative
-                        // position. Every other source keeps its own recency
-                        // cursor; instruction and resolver offsets are never
-                        // compared with one another.
-                        source_domain: account_position
-                            .is_none()
-                            .then_some(source_domain)
-                            .flatten(),
-                    },
+                    projections,
+                    pending,
+                    (
+                        RememberedChange {
+                            seq: seq.clone(),
+                            source_domain,
+                            account_position: resend_account_position,
+                        },
+                        requested_resend,
+                    ),
+                    json_buffer,
                 )
-                .await;
-
-            match write {
-                CacheWrite::Refused { patch } => {
-                    refused = true;
-                    if spec.mode == Mode::List {
-                        self.merge_into_held_derived_entities(&spec.id, &key, patch, &frame.append)
-                            .await;
-                    }
-                }
-                CacheWrite::Merged | CacheWrite::Created => {
-                    if spec.mode == Mode::List {
-                        self.update_derived_view_caches(&spec.id, &key).await;
-                    }
+                .await?;
+        } else {
+            // Every view's cache write happens before any view publishes, so a
+            // subscriber reading the cache on a frame finds it written.
+            let ordering = LifetimeOrdering {
+                account_position,
+                source_seq: seq.as_deref(),
+                // Account mutations carry their authoritative position. Every
+                // other source keeps its own recency cursor; instruction and
+                // resolver offsets are never compared with one another.
+                source_domain: account_position
+                    .is_none()
+                    .then_some(source_domain)
+                    .flatten(),
+            };
+            let mut writes: SmallVec<[Option<CacheWrite>; 4]> =
+                pending.iter().map(|_| None).collect();
+            for (projection, (_, fields)) in projections.into_iter().enumerate() {
+                let members: SmallVec<[usize; 4]> = pending
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, frame)| frame.projection == projection)
+                    .map(|(index, _)| index)
+                    .collect();
+                let views: SmallVec<[ViewVersion<'_>; 4]> = members
+                    .iter()
+                    .map(|&index| ViewVersion {
+                        view_id: &pending[index].spec.id,
+                        version: pending[index].version.clone(),
+                    })
+                    .collect();
+                let results = self
+                    .entity_cache
+                    .upsert_views(&key, fields, &views, &append, origin, ordering)
+                    .await;
+                for (index, write) in members.into_iter().zip(results) {
+                    writes[index] = Some(write);
                 }
             }
 
-            let message = Arc::new(BusMessage {
-                key: key.clone(),
-                entity: spec.id.clone(),
-                payload,
-            });
-
-            self.publish_frame(spec, message).await;
-            frames_published += 1;
-
-            #[cfg(feature = "otel")]
-            if let Some(ref metrics) = self.metrics {
-                let mode_str = match spec.mode {
-                    Mode::List => "list",
-                    Mode::State => "state",
-                    Mode::Append => "append",
+            for (frame, write) in pending.into_iter().zip(writes) {
+                let (Some(write), FrameOutput::Change(payload)) = (write, frame.output) else {
+                    continue;
                 };
-                metrics.record_frame_published(mode_str, &spec.export);
+                let spec = frame.spec;
+                match write {
+                    CacheWrite::Refused { patch } => {
+                        refused = true;
+                        if spec.mode == Mode::List {
+                            self.merge_into_held_derived_entities(&spec.id, &key, patch, &append)
+                                .await;
+                        }
+                    }
+                    CacheWrite::Merged | CacheWrite::Created => {
+                        if spec.mode == Mode::List {
+                            self.update_derived_view_caches(&spec.id, &key).await;
+                        }
+                    }
+                }
+
+                let message = Arc::new(BusMessage {
+                    key: key.clone(),
+                    entity: spec.id.clone(),
+                    payload,
+                });
+
+                self.publish_frame(spec, message).await;
+                frames_published += 1;
+
+                #[cfg(feature = "otel")]
+                if let Some(ref metrics) = self.metrics {
+                    let mode_str = match spec.mode {
+                        Mode::List => "list",
+                        Mode::State => "state",
+                        Mode::Append => "append",
+                    };
+                    metrics.record_frame_published(mode_str, &spec.export);
+                }
             }
         }
 
@@ -777,8 +856,9 @@ impl Projector {
     }
 
     /// Store a whole entity the VM resent for a key the cache had to refuse,
-    /// and tell list and state subscribers. `projected` and `seq` carry the
-    /// position of the entity's latest change, not the resend's batch.
+    /// and tell list and state subscribers. `pending` carries each view's
+    /// frame data, and `resend` the position of the entity's latest change,
+    /// not the resend's batch.
     ///
     /// It is state, not an event: append views get only their cache entry, and
     /// neither the journal nor their tape subscribers see it. List and state
@@ -786,63 +866,87 @@ impl Projector {
     /// client that holds the key and uses to (re)admit it to windows.
     async fn apply_whole_entity(
         &self,
-        spec: &ViewSpec,
         key: &str,
-        projected: Value,
-        wire_data: Value,
+        projections: SmallVec<[(&Projection, Value); 1]>,
+        pending: SmallVec<[PendingFrame<'_>; 4]>,
         resend: (RememberedChange, bool),
         json_buffer: &mut Vec<u8>,
     ) -> anyhow::Result<u32> {
         let (position, requested_resend) = resend;
-        let stored = if requested_resend {
-            self.entity_cache
-                .store_whole_for_ordering_in_domain(
-                    &spec.id,
-                    key,
-                    projected,
-                    position.account_position,
+        let mut stored: SmallVec<[bool; 4]> = pending.iter().map(|_| false).collect();
+        // A delete cancels its outstanding request, so with a linked VM a late
+        // whole result with no matching request belongs to an old lifetime
+        // and is not stored. Sources without a linked VM may still explicitly
+        // vouch that a mutation is whole; there is no request to match.
+        if requested_resend || !self.resync.is_linked() {
+            let requested_source = requested_resend.then(|| {
+                (
                     position.seq.as_deref(),
                     position.source_domain.unwrap_or(SlotIndexDomain::Legacy),
                 )
-                .await
-        } else if self.resync.is_linked() {
-            // A delete cancels its outstanding request. A late whole result
-            // with no matching request therefore belongs to an old lifetime.
-            false
-        } else {
-            // Sources without a linked VM may still explicitly vouch that a
-            // mutation is whole; there is no asynchronous request to match.
-            self.entity_cache
-                .store_whole_for_lifetime(&spec.id, key, projected, position.account_position)
-                .await
-        };
-        if !stored {
-            return Ok(0);
+            });
+            for (projection, (_, fields)) in projections.into_iter().enumerate() {
+                let members: SmallVec<[usize; 4]> = pending
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, frame)| frame.projection == projection)
+                    .map(|(index, _)| index)
+                    .collect();
+                let views: SmallVec<[ViewVersion<'_>; 4]> = members
+                    .iter()
+                    .map(|&index| ViewVersion {
+                        view_id: &pending[index].spec.id,
+                        version: pending[index].version.clone(),
+                    })
+                    .collect();
+                let results = self
+                    .entity_cache
+                    .store_whole_views(
+                        key,
+                        fields,
+                        &views,
+                        position.account_position,
+                        requested_source,
+                    )
+                    .await;
+                for (index, result) in members.into_iter().zip(results) {
+                    stored[index] = result;
+                }
+            }
         }
-        match spec.mode {
-            Mode::Append => return Ok(0),
-            Mode::List => self.update_derived_view_caches(&spec.id, key).await,
-            Mode::State => {}
+
+        let mut published = 0;
+        for (frame, stored) in pending.into_iter().zip(stored) {
+            let (true, FrameOutput::Whole(wire_data)) = (stored, frame.output) else {
+                continue;
+            };
+            let spec = frame.spec;
+            match spec.mode {
+                Mode::Append => continue,
+                Mode::List => self.update_derived_view_caches(&spec.id, key).await,
+                Mode::State => {}
+            }
+            let frame = SourceFrame {
+                mode: spec.mode,
+                export: spec.id.clone(),
+                op: "upsert",
+                key: key.to_string(),
+                data: wire_data,
+                append: Vec::new(),
+                seq: position.seq.clone(),
+                offset: None,
+            };
+            json_buffer.clear();
+            serde_json::to_writer(&mut *json_buffer, &frame)?;
+            let message = Arc::new(BusMessage {
+                key: key.to_string(),
+                entity: spec.id.clone(),
+                payload: Arc::new(Bytes::copy_from_slice(json_buffer)),
+            });
+            self.publish_frame(spec, message).await;
+            published += 1;
         }
-        let frame = SourceFrame {
-            mode: spec.mode,
-            export: spec.id.clone(),
-            op: "upsert",
-            key: key.to_string(),
-            data: wire_data,
-            append: Vec::new(),
-            seq: position.seq,
-            offset: None,
-        };
-        json_buffer.clear();
-        serde_json::to_writer(&mut *json_buffer, &frame)?;
-        let message = Arc::new(BusMessage {
-            key: key.to_string(),
-            entity: spec.id.clone(),
-            payload: Arc::new(Bytes::copy_from_slice(json_buffer)),
-        });
-        self.publish_frame(spec, message).await;
-        Ok(1)
+        Ok(published)
     }
 
     pub(crate) fn extract_key(key: &serde_json::Value) -> String {
@@ -872,12 +976,16 @@ impl Projector {
             return;
         }
 
-        let entity_data = match self.entity_cache.get(source_view_id, entity_key).await {
-            Some(data) => data,
-            None => return,
+        // The source view's own copy: derived views share its fields.
+        let Some(entity) = self
+            .entity_cache
+            .get_shared(source_view_id, entity_key)
+            .await
+        else {
+            return;
         };
 
-        // Bound each derived sorted copy by the source view's cache size,
+        // Bound each derived sorted view by the source view's cache size,
         // evicting from the bottom of the sort order (see `SortedViewCache`).
         let max_entries = self.entity_cache.max_entities_per_view();
         let sorted_caches = self.view_index.sorted_caches();
@@ -885,9 +993,8 @@ impl Projector {
 
         // A derived view holds only the entities its filter passes, so one
         // that stops passing leaves it. Of the rest, only a view that would
-        // keep the entity gets a copy of it: once a view is full, most updates
-        // sort below its last entry. The last one gets the entity itself.
-        let mut keeping: SmallVec<[&str; 4]> = SmallVec::new();
+        // keep the entity holds on to it: once a view is full, most updates
+        // sort below its last entry.
         for spec in &derived_views {
             let Some(cache) = caches.get_mut(&spec.id) else {
                 continue;
@@ -896,33 +1003,18 @@ impl Projector {
                 .pipeline
                 .as_ref()
                 .and_then(|pipeline| pipeline.filter.as_ref())
-                .is_none_or(|filter| filter.matches(&entity_data));
+                .is_none_or(|filter| filter.matches(&entity));
             if !passes {
                 cache.remove(entity_key);
                 continue;
             }
-            if cache.would_keep(entity_key, &entity_data, max_entries) {
-                keeping.push(spec.id.as_str());
+            if cache.would_keep(entity_key, &entity, max_entries) {
+                cache.upsert_bounded(entity_key.to_string(), entity.clone(), max_entries);
+                debug!(
+                    "Updated sorted cache for derived view {} with key {}",
+                    spec.id, entity_key
+                );
             }
-        }
-        let mut entity_data = Some(entity_data);
-        for (index, view_id) in keeping.iter().enumerate() {
-            let Some(cache) = caches.get_mut(*view_id) else {
-                continue;
-            };
-            let entity = if index + 1 == keeping.len() {
-                entity_data.take()
-            } else {
-                entity_data.clone()
-            };
-            let Some(entity) = entity else {
-                continue;
-            };
-            cache.upsert_bounded(entity_key.to_string(), entity, max_entries);
-            debug!(
-                "Updated sorted cache for derived view {} with key {}",
-                view_id, entity_key
-            );
         }
     }
 
@@ -934,7 +1026,8 @@ impl Projector {
     /// so the patch merges into it exactly as it would have in the entity
     /// cache. A view that does not hold the key gets nothing: the patch alone
     /// is not an entity, and inserting it would rank a handful of changed
-    /// fields as though they were the whole entity.
+    /// fields as though they were the whole entity. Views that shared the
+    /// entity's fields share the merged ones.
     async fn merge_into_held_derived_entities(
         &self,
         source_view_id: &str,
@@ -949,15 +1042,29 @@ impl Projector {
         let max_entries = self.entity_cache.max_entities_per_view();
         let sorted_caches = self.view_index.sorted_caches();
         let mut caches = sorted_caches.write().await;
+        // The entities merged so far: what each view held, and the result.
+        let mut merged: SmallVec<[(SharedEntity, SharedEntity); 2]> = SmallVec::new();
         for spec in &derived_views {
             let Some(cache) = caches.get_mut(&spec.id) else {
                 continue;
             };
-            let Some(mut entity) = cache.get(entity_key).cloned() else {
+            let Some(held) = cache.get(entity_key).cloned() else {
                 continue;
             };
-            self.entity_cache
-                .merge_patch_shared(&mut entity, patch.clone(), append_paths);
+            // The same patch merged into the same entity gives the same
+            // entity: reuse it rather than merge (and copy) again.
+            let entity = match merged.iter().find(|(before, _)| {
+                before.shares_fields_with(&held) && before.version() == held.version()
+            }) {
+                Some((_, after)) => after.clone(),
+                None => {
+                    let mut entity = held.clone();
+                    self.entity_cache
+                        .merge_patch_shared(&mut entity, patch.clone(), append_paths);
+                    merged.push((held, entity.clone()));
+                    entity
+                }
+            };
             let passes = spec
                 .pipeline
                 .as_ref()
