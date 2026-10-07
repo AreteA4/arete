@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.31.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.30.0...arete-interpreter-v0.31.0) (2026-10-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **vm:** `StateTable::data` is no longer public. Read rows with
+
+### Features
+
+* **vm:** report the heap bytes of a state's packed rows ([987de9a](https://github.com/AreteA4/arete/commit/987de9a27ec9df1edc16195006584f15a32fd34b))
+
+
+### Performance Improvements
+
+* **vm:** keep state table rows packed instead of as JSON value trees ([f099f28](https://github.com/AreteA4/arete/commit/f099f2866484b5fd9a293fd258955fc3a858c5b2))
+* **vm:** keep state table rows packed instead of as JSON value trees ([253a147](https://github.com/AreteA4/arete/commit/253a14780787d071b0b74fa38d8b8f5221006a4c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.30.0 to 0.31.0
+
 ## [0.30.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.29.1...arete-interpreter-v0.30.0) (2026-10-07)
 
 
