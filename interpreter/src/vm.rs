@@ -4,12 +4,13 @@ use crate::ast::{
 };
 use crate::compiler::{MultiEntityBytecode, OpCode};
 use crate::debugger::{VmDebugEvent, VmDebugger, VmLookupHop};
+use crate::packed_row::PackedRow;
 use crate::Mutation;
 use dashmap::DashMap;
 use lru::LruCache;
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -681,12 +682,6 @@ pub struct VmContext {
     /// `ReadOrInitState` and has not written back yet: state id, key and the
     /// register holding it. See [`VmContext::execute_handler_segment`].
     taken_entity: Option<(u32, Value, Register)>,
-    /// Whether a handler's state register must still hold the entity after
-    /// the event; see [`VmContext::retain_state_register`].
-    retain_state_register: bool,
-    /// The register `UpdateState` moved into its table in this segment, with
-    /// the table and key, for `EmitMutation` to read the entity from there.
-    moved_state: Option<(Register, u32, Value)>,
     /// Entities to send whole at the end of the next call; see
     /// [`WholeEntityRequests`].
     whole_entity_requests: Option<WholeEntityRequests>,
@@ -1177,6 +1172,10 @@ pub struct VmCacheStats {
     /// Entries in the state's instruction deduplication cache; zero for a
     /// state whose table does not exist yet.
     pub instruction_dedup_entries: usize,
+    /// Heap bytes of the state's entity rows, which the table keeps packed
+    /// (see [`StateTable`]). Counts the rows alone, not their keys or the
+    /// table's bookkeeping.
+    pub state_table_row_bytes: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1273,9 +1272,16 @@ impl Default for VersionTracker {
     }
 }
 
+/// One entity's rows and the indexes and caches that resolve events to them.
+///
+/// Rows are kept packed (see [`PackedRow`]): each is a single allocation
+/// about the size of its JSON or smaller, where a `Value` tree costs several
+/// times that. A handler gets the row unpacked into a `Value` from
+/// [`Self::take_and_touch`] and writes it back with
+/// [`Self::insert_with_eviction`], which packs it again.
 #[derive(Debug)]
 pub struct StateTable {
-    pub data: DashMap<Value, Value>,
+    data: DashMap<Value, PackedRow>,
     /// Keys in access order, least recently used first, so eviction and
     /// touching are O(1). Only keys written through [`insert_with_eviction`]
     /// are tracked; eviction skips any that were removed some other way.
@@ -1310,6 +1316,29 @@ pub struct StateTable {
 }
 
 impl StateTable {
+    /// Number of entities held.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    pub fn contains_key(&self, key: &Value) -> bool {
+        self.data.contains_key(key)
+    }
+
+    /// Heap bytes of the packed rows.
+    pub fn row_bytes(&self) -> usize {
+        self.data.iter().map(|entry| entry.value().len()).sum()
+    }
+
+    /// A copy of the entity at `key`, without marking it used.
+    pub fn get(&self, key: &Value) -> Option<Value> {
+        self.data.get(key).map(|row| row.unpack())
+    }
+
     pub fn is_at_capacity(&self) -> bool {
         self.data.len() >= self.config.max_entries
     }
@@ -1375,7 +1404,13 @@ impl StateTable {
         evicted
     }
 
-    pub fn insert_with_eviction(&self, key: Value, value: Value) {
+    /// Store `value` as the entity at `key`, packed, evicting the least
+    /// recently used entity if the table is full and `key` is new.
+    ///
+    /// Packing reads `value` without consuming it, so a caller that still
+    /// needs the entity passes a reference rather than a copy.
+    pub fn insert_with_eviction(&self, key: Value, value: impl Borrow<Value>) {
+        let row = PackedRow::pack(value.borrow());
         let resident = self.data.contains_key(&key);
         if self.data.len() >= self.config.max_entries && !resident {
             #[cfg(feature = "otel")]
@@ -1383,14 +1418,15 @@ impl StateTable {
             let to_evict = (self.data.len() + 1).saturating_sub(self.config.max_entries);
             self.evict_lru(to_evict.max(1));
         }
-        self.data.insert(key.clone(), value);
+        self.data.insert(key.clone(), row);
         // A key neither here nor tracked is a new row. One a handler took out
         // with `take_and_touch` is still tracked, so writing it back is not.
         self.touch(&key, !resident);
     }
 
+    /// A copy of the entity at `key`, marking it used.
     pub fn get_and_touch(&self, key: &Value) -> Option<Value> {
-        let result = self.data.get(key).map(|v| v.clone());
+        let result = self.get(key);
         if result.is_some() {
             self.touch(key, false);
         }
@@ -1400,11 +1436,10 @@ impl StateTable {
     /// Take an entity out of the table for a handler to change, marking it
     /// used. The handler puts it back with [`Self::insert_with_eviction`].
     ///
-    /// Reading a copy instead leaves two copies of the entity, one of which
-    /// the write then drops; for an entity carrying arrays that is most of
-    /// what a handler costs.
+    /// The packed row is dropped rather than kept beside the unpacked entity
+    /// the handler works on, since the write replaces it anyway.
     pub fn take_and_touch(&self, key: &Value) -> Option<Value> {
-        let result = self.data.remove(key).map(|(_, value)| value);
+        let result = self.data.remove(key).map(|(_, row)| row.unpack());
         if result.is_some() {
             self.touch(key, false);
         }
@@ -1539,8 +1574,8 @@ impl StateTable {
         let recency = self.recency();
         let mut dumped = Vec::with_capacity(self.data.len());
         for (key, _) in recency.iter() {
-            if let Some(value) = self.data.get(key) {
-                dumped.push((key.clone(), value.clone()));
+            if let Some(row) = self.data.get(key) {
+                dumped.push((key.clone(), row.unpack()));
             }
         }
         drop(recency);
@@ -1548,7 +1583,7 @@ impl StateTable {
             let tracked: HashSet<Value> = dumped.iter().map(|(key, _)| key.clone()).collect();
             for entry in self.data.iter() {
                 if !tracked.contains(entry.key()) {
-                    dumped.push((entry.key().clone(), entry.value().clone()));
+                    dumped.push((entry.key().clone(), entry.value().unpack()));
                 }
             }
         }
@@ -1570,7 +1605,7 @@ impl StateTable {
         let data = DashMap::new();
         let mut recency = lru::LruCache::unbounded();
         for (key, value) in snapshot.data.iter().rev() {
-            data.insert(key.clone(), value.clone());
+            data.insert(key.clone(), PackedRow::pack(value));
             recency.put(key.clone(), false);
         }
 
@@ -1670,8 +1705,6 @@ impl VmContext {
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
-            retain_state_register: true,
-            moved_state: None,
             whole_entity_requests: None,
         };
         vm.states.insert(
@@ -1779,7 +1812,7 @@ impl VmContext {
         for (export, key) in requests.take_all() {
             let whole = bytecode.entities.get(&export).and_then(|entity| {
                 let table = self.states.get(&entity.state_id)?;
-                let row = table.data.get(&key)?.value().clone();
+                let row = table.get(&key)?;
                 let whole = Self::emitted_entity(row, &entity.non_emitted_fields);
                 whole.is_object().then_some(whole)
             });
@@ -1817,18 +1850,17 @@ impl VmContext {
         }
     }
 
-    /// Whether the entity a handler writes back stays in its state register
-    /// after the event. On by default.
+    /// Has no effect: the entity a handler writes back always stays in its
+    /// state register after the event.
     ///
-    /// Instruction hooks (`InstructionContext::with_metrics`) read and change
-    /// the entity in the state register after the event, so a caller that
-    /// runs them needs it there. Otherwise `UpdateState` can move the entity
-    /// into its table instead of copying it, and the next handler has no copy
-    /// to drop. For an entity carrying arrays those are most of a handler's
-    /// cost.
-    pub fn retain_state_register(&mut self, retain: bool) {
-        self.retain_state_register = retain;
-    }
+    /// `UpdateState` used to copy the entity into its table, and turning this
+    /// off let it move the entity instead. The table now packs the entity
+    /// straight from the register (see [`StateTable`]), which neither copies
+    /// nor moves it.
+    #[deprecated(
+        note = "the state register is always retained; packing it into the table copies nothing"
+    )]
+    pub fn retain_state_register(&mut self, _retain: bool) {}
 
     pub fn clear_debugger(&mut self) {
         self.debugger = None;
@@ -1880,8 +1912,6 @@ impl VmContext {
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
-            retain_state_register: true,
-            moved_state: None,
             whole_entity_requests: None,
         }
     }
@@ -1914,8 +1944,6 @@ impl VmContext {
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
-            retain_state_register: true,
-            moved_state: None,
             whole_entity_requests: None,
         };
         vm.states.insert(
@@ -2086,7 +2114,7 @@ impl VmContext {
                 state
                     .data
                     .iter()
-                    .map(|entry| (entry.key().clone(), entry.value().clone()))
+                    .map(|entry| (entry.key().clone(), entry.value().unpack()))
                     .collect()
             })
             .unwrap_or_default()
@@ -2381,7 +2409,7 @@ impl VmContext {
                 }
             }
 
-            state.insert_with_eviction(target.primary_key.clone(), entity_state.clone());
+            state.insert_with_eviction(target.primary_key.clone(), &entity_state);
 
             if dirty_tracker.is_empty() {
                 continue;
@@ -2645,8 +2673,7 @@ impl VmContext {
         register: Register,
     ) -> Result<()> {
         let state = self.states.get(&state_id).ok_or("State table not found")?;
-        let value = self.registers[register].clone();
-        state.insert_with_eviction(key, value);
+        state.insert_with_eviction(key, &self.registers[register]);
         Ok(())
     }
 
@@ -3489,9 +3516,8 @@ impl VmContext {
             non_emitted_fields,
         );
         if let Some((state_id, key, register)) = self.taken_entity.take() {
-            let value = self.registers[register].clone();
             if let Some(state) = self.states.get(&state_id) {
-                state.insert_with_eviction(key, value);
+                state.insert_with_eviction(key, &self.registers[register]);
             }
         }
         result
@@ -3511,7 +3537,6 @@ impl VmContext {
         non_emitted_fields: Option<&HashSet<String>>,
     ) -> Result<Vec<Mutation>> {
         self.reset_registers();
-        self.moved_state = None;
 
         let mut pc: usize = 0;
         let mut output = Vec::new();
@@ -3813,20 +3838,6 @@ impl VmContext {
                         pc += 1;
                         continue;
                     }
-                    // Moved rather than copied when nothing after this reads
-                    // the register but the mutation built from it, which then
-                    // reads the table.
-                    let move_state = !self.retain_state_register
-                        && handler[pc + 1..].iter().all(
-                            |op| matches!(op, OpCode::EmitMutation { state, .. } if state == value),
-                        );
-                    let value_data = if move_state {
-                        self.moved_state = Some((*value, actual_state_id, key_value.clone()));
-                        std::mem::take(&mut self.registers[*value])
-                    } else {
-                        self.registers[*value].clone()
-                    };
-
                     if self
                         .taken_entity
                         .as_ref()
@@ -3836,7 +3847,9 @@ impl VmContext {
                     {
                         self.taken_entity = None;
                     }
-                    state.insert_with_eviction(key_value, value_data);
+                    // Packed from the register, which keeps the entity for
+                    // the mutation built from it and any hook after the event.
+                    state.insert_with_eviction(key_value, &self.registers[*value]);
                     pc += 1;
                 }
                 OpCode::AppendToArray {
@@ -3991,16 +4004,7 @@ impl VmContext {
                             // The row, not this segment's changes: a row
                             // started by a segment that emitted nothing (an
                             // instruction hook) holds more than they do.
-                            let row = match &self.moved_state {
-                                Some((register, state_id, key)) if register == state => self
-                                    .states
-                                    .get(state_id)
-                                    .and_then(|table| {
-                                        table.data.get(key).map(|entity| entity.value().clone())
-                                    })
-                                    .unwrap_or_else(|| json!({})),
-                                _ => self.registers[*state].clone(),
-                            };
+                            let row = self.registers[*state].clone();
                             Self::creation(
                                 entity_name,
                                 primary_key,
@@ -4009,22 +4013,8 @@ impl VmContext {
                                 append,
                             )
                         } else {
-                            let patch = match &self.moved_state {
-                                Some((register, state_id, key)) if register == state => {
-                                    let table =
-                                        self.states.get(state_id).ok_or("State table not found")?;
-                                    match table.data.get(key) {
-                                        Some(entity) => Self::partial_state_with_tracker(
-                                            &entity,
-                                            &dirty_tracker,
-                                        )?,
-                                        None => json!({}),
-                                    }
-                                }
-                                _ => {
-                                    self.extract_partial_state_with_tracker(*state, &dirty_tracker)?
-                                }
-                            };
+                            let patch =
+                                self.extract_partial_state_with_tracker(*state, &dirty_tracker)?;
                             Mutation {
                                 export: entity_name.clone(),
                                 key: primary_key,
@@ -5519,7 +5509,7 @@ impl VmContext {
             }
         }
 
-        state.insert_with_eviction(op.primary_key.clone(), entity_state.clone());
+        state.insert_with_eviction(op.primary_key.clone(), &entity_state);
 
         if !op.emit {
             return Ok(vec![]);
@@ -6119,6 +6109,7 @@ impl VmContext {
                 .states
                 .get(&state_id)
                 .map_or(0, |state| state.instruction_dedup_cache.len()),
+            state_table_row_bytes: self.states.get(&state_id).map_or(0, StateTable::row_bytes),
         }
     }
 
@@ -7385,56 +7376,75 @@ mod tests {
     }
 
     #[test]
-    fn a_state_register_not_retained_is_moved_into_the_table_with_the_same_mutation() {
-        let handler = read_set_write_then(vec![emit_k()]);
+    #[allow(deprecated)]
+    fn writing_an_entity_back_packs_it_and_leaves_it_in_its_register() {
+        let handler =
+            read_set_write_then(vec![emit_k(), OpCode::CopyRegister { source: 2, dest: 5 }]);
         let seed = json!({ "amount": 1, "recent": [1, 2, 3] });
+        let written = json!({ "amount": 7, "recent": [1, 2, 3] });
 
-        let mut retained = VmContext::new();
-        retained
-            .states
+        let mut vm = VmContext::new();
+        vm.states
             .get(&0)
             .unwrap()
-            .insert_with_eviction(json!("k"), seed.clone());
-        let expected = run(&mut retained, &handler);
-        assert_eq!(
-            retained.registers[2],
-            json!({ "amount": 7, "recent": [1, 2, 3] })
-        );
+            .insert_with_eviction(json!("k"), &seed);
+        let mutations = run(&mut vm, &handler);
 
-        let mut moved = VmContext::new();
-        moved.retain_state_register(false);
-        moved
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].patch, json!({ "amount": 7 }));
+        // The mutation and anything after the write read the entity from its
+        // register, which still holds it.
+        assert_eq!(vm.registers[2], written);
+        assert_eq!(vm.registers[5], written);
+        assert_eq!(vm.get_entity_state(0, &json!("k")), Some(written.clone()));
+
+        // Not retaining the register no longer changes anything.
+        let mut not_retained = VmContext::new();
+        not_retained.retain_state_register(false);
+        not_retained
             .states
             .get(&0)
             .unwrap()
             .insert_with_eviction(json!("k"), seed);
-        let mutations = run(&mut moved, &handler);
-
         assert_eq!(
-            serde_json::to_value(&mutations).unwrap(),
-            serde_json::to_value(&expected).unwrap()
+            serde_json::to_value(run(&mut not_retained, &handler)).unwrap(),
+            serde_json::to_value(&mutations).unwrap()
         );
-        assert_eq!(moved.registers[2], Value::Null);
-        assert_eq!(
-            moved.get_entity_state(0, &json!("k")),
-            Some(json!({ "amount": 7, "recent": [1, 2, 3] }))
-        );
+        assert_eq!(not_retained.registers[2], written);
     }
 
     #[test]
-    fn a_state_register_read_after_the_write_is_copied_even_when_not_retained() {
-        let mut vm = VmContext::new();
-        vm.retain_state_register(false);
-        let handler =
-            read_set_write_then(vec![emit_k(), OpCode::CopyRegister { source: 2, dest: 5 }]);
+    fn state_table_rows_read_back_exactly_as_written() {
+        let table = small_state_table(3);
+        let row = json!({
+            "id": {"address": "So11111111111111111111111111111111111111112", "index": 7},
+            "amounts": ["0", "18446744073709551616", "340282366920938463463374607431768211455"],
+            "fees": [
+                {"fee_x": "1000", "fee_y": "0", "pending": 0},
+                {"fee_x": "1001", "fee_y": "5", "pending": 1},
+            ],
+            "price": 1.0,
+            "delta": -3,
+            "label": "caf\u{e9} \"quoted\"",
+            "empty": {},
+            "none": null,
+        });
+        table.insert_with_eviction(json!("k"), &row);
 
-        run(&mut vm, &handler);
-
-        assert_eq!(vm.registers[5], json!({ "amount": 7 }));
-        assert_eq!(
-            vm.get_entity_state(0, &json!("k")),
-            Some(json!({ "amount": 7 }))
-        );
+        for read in [
+            table.get(&json!("k")),
+            table.get_and_touch(&json!("k")),
+            table.dump().data.into_iter().next().map(|(_, row)| row),
+            table.take_and_touch(&json!("k")),
+        ] {
+            let read = read.expect("the row is there");
+            assert_eq!(read, row);
+            assert_eq!(
+                serde_json::to_string(&read).unwrap(),
+                serde_json::to_string(&row).unwrap()
+            );
+        }
+        assert!(table.is_empty(), "taking the row removes it");
     }
 
     #[test]
@@ -8399,7 +8409,7 @@ mod tests {
         }
 
         let state = vm.states.get(&0).unwrap();
-        let entity = state.data.get(&json!("pk_123")).unwrap();
+        let entity = state.get(&json!("pk_123")).unwrap();
         assert_eq!(
             entity.get("entropy_value").unwrap(),
             "deferred_value",
@@ -8562,11 +8572,11 @@ mod tests {
 
         // Check the entity state
         let state = vm.states.get(&0).unwrap();
-        let entity = state.data.get(&primary_key).unwrap();
+        let entity = state.get(&primary_key).unwrap();
 
         println!(
             "Entity state: {}",
-            serde_json::to_string_pretty(&*entity).unwrap()
+            serde_json::to_string_pretty(&entity).unwrap()
         );
 
         // Verify base value was set
@@ -9325,6 +9335,7 @@ mod snapshot_tests {
             resolver_cache_capacity().get()
         );
         assert_eq!(empty.instruction_dedup_entries, 0);
+        assert_eq!(empty.state_table_row_bytes, 0);
 
         let resolver = ResolverType::Token;
         vm.cache_resolver_value(&resolver, &json!("mint1"), &json!({"symbol": "T"}));
@@ -9334,15 +9345,19 @@ mod snapshot_tests {
         assert!(!table.is_duplicate_instruction(&json!("key-2"), "Buy", 10, 1, None));
         // An exact duplicate is not recorded again.
         assert!(table.is_duplicate_instruction(&json!("key-1"), "Buy", 10, 0, None));
+        let row = json!({"mint": "mint1", "supply": "1000000000"});
+        table.insert_with_eviction(json!("mint1"), &row);
 
         let stats = vm.get_cache_stats(0);
         assert_eq!(stats.resolver_cache_entries, 2);
         assert_eq!(stats.instruction_dedup_entries, 2);
+        assert!(stats.state_table_row_bytes > 0);
         // The resolver cache is VM-wide; a state with no table has no dedup
         // entries.
         let missing = vm.get_cache_stats(99);
         assert_eq!(missing.resolver_cache_entries, 2);
         assert_eq!(missing.instruction_dedup_entries, 0);
+        assert_eq!(missing.state_table_row_bytes, 0);
     }
 
     #[test]

@@ -32,6 +32,7 @@ pub mod event_type_helpers;
 pub mod identifiers;
 mod idl_models;
 pub mod metrics_context;
+mod packed_row;
 pub mod program_sdk;
 pub mod proto_router;
 pub mod public_artifacts;
