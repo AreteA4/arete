@@ -34,6 +34,17 @@
 //!    (`TOKEN_BALANCES` + `_STACK`), which is never reserved as a whole, so
 //!    they leave reserved words alone.
 //!
+//! # Rust stack type names
+//!
+//! The Rust types generated for a stack (`<Stack>Stack`, `<Stack>StackViews`,
+//! `<Stack>StackPrograms`, and a program-only crate's `<Stack>Programs`) are
+//! always UpperCamelCase, whatever the stack name's own casing: rustc's
+//! `non_camel_case_types` lint rejects `token_balancesStack`, which is an
+//! error under `-D warnings`. [`rust::stack_type_stem`] applies `Pascal` to
+//! the stack name, so `token_balances`, `token-balances` and `Token_Balances`
+//! all become `TokenBalances`, while names that are already UpperCamelCase,
+//! such as `OreStream`, are kept byte for byte.
+//!
 //! # Python
 //!
 //! Python generation already mapped every name through a snake_case
@@ -606,6 +617,14 @@ pub mod rust {
         identifier
     }
 
+    /// The UpperCamelCase stem of the Rust type names generated for a stack
+    /// (`TokenBalances` in `TokenBalancesStack`, `TokenBalancesStackViews`,
+    /// `TokenBalancesStackPrograms` and `TokenBalancesPrograms`); see
+    /// "Rust stack type names" in the module documentation.
+    pub fn stack_type_stem(stack_name: &str) -> String {
+        identifier_stem(stack_name, IdentifierCase::Pascal)
+    }
+
     /// A Cargo package name derived from `raw`: characters other than ASCII
     /// letters, digits, `-` and `_` become `-`, and a name that would not
     /// start with a letter or `_` is prefixed with `a`. Valid package names
@@ -908,6 +927,123 @@ mod tests {
                 is_ascii_identifier(&py, |_| false) && !python::is_keyword(&py),
                 "{raw:?} -> {py}"
             );
+        }
+    }
+
+    /// rustc's `non_camel_case_types` rule: no leading lower-case letter, no
+    /// `__`, and no `_` next to a letter.
+    fn is_upper_camel_case(name: &str) -> bool {
+        let name = name.trim_matches('_');
+        let characters = name.chars().collect::<Vec<_>>();
+        !characters.first().is_some_and(|first| first.is_lowercase())
+            && !name.contains("__")
+            && !characters.windows(2).any(|pair| {
+                (pair[0].is_alphabetic() && pair[1] == '_')
+                    || (pair[0] == '_' && pair[1].is_alphabetic())
+            })
+    }
+
+    #[test]
+    fn rust_stack_type_stems_are_upper_camel_case() {
+        let cases = [
+            // snake_case
+            ("token_balances", "TokenBalances"),
+            ("vault_stream", "VaultStream"),
+            ("vault", "Vault"),
+            ("a_b_c", "ABC"),
+            ("_private", "Private"),
+            ("token__balances", "TokenBalances"),
+            // kebab-case and other separators
+            ("token-balances", "TokenBalances"),
+            ("my.stack", "MyStack"),
+            ("my stack", "MyStack"),
+            ("ore::round", "OreRound"),
+            // mixed
+            ("Token_Balances", "TokenBalances"),
+            ("token_balances-v2", "TokenBalancesV2"),
+            ("oreStream", "OreStream"),
+            ("mixed_Case-name.v2", "MixedCaseNameV2"),
+            ("ORE_STREAM", "ORESTREAM"),
+            // digits
+            ("token_2022", "Token2022"),
+            ("token-2022", "Token2022"),
+            ("v2_pool", "V2Pool"),
+            ("ore2", "Ore2"),
+            ("9lives", "A9lives"),
+            ("_9x", "A9x"),
+            ("9_lives", "A9Lives"),
+            // no letters or digits
+            ("---", "Unnamed"),
+            ("_", "Unnamed"),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(rust::stack_type_stem(raw), expected, "{raw}");
+            for suffix in ["Stack", "StackViews", "StackPrograms", "Programs"] {
+                let name = format!("{expected}{suffix}");
+                assert!(rust::is_identifier(&name), "{raw} -> {name}");
+                assert!(is_upper_camel_case(&name), "{raw} -> {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn upper_camel_case_stack_names_keep_their_rust_type_names() {
+        // The published catalog's stack names (all but `token_balances`) and
+        // other names that are already UpperCamelCase.
+        let names = [
+            "AddressLookupTableStream",
+            "BisonfiStream",
+            "BonkswapStream",
+            "BubblegumStream",
+            "CCryptMarketStream",
+            "CCryptSwapStream",
+            "JupiterStream",
+            "JurassicLaunchpadStream",
+            "KlendStream",
+            "KvaultStream",
+            "MagicEdenM2Stream",
+            "MagicEdenMmmStream",
+            "ManifestStream",
+            "MeteoraAmmStream",
+            "MeteoraBondingStream",
+            "MeteoraDammStream",
+            "MeteoraDlmmStream",
+            "MeteoraPresaleStream",
+            "OrcaWhirlpoolStream",
+            "OreStream",
+            "PancakeswapStream",
+            "PumpAmmStream",
+            "PumpFeesStream",
+            "PumpfunStream",
+            "PythPushOracleStream",
+            "PythReceiverStream",
+            "RaydiumAmmStream",
+            "RaydiumClmmStream",
+            "RaydiumCpSwapStream",
+            "RaydiumLaunchpadStream",
+            "SolfiV2Stream",
+            "SplAtaStream",
+            "SquadsV4Stream",
+            "StakeProgramStream",
+            "SubscriptionsStream",
+            "SystemProgramStream",
+            "TensorswapStream",
+            "TesseraStream",
+            "Token2022Stream",
+            "TokenMetadataStream",
+            "WormholeCoreBridgeStream",
+            "ZincStream",
+            "HeaderStream",
+            "VaultStream",
+            "Ore",
+            "Ore2",
+            "ORE",
+            "OREStream",
+            "A9lives",
+        ];
+        for name in names {
+            assert_eq!(rust::stack_type_stem(name), name);
+            assert!(is_upper_camel_case(&format!("{name}Stack")), "{name}");
         }
     }
 

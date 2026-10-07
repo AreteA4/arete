@@ -2824,6 +2824,20 @@ mod tests {
         // Consumer smoke test: compile the generated crate against this
         // checkout's runtime. This catches invalid generated expressions,
         // module paths, re-exports, and dependency declarations.
+        compile_generated_crate(&base, &["check"], &[], "generated standalone Rust crate");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Run `cargo <command> --quiet --offline` (then `-- <rustc_args>`) on the
+    /// generated crate at `base`, compiled against this checkout's runtime
+    /// through a `[patch.crates-io]` on the generated manifest, and fail with
+    /// cargo's output when it is rejected.
+    fn compile_generated_crate(
+        base: &std::path::Path,
+        command: &[&str],
+        rustc_args: &[&str],
+        what: &str,
+    ) {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("interpreter crate lives in the repo root");
@@ -2845,17 +2859,86 @@ mod tests {
         std::fs::write(&manifest_path, manifest).expect("localize generated dependency");
 
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let checked = Command::new(cargo)
-            .args(["check", "--quiet", "--offline", "--manifest-path"])
+        let mut cargo = Command::new(cargo);
+        cargo
+            .args(command)
+            .args(["--quiet", "--offline", "--manifest-path"])
             .arg(&manifest_path)
-            .env("CARGO_TARGET_DIR", base.join("target"))
+            .env("CARGO_TARGET_DIR", base.join("target"));
+        if !rustc_args.is_empty() {
+            cargo.arg("--").args(rustc_args);
+        }
+        let compiled = cargo
             .output()
             .expect("cargo must be available for generated consumer smoke tests");
         assert!(
-            checked.status.success(),
-            "generated standalone Rust crate failed cargo check:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&checked.stdout),
-            String::from_utf8_lossy(&checked.stderr),
+            compiled.status.success(),
+            "{what} failed cargo {}:\nstdout:\n{}\nstderr:\n{}",
+            command.join(" "),
+            String::from_utf8_lossy(&compiled.stdout),
+            String::from_utf8_lossy(&compiled.stderr),
+        );
+    }
+
+    /// Rust type names derived from the stack name are UpperCamelCase however
+    /// the stack is named: the catalog's `token_balances` stack used to
+    /// generate `token_balancesStack`, `token_balancesStackViews` and
+    /// `token_balancesStackPrograms`, which rustc's `non_camel_case_types`
+    /// rejects under `-D warnings`.
+    #[test]
+    fn snake_case_stack_names_generate_upper_camel_case_rust_types() {
+        let mut spec = programs_stack_spec();
+        spec.stack_name = "token_balances".to_string();
+        let output =
+            compile_stack_spec(spec.clone(), None).expect("rust stack generation should succeed");
+
+        for declaration in [
+            "pub struct TokenBalancesStack;",
+            "impl Stack for TokenBalancesStack {",
+            "type Views = TokenBalancesStackViews;",
+            "type Programs = TokenBalancesStackPrograms;",
+            "pub struct TokenBalancesStackViews {",
+            "impl Views for TokenBalancesStackViews {",
+            "pub struct TokenBalancesStackPrograms {",
+            "impl arete_sdk::Programs for TokenBalancesStackPrograms {",
+        ] {
+            assert!(
+                output.entity_rs.contains(declaration),
+                "missing `{declaration}`:\n{}",
+                output.entity_rs
+            );
+        }
+        // The stack keeps its name as written on the wire.
+        assert!(output.entity_rs.contains("\"token_balances\""));
+        assert!(output.lib_rs.contains(
+            "pub use entity::{TokenBalancesStack, TokenBalancesStackViews, DemoThingEntityViews, TokenBalancesStackPrograms};"
+        ));
+        for file in [&output.entity_rs, &output.lib_rs, &output.types_rs] {
+            assert!(!file.contains("token_balancesStack"), "{file}");
+        }
+
+        let programs = compile_program_modules(spec, None)
+            .expect("standalone program generation should succeed");
+        assert!(programs
+            .lib_rs
+            .contains("pub use programs::TokenBalancesPrograms;"));
+        assert!(programs
+            .programs_rs
+            .contains("impl arete_sdk::ProgramSdk for TokenBalancesPrograms"));
+
+        // The generated crate compiles warning-free.
+        let base = std::env::temp_dir().join(format!(
+            "arete-rust-stack-type-names-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        write_rust_crate(&output, &base).expect("stack crate should write");
+        compile_generated_crate(
+            &base,
+            &["clippy"],
+            &["-D", "warnings"],
+            "generated `token_balances` Rust stack crate",
         );
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -4006,8 +4089,9 @@ fn compile_stack_spec_with_view_selection(
     let config = config.unwrap_or_default();
     let stack_name = &stack_spec.stack_name;
     let stack_kebab = to_kebab_case(stack_name);
-    // `{stack}Stack`, `{stack}StackViews`, `{stack}StackPrograms`.
-    let stack_ident = rust_ident::identifier_stem(stack_name, IdentifierCase::Preserve);
+    // `{stack}Stack`, `{stack}StackViews`, `{stack}StackPrograms`, always
+    // UpperCamelCase (`token_balances` -> `TokenBalancesStack`).
+    let stack_ident = rust_ident::stack_type_stem(stack_name);
 
     let mut entity_names: Vec<String> = Vec::new();
     let mut entity_specs: Vec<SerializableStreamSpec> = Vec::new();
@@ -4190,7 +4274,7 @@ pub fn compile_program_modules(
     validate_extension_modules(&config, &["pdas"])?;
     let aggregate_name = format!(
         "{}Programs",
-        rust_ident::identifier_stem(&stack_spec.stack_name, IdentifierCase::Pascal)
+        rust_ident::stack_type_stem(&stack_spec.stack_name)
     );
     // `pub use programs::<Aggregate>` would silently shadow a generated type
     // of the same name re-exported through `pub use types::*`.

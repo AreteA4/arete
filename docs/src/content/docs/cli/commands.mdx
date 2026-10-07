@@ -1232,14 +1232,18 @@ A StackManifest `name` may contain any characters, for example
 `\`, or `:`, or a name that is `.` or `..`, is rejected. Generated identifiers treat
 every character other than a letter, digit, or `_` as a word boundary:
 
-| Stack name       | TypeScript                                   | Rust                                               | Python                 |
-| ---------------- | -------------------------------------------- | -------------------------------------------------- | ---------------------- |
-| `token-balances` | `TOKEN_BALANCES_STACK`, `TokenBalancesStack` | `TokenBalancesStack`, crate `token-balances-stack` | `TOKEN_BALANCES_STACK` |
-| `my.stack`       | `MY_STACK_STACK`, `MyStackStack`             | `MyStackStack`, crate `my-stack-stack`             | `MY_STACK_STACK`       |
-| `9lives`         | `A9LIVES_STACK`, `A9livesStack`              | `A9livesStack`, crate `a9lives-stack`              | `VALUE_9LIVES_STACK`   |
+| Stack name       | TypeScript                                    | Rust                                               | Python                 |
+| ---------------- | --------------------------------------------- | -------------------------------------------------- | ---------------------- |
+| `token-balances` | `TOKEN_BALANCES_STACK`, `TokenBalancesStack`  | `TokenBalancesStack`, crate `token-balances-stack` | `TOKEN_BALANCES_STACK` |
+| `token_balances` | `TOKEN_BALANCES_STACK`, `token_balancesStack` | `TokenBalancesStack`, crate `token_balances-stack` | `TOKEN_BALANCES_STACK` |
+| `my.stack`       | `MY_STACK_STACK`, `MyStackStack`              | `MyStackStack`, crate `my-stack-stack`             | `MY_STACK_STACK`       |
+| `9lives`         | `A9LIVES_STACK`, `A9livesStack`               | `A9livesStack`, crate `a9lives-stack`              | `VALUE_9LIVES_STACK`   |
 
-Names that are already identifiers, such as `OreStream` or `token_balances`,
-keep generating exactly the names they always have. If two names generate the
+Rust type names are always UpperCamelCase, as rustc expects: `token_balances`
+generates `TokenBalancesStack`, `TokenBalancesStackViews` and
+`TokenBalancesStackPrograms`. Otherwise, names that are already identifiers,
+such as `OreStream` or `token_balances`, keep generating exactly the names they
+always have. If two names generate the
 same identifier, for example a stack `my-vault` and an entity `MyVaultStack`,
 or programs `token-2022` and `token_2022`, generation fails with an error that
 names both. Rename one of them.
