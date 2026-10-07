@@ -957,7 +957,7 @@ impl Projector {
                 continue;
             };
             self.entity_cache
-                .merge_patch(&mut entity, patch.clone(), append_paths);
+                .merge_patch_shared(&mut entity, patch.clone(), append_paths);
             let passes = spec
                 .pipeline
                 .as_ref()

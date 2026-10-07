@@ -5,6 +5,9 @@
 //! cached snapshots immediately rather than waiting for the next live mutation.
 
 use crate::mutation_batch::SlotIndexDomain;
+use crate::shared_entity::{
+    split_version, with_version, EntityFields, SharedEntity, VERSION_FIELD,
+};
 use arete_interpreter::AccountPosition;
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
@@ -65,6 +68,23 @@ pub enum CacheWrite {
     Refused { patch: Value },
 }
 
+/// What one view does with a patch for a key, decided before any view
+/// changes (see [`EntityCache::upsert_with_ordering`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    Refuse,
+    Create,
+    Merge,
+}
+
+/// One view's part in a write to several views at once: the view, and the
+/// `_version` its frame carries.
+#[derive(Debug, Clone)]
+pub(crate) struct ViewVersion<'a> {
+    pub view_id: &'a str,
+    pub version: Option<Value>,
+}
+
 /// One view's cached entities and the keys it evicted to stay bounded.
 ///
 /// Both maps are unbounded `LruCache`s capped by hand: a bounded one
@@ -73,7 +93,7 @@ pub enum CacheWrite {
 /// evicted from it.
 struct ViewEntries {
     max_entities: usize,
-    entities: LruCache<String, Value>,
+    entities: LruCache<String, SharedEntity>,
     /// Keys evicted for space, most recently evicted or refused first.
     /// Allocated on the first eviction, and never for a view fed by a source
     /// that marks creations.
@@ -107,7 +127,7 @@ impl ViewEntries {
     }
 
     /// Store `entity` under `key`, remembering whatever it pushes out.
-    fn store(&mut self, key: String, entity: Value) {
+    fn store(&mut self, key: String, entity: SharedEntity) {
         self.forget_evicted(&key);
         self.entities.put(key, entity);
         while self.entities.len() > self.max_entities {
@@ -196,7 +216,7 @@ impl ViewEntries {
         let entity = self
             .entities
             .peek(key)
-            .and_then(|entity| entity.get("_seq"))
+            .and_then(|entity| entity.field("_seq"))
             .and_then(Value::as_str);
         match (checkpoint, entity) {
             (Some(left), Some(right)) if cmp_seq(left, right).is_lt() => Some(right),
@@ -221,6 +241,130 @@ impl ViewEntries {
             // lifetime change cannot prove that it is newer.
             (Some(_), None) => false,
             (None, _) => true,
+        }
+    }
+
+    /// Check a patch for `key` against the key's lifetime ordering, record
+    /// its position, and decide what it does to this view: refused, stored as
+    /// a new entity, or merged into the one held (see [`EntityCache`]'s "Only
+    /// whole entities").
+    fn admit(
+        &mut self,
+        key: &str,
+        origin: PatchOrigin,
+        ordering: LifetimeOrdering<'_>,
+    ) -> Admission {
+        let LifetimeOrdering {
+            account_position,
+            source_seq,
+            source_domain,
+        } = ordering;
+        if origin != PatchOrigin::Unknown && !self.creations_marked {
+            self.mark_creations();
+        }
+
+        let creation = origin == PatchOrigin::Creation;
+        if !self.accepts(key, creation, account_position, source_seq, source_domain) {
+            return Admission::Refuse;
+        }
+
+        if let Some(position) = account_position {
+            // Account writes choose the lifetime, but they do not reset the
+            // independent instruction/resolver high-water marks. Keeping
+            // those cursors across deletion and recreation prevents a late
+            // duplicate from the old lifetime from contaminating the new
+            // row. A genuinely newer source event still advances its own
+            // domain normally.
+            let previous = self.lifetimes.peek(key).cloned();
+            self.lifetimes.put(
+                key.to_string(),
+                EntityLifetimeCheckpoint {
+                    account_position: Some(position),
+                    source_seq: previous
+                        .as_ref()
+                        .and_then(|checkpoint| checkpoint.source_seq.clone()),
+                    source_sequences: previous
+                        .map(|checkpoint| checkpoint.source_sequences)
+                        .unwrap_or_default(),
+                    deleted: false,
+                },
+            );
+            self.trim_lifetimes();
+        } else if let (Some(source_seq), Some(source_domain)) = (source_seq, source_domain) {
+            let mut checkpoint = if creation {
+                EntityLifetimeCheckpoint {
+                    account_position: None,
+                    source_seq: None,
+                    source_sequences: BTreeMap::new(),
+                    deleted: false,
+                }
+            } else {
+                self.lifetimes
+                    .peek(key)
+                    .cloned()
+                    .unwrap_or(EntityLifetimeCheckpoint {
+                        account_position: None,
+                        source_seq: None,
+                        source_sequences: BTreeMap::new(),
+                        deleted: false,
+                    })
+            };
+            checkpoint
+                .source_sequences
+                .insert(source_domain, source_seq.to_string());
+            checkpoint.deleted = false;
+            self.lifetimes.put(key.to_string(), checkpoint);
+            self.trim_lifetimes();
+        } else if creation
+            && self.lifetimes.peek(key).is_some_and(|checkpoint| {
+                checkpoint.source_seq.is_none() && checkpoint.source_sequences.is_empty()
+            })
+        {
+            // An entirely unsequenced source preserves its historical
+            // recreate behavior; there is no ordering evidence to retain.
+            self.lifetimes.pop(key);
+        }
+
+        let whole = match origin {
+            PatchOrigin::Creation => true,
+            PatchOrigin::Change => self.entities.contains(key),
+            PatchOrigin::Unknown => self.entities.contains(key) || !self.was_evicted(key),
+        };
+        if !whole {
+            return Admission::Refuse;
+        }
+        // A creation is a complete replacement. Deep-merging it would retain
+        // fields from the previous account lifetime.
+        if creation || !self.entities.contains(key) {
+            Admission::Create
+        } else {
+            Admission::Merge
+        }
+    }
+
+    /// Whether a whole entity requested for `key` may be stored: it was
+    /// requested for the account lifetime and source position that are still
+    /// current (see [`EntityCache::store_whole_for_lifetime`]).
+    fn accepts_whole(
+        &self,
+        key: &str,
+        requested_account_position: Option<AccountPosition>,
+        requested_source: Option<(Option<&str>, SlotIndexDomain)>,
+    ) -> bool {
+        let Some(checkpoint) = self.lifetimes.peek(key) else {
+            return true;
+        };
+        if checkpoint.deleted || checkpoint.account_position != requested_account_position {
+            return false;
+        }
+        match requested_source {
+            Some((requested_source_seq, requested_source_domain)) => {
+                !((checkpoint.account_position.is_none()
+                    && checkpoint.source_seq(Some(requested_source_domain))
+                        != requested_source_seq)
+                    || self.entities.contains(key))
+            }
+            None => !(checkpoint.account_position.is_some() && self.entities.contains(key)),
         }
     }
 
@@ -449,110 +593,166 @@ impl EntityCache {
         origin: PatchOrigin,
         ordering: LifetimeOrdering<'_>,
     ) -> CacheWrite {
-        let LifetimeOrdering {
-            account_position,
-            source_seq,
-            source_domain,
-        } = ordering;
+        let (patch, version) = split_version(patch);
+        self.upsert_views(
+            key,
+            patch,
+            &[ViewVersion { view_id, version }],
+            append_paths,
+            origin,
+            ordering,
+        )
+        .await
+        .pop()
+        .expect("upsert_views returns one write per view")
+    }
+
+    /// Apply one patch to several views of its export at once, each with the
+    /// `_version` its own frame carries. `patch` holds every other field.
+    ///
+    /// Each view decides what to do with the patch exactly as
+    /// [`Self::upsert_with_ordering`] would on its own. Views that store it
+    /// whole share one copy of it, and views that hold the same fields (see
+    /// [`SharedEntity`]) merge it into them once and keep sharing the result.
+    /// That merge happens in place unless something outside these views
+    /// (a derived view, a subscriber) still holds the fields, in which case
+    /// they are copied first and the other holder keeps the old ones.
+    pub(crate) async fn upsert_views(
+        &self,
+        key: &str,
+        patch: Value,
+        views: &[ViewVersion<'_>],
+        append_paths: &[String],
+        origin: PatchOrigin,
+        ordering: LifetimeOrdering<'_>,
+    ) -> Vec<CacheWrite> {
+        // A stray `_version` in the patch stands for any view without one,
+        // and must not end up among the shared fields.
+        let (mut patch, stray_version) = split_version(patch);
+        let version_of = |index: usize| {
+            views[index]
+                .version
+                .clone()
+                .or_else(|| stray_version.clone())
+        };
+        let max_array_length = self.config.max_array_length;
         let mut caches = self.caches.write().await;
 
-        let view = caches
-            .entry(view_id.to_string())
-            .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
-        if origin != PatchOrigin::Unknown && !view.creations_marked {
-            view.mark_creations();
-        }
+        let mut admissions: Vec<Admission> = views
+            .iter()
+            .map(|view| {
+                caches
+                    .entry(view.view_id.to_string())
+                    .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view))
+                    .admit(key, origin, ordering)
+            })
+            .collect();
 
-        let max_array_length = self.config.max_array_length;
-
-        let creation = origin == PatchOrigin::Creation;
-        if !view.accepts(key, creation, account_position, source_seq, source_domain) {
-            return CacheWrite::Refused { patch };
-        }
-
-        if let Some(position) = account_position {
-            // Account writes choose the lifetime, but they do not reset the
-            // independent instruction/resolver high-water marks. Keeping
-            // those cursors across deletion and recreation prevents a late
-            // duplicate from the old lifetime from contaminating the new
-            // row. A genuinely newer source event still advances its own
-            // domain normally.
-            let previous = view.lifetimes.peek(key).cloned();
-            view.lifetimes.put(
-                key.to_string(),
-                EntityLifetimeCheckpoint {
-                    account_position: Some(position),
-                    source_seq: previous
-                        .as_ref()
-                        .and_then(|checkpoint| checkpoint.source_seq.clone()),
-                    source_sequences: previous
-                        .map(|checkpoint| checkpoint.source_sequences)
-                        .unwrap_or_default(),
-                    deleted: false,
-                },
-            );
-            view.trim_lifetimes();
-        } else {
-            if let (Some(source_seq), Some(source_domain)) = (source_seq, source_domain) {
-                let mut checkpoint = if creation {
-                    EntityLifetimeCheckpoint {
-                        account_position: None,
-                        source_seq: None,
-                        source_sequences: BTreeMap::new(),
-                        deleted: false,
-                    }
-                } else {
-                    view.lifetimes
-                        .peek(key)
-                        .cloned()
-                        .unwrap_or(EntityLifetimeCheckpoint {
-                            account_position: None,
-                            source_seq: None,
-                            source_sequences: BTreeMap::new(),
-                            deleted: false,
-                        })
+        let mut writes = vec![CacheWrite::Merged; views.len()];
+        for (index, admission) in admissions.iter().enumerate() {
+            if *admission == Admission::Refuse {
+                writes[index] = CacheWrite::Refused {
+                    patch: with_version(patch.clone(), version_of(index)),
                 };
-                checkpoint
-                    .source_sequences
-                    .insert(source_domain, source_seq.to_string());
-                checkpoint.deleted = false;
-                view.lifetimes.put(key.to_string(), checkpoint);
-                view.trim_lifetimes();
-            } else if creation
-                && view.lifetimes.peek(key).is_some_and(|checkpoint| {
-                    checkpoint.source_seq.is_none() && checkpoint.source_sequences.is_empty()
-                })
-            {
-                // An entirely unsequenced source preserves its historical
-                // recreate behavior; there is no ordering evidence to retain.
-                view.lifetimes.pop(key);
             }
         }
 
-        let whole = match origin {
-            PatchOrigin::Creation => true,
-            PatchOrigin::Change => view.entities.contains(key),
-            PatchOrigin::Unknown => view.entities.contains(key) || !view.was_evicted(key),
-        };
-        if !whole {
-            return CacheWrite::Refused { patch };
+        // Take the fields out of every merging view, so views that share them
+        // can merge them once: in place when no other holder is left.
+        let placeholder = Arc::new(Value::Null);
+        let mut groups: Vec<(Arc<Value>, Vec<usize>)> = Vec::new();
+        for (index, admission) in admissions.iter_mut().enumerate() {
+            if *admission != Admission::Merge {
+                continue;
+            }
+            let held = caches
+                .get_mut(views[index].view_id)
+                .and_then(|view| view.entities.get_mut(key));
+            let Some(entity) = held else {
+                // Admitted under this lock as held, so this cannot happen;
+                // storing the patch whole is what a view without it does.
+                *admission = Admission::Create;
+                continue;
+            };
+            let fields = std::mem::replace(entity.fields_mut(), placeholder.clone());
+            match groups
+                .iter_mut()
+                .find(|(shared, _)| Arc::ptr_eq(shared, &fields))
+            {
+                Some((_, members)) => members.push(index),
+                None => groups.push((fields, vec![index])),
+            }
         }
 
-        // A creation is a complete replacement. Deep-merging it would retain
-        // fields from the previous account lifetime.
-        if creation {
-            let new_entity = truncate_arrays_if_needed(patch, max_array_length);
-            view.store(key.to_string(), new_entity);
-            return CacheWrite::Created;
+        if admissions.contains(&Admission::Create) {
+            let source = if groups.is_empty() {
+                std::mem::take(&mut patch)
+            } else {
+                patch.clone()
+            };
+            let created = Arc::new(truncate_arrays_if_needed(source, max_array_length));
+            for (index, admission) in admissions.iter().enumerate() {
+                if *admission != Admission::Create {
+                    continue;
+                }
+                let version = version_of(index)
+                    .filter(|_| created.is_object())
+                    .map(|version| truncate_arrays_if_needed(version, max_array_length));
+                if let Some(view) = caches.get_mut(views[index].view_id) {
+                    view.store(
+                        key.to_string(),
+                        SharedEntity::from_parts(created.clone(), version),
+                    );
+                }
+                writes[index] = CacheWrite::Created;
+            }
         }
 
-        if let Some(entity) = view.entities.get_mut(key) {
-            deep_merge_with_append(entity, patch, append_paths, max_array_length);
-            return CacheWrite::Merged;
+        let last_group = groups.len().saturating_sub(1);
+        for (group, (mut fields, members)) in groups.into_iter().enumerate() {
+            let mut group_patch = if group == last_group {
+                std::mem::take(&mut patch)
+            } else {
+                patch.clone()
+            };
+            let merge_once = fields.is_object() && group_patch.is_object();
+            if merge_once {
+                deep_merge_with_append(
+                    Arc::make_mut(&mut fields),
+                    std::mem::take(&mut group_patch),
+                    append_paths,
+                    max_array_length,
+                );
+            }
+            for index in members {
+                let Some(entity) = caches
+                    .get_mut(views[index].view_id)
+                    .and_then(|view| view.entities.peek_mut(key))
+                else {
+                    continue;
+                };
+                *entity.fields_mut() = fields.clone();
+                if merge_once {
+                    let version = entity.version_mut();
+                    *version = merge_version(
+                        version.take(),
+                        version_of(index),
+                        append_paths,
+                        max_array_length,
+                    );
+                } else {
+                    // Not two objects: the patch replaces the entity, or
+                    // merges into the array it is. Rare enough to do per view.
+                    merge_shared(
+                        entity,
+                        with_version(group_patch.clone(), version_of(index)),
+                        append_paths,
+                        max_array_length,
+                    );
+                }
+            }
         }
-        let new_entity = truncate_arrays_if_needed(patch, max_array_length);
-        view.store(key.to_string(), new_entity);
-        CacheWrite::Created
+        writes
     }
 
     /// Store `entity` as the whole entity for `key`, replacing anything held
@@ -622,28 +822,58 @@ impl EntityCache {
         requested_account_position: Option<AccountPosition>,
         requested_source: Option<(Option<&str>, SlotIndexDomain)>,
     ) -> bool {
+        let (entity, version) = split_version(entity);
+        self.store_whole_views(
+            key,
+            entity,
+            &[ViewVersion { view_id, version }],
+            requested_account_position,
+            requested_source,
+        )
+        .await
+        .pop()
+        .expect("store_whole_views answers for every view")
+    }
+
+    /// Store a whole entity in several views at once, each under its own
+    /// `_version`, where the checks of [`Self::store_whole_for_lifetime`]
+    /// (or, with `requested_source`,
+    /// [`Self::store_whole_for_ordering_in_domain`]) pass. `entity` holds every
+    /// other field; the views that store it share one copy.
+    pub(crate) async fn store_whole_views(
+        &self,
+        key: &str,
+        entity: Value,
+        views: &[ViewVersion<'_>],
+        requested_account_position: Option<AccountPosition>,
+        requested_source: Option<(Option<&str>, SlotIndexDomain)>,
+    ) -> Vec<bool> {
+        let max_array_length = self.config.max_array_length;
+        let (entity, stray_version) = split_version(entity);
+        let fields = Arc::new(truncate_arrays_if_needed(entity, max_array_length));
         let mut caches = self.caches.write().await;
-        let view = caches
-            .entry(view_id.to_string())
-            .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
-        let entity = truncate_arrays_if_needed(entity, self.config.max_array_length);
-        if let Some(checkpoint) = view.lifetimes.peek(key) {
-            if checkpoint.deleted || checkpoint.account_position != requested_account_position {
-                return false;
-            }
-            if let Some((requested_source_seq, requested_source_domain)) = requested_source {
-                if (checkpoint.account_position.is_none()
-                    && checkpoint.source_seq(Some(requested_source_domain)) != requested_source_seq)
-                    || view.entities.contains(key)
-                {
+        views
+            .iter()
+            .map(|view| {
+                let entries = caches
+                    .entry(view.view_id.to_string())
+                    .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
+                if !entries.accepts_whole(key, requested_account_position, requested_source) {
                     return false;
                 }
-            } else if checkpoint.account_position.is_some() && view.entities.contains(key) {
-                return false;
-            }
-        }
-        view.store(key.to_string(), entity);
-        true
+                let version = view
+                    .version
+                    .clone()
+                    .or_else(|| stray_version.clone())
+                    .filter(|_| fields.is_object())
+                    .map(|version| truncate_arrays_if_needed(version, max_array_length));
+                entries.store(
+                    key.to_string(),
+                    SharedEntity::from_parts(fields.clone(), version),
+                );
+                true
+            })
+            .collect()
     }
 
     pub async fn account_position(&self, view_id: &str, key: &str) -> Option<AccountPosition> {
@@ -919,6 +1149,17 @@ impl EntityCache {
         deep_merge_with_append(base, patch, append_paths, self.config.max_array_length);
     }
 
+    /// [`Self::merge_patch`] for a [`SharedEntity`]: copies its fields first
+    /// if another holder shares them, so the merge never reaches that holder.
+    pub fn merge_patch_shared(
+        &self,
+        entity: &mut SharedEntity,
+        patch: Value,
+        append_paths: &[String],
+    ) {
+        merge_shared(entity, patch, append_paths, self.config.max_array_length);
+    }
+
     /// Treat `keys` as evicted from `view_id` unless the view holds them, so
     /// patches for them from a source that does not mark creations are
     /// refused. Used after a restore, when the VM holds entities the restored
@@ -939,8 +1180,19 @@ impl EntityCache {
     /// Get all cached entities for a view.
     ///
     /// Returns a vector of (key, entity) pairs for sending as snapshots
-    /// to new subscribers.
+    /// to new subscribers. Each is a copy; [`Self::get_all_shared`] returns
+    /// the cached entities themselves.
     pub async fn get_all(&self, view_id: &str) -> Vec<(String, Value)> {
+        self.get_all_shared(view_id)
+            .await
+            .into_iter()
+            .map(|(key, entity)| (key, entity.into_value()))
+            .collect()
+    }
+
+    /// Every entity cached for a view, most recently used first, sharing
+    /// their fields with the cache rather than copying them.
+    pub async fn get_all_shared(&self, view_id: &str) -> Vec<(String, SharedEntity)> {
         let caches = self.caches.read().await;
 
         caches
@@ -968,23 +1220,23 @@ impl EntityCache {
         let caches = self.caches.read().await;
 
         if let Some(view) = caches.get(view_id) {
-            let mut results: Vec<(String, Value)> = view
+            let mut results: Vec<(String, &SharedEntity)> = view
                 .entities
                 .iter()
                 .filter(|(_, entity)| {
                     entity
-                        .get("_seq")
+                        .field("_seq")
                         .and_then(|s| s.as_str())
                         .map(|seq| cmp_seq(seq, cursor) == std::cmp::Ordering::Greater)
                         .unwrap_or(false)
                 })
-                .map(|(k, v)| (k.clone(), v.clone()))
+                .map(|(k, v)| (k.clone(), v))
                 .collect();
 
             // Sort by _seq (ascending)
             results.sort_by(|a, b| {
-                let seq_a = a.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
-                let seq_b = b.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
+                let seq_a = a.1.field("_seq").and_then(|s| s.as_str()).unwrap_or("");
+                let seq_b = b.1.field("_seq").and_then(|s| s.as_str()).unwrap_or("");
                 cmp_seq(seq_a, seq_b)
             });
 
@@ -994,13 +1246,24 @@ impl EntityCache {
             }
 
             results
+                .into_iter()
+                .map(|(key, entity)| (key, entity.to_value()))
+                .collect()
         } else {
             vec![]
         }
     }
 
-    /// Get a specific entity from the cache
+    /// Get a copy of a specific entity from the cache.
     pub async fn get(&self, view_id: &str, key: &str) -> Option<Value> {
+        self.get_shared(view_id, key)
+            .await
+            .map(SharedEntity::into_value)
+    }
+
+    /// A specific cached entity, sharing its fields with the cache rather
+    /// than copying them.
+    pub async fn get_shared(&self, view_id: &str, key: &str) -> Option<SharedEntity> {
         let caches = self.caches.read().await;
         caches
             .get(view_id)
@@ -1012,11 +1275,14 @@ impl EntityCache {
     /// The delete ends the entity, so the key is also forgotten as evicted: a
     /// later patch for it creates a new entity.
     pub async fn remove(&self, view_id: &str, key: &str) -> Option<Value> {
-        let mut caches = self.caches.write().await;
-        caches.get_mut(view_id).and_then(|view| {
-            view.forget_evicted(key);
-            view.entities.pop(key)
-        })
+        let removed = {
+            let mut caches = self.caches.write().await;
+            caches.get_mut(view_id).and_then(|view| {
+                view.forget_evicted(key);
+                view.entities.pop(key)
+            })
+        };
+        removed.map(SharedEntity::into_value)
     }
 
     /// Get the number of cached entities for a view
@@ -1068,7 +1334,7 @@ impl EntityCache {
                     view_id.clone(),
                     view.entities
                         .iter()
-                        .map(|(key, entity)| (key.clone(), entity.clone()))
+                        .map(|(key, entity)| (key.clone(), entity.to_value()))
                         .collect(),
                 )
             })
@@ -1078,16 +1344,28 @@ impl EntityCache {
     /// Restore entities dumped by [`Self::dump`], preserving LRU order.
     ///
     /// Entities are inserted as-is (no merge): a snapshot holds fully
-    /// projected entities, not patches.
+    /// projected entities, not patches. A snapshot saves each view's copy of
+    /// an entity on its own, so views whose copies have the same fields (all
+    /// but `_version`) share them again, as they did when saved.
     pub async fn hydrate(&self, views: Vec<(String, Vec<(String, Value)>)>) {
         let mut caches = self.caches.write().await;
         caches.clear();
+        let mut restored: HashMap<String, Vec<Arc<Value>>> = HashMap::new();
         for (view_id, entries) in views {
             let view = caches
                 .entry(view_id)
                 .or_insert_with(|| ViewEntries::new(self.config.max_entities_per_view));
             for (key, entity) in entries.into_iter().rev() {
-                view.store(key, entity);
+                let (fields, version) = SharedEntity::new(entity).into_parts();
+                let seen = restored.entry(key.clone()).or_default();
+                let fields = match seen.iter().find(|held| **held == fields) {
+                    Some(held) => held.clone(),
+                    None => {
+                        seen.push(fields.clone());
+                        fields
+                    }
+                };
+                view.store(key, SharedEntity::from_parts(fields, version));
             }
         }
     }
@@ -1198,28 +1476,101 @@ fn deep_merge_with_append_inner(
     }
 }
 
-/// Recursively truncate any arrays in a value to the max length
-fn truncate_arrays_if_needed(value: Value, max_array_length: usize) -> Value {
+/// Recursively truncate any arrays in a value to the max length, keeping
+/// the newest (last) elements.
+fn truncate_arrays_if_needed(mut value: Value, max_array_length: usize) -> Value {
+    truncate_arrays_in_place(&mut value, max_array_length);
+    value
+}
+
+/// [`truncate_arrays_if_needed`] without rebuilding anything that needs no
+/// truncation.
+fn truncate_arrays_in_place(value: &mut Value, max_array_length: usize) {
     match value {
-        Value::Array(mut arr) => {
-            // Truncate this array if needed
+        Value::Array(arr) => {
             if arr.len() > max_array_length {
                 let excess = arr.len() - max_array_length;
                 arr.drain(0..excess);
             }
-            // Recursively process elements
-            Value::Array(
-                arr.into_iter()
-                    .map(|v| truncate_arrays_if_needed(v, max_array_length))
-                    .collect(),
-            )
+            for element in arr {
+                truncate_arrays_in_place(element, max_array_length);
+            }
         }
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(k, v)| (k, truncate_arrays_if_needed(v, max_array_length)))
-                .collect(),
-        ),
-        other => other,
+        Value::Object(map) => {
+            for field in map.values_mut() {
+                truncate_arrays_in_place(field, max_array_length);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Merge `patch` into `entity` exactly as [`deep_merge_with_append`] would
+/// merge it into the whole entity, `_version` included. The fields are copied
+/// first if another holder shares them.
+fn merge_shared(
+    entity: &mut SharedEntity,
+    patch: Value,
+    append_paths: &[String],
+    max_array_length: usize,
+) {
+    let (patch, patch_version) = split_version(patch);
+    if entity.fields().is_object() && patch.is_object() {
+        deep_merge_with_append(
+            Arc::make_mut(entity.fields_mut()),
+            patch,
+            append_paths,
+            max_array_length,
+        );
+        let version = entity.version_mut();
+        *version = merge_version(
+            version.take(),
+            patch_version,
+            append_paths,
+            max_array_length,
+        );
+        return;
+    }
+    // Not two objects: the patch replaces the entity, unless both are arrays
+    // and it merges into the one held. Only an object has a `_version`, so
+    // the entity's own goes with it.
+    let (fields, _) = std::mem::replace(entity, SharedEntity::new(Value::Null)).into_parts();
+    let mut whole = match (&*fields, &patch) {
+        (Value::Array(_), Value::Array(_)) => {
+            Arc::try_unwrap(fields).unwrap_or_else(|shared| Value::clone(&shared))
+        }
+        _ => Value::Null,
+    };
+    deep_merge_with_append(
+        &mut whole,
+        with_version(patch, patch_version),
+        append_paths,
+        max_array_length,
+    );
+    *entity = SharedEntity::new(whole);
+}
+
+/// The `_version` an entity has after a patch: the patch's, merged into the
+/// entity's as [`deep_merge_with_append`] merges any top-level field.
+fn merge_version(
+    current: Option<Value>,
+    incoming: Option<Value>,
+    append_paths: &[String],
+    max_array_length: usize,
+) -> Option<Value> {
+    match (current, incoming) {
+        (Some(mut current), Some(incoming)) => {
+            deep_merge_with_append_inner(
+                &mut current,
+                incoming,
+                append_paths,
+                VERSION_FIELD,
+                max_array_length,
+            );
+            Some(current)
+        }
+        (None, Some(incoming)) => Some(truncate_arrays_if_needed(incoming, max_array_length)),
+        (current, None) => current,
     }
 }
 

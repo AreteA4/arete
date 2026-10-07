@@ -4,8 +4,10 @@
 //! maintaining materialized results that update as source data changes.
 
 use crate::cache::EntityCache;
+use crate::shared_entity::{lookup, EntityFields};
 use serde::Serialize;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -76,18 +78,9 @@ pub struct FilterConfig {
 impl FilterConfig {
     /// Whether `entity` passes the filter. A missing field reads as null,
     /// which passes only `Ne` against a non-null value.
-    pub fn matches(&self, entity: &Value) -> bool {
-        static NULL: Value = Value::Null;
-        let mut field = entity;
-        for segment in &self.field_path {
-            match field.get(segment) {
-                Some(value) => field = value,
-                None => {
-                    field = &NULL;
-                    break;
-                }
-            }
-        }
+    pub fn matches<E: EntityFields + ?Sized>(&self, entity: &E) -> bool {
+        let field = lookup(entity, &self.field_path).unwrap_or(Cow::Owned(Value::Null));
+        let field: &Value = &field;
         match self.op {
             CompareOp::Eq => *field == self.value,
             CompareOp::Ne => *field != self.value,

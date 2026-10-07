@@ -47,6 +47,7 @@ pub mod mutation_batch;
 pub mod program_runtime;
 pub mod projector;
 pub mod runtime;
+pub mod shared_entity;
 pub mod snapshot;
 pub mod solana_gateway_usage;
 pub mod sorted_cache;
@@ -79,6 +80,7 @@ pub use program_runtime::{
 };
 pub use projector::{EntityResync, Projector};
 pub use runtime::{ConnectionServer, Runtime, RuntimeHandle};
+pub use shared_entity::{EntityFields, SharedEntity};
 pub use snapshot::{SnapshotConfig, SnapshotService};
 pub use solana_gateway_usage::{
     SolanaGatewayUsageObservation, SolanaGatewayUsageObserver, SolanaGatewayUsageSurface,
