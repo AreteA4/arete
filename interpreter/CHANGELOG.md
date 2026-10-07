@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.30.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.29.1...arete-interpreter-v0.30.0) (2026-10-07)
+
+
+### Bug Fixes
+
+* **sdk:** generate UpperCamelCase Rust stack type names ([239c6d7](https://github.com/AreteA4/arete/commit/239c6d763013a3e3198fd32fa3e8e4abd73f7339))
+* **sdk:** generate UpperCamelCase stack type names ([8c21afb](https://github.com/AreteA4/arete/commit/8c21afbf9e59fb9ba3e4bfdd2ba77762f6454698))
+* **sdk:** PascalCase TypeScript stack type aliases ([5624d1f](https://github.com/AreteA4/arete/commit/5624d1f25bc6ab68cd087e2eb84cd6e2ed9a327c))
+* **vm:** replay queued account updates with their own timestamp ([81af3f7](https://github.com/AreteA4/arete/commit/81af3f7df3d14a8b5bfd13aa079ee4fc67b5e953))
+* **vm:** stamp events and captures with the update's timestamp ([a4a9035](https://github.com/AreteA4/arete/commit/a4a90350cadb7dd5d45f42bb3b598e8aeb4820e5))
+* **vm:** stamp events and captures with the update's timestamp ([58a356a](https://github.com/AreteA4/arete/commit/58a356ae42969ccf302f2096055c65d7a4f1183d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.29.1 to 0.30.0
+
 ## [0.29.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.29.0...arete-interpreter-v0.29.1) (2026-10-06)
 
 
