@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## [0.31.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.30.0...a4-cli-v0.31.0) (2026-10-07)
+
+
+### Miscellaneous Chores
+
+* **a4-cli:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.30.0 to 0.31.0
+    * arete-mcp bumped from 0.30.0 to 0.31.0
+
 ## [0.30.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.29.1...a4-cli-v0.30.0) (2026-10-07)
 
 

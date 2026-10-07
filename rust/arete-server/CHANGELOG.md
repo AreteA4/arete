@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.31.0](https://github.com/AreteA4/arete/compare/arete-server-v0.30.0...arete-server-v0.31.0) (2026-10-07)
+
+
+### Features
+
+* **server:** serialize shared entities without copying them ([a8db72d](https://github.com/AreteA4/arete/commit/a8db72d1a6ed2a31dc342d231fbf0db87f6b31b6))
+
+
+### Performance Improvements
+
+* **server:** keep a state subscriber's catch-up base shared ([573c93e](https://github.com/AreteA4/arete/commit/573c93ec9f3976601b65d62138ef6fb060ad414d))
+* **server:** scope and read source frames without parsing their data ([9fb3f60](https://github.com/AreteA4/arete/commit/9fb3f6056bdcbf99a41318e9b9e54f0c9167e2e7))
+* **server:** send snapshots and upserts without copying entities ([72f88f5](https://github.com/AreteA4/arete/commit/72f88f50d794dbd931970bf2a99d994e1979257b))
+* **server:** stop copying entities per subscriber, snapshot and frame ([d2348e0](https://github.com/AreteA4/arete/commit/d2348e00b12cbc3d423b2120fee5579267a08b11))
+* **server:** write state snapshots from the shared entity copies ([62b0230](https://github.com/AreteA4/arete/commit/62b0230e42bbc1f190ab0eee85ba8278f79e3d7b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.30.0 to 0.31.0
+
 ## [0.30.0](https://github.com/AreteA4/arete/compare/arete-server-v0.29.1...arete-server-v0.30.0) (2026-10-07)
 
 
