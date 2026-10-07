@@ -1,6 +1,7 @@
 use crate::bus::{BusManager, BusMessage, StateUpdate};
 use crate::cache::{cmp_seq, EntityCache, SnapshotBatchConfig};
 use crate::compression::maybe_compress;
+use crate::shared_entity::{lookup, EntityFields, SharedEntity};
 use crate::view::{ViewIndex, ViewSpec};
 use crate::websocket::admission::{WebSocketAdmissionProvider, WebSocketConnectionPermit};
 use crate::websocket::auth::{
@@ -1653,7 +1654,7 @@ async fn attach_state_subscription(
                         // already has, so only the catch-up below reaches it.
                         let Some(cached) = task_context
                             .entity_cache
-                            .get(&view_spec_task.id, &key)
+                            .get_shared(&view_spec_task.id, &key)
                             .await
                         else {
                             // A copy of a replaced entity takes no patch: it
@@ -1700,7 +1701,7 @@ async fn attach_state_subscription(
                             // number themselves differently, so the latest
                             // patch's seq can sort below one already delivered.
                             (true, Some((entity_key, data))) => {
-                                let mut current = data;
+                                let mut current = data.into_value();
                                 apply_wire_format(&mut current, &view_spec_task.wire_format);
                                 let body = match (&synced, replace) {
                                     (Some(base), false) => changed_fields(base, &current, &touched),
@@ -1722,7 +1723,7 @@ async fn attach_state_subscription(
                                 }
                             }
                             (false, Some((entity_key, data))) => {
-                                let mut current = data;
+                                let mut current = data.into_value();
                                 apply_wire_format(&mut current, &view_spec_task.wire_format);
                                 synced = Some(current.clone());
                                 touched = Value::Null;
@@ -2010,7 +2011,10 @@ async fn subscribe_collection_then_snapshot(
     source_view_id: &str,
     view_spec: &ViewSpec,
     query: &SubscriptionQuery,
-) -> (broadcast::Receiver<Arc<BusMessage>>, Vec<(String, Value)>) {
+) -> (
+    broadcast::Receiver<Arc<BusMessage>>,
+    Vec<(String, SharedEntity)>,
+) {
     let cache = context.entity_cache.clone();
     let sorted_caches = view_spec
         .is_derived()
@@ -2028,7 +2032,10 @@ async fn recover_collection_subscription(
     subscription: &Subscription,
     view_spec: &ViewSpec,
     source_view_id: &str,
-) -> Result<(broadcast::Receiver<Arc<BusMessage>>, Vec<(String, Value)>)> {
+) -> Result<(
+    broadcast::Receiver<Arc<BusMessage>>,
+    Vec<(String, SharedEntity)>,
+)> {
     let (receiver, membership) =
         subscribe_collection_then_snapshot(context, source_view_id, view_spec, &subscription.query)
             .await;
@@ -2444,14 +2451,16 @@ fn live_frame_matches(query: &SubscriptionQuery, key: &str, payload: &[u8]) -> b
         return false;
     };
     if let Some(partition) = &query.partition {
-        if value_at_dot_path(data, "_partition") != Some(&Value::String(partition.clone())) {
+        if value_at_dot_path(data, "_partition").as_deref()
+            != Some(&Value::String(partition.clone()))
+        {
             return false;
         }
     }
     query
         .filters
         .iter()
-        .all(|(path, expected)| value_at_dot_path(data, path) == Some(expected))
+        .all(|(path, expected)| value_at_dot_path(data, path).as_deref() == Some(expected))
 }
 
 /// Awaiting variant of [`send_scoped_source_payload`], for replays that can
@@ -2670,8 +2679,8 @@ fn emit_collection_delta(
     context: &SubscriptionContext,
     subscription_id: &str,
     view_spec: &ViewSpec,
-    current: &[(String, Value)],
-    next: &[(String, Value)],
+    current: &[(String, SharedEntity)],
+    next: &[(String, SharedEntity)],
     envelope: &BusMessage,
     metadata: &SourceFrameMetadata,
     undelivered: &mut HashSet<String>,
@@ -2722,17 +2731,18 @@ fn emit_collection_delta(
                 envelope.payload.clone(),
             )?,
             MemberAction::Upsert => {
-                let seq = metadata
-                    .seq
-                    .clone()
-                    .or_else(|| data.get("_seq").and_then(Value::as_str).map(str::to_string));
+                let seq = metadata.seq.clone().or_else(|| {
+                    data.field("_seq")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
                 send_membership_frame(
                     context,
                     subscription_id,
                     view_spec,
                     "upsert",
                     key,
-                    data.clone(),
+                    data.to_value(),
                     seq,
                 )?;
                 undelivered.remove(key);
@@ -2750,8 +2760,8 @@ fn emit_coalesced_collection_delta(
     context: &SubscriptionContext,
     subscription_id: &str,
     view_spec: &ViewSpec,
-    current: &[(String, Value)],
-    next: &[(String, Value)],
+    current: &[(String, SharedEntity)],
+    next: &[(String, SharedEntity)],
     pending: &HashMap<String, Arc<BusMessage>>,
     undelivered: &mut HashSet<String>,
 ) -> Result<()> {
@@ -2789,12 +2799,12 @@ struct CollectionChange {
 /// client was never sent; they get no `remove`/`delete` when they leave, and
 /// like every changed key they are sent whole when they change.
 fn plan_coalesced_collection_delta(
-    current: &[(String, Value)],
-    next: &[(String, Value)],
+    current: &[(String, SharedEntity)],
+    next: &[(String, SharedEntity)],
     pending: &HashMap<String, Arc<BusMessage>>,
     undelivered: &HashSet<String>,
 ) -> Vec<CollectionChange> {
-    let current_by_key: HashMap<&str, &Value> = current
+    let current_by_key: HashMap<&str, &SharedEntity> = current
         .iter()
         .map(|(key, data)| (key.as_str(), data))
         .collect();
@@ -2839,7 +2849,7 @@ fn plan_coalesced_collection_delta(
             continue;
         }
         let seq = data
-            .get("_seq")
+            .field("_seq")
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| {
@@ -2851,7 +2861,7 @@ fn plan_coalesced_collection_delta(
         changes.push(CollectionChange {
             op: "upsert",
             key: key.clone(),
-            data: data.clone(),
+            data: data.to_value(),
             seq,
         });
     }
@@ -2919,12 +2929,13 @@ fn member_action(
 }
 
 fn to_wire_snapshot_entities(
-    entities: Vec<(String, Value)>,
+    entities: Vec<(String, SharedEntity)>,
     view_spec: &ViewSpec,
 ) -> Vec<SnapshotEntity> {
     entities
         .into_iter()
-        .map(|(key, mut data)| {
+        .map(|(key, entity)| {
+            let mut data = entity.into_value();
             apply_wire_format(&mut data, &view_spec.wire_format);
             SnapshotEntity { key, data }
         })
@@ -2939,12 +2950,13 @@ async fn load_query_entities(
     view_spec: &ViewSpec,
     query: &SubscriptionQuery,
     apply_snapshot_limit: bool,
-) -> Vec<(String, Value)> {
+) -> Vec<(String, SharedEntity)> {
+    // Rows share their fields with the caches; nothing here copies an entity.
     let ordered = if let Some(sorted_caches) = sorted_caches {
         let mut caches = sorted_caches.write().await;
         caches
             .get_mut(&view_spec.id)
-            .map(|cache| cache.get_all_ordered())
+            .map(|cache| cache.ordered_entities())
     } else {
         None
     };
@@ -2954,7 +2966,7 @@ async fn load_query_entities(
         // Empty and filter-only pipelines have no sorted cache. Evaluate the
         // source rows, retaining the pipeline predicate before query selection.
         let mut entities = entity_cache
-            .get_all(view_spec.source_view.as_deref().unwrap_or(&view_spec.id))
+            .get_all_shared(view_spec.source_view.as_deref().unwrap_or(&view_spec.id))
             .await;
         if let Some(filter) = view_spec
             .pipeline
@@ -2967,7 +2979,7 @@ async fn load_query_entities(
     } else if view_spec.mode == Mode::State {
         let entity = match query.key.as_deref() {
             Some(key) => entity_cache
-                .get(&view_spec.id, key)
+                .get_shared(&view_spec.id, key)
                 .await
                 .map(|data| vec![(key.to_string(), data)])
                 .unwrap_or_default(),
@@ -2975,7 +2987,7 @@ async fn load_query_entities(
         };
         (entity, true)
     } else {
-        (entity_cache.get_all(&view_spec.id).await, false)
+        (entity_cache.get_all_shared(&view_spec.id).await, false)
     };
     let mut query = query.clone();
     if let Some(limit) = view_spec
@@ -2988,17 +3000,17 @@ async fn load_query_entities(
     select_query_entities(entities, &query, preordered, apply_snapshot_limit)
 }
 
-fn select_query_entities(
-    mut entities: Vec<(String, Value)>,
+fn select_query_entities<E: EntityFields>(
+    mut entities: Vec<(String, E)>,
     query: &SubscriptionQuery,
     preordered: bool,
     apply_snapshot_limit: bool,
-) -> Vec<(String, Value)> {
+) -> Vec<(String, E)> {
     entities.retain(|(key, data)| query_matches_entity(query, key, data));
     if !preordered {
         entities.sort_by(|left, right| {
-            let left_seq = left.1.get("_seq").and_then(Value::as_str).unwrap_or("");
-            let right_seq = right.1.get("_seq").and_then(Value::as_str).unwrap_or("");
+            let left_seq = left.1.field("_seq").and_then(Value::as_str).unwrap_or("");
+            let right_seq = right.1.field("_seq").and_then(Value::as_str).unwrap_or("");
             let order = if query.after.is_some() {
                 cmp_seq(left_seq, right_seq)
             } else {
@@ -3019,17 +3031,23 @@ fn select_query_entities(
     selected
 }
 
-fn query_matches_entity(query: &SubscriptionQuery, key: &str, data: &Value) -> bool {
+fn query_matches_entity<E: EntityFields + ?Sized>(
+    query: &SubscriptionQuery,
+    key: &str,
+    data: &E,
+) -> bool {
     if !query.matches_key(key) {
         return false;
     }
     if let Some(partition) = &query.partition {
-        if value_at_dot_path(data, "_partition") != Some(&Value::String(partition.clone())) {
+        if value_at_dot_path(data, "_partition").as_deref()
+            != Some(&Value::String(partition.clone()))
+        {
             return false;
         }
     }
     if let Some(after) = &query.after {
-        let Some(seq) = data.get("_seq").and_then(Value::as_str) else {
+        let Some(seq) = data.field("_seq").and_then(Value::as_str) else {
             return false;
         };
         if cmp_seq(seq, after) != std::cmp::Ordering::Greater {
@@ -3039,12 +3057,14 @@ fn query_matches_entity(query: &SubscriptionQuery, key: &str, data: &Value) -> b
     query
         .filters
         .iter()
-        .all(|(path, expected)| value_at_dot_path(data, path) == Some(expected))
+        .all(|(path, expected)| value_at_dot_path(data, path).as_deref() == Some(expected))
 }
 
-fn value_at_dot_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
-    path.split('.')
-        .try_fold(value, |current, segment| current.get(segment))
+fn value_at_dot_path<'a, E: EntityFields + ?Sized>(
+    entity: &'a E,
+    path: &str,
+) -> Option<std::borrow::Cow<'a, Value>> {
+    lookup(entity, path.split('.'))
 }
 
 #[cfg(test)]
@@ -3275,7 +3295,12 @@ mod tests {
         let undelivered = HashSet::from(["unsent".to_string(), "gone".to_string()]);
 
         assert_eq!(
-            plan_coalesced_collection_delta(&current, &next, &pending, &undelivered),
+            plan_coalesced_collection_delta(
+                &shared(&current),
+                &shared(&next),
+                &pending,
+                &undelivered
+            ),
             vec![CollectionChange {
                 op: "upsert",
                 key: "unsent".to_string(),
@@ -3362,6 +3387,12 @@ mod tests {
         assert_eq!(plan[250].1, MemberAction::ForwardPatch);
     }
 
+    fn shared(rows: &[(String, Value)]) -> Vec<(String, SharedEntity)> {
+        rows.iter()
+            .map(|(key, data)| (key.clone(), SharedEntity::new(data.clone())))
+            .collect()
+    }
+
     fn list_message(key: &str, op: &str, seq: &str) -> Arc<BusMessage> {
         Arc::new(BusMessage {
             key: key.to_string(),
@@ -3404,7 +3435,12 @@ mod tests {
         ]);
 
         assert_eq!(
-            plan_coalesced_collection_delta(&current, &next, &pending, &HashSet::new()),
+            plan_coalesced_collection_delta(
+                &shared(&current),
+                &shared(&next),
+                &pending,
+                &HashSet::new()
+            ),
             vec![
                 CollectionChange {
                     op: "delete",

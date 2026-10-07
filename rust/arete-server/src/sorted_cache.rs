@@ -4,10 +4,12 @@
 //! enabling efficient windowed subscriptions (take/skip) with minimal
 //! recomputation on updates.
 
+use crate::shared_entity::{lookup, EntityFields, SharedEntity};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 /// A sortable key that combines the sort value with entity key for stable ordering.
 /// Uses (sort_value, entity_key) tuple to ensure deterministic ordering even when
@@ -160,9 +162,11 @@ pub enum ViewDelta {
 ///
 /// # Bounding
 ///
-/// The cache holds a full copy of every entity it has been given, so callers
-/// that feed it from a bounded source (the projector and snapshot restore feed
-/// it from the LRU-capped [`EntityCache`](crate::EntityCache)) should use
+/// The cache holds every entity it has been given. It shares an entity's
+/// fields with whoever gave it (see [`SharedEntity`]) rather than copying
+/// them, but it keeps them alive, so callers that feed it from a bounded
+/// source (the projector and snapshot restore feed it from the LRU-capped
+/// [`EntityCache`](crate::EntityCache)) should use
 /// [`upsert_bounded`](Self::upsert_bounded) or
 /// [`trim_to_max_entries`](Self::trim_to_max_entries) with that source's cap.
 ///
@@ -188,8 +192,8 @@ pub struct SortedViewCache {
     order: SortOrder,
     /// Sorted entries: SortKey -> entity_key (for iteration in order)
     sorted: BTreeMap<SortKey, ()>,
-    /// Entity data: entity_key -> (SortKey, Value)
-    entities: HashMap<String, (SortKey, Value)>,
+    /// Entity data: entity_key -> (SortKey, entity)
+    entities: HashMap<String, (SortKey, SharedEntity)>,
     /// Ordered keys cache (rebuilt on structural changes)
     keys_cache: Vec<String>,
     /// Whether keys_cache needs rebuild
@@ -222,7 +226,12 @@ impl SortedViewCache {
     }
 
     /// Insert or update an entity, returns the position where it was inserted
-    pub fn upsert(&mut self, entity_key: String, entity: Value) -> UpsertResult {
+    ///
+    /// An update merges into the entity held, keeping fields the update lacks.
+    /// When it lacks none, which is the case for a whole entity, the cache
+    /// shares the update's fields instead of copying them.
+    pub fn upsert(&mut self, entity_key: String, entity: impl Into<SharedEntity>) -> UpsertResult {
+        let entity = entity.into();
         let sort_value = self.extract_sort_value(&entity);
 
         // Check if entity already exists. Taken out rather than copied: every
@@ -243,7 +252,7 @@ impl SortedViewCache {
             };
 
             // Merge incoming entity with existing to preserve fields not in the update
-            let merged_entity = Self::deep_merge(old_entity, entity);
+            let merged_entity = Self::merge_entity(old_entity, entity);
 
             if old_sort_key == new_sort_key {
                 // Sort key unchanged - just update entity data
@@ -287,7 +296,12 @@ impl SortedViewCache {
     ///
     /// Lets a caller skip copying an entity that [`Self::upsert_bounded`]
     /// would evict straight away, which in a busy view is most of them.
-    pub fn would_keep(&self, entity_key: &str, entity: &Value, max_entries: usize) -> bool {
+    pub fn would_keep<E: EntityFields + ?Sized>(
+        &self,
+        entity_key: &str,
+        entity: &E,
+        max_entries: usize,
+    ) -> bool {
         if self.entities.contains_key(entity_key) || self.sorted.len() < max_entries {
             return true;
         }
@@ -310,7 +324,7 @@ impl SortedViewCache {
     pub fn upsert_bounded(
         &mut self,
         entity_key: String,
-        entity: Value,
+        entity: impl Into<SharedEntity>,
         max_entries: usize,
     ) -> UpsertResult {
         let result = self.upsert(entity_key, entity);
@@ -340,6 +354,31 @@ impl SortedViewCache {
             self.keys_cache.truncate(self.sorted.len());
         }
         evicted
+    }
+
+    /// [`Self::deep_merge`] for whole entities, `_version` included. The
+    /// result shares `patch`'s fields whenever merging adds nothing to them:
+    /// when `base` has no field, at any depth, that `patch` lacks.
+    fn merge_entity(base: SharedEntity, patch: SharedEntity) -> SharedEntity {
+        let (base_fields, base_version) = base.into_parts();
+        let (patch_fields, patch_version) = patch.into_parts();
+        if !(base_fields.is_object() && patch_fields.is_object()) {
+            return SharedEntity::from_parts(patch_fields, patch_version);
+        }
+        let fields = if Arc::ptr_eq(&base_fields, &patch_fields)
+            || !keeps_fields(&base_fields, &patch_fields)
+        {
+            patch_fields
+        } else {
+            let base = Arc::try_unwrap(base_fields).unwrap_or_else(|shared| Value::clone(&shared));
+            Arc::new(Self::deep_merge(base, Value::clone(&patch_fields)))
+        };
+        let version = match (base_version, patch_version) {
+            (Some(base), Some(patch)) => Some(Self::deep_merge(base, patch)),
+            (base, None) => base,
+            (None, patch) => patch,
+        };
+        SharedEntity::from_parts(fields, version)
     }
 
     fn deep_merge(base: Value, patch: Value) -> Value {
@@ -377,7 +416,7 @@ impl SortedViewCache {
     }
 
     /// Get entity by key
-    pub fn get(&self, entity_key: &str) -> Option<&Value> {
+    pub fn get(&self, entity_key: &str) -> Option<&SharedEntity> {
         self.entities.get(entity_key).map(|(_, v)| v)
     }
 
@@ -389,7 +428,7 @@ impl SortedViewCache {
         &self.keys_cache
     }
 
-    /// Get a window of entities
+    /// Get a window of entities, as copies.
     pub fn get_window(&mut self, skip: usize, take: usize) -> Vec<(String, Value)> {
         if self.cache_dirty {
             self.rebuild_keys_cache();
@@ -402,13 +441,22 @@ impl SortedViewCache {
             .filter_map(|key| {
                 self.entities
                     .get(key)
-                    .map(|(_, v)| (key.clone(), v.clone()))
+                    .map(|(_, v)| (key.clone(), v.to_value()))
             })
             .collect()
     }
 
-    /// Get every entity in deterministic sort order for query-side filtering.
+    /// Copies of every entity in deterministic sort order.
     pub fn get_all_ordered(&mut self) -> Vec<(String, Value)> {
+        self.ordered_entities()
+            .into_iter()
+            .map(|(key, entity)| (key, entity.into_value()))
+            .collect()
+    }
+
+    /// Every entity in deterministic sort order for query-side filtering,
+    /// sharing their fields with the cache rather than copying them.
+    pub fn ordered_entities(&mut self) -> Vec<(String, SharedEntity)> {
         if self.cache_dirty {
             self.rebuild_keys_cache();
         }
@@ -418,7 +466,7 @@ impl SortedViewCache {
             .filter_map(|key| {
                 self.entities
                     .get(key)
-                    .map(|(_, value)| (key.clone(), value.clone()))
+                    .map(|(_, entity)| (key.clone(), entity.clone()))
             })
             .collect()
     }
@@ -453,7 +501,7 @@ impl SortedViewCache {
             if let Some((_, entity)) = self.entities.get(*key) {
                 deltas.push(ViewDelta::Add {
                     key: (*key).clone(),
-                    entity: entity.clone(),
+                    entity: entity.to_value(),
                 });
             }
         }
@@ -461,16 +509,11 @@ impl SortedViewCache {
         deltas
     }
 
-    fn extract_sort_value(&self, entity: &Value) -> SortValue {
-        let mut current = entity;
-        for segment in &self.sort_field {
-            match current.get(segment) {
-                Some(v) => current = v,
-                None => return SortValue::Null,
-            }
+    fn extract_sort_value<E: EntityFields + ?Sized>(&self, entity: &E) -> SortValue {
+        match lookup(entity, &self.sort_field) {
+            Some(value) => value_to_sort_value(&value),
+            None => SortValue::Null,
         }
-
-        value_to_sort_value(current)
     }
 
     fn find_position(&self, entity_key: &str) -> usize {
@@ -498,6 +541,17 @@ pub enum UpsertResult {
     Inserted { position: usize },
     /// Entity was updated (may or may not have moved)
     Updated { position: usize },
+}
+
+/// Whether merging `patch` into `base` keeps a field `patch` lacks: whether
+/// `base` has one, in an object where `patch` has an object too.
+fn keeps_fields(base: &Value, patch: &Value) -> bool {
+    match (base, patch) {
+        (Value::Object(base), Value::Object(patch)) => base
+            .iter()
+            .any(|(key, base)| patch.get(key).is_none_or(|patch| keeps_fields(base, patch))),
+        _ => false,
+    }
 }
 
 fn value_to_sort_value(v: &Value) -> SortValue {
@@ -1026,5 +1080,69 @@ mod tests {
         assert!(!cache.would_keep("1", &partial, 3));
         cache.upsert_bounded("1".to_string(), partial, 3);
         assert_eq!(cache.ordered_keys(), ["300", "200", "100"]);
+    }
+
+    /// A whole entity, holding every field the cached copy has, is kept as
+    /// given: the cache shares its fields instead of copying them.
+    #[test]
+    fn a_whole_update_shares_the_given_entity() {
+        let mut cache = SortedViewCache::new(
+            "test/top".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+        cache.upsert(
+            "a".to_string(),
+            json!({"score": 1, "name": "a", "_version": "e:1"}),
+        );
+        let update =
+            SharedEntity::new(json!({"score": 2, "name": "a", "extra": true, "_version": "e:2"}));
+        cache.upsert("a".to_string(), update.clone());
+        let held = cache.get("a").unwrap();
+        assert!(held.shares_fields_with(&update));
+        assert_eq!(*held, update);
+    }
+
+    /// An update that lacks a field the cached copy has keeps that field, in
+    /// a copy of its own: the entity it was given is left as it was.
+    #[test]
+    fn an_update_lacking_held_fields_merges_into_its_own_copy() {
+        let mut cache = SortedViewCache::new(
+            "test/top".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+        cache.upsert(
+            "a".to_string(),
+            json!({"score": 1, "nested": {"x": 1, "y": 1}, "_version": "e:1"}),
+        );
+        let update = SharedEntity::new(json!({"score": 2, "nested": {"x": 2}}));
+        cache.upsert("a".to_string(), update.clone());
+        let held = cache.get("a").unwrap();
+        assert!(!held.shares_fields_with(&update));
+        assert_eq!(
+            held.to_value(),
+            json!({"score": 2, "nested": {"x": 2, "y": 1}, "_version": "e:1"})
+        );
+        assert_eq!(update.to_value(), json!({"score": 2, "nested": {"x": 2}}));
+    }
+
+    /// `_version` sorts like any other field, though copies keep it apart
+    /// from the fields they share.
+    #[test]
+    fn a_version_sort_reads_each_copys_own_version() {
+        let mut cache = SortedViewCache::new(
+            "test/versions".to_string(),
+            vec!["_version".to_string()],
+            SortOrder::Desc,
+        );
+        let first = SharedEntity::new(json!({"id": 1, "_version": "e:1"}));
+        let (fields, _) = first.clone().into_parts();
+        cache.upsert("a".to_string(), first);
+        cache.upsert(
+            "b".to_string(),
+            SharedEntity::from_parts(fields, Some(json!("e:2"))),
+        );
+        assert_eq!(cache.ordered_keys(), ["b", "a"]);
     }
 }

@@ -227,6 +227,73 @@ async fn frames_and_everything_built_from_the_cache_carry_the_latest_version() {
     assert_eq!(version(&cached_state).0, version(&cached_list).0);
 }
 
+/// The views of an export share one copy of each entity's fields, each view
+/// keeping the version its own frames carry; a view that keeps other fields
+/// keeps its own copy. A derived view shares its source view's copy.
+#[tokio::test]
+async fn views_share_an_entity_but_keep_their_own_versions() {
+    let mut index = ViewIndex::new();
+    index.add_spec(spec("Round/list", Mode::List, Projection::all()));
+    index.add_spec(spec("Round/state", Mode::State, Projection::all()));
+    index.add_spec(spec(
+        "Round/summary",
+        Mode::State,
+        Projection {
+            fields: Some(vec!["id".to_string(), "total".to_string()]),
+        },
+    ));
+    index.add_spec(ViewSpec {
+        pipeline: Some(ViewPipeline {
+            filter: None,
+            sort: Some(SortConfig {
+                field_path: vec!["id".to_string()],
+                order: SortOrder::Desc,
+            }),
+            limit: None,
+        }),
+        source_view: Some("Round/list".to_string()),
+        ..spec("Round/latest", Mode::List, Projection::all())
+    });
+    let harness = Harness::start(index);
+    let mut list_frames = harness.bus.get_or_create_list_bus("Round/list").await;
+
+    harness
+        .send(150, 3, vec![("7", json!({"id": 7, "detail": {"a": 1}}))])
+        .await;
+    harness
+        .send(150, 9, vec![("7", json!({"total": 2, "detail": {"b": 2}}))])
+        .await;
+
+    let list = harness.cache.get_shared("Round/list", "7").await.unwrap();
+    let state = harness.cache.get_shared("Round/state", "7").await.unwrap();
+    let summary = harness
+        .cache
+        .get_shared("Round/summary", "7")
+        .await
+        .unwrap();
+    assert!(list.shares_fields_with(&state));
+    assert!(!list.shares_fields_with(&summary));
+    assert_ne!(list.version(), state.version());
+    assert_eq!(list["detail"], json!({"a": 1, "b": 2}));
+    assert_eq!(
+        summary.to_value(),
+        json!({"id": 7, "total": 2, "_version": summary.version().unwrap().clone()})
+    );
+
+    list_frames.recv().await.unwrap();
+    let last = frame(&list_frames.recv().await.unwrap().payload);
+    assert_eq!(Some(&last["data"]["_version"]), list.version());
+
+    let caches = harness.index.sorted_caches();
+    let caches = caches.read().await;
+    let derived = caches
+        .get("Round/latest")
+        .and_then(|cache| cache.get("7"))
+        .expect("round 7 ranks");
+    assert!(derived.shares_fields_with(&list));
+    assert_eq!(derived.version(), list.version());
+}
+
 /// A version is only comparable within its epoch, and each projector (a
 /// restart, a stack loaded again) starts a new one.
 #[tokio::test]

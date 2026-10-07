@@ -950,7 +950,8 @@ async fn rebuild_sorted_caches(view_index: &ViewIndex, entity_cache: &EntityCach
         let Some(source_view) = spec.source_view.as_ref() else {
             continue;
         };
-        let entities = entity_cache.get_all(source_view).await;
+        // The source view's own copies: derived views share their fields.
+        let entities = entity_cache.get_all_shared(source_view).await;
         let filter = spec
             .pipeline
             .as_ref()
