@@ -157,13 +157,20 @@ pub enum OpCode {
         path: String,
         value: Register,
     },
+    /// Load the Unix-seconds timestamp of the update being processed (its
+    /// `UpdateContext` timestamp, else the wall clock). It is the update's
+    /// time, not the processing time, so a replay reproduces it.
     GetCurrentTimestamp {
         dest: Register,
     },
+    /// Wrap an event as `{timestamp, data, slot?, signature?, event_index?,
+    /// ix_path?}`, stamped with the update's timestamp.
     CreateEvent {
         dest: Register,
         event_value: Register,
     },
+    /// Wrap a captured account as `{timestamp, account_address, data, slot?,
+    /// signature?}`, stamped with the update's timestamp.
     CreateCapture {
         dest: Register,
         capture_value: Register,
@@ -2482,6 +2489,107 @@ mod tests {
 
     fn pool_bytecode() -> MultiEntityBytecode {
         MultiEntityBytecode::from_single("Pool".to_string(), whole_entity_pool_spec(), 0)
+    }
+
+    /// Event (`#[event]`), capture (`#[snapshot]`) and context (`__timestamp`)
+    /// mappings compiled from a spec are stamped with the update's timestamp,
+    /// so replaying an update reproduces them.
+    #[test]
+    fn compiled_event_capture_and_context_mappings_carry_the_update_timestamp() {
+        let with_source = |target: &str, source: MappingSource| SerializableFieldMapping {
+            source,
+            ..mapping(target, &[], PopulationStrategy::LastWrite)
+        };
+        let spec: TypedStreamSpec<Value> =
+            TypedStreamSpec::from_serializable(SerializableStreamSpec {
+                ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
+                state_name: "Pool".to_string(),
+                program_id: None,
+                idl: None,
+                identity: IdentitySpec {
+                    primary_keys: vec!["id.address".to_string()],
+                    lookup_indexes: vec![],
+                },
+                handlers: vec![SerializableHandlerSpec {
+                    source: SourceSpec::Source {
+                        program_id: None,
+                        discriminator: None,
+                        type_name: "amm::PoolState".to_string(),
+                        serialization: None,
+                        is_account: true,
+                    },
+                    key_resolution: KeyResolutionStrategy::Embedded {
+                        primary_field: FieldPath::new(&["__account_address"]),
+                    },
+                    mappings: vec![
+                        mapping(
+                            "id.address",
+                            &["__account_address"],
+                            PopulationStrategy::SetOnce,
+                        ),
+                        with_source(
+                            "events.priced",
+                            MappingSource::AsEvent {
+                                fields: vec![Box::new(MappingSource::FromSource {
+                                    path: FieldPath::new(&["price"]),
+                                    default: None,
+                                    transform: None,
+                                })],
+                            },
+                        ),
+                        with_source(
+                            "snapshots.pool",
+                            MappingSource::AsCapture {
+                                field_transforms: BTreeMap::new(),
+                            },
+                        ),
+                        with_source(
+                            "state.updated_at",
+                            MappingSource::FromContext {
+                                field: "timestamp".to_string(),
+                            },
+                        ),
+                    ],
+                    conditions: vec![],
+                    emit: true,
+                }],
+                sections: vec![],
+                field_mappings: BTreeMap::new(),
+                resolver_hooks: vec![],
+                instruction_hooks: vec![],
+                resolver_specs: vec![],
+                computed_fields: vec![],
+                computed_field_specs: vec![],
+                content_hash: None,
+                views: vec![],
+            });
+        let bytecode = MultiEntityBytecode::from_single("Pool".to_string(), spec, 0);
+        let context = crate::vm::UpdateContext::with_timestamp(7, "sig-7".to_string(), 1_234_567);
+
+        let mut vm = VmContext::new();
+        vm.process_event(
+            &bytecode,
+            pool_event(100, 1),
+            "amm::PoolState",
+            Some(&context),
+            None,
+        )
+        .unwrap();
+
+        let pool = vm.get_entity_state(0, &json!("pool_1")).unwrap();
+        for path in [
+            "/events/priced/timestamp",
+            "/snapshots/pool/timestamp",
+            "/state/updated_at",
+        ] {
+            assert_eq!(
+                pool.pointer(path),
+                Some(&json!(1_234_567)),
+                "{path}: {pool:#}"
+            );
+        }
+        assert_eq!(pool.pointer("/events/priced/data/price"), Some(&json!(100)));
+        assert_eq!(pool.pointer("/snapshots/pool/slot"), Some(&json!(7)));
     }
 
     fn pool_event(price: u64, fill: u64) -> Value {
