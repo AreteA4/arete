@@ -1,11 +1,11 @@
 use crate::types::{Vault};
 use arete_sdk::{Stack, StateView, ViewBuilder, ViewHandle, Views};
 
-pub struct vaultStack;
+pub struct VaultStack;
 
-impl Stack for vaultStack {
-    type Views = vaultStackViews;
-    type Programs = vaultStackPrograms;
+impl Stack for VaultStack {
+    type Views = VaultStackViews;
+    type Programs = VaultStackPrograms;
 
     fn name() -> &'static str {
         "vault"
@@ -16,11 +16,11 @@ impl Stack for vaultStack {
     }
 }
 
-pub struct vaultStackViews {
+pub struct VaultStackViews {
     pub vault: VaultEntityViews,
 }
 
-impl Views for vaultStackViews {
+impl Views for VaultStackViews {
     fn from_builder(builder: ViewBuilder) -> Self {
         Self {
             vault: VaultEntityViews { builder },
@@ -46,11 +46,11 @@ impl VaultEntityViews {
         self.builder.view("Vault/list")
     }
 }
-pub struct vaultStackPrograms {
+pub struct VaultStackPrograms {
     pub vault: crate::programs::vault::VaultProgram,
 }
 
-impl arete_sdk::Programs for vaultStackPrograms {
+impl arete_sdk::Programs for VaultStackPrograms {
     fn from_builder(builder: arete_sdk::ProgramBuilder) -> Self {
         Self {
             vault: crate::programs::vault::VaultProgram::from_builder(builder),

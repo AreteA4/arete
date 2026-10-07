@@ -1235,14 +1235,26 @@ every character other than a letter, digit, or `_` as a word boundary:
 | Stack name       | TypeScript                                   | Rust                                               | Python                 |
 | ---------------- | -------------------------------------------- | -------------------------------------------------- | ---------------------- |
 | `token-balances` | `TOKEN_BALANCES_STACK`, `TokenBalancesStack` | `TokenBalancesStack`, crate `token-balances-stack` | `TOKEN_BALANCES_STACK` |
+| `token_balances` | `TOKEN_BALANCES_STACK`, `TokenBalancesStack` | `TokenBalancesStack`, crate `token_balances-stack` | `TOKEN_BALANCES_STACK` |
 | `my.stack`       | `MY_STACK_STACK`, `MyStackStack`             | `MyStackStack`, crate `my-stack-stack`             | `MY_STACK_STACK`       |
 | `9lives`         | `A9LIVES_STACK`, `A9livesStack`              | `A9livesStack`, crate `a9lives-stack`              | `VALUE_9LIVES_STACK`   |
 
-Names that are already identifiers, such as `OreStream` or `token_balances`,
-keep generating exactly the names they always have. If two names generate the
-same identifier, for example a stack `my-vault` and an entity `MyVaultStack`,
-or programs `token-2022` and `token_2022`, generation fails with an error that
-names both. Rename one of them.
+Type names are always UpperCamelCase. Most stack names already generated
+UpperCamelCase type names and keep generating exactly the same ones: names that
+are UpperCamelCase (`OreStream`) and names with `-`, `.` or other separators
+(`token-balances`, `my.stack`). Only a name that was kept as written but is not
+UpperCamelCase, such as snake_case `token_balances` or all-lowercase
+`orestream`, changes: `token_balances`, which used to generate
+`token_balancesStack`, generates the Rust types `TokenBalancesStack`,
+`TokenBalancesStackViews` and `TokenBalancesStackPrograms`, and the TypeScript
+types `TokenBalancesStack`, `TokenBalancesCoreStack`, `TokenBalancesEntity` and
+`TokenBalancesPrograms`. After regenerating such an SDK, update code that names
+the old types. Constants (`TOKEN_BALANCES_STACK`), file names, crate names and
+Python names do not change.
+
+If two names generate the same identifier, for example a stack `my-vault` and
+an entity `MyVaultStack`, or programs `token-2022` and `token_2022`, generation
+fails with an error that names both. Rename one of them.
 
 ### When a hosted stack version is retired
 

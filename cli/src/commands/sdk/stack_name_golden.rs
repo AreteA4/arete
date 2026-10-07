@@ -256,13 +256,61 @@ pub(super) fn collect_files(root: &Path) -> BTreeMap<String, String> {
     files
 }
 
-/// Every generated Rust file must parse and every Python file must compile.
-/// (TypeScript is type-checked with `tsc` in CI.)
+/// rustc's `non_camel_case_types` rule (an error under `-D warnings`): no
+/// leading lower-case letter, no `__`, and no `_` next to a letter.
+fn is_upper_camel_case(name: &str) -> bool {
+    let name = name.trim_matches('_');
+    let characters = name.chars().collect::<Vec<_>>();
+    !characters.first().is_some_and(|first| first.is_lowercase())
+        && !name.contains("__")
+        && !characters.windows(2).any(|pair| {
+            (pair[0].is_alphabetic() && pair[1] == '_')
+                || (pair[0] == '_' && pair[1].is_alphabetic())
+        })
+}
+
+/// Every type, trait and enum variant a generated Rust file declares.
+fn declared_rust_type_names(items: &[syn::Item], names: &mut Vec<String>) {
+    for item in items {
+        match item {
+            syn::Item::Struct(item) => names.push(item.ident.to_string()),
+            syn::Item::Enum(item) => {
+                names.push(item.ident.to_string());
+                names.extend(
+                    item.variants
+                        .iter()
+                        .map(|variant| variant.ident.to_string()),
+                );
+            }
+            syn::Item::Type(item) => names.push(item.ident.to_string()),
+            syn::Item::Trait(item) => names.push(item.ident.to_string()),
+            syn::Item::Union(item) => names.push(item.ident.to_string()),
+            syn::Item::Mod(item) => {
+                if let Some((_, items)) = &item.content {
+                    declared_rust_type_names(items, names);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Every generated Rust file must parse and declare only UpperCamelCase type
+/// names, and every Python file must compile. (TypeScript is type-checked
+/// with `tsc` in CI.)
 pub(super) fn assert_syntax(name: &str, root: &Path, files: &BTreeMap<String, String>) {
     for (relative, contents) in files {
         if relative.ends_with(".rs") {
-            if let Err(error) = syn::parse_file(contents) {
-                panic!("{relative} for stack '{name}' is not valid Rust: {error}\n{contents}");
+            let file = syn::parse_file(contents).unwrap_or_else(|error| {
+                panic!("{relative} for stack '{name}' is not valid Rust: {error}\n{contents}")
+            });
+            let mut types = Vec::new();
+            declared_rust_type_names(&file.items, &mut types);
+            for declared in types {
+                assert!(
+                    is_upper_camel_case(&declared),
+                    "{relative} for stack '{name}' declares `{declared}`, which rustc's non_camel_case_types lint rejects"
+                );
             }
         }
     }
@@ -394,7 +442,11 @@ pub(super) fn compare_with_golden(
     }
 }
 
-// Names that already generated valid SDKs. Their output must never change.
+// Names that already generated valid SDKs. An UpperCamelCase name's output
+// must never change. Rust type names are UpperCamelCase whatever the stack
+// name's casing (`vault_stream` -> `VaultStreamStack`, `vault` ->
+// `VaultStack`); `vault_streamStack` and `vaultStack` failed rustc's
+// `non_camel_case_types` lint.
 
 #[test]
 fn stack_name_golden_pascal_case() {

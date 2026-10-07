@@ -210,10 +210,10 @@ export const VAULT_STREAM_STACK_CORE = {
 } as const;
 
 /** Type alias for the core stack */
-export type vault_streamCoreStack = typeof VAULT_STREAM_STACK_CORE;
+export type VaultStreamCoreStack = typeof VAULT_STREAM_STACK_CORE;
 
 /** Entity types in this stack */
-export type vault_streamEntity = Vault;
+export type VaultStreamEntity = Vault;
 
 /** Default export for convenience */
 export default VAULT_STREAM_STACK_CORE;

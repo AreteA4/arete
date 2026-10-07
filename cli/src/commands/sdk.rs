@@ -5041,10 +5041,7 @@ fn render_typescript_stack_entry(
         ts_ident::identifier_stem(stack_name, IdentifierCase::ScreamingSnake)
     );
     let core_export_name = format!("{}_CORE", export_name);
-    let type_name = format!(
-        "{}Stack",
-        ts_ident::identifier_stem(stack_name, IdentifierCase::Preserve)
-    );
+    let type_name = format!("{}Stack", ts_ident::stack_type_stem(stack_name));
     let core_import = format!("./{}-core.js", layout.base_name);
     if !hosted_program_modules.is_empty() {
         let mut sdk_imports = Vec::new();
@@ -5377,10 +5374,7 @@ fn render_typescript_program_collection_entry(
         ts_ident::identifier_stem(stack_name, IdentifierCase::ScreamingSnake)
     );
     let core_export_name = format!("{}_CORE", export_name);
-    let type_name = format!(
-        "{}Programs",
-        ts_ident::identifier_stem(stack_name, IdentifierCase::Preserve)
-    );
+    let type_name = format!("{}Programs", ts_ident::stack_type_stem(stack_name));
     let core_import = format!("./{}-core.js", layout.base_name);
 
     if !hosted_program_modules.is_empty() {
