@@ -1003,6 +1003,32 @@ pub struct PendingAccountUpdate {
     pub is_stale_reprocess: bool,
 }
 
+impl PendingAccountUpdate {
+    /// The context to replay this update under once its mapping appears: its
+    /// own slot, signature and write version ([`UpdateContext::new_reprocessed`]
+    /// for stale cached data), and the timestamp it was first processed with.
+    ///
+    /// An update queued by the VM keeps the `__update_context` it was first
+    /// processed with in `account_data`, so its `__timestamp` fields replay
+    /// with that time. Its events, captures and computed fields are stamped
+    /// from the replay context, so the context carries the same timestamp:
+    /// one update keeps one time however long it waited. Data without a
+    /// recorded context replays without a timestamp (the wall clock).
+    pub fn replay_context(&self) -> UpdateContext {
+        let mut context = if self.is_stale_reprocess {
+            UpdateContext::new_reprocessed(self.slot, self.write_version)
+        } else {
+            UpdateContext::new_account(self.slot, self.signature.clone(), self.write_version)
+        };
+        context.timestamp = self
+            .account_data
+            .get("__update_context")
+            .and_then(|recorded| recorded.get("timestamp"))
+            .and_then(Value::as_i64);
+        context
+    }
+}
+
 /// Input for queueing an instruction event when PDA lookup fails.
 #[derive(Debug, Clone)]
 pub struct QueuedInstructionEvent {
@@ -3031,19 +3057,8 @@ impl VmContext {
                             if let Some(pending_handler) =
                                 entity_bytecode.handlers.get(&pending.account_type)
                             {
-                                let previous_context = self.current_context.clone();
-                                self.current_context = Some(if pending.is_stale_reprocess {
-                                    UpdateContext::new_reprocessed(
-                                        pending.slot,
-                                        pending.write_version,
-                                    )
-                                } else {
-                                    UpdateContext::new_account(
-                                        pending.slot,
-                                        pending.signature.clone(),
-                                        pending.write_version,
-                                    )
-                                });
+                                let previous_context =
+                                    self.current_context.replace(pending.replay_context());
                                 match self.execute_handler(
                                     pending_handler,
                                     &pending.account_data,
@@ -3130,12 +3145,8 @@ impl VmContext {
                                     if let Some(pending_handler) =
                                         entity_bytecode.handlers.get(&pending.account_type)
                                     {
-                                        let previous_context = self.current_context.clone();
-                                        self.current_context = Some(UpdateContext::new_account(
-                                            pending.slot,
-                                            pending.signature.clone(),
-                                            pending.write_version,
-                                        ));
+                                        let previous_context =
+                                            self.current_context.replace(pending.replay_context());
                                         match self.execute_handler(
                                             pending_handler,
                                             &pending.account_data,
@@ -8962,6 +8973,40 @@ mod tests {
         assert_eq!(first_entity["vault"]["account_address"], json!("vault_1"));
         assert_eq!(first_entity["vault"]["data"], json!({ "balance": 9 }));
         assert_eq!(first_entity["vault"]["slot"], json!(42));
+    }
+
+    #[test]
+    fn queued_account_updates_replay_with_their_recorded_context() {
+        let recorded = UpdateContext::with_timestamp(7, "sig-7".to_string(), UPDATE_TIMESTAMP);
+        let mut update = PendingAccountUpdate {
+            account_type: "vault::VaultState".to_string(),
+            pda_address: "vault_1".to_string(),
+            account_data: json!({ "balance": 1, "__update_context": recorded.to_value() }),
+            slot: 7,
+            write_version: 3,
+            signature: "sig-7".to_string(),
+            queued_at: 0,
+            is_stale_reprocess: false,
+        };
+
+        let replay = update.replay_context();
+        assert_eq!(replay.timestamp, Some(UPDATE_TIMESTAMP));
+        assert_eq!(replay.slot, Some(7));
+        assert_eq!(replay.signature.as_deref(), Some("sig-7"));
+        assert_eq!(replay.write_version, Some(3));
+        assert!(!replay.skip_resolvers);
+
+        // Stale cached data after a PDA remap: no signature, resolvers
+        // skipped, same time.
+        update.is_stale_reprocess = true;
+        let replay = update.replay_context();
+        assert_eq!(replay.timestamp, Some(UPDATE_TIMESTAMP));
+        assert_eq!(replay.signature, None);
+        assert!(replay.skip_resolvers);
+
+        // Data queued without a recorded context has no timestamp to keep.
+        update.account_data = json!({ "balance": 1 });
+        assert_eq!(update.replay_context().timestamp, None);
     }
 
     /// Without an update timestamp, state is stamped with the wall clock in

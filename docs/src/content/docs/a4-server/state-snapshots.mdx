@@ -104,6 +104,11 @@ server cold-starts (today's behavior) with a clear log line. The same applies
 to snapshots with a different format version, mismatched program ids, or
 corrupt/truncated blobs — restore problems never block startup.
 
+Event and capture `timestamp` fields hold the update's own timestamp when it
+carries one, rather than the time it was processed; snapshots taken before
+this change keep processing-time values when restored, so regenerate replay
+snapshots after upgrading if consistent timestamps matter.
+
 ## Staleness and fallbacks
 
 - If the snapshot is older than `ARETE_SNAPSHOT_MAX_RESUME_AGE_SLOTS`
