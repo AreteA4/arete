@@ -1496,6 +1496,8 @@ pub fn generate_vm_handler(
                                     );
                                     let resolved_key = vm.try_chained_pda_lookup(0, "default_pda_lookup", &update.pda_address);
 
+                                    // Keeps the update's own slot, signature and timestamp.
+                                    let update_context = update.replay_context();
                                     let mut account_data = update.account_data;
                                     if let Some(ref key) = resolved_key {
                                         arete::runtime::tracing::info!(
@@ -1513,22 +1515,12 @@ pub fn generate_vm_handler(
                                         );
                                     }
 
-                                    let update_context = if update.is_stale_reprocess {
+                                    if update.is_stale_reprocess {
                                         arete::runtime::tracing::info!(
                                             pda = %update.pda_address,
                                             "[PDA] Using reprocessed context (empty sig, skip resolvers)"
                                         );
-                                        arete::runtime::arete_interpreter::UpdateContext::new_reprocessed(
-                                            update.slot,
-                                            update.write_version,
-                                        )
-                                    } else {
-                                        arete::runtime::arete_interpreter::UpdateContext::new_account(
-                                            update.slot,
-                                            update.signature.clone(),
-                                            update.write_version,
-                                        )
-                                    };
+                                    }
 
                                     let pending_result = vm.process_event(&bytecode, account_data, &update.account_type, Some(&update_context), None);
                                     vm.set_current_context(Some(context.clone()));
@@ -2615,6 +2607,8 @@ pub fn generate_instruction_handler_impl(
                                     );
                                     let resolved_key = vm.try_chained_pda_lookup(0, "default_pda_lookup", &update.pda_address);
 
+                                    // Keeps the update's own slot, signature and timestamp.
+                                    let update_context = update.replay_context();
                                     let mut account_data = update.account_data;
                                     if let Some(ref key) = resolved_key {
                                         arete::runtime::tracing::info!(
@@ -2632,22 +2626,12 @@ pub fn generate_instruction_handler_impl(
                                         );
                                     }
 
-                                    let update_context = if update.is_stale_reprocess {
+                                    if update.is_stale_reprocess {
                                         arete::runtime::tracing::info!(
                                             pda = %update.pda_address,
                                             "[PDA] Using reprocessed context (empty sig, skip resolvers)"
                                         );
-                                        arete::runtime::arete_interpreter::UpdateContext::new_reprocessed(
-                                            update.slot,
-                                            update.write_version,
-                                        )
-                                    } else {
-                                        arete::runtime::arete_interpreter::UpdateContext::new_account(
-                                            update.slot,
-                                            update.signature.clone(),
-                                            update.write_version,
-                                        )
-                                    };
+                                    }
 
                                     let pending_result = vm.process_event(&bytecode, account_data, &update.account_type, Some(&update_context), None);
                                     vm.set_current_context(Some(context.clone()));

@@ -157,13 +157,20 @@ pub enum OpCode {
         path: String,
         value: Register,
     },
+    /// Load the Unix-seconds timestamp of the update being processed (its
+    /// `UpdateContext` timestamp, else the wall clock). It is the update's
+    /// time, not the processing time, so a replay reproduces it.
     GetCurrentTimestamp {
         dest: Register,
     },
+    /// Wrap an event as `{timestamp, data, slot?, signature?, event_index?,
+    /// ix_path?}`, stamped with the update's timestamp.
     CreateEvent {
         dest: Register,
         event_value: Register,
     },
+    /// Wrap a captured account as `{timestamp, account_address, data, slot?,
+    /// signature?}`, stamped with the update's timestamp.
     CreateCapture {
         dest: Register,
         capture_value: Register,
@@ -2320,6 +2327,284 @@ mod tests {
         })
     }
 
+    /// A token whose bonding-curve account is keyed by the `id.bonding_curve`
+    /// lookup index, which `LinkIxState` writes, or through the PDA mapping
+    /// `BuyIxState` registers to the token's creator (indexed by
+    /// `CreateIxState`), and whose round account is keyed by the numeric
+    /// `id.round` index `OpenRoundIxState` writes. Both account handlers
+    /// record an event, a capture and the update's context timestamp.
+    fn timed_bonding_curve_spec() -> TypedStreamSpec<Value> {
+        let with_source = |target: &str, source: MappingSource| SerializableFieldMapping {
+            source,
+            ..mapping(target, &[], PopulationStrategy::LastWrite)
+        };
+        let timestamped = || {
+            vec![
+                with_source(
+                    "events.reserves",
+                    MappingSource::AsEvent {
+                        fields: vec![Box::new(MappingSource::FromSource {
+                            path: FieldPath::new(&["virtual_token_reserves"]),
+                            default: None,
+                            transform: None,
+                        })],
+                    },
+                ),
+                with_source(
+                    "snapshots.curve",
+                    MappingSource::AsCapture {
+                        field_transforms: BTreeMap::new(),
+                    },
+                ),
+                with_source(
+                    "state.seen_at",
+                    MappingSource::FromContext {
+                        field: "timestamp".to_string(),
+                    },
+                ),
+            ]
+        };
+        let source = |type_name: &str, is_account: bool| SourceSpec::Source {
+            program_id: None,
+            discriminator: None,
+            type_name: type_name.to_string(),
+            serialization: None,
+            is_account,
+        };
+        TypedStreamSpec::from_serializable(SerializableStreamSpec {
+            ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
+            state_name: "PumpfunToken".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.mint".to_string()],
+                lookup_indexes: vec![
+                    LookupIndexSpec {
+                        field_name: "id.bonding_curve".to_string(),
+                        temporal_field: None,
+                    },
+                    LookupIndexSpec {
+                        field_name: "id.creator".to_string(),
+                        temporal_field: None,
+                    },
+                    LookupIndexSpec {
+                        field_name: "id.round".to_string(),
+                        temporal_field: None,
+                    },
+                ],
+            },
+            handlers: vec![
+                SerializableHandlerSpec {
+                    source: source("pump::BondingCurveState", true),
+                    key_resolution: KeyResolutionStrategy::Lookup {
+                        primary_field: FieldPath::new(&["__account_address"]),
+                    },
+                    mappings: [
+                        vec![mapping(
+                            "id.bonding_curve",
+                            &["__account_address"],
+                            PopulationStrategy::SetOnce,
+                        )],
+                        timestamped(),
+                    ]
+                    .concat(),
+                    conditions: vec![],
+                    emit: true,
+                },
+                SerializableHandlerSpec {
+                    source: source("pump::RoundState", true),
+                    key_resolution: KeyResolutionStrategy::Lookup {
+                        primary_field: FieldPath::new(&["round"]),
+                    },
+                    mappings: timestamped(),
+                    conditions: vec![],
+                    emit: true,
+                },
+                SerializableHandlerSpec {
+                    source: source("pump::OpenRoundIxState", false),
+                    key_resolution: KeyResolutionStrategy::Embedded {
+                        primary_field: FieldPath::new(&["accounts", "mint"]),
+                    },
+                    mappings: vec![
+                        mapping(
+                            "id.mint",
+                            &["accounts", "mint"],
+                            PopulationStrategy::SetOnce,
+                        ),
+                        mapping(
+                            "id.round",
+                            &["accounts", "round"],
+                            PopulationStrategy::SetOnce,
+                        ),
+                    ],
+                    conditions: vec![],
+                    emit: true,
+                },
+                SerializableHandlerSpec {
+                    source: source("pump::LinkIxState", false),
+                    key_resolution: KeyResolutionStrategy::Embedded {
+                        primary_field: FieldPath::new(&["accounts", "mint"]),
+                    },
+                    mappings: vec![
+                        mapping(
+                            "id.mint",
+                            &["accounts", "mint"],
+                            PopulationStrategy::SetOnce,
+                        ),
+                        mapping(
+                            "id.bonding_curve",
+                            &["accounts", "bonding_curve"],
+                            PopulationStrategy::SetOnce,
+                        ),
+                    ],
+                    conditions: vec![],
+                    emit: true,
+                },
+                SerializableHandlerSpec {
+                    source: source("pump::CreateIxState", false),
+                    key_resolution: KeyResolutionStrategy::Embedded {
+                        primary_field: FieldPath::new(&["accounts", "mint"]),
+                    },
+                    mappings: vec![
+                        mapping(
+                            "id.mint",
+                            &["accounts", "mint"],
+                            PopulationStrategy::SetOnce,
+                        ),
+                        mapping(
+                            "id.creator",
+                            &["accounts", "user"],
+                            PopulationStrategy::SetOnce,
+                        ),
+                    ],
+                    conditions: vec![],
+                    emit: true,
+                },
+            ],
+            sections: vec![],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            instruction_hooks: vec![InstructionHook {
+                instruction_type: "pump::BuyIxState".to_string(),
+                actions: vec![HookAction::RegisterPdaMapping {
+                    pda_field: FieldPath::new(&["accounts", "bonding_curve"]),
+                    seed_field: FieldPath::new(&["accounts", "user"]),
+                    lookup_name: "default_pda_lookup".to_string(),
+                }],
+                lookup_by: None,
+            }],
+            resolver_specs: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        })
+    }
+
+    /// A timed account update that waits for its key replays with its own
+    /// time: the event, the capture and the `__timestamp` field all carry the
+    /// update's timestamp, not the flush time or the flushing instruction's.
+    /// The update waits for its lookup index entry (`LinkIxState`), for its
+    /// PDA mapping (`BuyIxState`), for the index entry of its already mapped
+    /// PDA's seed (`CreateIxState`), or for a numeric index entry, which is
+    /// no PDA (`OpenRoundIxState`).
+    #[test]
+    fn a_queued_account_update_replays_with_its_own_timestamp() {
+        use crate::vm::UpdateContext;
+
+        let accounts = json!({
+            "bonding_curve": "bonding_curve_1",
+            "mint": "mint_1",
+            "user": "user_1",
+            "round": 7,
+        });
+        let curve = (
+            "pump::BondingCurveState",
+            json!({ "__account_address": "bonding_curve_1", "virtual_token_reserves": 42 }),
+        );
+        let round = (
+            "pump::RoundState",
+            json!({ "__account_address": "round_1", "round": 7, "virtual_token_reserves": 42 }),
+        );
+        let instruction = |vm: &mut VmContext, bytecode: &MultiEntityBytecode, name: &str| {
+            let mut context =
+                UpdateContext::new_instruction(20, "instruction-signature".to_string(), 0);
+            context.timestamp = Some(2_000);
+            vm.process_event(
+                bytecode,
+                json!({ "accounts": accounts }),
+                name,
+                Some(&context),
+                None,
+            )
+            .unwrap();
+        };
+        // (instructions before the account update, the account update,
+        // instructions after it)
+        let scenarios: [(&[&str], _, &[&str]); 4] = [
+            (&[], &curve, &["pump::LinkIxState"]),
+            (&[], &curve, &["pump::CreateIxState", "pump::BuyIxState"]),
+            (&["pump::BuyIxState"], &curve, &["pump::CreateIxState"]),
+            (&[], &round, &["pump::OpenRoundIxState"]),
+        ];
+        for (before, (account_type, account), after) in scenarios {
+            let bytecode = MultiEntityBytecode::from_single(
+                "PumpfunToken".to_string(),
+                timed_bonding_curve_spec(),
+                0,
+            );
+            let mut vm = VmContext::new();
+            for name in before {
+                instruction(&mut vm, &bytecode, name);
+            }
+            let mut account_context =
+                UpdateContext::new_account(10, "curve-signature".to_string(), 1);
+            account_context.timestamp = Some(1_000);
+
+            let queued = vm
+                .process_event(
+                    &bytecode,
+                    account.clone(),
+                    account_type,
+                    Some(&account_context),
+                    None,
+                )
+                .unwrap();
+            assert!(queued.is_empty(), "{after:?}: {queued:?}");
+
+            // Flush after a wall-clock second has passed, under instructions
+            // with a later timestamp of their own.
+            std::thread::sleep(std::time::Duration::from_millis(1_100));
+            for name in after {
+                instruction(&mut vm, &bytecode, name);
+            }
+
+            let token = vm
+                .get_entity_state(0, &json!("mint_1"))
+                .unwrap_or_else(|| panic!("{after:?}: no entity"));
+            for path in [
+                "/events/reserves/timestamp",
+                "/snapshots/curve/timestamp",
+                "/state/seen_at",
+            ] {
+                assert_eq!(
+                    token.pointer(path),
+                    Some(&json!(1_000)),
+                    "{before:?} {after:?} {path}: {token:#}"
+                );
+            }
+            assert_eq!(
+                token.pointer("/events/reserves/data/virtual_token_reserves"),
+                Some(&json!(42))
+            );
+            assert_eq!(token.pointer("/events/reserves/slot"), Some(&json!(10)));
+            assert_eq!(
+                token.pointer("/snapshots/curve/signature"),
+                Some(&json!("curve-signature"))
+            );
+        }
+    }
+
     fn pda_to_intermediate_lookup_spec() -> TypedStreamSpec<Value> {
         TypedStreamSpec::from_serializable(SerializableStreamSpec {
             ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
@@ -2482,6 +2767,107 @@ mod tests {
 
     fn pool_bytecode() -> MultiEntityBytecode {
         MultiEntityBytecode::from_single("Pool".to_string(), whole_entity_pool_spec(), 0)
+    }
+
+    /// Event (`#[event]`), capture (`#[snapshot]`) and context (`__timestamp`)
+    /// mappings compiled from a spec are stamped with the update's timestamp,
+    /// so replaying an update reproduces them.
+    #[test]
+    fn compiled_event_capture_and_context_mappings_carry_the_update_timestamp() {
+        let with_source = |target: &str, source: MappingSource| SerializableFieldMapping {
+            source,
+            ..mapping(target, &[], PopulationStrategy::LastWrite)
+        };
+        let spec: TypedStreamSpec<Value> =
+            TypedStreamSpec::from_serializable(SerializableStreamSpec {
+                ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
+                state_name: "Pool".to_string(),
+                program_id: None,
+                idl: None,
+                identity: IdentitySpec {
+                    primary_keys: vec!["id.address".to_string()],
+                    lookup_indexes: vec![],
+                },
+                handlers: vec![SerializableHandlerSpec {
+                    source: SourceSpec::Source {
+                        program_id: None,
+                        discriminator: None,
+                        type_name: "amm::PoolState".to_string(),
+                        serialization: None,
+                        is_account: true,
+                    },
+                    key_resolution: KeyResolutionStrategy::Embedded {
+                        primary_field: FieldPath::new(&["__account_address"]),
+                    },
+                    mappings: vec![
+                        mapping(
+                            "id.address",
+                            &["__account_address"],
+                            PopulationStrategy::SetOnce,
+                        ),
+                        with_source(
+                            "events.priced",
+                            MappingSource::AsEvent {
+                                fields: vec![Box::new(MappingSource::FromSource {
+                                    path: FieldPath::new(&["price"]),
+                                    default: None,
+                                    transform: None,
+                                })],
+                            },
+                        ),
+                        with_source(
+                            "snapshots.pool",
+                            MappingSource::AsCapture {
+                                field_transforms: BTreeMap::new(),
+                            },
+                        ),
+                        with_source(
+                            "state.updated_at",
+                            MappingSource::FromContext {
+                                field: "timestamp".to_string(),
+                            },
+                        ),
+                    ],
+                    conditions: vec![],
+                    emit: true,
+                }],
+                sections: vec![],
+                field_mappings: BTreeMap::new(),
+                resolver_hooks: vec![],
+                instruction_hooks: vec![],
+                resolver_specs: vec![],
+                computed_fields: vec![],
+                computed_field_specs: vec![],
+                content_hash: None,
+                views: vec![],
+            });
+        let bytecode = MultiEntityBytecode::from_single("Pool".to_string(), spec, 0);
+        let context = crate::vm::UpdateContext::with_timestamp(7, "sig-7".to_string(), 1_234_567);
+
+        let mut vm = VmContext::new();
+        vm.process_event(
+            &bytecode,
+            pool_event(100, 1),
+            "amm::PoolState",
+            Some(&context),
+            None,
+        )
+        .unwrap();
+
+        let pool = vm.get_entity_state(0, &json!("pool_1")).unwrap();
+        for path in [
+            "/events/priced/timestamp",
+            "/snapshots/pool/timestamp",
+            "/state/updated_at",
+        ] {
+            assert_eq!(
+                pool.pointer(path),
+                Some(&json!(1_234_567)),
+                "{path}: {pool:#}"
+            );
+        }
+        assert_eq!(pool.pointer("/events/priced/data/price"), Some(&json!(100)));
+        assert_eq!(pool.pointer("/snapshots/pool/slot"), Some(&json!(7)));
     }
 
     fn pool_event(price: u64, fill: u64) -> Value {

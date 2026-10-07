@@ -25,7 +25,10 @@ pub struct UpdateContext {
     pub slot: Option<u64>,
     /// Transaction signature
     pub signature: Option<String>,
-    /// Unix timestamp (seconds since epoch)
+    /// Unix timestamp (seconds since epoch) of the update, e.g. the block
+    /// time. The VM stamps captures, events and the context timestamp of
+    /// computed fields with it, so processing the same updates again (a
+    /// replay or backfill) reproduces the same values.
     /// If not provided, will default to current system time when accessed
     pub timestamp: Option<i64>,
     /// Write version for account updates (monotonically increasing per account within a slot)
@@ -164,12 +167,7 @@ impl UpdateContext {
 
     /// Get the timestamp, falling back to current system time if not set
     pub fn timestamp(&self) -> i64 {
-        self.timestamp.unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64
-        })
+        self.timestamp.unwrap_or_else(wall_clock_unix_seconds)
     }
 
     /// Create an empty context (for testing or when context is not available)
@@ -238,6 +236,14 @@ impl UpdateContext {
         }
         Value::Object(obj)
     }
+}
+
+/// The current wall-clock time in Unix seconds.
+fn wall_clock_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 
 pub type Register = usize;
@@ -995,6 +1001,32 @@ pub struct PendingAccountUpdate {
     /// prevent `when` guards from matching stale instruction signatures
     /// and to skip resolver scheduling.
     pub is_stale_reprocess: bool,
+}
+
+impl PendingAccountUpdate {
+    /// The context to replay this update under once its mapping appears: its
+    /// own slot, signature and write version ([`UpdateContext::new_reprocessed`]
+    /// for stale cached data), and the timestamp it was first processed with.
+    ///
+    /// An update queued by the VM keeps the `__update_context` it was first
+    /// processed with in `account_data`, so its `__timestamp` fields replay
+    /// with that time. Its events, captures and computed fields are stamped
+    /// from the replay context, so the context carries the same timestamp:
+    /// one update keeps one time however long it waited. Data without a
+    /// recorded context replays without a timestamp (the wall clock).
+    pub fn replay_context(&self) -> UpdateContext {
+        let mut context = if self.is_stale_reprocess {
+            UpdateContext::new_reprocessed(self.slot, self.write_version)
+        } else {
+            UpdateContext::new_account(self.slot, self.signature.clone(), self.write_version)
+        };
+        context.timestamp = self
+            .account_data
+            .get("__update_context")
+            .and_then(|recorded| recorded.get("timestamp"))
+            .and_then(Value::as_i64);
+        context
+    }
 }
 
 /// Input for queueing an instruction event when PDA lookup fails.
@@ -2329,16 +2361,7 @@ impl VmContext {
                     .collect();
 
                 let context_slot = self.current_context.as_ref().and_then(|c| c.slot);
-                let context_timestamp = self
-                    .current_context
-                    .as_ref()
-                    .map(|c| c.timestamp())
-                    .unwrap_or_else(|| {
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs() as i64
-                    });
+                let context_timestamp = self.update_timestamp();
                 let eval_result = evaluator(&mut entity_state, context_slot, context_timestamp);
 
                 if eval_result.is_ok() {
@@ -2590,6 +2613,17 @@ impl VmContext {
     /// Set the current update context for computed field evaluation
     pub fn set_current_context(&mut self, context: Option<UpdateContext>) {
         self.current_context = context;
+    }
+
+    /// Unix seconds of the update being processed: the current context's
+    /// timestamp (the block time, when the source provides it), else the
+    /// wall clock. Values written into entity state, events and captures use
+    /// it, so the same updates processed twice yield the same state; queue,
+    /// TTL and eviction bookkeeping keeps using the wall clock.
+    fn update_timestamp(&self) -> i64 {
+        self.current_context
+            .as_ref()
+            .map_or_else(wall_clock_unix_seconds, UpdateContext::timestamp)
     }
 
     fn add_warning(&mut self, msg: String) {
@@ -3023,19 +3057,8 @@ impl VmContext {
                             if let Some(pending_handler) =
                                 entity_bytecode.handlers.get(&pending.account_type)
                             {
-                                let previous_context = self.current_context.clone();
-                                self.current_context = Some(if pending.is_stale_reprocess {
-                                    UpdateContext::new_reprocessed(
-                                        pending.slot,
-                                        pending.write_version,
-                                    )
-                                } else {
-                                    UpdateContext::new_account(
-                                        pending.slot,
-                                        pending.signature.clone(),
-                                        pending.write_version,
-                                    )
-                                });
+                                let previous_context =
+                                    self.current_context.replace(pending.replay_context());
                                 match self.execute_handler(
                                     pending_handler,
                                     &pending.account_data,
@@ -3122,12 +3145,8 @@ impl VmContext {
                                     if let Some(pending_handler) =
                                         entity_bytecode.handlers.get(&pending.account_type)
                                     {
-                                        let previous_context = self.current_context.clone();
-                                        self.current_context = Some(UpdateContext::new_account(
-                                            pending.slot,
-                                            pending.signature.clone(),
-                                            pending.write_version,
-                                        ));
+                                        let previous_context =
+                                            self.current_context.replace(pending.replay_context());
                                         match self.execute_handler(
                                             pending_handler,
                                             &pending.account_data,
@@ -3838,18 +3857,11 @@ impl VmContext {
                     pc += 1;
                 }
                 OpCode::GetCurrentTimestamp { dest } => {
-                    let timestamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs() as i64;
-                    self.registers[*dest] = json!(timestamp);
+                    self.registers[*dest] = json!(self.update_timestamp());
                     pc += 1;
                 }
                 OpCode::CreateEvent { dest, event_value } => {
-                    let timestamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs() as i64;
+                    let timestamp = self.update_timestamp();
 
                     // Filter out __update_context from the event data
                     let mut event_data = self.registers[*event_value].clone();
@@ -3885,10 +3897,7 @@ impl VmContext {
                     dest,
                     capture_value,
                 } => {
-                    let timestamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs() as i64;
+                    let timestamp = self.update_timestamp();
 
                     // Get the capture data (already filtered by load_field)
                     let capture_data = self.registers[*capture_value].clone();
@@ -4592,18 +4601,9 @@ impl VmContext {
                             .map(|path| Self::get_value_at_path(&self.registers[*state], path))
                             .collect();
 
-                        let state_value = &mut self.registers[*state];
                         let context_slot = self.current_context.as_ref().and_then(|c| c.slot);
-                        let context_timestamp = self
-                            .current_context
-                            .as_ref()
-                            .map(|c| c.timestamp())
-                            .unwrap_or_else(|| {
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_secs() as i64
-                            });
+                        let context_timestamp = self.update_timestamp();
+                        let state_value = &mut self.registers[*state];
                         let eval_result = evaluator(state_value, context_slot, context_timestamp);
 
                         if eval_result.is_ok() {
@@ -5500,16 +5500,7 @@ impl VmContext {
         // Re-evaluate computed fields if an evaluator is provided
         if let Some(evaluator) = entity_evaluator {
             let context_slot = self.current_context.as_ref().and_then(|c| c.slot);
-            let context_timestamp = self
-                .current_context
-                .as_ref()
-                .map(|c| c.timestamp())
-                .unwrap_or_else(|| {
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs() as i64
-                });
+            let context_timestamp = self.update_timestamp();
 
             tracing::debug!(
                 entity_name = %op.entity_name,
@@ -8827,6 +8818,220 @@ mod tests {
         let state = &vm.states[&0];
         assert!(!state.pending_instruction_events.contains_key("pda"));
         assert_eq!(state.pending_instruction_event_count, 1);
+    }
+
+    /// Block time of the update the timestamp tests process.
+    const UPDATE_TIMESTAMP: i64 = 1_700_000_000;
+
+    /// Computed-field evaluator recording the context timestamp it is given.
+    fn stamp_computed_at(
+        state: &mut Value,
+        _slot: Option<u64>,
+        timestamp: i64,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        state["computed_at"] = json!(timestamp);
+        Ok(())
+    }
+
+    /// A `Vault` entity keyed by the account address whose deposit handler
+    /// stamps state through every timestamp source: an event (`deposit`), a
+    /// capture (`vault`), `GetCurrentTimestamp` (`seen_at`) and the computed
+    /// fields' context timestamp (`computed_at`).
+    fn timestamped_vault_bytecode() -> MultiEntityBytecode {
+        let handler = vec![
+            OpCode::LoadEventField {
+                path: FieldPath::new(&["__account_address"]),
+                dest: 0,
+                default: None,
+            },
+            OpCode::ReadOrInitState {
+                state_id: 0,
+                key: 0,
+                default: json!({}),
+                dest: 2,
+            },
+            OpCode::LoadEventField {
+                path: FieldPath::new(&["amount"]),
+                dest: 3,
+                default: None,
+            },
+            OpCode::CreateEvent {
+                dest: 4,
+                event_value: 3,
+            },
+            OpCode::SetField {
+                object: 2,
+                path: "deposit".to_string(),
+                value: 4,
+            },
+            OpCode::LoadConstant {
+                value: json!({ "balance": 9 }),
+                dest: 5,
+            },
+            OpCode::CreateCapture {
+                dest: 6,
+                capture_value: 5,
+            },
+            OpCode::SetField {
+                object: 2,
+                path: "vault".to_string(),
+                value: 6,
+            },
+            OpCode::GetCurrentTimestamp { dest: 7 },
+            OpCode::SetField {
+                object: 2,
+                path: "seen_at".to_string(),
+                value: 7,
+            },
+            OpCode::EvaluateComputedFields {
+                state: 2,
+                computed_paths: vec!["computed_at".to_string()],
+            },
+            OpCode::UpdateState {
+                state_id: 0,
+                key: 0,
+                value: 2,
+            },
+            OpCode::EmitMutation {
+                entity_name: "Vault".to_string(),
+                key: 0,
+                state: 2,
+            },
+        ];
+        let entity = crate::compiler::EntityBytecode {
+            state_id: 0,
+            handlers: HashMap::from([("vault::Deposit".to_string(), handler)]),
+            entity_name: "Vault".to_string(),
+            when_events: HashSet::new(),
+            non_emitted_fields: HashSet::new(),
+            computed_paths: vec!["computed_at".to_string()],
+            computed_fields_evaluator: Some(Box::new(stamp_computed_at)),
+        };
+        MultiEntityBytecode {
+            entities: HashMap::from([("Vault".to_string(), entity)]),
+            event_routing: HashMap::from([(
+                "vault::Deposit".to_string(),
+                vec!["Vault".to_string()],
+            )]),
+            when_events: HashSet::new(),
+            proto_router: Default::default(),
+        }
+    }
+
+    /// Process one deposit in a fresh VM; returns the entity and the emitted
+    /// mutations.
+    fn process_deposit(context: Option<&UpdateContext>) -> (Value, Value) {
+        let bytecode = timestamped_vault_bytecode();
+        let mut vm = VmContext::new();
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                json!({ "__account_address": "vault_1", "amount": 5 }),
+                "vault::Deposit",
+                context,
+                None,
+            )
+            .unwrap();
+        let entity = vm.get_entity_state(0, &json!("vault_1")).unwrap();
+        (entity, serde_json::to_value(mutations).unwrap())
+    }
+
+    fn stamped_timestamps(entity: &Value) -> [Option<i64>; 4] {
+        [
+            "/deposit/timestamp",
+            "/vault/timestamp",
+            "/seen_at",
+            "/computed_at",
+        ]
+        .map(|path| entity.pointer(path).and_then(Value::as_i64))
+    }
+
+    /// Processing the same update twice yields the same state: events,
+    /// captures and computed fields carry the update's timestamp, not the
+    /// time it was processed, so a replay, a backfill or a second runtime
+    /// compared against this one reproduces them exactly.
+    #[test]
+    fn state_timestamps_come_from_the_update_not_the_wall_clock() {
+        let context =
+            UpdateContext::with_timestamp(42, "signature-42".to_string(), UPDATE_TIMESTAMP);
+
+        let (first_entity, first_mutations) = process_deposit(Some(&context));
+        // Straddle a wall-clock second.
+        std::thread::sleep(Duration::from_millis(1_100));
+        let (second_entity, second_mutations) = process_deposit(Some(&context));
+
+        assert_eq!(first_entity, second_entity);
+        assert_eq!(first_mutations, second_mutations);
+        assert_eq!(
+            stamped_timestamps(&first_entity),
+            [Some(UPDATE_TIMESTAMP); 4],
+            "{first_entity:#}"
+        );
+        assert_eq!(first_entity["deposit"]["data"], json!(5));
+        assert_eq!(first_entity["deposit"]["slot"], json!(42));
+        assert_eq!(first_entity["deposit"]["signature"], json!("signature-42"));
+        assert_eq!(first_entity["vault"]["account_address"], json!("vault_1"));
+        assert_eq!(first_entity["vault"]["data"], json!({ "balance": 9 }));
+        assert_eq!(first_entity["vault"]["slot"], json!(42));
+    }
+
+    #[test]
+    fn queued_account_updates_replay_with_their_recorded_context() {
+        let recorded = UpdateContext::with_timestamp(7, "sig-7".to_string(), UPDATE_TIMESTAMP);
+        let mut update = PendingAccountUpdate {
+            account_type: "vault::VaultState".to_string(),
+            pda_address: "vault_1".to_string(),
+            account_data: json!({ "balance": 1, "__update_context": recorded.to_value() }),
+            slot: 7,
+            write_version: 3,
+            signature: "sig-7".to_string(),
+            queued_at: 0,
+            is_stale_reprocess: false,
+        };
+
+        let replay = update.replay_context();
+        assert_eq!(replay.timestamp, Some(UPDATE_TIMESTAMP));
+        assert_eq!(replay.slot, Some(7));
+        assert_eq!(replay.signature.as_deref(), Some("sig-7"));
+        assert_eq!(replay.write_version, Some(3));
+        assert!(!replay.skip_resolvers);
+
+        // Stale cached data after a PDA remap: no signature, resolvers
+        // skipped, same time.
+        update.is_stale_reprocess = true;
+        let replay = update.replay_context();
+        assert_eq!(replay.timestamp, Some(UPDATE_TIMESTAMP));
+        assert_eq!(replay.signature, None);
+        assert!(replay.skip_resolvers);
+
+        // Data queued without a recorded context has no timestamp to keep.
+        update.account_data = json!({ "balance": 1 });
+        assert_eq!(update.replay_context().timestamp, None);
+    }
+
+    /// Without an update timestamp, state is stamped with the wall clock in
+    /// Unix seconds, as before.
+    #[test]
+    fn state_timestamps_fall_back_to_the_wall_clock_without_an_update_timestamp() {
+        let unix_now = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+        };
+        let untimed = UpdateContext::new(42, "signature-42".to_string());
+        for context in [None, Some(&untimed)] {
+            let before = unix_now();
+            let (entity, _) = process_deposit(context);
+            let after = unix_now();
+            for timestamp in stamped_timestamps(&entity) {
+                let timestamp = timestamp.unwrap_or_else(|| panic!("{entity:#}"));
+                assert!(
+                    (before..=after).contains(&timestamp),
+                    "{timestamp} not in {before}..={after} for context {context:?}"
+                );
+            }
+        }
     }
 }
 
