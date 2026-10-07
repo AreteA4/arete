@@ -1604,7 +1604,7 @@ async fn attach_state_subscription(
     let synced = if delivered {
         snapshot_entities
             .first()
-            .map(|(_, entity)| wire_value(entity, &view_spec.wire_format))
+            .map(|(_, entity)| Synced::Entity(entity.clone()))
     } else {
         None
     };
@@ -1631,7 +1631,7 @@ async fn attach_state_subscription(
             // Whether the client holds this key, not whether it exists.
             let mut member = delivered;
             // The entity as the client last received it whole (its snapshot
-            // row, an upsert or the last catch-up), in wire format. A catch-up
+            // row, an upsert or the last catch-up; see `Synced`). A catch-up
             // sends what changed since, and every field a patch forwarded in
             // between set (`touched`, see `mark_fields`): the entity may have
             // set it back, and a client may have dropped the patch.
@@ -1753,41 +1753,57 @@ async fn attach_state_subscription(
                             // number themselves differently, so the latest
                             // patch's seq can sort below one already delivered.
                             (true, Some((entity_key, data))) => {
-                                let mut current = data.into_value();
-                                apply_wire_format(&mut current, &view_spec_task.wire_format);
-                                let body = match (&synced, replace) {
-                                    (Some(base), false) => changed_fields(base, &current, &touched),
-                                    _ => Some(current.clone()),
-                                };
-                                synced = Some(current);
-                                touched = Value::Null;
-                                match body {
-                                    Some(body) => send_membership_frame(
+                                let wire_format = &view_spec_task.wire_format;
+                                let base = synced
+                                    .as_ref()
+                                    .filter(|_| !replace)
+                                    .and_then(|synced| synced.wire(wire_format));
+                                let result = match base {
+                                    Some(base) => match changed_fields(
+                                        &base,
+                                        &wire_value(&data, wire_format),
+                                        &touched,
+                                    ) {
+                                        Some(body) => send_membership_frame(
+                                            &task_context,
+                                            &subscription_id,
+                                            &view_spec_task,
+                                            "patch",
+                                            &entity_key,
+                                            body,
+                                            None,
+                                        ),
+                                        None => Ok(()),
+                                    },
+                                    // Nothing to measure against: the whole
+                                    // entity, straight from the cache.
+                                    None => send_entity_frame(
                                         &task_context,
                                         &subscription_id,
                                         &view_spec_task,
                                         if replace { "upsert" } else { "patch" },
                                         &entity_key,
-                                        body,
+                                        &data,
                                         None,
                                     ),
-                                    None => Ok(()),
-                                }
+                                };
+                                synced = Some(Synced::Entity(data));
+                                touched = Value::Null;
+                                result
                             }
                             (false, Some((entity_key, data))) => {
-                                let mut current = data.into_value();
-                                apply_wire_format(&mut current, &view_spec_task.wire_format);
-                                synced = Some(current.clone());
-                                touched = Value::Null;
-                                send_membership_frame(
+                                let result = send_entity_frame(
                                     &task_context,
                                     &subscription_id,
                                     &view_spec_task,
                                     "upsert",
                                     &entity_key,
-                                    current,
-                                    metadata.seq,
-                                )
+                                    &data,
+                                    metadata.seq.as_deref(),
+                                );
+                                synced = Some(Synced::Entity(data));
+                                touched = Value::Null;
+                                result
                             }
                             (true, None) => {
                                 synced = None;
@@ -2579,15 +2595,41 @@ fn source_frame_data(payload: &[u8]) -> Option<Value> {
     frame.get_mut("data").map(Value::take)
 }
 
+/// What a state subscriber last received whole, which a catch-up is
+/// measured against. Both kinds are shared, with the entity cache or the bus,
+/// so a subscriber keeps no copy of its own. A subscriber does keep the
+/// version it was sent alive while the cache moves on; subscribers sent the
+/// same version share it.
+enum Synced {
+    /// The cached entity, as sent in a snapshot row, an upsert or a catch-up.
+    Entity(SharedEntity),
+    /// A forwarded `upsert` source frame, whose `data` the client holds.
+    Frame(Arc<Bytes>),
+}
+
+impl Synced {
+    /// What the client holds, as it received it: in wire format.
+    fn wire(&self, wire_format: &WireFormat) -> Option<Value> {
+        match self {
+            Synced::Entity(entity) => Some(wire_value(entity, wire_format)),
+            Synced::Frame(frame) => source_frame_data(frame),
+        }
+    }
+}
+
 /// Tracks what a client holds after a frame forwarded to it as published. An
 /// upsert hands it the entity whole, which a catch-up is then measured
 /// against; a patch sets fields (see [`mark_fields`]).
-fn record_forwarded(payload: &[u8], op: &str, synced: &mut Option<Value>, touched: &mut Value) {
-    let data = source_frame_data(payload);
+fn record_forwarded(
+    payload: &Arc<Bytes>,
+    op: &str,
+    synced: &mut Option<Synced>,
+    touched: &mut Value,
+) {
     if op == "upsert" {
-        *synced = data;
+        *synced = Some(Synced::Frame(payload.clone()));
         *touched = Value::Null;
-    } else if let Some(data) = data {
+    } else if let Some(data) = source_frame_data(payload) {
         mark_fields(touched, &data);
     }
 }
