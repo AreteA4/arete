@@ -165,7 +165,8 @@ pub struct App {
     pub pending_g: bool,
     pub list_state: ListState,
     store: EntityStore,
-    raw_frames: VecDeque<(std::time::Instant, Frame)>,
+    /// Recent frames with when they arrived and on which connection.
+    raw_frames: VecDeque<(std::time::Instant, u64, Frame)>,
     stream_start: std::time::Instant,
     pub dropped_frames: std::sync::Arc<std::sync::atomic::AtomicU64>,
     filtered_cache: Option<Vec<String>>,
@@ -355,8 +356,11 @@ impl App {
 
                 if complete {
                     let Some(snapshot) = self.pending_snapshot.take() else {
-                        self.raw_frames
-                            .push_back((std::time::Instant::now(), raw_frame.clone()));
+                        self.raw_frames.push_back((
+                            std::time::Instant::now(),
+                            self.connection,
+                            raw_frame.clone(),
+                        ));
                         while self.raw_frames.len() > 1000 {
                             self.raw_frames.pop_front();
                         }
@@ -431,7 +435,7 @@ impl App {
         }
 
         self.raw_frames
-            .push_back((std::time::Instant::now(), raw_frame));
+            .push_back((std::time::Instant::now(), self.connection, raw_frame));
         while self.raw_frames.len() > 1000 {
             self.raw_frames.pop_front();
         }
@@ -630,11 +634,7 @@ impl App {
                 // Note: this does synchronous file I/O on the runtime thread. Acceptable
                 // because raw_frames is capped at 1000 entries. For larger caps, consider
                 // spawning onto a blocking thread.
-                let mut recorder = SnapshotRecorder::new(&self.view, &self.url);
-                for (arrival_time, frame) in &self.raw_frames {
-                    let ts_ms = arrival_time.duration_since(self.stream_start).as_millis() as u64;
-                    recorder.record_with_ts(frame, ts_ms);
-                }
+                let recorder = self.recording();
                 let filename = format!(
                     "a4-stream-{}.json",
                     chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f")
@@ -753,6 +753,22 @@ impl App {
         }
     }
 
+    /// The recent frames as a recording, marking where a new connection
+    /// began so a replay starts over there as the stream did.
+    fn recording(&self) -> SnapshotRecorder {
+        let mut recorder = SnapshotRecorder::new(&self.view, &self.url);
+        let mut previous_connection = None;
+        for (arrival_time, connection, frame) in &self.raw_frames {
+            let ts_ms = arrival_time.duration_since(self.stream_start).as_millis() as u64;
+            if previous_connection.is_some_and(|previous| previous != *connection) {
+                recorder.record_reconnect_with_ts(ts_ms);
+            }
+            previous_connection = Some(*connection);
+            recorder.record_with_ts(frame, ts_ms);
+        }
+        recorder
+    }
+
     pub fn selected_key(&self) -> Option<String> {
         let keys = self.filtered_keys();
         keys.get(self.selected_index).map(|s| s.to_string())
@@ -763,14 +779,19 @@ impl App {
 
         // Raw mode: show the most recent raw frame containing this entity key.
         if self.show_raw {
-            if let Some((_, raw)) = self.raw_frames.iter().rev().find(|(_, frame)| match frame {
-                Frame::Snapshot { data, .. } => data.iter().any(|row| row.key == key),
-                Frame::Upsert { key: frame_key, .. }
-                | Frame::Patch { key: frame_key, .. }
-                | Frame::Remove { key: frame_key, .. }
-                | Frame::Delete { key: frame_key, .. } => frame_key == &key,
-                Frame::Subscribed { .. } | Frame::Unsubscribed { .. } => false,
-            }) {
+            if let Some((_, _, raw)) =
+                self.raw_frames
+                    .iter()
+                    .rev()
+                    .find(|(_, _, frame)| match frame {
+                        Frame::Snapshot { data, .. } => data.iter().any(|row| row.key == key),
+                        Frame::Upsert { key: frame_key, .. }
+                        | Frame::Patch { key: frame_key, .. }
+                        | Frame::Remove { key: frame_key, .. }
+                        | Frame::Delete { key: frame_key, .. } => frame_key == &key,
+                        Frame::Subscribed { .. } | Frame::Unsubscribed { .. } => false,
+                    })
+            {
                 return Some(serde_json::to_string_pretty(raw).unwrap_or_default());
             }
             let record = self.store.get(&key)?;
@@ -1132,6 +1153,30 @@ mod tests {
         app.apply_connection_frame(1, patch("a", serde_json::json!({"new": 2})));
 
         assert_eq!(app.entity_keys, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn a_saved_recording_marks_where_a_new_connection_began() {
+        let mut app = app();
+        app.apply_connection_frame(0, snapshot("first", true, true, &["a"]));
+        app.apply_connection_frame(0, patch("a", serde_json::json!({"n": 1})));
+        app.apply_connection_frame(1, snapshot("second", true, true, &["b"]));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recording.json");
+        let path = path.to_str().unwrap();
+
+        app.recording().save(path).unwrap();
+
+        let player = crate::commands::stream::snapshot::SnapshotPlayer::load(path).unwrap();
+        assert_eq!(player.frames.len(), 3);
+        assert_eq!(
+            player
+                .reconnects
+                .iter()
+                .map(|reconnect| reconnect.at_frame)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
     }
 
     #[test]

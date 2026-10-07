@@ -230,30 +230,45 @@ impl SessionHandler for Output<'_> {
     }
 
     fn on_reconnected(&mut self, url: &str) -> Result<()> {
-        // The new subscription starts over with its own snapshot. Entities
-        // merged from the old connection, or a snapshot it left half
-        // delivered, would otherwise mix stale state into the output.
+        self.print_notice(&format!("Reconnected; resubscribed to {}", self.view));
+        self.begin_new_connection(&serde_json::json!({"url": url}))
+    }
+}
+
+impl Output<'_> {
+    /// Start over for a new connection that replaced a lost one, live or in
+    /// a replay of a recording that spans the reconnect.
+    ///
+    /// The new subscription starts again with its own snapshot, or with
+    /// --no-snapshot with nothing at all. Entities merged from the old
+    /// connection, or a snapshot it left half delivered, would otherwise mix
+    /// stale state into the output, and patches would merge into fields the
+    /// server may have dropped. Update history is kept.
+    fn begin_new_connection(&mut self, payload: &serde_json::Value) -> Result<()> {
+        if let Some(recorder) = &mut self.state.recorder {
+            recorder.record_reconnect();
+        }
         self.state.entities.clear();
         self.state.entity_count = 0;
         self.state.pending_snapshot = None;
+        if let Some(store) = &mut self.state.store {
+            store.reset_current_state();
+        }
         self.snapshot_complete = false;
 
-        self.print_notice(&format!("Reconnected; resubscribed to {}", self.view));
         if let OutputMode::NoDna = self.state.output_mode {
             output::emit_no_dna_event(
                 &mut self.state.out,
                 "reconnected",
                 self.view,
-                &serde_json::json!({"url": url}),
+                payload,
                 self.state.update_count,
                 self.state.entity_count,
             )?;
         }
         Ok(())
     }
-}
 
-impl Output<'_> {
     /// Print a line to stderr, below the running count when --count is
     /// drawing one there.
     fn print_notice(&mut self, line: &str) {
@@ -280,19 +295,13 @@ pub async fn replay(player: SnapshotPlayer, view: &str, args: &StreamArgs) -> Re
         )?;
     }
 
-    let mut snapshot_complete = false;
-
-    for snapshot_frame in &player.frames {
-        if handle_server_message(
-            ServerMessage::Frame(snapshot_frame.frame.clone()),
-            view,
-            &mut state,
-            &mut snapshot_complete,
-            args.no_snapshot,
-        )? {
-            break;
-        }
-    }
+    let mut output = Output {
+        state: &mut state,
+        view,
+        no_snapshot: args.no_snapshot,
+        snapshot_complete: false,
+    };
+    play(&player, &mut output)?;
 
     if state.count_only {
         finalize_count(&mut state)?;
@@ -312,6 +321,30 @@ pub async fn replay(player: SnapshotPlayer, view: &str, args: &StreamArgs) -> Re
     output_history_if_requested(&state, args)?;
 
     eprintln!("Replay complete: {} updates processed.", state.update_count);
+    Ok(())
+}
+
+/// Feed a recording's frames through `output`, starting over wherever the
+/// recorded stream reconnected, as the live stream did.
+fn play(player: &SnapshotPlayer, output: &mut Output<'_>) -> Result<()> {
+    let reconnected = serde_json::json!({"url": player.header.url, "source": "replay"});
+    let mut reconnects = player
+        .reconnects
+        .iter()
+        .map(|reconnect| reconnect.at_frame)
+        .peekable();
+    for (index, recorded) in player.frames.iter().enumerate() {
+        while reconnects.next_if(|&at| at <= index as u64).is_some() {
+            output.begin_new_connection(&reconnected)?;
+        }
+        if output.on_message(ServerMessage::Frame(recorded.frame.clone()))? {
+            return Ok(());
+        }
+    }
+    // A reconnect after the last frame still left the stream empty.
+    for _ in reconnects {
+        output.begin_new_connection(&reconnected)?;
+    }
     Ok(())
 }
 
@@ -830,6 +863,131 @@ mod tests {
             state.entities.keys().cloned().collect::<Vec<_>>(),
             vec!["4".to_string()]
         );
+    }
+
+    fn patch(key: &str, data: serde_json::Value) -> Frame {
+        Frame::Patch {
+            protocol_version: 2,
+            subscription_id: "cli:test".to_string(),
+            mode: Mode::List,
+            entity: "Thing/list".to_string(),
+            key: key.to_string(),
+            data,
+            append: Vec::new(),
+            seq: None,
+            offset: None,
+        }
+    }
+
+    type Entities = HashMap<String, serde_json::Value>;
+
+    /// Stream `before`, reconnect, stream `after`, recording all of it; then
+    /// replay the recording. Returns the entities each run ended with, and
+    /// what a replay that ignored the reconnect would have produced.
+    fn live_and_replayed(
+        no_snapshot: bool,
+        before: Vec<Frame>,
+        after: Vec<Frame>,
+    ) -> (Entities, Entities, Result<Entities>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recording.json");
+        let path = path.to_str().unwrap();
+
+        let mut live = state();
+        live.recorder = Some(SnapshotRecorder::new("Thing/list", "ws://localhost/"));
+        let mut output = Output {
+            state: &mut live,
+            view: "Thing/list",
+            no_snapshot,
+            snapshot_complete: false,
+        };
+        for frame in before {
+            output.on_message(ServerMessage::Frame(frame)).unwrap();
+        }
+        output.on_reconnected("ws://localhost/").unwrap();
+        for frame in after {
+            output.on_message(ServerMessage::Frame(frame)).unwrap();
+        }
+        live.recorder.as_ref().unwrap().save(path).unwrap();
+
+        let replay = |player: &SnapshotPlayer| -> Result<Entities> {
+            let mut replayed = state();
+            let mut output = Output {
+                state: &mut replayed,
+                view: "Thing/list",
+                no_snapshot,
+                snapshot_complete: false,
+            };
+            play(player, &mut output)?;
+            Ok(replayed.entities)
+        };
+        let mut player = SnapshotPlayer::load(path).unwrap();
+        let replayed = replay(&player).unwrap();
+        player.reconnects.clear();
+        let unmarked = replay(&player);
+        (live.entities, replayed, unmarked)
+    }
+
+    #[test]
+    fn a_replay_starts_over_where_a_snapshot_stream_reconnected() {
+        let (live, replayed, unmarked) = live_and_replayed(
+            false,
+            vec![
+                snapshot("initial", true, true, &["1", "2"]),
+                patch("1", serde_json::json!({"old": true})),
+                // The connection drops halfway through a later snapshot.
+                snapshot("recovery", true, false, &["1"]),
+            ],
+            // The new snapshot is incremental (as with --after), and "2" went
+            // away while the connection was down.
+            vec![
+                snapshot("again", false, true, &["1"]),
+                patch("1", serde_json::json!({"new": true})),
+            ],
+        );
+
+        assert_eq!(
+            live,
+            HashMap::from([("1".to_string(), serde_json::json!({"id": "1", "new": true}))])
+        );
+        assert_eq!(replayed, live);
+        // Without the marker the replay would fail on the mixed snapshot.
+        assert!(unmarked.is_err(), "{unmarked:?}");
+    }
+
+    #[test]
+    fn a_replay_starts_over_where_a_stream_without_snapshots_reconnected() {
+        let (live, replayed, unmarked) = live_and_replayed(
+            true,
+            vec![
+                patch("1", serde_json::json!({"id": "1", "old": true})),
+                patch("2", serde_json::json!({"id": "2"})),
+            ],
+            vec![patch("1", serde_json::json!({"new": true}))],
+        );
+
+        assert_eq!(
+            live,
+            HashMap::from([("1".to_string(), serde_json::json!({"new": true}))])
+        );
+        assert_eq!(replayed, live);
+        assert_ne!(
+            unmarked.unwrap(),
+            live,
+            "the marker is what makes them agree"
+        );
+    }
+
+    #[test]
+    fn a_replay_honours_a_reconnect_after_the_last_frame() {
+        let (live, replayed, _) = live_and_replayed(
+            true,
+            vec![patch("1", serde_json::json!({"id": "1"}))],
+            Vec::new(),
+        );
+
+        assert!(live.is_empty());
+        assert_eq!(replayed, live);
     }
 
     /// A hosted stream against a local server standing in for the stack.
