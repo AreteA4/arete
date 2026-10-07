@@ -11,8 +11,10 @@
 
 use std::borrow::Cow;
 use std::ops::Index;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use serde::ser::SerializeMap as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 /// The field each view's copy of an entity stamps with its own frame version.
@@ -23,7 +25,8 @@ pub const VERSION_FIELD: &str = "_version";
 ///
 /// It reads and compares as the whole entity it stands for, `_version`
 /// included: [`Self::to_value`] rebuilds that entity, and equality, field
-/// access ([`EntityFields`]) and indexing see it too.
+/// access ([`EntityFields`]) and indexing see it too. It serializes exactly as
+/// that entity does, without rebuilding it.
 #[derive(Clone, Debug)]
 pub struct SharedEntity {
     /// Every field but `_version`. Never has a top-level `_version`.
@@ -118,6 +121,71 @@ impl PartialEq for SharedEntity {
         self.version == other.version
             && (Arc::ptr_eq(&self.fields, &other.fields) || self.fields == other.fields)
     }
+}
+
+/// Serializes exactly as [`SharedEntity::to_value`] would, in any format,
+/// without building that value: `_version` is written where rebuilding the
+/// entity would have put it.
+impl Serialize for SharedEntity {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.serialize_with(serializer, |_, value| value, |value| value)
+    }
+}
+
+impl SharedEntity {
+    /// Serialize the entity as [`Serialize`] does, passing each top-level
+    /// field's value (`_version` included) through `field`, or the whole
+    /// entity through `other` if it is not an object.
+    pub(crate) fn serialize_with<'a, S, F, O>(
+        &'a self,
+        serializer: S,
+        field: impl Fn(&'a str, &'a Value) -> F,
+        other: impl FnOnce(&'a Value) -> O,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        F: Serialize,
+        O: Serialize,
+    {
+        let Value::Object(fields) = &*self.fields else {
+            return other(&self.fields).serialize(serializer);
+        };
+        let mut map =
+            serializer.serialize_map(Some(fields.len() + usize::from(self.version.is_some())))?;
+        let mut pending = self.version.as_ref();
+        for (key, value) in fields {
+            if maps_sort_keys() && key.as_str() > VERSION_FIELD {
+                if let Some(version) = pending.take() {
+                    map.serialize_entry(VERSION_FIELD, &field(VERSION_FIELD, version))?;
+                }
+            }
+            map.serialize_entry(key, &field(key, value))?;
+        }
+        if let Some(version) = pending {
+            map.serialize_entry(VERSION_FIELD, &field(VERSION_FIELD, version))?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for SharedEntity {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Value::deserialize(deserializer).map(SharedEntity::new)
+    }
+}
+
+/// Whether `serde_json` keeps an object's keys sorted, its default, rather
+/// than in insertion order (its `preserve_order` feature). Rebuilding an
+/// entity inserts `_version` last, which lands it in key order in the first
+/// case and at the end in the second.
+fn maps_sort_keys() -> bool {
+    static SORTED: OnceLock<bool> = OnceLock::new();
+    *SORTED.get_or_init(|| {
+        let mut map = serde_json::Map::new();
+        map.insert("b".to_string(), Value::Null);
+        map.insert("a".to_string(), Value::Null);
+        map.keys().next().map(String::as_str) == Some("a")
+    })
 }
 
 /// Reads a field the way indexing a [`Value`] does: `Null` when it is absent.
@@ -242,6 +310,32 @@ mod tests {
         assert!(state.shares_fields_with(&list));
         assert_ne!(state, list);
         assert_eq!(state.to_value(), json!({"a": 1, "_version": "e:2"}));
+    }
+
+    /// Serializing a copy writes the bytes the whole entity would, wherever
+    /// `_version` falls among the other fields.
+    #[test]
+    fn it_serializes_as_the_whole_entity() {
+        let entities = [
+            json!({"a": 1, "_version": "e:1"}),
+            json!({"_a": 1, "_seq": "1:0", "_version": "e:1", "_z": 2, "Z": 3, "z": [1, {"_version": 2}]}),
+            json!({"_version": "e:1"}),
+            json!({"a": 1}),
+            json!({"_version": {"nested": [1, 2]}, "b": null}),
+            json!([1, 2, {"_version": "kept in place"}]),
+            json!("text"),
+            json!(null),
+        ];
+        for whole in entities {
+            let entity = SharedEntity::new(whole.clone());
+            assert_eq!(
+                serde_json::to_string(&entity).unwrap(),
+                serde_json::to_string(&whole).unwrap(),
+                "{whole}"
+            );
+            let read: SharedEntity = serde_json::from_value(whole.clone()).unwrap();
+            assert_eq!(read, entity);
+        }
     }
 
     #[test]
