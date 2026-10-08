@@ -155,16 +155,16 @@ const aggregateSchema = z.object({
   ),
 });
 
-async function aggregate(dirs: string[], model: LanguageModel, out: string): Promise<void> {
+async function aggregate(dirs: string[], model: LanguageModel, modelId: string, out: string): Promise<void> {
   const reviews = dirs
     .filter((d) => existsSync(join(d, 'review.json')))
     .map((d) => {
       const report = JSON.parse(readFileSync(join(d, 'report.json'), 'utf8')) as RunReport;
-      const review = JSON.parse(readFileSync(join(d, 'review.json'), 'utf8')) as Review;
+      const { reviewer: _reviewer, ...review } = JSON.parse(readFileSync(join(d, 'review.json'), 'utf8')) as Review & { reviewer?: unknown };
       return { run: report.runId, task: report.task.name, harness: report.config.harness, model: report.config.model, passed: report.verification.passed, ...review };
     });
   if (!reviews.length) throw new Error('No reviewed runs; run `npm run review` first.');
-  const { output } = await generateText({
+  const { output, usage } = await generateText({
     model,
     instructions:
       'You merge per-run reviews of agents using Arete into one ranked improvement list. Merge findings that describe the same root cause, count the runs they affect, and rank by impact on agent success, time and tokens. Be concrete.',
@@ -186,7 +186,8 @@ async function aggregate(dirs: string[], model: LanguageModel, out: string): Pro
   }
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, redact(lines.join('\n')));
-  writeFileSync(out.replace(/\.md$/, '.json'), redact(JSON.stringify(output, null, 2)));
+  const reviewer = { model: modelId, inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0 };
+  writeFileSync(out.replace(/\.md$/, '.json'), redact(JSON.stringify({ ...output, reviewer }, null, 2)));
   process.stdout.write(`wrote ${out}\n`);
 }
 
@@ -206,7 +207,7 @@ async function main(): Promise<void> {
   const dirs = findRunDirs(root);
 
   if (values.aggregate) {
-    await aggregate(dirs, model, join(resultsDir(), 'reports', `${new Date().toISOString().slice(0, 10)}-findings.md`));
+    await aggregate(dirs, model, values.model!, join(resultsDir(), 'reports', `${new Date().toISOString().slice(0, 10)}-findings.md`));
     return;
   }
 
@@ -219,7 +220,8 @@ async function main(): Promise<void> {
       prompt: reviewInput(dir),
       output: Output.object({ schema: reviewSchema }),
     });
-    writeFileSync(join(dir, 'review.json'), redact(JSON.stringify(output, null, 2)));
+    const reviewer = { model: values.model, inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0 };
+    writeFileSync(join(dir, 'review.json'), redact(JSON.stringify({ ...output, reviewer }, null, 2)));
     writeFileSync(join(dir, 'review.md'), redact(renderReview(output, dir)));
     process.stdout.write(`  ${output.outcome}: ${output.findings.length} finding(s) · ${usage.inputTokens ?? 0} in / ${usage.outputTokens ?? 0} out tokens\n`);
   }

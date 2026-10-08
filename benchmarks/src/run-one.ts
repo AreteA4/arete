@@ -17,6 +17,7 @@ import {
 import { classify } from './classify.js';
 import { BENCH_ROOT, resultsDir } from './env.js';
 import { detectFriction } from './friction.js';
+import { backfillCodexUsage } from './native-usage.js';
 import { createHarness, NATIVE_LOG_DIRS } from './harnesses.js';
 import type { KeyPool } from './keys.js';
 import { summarizeTiming, summarizeTokens, summarizeTools } from './metrics.js';
@@ -255,8 +256,10 @@ export async function runOne(config: RunConfig, task: TaskDefinition, opts: RunO
 
   // ---- report --------------------------------------------------------------
   const transcript = recorder.transcript;
+  // Codex reports usage per turn only; its own rollout log has every call.
+  const codex = config.harness === 'codex' ? backfillCodexUsage(transcript, join(dir.path, 'native')) : undefined;
   const calls = transcript.toolCalls.map(classify);
-  const tokens = summarizeTokens(transcript, pricing?.contextWindow);
+  const tokens = summarizeTokens(transcript, codex?.contextWindow ?? pricing?.contextWindow);
   const cost = modelCost(pricing, tokens);
   const harnessReportedUsd = transcript.turns
     .map((t) => (t.providerMetadata as Record<string, { costUsd?: number }> | undefined)?.['claude-code']?.costUsd)

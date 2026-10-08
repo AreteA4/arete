@@ -5,6 +5,7 @@ import { classify } from '../classify.js';
 import { resultsDir } from '../env.js';
 import { detectFriction } from '../friction.js';
 import { summarizeTiming, summarizeTokens, summarizeTools } from '../metrics.js';
+import { backfillCodexUsage } from '../native-usage.js';
 import { gatewayModelId, loadPricing, modelCost } from '../pricing.js';
 import { normalizeUsage } from '../recorder.js';
 import { formatSummary, redact } from '../report.js';
@@ -69,10 +70,11 @@ async function main(): Promise<void> {
     if (!existsSync(join(dir, 'transcript.json'))) continue;
     const report = JSON.parse(readFileSync(join(dir, 'report.json'), 'utf8')) as RunReport;
     const transcript = normalize(JSON.parse(readFileSync(join(dir, 'transcript.json'), 'utf8')) as Transcript);
-    writeFileSync(join(dir, 'transcript.json'), redact(JSON.stringify(transcript, null, 2)));
+    const codex = report.config.harness === 'codex' ? backfillCodexUsage(transcript, join(dir, 'native')) : undefined;
+    writeFileSync(join(dir, 'transcript.json'), redact(`${JSON.stringify(transcript, null, 2)}\n`));
     const calls = transcript.toolCalls.map(classify);
     const price = pricing.get(gatewayModelId(report.config.model, report.config.harness));
-    const tokens = summarizeTokens(transcript, price?.contextWindow);
+    const tokens = summarizeTokens(transcript, codex?.contextWindow ?? price?.contextWindow);
     const cost = modelCost(price, tokens);
     const updated: RunReport = {
       ...report,
