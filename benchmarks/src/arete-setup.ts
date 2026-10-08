@@ -115,26 +115,38 @@ export async function runDoctor(shell: SandboxShell): Promise<DoctorResult | und
   };
 }
 
-/**
- * Consumed amount per usage meter for an agent key, read from the host so
- * measuring never touches the sandbox the agent works in.
- */
-export async function fetchAgentUsage(key: string): Promise<Record<string, number> | undefined> {
+export interface AgentProfile {
+  slug?: string;
+  plan?: string;
+  claimState?: string;
+  trialRemainingSeconds?: number | null;
+  usage?: {
+    exhausted?: boolean;
+    meters?: Array<{ meter: string; consumed: number; allowance?: number; remaining?: number; exhausted?: boolean }>;
+  };
+}
+
+/** `/api/agents/me` for an agent key, or undefined when the key is not accepted. */
+export async function fetchAgentProfile(key: string): Promise<AgentProfile | undefined> {
   try {
     const response = await fetch(`${ARETE_API_URL}/api/agents/me`, {
       headers: { Authorization: `Bearer ${key}` },
       signal: AbortSignal.timeout(15_000),
     });
-    if (!response.ok) return undefined;
-    const body = (await response.json()) as {
-      usage?: { meters?: Array<{ meter: string; consumed: number }> };
-    };
-    const meters = body.usage?.meters;
-    if (!meters) return undefined;
-    return Object.fromEntries(meters.map((m) => [m.meter, Number(m.consumed) || 0]));
+    return response.ok ? ((await response.json()) as AgentProfile) : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Consumed amount per usage meter for an agent key, read from the host so
+ * measuring never touches the sandbox the agent works in.
+ */
+export async function fetchAgentUsage(key: string): Promise<Record<string, number> | undefined> {
+  const meters = (await fetchAgentProfile(key))?.usage?.meters;
+  if (!meters) return undefined;
+  return Object.fromEntries(meters.map((m) => [m.meter, Number(m.consumed) || 0]));
 }
 
 export function usageDelta(

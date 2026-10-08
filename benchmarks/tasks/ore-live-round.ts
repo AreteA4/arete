@@ -23,6 +23,15 @@ export const task: TaskDefinition = {
   description: 'Discover and install the ORE stack, then print the live round from a TypeScript script',
   track: 'build',
   setup: 'initialized',
+  // Measured cost profile, used by preflight to estimate a sweep.
+  estimate: {
+    noCacheTokens: 40,
+    cacheReadTokens: 893_679,
+    cacheWriteTokens: 44_417,
+    outputTokens: 4_830,
+    wallMs: 132_000,
+    source: 'Claude Code + Sonnet 5.5, 2026-10-08',
+  },
   turns: [
     {
       prompt:

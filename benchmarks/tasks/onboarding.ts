@@ -24,6 +24,15 @@ export const task: TaskDefinition = {
   description: 'Follow the arete.run setup prompt from scratch, then answer a live-data question after a host restart',
   track: 'onboarding',
   setup: 'bare',
+  // Measured cost profile, used by preflight to estimate a sweep.
+  estimate: {
+    noCacheTokens: 30,
+    cacheReadTokens: 470_609,
+    cacheWriteTokens: 26_097,
+    outputTokens: 3_077,
+    wallMs: 78_000,
+    source: 'Claude Code + Sonnet 5.5, 2026-10-08',
+  },
   turns: [
     { prompt: ARETE_RUN_PROMPT },
     {

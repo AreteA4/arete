@@ -6,6 +6,7 @@
   "description": "Agent benchmarks for Arete: run coding agents against Arete tasks and record speed, tokens, tool calls and full session histories",
   "scripts": {
     "bench": "tsx src/cli/run.ts",
+    "preflight": "tsx src/cli/preflight.ts",
     "compare": "tsx src/cli/compare.ts",
     "review": "tsx src/cli/review.ts",
     "rescore": "tsx src/cli/rescore.ts",

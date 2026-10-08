@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
+import { resolveModelAuth } from './env.js';
 import type { RunConfig } from './types.js';
 
 const harnessSchema = z.enum(['claude-code', 'codex', 'opencode']);
@@ -20,7 +21,7 @@ const sharedSchema = z.object({
   a4Version: z.string().default('0.32.0'),
   skillsRef: z.string().optional(),
   keyMode: z.enum(['pool', 'signup']).default('pool'),
-  modelAuth: z.enum(['ai-gateway', 'direct']).default('ai-gateway'),
+  modelAuth: z.enum(['auto', 'ai-gateway', 'direct']).default('auto'),
   instructions: z.string().optional(),
   turnTimeoutMinutes: z.number().min(1).default(20),
   sandbox: sandboxSchema,
@@ -76,7 +77,7 @@ export function expandSweep(sweep: SweepConfig): RunConfig[] {
           a4Version: sweep.a4Version,
           skillsRef: sweep.skillsRef,
           keyMode: sweep.keyMode,
-          modelAuth: sweep.modelAuth,
+          modelAuth: resolveModelAuth(sweep.modelAuth),
           instructions: sweep.instructions,
           turnTimeoutMinutes: sweep.turnTimeoutMinutes,
           sandbox: sweep.sandbox,

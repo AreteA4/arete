@@ -1,61 +1,11 @@
-import { parseArgs } from 'node:util';
-import { expandSweep, loadConfigFile, RunConfigSchema, SweepConfigSchema, type SweepConfig } from '../config.js';
-import { assertCredentials, resultsDir } from '../env.js';
+import { sharedAgentKey } from '../agent-key.js';
+import { expandSweep } from '../config.js';
+import { agentKeys, assertCredentials, resolveModelAuth, resultsDir } from '../env.js';
 import { KeyPool } from '../keys.js';
+import { formatPreflight, preflight } from '../preflight.js';
 import { loadTask, runOne } from '../run-one.js';
 import type { RunReport, TaskDefinition } from '../types.js';
-
-const USAGE = `Usage:
-  npm run bench -- <config.json>
-  npm run bench -- --task <task.ts> --harness <claude-code|codex|opencode> --model <gateway-model-id>
-                   [--repetitions N] [--concurrency N] [--effort high] [--key-mode pool|signup]
-                   [--model-auth ai-gateway|direct]`;
-
-function sweepFromArgs(argv: string[]): SweepConfig {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      task: { type: 'string', multiple: true },
-      harness: { type: 'string' },
-      model: { type: 'string' },
-      effort: { type: 'string' },
-      repetitions: { type: 'string' },
-      concurrency: { type: 'string' },
-      'key-mode': { type: 'string' },
-      'model-auth': { type: 'string' },
-      'a4-version': { type: 'string' },
-      help: { type: 'boolean', short: 'h' },
-    },
-  });
-  if (values.help) {
-    process.stdout.write(`${USAGE}\n`);
-    process.exit(0);
-  }
-  const overrides = {
-    ...(values.repetitions ? { repetitions: Number(values.repetitions) } : {}),
-    ...(values.concurrency ? { concurrency: Number(values.concurrency) } : {}),
-    ...(values['key-mode'] ? { keyMode: values['key-mode'] } : {}),
-    ...(values['model-auth'] ? { modelAuth: values['model-auth'] } : {}),
-    ...(values['a4-version'] ? { a4Version: values['a4-version'] } : {}),
-  };
-  if (positionals[0]) {
-    return SweepConfigSchema.parse({ ...loadConfigFile(positionals[0]), ...overrides });
-  }
-  if (!values.task || !values.harness || !values.model) throw new Error(USAGE);
-  const run = RunConfigSchema.parse({
-    task: values.task[0],
-    harness: values.harness,
-    model: values.model,
-    effort: values.effort,
-  });
-  return SweepConfigSchema.parse({
-    ...run,
-    agents: [{ harness: run.harness, model: run.model, effort: run.effort }],
-    tasks: values.task,
-    ...overrides,
-  });
-}
+import { sweepFromArgs } from './args.js';
 
 /** Run promise-returning jobs with at most `limit` in flight. */
 async function pool<T>(jobs: Array<() => Promise<T>>, limit: number): Promise<PromiseSettledResult<T>[]> {
@@ -76,22 +26,27 @@ async function pool<T>(jobs: Array<() => Promise<T>>, limit: number): Promise<Pr
 }
 
 async function main(): Promise<void> {
-  const sweep = sweepFromArgs(process.argv.slice(2));
-  assertCredentials(sweep.modelAuth);
+  const { sweep, skipPreflight } = sweepFromArgs(process.argv.slice(2));
+  assertCredentials(resolveModelAuth(sweep.modelAuth));
   const runs = expandSweep(sweep);
   const tasks = new Map<string, TaskDefinition>();
   for (const ref of new Set(sweep.tasks)) tasks.set(ref, await loadTask(ref));
+  const log = (line: string) => process.stdout.write(`${line}\n`);
 
-  const keyPool = new KeyPool();
-  if (sweep.keyMode === 'pool' && keyPool.size === 0) {
-    process.stdout.write('note: ARETE_AGENT_KEYS is empty; runs fall back to `auth signup --if-missing` (5/hour/IP).\n');
+  if (!skipPreflight) {
+    const result = await preflight(runs, tasks);
+    log(`${formatPreflight(result)}\n`);
+    if (!result.ok) throw new Error('preflight failed; fix the ✗ items above (or pass --skip-preflight)');
   }
+
+  // Without configured keys, every run shares one benchmark agent.
+  const keys = sweep.keyMode === 'pool' && agentKeys().length === 0 ? [await sharedAgentKey(runs[0]!, log)] : agentKeys();
+  const keyPool = new KeyPool(keys);
   process.stdout.write(
     `${runs.length} run(s): ${sweep.agents.length} agent(s) × ${sweep.tasks.length} task(s) × ${sweep.repetitions} rep(s), concurrency ${sweep.concurrency}\n` +
       `results → ${resultsDir()}\n`,
   );
 
-  const log = (line: string) => process.stdout.write(`${line}\n`);
   const settled = await pool(
     runs.map((config) => () => runOne(config, tasks.get(config.task)!, { keyPool, log })),
     sweep.concurrency,

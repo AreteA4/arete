@@ -39,9 +39,10 @@ export interface RunConfig {
   skillsRef?: string;
   keyMode: KeyMode;
   /**
-   * `ai-gateway` (default): one Vercel AI Gateway key for every harness.
-   * `direct`: provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-   * `OPENROUTER_API_KEY`) with provider-native model ids.
+   * `ai-gateway`: one Vercel AI Gateway key for every harness.
+   * `direct`: provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) with
+   * provider-native model ids. Configs may say `auto`, which picks the
+   * gateway when its credentials are set.
    */
   modelAuth: 'ai-gateway' | 'direct';
   /** Extra instructions appended after the benchmark's unattended-run note. */
@@ -95,9 +96,21 @@ export interface TaskTurn {
   freshSession?: boolean;
 }
 
+/** Typical cost profile of one run, used to estimate a sweep before it starts. */
+export interface TaskEstimate {
+  noCacheTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  wallMs: number;
+  /** Where the numbers came from. */
+  source: string;
+}
+
 export interface TaskDefinition {
   name: string;
   description: string;
+  estimate?: TaskEstimate;
   track: 'onboarding' | 'build' | 'discovery';
   /**
    * `bare`: empty project; the agent installs and configures Arete itself.

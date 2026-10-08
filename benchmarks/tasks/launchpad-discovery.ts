@@ -37,6 +37,15 @@ export const task: TaskDefinition = {
   description: 'Use the catalog to say which token launchpads Arete can stream and build transactions for',
   track: 'discovery',
   setup: 'initialized',
+  // Measured cost profile, used by preflight to estimate a sweep.
+  estimate: {
+    noCacheTokens: 10,
+    cacheReadTokens: 83_438,
+    cacheWriteTokens: 12_028,
+    outputTokens: 1_317,
+    wallMs: 47_000,
+    source: 'Claude Code + Sonnet 5.5, 2026-10-08',
+  },
   turns: [
     {
       prompt:

@@ -10,37 +10,79 @@ Agents are driven through the Vercel AI SDK harness packages
 prompt on arete.run: install `a4`, run `a4 init`, sign in the restricted agent
 profile, check `a4 doctor`, then discover, install and build.
 
-## Quick start
+## Run it yourself
+
+You need Node 22+, a Vercel account and model access. Nothing in the rest of
+the repository has to be built.
+
+**1. Accounts**
+
+| Need | How | Notes |
+| --- | --- | --- |
+| Vercel Sandbox | Create an access token, and note a team id and any project id (see `.env.example`). | Every run is a disposable sandbox. The Hobby plan works: sandboxes are capped at 45 minutes, which is the default run timeout. |
+| Models: **either** the AI Gateway | `AI_GATEWAY_API_KEY` from your Vercel team's AI page. | One key for every harness and model. The team needs a card on file before the gateway serves requests. |
+| Models: **or** provider keys | `ANTHROPIC_API_KEY` and/or `OPENAI_API_KEY`. | Used automatically when no gateway key is set. Covers Claude Code, Codex, and OpenCode with `anthropic/` or `openai/` models; other models (DeepSeek) need the gateway. |
+| Arete | Nothing. | Without `ARETE_AGENT_KEYS`, the first sweep signs up one trial agent in a throwaway sandbox and caches its key in `output/.cache/agent-key` for every later run. |
+
+**2. Install and check**
 
 ```bash
 cd benchmarks
-npm install
-cp .env.example .env   # fill in the keys, see below
-npm run bench -- configs/smoke.json
+npm ci
+cp .env.example .env     # fill in the keys from step 1
+npm run preflight        # checks every credential and estimates cost; starts no agents
+```
+
+Preflight confirms Vercel access, sends a 16-token request to each model (or
+looks it up for provider keys), checks that the pinned `a4` release exists,
+shows the Arete agent's remaining allowances, and prints an estimated cost.
+`npm run bench` runs the same checks first and stops before any sandbox starts
+if one fails.
+
+**3. Run**
+
+```bash
+npm run bench -- configs/smoke.json      # one discovery run, about $0.05
+npm run bench -- --task ore-live-round.ts --harness codex --model openai/gpt-5.6-sol
+npm run preflight -- configs/matrix.json # see the cost of the full matrix first
+npm run bench -- configs/matrix.json     # 4 agents × 3 tasks × 3 repetitions, 4 at a time
 npm run compare
 ```
 
-Run one task directly:
+**What it costs.** Measured on 2026-10-08, model cost at AI Gateway rates:
 
-```bash
-npm run bench -- --task ore-live-round.ts --harness codex --model openai/gpt-5.6-sol
-```
+| Task | Claude Code · Sonnet 5.5 | Codex · gpt-5.6-sol | Wall time |
+| --- | --- | --- | --- |
+| `launchpad-discovery` | $0.05 | $0.20 | ~1 min |
+| `onboarding` | $0.14 | – | ~1.5 min |
+| `ore-live-round` | $0.25 | $0.83 | 2–3 min |
 
-Run the full matrix (4 agents × 3 tasks × 3 repetitions, 4 at a time):
+The full matrix comes to roughly $8–10 in model spend. Sandbox time is a few
+cents per run. `npm run preflight` prints the estimate for any config, using
+your own earlier runs when it has them.
 
-```bash
-npm run bench -- configs/matrix.json
-```
+**Limits to know about**
+
+- A trial agent allows 100 websocket connections, and ORE and onboarding runs
+  open several each. For the full matrix, use agent keys with raised limits in
+  `ARETE_AGENT_KEYS`, or have a human claim the cached agent:
+  `a4 auth login --profile bench --key "$(cat output/.cache/agent-key)"`, then
+  `a4 --profile bench auth claim-link`.
+- Low-tier provider keys hit rate limits when runs overlap. Lower
+  `concurrency`; each report counts the harness's API retries, because
+  backoff inflates its timings.
+- Tasks check answers against live data and the live catalog, so results move
+  as stacks and the catalog change.
 
 ## Credentials
 
 | Variable | Purpose |
 | --- | --- |
-| `AI_GATEWAY_API_KEY` | Model access for every harness through the Vercel AI Gateway. The team needs a card on file. `VERCEL_OIDC_TOKEN` also works. |
+| `AI_GATEWAY_API_KEY` | Model access for every harness through the Vercel AI Gateway. `VERCEL_OIDC_TOKEN` also works. |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | Provider keys, used when no gateway key is set (or with `--model-auth direct`). |
 | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Vercel Sandbox. |
-| `ARETE_AGENT_KEYS` | Comma-separated `a4_ak_*` keys, written into each sandbox's `agent` profile. Use keys with raised limits. Without keys, each run signs up a trial agent (5/hour/IP). |
-| `BENCH_RESULTS_DIR` | Where run directories go. Point it at a clone of the private results repo. |
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` | Only for `--model-auth direct`, which bypasses the gateway. |
+| `ARETE_AGENT_KEYS` | Optional comma-separated `a4_ak_*` keys written into each sandbox's `agent` profile. Concurrent runs get separate keys while they last, which keeps per-run usage attributable. |
+| `BENCH_RESULTS_DIR` | Where run directories go (default `./output`). Point it at a clone of a private results repository. |
 
 The gateway key never enters the sandbox: the harness brokers it through
 Vercel's request transformations, and the sandbox only sees a placeholder.
@@ -139,8 +181,8 @@ A config file holds either one run (`harness`, `model`, `task`) or a sweep
 | --- | --- | --- |
 | `a4Version` | `0.32.0` | Pinned `a4` release, also exported as `A4_VERSION` so an agent's own `install.sh` call gets the same version. |
 | `skillsRef` | latest | `AreteA4/skills` tag passed to `a4 init --skills-ref`. |
-| `keyMode` | `pool` | `pool` writes an `ARETE_AGENT_KEYS` key; `signup` lets the agent sign up. |
-| `modelAuth` | `ai-gateway` | `direct` uses provider keys and provider-native model ids. OpenCode direct mode supports only `anthropic/` and `openai/` models. |
+| `keyMode` | `pool` | `pool` writes a configured or shared agent key into each sandbox; `signup` makes every run sign up its own trial agent (5/hour/IP). |
+| `modelAuth` | `auto` | `auto` uses the gateway when `AI_GATEWAY_API_KEY` is set, otherwise provider keys. `direct` forces provider keys (OpenCode supports only `anthropic/` and `openai/` models there). |
 | `turnTimeoutMinutes` | `20` | Per-turn abort. |
 | `sandbox.image` | `vercel/sandbox/universal` | Ubuntu 26.04. `sandbox.runtime: "node24"` selects the legacy Amazon Linux 2023 image, where `a4` ≤ 0.32.0 cannot start (its linux-x64 binary needs glibc 2.39). |
 | `sandbox.vcpus` | `2` | |
@@ -188,10 +230,15 @@ and the models.
 ```
 src/
   cli/run.ts       single runs and sweeps, with a concurrency pool
+  cli/preflight.ts credential, model, release and agent checks plus a cost estimate
+  cli/args.ts      shared argument parsing
   cli/compare.ts   comparison and friction tables
   cli/review.ts    LLM session reviews and aggregated findings
   cli/rescore.ts   recompute transcript-derived metrics for saved runs
   run-one.ts       sandbox → setup → turns → verify → collect → report
+  preflight.ts     the checks and estimate behind `npm run preflight`
+  agent-key.ts     the shared benchmark agent, signed up once and cached
+  history.ts       loading earlier run reports
   arete-setup.ts   a4 install, init, trust, credentials, doctor, usage
   harnesses.ts     adapters, auth mode and model ids per harness
   sandbox.ts       Vercel sandbox creation and the bash runner

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 export const BENCH_ROOT = resolve(import.meta.dirname, '..');
@@ -22,6 +23,26 @@ export function vercelCredentials():
   return {};
 }
 
+/**
+ * Where the shared benchmark agent's key is cached between sweeps: under the
+ * package's gitignored `output/`, never in the results directory, which may
+ * be a git repository.
+ */
+export const AGENT_KEY_CACHE = resolve(BENCH_ROOT, 'output/.cache/agent-key');
+
+export function cachedAgentKey(): string | undefined {
+  if (!existsSync(AGENT_KEY_CACHE)) return undefined;
+  return readFileSync(AGENT_KEY_CACHE, 'utf8').trim() || undefined;
+}
+
+export type ModelAuth = 'ai-gateway' | 'direct';
+
+/** `auto` picks the gateway when its credentials are present, otherwise provider keys. */
+export function resolveModelAuth(mode: ModelAuth | 'auto'): ModelAuth {
+  if (mode !== 'auto') return mode;
+  return process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN ? 'ai-gateway' : 'direct';
+}
+
 /** Agent keys available to runs, from `ARETE_AGENT_KEYS` (comma separated). */
 export function agentKeys(): string[] {
   return (process.env.ARETE_AGENT_KEYS ?? process.env.ARETE_AGENT_KEY ?? '')
@@ -30,7 +51,7 @@ export function agentKeys(): string[] {
     .filter(Boolean);
 }
 
-export function assertCredentials(modelAuth: 'ai-gateway' | 'direct'): void {
+export function assertCredentials(modelAuth: ModelAuth): void {
   const missing: string[] = [];
   if (modelAuth === 'ai-gateway' && !process.env.AI_GATEWAY_API_KEY && !process.env.VERCEL_OIDC_TOKEN) {
     missing.push('AI_GATEWAY_API_KEY (or VERCEL_OIDC_TOKEN)');
@@ -47,6 +68,7 @@ export function assertCredentials(modelAuth: 'ai-gateway' | 'direct'): void {
 export function knownSecrets(): string[] {
   return [
     ...agentKeys(),
+    cachedAgentKey(),
     process.env.AI_GATEWAY_API_KEY,
     process.env.ANTHROPIC_API_KEY,
     process.env.OPENAI_API_KEY,

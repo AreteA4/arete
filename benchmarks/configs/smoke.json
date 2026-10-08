@@ -1,5 +1,5 @@
 {
   "harness": "claude-code",
   "model": "anthropic/claude-sonnet-5.5",
-  "task": "ore-live-round.ts"
+  "task": "launchpad-discovery.ts"
 }
