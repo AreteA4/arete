@@ -68,9 +68,14 @@ export function createHarness(config: RunConfig): HarnessSetup {
       if (!gateway && provider !== 'anthropic' && provider !== 'openai') {
         throw new Error(`OpenCode direct mode supports anthropic/ and openai/ models; use the AI Gateway for ${config.model}`);
       }
+      // Through the gateway, OpenCode splits `provider/model` and sends only the
+      // model part, which the gateway rejects for providers OpenCode already
+      // knows (its bundled registry also lags new models). An unknown provider
+      // id makes it an OpenAI-compatible provider that sends the full gateway id.
+      const gatewayModel = provider === 'anthropic' || provider === 'openai' ? config.model : `aigateway/${config.model}`;
       return {
         adapter: createOpenCode({ auth: gateway ? 'ai-gateway' : (provider as 'anthropic' | 'openai') }),
-        model: gateway || provider === 'openai' ? config.model : `anthropic/${anthropicModelId(config.model)}`,
+        model: gateway ? gatewayModel : provider === 'openai' ? config.model : `anthropic/${anthropicModelId(config.model)}`,
         a4AgentId: 'opencode',
         inactiveTools: ['askUserQuestions'],
       };

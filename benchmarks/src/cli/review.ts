@@ -158,8 +158,9 @@ const aggregateSchema = z.object({
 async function aggregate(dirs: string[], model: LanguageModel, modelId: string, out: string): Promise<void> {
   const reviews = dirs
     .filter((d) => existsSync(join(d, 'review.json')))
-    .map((d) => {
-      const report = JSON.parse(readFileSync(join(d, 'report.json'), 'utf8')) as RunReport;
+    .map((d) => ({ d, report: JSON.parse(readFileSync(join(d, 'report.json'), 'utf8')) as RunReport }))
+    .filter(({ report }) => report.status !== 'infra-error' && report.status !== 'setup-error')
+    .map(({ d, report }) => {
       const { reviewer: _reviewer, ...review } = JSON.parse(readFileSync(join(d, 'review.json'), 'utf8')) as Review & { reviewer?: unknown };
       return { run: report.runId, task: report.task.name, harness: report.config.harness, model: report.config.model, passed: report.verification.passed, ...review };
     });
@@ -200,6 +201,7 @@ async function main(): Promise<void> {
       'model-auth': { type: 'string', default: process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN ? 'ai-gateway' : 'direct' },
       force: { type: 'boolean', default: false },
       aggregate: { type: 'boolean', default: false },
+      concurrency: { type: 'string', default: '4' },
     },
   });
   const root = positionals[0] ?? join(resultsDir(), 'runs');
@@ -211,9 +213,14 @@ async function main(): Promise<void> {
     return;
   }
 
-  for (const dir of dirs) {
-    if (!values.force && existsSync(join(dir, 'review.json'))) continue;
-    process.stdout.write(`reviewing ${dir}\n`);
+  // Setup and infrastructure failures have no agent session worth reviewing.
+  const pending = dirs.filter((dir) => {
+    if (!values.force && existsSync(join(dir, 'review.json'))) return false;
+    const { status } = JSON.parse(readFileSync(join(dir, 'report.json'), 'utf8')) as RunReport;
+    return status !== 'infra-error' && status !== 'setup-error';
+  });
+  process.stdout.write(`${pending.length} run(s) to review\n`);
+  const reviewOne = async (dir: string) => {
     const { output, usage } = await generateText({
       model,
       instructions: REVIEW_INSTRUCTIONS,
@@ -223,8 +230,24 @@ async function main(): Promise<void> {
     const reviewer = { model: values.model, inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0 };
     writeFileSync(join(dir, 'review.json'), redact(JSON.stringify({ ...output, reviewer }, null, 2)));
     writeFileSync(join(dir, 'review.md'), redact(renderReview(output, dir)));
-    process.stdout.write(`  ${output.outcome}: ${output.findings.length} finding(s) · ${usage.inputTokens ?? 0} in / ${usage.outputTokens ?? 0} out tokens\n`);
-  }
+    process.stdout.write(`  ${dir.split('/').pop()}: ${output.outcome}, ${output.findings.length} finding(s) · ${usage.inputTokens ?? 0} in / ${usage.outputTokens ?? 0} out tokens\n`);
+  };
+  let next = 0;
+  let failed = 0;
+  const worker = async () => {
+    while (next < pending.length) {
+      const dir = pending[next++]!;
+      try {
+        await reviewOne(dir);
+      } catch (err) {
+        failed++;
+        process.stderr.write(`  review failed for ${dir}: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Number(values.concurrency), pending.length) }, worker));
+  if (failed) process.exitCode = 1;
+
 }
 
 main().catch((err) => {

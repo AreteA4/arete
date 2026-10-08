@@ -3,7 +3,7 @@ import { expandSweep } from '../config.js';
 import { agentKeys, assertCredentials, resolveModelAuth, resultsDir } from '../env.js';
 import { KeyPool } from '../keys.js';
 import { formatPreflight, preflight } from '../preflight.js';
-import { loadTask, runOne } from '../run-one.js';
+import { loadTask, prewarmTemplate, runOne } from '../run-one.js';
 import type { RunReport, TaskDefinition } from '../types.js';
 import { sweepFromArgs } from './args.js';
 
@@ -46,6 +46,11 @@ async function main(): Promise<void> {
     `${runs.length} run(s): ${sweep.agents.length} agent(s) × ${sweep.tasks.length} task(s) × ${sweep.repetitions} rep(s), concurrency ${sweep.concurrency}\n` +
       `results → ${resultsDir()}\n`,
   );
+
+  // One image build per harness up front; concurrent first builds would race.
+  const firstPerHarness = [...new Map(runs.map((r) => [r.harness, r])).values()];
+  log(`preparing sandbox images: ${firstPerHarness.map((r) => r.harness).join(', ')}`);
+  await Promise.all(firstPerHarness.map((config) => prewarmTemplate(config)));
 
   const settled = await pool(
     runs.map((config) => () => runOne(config, tasks.get(config.task)!, { keyPool, log })),

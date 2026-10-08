@@ -37,6 +37,9 @@ import type {
 } from './types.js';
 import { diffWorkspace, downloadDirs, snapshotWorkspace, WORKSPACE_EXCLUDES, type WorkspaceEntry } from './workspace.js';
 
+/** Project directory inside the sandbox, relative to its default working directory. */
+const RUN_WORKDIR = 'project';
+
 const UNATTENDED_NOTE =
   'You are running unattended in a fresh Linux sandbox as part of an automated evaluation. ' +
   'No human is available to answer questions or approve actions: when a decision is needed, ' +
@@ -72,6 +75,17 @@ function nativeIds(state: unknown): Record<string, string> {
     if (typeof value === 'string' && /id$/i.test(key)) ids[key] = value;
   }
   return ids;
+}
+
+/**
+ * Build (or reuse) a harness's cached sandbox image. Concurrent runs that
+ * all find the image missing would race to build the same named template,
+ * so sweeps call this once per harness before starting runs.
+ */
+export async function prewarmTemplate(config: RunConfig): Promise<void> {
+  const agent = new HarnessAgent({ harness: createHarness(config).adapter, sandboxConfig: { workDir: RUN_WORKDIR } });
+  const sandbox = await createRunSandbox(config, await agent.getSandboxTemplate(), `prewarm-${config.harness}`);
+  await destroySandbox(sandbox);
 }
 
 export interface RunOptions {
@@ -126,7 +140,7 @@ export async function runOne(config: RunConfig, task: TaskDefinition, opts: RunO
     debug: { enabled: true, level: 'info' },
     onLog: (diagnostic) => harnessDiagnostics.push({ t: Math.round(performance.now() - t0), ...diagnostic }),
     sandboxConfig: {
-      workDir: 'project',
+      workDir: RUN_WORKDIR,
       // Runs once per sandbox, before the harness runtime starts, so the
       // runtime sees the MCP servers, skills and instructions `a4 init` wrote.
       onSession: async ({ sessionWorkDir }) => {
