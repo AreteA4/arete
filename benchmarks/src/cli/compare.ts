@@ -46,7 +46,8 @@ export function compareTable(reports: RunReport[]): string {
 }
 
 /** Friction totals across runs, most frequent first. */
-export function frictionTable(reports: RunReport[]): string {
+export function frictionTable(all: RunReport[]): string {
+  const reports = all.filter((r) => r.status !== 'infra-error' && r.status !== 'setup-error');
   const totals = new Map<string, number>();
   for (const r of reports) {
     for (const [kind, count] of Object.entries(r.friction.counts)) {
