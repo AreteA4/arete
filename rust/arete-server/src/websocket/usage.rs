@@ -1188,6 +1188,70 @@ mod tests {
     }
 
     #[test]
+    fn updates_for_different_identities_or_deployments_are_never_summed() {
+        let mut updates = CoalescedUpdates::new(None);
+        let mut pending = Vec::new();
+        let base = update_key(5, "client-1", "Round/latest");
+        let other_account = UpdateKey {
+            identity: UsageIdentity {
+                account_key: Some("account:43".to_string()),
+                ..Default::default()
+            },
+            ..base.clone()
+        };
+        let other_plan = UpdateKey {
+            identity: UsageIdentity {
+                plan_code: Some("pro".to_string()),
+                ..base.identity.clone()
+            },
+            ..base.clone()
+        };
+        let other_deployment = UpdateKey {
+            deployment_id: Some("2".to_string()),
+            ..base.clone()
+        };
+        for (key, bytes) in [
+            (base.clone(), 1),
+            (other_account.clone(), 10),
+            (other_plan.clone(), 100),
+            (other_deployment.clone(), 1_000),
+            (base.clone(), 2),
+        ] {
+            updates.add(key, update(1, bytes, 50_000), &mut pending);
+        }
+        updates.drain_all(&mut pending);
+
+        let mut totals = pending
+            .iter()
+            .map(|envelope| match &envelope.event {
+                WebSocketUsageEvent::UpdateSent {
+                    deployment_id,
+                    identity,
+                    messages,
+                    bytes,
+                    ..
+                } => (deployment_id.clone(), identity.clone(), *messages, *bytes),
+                other => panic!("unexpected event: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        totals.sort_by_key(|(_, _, _, bytes)| *bytes);
+        assert_eq!(
+            totals,
+            vec![
+                (base.deployment_id, base.identity, 2, 3),
+                (other_account.deployment_id, other_account.identity, 1, 10),
+                (other_plan.deployment_id, other_plan.identity, 1, 100),
+                (
+                    other_deployment.deployment_id,
+                    other_deployment.identity,
+                    1,
+                    1_000
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn closed_windows_drain_and_the_open_window_keeps_summing() {
         let mut updates = CoalescedUpdates::new(None);
         let mut pending = Vec::new();
