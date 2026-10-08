@@ -63,9 +63,10 @@ your own earlier runs when it has them.
 
 **Limits to know about**
 
-- A trial agent allows 100 websocket connections, and ORE and onboarding runs
-  open several each. For the full matrix, use agent keys with raised limits in
-  `ARETE_AGENT_KEYS`, or have a human claim the cached agent:
+- A trial agent has usage allowances (preflight shows what remains), and ORE
+  and onboarding runs open several live connections each. For the full matrix,
+  use agent keys with raised limits in `ARETE_AGENT_KEYS`, or have a human
+  claim the cached agent:
   `a4 auth login --profile bench --key "$(cat output/.cache/agent-key)"`, then
   `a4 --profile bench auth claim-link`.
 - Low-tier provider keys hit rate limits when runs overlap. Lower
