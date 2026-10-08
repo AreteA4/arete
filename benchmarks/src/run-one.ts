@@ -23,7 +23,7 @@ import { summarizeTiming, summarizeTokens, summarizeTools } from './metrics.js';
 import { gatewayModelId, loadPricing, modelCost, sandboxCostUpperBound } from './pricing.js';
 import { errorText, Recorder } from './recorder.js';
 import { formatSummary, RunDir } from './report.js';
-import { createRunSandbox, createShell, resolveHomeDir } from './sandbox.js';
+import { createRunSandbox, createShell, destroySandbox, resolveHomeDir } from './sandbox.js';
 import { renderTranscript } from './transcript.js';
 import type {
   AreteState,
@@ -248,7 +248,7 @@ export async function runOne(config: RunConfig, task: TaskDefinition, opts: RunO
       arete.usageAttribution = lease.attribution();
     }
     lease.release();
-    if (sandboxSession) await Promise.resolve(sandboxSession.destroy()).catch(() => {});
+    if (sandboxSession) await destroySandbox(sandboxSession).catch(() => {});
     phases.collectMs = Math.round(performance.now() - collectStart);
     phases.totalMs = Math.round(performance.now() - t0);
   }

@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fetchAgentProfile, installA4 } from './arete-setup.js';
 import { AGENT_KEY_CACHE, cachedAgentKey } from './env.js';
-import { createRunSandbox, createShell, resolveHomeDir } from './sandbox.js';
+import { createRunSandbox, createShell, destroySandbox, resolveHomeDir } from './sandbox.js';
 import type { RunConfig } from './types.js';
 
 /**
@@ -39,6 +39,6 @@ export async function sharedAgentKey(config: RunConfig, log: (line: string) => v
     log(`signed up a benchmark agent; key cached at ${AGENT_KEY_CACHE}`);
     return key;
   } finally {
-    await Promise.resolve(sandbox.destroy()).catch(() => {});
+    await destroySandbox(sandbox).catch(() => {});
   }
 }
