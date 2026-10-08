@@ -1,0 +1,35 @@
+{
+  "name": "arete-benchmarks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent benchmarks for Arete: run coding agents against Arete tasks and record speed, tokens, tool calls and full session histories",
+  "scripts": {
+    "bench": "tsx src/cli/run.ts",
+    "compare": "tsx src/cli/compare.ts",
+    "review": "tsx src/cli/review.ts",
+    "rescore": "tsx src/cli/rescore.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "4.0.77",
+    "@ai-sdk/harness": "1.0.145",
+    "@ai-sdk/harness-claude-code": "1.0.149",
+    "@ai-sdk/harness-codex": "1.0.147",
+    "@ai-sdk/harness-opencode": "1.0.147",
+    "@ai-sdk/sandbox-vercel": "1.0.145",
+    "@vercel/sandbox": "3.6.1",
+    "ai": "7.0.134",
+    "dotenv": "16.6.1",
+    "ws": "8.22.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,89 @@
+name: Benchmarks
+
+on:
+  schedule:
+    # Weekly (Sun 03:00 UTC). Kept off the PR path: runs bill the sandbox and models.
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      config:
+        description: 'Config in benchmarks/configs'
+        required: false
+        default: 'matrix.json'
+
+# Runs share agent keys and sandbox quota; never overlap them.
+concurrency:
+  group: benchmarks
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    name: Run benchmark suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      ARETE_AGENT_KEYS: ${{ secrets.ARETE_AGENT_KEYS }}
+      BENCH_RESULTS_DIR: ${{ github.workspace }}/bench-results
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Check out results repository
+        if: ${{ vars.BENCH_RESULTS_REPO != '' }}
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ vars.BENCH_RESULTS_REPO }}
+          token: ${{ secrets.BENCH_RESULTS_TOKEN }}
+          path: bench-results
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: benchmarks/package-lock.json
+
+      - name: Install
+        working-directory: benchmarks
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: benchmarks
+        run: npm run typecheck
+
+      - name: Run
+        working-directory: benchmarks
+        run: npm run bench -- "configs/${{ github.event.inputs.config || 'matrix.json' }}"
+
+      - name: Review sessions
+        working-directory: benchmarks
+        continue-on-error: true
+        run: |
+          npm run review
+          npm run review -- --aggregate
+
+      - name: Summary
+        if: always()
+        working-directory: benchmarks
+        run: npm run --silent compare -- --since "$(date -u +%F)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit results
+        if: ${{ always() && vars.BENCH_RESULTS_REPO != '' }}
+        working-directory: bench-results
+        run: |
+          git config user.name "arete-bench"
+          git config user.email "arete-bench@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "bench: $(date -u +%F) ${{ github.event.inputs.config || 'matrix.json' }} (run ${{ github.run_id }})"
+          git push
+
+      - name: Upload results
+        if: ${{ always() && vars.BENCH_RESULTS_REPO == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.run_id }}
+          path: bench-results
+          retention-days: 30
+          if-no-files-found: warn
