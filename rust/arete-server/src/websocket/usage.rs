@@ -1,5 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::btree_map::Entry;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -9,10 +11,18 @@ use uuid::Uuid;
 
 const MAX_IN_MEMORY_RETRIES: u32 = 3;
 
+/// `UpdateSent` usage is merged per connection, view and identity within
+/// fixed wall-clock windows of this length. The length divides an hour, so a
+/// merged update never spans an hour boundary.
+const UPDATE_COALESCE_WINDOW_MS: u64 = 10_000;
+
+/// Merged updates kept in memory before they are queued early.
+const MAX_COALESCED_UPDATES: usize = 10_000;
+
 /// Billing and policy identity copied from one verified session token. The
 /// legacy fields remain present during the compatibility window; V2 fields
 /// are emitted only as a complete signed tuple.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct UsageIdentity {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metering_key: Option<String>,
@@ -131,6 +141,15 @@ impl WebSocketUsageEmitter for ChannelUsageEmitter {
     }
 }
 
+/// Posts usage events to an HTTP endpoint in bounded batches, retrying and
+/// optionally spooling to disk when the endpoint is unavailable.
+///
+/// `UpdateSent` events are not posted one per message. Updates for the same
+/// connection, deployment, identity and view are summed over a 10-second
+/// window and posted as one event carrying the total `messages` and `bytes`,
+/// stamped with the time of the last update it covers. Consumers should sum
+/// those fields rather than count events. Every other event type is posted
+/// as emitted.
 pub struct HttpUsageEmitter {
     sender: mpsc::UnboundedSender<UsageEmitterCommand>,
 }
@@ -229,6 +248,7 @@ impl HttpUsageEmitter {
             let mut ticker = interval(flush_interval);
             ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
             let mut pending: Vec<WebSocketUsageEnvelope> = Vec::new();
+            let mut updates = CoalescedUpdates::new(build_id.clone());
             let mut retry_state: Option<RetryState> = None;
 
             if let Some(dir) = spool_dir.as_ref() {
@@ -242,12 +262,42 @@ impl HttpUsageEmitter {
                     maybe_command = receiver.recv() => {
                         match maybe_command {
                             Some(UsageEmitterCommand::Event(event)) => {
-                                pending.push(WebSocketUsageEnvelope {
-                                    event_id: Uuid::new_v4().to_string(),
-                                    occurred_at_ms: current_time_ms(),
-                                    build_id: build_id.clone(),
-                                    event: *event,
-                                });
+                                let occurred_at_ms = current_time_ms();
+                                match *event {
+                                    WebSocketUsageEvent::UpdateSent {
+                                        client_id,
+                                        deployment_id,
+                                        identity,
+                                        view_id,
+                                        messages,
+                                        bytes,
+                                    } => {
+                                        updates.add(
+                                            UpdateKey {
+                                                window: occurred_at_ms / UPDATE_COALESCE_WINDOW_MS,
+                                                client_id,
+                                                deployment_id,
+                                                identity,
+                                                view_id,
+                                            },
+                                            UpdateTotals {
+                                                messages,
+                                                bytes,
+                                                last_occurred_at_ms: occurred_at_ms,
+                                            },
+                                            &mut pending,
+                                        );
+                                        if updates.len() >= MAX_COALESCED_UPDATES {
+                                            updates.drain_all(&mut pending);
+                                        }
+                                    }
+                                    event => pending.push(WebSocketUsageEnvelope {
+                                        event_id: Uuid::new_v4().to_string(),
+                                        occurred_at_ms,
+                                        build_id: build_id.clone(),
+                                        event,
+                                    }),
+                                }
 
                                 if retry_state.is_none() && pending.len() >= batch_size {
                                     flush_pending_batch(
@@ -262,6 +312,7 @@ impl HttpUsageEmitter {
                                 }
                             }
                             Some(UsageEmitterCommand::Flush(done)) => {
+                                updates.drain_all(&mut pending);
                                 flush_on_shutdown(
                                     &client,
                                     &endpoint,
@@ -277,6 +328,7 @@ impl HttpUsageEmitter {
                                 let _ = done.send(());
                             }
                             Some(UsageEmitterCommand::Shutdown(done)) => {
+                                updates.drain_all(&mut pending);
                                 flush_on_shutdown(
                                     &client,
                                     &endpoint,
@@ -293,6 +345,7 @@ impl HttpUsageEmitter {
                                 break;
                             }
                             None => {
+                                updates.drain_all(&mut pending);
                                 flush_on_shutdown(
                                     &client,
                                     &endpoint,
@@ -310,6 +363,7 @@ impl HttpUsageEmitter {
                         }
                     }
                     _ = ticker.tick() => {
+                        updates.drain_closed(current_time_ms(), &mut pending);
                         if let Some(dir) = spool_dir.as_deref() {
                             if retry_state.is_none() {
                                 if let Err(error) = flush_one_spooled_batch(
@@ -380,6 +434,143 @@ impl HttpUsageEmitter {
         });
 
         Self { sender }
+    }
+}
+
+/// Identifies the updates that are summed into one `UpdateSent` event.
+/// `window` comes first so every closed window is a prefix of the map.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct UpdateKey {
+    window: u64,
+    client_id: String,
+    deployment_id: Option<String>,
+    identity: UsageIdentity,
+    view_id: String,
+}
+
+impl UpdateKey {
+    /// The smallest key in `window`.
+    fn window_start(window: u64) -> Self {
+        Self {
+            window,
+            client_id: String::new(),
+            deployment_id: None,
+            identity: UsageIdentity::default(),
+            view_id: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UpdateTotals {
+    messages: u32,
+    bytes: u64,
+    last_occurred_at_ms: u64,
+}
+
+/// `UpdateSent` usage waiting for its window to close.
+///
+/// A busy connection sends many updates a second. One event per update made
+/// usage volume, and everything downstream of it, grow with message rate.
+struct CoalescedUpdates {
+    build_id: Option<String>,
+    updates: BTreeMap<UpdateKey, UpdateTotals>,
+}
+
+impl CoalescedUpdates {
+    fn new(build_id: Option<String>) -> Self {
+        Self {
+            build_id,
+            updates: BTreeMap::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.updates.len()
+    }
+
+    /// Add an update to its window's totals. When the sum would overflow,
+    /// queue the window's earlier totals and start again from this update.
+    fn add(
+        &mut self,
+        key: UpdateKey,
+        update: UpdateTotals,
+        pending: &mut Vec<WebSocketUsageEnvelope>,
+    ) {
+        match self.updates.entry(key) {
+            Entry::Vacant(entry) => {
+                entry.insert(update);
+            }
+            Entry::Occupied(mut entry) => {
+                let totals = entry.get_mut();
+                match (
+                    totals.messages.checked_add(update.messages),
+                    totals.bytes.checked_add(update.bytes),
+                ) {
+                    (Some(messages), Some(bytes)) => {
+                        totals.messages = messages;
+                        totals.bytes = bytes;
+                        totals.last_occurred_at_ms =
+                            totals.last_occurred_at_ms.max(update.last_occurred_at_ms);
+                    }
+                    _ => {
+                        let earlier = std::mem::replace(totals, update);
+                        pending.push(update_envelope(
+                            &self.build_id,
+                            entry.key().clone(),
+                            earlier,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Queue every window that closed before `now_ms`.
+    fn drain_closed(&mut self, now_ms: u64, pending: &mut Vec<WebSocketUsageEnvelope>) {
+        let open = self
+            .updates
+            .split_off(&UpdateKey::window_start(now_ms / UPDATE_COALESCE_WINDOW_MS));
+        let closed = std::mem::replace(&mut self.updates, open);
+        self.queue(closed, pending);
+    }
+
+    /// Queue every window, open or not, for a flush barrier or shutdown.
+    fn drain_all(&mut self, pending: &mut Vec<WebSocketUsageEnvelope>) {
+        let all = std::mem::take(&mut self.updates);
+        self.queue(all, pending);
+    }
+
+    fn queue(
+        &self,
+        updates: BTreeMap<UpdateKey, UpdateTotals>,
+        pending: &mut Vec<WebSocketUsageEnvelope>,
+    ) {
+        pending.extend(
+            updates
+                .into_iter()
+                .map(|(key, totals)| update_envelope(&self.build_id, key, totals)),
+        );
+    }
+}
+
+fn update_envelope(
+    build_id: &Option<String>,
+    key: UpdateKey,
+    totals: UpdateTotals,
+) -> WebSocketUsageEnvelope {
+    WebSocketUsageEnvelope {
+        event_id: Uuid::new_v4().to_string(),
+        occurred_at_ms: totals.last_occurred_at_ms,
+        build_id: build_id.clone(),
+        event: WebSocketUsageEvent::UpdateSent {
+            client_id: key.client_id,
+            deployment_id: key.deployment_id,
+            identity: key.identity,
+            view_id: key.view_id,
+            messages: totals.messages,
+            bytes: totals.bytes,
+        },
     }
 }
 
@@ -768,6 +959,20 @@ mod tests {
     async fn successful_batch_server(
         request_count: usize,
     ) -> (String, tokio::task::JoinHandle<Vec<Vec<String>>>) {
+        batch_server(request_count, |batch| {
+            batch
+                .events
+                .into_iter()
+                .map(|event| event.event_id)
+                .collect()
+        })
+        .await
+    }
+
+    async fn batch_server<T: Send + 'static>(
+        request_count: usize,
+        received_batch: fn(WebSocketUsageBatch) -> T,
+    ) -> (String, tokio::task::JoinHandle<Vec<T>>) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("test server should bind");
@@ -805,13 +1010,7 @@ mod tests {
                 let batch: WebSocketUsageBatch =
                     serde_json::from_slice(&bytes[body_start..body_start + content_length])
                         .expect("request should contain a usage batch");
-                received.push(
-                    batch
-                        .events
-                        .into_iter()
-                        .map(|event| event.event_id)
-                        .collect(),
-                );
+                received.push(received_batch(batch));
                 stream
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                     .await
@@ -869,6 +1068,244 @@ mod tests {
         assert_eq!(received.len(), 2);
         assert_eq!(received[0].len(), 1);
         assert_eq!(received[1].len(), 1);
+    }
+
+    fn update_key(window: u64, client_id: &str, view_id: &str) -> UpdateKey {
+        UpdateKey {
+            window,
+            client_id: client_id.to_string(),
+            deployment_id: Some("1".to_string()),
+            identity: UsageIdentity {
+                account_key: Some("account:42".to_string()),
+                ..Default::default()
+            },
+            view_id: view_id.to_string(),
+        }
+    }
+
+    fn update(messages: u32, bytes: u64, last_occurred_at_ms: u64) -> UpdateTotals {
+        UpdateTotals {
+            messages,
+            bytes,
+            last_occurred_at_ms,
+        }
+    }
+
+    fn update_counts(pending: &[WebSocketUsageEnvelope]) -> Vec<(String, String, u32, u64, u64)> {
+        pending
+            .iter()
+            .map(|envelope| match &envelope.event {
+                WebSocketUsageEvent::UpdateSent {
+                    client_id,
+                    view_id,
+                    messages,
+                    bytes,
+                    ..
+                } => (
+                    client_id.clone(),
+                    view_id.clone(),
+                    *messages,
+                    *bytes,
+                    envelope.occurred_at_ms,
+                ),
+                other => panic!("unexpected event: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn updates_are_summed_per_connection_view_and_window() {
+        let mut updates = CoalescedUpdates::new(Some("7".to_string()));
+        let mut pending = Vec::new();
+        updates.add(
+            update_key(5, "client-1", "Round/latest"),
+            update(1, 10, 50_001),
+            &mut pending,
+        );
+        updates.add(
+            update_key(5, "client-1", "Round/latest"),
+            update(1, 20, 50_003),
+            &mut pending,
+        );
+        updates.add(
+            update_key(5, "client-1", "Round/list"),
+            update(1, 5, 50_002),
+            &mut pending,
+        );
+        updates.add(
+            update_key(5, "client-2", "Round/latest"),
+            update(1, 7, 50_004),
+            &mut pending,
+        );
+        updates.add(
+            update_key(6, "client-1", "Round/latest"),
+            update(1, 30, 60_000),
+            &mut pending,
+        );
+        assert!(
+            pending.is_empty(),
+            "nothing is queued before its window closes"
+        );
+
+        updates.drain_all(&mut pending);
+        assert_eq!(
+            update_counts(&pending),
+            vec![
+                (
+                    "client-1".to_string(),
+                    "Round/latest".to_string(),
+                    2,
+                    30,
+                    50_003
+                ),
+                (
+                    "client-1".to_string(),
+                    "Round/list".to_string(),
+                    1,
+                    5,
+                    50_002
+                ),
+                (
+                    "client-2".to_string(),
+                    "Round/latest".to_string(),
+                    1,
+                    7,
+                    50_004
+                ),
+                (
+                    "client-1".to_string(),
+                    "Round/latest".to_string(),
+                    1,
+                    30,
+                    60_000
+                ),
+            ]
+        );
+        assert!(pending
+            .iter()
+            .all(|envelope| envelope.build_id.as_deref() == Some("7")));
+        assert_eq!(updates.len(), 0);
+    }
+
+    #[test]
+    fn closed_windows_drain_and_the_open_window_keeps_summing() {
+        let mut updates = CoalescedUpdates::new(None);
+        let mut pending = Vec::new();
+        updates.add(
+            update_key(5, "client-1", "view"),
+            update(1, 1, 59_999),
+            &mut pending,
+        );
+        updates.add(
+            update_key(6, "client-1", "view"),
+            update(1, 2, 60_000),
+            &mut pending,
+        );
+
+        updates.drain_closed(65_000, &mut pending);
+        assert_eq!(
+            update_counts(&pending),
+            vec![("client-1".to_string(), "view".to_string(), 1, 1, 59_999)]
+        );
+
+        pending.clear();
+        updates.add(
+            update_key(6, "client-1", "view"),
+            update(1, 3, 61_000),
+            &mut pending,
+        );
+        updates.drain_closed(69_999, &mut pending);
+        assert!(pending.is_empty(), "window 6 is still open");
+        updates.drain_closed(70_000, &mut pending);
+        assert_eq!(
+            update_counts(&pending),
+            vec![("client-1".to_string(), "view".to_string(), 2, 5, 61_000)]
+        );
+    }
+
+    #[test]
+    fn overflowing_update_totals_queue_the_earlier_sum() {
+        let mut updates = CoalescedUpdates::new(None);
+        let mut pending = Vec::new();
+        updates.add(
+            update_key(5, "client-1", "view"),
+            update(u32::MAX, 1, 50_000),
+            &mut pending,
+        );
+        updates.add(
+            update_key(5, "client-1", "view"),
+            update(2, 3, 50_001),
+            &mut pending,
+        );
+        assert_eq!(
+            update_counts(&pending),
+            vec![(
+                "client-1".to_string(),
+                "view".to_string(),
+                u32::MAX,
+                1,
+                50_000
+            )]
+        );
+
+        updates.drain_all(&mut pending);
+        assert_eq!(
+            update_counts(&pending[1..]),
+            vec![("client-1".to_string(), "view".to_string(), 2, 3, 50_001)]
+        );
+    }
+
+    #[tokio::test]
+    async fn http_emitter_posts_summed_updates_and_other_events_as_emitted() {
+        let (endpoint, server) = batch_server(1, |batch| batch.events).await;
+        let emitter = HttpUsageEmitter::with_config(endpoint, None, 50, Duration::from_secs(3_600));
+        let identity = UsageIdentity {
+            account_key: Some("account:42".to_string()),
+            ..Default::default()
+        };
+
+        emitter.emit(usage_event(1)).await;
+        for bytes in 1..=10 {
+            emitter
+                .emit(WebSocketUsageEvent::UpdateSent {
+                    client_id: "client-1".to_string(),
+                    deployment_id: Some("1".to_string()),
+                    identity: identity.clone(),
+                    view_id: "Round/latest".to_string(),
+                    messages: 1,
+                    bytes,
+                })
+                .await;
+        }
+        emitter.shutdown().await;
+
+        let received = server.await.expect("test server should finish");
+        assert_eq!(received.len(), 1);
+        let (updates, others): (Vec<_>, Vec<_>) = received[0]
+            .iter()
+            .partition(|envelope| matches!(envelope.event, WebSocketUsageEvent::UpdateSent { .. }));
+        assert_eq!(others.len(), 1, "connection events are posted one each");
+        // Ten updates sent back to back can straddle at most one window edge.
+        assert!(
+            (1..=2).contains(&updates.len()),
+            "expected the updates summed into at most two events, got {}",
+            updates.len()
+        );
+        let (messages, bytes) = updates.iter().fold((0, 0), |(messages, bytes), envelope| {
+            match &envelope.event {
+                WebSocketUsageEvent::UpdateSent {
+                    messages: m,
+                    bytes: b,
+                    identity: event_identity,
+                    ..
+                } => {
+                    assert_eq!(event_identity, &identity);
+                    (messages + m, bytes + b)
+                }
+                _ => unreachable!(),
+            }
+        });
+        assert_eq!((messages, bytes), (10, 55));
     }
 
     #[test]
