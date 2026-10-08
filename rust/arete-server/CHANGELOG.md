@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.32.0](https://github.com/AreteA4/arete/compare/arete-server-v0.31.0...arete-server-v0.32.0) (2026-10-08)
+
+
+### Features
+
+* **server:** sum websocket update usage per connection and view ([b21bba7](https://github.com/AreteA4/arete/commit/b21bba79126d3f3f0d4d7d2e20e5d7cd7e0ac9e9))
+* **server:** sum websocket update usage per connection and view ([38bc9a8](https://github.com/AreteA4/arete/commit/38bc9a8ba927e706bf5310e04c3928bda3ba5679))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.31.0 to 0.32.0
+
 ## [0.31.0](https://github.com/AreteA4/arete/compare/arete-server-v0.30.0...arete-server-v0.31.0) (2026-10-07)
 
 
