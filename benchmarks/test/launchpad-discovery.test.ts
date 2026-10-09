@@ -38,9 +38,16 @@ describe('launchpad answer key', () => {
     assert.deepEqual(scoreList(['meteora_presale'], 'live').missing, ['jurassic']);
   });
 
-  test('non-string and missing lists score as empty', () => {
+  test('a missing list names nothing', () => {
     assert.deepEqual(scoreList(undefined, 'live').missing, ['jurassic', 'meteora-presale']);
-    assert.deepEqual(scoreList([42, null, 'jurassic'], 'live').missing, ['meteora-presale']);
+    assert.deepEqual(scoreList('jurassic', 'live').missing, ['jurassic', 'meteora-presale']);
+  });
+
+  test('entries that are not strings count as extras', () => {
+    const score = scoreList(['jurassic', 'meteora-presale', null, 42], 'live');
+    assert.equal(score.exact, false);
+    assert.deepEqual(score.missing, []);
+    assert.deepEqual(score.extra, ['invalid null', 'invalid 42']);
   });
 });
 

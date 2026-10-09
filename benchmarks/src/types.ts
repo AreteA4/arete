@@ -118,6 +118,12 @@ export interface TaskDefinition {
    * provisioned and `doctor` checked before the agent starts.
    */
   setup: 'bare' | 'initialized';
+  /**
+   * Version of how `verify()` grades, 1 when unset. Bump it when a change
+   * could flip a saved run's pass or score, so `compare` keeps runs graded
+   * differently apart.
+   */
+  grading?: number;
   turns: TaskTurn[];
   verify(ctx: VerifyContext): Promise<CheckResult[]>;
 }
@@ -279,7 +285,8 @@ export interface RunReport {
   runId: string;
   startedAt: string;
   config: RunConfig;
-  task: { name: string; track: TaskDefinition['track']; setup: TaskDefinition['setup'] };
+  /** `grading` is absent from reports written before it existed, which were all grading 1. */
+  task: { name: string; track: TaskDefinition['track']; setup: TaskDefinition['setup']; grading?: number };
   versions: Record<string, string>;
   status: 'success' | 'agent-error' | 'setup-error' | 'infra-error';
   error?: string;

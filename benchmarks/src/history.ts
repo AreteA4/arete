@@ -20,6 +20,12 @@ export function loadReports(root: string): RunReport[] {
   return reports.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
 }
 
+/** A task's name, plus its grading version once that has changed. */
+export function taskLabel(task: RunReport['task']): string {
+  const grading = task.grading ?? 1;
+  return grading > 1 ? `${task.name} (grading ${grading})` : task.name;
+}
+
 export function quantile(values: number[], q: number): number | undefined {
   if (!values.length) return undefined;
   const sorted = [...values].sort((a, b) => a - b);

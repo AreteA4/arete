@@ -23,6 +23,9 @@ export const task: TaskDefinition = {
   description: 'Discover and install the ORE stack, then print the live round from a TypeScript script',
   track: 'build',
   setup: 'initialized',
+  // 2: the script must exit within the prompt's 60 seconds and print a
+  // single stdout line (was 90 seconds, extra lines allowed).
+  grading: 2,
   // Measured cost profile, used by preflight to estimate a sweep.
   estimate: {
     noCacheTokens: 40,

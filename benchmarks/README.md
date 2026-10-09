@@ -107,6 +107,12 @@ its setup mode, and a `verify()` that checks the sandbox after the agent
 finishes. `tasks/lib.ts` has helpers for doctor, manifest, lockfile
 reproducibility, secret scanning and live ground truth.
 
+When a change to `verify()` could flip a saved run's pass or score, bump the
+task's `grading`. Every report records it (reports from before it existed are
+grading 1), and `compare` lists each grading as its own row, such as
+`launchpad-discovery (grading 2)`, so it never pools pass rates graded under
+different rules.
+
 ## What a run records
 
 Each run writes `runs/<date>/<run-id>/` under the results directory:

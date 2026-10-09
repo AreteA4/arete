@@ -285,7 +285,7 @@ export async function runOne(config: RunConfig, task: TaskDefinition, opts: RunO
     runId,
     startedAt: startedAt.toISOString(),
     config,
-    task: { name: task.name, track: task.track, setup: task.setup },
+    task: { name: task.name, track: task.track, setup: task.setup, grading: task.grading ?? 1 },
     versions: {
       '@ai-sdk/harness': packageVersion('@ai-sdk/harness'),
       [`@ai-sdk/harness-${config.harness}`]: packageVersion(`@ai-sdk/harness-${config.harness}`),

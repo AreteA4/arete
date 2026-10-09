@@ -44,11 +44,16 @@ export interface ListScore {
 
 /**
  * Score one answer list per launchpad: any of a launchpad's slugs counts
- * once, and any other slug (unknown or not a launchpad) counts as extra.
+ * once, and any other entry counts as extra: an unknown slug, a protocol
+ * that is not a launchpad, or a value that is not a string at all.
  */
 export function scoreList(slugs: unknown, mode: 'live' | 'build'): ListScore {
-  const given = Array.isArray(slugs) ? slugs.filter((s): s is string => typeof s === 'string') : [];
-  const predicted = [...new Set(given.map((s) => LAUNCHPAD_BY_SLUG.get(norm(s)) ?? norm(s)))];
+  const given: unknown[] = Array.isArray(slugs) ? slugs : [];
+  const predicted = [
+    ...new Set(
+      given.map((s) => (typeof s === 'string' ? (LAUNCHPAD_BY_SLUG.get(norm(s)) ?? norm(s)) : `invalid ${JSON.stringify(s)}`)),
+    ),
+  ];
   const expected = Object.entries(LAUNCHPADS).filter(([, launchpad]) => launchpad[mode]).map(([id]) => id);
   const missing = expected.filter((id) => !predicted.includes(id));
   const extra = predicted.filter((id) => !expected.includes(id));
@@ -72,6 +77,9 @@ export const task: TaskDefinition = {
   description: 'Use the catalog to say which token launchpads Arete can stream and build transactions for',
   track: 'discovery',
   setup: 'initialized',
+  // 2: scored against the answer key, live list exact (was F1 >= 0.5
+  // against the catalog's token-launch concept).
+  grading: 2,
   // Measured cost profile, used by preflight to estimate a sweep.
   estimate: {
     noCacheTokens: 10,
