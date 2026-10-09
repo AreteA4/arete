@@ -163,7 +163,8 @@ npm run compare                          # medians per task × harness × model,
 npm run compare -- --since 2026-10-01 --task onboarding
 
 npm run review                           # LLM review of every unreviewed run → review.md/json
-npm run review -- --aggregate            # merge reviews into reports/<date>-findings.md
+npm run review -- --aggregate            # merge the last 28 days of reviews into reports/<date>-findings.md
+npm run review -- --aggregate --since 2026-10-01
 npm run rescore                          # recompute metrics from saved transcripts after classifier changes
 ```
 
@@ -171,7 +172,8 @@ The reviewer reads the transcript, the friction signals and the verification
 results. It files findings as docs, skill, CLI UX, CLI bug, SDK, catalog, MCP,
 agent behaviour, harness or task problems, each with evidence and a concrete
 suggestion. `--aggregate` merges findings that share a root cause across runs
-into one ranked list.
+into one ranked list, over runs started in the last 28 days unless `--since`
+says otherwise, so the request stays bounded as results accumulate.
 
 ## Configuration
 
@@ -225,6 +227,11 @@ commits the run directories to the results repo when `BENCH_RESULTS_REPO` and
 `BENCH_RESULTS_TOKEN` are set; otherwise it uploads them as a workflow
 artifact. It never runs on pull requests, because every run bills the sandbox
 and the models.
+
+`npm run bench` exits non-zero when any run ends in `setup-error` or
+`infra-error`, so a sweep where agents never started fails the workflow. A run
+the agent failed is a result, not an error, and leaves the exit code alone.
+Reviews, the summary and the results commit still run after a failed sweep.
 
 ## Layout
 

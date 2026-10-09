@@ -244,13 +244,15 @@ export interface ToolSummary {
   skillReads: number;
   docsLookups: number;
   directApiCalls: number;
+  /** Summed call durations; parallel calls each count in full. */
   toolTimeMs: number;
 }
 
 export interface TimingSummary extends PhaseTimings {
   turnsMs: number[];
-  /** Sum of step durations minus tool time — approximate model time. */
+  /** Agent time minus `toolMs` — approximate model time. */
   modelMs: number;
+  /** Wall time with at least one tool call running (overlaps merged). */
   toolMs: number;
   ttftMs: { first?: number; median?: number; max?: number };
   milestones: Milestones;

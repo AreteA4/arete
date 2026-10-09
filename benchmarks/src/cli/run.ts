@@ -65,7 +65,10 @@ async function main(): Promise<void> {
     `  ${r.verification.passed ? 'PASS' : 'FAIL'}  ${r.task.name.padEnd(24)} ${r.config.harness.padEnd(12)} ${(r.config.label ?? r.config.model).padEnd(32)} ${(r.timing.totalMs / 1000).toFixed(0).padStart(5)}s  $${r.cost.modelUsd.toFixed(3)}  ${r.status}`;
   process.stdout.write(`\nDone: ${reports.filter((r) => r.verification.passed).length}/${runs.length} passed\n${reports.map(line).join('\n')}\n`);
   process.stdout.write(`\nCompare: npm run compare\n`);
-  if (crashed.length) process.exitCode = 1;
+  // runOne() returns setup and infrastructure failures as reports, so they
+  // fail the sweep here; agent failures are results, not errors.
+  const broken = reports.filter((r) => r.status === 'infra-error' || r.status === 'setup-error');
+  if (crashed.length || broken.length) process.exitCode = 1;
 }
 
 main().catch((err) => {

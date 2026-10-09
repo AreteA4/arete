@@ -57,7 +57,10 @@ jobs:
         working-directory: benchmarks
         run: npm run bench -- "configs/${{ github.event.inputs.config || 'matrix.json' }}"
 
+      # Still runs when some runs hit setup or infra errors (the Run step then
+      # fails); the review skips those and covers the rest.
       - name: Review sessions
+        if: ${{ !cancelled() }}
         working-directory: benchmarks
         continue-on-error: true
         run: |

@@ -9,7 +9,8 @@ export const BENCH_ROOT = resolve(import.meta.dirname, '..');
  * the private results repository to keep transcripts out of this repo.
  */
 export function resultsDir(): string {
-  return resolve(process.env.BENCH_RESULTS_DIR ?? resolve(BENCH_ROOT, 'output'));
+  // `||`, not `??`: a copied .env.example sets the variable to an empty string.
+  return resolve(process.env.BENCH_RESULTS_DIR || resolve(BENCH_ROOT, 'output'));
 }
 
 export function vercelCredentials():
@@ -45,7 +46,7 @@ export function resolveModelAuth(mode: ModelAuth | 'auto'): ModelAuth {
 
 /** Agent keys available to runs, from `ARETE_AGENT_KEYS` (comma separated). */
 export function agentKeys(): string[] {
-  return (process.env.ARETE_AGENT_KEYS ?? process.env.ARETE_AGENT_KEY ?? '')
+  return (process.env.ARETE_AGENT_KEYS || process.env.ARETE_AGENT_KEY || '')
     .split(',')
     .map((k) => k.trim())
     .filter(Boolean);

@@ -42,16 +42,30 @@ export const task: TaskDefinition = {
   ],
   async verify({ shell }) {
     const checks = [await fileExists(shell, SCRIPT)];
-    const run = await shell.run(`npx -y tsx ${SCRIPT}`, { timeoutSeconds: 90 });
+    // Resolve tsx first so a cold npx download does not count against the
+    // script's 60 seconds; the shell's timeout then enforces the prompt's limit.
+    await shell.run('npx -y tsx --version', { timeoutSeconds: 120 });
+    const run = await shell.run(`npx -y tsx ${SCRIPT}`, { timeoutSeconds: 60 });
+    const timedOut = run.exitCode === 124 || run.exitCode === 137;
     const truth = await oreGroundTruth(shell);
     const output = lastJsonLine(run.stdout);
+    const stdoutLines = run.stdout.trim().split('\n').filter((line) => line.trim());
     const roundId = asNumber(output?.roundId);
     const totalMiners = asNumber(output?.totalMiners);
     checks.push(
       check(
         'script-runs',
         run.exitCode === 0 && output !== undefined,
-        run.exitCode === 0 ? (output ? 'printed JSON' : `no JSON line in: ${run.stdout.slice(-300)}`) : `exit ${run.exitCode}: ${(run.stderr || run.stdout).slice(-400)}`,
+        timedOut
+          ? 'did not exit within 60 seconds'
+          : run.exitCode === 0
+            ? output ? 'printed JSON' : `no JSON line in: ${run.stdout.slice(-300)}`
+            : `exit ${run.exitCode}: ${(run.stderr || run.stdout).slice(-400)}`,
+      ),
+      check(
+        'single-json-line',
+        stdoutLines.length === 1 && output !== undefined,
+        `${stdoutLines.length} stdout line(s)${stdoutLines.length > 1 ? `: ${stdoutLines.slice(0, 3).join(' | ').slice(0, 300)}` : ''}`,
       ),
       check(
         'output-shape',

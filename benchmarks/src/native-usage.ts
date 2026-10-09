@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Transcript, UsageRecord } from './types.js';
 
@@ -17,13 +17,15 @@ interface CodexRollout {
   contextWindow?: number;
 }
 
+/** Links are skipped: the sandbox wrote this tree, so one could point anywhere on the host. */
 function findRollouts(dir: string): string[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .flatMap((name) => {
       const path = join(dir, name);
-      if (statSync(path).isDirectory()) return findRollouts(path);
-      return /^rollout-.*\.jsonl$/.test(name) ? [path] : [];
+      const stat = lstatSync(path);
+      if (stat.isDirectory()) return findRollouts(path);
+      return stat.isFile() && /^rollout-.*\.jsonl$/.test(name) ? [path] : [];
     })
     .sort();
 }

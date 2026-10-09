@@ -120,6 +120,18 @@ export function findMilestones(calls: ClassifiedCall[]): Milestones {
   };
 }
 
+/** Time covered by at least one interval; parallel tool calls overlap. */
+export function wallTimeMs(intervals: ReadonlyArray<readonly [number, number]>): number {
+  let total = 0;
+  let end = -Infinity;
+  for (const [start, stop] of [...intervals].sort((a, b) => a[0] - b[0])) {
+    if (stop <= end) continue;
+    total += stop - Math.max(start, end);
+    end = stop;
+  }
+  return total;
+}
+
 export function summarizeTiming(
   phases: PhaseTimings,
   transcript: Transcript,
@@ -128,9 +140,8 @@ export function summarizeTiming(
   const ttfts = transcript.steps
     .filter((s) => s.firstOutputMs !== undefined)
     .map((s) => s.firstOutputMs! - s.readyMs);
-  const toolMs = calls.reduce(
-    (sum, c) => sum + (c.record.endMs !== undefined ? c.record.endMs - c.record.startMs : 0),
-    0,
+  const toolMs = wallTimeMs(
+    calls.flatMap((c) => (c.record.endMs !== undefined ? [[c.record.startMs, c.record.endMs] as const] : [])),
   );
   return {
     ...phases,

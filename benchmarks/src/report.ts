@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { knownSecrets } from './env.js';
 import type { RunReport } from './types.js';
@@ -31,14 +31,18 @@ export class RunDir {
     this.writeText(name, rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : ''));
   }
 
-  /** Redact every text file under a downloaded subdirectory in place. */
+  /**
+   * Redact every text file under a downloaded subdirectory in place. Links
+   * are never followed: the sandbox wrote them, and a link resolving outside
+   * the download (`../../.env`) would otherwise rewrite host files.
+   */
   redactTree(subdir: string): void {
     const walk = (dir: string) => {
       for (const name of readdirSync(dir)) {
         const file = join(dir, name);
-        const stat = statSync(file);
+        const stat = lstatSync(file);
         if (stat.isDirectory()) walk(file);
-        else if (stat.size < 50 * 1024 * 1024) {
+        else if (stat.isFile() && stat.size < 50 * 1024 * 1024) {
           const buf = readFileSync(file);
           if (buf.includes(0)) continue; // binary
           const text = buf.toString('utf8');

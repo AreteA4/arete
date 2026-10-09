@@ -155,16 +155,20 @@ const aggregateSchema = z.object({
   ),
 });
 
-async function aggregate(dirs: string[], model: LanguageModel, modelId: string, out: string): Promise<void> {
+/** Default aggregation window; results accumulate weekly, so all-time would grow without bound. */
+const AGGREGATE_WINDOW_DAYS = 28;
+
+async function aggregate(dirs: string[], since: string, model: LanguageModel, modelId: string, out: string): Promise<void> {
   const reviews = dirs
     .filter((d) => existsSync(join(d, 'review.json')))
     .map((d) => ({ d, report: JSON.parse(readFileSync(join(d, 'report.json'), 'utf8')) as RunReport }))
+    .filter(({ report }) => report.startedAt >= since)
     .filter(({ report }) => report.status !== 'infra-error' && report.status !== 'setup-error')
     .map(({ d, report }) => {
       const { reviewer: _reviewer, ...review } = JSON.parse(readFileSync(join(d, 'review.json'), 'utf8')) as Review & { reviewer?: unknown };
       return { run: report.runId, task: report.task.name, harness: report.config.harness, model: report.config.model, passed: report.verification.passed, ...review };
     });
-  if (!reviews.length) throw new Error('No reviewed runs; run `npm run review` first.');
+  if (!reviews.length) throw new Error(`No reviewed runs since ${since}; run \`npm run review\` first.`);
   const { output, usage } = await generateText({
     model,
     instructions:
@@ -172,7 +176,7 @@ async function aggregate(dirs: string[], model: LanguageModel, modelId: string, 
     prompt: JSON.stringify(reviews),
     output: Output.object({ schema: aggregateSchema }),
   });
-  const lines = [`# Arete agent findings — ${new Date().toISOString().slice(0, 10)}`, '', `${reviews.length} reviewed runs.`, '', output.overview, ''];
+  const lines = [`# Arete agent findings — ${new Date().toISOString().slice(0, 10)}`, '', `${reviews.length} reviewed runs since ${since}.`, '', output.overview, ''];
   for (const item of output.improvements) {
     lines.push(
       `## ${item.priority.toUpperCase()} · ${item.category} · ${item.title}`,
@@ -201,6 +205,7 @@ async function main(): Promise<void> {
       'model-auth': { type: 'string', default: process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN ? 'ai-gateway' : 'direct' },
       force: { type: 'boolean', default: false },
       aggregate: { type: 'boolean', default: false },
+      since: { type: 'string' },
       concurrency: { type: 'string', default: '4' },
     },
   });
@@ -209,7 +214,8 @@ async function main(): Promise<void> {
   const dirs = findRunDirs(root);
 
   if (values.aggregate) {
-    await aggregate(dirs, model, values.model!, join(resultsDir(), 'reports', `${new Date().toISOString().slice(0, 10)}-findings.md`));
+    const since = values.since ?? new Date(Date.now() - AGGREGATE_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
+    await aggregate(dirs, since, model, values.model!, join(resultsDir(), 'reports', `${new Date().toISOString().slice(0, 10)}-findings.md`));
     return;
   }
 
