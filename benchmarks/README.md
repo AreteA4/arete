@@ -274,6 +274,7 @@ src/
   transcript.ts    transcript.md renderer
   report.ts        redaction, run directory writer, console summary
 tasks/             task definitions and verifier helpers
+test/              unit tests (`npm test`): redaction and downloaded-tree handling
 configs/           smoke and matrix configs
 scripts/           probe-image.ts: inspect a sandbox image's toolchain
 ```

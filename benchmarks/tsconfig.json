@@ -19,6 +19,6 @@
     "rootDir": ".",
     "types": ["node"]
   },
-  "include": ["src/**/*", "tasks/**/*"],
+  "include": ["src/**/*", "tasks/**/*", "test/**/*"],
   "exclude": ["node_modules", "dist", "output", "results"]
 }

@@ -10,7 +10,8 @@
     "compare": "tsx src/cli/compare.ts",
     "review": "tsx src/cli/review.ts",
     "rescore": "tsx src/cli/rescore.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.77",
