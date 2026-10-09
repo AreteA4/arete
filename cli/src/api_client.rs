@@ -50,29 +50,14 @@ fn ensure_safe_credentials_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn ensure_owner_only_directory(path: &Path, created: bool) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        if created {
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).with_context(|| {
-                format!("Failed to protect credentials directory {}", path.display())
-            })?;
-        }
-        let mode = fs::metadata(path)?.permissions().mode() & 0o777;
-        if mode & 0o077 != 0 {
-            anyhow::bail!(
-                "Credentials directory permissions are too broad ({mode:o}); set {} to mode 700",
-                path.display()
-            );
-        }
-    }
-
-    #[cfg(not(unix))]
-    let _ = (path, created);
-
-    Ok(())
+/// Create the credentials directory owner-only. The default `~/.arete`
+/// directory is tightened to mode 700 automatically when it is too broad; a
+/// custom directory chosen with `ARETE_CREDENTIALS_PATH` is never changed
+/// behind the user's back.
+fn ensure_credentials_directory(path: &Path) -> Result<()> {
+    let is_default_home = dirs::home_dir().is_some_and(|home| path == home.join(".arete"))
+        || crate::arete_home::arete_home().is_ok_and(|home| path == home);
+    crate::arete_home::ensure_private_dir(path, is_default_home)
 }
 
 fn write_credentials_atomic(path: &Path, content: &[u8]) -> Result<()> {
@@ -80,15 +65,8 @@ fn write_credentials_atomic(path: &Path, content: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Credentials path must have a parent directory"))?;
-    let parent_existed = parent.exists();
-    fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "Failed to create credentials directory {}",
-            parent.display()
-        )
-    })?;
+    ensure_credentials_directory(parent)?;
     ensure_safe_credentials_path(path)?;
-    ensure_owner_only_directory(parent, !parent_existed)?;
 
     let filename = path
         .file_name()
@@ -1060,6 +1038,29 @@ pub struct ApiKey {
 }
 
 #[derive(Debug, Serialize)]
+pub struct CreateSecretKeyRequest {
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiry_days: Option<i64>,
+}
+
+/// Clear guidance for the key limits of unclaimed trial agent accounts.
+fn trial_agent_key_message(code: &str) -> Option<&'static str> {
+    match code {
+        "agent-trial-key-cap-reached" => Some(
+            "Trial agent accounts can only use their original key. Have a human claim this agent account (run `a4 auth claim-link`) to create more keys",
+        ),
+        "agent-trial-publishable-key-forbidden" => Some(
+            "Trial agent accounts cannot create publishable keys. Have a human claim this agent account (run `a4 auth claim-link`) to create publishable keys",
+        ),
+        "agent-trial-key-delete-forbidden" => Some(
+            "Trial agent accounts cannot delete their only key. Have a human claim this agent account (run `a4 auth claim-link`) to manage its keys",
+        ),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Serialize)]
 pub struct CreatePublishableKeyRequest {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2020,18 +2021,77 @@ impl ApiClient {
     // API Key endpoints
     // ============================================================================
 
-    /// List all API keys for the authenticated user
+    /// Whether the active credential belongs to an agent account. Agent
+    /// accounts manage their keys through `/api/agents/me/keys`; the
+    /// `/api/auth/keys` routes are only for human accounts.
+    fn uses_agent_credential(&self) -> bool {
+        self.api_key
+            .as_deref()
+            .is_some_and(|key| key.trim().starts_with("a4_ak_"))
+    }
+
+    fn keys_endpoint(&self) -> String {
+        if self.uses_agent_credential() {
+            format!("{}/api/agents/me/keys", self.base_url)
+        } else {
+            format!("{}/api/auth/keys", self.base_url)
+        }
+    }
+
+    /// Like `handle_response`, but explains the key limits of unclaimed
+    /// trial agent accounts.
+    fn handle_keys_response<T: for<'de> Deserialize<'de>>(
+        response: reqwest::blocking::Response,
+    ) -> Result<T> {
+        if response.status().is_success() {
+            response.json().context("Failed to parse response JSON")
+        } else {
+            let mut error = Self::response_error(response);
+            if let Some(message) = error
+                .problem
+                .code
+                .as_deref()
+                .and_then(trial_agent_key_message)
+            {
+                error.problem.error = message.to_string();
+            }
+            Err(error.into())
+        }
+    }
+
+    /// List all API keys for the authenticated account
     pub fn list_api_keys(&self) -> Result<Vec<ApiKey>> {
         let api_key = self.require_api_key()?;
 
         let response = self
             .client
-            .get(format!("{}/api/auth/keys", self.base_url))
+            .get(self.keys_endpoint())
             .bearer_auth(api_key)
             .send()
             .context("Failed to send list API keys request")?;
 
-        Self::handle_response(response)
+        Self::handle_keys_response(response)
+    }
+
+    /// Create a new secret API key
+    pub fn create_secret_key(
+        &self,
+        name: Option<String>,
+        expiry_days: Option<i64>,
+    ) -> Result<CreateApiKeyResponse> {
+        let api_key = self.require_api_key()?;
+
+        let req = CreateSecretKeyRequest { name, expiry_days };
+
+        let response = self
+            .client
+            .post(self.keys_endpoint())
+            .bearer_auth(api_key)
+            .json(&req)
+            .send()
+            .context("Failed to send create API key request")?;
+
+        Self::handle_keys_response(response)
     }
 
     /// Create a new publishable API key for browser use
@@ -2051,13 +2111,27 @@ impl ApiClient {
 
         let response = self
             .client
-            .post(format!("{}/api/auth/keys/publishable", self.base_url))
+            .post(format!("{}/publishable", self.keys_endpoint()))
             .bearer_auth(api_key)
             .json(&req)
             .send()
             .context("Failed to send create publishable key request")?;
 
-        Self::handle_response(response)
+        Self::handle_keys_response(response)
+    }
+
+    /// Delete (revoke) one of the account's API keys
+    pub fn delete_api_key(&self, key_id: i32) -> Result<()> {
+        let api_key = self.require_api_key()?;
+
+        let response = self
+            .client
+            .delete(format!("{}/{key_id}", self.keys_endpoint()))
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to send delete API key request")?;
+
+        Self::handle_keys_response::<serde_json::Value>(response).map(|_| ())
     }
 
     pub fn create_user_program(
@@ -2616,14 +2690,7 @@ impl ApiClient {
         let parent = credentials_path
             .parent()
             .ok_or_else(|| anyhow::anyhow!("Credentials path must have a parent directory"))?;
-        let parent_existed = parent.exists();
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "Failed to create credentials directory {}",
-                parent.display()
-            )
-        })?;
-        ensure_owner_only_directory(parent, !parent_existed)?;
+        ensure_credentials_directory(parent)?;
         let filename = credentials_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -3133,6 +3200,134 @@ pub(crate) mod test_support {
             self.received
                 .recv_timeout(Duration::from_secs(10))
                 .expect("mock server received a request")
+        }
+    }
+}
+
+#[cfg(test)]
+mod key_management_tests {
+    use super::test_support::MockServer;
+    use super::*;
+
+    const AGENT_KEY: &str = "a4_ak_0123456789012345678901234567890123456789";
+    const KEY_LIST: &str = r#"[{"id":7,"user_id":3,"name":"web","last_used_at":null,"expires_at":"2027-10-09T00:00:00Z","created_at":"2026-10-09T00:00:00Z","key_class":"publishable","origin_allowlist":["https://app.example.com"]}]"#;
+    const CREATED: &str = r#"{"id":8,"key":"a4_pk_new","name":"web","key_class":"publishable","expires_at":"2027-10-09T00:00:00Z","message":"created"}"#;
+
+    fn client(server: &MockServer, key: &str) -> ApiClient {
+        ApiClient::with_base_url(server.base_url()).with_api_key(key.to_string())
+    }
+
+    #[test]
+    fn agent_credentials_list_keys_through_agent_routes() {
+        let server = MockServer::json(200, KEY_LIST);
+
+        let keys = client(&server, AGENT_KEY).list_api_keys().unwrap();
+
+        assert_eq!(keys.len(), 1);
+        let req = server.request();
+        assert_eq!(req.request_line, "GET /api/agents/me/keys HTTP/1.1");
+        assert_eq!(
+            req.header("authorization"),
+            Some(format!("Bearer {AGENT_KEY}").as_str())
+        );
+    }
+
+    #[test]
+    fn human_credentials_keep_account_key_routes() {
+        let server = MockServer::json(200, KEY_LIST);
+
+        client(&server, "a4_sk_human").list_api_keys().unwrap();
+
+        assert_eq!(server.request().request_line, "GET /api/auth/keys HTTP/1.1");
+    }
+
+    #[test]
+    fn agent_credentials_create_publishable_keys_through_agent_routes() {
+        let server = MockServer::json(200, CREATED);
+
+        let created = client(&server, AGENT_KEY)
+            .create_publishable_key(
+                Some("web".into()),
+                vec!["https://app.example.com".into()],
+                Some(30),
+            )
+            .unwrap();
+
+        assert_eq!(created.key, "a4_pk_new");
+        let req = server.request();
+        assert_eq!(
+            req.request_line,
+            "POST /api/agents/me/keys/publishable HTTP/1.1"
+        );
+        let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "name": "web",
+                "expiry_days": 30,
+                "origin_allowlist": ["https://app.example.com"],
+            })
+        );
+    }
+
+    #[test]
+    fn secret_keys_are_created_on_the_matching_route() {
+        for (key, route) in [
+            (AGENT_KEY, "POST /api/agents/me/keys HTTP/1.1"),
+            ("a4_sk_human", "POST /api/auth/keys HTTP/1.1"),
+        ] {
+            let server = MockServer::json(
+                200,
+                r#"{"id":9,"key":"a4_ak_rotated","name":null,"key_class":"secret","expires_at":"2027-10-09T00:00:00Z","message":"created"}"#,
+            );
+
+            let created = client(&server, key).create_secret_key(None, None).unwrap();
+
+            assert_eq!(created.id, 9);
+            let req = server.request();
+            assert_eq!(req.request_line, route);
+            let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+            assert_eq!(body, serde_json::json!({ "name": null }));
+        }
+    }
+
+    #[test]
+    fn keys_are_deleted_on_the_matching_route() {
+        for (key, route) in [
+            (AGENT_KEY, "DELETE /api/agents/me/keys/42 HTTP/1.1"),
+            ("a4_sk_human", "DELETE /api/auth/keys/42 HTTP/1.1"),
+        ] {
+            let server = MockServer::json(200, r#"{"success":true,"message":"API key deleted"}"#);
+
+            client(&server, key).delete_api_key(42).unwrap();
+
+            assert_eq!(server.request().request_line, route);
+        }
+    }
+
+    #[test]
+    fn trial_agent_key_limits_explain_how_to_unlock_them() {
+        for (code, expected) in [
+            ("agent-trial-key-cap-reached", "to create more keys"),
+            (
+                "agent-trial-publishable-key-forbidden",
+                "cannot create publishable keys",
+            ),
+        ] {
+            let body = serde_json::json!({ "error": "forbidden", "code": code }).to_string();
+            let server = MockServer::json(403, &body);
+
+            let error = client(&server, AGENT_KEY)
+                .create_publishable_key(None, vec!["https://app.example.com".into()], None)
+                .unwrap_err();
+
+            let api_error = error.downcast_ref::<ApiClientError>().unwrap();
+            assert_eq!(api_error.status, reqwest::StatusCode::FORBIDDEN);
+            assert_eq!(api_error.problem.code.as_deref(), Some(code));
+            let message = error.to_string();
+            assert!(message.contains(expected), "{message}");
+            assert!(message.contains("claim this agent account"), "{message}");
+            assert!(message.contains("a4 auth claim-link"), "{message}");
         }
     }
 }

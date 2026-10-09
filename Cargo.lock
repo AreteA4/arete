@@ -27,6 +27,7 @@ dependencies = [
  "futures-util",
  "indicatif",
  "jsonc-parser",
+ "libc",
  "minisign-verify",
  "ratatui",
  "regex",

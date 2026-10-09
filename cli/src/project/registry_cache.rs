@@ -8,9 +8,7 @@ use anyhow::{bail, Result};
 
 /// `~/.arete/cache/registry/v1`.
 pub fn root() -> Result<PathBuf> {
-    Ok(dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine Arete cache directory"))?
-        .join(".arete")
+    Ok(crate::arete_home::arete_home()?
         .join("cache")
         .join("registry")
         .join("v1"))

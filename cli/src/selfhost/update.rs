@@ -22,8 +22,9 @@ use serde_json::json;
 use super::latest::{fetch_latest, is_newer};
 use super::manifest::{download_client, download_release_file, fetch_manifest};
 use super::platform::{asset_name, platform_key};
-use super::receipt::{arete_home, Receipt};
+use super::receipt::Receipt;
 use super::{current_version, install_binary, keys, now_rfc3339, same_file, verify, UpdateArgs};
+use crate::arete_home::ensure_arete_home;
 use crate::ui::{symbols, ExitCode};
 
 /// Exit code for `--check` when a newer release exists.
@@ -109,7 +110,7 @@ pub fn run(args: UpdateArgs, json: bool) -> Result<()> {
     // 4. Download + verify.
     let platform = platform_key()?;
     let asset = asset_name(platform);
-    let download_dir = arete_home()?.join("downloads").join(&target);
+    let download_dir = ensure_arete_home()?.join("downloads").join(&target);
     fs::create_dir_all(&download_dir)
         .with_context(|| format!("Failed to create {}", download_dir.display()))?;
     let outcome = download_and_verify(&target, &asset, &download_dir);

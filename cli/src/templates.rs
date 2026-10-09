@@ -92,9 +92,7 @@ impl TemplateManager {
     /// Create a new template manager for the current CLI version.
     pub fn new() -> Result<Self> {
         let version = env!("CARGO_PKG_VERSION").to_string();
-        let cache_dir = dirs::home_dir()
-            .context("Could not determine home directory")?
-            .join(".arete")
+        let cache_dir = crate::arete_home::arete_home()?
             .join("templates")
             .join(&version);
 
@@ -118,6 +116,7 @@ impl TemplateManager {
             self.version, self.version
         );
 
+        crate::arete_home::ensure_arete_home()?;
         fs::create_dir_all(&self.cache_dir)
             .with_context(|| format!("Failed to create cache directory: {:?}", self.cache_dir))?;
 

@@ -481,15 +481,25 @@ variable remains useful outside initialized repositories.
 
 ### a4 auth keys
 
-List your API keys, or create a publishable key for browser code.
+List, create or delete your API keys, or create a publishable key for
+browser code.
 
 ```bash
 a4 auth keys list [--json]
+a4 auth keys create [--name <name>] [--expiry-days <n>] [--json]
+a4 auth keys delete <id> [--yes]
 
 a4 auth keys create-publishable --origin http://localhost:5173
 a4 auth keys create-publishable --origin https://app.example.com --name web --env-file .env.local
 a4 auth keys create-publishable --origin http://localhost:5173 --json
 ```
+
+`create` makes a secret key and prints it once. `delete` revokes a key by the
+ID shown in `a4 auth keys list`; it asks for confirmation unless `--yes` is
+passed. When signed in with an agent key (`a4 auth signup`), these commands
+manage the agent account's own keys. A trial agent account can only use its
+original key: have a human claim it (`a4 auth claim-link`) to create more keys
+or publishable keys.
 
 A publishable key is safe in browser code, but **each key allows exactly one
 origin** (`scheme://host[:port]`, no path or trailing slash). Create one key per
