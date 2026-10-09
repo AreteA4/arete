@@ -12,7 +12,7 @@
     "test": "tsx --test src/ore-devex.test.ts"
   },
   "dependencies": {
-    "@usearete/sdk": "^0.32",
+    "@usearete/sdk": "^0.33",
     "zod": "^3.24.1"
   },
   "devDependencies": {
