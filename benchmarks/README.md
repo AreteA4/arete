@@ -222,11 +222,26 @@ npm run review && npm run review -- --aggregate
 
 ## CI
 
-`.github/workflows/benchmarks.yml` runs a config weekly or on demand. It
-commits the run directories to the results repo when `BENCH_RESULTS_REPO` and
-`BENCH_RESULTS_TOKEN` are set; otherwise it uploads them as a workflow
-artifact. It never runs on pull requests, because every run bills the sandbox
-and the models.
+`.github/workflows/benchmarks.yml` runs a config weekly or on demand, and
+commits the run directories to the private results repository. It never runs
+on pull requests, because every run bills the sandbox and the models.
+
+The repository is public, so its workflow logs, step summaries and artifacts
+are public too. The workflow is built around that:
+
+- Nothing runs until the `BENCH_RESULTS_REPO` variable names the results
+  repository. Scheduled runs skip quietly until then; a manual run fails and
+  says what is missing. Results are never uploaded as workflow artifacts.
+- It needs these secrets: `AI_GATEWAY_API_KEY`, `VERCEL_TOKEN`,
+  `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`, `ARETE_AGENT_KEYS` and
+  `BENCH_RESULTS_TOKEN` (write access to the results repository). The first
+  step fails if any is empty. Agent keys are required in CI: without them
+  every run would sign up a new trial agent.
+- Every key in `ARETE_AGENT_KEYS` is masked on its own, because GitHub only
+  masks a secret's whole value. Console output from `bench`, `preflight` and
+  `review` is redacted like the saved files, and agent progress lines are
+  redacted before they are shortened.
+- The step summary holds only the aggregate `compare` tables.
 
 `npm run bench` exits non-zero when any run ends in `setup-error` or
 `infra-error`, so a sweep where agents never started fails the workflow. A run
@@ -259,6 +274,7 @@ src/
   transcript.ts    transcript.md renderer
   report.ts        redaction, run directory writer, console summary
 tasks/             task definitions and verifier helpers
+test/              unit tests (`npm test`): redaction and downloaded-tree handling
 configs/           smoke and matrix configs
 scripts/           probe-image.ts: inspect a sandbox image's toolchain
 ```

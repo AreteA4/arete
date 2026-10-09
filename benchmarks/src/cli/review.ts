@@ -6,7 +6,7 @@ import { parseArgs } from 'node:util';
 import { z } from 'zod';
 import { classify } from '../classify.js';
 import { resultsDir } from '../env.js';
-import { redact } from '../report.js';
+import { print, redact } from '../report.js';
 import { renderTranscript } from '../transcript.js';
 import type { RunReport, Transcript } from '../types.js';
 
@@ -193,7 +193,7 @@ async function aggregate(dirs: string[], since: string, model: LanguageModel, mo
   writeFileSync(out, redact(lines.join('\n')));
   const reviewer = { model: modelId, inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0 };
   writeFileSync(out.replace(/\.md$/, '.json'), redact(JSON.stringify({ ...output, reviewer }, null, 2)));
-  process.stdout.write(`wrote ${out}\n`);
+  print(`wrote ${out}\n`);
 }
 
 async function main(): Promise<void> {
@@ -225,7 +225,7 @@ async function main(): Promise<void> {
     const { status } = JSON.parse(readFileSync(join(dir, 'report.json'), 'utf8')) as RunReport;
     return status !== 'infra-error' && status !== 'setup-error';
   });
-  process.stdout.write(`${pending.length} run(s) to review\n`);
+  print(`${pending.length} run(s) to review\n`);
   const reviewOne = async (dir: string) => {
     const { output, usage } = await generateText({
       model,
@@ -236,7 +236,7 @@ async function main(): Promise<void> {
     const reviewer = { model: values.model, inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0 };
     writeFileSync(join(dir, 'review.json'), redact(JSON.stringify({ ...output, reviewer }, null, 2)));
     writeFileSync(join(dir, 'review.md'), redact(renderReview(output, dir)));
-    process.stdout.write(`  ${dir.split('/').pop()}: ${output.outcome}, ${output.findings.length} finding(s) · ${usage.inputTokens ?? 0} in / ${usage.outputTokens ?? 0} out tokens\n`);
+    print(`  ${dir.split('/').pop()}: ${output.outcome}, ${output.findings.length} finding(s) · ${usage.inputTokens ?? 0} in / ${usage.outputTokens ?? 0} out tokens\n`);
   };
   let next = 0;
   let failed = 0;
@@ -247,7 +247,7 @@ async function main(): Promise<void> {
         await reviewOne(dir);
       } catch (err) {
         failed++;
-        process.stderr.write(`  review failed for ${dir}: ${err instanceof Error ? err.message : String(err)}\n`);
+        print(`  review failed for ${dir}: ${err instanceof Error ? err.message : String(err)}\n`, process.stderr);
       }
     }
   };
@@ -257,6 +257,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+  print(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`, process.stderr);
   process.exit(1);
 });
