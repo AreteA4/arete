@@ -57,10 +57,9 @@ Arete can:
     human `a4_sk_*` credential. Generated MCP configuration is pinned to this
     agent profile.
 
-    Credentials live in `~/.arete/credentials.toml`, one entry per named
-    profile. The CLI and the Arete MCP server read that file for you. Never
-    read, `cat`, print, or copy the file or any key from it into code, prompts,
-    tool arguments, or transcripts. To inspect authentication, use:
+    The CLI and the Arete MCP server load stored credentials for you. Do not
+    search for, read, print, or copy credential files or keys into code,
+    prompts, tool arguments, or transcripts. To inspect authentication, use:
 
         a4 --profile agent auth status
         a4 --profile agent auth whoami --json
