@@ -1136,6 +1136,56 @@ depends on `react`, `@usearete/adapter-web3js` when it depends on
 manager; run the line with the package manager you use. In `--json` output the
 same set is `runtime[]`, each entry a `{ "package", "version" }` pair.
 
+The summary also lists what the project still needs to type-check and run the
+generated code, and how to start using it. `a4` prints these steps; it never
+creates `package.json` or `tsconfig.json`:
+
+```text
+Package:     no package.json found, so nothing declares the packages below. The generated TypeScript is ES modules; create one in .:
+             npm init -y
+             npm pkg set type=module
+Runtime:     the generated TypeScript needs these packages (a4 does not change package.json):
+             npm install @usearete/sdk@0.23.0 "zod@^3.24.1"
+Dev tools:   to type-check and run it, also install:
+             npm install -D typescript tsx @types/node
+Tsconfig:    no tsconfig.json found. Create one that loads Node's types, in .:
+             npx tsc --init --types node
+Next steps:  use stack ore from ./index.ts:
+             import { createSession } from "@usearete/sdk";
+             import { ORE_STREAM_STACK } from "./generated/typescript/stacks/ore/ore.js";
+
+             const publishableKey = process.env.ARETE_PUBLISHABLE_KEY;
+             const session = await createSession(
+               { stacks: { app: ORE_STREAM_STACK } },
+               publishableKey ? { auth: { publishableKey } } : {},
+             );
+             for await (const update of session.stacks.app.views.OreRound.list.watch({ take: 20 })) {
+               console.log(update);
+             }
+             Run it with: npx tsx index.ts
+```
+
+- `Package` appears when no `package.json` is at or above an output. The
+  generated code is ES modules, so the new package is set to
+  `"type": "module"`.
+- `Dev tools` lists the development packages the nearest `package.json` does
+  not declare yet: `typescript`, plus `tsx` and `@types/node` for a Node app
+  (one that does not depend on `react`).
+- `Tsconfig` appears for a Node app with no `tsconfig.json` (create one with
+  `tsc --init --types node`, plus `npm pkg set type=module` for a CommonJS
+  package), or with one whose `compilerOptions.types` omits `"node"`.
+  `tsc --init` writes `"types": []`, which hides `@types/node` and makes `tsc`
+  report `process` and `Buffer` as unknown (TS2591).
+- `Next steps` shows, for each stack, the generated export, its import path
+  from the app's `package.json` directory, and a subscription to its first list
+  view. React apps get a `useArete` component instead.
+
+In `--json` output these are `devRuntime[]` (package names), `projectSetup`
+(`directory`, `commands[]`), `tsconfig` (`tsconfig` when one exists,
+`directory`, `types[]`, `commands[]`) and `usage[]` (`stack`, `exportName`,
+`importPath`, `fromDir`, `view`, `snippet[]` lines and `run`). Each is absent
+when there is nothing to report.
+
 Generated TypeScript is ES module source (`import`/`export` with `.js`
 specifiers). A project whose nearest `package.json` is not `"type": "module"`
 (`npm init` writes `"commonjs"`) and whose `tsconfig.json` sets
