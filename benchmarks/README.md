@@ -43,9 +43,9 @@ if one fails.
 
 ```bash
 npm run bench -- configs/smoke.json      # one discovery run, about $0.05
-npm run bench -- --task ore-live-round.ts --harness codex --model openai/gpt-5.6-sol
+npm run bench -- --task ore-live-round.ts --harness codex --model openai/gpt-6.1-sol
 npm run preflight -- configs/matrix.json # see the cost of the full matrix first
-npm run bench -- configs/matrix.json     # 4 agents × 3 tasks × 3 repetitions, 4 at a time
+npm run bench -- configs/matrix.json     # 5 agents × 3 tasks × 3 repetitions, 4 at a time
 npm run compare
 ```
 
@@ -57,8 +57,9 @@ npm run compare
 | `onboarding` | $0.14 | – | ~1.5 min |
 | `ore-live-round` | $0.25 | $0.83 | 2–3 min |
 
-The full matrix comes to roughly $8–10 in model spend. Sandbox time is a few
-cents per run. `npm run preflight` prints the estimate for any config, using
+The matrix then came to roughly $8–10 in model spend. It now runs GPT-6.1 Sol
+and GPT-6 Luna in place of GPT-5.6 Sol, at a half and about a fortieth of its
+list price. Sandbox time is a few cents per run. `npm run preflight` prints the estimate for any config, using
 your own earlier runs when it has them.
 
 **Limits to know about**
@@ -94,7 +95,7 @@ Vercel's request transformations, and the sandbox only sees a placeholder.
 | --- | --- | --- | --- |
 | `onboarding.ts` | onboarding | empty project | The verbatim arete.run prompt. Then, in a fresh session (simulating the "restart your agent" step), a live-data question that needs the new skills or MCP servers. |
 | `ore-live-round.ts` | build | initialized project | Discover the ORE stack from intent, install it, and write a script whose output is checked against the live view. |
-| `launchpad-discovery.ts` | discovery | initialized project | Answer a capability question from the catalog; scored by F1 against the catalog at verification time. |
+| `launchpad-discovery.ts` | discovery | initialized project | Answer a capability question from the catalog; scored per launchpad against a reviewed answer key (`LAUNCHPADS` in the task), which accepts any catalog slug for each launchpad. The live list must be exact; the build list counts toward the score. |
 
 An *initialized* project already has `a4` installed, `a4 init --agents <harness>`
 applied, the agent profile signed in and `a4 doctor` passing before the agent
@@ -105,6 +106,12 @@ Add a task by exporting a `TaskDefinition` from `tasks/<name>.ts`: its turns,
 its setup mode, and a `verify()` that checks the sandbox after the agent
 finishes. `tasks/lib.ts` has helpers for doctor, manifest, lockfile
 reproducibility, secret scanning and live ground truth.
+
+When a change to `verify()` could flip a saved run's pass or score, bump the
+task's `grading`. Every report records it (reports from before it existed are
+grading 1), and `compare` lists each grading as its own row, such as
+`launchpad-discovery (grading 2)`, so it never pools pass rates graded under
+different rules.
 
 ## What a run records
 
