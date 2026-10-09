@@ -95,7 +95,7 @@ Vercel's request transformations, and the sandbox only sees a placeholder.
 | --- | --- | --- | --- |
 | `onboarding.ts` | onboarding | empty project | The verbatim arete.run prompt. Then, in a fresh session (simulating the "restart your agent" step), a live-data question that needs the new skills or MCP servers. |
 | `ore-live-round.ts` | build | initialized project | Discover the ORE stack from intent, install it, and write a script whose output is checked against the live view. |
-| `launchpad-discovery.ts` | discovery | initialized project | Answer a capability question from the catalog; scored by F1 against the catalog at verification time. |
+| `launchpad-discovery.ts` | discovery | initialized project | Answer a capability question from the catalog; scored per launchpad against a reviewed answer key (`LAUNCHPADS` in the task), which accepts any catalog slug for each launchpad. The live list must be exact; the build list counts toward the score. |
 
 An *initialized* project already has `a4` installed, `a4 init --agents <harness>`
 applied, the agent profile signed in and `a4 doctor` passing before the agent
