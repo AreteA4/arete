@@ -1213,16 +1213,29 @@ impl ModuleTypeRequirement {
 }
 
 /// What else a TypeScript project needs before it can type-check and run the
-/// generated SDK, and the first lines of code that use it. Printed, never
-/// written: `a4` does not create or edit `package.json` or `tsconfig.json`.
+/// generated SDK, and the first lines of code that use it, for each app that
+/// receives TypeScript output. Printed, never written: `a4` does not create
+/// or edit `package.json` or `tsconfig.json`.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TypeScriptGuidance {
+    /// One entry per app directory (an output's nearest `package.json`
+    /// directory, or the project root when there is none). Outputs can point
+    /// into separate Node and React apps, and each gets its own advice.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    typescript_apps: Vec<TypeScriptAppGuidance>,
+}
+
+/// Guidance for one app directory.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TypeScriptAppGuidance {
+    directory: String,
     /// Development tools the app's `package.json` does not declare yet:
     /// `typescript`, and for a Node app `tsx` and `@types/node`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     dev_runtime: Vec<String>,
-    /// Present when no `package.json` is at or above a TypeScript output.
+    /// Present when no `package.json` is at or above the app's outputs.
     #[serde(skip_serializing_if = "Option::is_none")]
     project_setup: Option<ProjectSetup>,
     /// Present when a Node app has no `tsconfig.json`, or one that hides
@@ -1263,31 +1276,80 @@ impl TypeScriptGuidance {
         sdk_package: &str,
         outputs: impl IntoIterator<Item = &'a super::graph::PlannedOutput>,
     ) -> Self {
-        let outputs = outputs.into_iter().collect::<Vec<_>>();
-        let Some(first) = outputs.first() else {
-            return Self::default();
-        };
-        let mut declared = BTreeSet::new();
-        for output in &outputs {
-            declared.extend(runtime::app_dependencies(&output.path));
+        // Group outputs by app, keeping the order apps first appear in.
+        let mut apps: Vec<(PathBuf, Option<PathBuf>, Vec<&super::graph::PlannedOutput>)> =
+            Vec::new();
+        for output in outputs {
+            let package_json = runtime::nearest_package_json(&output.path);
+            let directory = package_json
+                .as_deref()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| root.to_path_buf());
+            match apps.iter_mut().find(|(dir, _, _)| *dir == directory) {
+                Some((_, _, members)) => members.push(output),
+                None => apps.push((directory, package_json, vec![output])),
+            }
         }
-        let browser = runtime::is_browser_app(&declared);
-        let app_dir = |output: &Path| {
-            runtime::nearest_package_json(output)
-                .and_then(|package_json| package_json.parent().map(Path::to_path_buf))
-                .unwrap_or_else(|| root.to_path_buf())
-        };
-        let first_package_json = runtime::nearest_package_json(&first.path);
-        let project_setup = outputs
+        Self {
+            typescript_apps: apps
+                .into_iter()
+                .map(|(directory, package_json, outputs)| {
+                    TypeScriptAppGuidance::for_app(
+                        &directory,
+                        package_json.as_deref(),
+                        &outputs,
+                        sdk_package,
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn emit(&self) {
+        for setup in self
+            .typescript_apps
             .iter()
-            .any(|output| runtime::nearest_package_json(&output.path).is_none())
-            .then(|| ProjectSetup {
-                directory: root.display().to_string(),
-                commands: vec!["npm init -y".into(), "npm pkg set type=module".into()],
-            });
+            .filter_map(|app| app.project_setup.as_ref())
+        {
+            println!(
+                "Package:     no package.json found, so nothing declares the packages below. The generated TypeScript is ES modules; create one in {}:",
+                display_path(&setup.directory)
+            );
+            for command in &setup.commands {
+                println!("             {command}");
+            }
+        }
+    }
+
+    fn emit_tools(&self) {
+        for app in &self.typescript_apps {
+            app.emit_tools();
+        }
+    }
+}
+
+impl TypeScriptAppGuidance {
+    /// Guidance for the app in `directory`, whose `package.json` (if any) is
+    /// `package_json`, from the TypeScript `outputs` it contains.
+    fn for_app(
+        directory: &Path,
+        package_json: Option<&Path>,
+        outputs: &[&super::graph::PlannedOutput],
+        sdk_package: &str,
+    ) -> Self {
+        let declared = package_json
+            .map(runtime::declared_dependencies)
+            .unwrap_or_default();
+        let browser = runtime::is_browser_app(&declared);
+        let project_setup = package_json.is_none().then(|| ProjectSetup {
+            directory: directory.display().to_string(),
+            commands: vec!["npm init -y".into(), "npm pkg set type=module".into()],
+        });
+        let first = &outputs[0].path;
         let tsconfig = if browser {
             None
-        } else if let Some(tsconfig) = runtime::tsconfig_hiding_node_types(&first.path) {
+        } else if let Some(tsconfig) = runtime::tsconfig_hiding_node_types(first) {
             Some(TsconfigRequirement {
                 directory: tsconfig
                     .parent()
@@ -1298,20 +1360,16 @@ impl TypeScriptGuidance {
                 types: vec!["node"],
                 commands: Vec::new(),
             })
-        } else if runtime::nearest_tsconfig(&first.path).is_none() {
+        } else if runtime::nearest_tsconfig(first).is_none() {
             let mut commands = vec!["npx tsc --init --types node".to_string()];
             // `tsc --init` compiles Node ES modules: in a CommonJS package it
             // rejects every import.
-            if project_setup.is_none()
-                && first_package_json
-                    .as_deref()
-                    .is_some_and(|package_json| !is_module_package(package_json))
-            {
+            if package_json.is_some_and(|package_json| !is_module_package(package_json)) {
                 commands.push("npm pkg set type=module".into());
             }
             Some(TsconfigRequirement {
                 tsconfig: None,
-                directory: app_dir(&first.path).display().to_string(),
+                directory: directory.display().to_string(),
                 types: vec!["node"],
                 commands,
             })
@@ -1325,13 +1383,14 @@ impl TypeScriptGuidance {
                 typescript_usage::stack_usage(
                     &output.alias,
                     &output.path,
-                    &app_dir(&output.path),
+                    directory,
                     browser,
                     sdk_package,
                 )
             })
             .collect();
         Self {
+            directory: directory.display().to_string(),
             dev_runtime: runtime::typescript_dev_tools(&declared),
             project_setup,
             tsconfig,
@@ -1339,21 +1398,12 @@ impl TypeScriptGuidance {
         }
     }
 
-    fn emit(&self) {
-        if let Some(setup) = &self.project_setup {
-            println!(
-                "Package:     no package.json found, so nothing declares the packages below. The generated TypeScript is ES modules; create one in {}:",
-                display_path(&setup.directory)
-            );
-            for command in &setup.commands {
-                println!("             {command}");
-            }
-        }
-    }
-
     fn emit_tools(&self) {
         if !self.dev_runtime.is_empty() {
-            println!("Dev tools:   to type-check and run it, also install:");
+            println!(
+                "Dev tools:   to type-check and run it, also install in {}:",
+                display_path(&self.directory)
+            );
             println!(
                 "             {}",
                 runtime::npm_install_dev_command(&self.dev_runtime)
@@ -3986,13 +4036,11 @@ fn sha256(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    /// A project with the golden installed TypeScript stack at
-    /// `generated/typescript/stacks/vault`.
-    fn typescript_stack_project() -> (tempfile::TempDir, super::super::graph::PlannedOutput) {
-        let temp = tempfile::tempdir().unwrap();
+    /// The golden installed TypeScript stack, copied to `output` and planned
+    /// under `alias`.
+    fn typescript_stack_output(output: PathBuf, alias: &str) -> super::super::graph::PlannedOutput {
         let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/golden/installed-typescript/stacks/vault");
-        let output = temp.path().join("generated/typescript/stacks/vault");
         fs::create_dir_all(&output).unwrap();
         for entry in fs::read_dir(&golden).unwrap() {
             let path = entry.unwrap().path();
@@ -4000,13 +4048,23 @@ mod tests {
                 fs::copy(&path, output.join(path.file_name().unwrap())).unwrap();
             }
         }
-        let planned = super::super::graph::PlannedOutput {
+        super::super::graph::PlannedOutput {
             kind: DependencyKind::Stack,
-            alias: "vault".into(),
+            alias: alias.into(),
             target: InstallTarget::TypeScript,
             path: output,
-        };
-        (temp, planned)
+        }
+    }
+
+    /// A project with the golden installed TypeScript stack at
+    /// `generated/typescript/stacks/vault`.
+    fn typescript_stack_project() -> (tempfile::TempDir, super::super::graph::PlannedOutput) {
+        let temp = tempfile::tempdir().unwrap();
+        let output = typescript_stack_output(
+            temp.path().join("generated/typescript/stacks/vault"),
+            "vault",
+        );
+        (temp, output)
     }
 
     #[test]
@@ -4014,25 +4072,29 @@ mod tests {
         let (temp, output) = typescript_stack_project();
         let guidance = TypeScriptGuidance::for_outputs(temp.path(), "@usearete/sdk", [&output]);
         let value = serde_json::to_value(&guidance).unwrap();
+        let apps = value["typescriptApps"].as_array().unwrap();
+        assert_eq!(apps.len(), 1, "{value}");
+        let app = &apps[0];
+        assert_eq!(app["directory"], temp.path().display().to_string());
         assert_eq!(
-            value["devRuntime"],
+            app["devRuntime"],
             serde_json::json!(["typescript", "tsx", "@types/node"])
         );
         assert_eq!(
-            value["projectSetup"]["commands"],
+            app["projectSetup"]["commands"],
             serde_json::json!(["npm init -y", "npm pkg set type=module"])
         );
         assert_eq!(
-            value["projectSetup"]["directory"],
+            app["projectSetup"]["directory"],
             temp.path().display().to_string()
         );
         // The new package is already ES modules: tsc --init alone.
         assert_eq!(
-            value["tsconfig"]["commands"],
+            app["tsconfig"]["commands"],
             serde_json::json!(["npx tsc --init --types node"])
         );
-        assert!(value["tsconfig"].get("tsconfig").is_none());
-        let usage = &value["usage"][0];
+        assert!(app["tsconfig"].get("tsconfig").is_none());
+        let usage = &app["usage"][0];
         assert_eq!(usage["stack"], "vault");
         assert_eq!(usage["exportName"], "VAULT_STREAM_STACK");
         assert_eq!(
@@ -4047,6 +4109,7 @@ mod tests {
     fn typescript_guidance_follows_an_existing_package_json() {
         let (temp, output) = typescript_stack_project();
         let root = temp.path();
+        let app = |value: &serde_json::Value| value["typescriptApps"][0].clone();
         // A CommonJS Node app that already has the compiler.
         fs::write(
             root.join("package.json"),
@@ -4054,7 +4117,7 @@ mod tests {
         )
         .unwrap();
         let guidance = TypeScriptGuidance::for_outputs(root, "@usearete/sdk", [&output]);
-        let value = serde_json::to_value(&guidance).unwrap();
+        let value = app(&serde_json::to_value(&guidance).unwrap());
         assert!(value.get("projectSetup").is_none(), "{value}");
         assert_eq!(
             value["devRuntime"],
@@ -4071,12 +4134,12 @@ mod tests {
             r#"{"compilerOptions":{"module":"esnext","types":[]}}"#,
         )
         .unwrap();
-        let value = serde_json::to_value(TypeScriptGuidance::for_outputs(
+        let value = app(&serde_json::to_value(TypeScriptGuidance::for_outputs(
             root,
             "@usearete/sdk",
             [&output],
         ))
-        .unwrap();
+        .unwrap());
         assert_eq!(
             value["tsconfig"]["tsconfig"],
             root.join("tsconfig.json").display().to_string()
@@ -4089,18 +4152,84 @@ mod tests {
             r#"{"type":"module","dependencies":{"react":"^19"},"devDependencies":{"typescript":"^5"}}"#,
         )
         .unwrap();
-        let value = serde_json::to_value(TypeScriptGuidance::for_outputs(
+        let value = app(&serde_json::to_value(TypeScriptGuidance::for_outputs(
             root,
             "@usearete/sdk",
             [&output],
         ))
-        .unwrap();
+        .unwrap());
         assert!(value.get("devRuntime").is_none(), "{value}");
         assert!(value.get("tsconfig").is_none(), "{value}");
         assert!(value["usage"][0].get("run").is_none(), "{value}");
         assert_eq!(
             value["usage"][0]["snippet"][0],
             r#"import { useArete } from "@usearete/react";"#
+        );
+    }
+
+    #[test]
+    fn typescript_guidance_is_per_app() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        // A Node service and a React web app, each with its own package.json
+        // and generated stack.
+        let server = root.join("apps/server");
+        let web = root.join("apps/web");
+        fs::create_dir_all(&server).unwrap();
+        fs::create_dir_all(&web).unwrap();
+        fs::write(
+            server.join("package.json"),
+            r#"{"type":"module","devDependencies":{"typescript":"^5"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            web.join("package.json"),
+            r#"{"type":"module","dependencies":{"react":"^19"}}"#,
+        )
+        .unwrap();
+        fs::write(web.join("tsconfig.json"), r#"{"compilerOptions":{}}"#).unwrap();
+        let server_output = typescript_stack_output(server.join("src/generated/vault"), "vault");
+        let web_output = typescript_stack_output(web.join("src/generated/vault"), "vault-web");
+
+        let value = serde_json::to_value(TypeScriptGuidance::for_outputs(
+            root,
+            "@usearete/sdk",
+            [&web_output, &server_output],
+        ))
+        .unwrap();
+        let apps = value["typescriptApps"].as_array().unwrap();
+        assert_eq!(apps.len(), 2, "{value}");
+
+        let web_app = &apps[0];
+        assert_eq!(web_app["directory"], web.display().to_string());
+        assert_eq!(web_app["devRuntime"], serde_json::json!(["typescript"]));
+        assert!(web_app.get("tsconfig").is_none(), "{value}");
+        assert!(web_app.get("projectSetup").is_none(), "{value}");
+        assert_eq!(web_app["usage"][0]["stack"], "vault-web");
+        assert_eq!(
+            web_app["usage"][0]["snippet"][0],
+            r#"import { useArete } from "@usearete/react";"#
+        );
+
+        let server_app = &apps[1];
+        assert_eq!(server_app["directory"], server.display().to_string());
+        assert_eq!(
+            server_app["devRuntime"],
+            serde_json::json!(["tsx", "@types/node"])
+        );
+        assert_eq!(
+            server_app["tsconfig"]["directory"],
+            server.display().to_string()
+        );
+        assert_eq!(
+            server_app["tsconfig"]["commands"],
+            serde_json::json!(["npx tsc --init --types node"])
+        );
+        assert_eq!(server_app["usage"][0]["stack"], "vault");
+        assert_eq!(server_app["usage"][0]["run"], "npx tsx index.ts");
+        assert_eq!(
+            server_app["usage"][0]["importPath"],
+            "./src/generated/vault/vault.js"
         );
     }
 
