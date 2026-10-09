@@ -35,16 +35,7 @@ pub struct Receipt {
     pub installed_at: String,
 }
 
-/// `~/.arete` (or `$ARETE_HOME` when set; test hook, undocumented).
-pub fn arete_home() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("ARETE_HOME") {
-        if !path.is_empty() {
-            return Ok(PathBuf::from(path));
-        }
-    }
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-    Ok(home.join(".arete"))
-}
+pub use crate::arete_home::arete_home;
 
 /// Path of the receipt file.
 pub fn receipt_path() -> Result<PathBuf> {
@@ -70,10 +61,11 @@ impl Receipt {
     /// Write the receipt (creates `~/.arete`).
     pub fn save(&self) -> Result<PathBuf> {
         let path = receipt_path()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create {}", parent.display()))?;
-        }
+        crate::arete_home::ensure_private_dir(
+            path.parent()
+                .ok_or_else(|| anyhow::anyhow!("Receipt path must have a parent directory"))?,
+            true,
+        )?;
         let content = serde_json::to_string_pretty(self)?;
         fs::write(&path, format!("{content}\n"))
             .with_context(|| format!("Failed to write install receipt {}", path.display()))?;

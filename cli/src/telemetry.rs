@@ -100,10 +100,7 @@ impl TelemetryConfig {
     /// Save telemetry config to disk
     pub fn save(&self) -> Result<()> {
         let path = config_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
-        }
+        crate::arete_home::ensure_arete_home()?;
 
         let contents = serde_json::to_string_pretty(self)?;
         fs::write(&path, contents)
@@ -127,9 +124,8 @@ impl TelemetryConfig {
 
 /// Get the path to the telemetry config file
 fn config_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".arete")
+    crate::arete_home::arete_home()
+        .unwrap_or_else(|_| PathBuf::from(".arete"))
         .join("telemetry.json")
 }
 

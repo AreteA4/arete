@@ -3369,6 +3369,7 @@ fn cache_program_install(
 }
 
 fn cache_immutable_json(kind: &str, hash: &str, value: &serde_json::Value) -> Result<()> {
+    crate::arete_home::ensure_arete_home()?;
     let path = registry_cache::file(&registry_cache::root()?, kind, hash)?;
     let directory = path.parent().expect("cache files live in a kind directory");
     fs::create_dir_all(directory)?;

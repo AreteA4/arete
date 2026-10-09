@@ -34,6 +34,7 @@ use std::process;
 
 mod agents;
 mod api_client;
+mod arete_home;
 mod commands;
 mod config;
 mod project;
@@ -610,7 +611,7 @@ enum AuthCommands {
     /// Create a short-lived link for a human to claim this agent
     ClaimLink,
 
-    /// Manage API keys for browser/client use
+    /// Manage API keys (agent accounts manage their own agent keys)
     #[command(subcommand)]
     Keys(KeysCommands),
 }
@@ -619,6 +620,23 @@ enum AuthCommands {
 enum KeysCommands {
     /// List all your API keys
     List,
+
+    /// Create a new secret API key (shown once)
+    Create {
+        /// Name for the key (optional)
+        #[arg(short, long)]
+        name: Option<String>,
+
+        /// Number of days until the key expires (default: 365)
+        #[arg(short, long)]
+        expiry_days: Option<i64>,
+    },
+
+    /// Delete (revoke) an API key by its ID (see `a4 auth keys list`)
+    Delete {
+        /// ID of the key to delete
+        id: i32,
+    },
 
     /// Create a new publishable API key for browser/client use
     CreatePublishable {
@@ -1444,6 +1462,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             AuthCommands::ClaimLink => commands::auth::claim_link(cli.json),
             AuthCommands::Keys(keys_cmd) => match keys_cmd {
                 KeysCommands::List => commands::auth::list_keys(cli.json),
+                KeysCommands::Create { name, expiry_days } => {
+                    commands::auth::create_secret_key(name, expiry_days, cli.json)
+                }
+                KeysCommands::Delete { id } => commands::auth::delete_key(id, cli.json),
                 KeysCommands::CreatePublishable {
                     name,
                     origin,

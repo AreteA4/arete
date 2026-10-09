@@ -524,6 +524,101 @@ pub fn list_keys(json: bool) -> Result<()> {
     Ok(())
 }
 
+/// `a4 auth keys create`: create a secret API key. Agent accounts create it
+/// through their own key routes.
+pub fn create_secret_key(name: Option<String>, expiry_days: Option<i64>, json: bool) -> Result<()> {
+    let client = ApiClient::new()?;
+    let spinner = (!json).then(|| ui::create_spinner("Creating API key..."));
+    let result = client.create_secret_key(name.clone(), expiry_days);
+    if let Some(spinner) = spinner {
+        spinner.finish_and_clear();
+    }
+    let response = result.map_err(|error| {
+        let message = format!("Failed to create API key: {error}");
+        error.context(message)
+    })?;
+    let name = response.name.clone().or(name);
+
+    if json {
+        let payload = serde_json::json!({
+            "schemaVersion": 1,
+            "id": response.id,
+            "name": name,
+            "keyClass": response.key_class,
+            "expiresAt": response.expires_at,
+            "key": response.key,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    println!("{}", "✓ API key created".green().bold());
+    println!();
+    println!(
+        "{}",
+        "Save this key now; it won't be shown again."
+            .yellow()
+            .bold()
+    );
+    println!();
+    if let Some(name) = &name {
+        println!("  Name:       {}", name);
+    }
+    println!("  Key ID:     {}", response.id);
+    println!("  Type:       {}", response.key_class.cyan());
+    println!(
+        "  Expires:    {}",
+        response
+            .expires_at
+            .split('T')
+            .next()
+            .unwrap_or(&response.expires_at)
+    );
+    println!();
+    println!("  {}", "Secret Key:".bold());
+    println!("  {}", response.key.green().bold());
+    println!();
+    println!(
+        "{}",
+        "Keep this key secret: never put it in browser code or commit it.".dimmed()
+    );
+    Ok(())
+}
+
+/// `a4 auth keys delete <id>`: revoke one of the account's API keys.
+pub fn delete_key(key_id: i32, json: bool) -> Result<()> {
+    if !ui::assume_yes() {
+        if !ui::interactive() {
+            anyhow::bail!(
+                "Deleting a key requires -y/--yes when not interactive. Pass: a4 auth keys delete {key_id} --yes"
+            );
+        }
+        let confirmed = dialoguer::Confirm::new()
+            .with_prompt(format!(
+                "Delete API key {key_id}? Anything using it stops working immediately"
+            ))
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            anyhow::bail!("Key deletion cancelled");
+        }
+    }
+
+    let client = ApiClient::new()?;
+    client.delete_api_key(key_id).map_err(|error| {
+        let message = format!("Failed to delete API key {key_id}: {error}");
+        error.context(message)
+    })?;
+
+    if json {
+        let payload = serde_json::json!({ "schemaVersion": 1, "id": key_id, "deleted": true });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        println!("{} Deleted API key {key_id}", "✓".green().bold());
+    }
+    Ok(())
+}
+
 /// Options for `a4 auth keys create-publishable`.
 pub struct CreatePublishableArgs {
     pub name: Option<String>,
