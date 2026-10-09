@@ -3,6 +3,7 @@ import { expandSweep } from '../config.js';
 import { agentKeys, assertCredentials, resolveModelAuth, resultsDir } from '../env.js';
 import { KeyPool } from '../keys.js';
 import { formatPreflight, preflight } from '../preflight.js';
+import { print } from '../report.js';
 import { loadTask, prewarmTemplate, runOne } from '../run-one.js';
 import type { RunReport, TaskDefinition } from '../types.js';
 import { sweepFromArgs } from './args.js';
@@ -31,7 +32,7 @@ async function main(): Promise<void> {
   const runs = expandSweep(sweep);
   const tasks = new Map<string, TaskDefinition>();
   for (const ref of new Set(sweep.tasks)) tasks.set(ref, await loadTask(ref));
-  const log = (line: string) => process.stdout.write(`${line}\n`);
+  const log = (line: string) => print(`${line}\n`);
 
   if (!skipPreflight) {
     const result = await preflight(runs, tasks);
@@ -42,7 +43,7 @@ async function main(): Promise<void> {
   // Without configured keys, every run shares one benchmark agent.
   const keys = sweep.keyMode === 'pool' && agentKeys().length === 0 ? [await sharedAgentKey(runs[0]!, log)] : agentKeys();
   const keyPool = new KeyPool(keys);
-  process.stdout.write(
+  print(
     `${runs.length} run(s): ${sweep.agents.length} agent(s) × ${sweep.tasks.length} task(s) × ${sweep.repetitions} rep(s), concurrency ${sweep.concurrency}\n` +
       `results → ${resultsDir()}\n`,
   );
@@ -59,12 +60,12 @@ async function main(): Promise<void> {
 
   const reports = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
   const crashed = settled.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
-  for (const c of crashed) process.stderr.write(`run crashed: ${String(c.reason?.stack ?? c.reason)}\n`);
+  for (const c of crashed) print(`run crashed: ${String(c.reason?.stack ?? c.reason)}\n`, process.stderr);
 
   const line = (r: RunReport) =>
     `  ${r.verification.passed ? 'PASS' : 'FAIL'}  ${r.task.name.padEnd(24)} ${r.config.harness.padEnd(12)} ${(r.config.label ?? r.config.model).padEnd(32)} ${(r.timing.totalMs / 1000).toFixed(0).padStart(5)}s  $${r.cost.modelUsd.toFixed(3)}  ${r.status}`;
-  process.stdout.write(`\nDone: ${reports.filter((r) => r.verification.passed).length}/${runs.length} passed\n${reports.map(line).join('\n')}\n`);
-  process.stdout.write(`\nCompare: npm run compare\n`);
+  print(`\nDone: ${reports.filter((r) => r.verification.passed).length}/${runs.length} passed\n${reports.map(line).join('\n')}\n`);
+  print(`\nCompare: npm run compare\n`);
   // runOne() returns setup and infrastructure failures as reports, so they
   // fail the sweep here; agent failures are results, not errors.
   const broken = reports.filter((r) => r.status === 'infra-error' || r.status === 'setup-error');
@@ -72,6 +73,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+  print(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`, process.stderr);
   process.exit(1);
 });

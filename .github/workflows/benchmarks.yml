@@ -16,9 +16,23 @@ concurrency:
   group: benchmarks
   cancel-in-progress: false
 
+# This repository is public, and so are its logs, summaries and artifacts.
+# Transcripts only ever go to the private results repository, so nothing
+# runs until BENCH_RESULTS_REPO is set: scheduled runs skip quietly, and a
+# manual run says what is missing.
 jobs:
+  not-configured:
+    name: Benchmarks are not configured
+    if: ${{ vars.BENCH_RESULTS_REPO == '' && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error::Set the BENCH_RESULTS_REPO variable and the benchmark secrets first; see benchmarks/README.md (CI)."
+          exit 1
+
   bench:
     name: Run benchmark suite
+    if: ${{ vars.BENCH_RESULTS_REPO != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
@@ -29,10 +43,32 @@ jobs:
       ARETE_AGENT_KEYS: ${{ secrets.ARETE_AGENT_KEYS }}
       BENCH_RESULTS_DIR: ${{ github.workspace }}/bench-results
     steps:
+      # GitHub masks each secret's whole value, but a pooled key can reach the
+      # log on its own, so every key in ARETE_AGENT_KEYS is masked separately.
+      # Configured keys are required: without them each run would sign up a
+      # new trial agent, whose key no secret covers.
+      - name: Check secrets and mask agent keys
+        env:
+          BENCH_RESULTS_TOKEN: ${{ secrets.BENCH_RESULTS_TOKEN }}
+        run: |
+          missing=()
+          for name in AI_GATEWAY_API_KEY VERCEL_TOKEN VERCEL_TEAM_ID VERCEL_PROJECT_ID ARETE_AGENT_KEYS BENCH_RESULTS_TOKEN; do
+            if [ -z "${!name}" ]; then missing+=("$name"); fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing secrets: ${missing[*]}. See benchmarks/README.md (CI)."
+            exit 1
+          fi
+          IFS=',' read -ra keys <<< "$ARETE_AGENT_KEYS"
+          for key in "${keys[@]}"; do
+            key="${key//[[:space:]]/}"
+            if [ -n "$key" ]; then echo "::add-mask::$key"; fi
+          done
+
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Check out results repository
-        if: ${{ vars.BENCH_RESULTS_REPO != '' }}
+        id: results
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: ${{ vars.BENCH_RESULTS_REPO }}
@@ -46,6 +82,7 @@ jobs:
           cache-dependency-path: benchmarks/package-lock.json
 
       - name: Install
+        id: install
         working-directory: benchmarks
         run: npm ci
 
@@ -67,13 +104,14 @@ jobs:
           npm run review
           npm run review -- --aggregate
 
+      # Aggregate medians only; transcripts stay in the results repository.
       - name: Summary
-        if: always()
+        if: ${{ always() && steps.install.outcome == 'success' }}
         working-directory: benchmarks
         run: npm run --silent compare -- --since "$(date -u +%F)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit results
-        if: ${{ always() && vars.BENCH_RESULTS_REPO != '' }}
+        if: ${{ always() && steps.results.outcome == 'success' }}
         working-directory: bench-results
         run: |
           git config user.name "arete-bench"
@@ -81,12 +119,3 @@ jobs:
           git add -A
           git diff --cached --quiet || git commit -m "bench: $(date -u +%F) ${{ github.event.inputs.config || 'matrix.json' }} (run ${{ github.run_id }})"
           git push
-
-      - name: Upload results
-        if: ${{ always() && vars.BENCH_RESULTS_REPO == '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results-${{ github.run_id }}
-          path: bench-results
-          retention-days: 30
-          if-no-files-found: warn

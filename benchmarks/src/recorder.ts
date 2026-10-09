@@ -1,4 +1,5 @@
 import type { LanguageModelUsage, TextStreamPart, ToolSet } from 'ai';
+import { redact } from './report.js';
 import type { StepRecord, ToolCallRecord, Transcript, TurnRecord, UsageRecord } from './types.js';
 
 export interface RecordedEvent {
@@ -62,6 +63,10 @@ export class Recorder {
   private readonly openBlocks = new Map<string, { kind: 'text' | 'reasoning'; startMs: number; text: string }>();
   private readonly toolsById = new Map<string, ToolCallRecord>();
 
+  /**
+   * `onProgress` lines go to the console, which is a public log in CI. They
+   * are redacted before truncation, so a key cut short cannot slip through.
+   */
   constructor(private readonly onProgress?: (line: string) => void) {}
 
   now(): number {
@@ -200,7 +205,7 @@ export class Recorder {
         this.openBlocks.delete(key);
         if (block && block.text) {
           this.push({ type: kind, startMs: block.startMs, text: block.text });
-          if (kind === 'text') this.onProgress?.(`text: ${preview(block.text.trim(), 160)}`);
+          if (kind === 'text') this.onProgress?.(`text: ${preview(redact(block.text.trim()), 160)}`);
         }
         return;
       }
@@ -213,7 +218,7 @@ export class Recorder {
         record.input = part.input;
         record.providerExecuted = Boolean(part.providerExecuted);
         this.push({ type: 'tool-call', toolCallId: part.toolCallId, toolName: part.toolName, input: part.input });
-        this.onProgress?.(`${part.toolName}: ${preview(summarizeInput(part.input), 160)}`);
+        this.onProgress?.(`${part.toolName}: ${preview(redact(summarizeInput(part.input)), 160)}`);
         return;
       }
       case 'tool-result':
@@ -261,7 +266,7 @@ export class Recorder {
         const message = errorText(part.error);
         this.transcript.errors.push({ atMs: this.now(), turn: this.currentTurn?.turn ?? 0, message });
         this.push({ type: 'error', message });
-        this.onProgress?.(`error: ${preview(message, 200)}`);
+        this.onProgress?.(`error: ${preview(redact(message), 200)}`);
         return;
       }
       case 'abort':

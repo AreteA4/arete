@@ -12,6 +12,14 @@ export function redact(text: string, secrets: string[] = knownSecrets()): string
   return out.replace(KEY_PATTERN, '[REDACTED_A4_KEY]').replace(BEARER_PATTERN, '$1[REDACTED]');
 }
 
+/**
+ * Console output, redacted like written artifacts. The weekly workflow runs
+ * in a public repository, so its logs are public.
+ */
+export function print(text: string, stream: NodeJS.WriteStream = process.stdout): void {
+  stream.write(redact(text));
+}
+
 export class RunDir {
   constructor(readonly path: string) {
     mkdirSync(path, { recursive: true });
