@@ -1,0 +1,5 @@
+{
+  "harness": "claude-code",
+  "model": "anthropic/claude-sonnet-5.5",
+  "task": "launchpad-discovery.ts"
+}
