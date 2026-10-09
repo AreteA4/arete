@@ -43,9 +43,9 @@ if one fails.
 
 ```bash
 npm run bench -- configs/smoke.json      # one discovery run, about $0.05
-npm run bench -- --task ore-live-round.ts --harness codex --model openai/gpt-5.6-sol
+npm run bench -- --task ore-live-round.ts --harness codex --model openai/gpt-6.1-sol
 npm run preflight -- configs/matrix.json # see the cost of the full matrix first
-npm run bench -- configs/matrix.json     # 4 agents × 3 tasks × 3 repetitions, 4 at a time
+npm run bench -- configs/matrix.json     # 5 agents × 3 tasks × 3 repetitions, 4 at a time
 npm run compare
 ```
 
@@ -57,8 +57,9 @@ npm run compare
 | `onboarding` | $0.14 | – | ~1.5 min |
 | `ore-live-round` | $0.25 | $0.83 | 2–3 min |
 
-The full matrix comes to roughly $8–10 in model spend. Sandbox time is a few
-cents per run. `npm run preflight` prints the estimate for any config, using
+The matrix then came to roughly $8–10 in model spend. It now runs GPT-6.1 Sol
+and GPT-6 Luna in place of GPT-5.6 Sol, at a half and about a fortieth of its
+list price. Sandbox time is a few cents per run. `npm run preflight` prints the estimate for any config, using
 your own earlier runs when it has them.
 
 **Limits to know about**
