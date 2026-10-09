@@ -306,14 +306,16 @@ class AuthConfig:
         auth = AuthConfig(get_token=get_token)
     """
 
-    token: Optional[str] = None
-    publishable_key: Optional[str] = None
+    # Credential fields stay out of repr() so logging a config never prints
+    # key or token material (matching the Rust SDK's masked Debug output).
+    token: Optional[str] = field(default=None, repr=False)
+    publishable_key: Optional[str] = field(default=None, repr=False)
     token_endpoint: Optional[str] = None
     get_token: Optional[TokenProvider] = None
     token_transport: TokenTransport = TokenTransport.QUERY
-    token_endpoint_headers: Dict[str, str] = field(default_factory=dict)
+    token_endpoint_headers: Dict[str, str] = field(default_factory=dict, repr=False)
     token_endpoint_credentials: Optional[str] = None  # 'omit', 'same-origin', 'include'
-    secret_key: Optional[str] = None
+    secret_key: Optional[str] = field(default=None, repr=False)
     """Agent key (``a4_ak_...``) or secret key (``a4_sk_...``). Server-side
     only; defaults to ``ARETE_API_KEY`` when no auth option is set."""
 

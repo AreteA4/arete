@@ -173,3 +173,16 @@ async def test_http_auth_client_uses_env_key(monkeypatch):
     )
     assert await client.get_token() == "minted"
     assert seen[0].headers["authorization"] == f"Bearer {AGENT}"
+
+
+def test_repr_contains_no_credential_material():
+    for config in (
+        AuthConfig(secret_key=SECRET),
+        AuthConfig(publishable_key=PUBLISHABLE),
+        AuthConfig(token="static-token-value"),
+        AuthConfig(token_endpoint_headers={"Authorization": f"Bearer {AGENT}"}),
+    ):
+        text = repr(config)
+        for material in (SECRET, AGENT, PUBLISHABLE, "static-token-value"):
+            assert material not in text
+            assert material[6:] not in text

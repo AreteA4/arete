@@ -212,7 +212,8 @@ impl AuthConfig {
     /// Agent key (`a4_ak_...`) or secret key (`a4_sk_...`) for servers,
     /// agents and local scripts. Sent to the token endpoint as the bearer
     /// credential; no `Origin` header is needed. When no auth option is set,
-    /// [`ARETE_API_KEY_ENV`] supplies it at connect time.
+    /// [`ARETE_API_KEY_ENV`] supplies it when connecting through the client
+    /// or session builder.
     pub fn with_secret_key(mut self, secret_key: impl Into<String>) -> Self {
         self.secret_key = Some(secret_key.into());
         self
@@ -424,11 +425,14 @@ static WARNED_SECRET_IN_PUBLISHABLE: std::sync::atomic::AtomicBool =
 static WARNED_PUBLISHABLE_IN_ENV: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-pub(crate) fn resolve_auth_config_with_env(
-    auth: Option<AuthConfig>,
-    read_env: impl Fn(&str) -> Option<String>,
-) -> Result<Option<AuthConfig>, AreteError> {
-    if let Some(config) = auth.as_ref() {
+/// Check the API key fields of an explicit config: a publishable key passed
+/// as the secret key, or both keys set, is refused; a secret-class key passed
+/// as the publishable key warns once. Error and warning text never includes
+/// key material. Unlike [`resolve_auth_config`], this never reads
+/// [`ARETE_API_KEY_ENV`], so the low-level constructors that call it leave
+/// credential lookup to their caller.
+pub(crate) fn validate_auth_config(auth: Option<&AuthConfig>) -> Result<(), AreteError> {
+    if let Some(config) = auth {
         if let Some(secret_key) = config.secret_key.as_deref() {
             if secret_key.trim().is_empty() {
                 return Err(AreteError::InvalidConfig("auth.secret_key is empty".into()));
@@ -463,9 +467,17 @@ pub(crate) fn resolve_auth_config_with_env(
                 ),
             );
         }
-        if config.has_explicit_auth() {
-            return Ok(auth);
-        }
+    }
+    Ok(())
+}
+
+pub(crate) fn resolve_auth_config_with_env(
+    auth: Option<AuthConfig>,
+    read_env: impl Fn(&str) -> Option<String>,
+) -> Result<Option<AuthConfig>, AreteError> {
+    validate_auth_config(auth.as_ref())?;
+    if auth.as_ref().is_some_and(AuthConfig::has_explicit_auth) {
+        return Ok(auth);
     }
 
     let Some(env_key) = read_env(ARETE_API_KEY_ENV)

@@ -314,6 +314,9 @@ struct EndpointTokenResponse {
 /// endpoint and is echoed in untargeted token endpoint requests.
 pub struct HttpAuthClient {
     auth: Option<AuthConfig>,
+    /// Set when `auth` failed key validation; every token request then
+    /// fails with this message instead of sending the key.
+    invalid_config: Option<String>,
     websocket_url: Option<String>,
     http: reqwest::Client,
     cache: Mutex<AuthTokenCache>,
@@ -332,13 +335,26 @@ impl std::fmt::Debug for HttpAuthClient {
 impl HttpAuthClient {
     /// Creates a token client mirroring the TS `ConnectionManager` HTTP-token
     /// behavior.
+    ///
+    /// Key fields are checked as in the client builder; an invalid
+    /// combination (a publishable key as `secret_key`, or both keys set)
+    /// makes every token request fail with [`AreteError::InvalidConfig`]
+    /// without sending the key. `ARETE_API_KEY` is not read here: this
+    /// low-level constructor uses exactly the auth it is given.
     pub fn new(
         auth: Option<AuthConfig>,
         websocket_url: Option<String>,
         http_client: reqwest::Client,
     ) -> Self {
+        let invalid_config = crate::auth::validate_auth_config(auth.as_ref())
+            .err()
+            .map(|error| match error {
+                AreteError::InvalidConfig(message) => message,
+                other => other.to_string(),
+            });
         Self {
             auth,
+            invalid_config,
             websocket_url,
             http: http_client,
             cache: Mutex::new(AuthTokenCache::default()),
@@ -365,6 +381,9 @@ impl HttpAuthClient {
         target: Option<&AuthTokenTarget>,
         scopes: &[String],
     ) -> Result<Option<MintedToken>, AreteError> {
+        if let Some(message) = &self.invalid_config {
+            return Err(AreteError::InvalidConfig(message.clone()));
+        }
         match self.strategy() {
             ResolvedAuthStrategy::None => Ok(None),
             ResolvedAuthStrategy::StaticToken(token) => Ok(Some(MintedToken {
@@ -1026,6 +1045,33 @@ mod tests {
 
     fn target(id: &str) -> AuthTokenTarget {
         AuthTokenTarget::program_read_binding(id, "release-hash")
+    }
+
+    #[tokio::test]
+    async fn invalid_key_fields_fail_token_requests_without_sending_the_key() {
+        let state = EndpointState::default();
+        let endpoint = spawn_token_endpoint(state.clone()).await;
+        for auth in [
+            AuthConfig::default().with_secret_key("a4_pk_publicvalue"),
+            AuthConfig::default()
+                .with_secret_key("a4_sk_supersecretvalue")
+                .with_publishable_key("a4_pk_publicvalue"),
+        ] {
+            let client = HttpAuthClient::new(
+                Some(auth.with_token_endpoint(&endpoint)),
+                None,
+                reqwest::Client::new(),
+            );
+            let error = client
+                .token(&AuthTokenRequest::read(), false)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, AreteError::InvalidConfig(_)), "{error}");
+            let message = error.to_string();
+            assert!(!message.contains("publicvalue"), "{message}");
+            assert!(!message.contains("supersecretvalue"), "{message}");
+        }
+        assert_eq!(state.mints.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
