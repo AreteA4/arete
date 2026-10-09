@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.33.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.32.0...arete-mcp-v0.33.0) (2026-10-09)
+
+
+### Features
+
+* **cli,mcp:** compact catalog output and friendlier MCP parameters ([1549bbd](https://github.com/AreteA4/arete/commit/1549bbd409c767ecb401970389aa13e718abfb0b))
+* **cli,mcp:** compact catalog output and friendlier MCP parameters ([f21a344](https://github.com/AreteA4/arete/commit/f21a344ca1b40e54acd2944bebb4f22ef8d1e808))
+* **sdk:** add server-only secretKey auth ([61e6766](https://github.com/AreteA4/arete/commit/61e6766c59bd4bfcb0e7df23c53e5906b070d4ed))
+* **sdk:** add server-only secretKey auth ([b65b5ff](https://github.com/AreteA4/arete/commit/b65b5ff0b2d119b9afbb08920c448c063928e82d))
+
 ## [0.32.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.31.0...arete-mcp-v0.32.0) (2026-10-08)
 
 

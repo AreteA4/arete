@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## [0.33.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.32.0...a4-cli-v0.33.0) (2026-10-09)
+
+
+### Features
+
+* **cli,mcp:** compact catalog output and friendlier MCP parameters ([1549bbd](https://github.com/AreteA4/arete/commit/1549bbd409c767ecb401970389aa13e718abfb0b))
+* **cli,mcp:** compact catalog output and friendlier MCP parameters ([f21a344](https://github.com/AreteA4/arete/commit/f21a344ca1b40e54acd2944bebb4f22ef8d1e808))
+* **cli:** print TypeScript dev tools, setup and usage after install ([746acd5](https://github.com/AreteA4/arete/commit/746acd50ed814852d04e9c9c53631185d2811a43))
+* **cli:** print TypeScript dev tools, setup and usage after install ([6f994b4](https://github.com/AreteA4/arete/commit/6f994b48e48053b381f42e1d0b11e978962cd3ef))
+
+
+### Bug Fixes
+
+* **cli:** give each TypeScript app its own install guidance ([e12e32f](https://github.com/AreteA4/arete/commit/e12e32f1a8a169b6c6394f614475ba82edf72588))
+* **cli:** keep ~/.arete owner-only and route agent key management ([94469b7](https://github.com/AreteA4/arete/commit/94469b75aded37e7ba8aa633803b4b8d0fcd3b44))
+* **cli:** keep ~/.arete owner-only and route agent key management ([01910ef](https://github.com/AreteA4/arete/commit/01910ef0c6795fd784594d068e9ac6fda3355f21))
+* **cli:** never tighten ~/.arete permissions through a symlink ([ffbfefe](https://github.com/AreteA4/arete/commit/ffbfefe9727736d1c3d51986ecd4612ca927d08c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.32.0 to 0.33.0
+    * arete-mcp bumped from 0.32.0 to 0.33.0
+
 ## [0.32.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.31.0...a4-cli-v0.32.0) (2026-10-08)
 
 

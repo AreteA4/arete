@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.33.0](https://github.com/AreteA4/arete/compare/arete-python-v0.32.0...arete-python-v0.33.0) (2026-10-09)
+
+
+### Features
+
+* **sdk:** add server-only secretKey auth ([61e6766](https://github.com/AreteA4/arete/commit/61e6766c59bd4bfcb0e7df23c53e5906b070d4ed))
+* **sdk:** add server-only secretKey auth ([b65b5ff](https://github.com/AreteA4/arete/commit/b65b5ff0b2d119b9afbb08920c448c063928e82d))
+
+
+### Bug Fixes
+
+* **sdk:** validate keys in low-level constructors and hide credentials from repr ([d1293a9](https://github.com/AreteA4/arete/commit/d1293a9a5bb955dfc184416602f0baa5b1b7f3e2))
+
 ## [0.32.0](https://github.com/AreteA4/arete/compare/arete-python-v0.31.0...arete-python-v0.32.0) (2026-10-08)
 
 
