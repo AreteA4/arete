@@ -57,6 +57,17 @@ Arete can:
     human `a4_sk_*` credential. Generated MCP configuration is pinned to this
     agent profile.
 
+    The CLI and the Arete MCP server load stored credentials for you. Do not
+    search for, read, print, or copy credential files or keys into code,
+    prompts, tool arguments, or transcripts. To inspect authentication, use:
+
+        a4 --profile agent auth status
+        a4 --profile agent auth whoami --json
+
+    Browser code needs a publishable key instead: it is bound to one origin and
+    safe to ship to the client. Create one per origin with
+    `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
+
 5.  Continue from what the user actually asked. For the bootstrap prompt, which
     asks only what Arete can do, summarize the capability list above and use the
     catalog vocabulary for current discovery categories:

@@ -134,6 +134,13 @@ Let the CLI store and resolve credentials. Do not implement key or session
 management against platform endpoints, and do not request a human `a4_sk_*`
 credential for agent work.
 
+The CLI and the Arete MCP server load stored credentials for you. Do not search
+for, read, print, or copy credential files or keys into code, prompts, tool
+arguments, or transcripts; use `auth status` and `auth whoami` to inspect
+authentication.
+Browser code needs an origin-bound publishable key instead, created per origin
+with `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
+
 ## Use the installed task skill
 
 `a4 init` installs five focused skills:
