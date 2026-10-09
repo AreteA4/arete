@@ -2,7 +2,7 @@
 name: arete-streams
 description: Query or subscribe to deployed Arete stack views from TypeScript, React, Rust, Python, the a4 CLI, or the Arete MCP server. Use for dashboards, bots, backends, current-state reads, live entity updates, view filtering, or stream debugging. Do not use for program accounts or transaction construction; use arete-programs for those.
 metadata:
-  version: "1.3.1"
+  version: "1.4.0"
   min-cli: ">=0.25.0"
 ---
 
@@ -95,12 +95,13 @@ Match the existing project language and framework. Do not migrate frameworks mer
 
 Use the authentication policy returned by the descriptor.
 
-- Hosted reads commonly require a publishable key, including browser reads.
+- Hosted reads commonly require a key, including browser reads.
 - A read-only view does not require a wallet.
-- Browser publishable keys must be origin-bound and may appear in client configuration.
+- Servers, agents, and local scripts authenticate with an agent key or secret key: `secretKey` in TypeScript, `secret_key` in Python and Rust. Read it from the environment. With no auth option set, the SDKs read `ARETE_API_KEY` themselves.
+- Anything shipped to a browser uses an origin-bound publishable key (`publishableKey` / `publishable_key`), which may appear in client configuration. The TypeScript SDK throws if `secretKey` is used in a browser.
 - Never embed an Arete API key, wallet secret, private key, or unrestricted token in generated or browser code.
 
-If a publishable key must be created or its origins changed, that is an external account mutation. Do it only when requested and use the current `a4 auth keys --help` surface.
+If a publishable key must be created or its origins changed, that is an external account mutation. Do it only when requested: `a4 auth keys create-publishable --origin <scheme://host[:port]>` creates one, and `a4 auth keys --help` lists the rest.
 
 ## Verify Behavior
 

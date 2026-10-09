@@ -8,7 +8,9 @@ import { MY_STACK } from './generated/my-stack';
 
 const session = await createSession(
   { stacks: { app: MY_STACK } },
-  { wallet, auth: { publishableKey } },
+  // Server or script: { secretKey } (or ARETE_API_KEY in the environment).
+  // Browser: an origin-bound { publishableKey }.
+  { wallet, auth: { secretKey: process.env.ARETE_API_KEY! } },
 );
 
 const program = session.stacks.app.programs.myProgram;

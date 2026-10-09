@@ -10,7 +10,7 @@ use arete_sdk::prelude::*;
 use my_generated_stack::MyStack;
 
 let client = Arete::<MyStack>::builder()
-    .publishable_key(publishable_key)
+    .secret_key(std::env::var("ARETE_API_KEY")?)
     .connect()
     .await?;
 
@@ -28,6 +28,8 @@ if let Some(position) = updates.next().await {
 
 client.disconnect().await;
 ```
+
+`secret_key` takes an agent key (`a4_ak_...`) or secret key (`a4_sk_...`). With no auth option, `connect()` reads `ARETE_API_KEY` itself. `publishable_key` is for origin-bound keys used by browser apps; a publishable key passed to `secret_key` is refused with `AreteError::InvalidConfig`.
 
 Treat names such as `MyStack` and the accessor paths above as shape examples. Inspect the generated crate for the exact types and constructor signatures. Rust state accessors currently take the canonical encoded key string even when TypeScript and Python expose structured key inputs.
 

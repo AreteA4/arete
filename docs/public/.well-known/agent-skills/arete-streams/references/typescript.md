@@ -18,7 +18,7 @@ import { MY_STACK } from './generated/my-stack';
 
 const session = await createSession(
   { stacks: { app: MY_STACK } },
-  { auth: { publishableKey: process.env.ARETE_PUBLISHABLE_KEY! } },
+  { auth: { secretKey: process.env.ARETE_API_KEY! } },
 );
 
 const current = await session.stacks.app.views.Position.state.get({ owner });
@@ -30,6 +30,13 @@ for await (const position of session.stacks.app.views.Position.list.use({ take: 
 
 session.close();
 ```
+
+Pick the key by where the code runs:
+
+- Node.js, Bun, Deno, workers, SSR, agents, and scripts: `auth: { secretKey }` with an agent key (`a4_ak_...`) or secret key (`a4_sk_...`) from the environment. With no `auth` option, the SDK reads `ARETE_API_KEY` itself.
+- Browser code (Vue, Svelte, plain pages): `auth: { publishableKey }` with an origin-bound publishable key (`a4_pk_...`), for example from `import.meta.env.VITE_ARETE_PUBLISHABLE_KEY`. Create one with `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
+
+`secretKey` throws in a browser, as does a secret or agent key passed as `publishableKey`. A publishable key passed as `secretKey` is refused everywhere.
 
 Use `Arete.connect(MY_STACK, options)` for one direct stack client. The generated stack contains default endpoints; override `url` or `httpUrl` only for an intentional local or alternate binding.
 

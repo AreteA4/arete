@@ -2,7 +2,7 @@
 name: arete-programs
 description: Use generated Arete program SDKs, standalone or included in a stack, to read accounts, derive PDAs, build instructions, prepare semantic operations, inspect transactions, or execute them through a wallet. Use for Solana protocol integrations and transaction workflows. Do not use for stack views or subscriptions; use arete-streams. Do not publish a program or deploy a stack; use arete-deploy.
 metadata:
-  version: "1.2.0"
+  version: "1.2.1"
   min-cli: ">=0.25.0"
 ---
 
