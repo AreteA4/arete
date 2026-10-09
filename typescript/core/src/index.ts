@@ -166,6 +166,9 @@ export type {
   ProgramReadTransport,
 } from './program-read-transport';
 
+export { ARETE_API_KEY_ENV, classifyApiKey } from './auth-keys';
+export type { ApiKeyClass } from './auth-keys';
+
 export {
   ConnectionManager,
   hostedWebsocketSuffixes,

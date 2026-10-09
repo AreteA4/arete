@@ -14,6 +14,44 @@ pub const DEFAULT_QUERY_PARAMETER: &str = "hs_token";
 pub const DEFAULT_HOSTED_TOKEN_ENDPOINT: &str = "https://api.arete.run/ws/sessions";
 pub const HOSTED_WEBSOCKET_SUFFIX: &str = ".stack.arete.run";
 
+/// Environment variable that supplies [`AuthConfig::with_secret_key`] when no
+/// auth option is set.
+pub const ARETE_API_KEY_ENV: &str = "ARETE_API_KEY";
+
+const PUBLISHABLE_KEY_PREFIXES: [&str; 2] = ["a4_pk_", "hspk_"];
+const SECRET_KEY_PREFIXES: [&str; 3] = ["a4_sk_", "a4_ak_", "hsk_"];
+const CREATE_PUBLISHABLE_HINT: &str =
+    "create one with `a4 auth keys create-publishable --origin <scheme://host[:port]>`";
+
+/// Key class inferred from an API key's prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiKeyClass {
+    /// Origin-bound publishable key (`a4_pk_...`) for code shipped to a browser.
+    Publishable,
+    /// Secret key (`a4_sk_...`) or agent key (`a4_ak_...`); server-side only.
+    Secret,
+    /// A key this SDK does not recognise; passed through unvalidated.
+    Unknown,
+}
+
+/// Classify an API key by its prefix.
+pub fn classify_api_key(key: &str) -> ApiKeyClass {
+    let key = key.trim();
+    if PUBLISHABLE_KEY_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+    {
+        ApiKeyClass::Publishable
+    } else if SECRET_KEY_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+    {
+        ApiKeyClass::Secret
+    } else {
+        ApiKeyClass::Unknown
+    }
+}
+
 /// Environment variable naming extra hosted suffixes, comma separated.
 ///
 /// A deployment can be served on a hostname outside the default suffix - the
@@ -128,6 +166,7 @@ pub struct AuthConfig {
     pub(crate) get_token: Option<Arc<TokenProvider>>,
     pub(crate) token_endpoint: Option<String>,
     pub(crate) publishable_key: Option<String>,
+    pub(crate) secret_key: Option<String>,
     pub(crate) token_endpoint_headers: HashMap<String, String>,
     pub(crate) token_transport: TokenTransport,
     /// Served stack version named in untargeted session requests. Set by the
@@ -145,6 +184,7 @@ impl fmt::Debug for AuthConfig {
                 "publishable_key",
                 &self.publishable_key.as_ref().map(|_| "***"),
             )
+            .field("secret_key", &self.secret_key.as_ref().map(|_| "***"))
             .field(
                 "token_endpoint_headers",
                 &self.token_endpoint_headers.keys().collect::<Vec<_>>(),
@@ -161,9 +201,48 @@ impl AuthConfig {
         self
     }
 
+    /// Publishable key (`a4_pk_...`) for code shipped to a browser. It is
+    /// bound to the origins it was created for; create one with
+    /// `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
     pub fn with_publishable_key(mut self, publishable_key: impl Into<String>) -> Self {
         self.publishable_key = Some(publishable_key.into());
         self
+    }
+
+    /// Agent key (`a4_ak_...`) or secret key (`a4_sk_...`) for servers,
+    /// agents and local scripts. Sent to the token endpoint as the bearer
+    /// credential; no `Origin` header is needed. When no auth option is set,
+    /// [`ARETE_API_KEY_ENV`] supplies it when connecting through the client
+    /// or session builder.
+    pub fn with_secret_key(mut self, secret_key: impl Into<String>) -> Self {
+        self.secret_key = Some(secret_key.into());
+        self
+    }
+
+    /// Set the key field matching an API key's prefix: publishable keys go
+    /// to [`Self::with_publishable_key`], everything else to
+    /// [`Self::with_secret_key`].
+    pub fn with_api_key(self, api_key: impl Into<String>) -> Self {
+        let api_key = api_key.into();
+        match classify_api_key(&api_key) {
+            ApiKeyClass::Publishable => self.with_publishable_key(api_key),
+            ApiKeyClass::Secret | ApiKeyClass::Unknown => self.with_secret_key(api_key),
+        }
+    }
+
+    /// The key sent as the token endpoint bearer credential, if any.
+    pub(crate) fn api_key(&self) -> Option<&str> {
+        self.secret_key
+            .as_deref()
+            .or(self.publishable_key.as_deref())
+    }
+
+    fn has_explicit_auth(&self) -> bool {
+        self.token.is_some()
+            || self.get_token.is_some()
+            || self.token_endpoint.is_some()
+            || self.publishable_key.is_some()
+            || self.secret_key.is_some()
     }
 
     pub fn with_token_endpoint(mut self, token_endpoint: impl Into<String>) -> Self {
@@ -212,7 +291,7 @@ impl AuthConfig {
             return ResolvedAuthStrategy::TokenEndpoint(token_endpoint);
         }
 
-        if self.publishable_key.is_some() && is_hosted_arete_websocket_url(websocket_url) {
+        if self.api_key().is_some() && is_hosted_arete_websocket_url(websocket_url) {
             return ResolvedAuthStrategy::TokenEndpoint(DEFAULT_HOSTED_TOKEN_ENDPOINT.to_string());
         }
 
@@ -327,9 +406,103 @@ pub(crate) fn build_websocket_url(
     Ok(url.to_string())
 }
 
+/// Validate the configured API keys and apply the [`ARETE_API_KEY_ENV`]
+/// fallback. Error and warning text never includes key material.
+pub(crate) fn resolve_auth_config(
+    auth: Option<AuthConfig>,
+) -> Result<Option<AuthConfig>, AreteError> {
+    resolve_auth_config_with_env(auth, |name| std::env::var(name).ok())
+}
+
+fn warn_once(flag: &std::sync::atomic::AtomicBool, message: &str) {
+    if !flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!("{message}");
+    }
+}
+
+static WARNED_SECRET_IN_PUBLISHABLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static WARNED_PUBLISHABLE_IN_ENV: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Check the API key fields of an explicit config: a publishable key passed
+/// as the secret key, or both keys set, is refused; a secret-class key passed
+/// as the publishable key warns once. Error and warning text never includes
+/// key material. Unlike [`resolve_auth_config`], this never reads
+/// [`ARETE_API_KEY_ENV`], so the low-level constructors that call it leave
+/// credential lookup to their caller.
+pub(crate) fn validate_auth_config(auth: Option<&AuthConfig>) -> Result<(), AreteError> {
+    if let Some(config) = auth {
+        if let Some(secret_key) = config.secret_key.as_deref() {
+            if secret_key.trim().is_empty() {
+                return Err(AreteError::InvalidConfig("auth.secret_key is empty".into()));
+            }
+            if classify_api_key(secret_key) == ApiKeyClass::Publishable {
+                return Err(AreteError::InvalidConfig(
+                    "auth.secret_key was given a publishable key (a4_pk_...). Pass it as \
+                     auth.publishable_key instead; auth.secret_key takes an agent key \
+                     (a4_ak_...) or secret key (a4_sk_...)."
+                        .into(),
+                ));
+            }
+            if config.publishable_key.is_some() {
+                return Err(AreteError::InvalidConfig(
+                    "Set either auth.secret_key (servers and scripts) or \
+                     auth.publishable_key (browsers), not both."
+                        .into(),
+                ));
+            }
+        }
+        if config
+            .publishable_key
+            .as_deref()
+            .is_some_and(|key| classify_api_key(key) == ApiKeyClass::Secret)
+        {
+            warn_once(
+                &WARNED_SECRET_IN_PUBLISHABLE,
+                &format!(
+                    "auth.publishable_key was given a secret-class key (a4_sk_... or \
+                     a4_ak_...). Pass it as auth.secret_key instead, or set {ARETE_API_KEY_ENV}. \
+                     Publishable keys are for code shipped to a browser; {CREATE_PUBLISHABLE_HINT}."
+                ),
+            );
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn resolve_auth_config_with_env(
+    auth: Option<AuthConfig>,
+    read_env: impl Fn(&str) -> Option<String>,
+) -> Result<Option<AuthConfig>, AreteError> {
+    validate_auth_config(auth.as_ref())?;
+    if auth.as_ref().is_some_and(AuthConfig::has_explicit_auth) {
+        return Ok(auth);
+    }
+
+    let Some(env_key) = read_env(ARETE_API_KEY_ENV)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(auth);
+    };
+    if classify_api_key(&env_key) == ApiKeyClass::Publishable {
+        warn_once(
+            &WARNED_PUBLISHABLE_IN_ENV,
+            &format!(
+                "{ARETE_API_KEY_ENV} holds a publishable key (a4_pk_...) and was ignored. Set it \
+                 to an agent key (a4_ak_...) or secret key (a4_sk_...), or pass the publishable \
+                 key as auth.publishable_key."
+            ),
+        );
+        return Ok(auth);
+    }
+    Ok(Some(auth.unwrap_or_default().with_secret_key(env_key)))
+}
+
 pub(crate) fn hosted_auth_required_error() -> AreteError {
     AreteError::WebSocket {
-        message: "Hosted Arete websocket connections require auth.publishable_key, auth.get_token, auth.token_endpoint, or auth.token".to_string(),
+        message: "Hosted Arete websocket connections require auth.secret_key (or ARETE_API_KEY), auth.publishable_key, auth.get_token, auth.token_endpoint, or auth.token".to_string(),
         code: Some(AuthErrorCode::AuthRequired),
     }
 }
@@ -422,6 +595,150 @@ mod tests {
             ResolvedAuthStrategy::TokenEndpoint(ref endpoint)
                 if endpoint == DEFAULT_HOSTED_TOKEN_ENDPOINT
         ));
+    }
+
+    const SECRET: &str = "a4_sk_supersecretvalue";
+    const AGENT: &str = "a4_ak_agentsecretvalue";
+    const PUBLISHABLE: &str = "a4_pk_publicvalue";
+
+    fn env_with(value: Option<&'static str>) -> impl Fn(&str) -> Option<String> {
+        move |name| {
+            assert_eq!(name, ARETE_API_KEY_ENV);
+            value.map(str::to_string)
+        }
+    }
+
+    fn assert_no_key_material(text: &str) {
+        for key in [SECRET, AGENT, PUBLISHABLE] {
+            assert!(!text.contains(key), "{text}");
+            assert!(!text.contains(&key[6..]), "{text}");
+        }
+    }
+
+    #[test]
+    fn classifies_api_keys_by_prefix() {
+        assert_eq!(classify_api_key(PUBLISHABLE), ApiKeyClass::Publishable);
+        assert_eq!(classify_api_key("hspk_legacy"), ApiKeyClass::Publishable);
+        assert_eq!(classify_api_key(SECRET), ApiKeyClass::Secret);
+        assert_eq!(classify_api_key(AGENT), ApiKeyClass::Secret);
+        assert_eq!(classify_api_key("hsk_legacy"), ApiKeyClass::Secret);
+        assert_eq!(classify_api_key("custom-key"), ApiKeyClass::Unknown);
+    }
+
+    #[test]
+    fn secret_key_on_hosted_url_uses_default_token_endpoint() {
+        let auth = AuthConfig::default().with_secret_key(SECRET);
+        assert_eq!(auth.api_key(), Some(SECRET));
+        assert!(matches!(
+            auth.resolve_strategy("wss://demo.stack.arete.run"),
+            ResolvedAuthStrategy::TokenEndpoint(ref endpoint)
+                if endpoint == DEFAULT_HOSTED_TOKEN_ENDPOINT
+        ));
+    }
+
+    #[test]
+    fn with_api_key_routes_by_prefix() {
+        let secret = AuthConfig::default().with_api_key(AGENT);
+        assert_eq!(secret.secret_key.as_deref(), Some(AGENT));
+        assert_eq!(secret.publishable_key, None);
+        let publishable = AuthConfig::default().with_api_key(PUBLISHABLE);
+        assert_eq!(publishable.publishable_key.as_deref(), Some(PUBLISHABLE));
+        assert_eq!(publishable.secret_key, None);
+    }
+
+    #[test]
+    fn debug_output_masks_keys() {
+        let debug = format!("{:?}", AuthConfig::default().with_secret_key(SECRET));
+        assert!(debug.contains("secret_key"));
+        assert_no_key_material(&debug);
+    }
+
+    #[test]
+    fn env_key_applies_only_without_other_auth() {
+        let resolved =
+            resolve_auth_config_with_env(None, env_with(Some(" a4_ak_agentsecretvalue\n")))
+                .unwrap()
+                .unwrap();
+        assert_eq!(resolved.secret_key.as_deref(), Some(AGENT));
+
+        let with_transport = AuthConfig::default().with_token_transport(TokenTransport::Bearer);
+        let resolved = resolve_auth_config_with_env(Some(with_transport), env_with(Some(AGENT)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.secret_key.as_deref(), Some(AGENT));
+        assert_eq!(resolved.token_transport, TokenTransport::Bearer);
+
+        for explicit in [
+            AuthConfig::default().with_secret_key(SECRET),
+            AuthConfig::default().with_publishable_key(PUBLISHABLE),
+            AuthConfig::default().with_token("static"),
+            AuthConfig::default().with_token_endpoint("https://auth.example.com/token"),
+        ] {
+            let resolved = resolve_auth_config_with_env(Some(explicit), env_with(Some(AGENT)))
+                .unwrap()
+                .unwrap();
+            assert_ne!(resolved.api_key(), Some(AGENT));
+        }
+
+        assert!(resolve_auth_config_with_env(None, env_with(None))
+            .unwrap()
+            .is_none());
+        assert!(resolve_auth_config_with_env(None, env_with(Some("  ")))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn publishable_key_in_env_is_ignored() {
+        assert!(
+            resolve_auth_config_with_env(None, env_with(Some(PUBLISHABLE)))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn publishable_key_as_secret_key_is_refused_without_leaking_it() {
+        let error = resolve_auth_config_with_env(
+            Some(AuthConfig::default().with_secret_key(PUBLISHABLE)),
+            env_with(None),
+        )
+        .unwrap_err();
+        assert!(matches!(error, AreteError::InvalidConfig(_)));
+        let message = error.to_string();
+        assert!(message.contains("Pass it as auth.publishable_key"));
+        assert_no_key_material(&message);
+    }
+
+    #[test]
+    fn empty_and_conflicting_keys_are_refused() {
+        assert!(resolve_auth_config_with_env(
+            Some(AuthConfig::default().with_secret_key(" ")),
+            env_with(None)
+        )
+        .is_err());
+        let error = resolve_auth_config_with_env(
+            Some(
+                AuthConfig::default()
+                    .with_secret_key(SECRET)
+                    .with_publishable_key(PUBLISHABLE),
+            ),
+            env_with(None),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("not both"));
+        assert_no_key_material(&error.to_string());
+    }
+
+    #[test]
+    fn secret_class_key_as_publishable_key_still_works() {
+        let resolved = resolve_auth_config_with_env(
+            Some(AuthConfig::default().with_publishable_key(SECRET)),
+            env_with(Some(AGENT)),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(resolved.api_key(), Some(SECRET));
     }
 
     #[test]

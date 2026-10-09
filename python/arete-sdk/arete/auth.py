@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
@@ -36,6 +36,33 @@ TOKEN_REFRESH_BUFFER_SECONDS = 60
 MIN_REFRESH_DELAY_SECONDS = 1
 DEFAULT_QUERY_PARAMETER = "hs_token"
 DEFAULT_HOSTED_TOKEN_ENDPOINT = "https://api.arete.run/ws/sessions"
+ARETE_API_KEY_ENV = "ARETE_API_KEY"
+"""Environment variable that supplies ``secret_key`` when no auth is set."""
+
+_PUBLISHABLE_KEY_PREFIXES = ("a4_pk_", "hspk_")
+_SECRET_KEY_PREFIXES = ("a4_sk_", "a4_ak_", "hsk_")
+_CREATE_PUBLISHABLE_HINT = (
+    "create one with `a4 auth keys create-publishable --origin <scheme://host[:port]>`"
+)
+_warned: set = set()
+
+
+def classify_api_key(key: str) -> str:
+    """Return ``"publishable"``, ``"secret"`` (secret or agent key) or
+    ``"unknown"`` from an API key's prefix. Unknown keys are not validated."""
+    trimmed = key.strip()
+    if trimmed.startswith(_PUBLISHABLE_KEY_PREFIXES):
+        return "publishable"
+    if trimmed.startswith(_SECRET_KEY_PREFIXES):
+        return "secret"
+    return "unknown"
+
+
+def _warn_once(warning_id: str, message: str) -> None:
+    if warning_id in _warned:
+        return
+    _warned.add(warning_id)
+    logger.warning(message)
 HOSTED_WEBSOCKET_SUFFIX = ".stack.arete.run"
 HOSTED_WEBSOCKET_SUFFIXES_ENV = "ARETE_HOSTED_WEBSOCKET_SUFFIXES"
 
@@ -250,19 +277,23 @@ class AuthConfig:
     Supports multiple authentication strategies:
     1. Static token - for server-side use with pre-minted tokens
     2. Token provider function - custom async function that returns tokens
-    3. API key - for server-side use (can be secret or publishable key)
-    4. Publishable key - for browser/client use with hosted Arete Cloud
+    3. Secret key - an agent key (``a4_ak_...``) or secret key
+       (``a4_sk_...``) for servers, agents and local scripts
+    4. Publishable key - an origin-bound key (``a4_pk_...``) for code
+       shipped to a browser
     5. Custom token endpoint - for self-hosted token servers
 
-    For server-side code, use `from_api_key()` or pass `publishable_key=`
-    (which accepts any API key, not just publishable ones):
+    For servers, agents and scripts, pass ``secret_key=``, or set no auth at
+    all and export ``ARETE_API_KEY``:
 
-        auth = AuthConfig.from_api_key("a4_pk_...")  # or secret "a4_sk_..."
-        auth = AuthConfig(publishable_key="a4_pk_...")  # same thing
+        auth = AuthConfig(secret_key="a4_sk_...")  # or an agent key "a4_ak_..."
 
-    For browser/client code, use publishable_key directly:
+    Publishable keys are for anything shipped to a browser; create one with
+    ``a4 auth keys create-publishable --origin <scheme://host[:port]>``:
 
-        auth = AuthConfig(publishable_key="a4_pk_...")  # must be publishable
+        auth = AuthConfig(publishable_key="a4_pk_...")
+
+    ``from_api_key()`` picks the right field from the key's prefix.
 
     Using static token:
 
@@ -275,45 +306,120 @@ class AuthConfig:
         auth = AuthConfig(get_token=get_token)
     """
 
-    token: Optional[str] = None
-    publishable_key: Optional[str] = None
+    # Credential fields stay out of repr() so logging a config never prints
+    # key or token material (matching the Rust SDK's masked Debug output).
+    token: Optional[str] = field(default=None, repr=False)
+    publishable_key: Optional[str] = field(default=None, repr=False)
     token_endpoint: Optional[str] = None
     get_token: Optional[TokenProvider] = None
     token_transport: TokenTransport = TokenTransport.QUERY
-    token_endpoint_headers: Dict[str, str] = field(default_factory=dict)
+    token_endpoint_headers: Dict[str, str] = field(default_factory=dict, repr=False)
     token_endpoint_credentials: Optional[str] = None  # 'omit', 'same-origin', 'include'
+    secret_key: Optional[str] = field(default=None, repr=False)
+    """Agent key (``a4_ak_...``) or secret key (``a4_sk_...``). Server-side
+    only; defaults to ``ARETE_API_KEY`` when no auth option is set."""
 
     @classmethod
     def from_api_key(cls, api_key: str, **kwargs) -> "AuthConfig":
-        """Create AuthConfig from an API key.
+        """Create AuthConfig from an API key of either class.
 
-        Use this for server-side code where the key could be either a
-        secret key or a publishable key. For browser/client code, use
-        the constructor with publishable_key=... directly.
+        Publishable keys (``a4_pk_...``) become ``publishable_key``; agent,
+        secret and unrecognised keys become ``secret_key``.
 
         Args:
-            api_key: The API key (can be secret or publishable)
+            api_key: The API key
             **kwargs: Additional auth config options
 
         Example:
-            auth = AuthConfig.from_api_key("a4_pk_...")
-            auth = AuthConfig.from_api_key("a4_sk_...", token_transport=TokenTransport.BEARER)
+            auth = AuthConfig.from_api_key("a4_sk_...")
+            auth = AuthConfig.from_api_key("a4_ak_...", token_transport=TokenTransport.BEARER)
         """
-        return cls(publishable_key=api_key, **kwargs)
+        if classify_api_key(api_key) == "publishable":
+            return cls(publishable_key=api_key, **kwargs)
+        return cls(secret_key=api_key, **kwargs)
+
+    @property
+    def api_key(self) -> Optional[str]:
+        """The key sent as the token endpoint bearer credential, if any."""
+        return self.secret_key or self.publishable_key
 
     def __post_init__(self):
+        # Error and warning text never includes key material.
+        if self.secret_key is not None:
+            if not self.secret_key.strip():
+                raise AreteError("auth.secret_key is empty", "INVALID_CONFIG")
+            if classify_api_key(self.secret_key) == "publishable":
+                raise AreteError(
+                    "auth.secret_key was given a publishable key (a4_pk_...). Pass it "
+                    "as auth.publishable_key instead; auth.secret_key takes an agent "
+                    "key (a4_ak_...) or secret key (a4_sk_...).",
+                    "INVALID_CONFIG",
+                )
+            if self.publishable_key is not None:
+                raise AreteError(
+                    "Set either auth.secret_key (servers and scripts) or "
+                    "auth.publishable_key (browsers), not both.",
+                    "INVALID_CONFIG",
+                )
+        if (
+            self.publishable_key is not None
+            and classify_api_key(self.publishable_key) == "secret"
+        ):
+            _warn_once(
+                "secret-in-publishable",
+                "auth.publishable_key was given a secret-class key (a4_sk_... or "
+                "a4_ak_...). Pass it as auth.secret_key instead, or set "
+                "ARETE_API_KEY. Publishable keys are for code shipped to a "
+                f"browser; {_CREATE_PUBLISHABLE_HINT}.",
+            )
+
         # Validate that at most one auth strategy is specified
         strategies = sum(
             [
                 1 if self.token else 0,
                 1 if self.get_token else 0,
-                1 if (self.publishable_key or self.token_endpoint) else 0,
+                1 if (self.api_key or self.token_endpoint) else 0,
             ]
         )
         if strategies > 1:
             logger.warning(
-                "Multiple auth strategies specified. Priority: token > get_token > token_endpoint/publishable_key"
+                "Multiple auth strategies specified. Priority: token > get_token > token_endpoint/secret_key/publishable_key"
             )
+
+
+def _has_explicit_auth(config: Optional[AuthConfig]) -> bool:
+    return config is not None and bool(
+        config.token
+        or config.get_token
+        or config.token_endpoint
+        or config.publishable_key
+        or config.secret_key
+    )
+
+
+def resolve_auth_config(config: Optional[AuthConfig]) -> Optional[AuthConfig]:
+    """Apply the ``ARETE_API_KEY`` fallback.
+
+    When no auth option is set (no token, token provider, token endpoint,
+    publishable key or secret key), a non-empty ``ARETE_API_KEY`` supplies
+    ``secret_key``. A publishable key there is ignored with a warning.
+    """
+    if _has_explicit_auth(config):
+        return config
+    env_key = (os.environ.get(ARETE_API_KEY_ENV) or "").strip()
+    if not env_key:
+        return config
+    if classify_api_key(env_key) == "publishable":
+        _warn_once(
+            "publishable-in-env",
+            f"{ARETE_API_KEY_ENV} holds a publishable key (a4_pk_...) and was "
+            "ignored. Set it to an agent key (a4_ak_...) or secret key "
+            "(a4_sk_...), or pass the publishable key as auth.publishable_key.",
+        )
+        return config
+    if config is None:
+        return AuthConfig(secret_key=env_key)
+    return replace(config, secret_key=env_key)
 
 
 def parse_jwt_expiry(token: str) -> Optional[int]:
@@ -468,13 +574,13 @@ async def request_token_from_endpoint(
 ) -> AuthToken:
     """POST the token endpoint and parse ``{token, expires_at[, scopes]}``.
 
-    Sends ``Authorization: Bearer <publishable key>`` plus any configured
-    endpoint headers. Raises :class:`AuthError` on failure.
+    Sends ``Authorization: Bearer <secret or publishable key>`` plus any
+    configured endpoint headers. Raises :class:`AuthError` on failure.
     """
     headers: Dict[str, str] = {"Content-Type": "application/json"}
     if config is not None:
-        if config.publishable_key:
-            headers["Authorization"] = f"Bearer {config.publishable_key}"
+        if config.api_key:
+            headers["Authorization"] = f"Bearer {config.api_key}"
         headers.update(config.token_endpoint_headers or {})
 
     try:
@@ -584,7 +690,7 @@ class AuthState:
         stack_release: Optional["StackRelease"] = None,
     ):
         self.websocket_url = websocket_url
-        self.config = config
+        self.config = resolve_auth_config(config)
         # Served stack version named in the session request, when the stack
         # definition carries one. Without it the request is unchanged.
         self.stack_release = stack_release
@@ -619,7 +725,7 @@ class AuthState:
             self.config.get_token is not None
             or self.config.token_endpoint is not None
             or (
-                self.config.publishable_key is not None
+                self.config.api_key is not None
                 and is_hosted_arete_websocket_url(self.websocket_url)
             )
         )
@@ -632,8 +738,8 @@ class AuthState:
         if self.config.token_endpoint:
             return self.config.token_endpoint
 
-        # For hosted Arete URLs, use default endpoint if publishable key provided
-        if self.config.publishable_key and is_hosted_arete_websocket_url(
+        # For hosted Arete URLs, use default endpoint if an API key is provided
+        if self.config.api_key and is_hosted_arete_websocket_url(
             self.websocket_url
         ):
             return DEFAULT_HOSTED_TOKEN_ENDPOINT
@@ -655,8 +761,9 @@ class AuthState:
         if self.config is None:
             if is_hosted_arete_websocket_url(self.websocket_url):
                 raise AuthError(
-                    "Hosted Arete websocket connections require an API key, "
-                    "auth.get_token, auth.token_endpoint, or auth.token",
+                    "Hosted Arete websocket connections require auth.secret_key "
+                    "(or ARETE_API_KEY), auth.publishable_key, auth.get_token, "
+                    "auth.token_endpoint, or auth.token",
                     AuthErrorCode.AUTH_REQUIRED,
                 )
             return None

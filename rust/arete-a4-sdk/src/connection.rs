@@ -124,11 +124,19 @@ impl Drop for SubscriptionLease {
 }
 
 impl ConnectionManager {
+    /// Open a managed connection with exactly the auth in `config`.
+    ///
+    /// Key fields are checked as in the client builder (a publishable key as
+    /// `secret_key`, or both keys set, fails with
+    /// [`AreteError::InvalidConfig`]), but `ARETE_API_KEY` is not read: this
+    /// low-level constructor leaves credential lookup to its caller. Use the
+    /// client builder for the environment fallback.
     pub async fn new(
         url: String,
         config: ConnectionConfig,
         store: SharedStore,
     ) -> Result<Self, AreteError> {
+        crate::auth::validate_auth_config(config.auth.as_ref())?;
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (initial_connect_tx, initial_connect_rx) = oneshot::channel();
         let state = Arc::new(RwLock::new(ConnectionState::Disconnected));
@@ -477,8 +485,8 @@ impl RuntimeAuthState {
             .json(&TokenEndpointRequest::new(&self.websocket_url, release));
 
         if let Some(config) = self.config.as_ref() {
-            if let Some(publishable_key) = config.publishable_key.as_ref() {
-                request = request.header("Authorization", format!("Bearer {}", publishable_key));
+            if let Some(api_key) = config.api_key() {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
             }
 
             for (key, value) in &config.token_endpoint_headers {
@@ -1073,6 +1081,36 @@ mod tests {
             config,
             handshake_headers,
         )
+    }
+
+    #[tokio::test]
+    async fn new_refuses_invalid_key_fields_before_connecting() {
+        // Port 9 is never dialled: validation fails first.
+        for auth in [
+            AuthConfig::default().with_secret_key("a4_pk_publicvalue"),
+            AuthConfig::default()
+                .with_secret_key("a4_sk_supersecretvalue")
+                .with_publishable_key("a4_pk_publicvalue"),
+        ] {
+            let config = ConnectionConfig {
+                auth: Some(auth),
+                ..ConnectionConfig::default()
+            };
+            let error = match ConnectionManager::new(
+                "ws://127.0.0.1:9/socket".to_string(),
+                config,
+                SharedStore::new(),
+            )
+            .await
+            {
+                Ok(_) => panic!("invalid key fields must be refused"),
+                Err(error) => error,
+            };
+            assert!(matches!(error, AreteError::InvalidConfig(_)), "{error}");
+            let message = error.to_string();
+            assert!(!message.contains("publicvalue"), "{message}");
+            assert!(!message.contains("supersecretvalue"), "{message}");
+        }
     }
 
     #[test]

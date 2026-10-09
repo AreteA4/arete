@@ -300,7 +300,8 @@ session.close().await;
 
 ```rust
 let a4 = Arete::<MyStack>::builder()
-    .publishable_key("hspk_…")                 // hosted stacks
+    .secret_key(std::env::var("ARETE_API_KEY")?) // agent (a4_ak_…) or secret (a4_sk_…) key
+    // .publishable_key("a4_pk_…")             // origin-bound key for browser-facing apps
     // .auth_token("jwt…")                     // pre-minted token
     // .token_endpoint("https://…/ws/sessions")
     // .get_token(|| async { … })              // custom provider
@@ -308,8 +309,16 @@ let a4 = Arete::<MyStack>::builder()
     .await?;
 ```
 
-Hosted `*.stack.arete.run` endpoints mint session tokens automatically from a
-publishable key; tokens refresh before expiry.
+Servers, agents and local scripts use an agent key or secret key via
+`secret_key`; with no auth option set, `connect()` reads `ARETE_API_KEY` itself.
+Publishable keys are for anything shipped to a browser; create one with
+`a4 auth keys create-publishable --origin <scheme://host[:port]>`. `api_key`
+picks the matching field from the key's prefix. A publishable key passed to
+`secret_key` is refused with `AreteError::InvalidConfig`; keys never appear in
+errors or logs.
+
+Hosted `*.stack.arete.run` endpoints mint session tokens automatically from
+the key; tokens refresh before expiry.
 
 ## Connection lifecycle
 

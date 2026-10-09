@@ -643,10 +643,32 @@ impl<S: Stack> AreteBuilder<S> {
         self
     }
 
-    /// Alias for `publishable_key` - use this for server-side code where
-    /// the key could be either a secret key or a publishable key.
-    pub fn api_key(self, api_key: impl Into<String>) -> Self {
-        self.publishable_key(api_key)
+    /// Agent key (`a4_ak_...`) or secret key (`a4_sk_...`) for servers,
+    /// agents and local scripts. Without any auth option, `ARETE_API_KEY`
+    /// supplies it at connect time.
+    pub fn secret_key(mut self, secret_key: impl Into<String>) -> Self {
+        let auth = self
+            .config
+            .auth
+            .take()
+            .unwrap_or_default()
+            .with_secret_key(secret_key);
+        self.config.auth = Some(auth);
+        self
+    }
+
+    /// Set an API key of either class: publishable keys (`a4_pk_...`) go to
+    /// [`Self::publishable_key`], agent, secret and unrecognised keys to
+    /// [`Self::secret_key`].
+    pub fn api_key(mut self, api_key: impl Into<String>) -> Self {
+        let auth = self
+            .config
+            .auth
+            .take()
+            .unwrap_or_default()
+            .with_api_key(api_key);
+        self.config.auth = Some(auth);
+        self
     }
 
     pub fn token_endpoint(mut self, token_endpoint: impl Into<String>) -> Self {
@@ -735,6 +757,10 @@ impl<S: Stack> AreteBuilder<S> {
         if transport == Transport::WebSocket && url.is_empty() {
             return Err(AreteError::MissingUrl);
         }
+
+        // Validate keys and apply ARETE_API_KEY before any binding session
+        // endpoint is filled in.
+        config.auth = crate::auth::resolve_auth_config(config.auth)?;
 
         // The generated release names the version served at the generated
         // URL; a different URL points somewhere the generator knew nothing

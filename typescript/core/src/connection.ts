@@ -1,4 +1,5 @@
 import type { Frame } from './frame';
+import { resolveAuthConfig, tokenEndpointApiKey } from './auth-keys';
 import { CursorTracker, parseFrame, parseFrameFromBlob } from './frame';
 import type {
   AuthConfig,
@@ -437,7 +438,7 @@ export class ConnectionManager {
     this.reconnectIntervals = config.reconnectIntervals ?? DEFAULT_CONFIG.reconnectIntervals;
     this.maxReconnectAttempts =
       config.maxReconnectAttempts ?? DEFAULT_CONFIG.maxReconnectAttempts;
-    this.authConfig = config.auth;
+    this.authConfig = resolveAuthConfig(config.auth);
     this.release = normalizeStackRelease(config.release);
     this.authFetch = config.fetch ?? ((input, init) => {
       if (typeof globalThis.fetch !== 'function') {
@@ -780,12 +781,11 @@ export class ConnectionManager {
     tokenEndpoint: string,
     request: AuthTokenRequest
   ): Promise<TokenEndpointResponse> {
+    const apiKey = tokenEndpointApiKey(this.authConfig);
     const response = await this.authFetch(tokenEndpoint, {
       method: 'POST',
       headers: {
-        ...(this.authConfig?.publishableKey
-          ? { Authorization: `Bearer ${this.authConfig.publishableKey}` }
-          : {}),
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
         ...(this.authConfig?.tokenEndpointHeaders ?? {}),
         'Content-Type': 'application/json',
       },

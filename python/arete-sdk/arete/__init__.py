@@ -46,7 +46,9 @@ from arete.errors import (  # noqa: E402
     SubscriptionError,
 )
 from arete.auth import (  # noqa: E402
+    ARETE_API_KEY_ENV,
     AuthConfig,
+    classify_api_key,
     hosted_websocket_suffixes,
     set_hosted_websocket_suffixes,
 )
@@ -238,7 +240,9 @@ __all__ = [
     "TransactionTransportError",
     "WalletError",
     # auth
+    "ARETE_API_KEY_ENV",
     "AuthConfig",
+    "classify_api_key",
     "hosted_websocket_suffixes",
     "set_hosted_websocket_suffixes",
     # views & updates

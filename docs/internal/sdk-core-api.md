@@ -56,13 +56,34 @@ only the spelling changes per language.
    (GET) and `/chain/{native-balance,balances}` (POST).
 4. **Transaction relay** —
    `POST <base>/transactions/v1/{latest-blockhash,fee,simulate,send,signature-status,block-height}`.
-5. **Auth** — token endpoint exchange (`Authorization: Bearer <publishableKey>` →
+5. **Auth** — token endpoint exchange (`Authorization: Bearer <secretKey | publishableKey>` →
    `{token, expires_at}`), WS token via `?hs_token=` or Bearer upgrade header, refresh at
    `exp − 60s`; targeted tokens for program-read and gateway bindings; on 401 refresh and
    replay **once**. For `send`-scoped requests the replay is additionally gated on the
    **response** header `X-Arete-Upstream-Attempted: false` — the server's proof that it
    did not dispatch upstream, so replaying cannot double-submit. The marker is written by
    the server and only ever read by clients; SDKs must never send it on a request.
+
+   **API keys.** Two key options feed the token endpoint exchange; no `Origin`
+   header is involved for either.
+   - `secret_key` (`secretKey` in TS) takes an agent key (`a4_ak_…`) or secret key
+     (`a4_sk_…`) for servers, agents and local scripts. When no auth option is set
+     (no token, token provider, token endpoint, publishable key or secret key),
+     the `ARETE_API_KEY` environment variable supplies it; a publishable key there
+     is ignored with a warning. TS reads the environment only in Node, Bun and Deno
+     (Deno only with env permission already granted) and never in a browser.
+   - `publishable_key` (`publishableKey`) takes an origin-bound publishable key
+     (`a4_pk_…`) for anything shipped to a browser, created with
+     `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
+   - Validation, by prefix (legacy `hspk_` counts as publishable, `hsk_` as
+     secret-class; unrecognised keys pass through): a publishable key in
+     `secret_key`, an empty `secret_key`, or both keys at once is an
+     `INVALID_CONFIG` error. A secret-class key in `publishable_key` warns once
+     and still works outside browsers. TS additionally refuses `secretKey`, and a
+     secret-class `publishableKey`, in a browser (a page with both `window` and
+     `document`; workers, edge runtimes and SSR are server-side).
+   - Errors and warnings never include key material. `from_api_key` (Python) and
+     `api_key` / `with_api_key` (Rust) route a key to the matching field by prefix.
 
 **Numeric rule**: `u64`/`u128` are decimal strings on the wire, native
 arbitrary/64-bit integers in every SDK (`bigint` / `u64` / `int`). `seq` compares slot
@@ -599,7 +620,8 @@ A language SDK claims alignment when it implements, with these exact semantics:
 5. Program SDK layers 1–8 (§6) generated from the stack artifacts by the interpreter's
    language backend.
 6. HTTP surfaces: auth token machinery (strategy order token > provider >
-   token_endpoint > hosted default; targeted tokens w/ LRU; refresh-replay-once;
+   token_endpoint > hosted default; bearer key secret_key > publishable_key, with
+   the `ARETE_API_KEY` fallback and prefix validation of §2; targeted tokens w/ LRU; refresh-replay-once;
    predispatch marker), chain (9 routes), transaction relay (6 routes), program reads
    (v1 contract).
 7. Execution: prepared operations + composition, wallet adapter interface, signer

@@ -49,7 +49,8 @@ RETIRED_BODY = {
 def test_public_api_is_intact():
     config = AuthConfig(publishable_key="a4_pk_x")
     assert config.token_transport is TokenTransport.QUERY
-    assert AuthConfig.from_api_key("a4_sk_x").publishable_key == "a4_sk_x"
+    assert AuthConfig.from_api_key("a4_sk_x").secret_key == "a4_sk_x"
+    assert AuthConfig.from_api_key("a4_pk_x").publishable_key == "a4_pk_x"
     token = AuthToken(token="t", expires_at=123)
     assert token.scopes is None  # new optional field defaults preserved
     assert AuthErrorCode.from_wire("token-expired") is AuthErrorCode.TOKEN_EXPIRED

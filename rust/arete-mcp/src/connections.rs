@@ -65,8 +65,9 @@ impl ConnectionRegistry {
         Self::default()
     }
 
-    /// Open a new connection. `api_key` becomes a publishable-key auth token
-    /// when present; absent means the stack must be public.
+    /// Open a new connection. `api_key` (publishable, secret or agent key) is
+    /// sent to the token endpoint when present; absent means the stack must be
+    /// public.
     pub async fn connect(
         &self,
         url: String,
@@ -74,7 +75,7 @@ impl ConnectionRegistry {
     ) -> Result<ConnectionId, AreteError> {
         let mut config = ConnectionConfig::default();
         if let Some(key) = api_key {
-            config.auth = Some(AuthConfig::default().with_publishable_key(key));
+            config.auth = Some(AuthConfig::default().with_api_key(key));
         }
 
         // TODO(HYP-189): SDK's StoreConfig defaults to 10k entries/view.

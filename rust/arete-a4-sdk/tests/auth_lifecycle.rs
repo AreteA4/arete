@@ -238,6 +238,60 @@ async fn uses_bearer_transport_for_websocket_handshake() {
 }
 
 #[tokio::test]
+async fn forwards_secret_key_to_the_token_endpoint() {
+    let (handshake_tx, handshake_rx) = oneshot::channel();
+    let (refresh_tx, _refresh_rx) = mpsc::channel(1);
+
+    let ws_server = spawn_websocket_server(handshake_tx, refresh_tx).await;
+    let token_endpoint = spawn_token_endpoint(vec![3600]).await;
+
+    let client = Arete::<TestStack>::builder()
+        .url(&ws_server.url)
+        .secret_key("a4_ak_test_123")
+        .token_endpoint(token_endpoint.url.clone())
+        .connect()
+        .await
+        .expect("client should connect with a secret key");
+
+    timeout(Duration::from_secs(3), handshake_rx)
+        .await
+        .expect("websocket handshake should complete")
+        .expect("handshake channel should resolve");
+
+    let endpoint_headers = token_endpoint
+        .state
+        .authorization_headers
+        .lock()
+        .await
+        .clone();
+    assert_eq!(
+        endpoint_headers,
+        vec![Some("Bearer a4_ak_test_123".to_string())],
+        "secret key should be forwarded to the token endpoint"
+    );
+
+    client.disconnect().await;
+    ws_server.shutdown().await;
+    token_endpoint.shutdown().await;
+}
+
+#[tokio::test]
+async fn refuses_a_publishable_key_passed_as_secret_key() {
+    let error = Arete::<TestStack>::builder()
+        .url("wss://demo.stack.arete.run")
+        .secret_key("a4_pk_should_not_leak")
+        .connect()
+        .await
+        .err()
+        .expect("a publishable key in secret_key should be refused");
+
+    assert!(matches!(error, AreteError::InvalidConfig(_)));
+    let message = error.to_string();
+    assert!(message.contains("auth.publishable_key"), "{message}");
+    assert!(!message.contains("should_not_leak"), "{message}");
+}
+
+#[tokio::test]
 async fn exposes_socket_issues_via_public_api() {
     let ws_server = spawn_socket_issue_server(json!({
         "type": "error",

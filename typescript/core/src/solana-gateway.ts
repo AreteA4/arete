@@ -1,5 +1,6 @@
 import { createChainClient, type ChainClient } from './chain';
 import { ConnectionManager } from './connection';
+import { resolveAuthConfig } from './auth-keys';
 import {
   createTransactionTransport,
   type TransactionAuthScope,
@@ -93,8 +94,11 @@ function hasRuntimeAuthStrategy(auth: AuthConfig | undefined): boolean {
 
 function bindingAuthConfig(
   binding: HostedSolanaGatewayCapabilityBinding,
-  runtimeAuth: AuthConfig | undefined
+  configuredAuth: AuthConfig | undefined
 ): AuthConfig | undefined {
+  // Resolve ARETE_API_KEY before the binding endpoint is filled in, so an
+  // otherwise unconfigured client still authenticates.
+  const runtimeAuth = resolveAuthConfig(configuredAuth);
   if (hasRuntimeAuthStrategy(runtimeAuth)) return runtimeAuth;
   if (!binding.auth.required) return runtimeAuth;
   return { ...runtimeAuth, tokenEndpoint: binding.auth.sessionEndpoint };
