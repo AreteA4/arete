@@ -22,7 +22,7 @@ import { createHarness, NATIVE_LOG_DIRS } from './harnesses.js';
 import type { KeyPool } from './keys.js';
 import { summarizeTiming, summarizeTokens, summarizeTools } from './metrics.js';
 import { gatewayModelId, loadPricing, modelCost, sandboxCostUpperBound } from './pricing.js';
-import { errorText, Recorder } from './recorder.js';
+import { errorText, Recorder, turnErrorStatus } from './recorder.js';
 import { formatSummary, RunDir } from './report.js';
 import { createRunSandbox, createShell, destroySandbox, resolveHomeDir } from './sandbox.js';
 import { renderTranscript } from './transcript.js';
@@ -201,9 +201,9 @@ export async function runOne(config: RunConfig, task: TaskDefinition, opts: RunO
         const streamError = recorder.transcript.errors.find((e) => e.turn === index)?.message;
         recorder.endTurn({ unfinished: session.hasUnfinishedTurn(), providerMetadata });
         if (streamError) {
-          // An `error` part ends the turn without throwing. Before the first
-          // model step it is a configuration or provider failure, not the agent's.
-          status = recorder.transcript.steps.some((st) => st.turn === index) ? 'agent-error' : 'infra-error';
+          // An `error` part ends the turn without throwing. If the model did no
+          // work it is a configuration or provider failure, not the agent's.
+          status = turnErrorStatus(recorder.transcript, index);
           error = streamError;
           log(`turn ${index + 1} errored: ${streamError}`);
           break;

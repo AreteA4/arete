@@ -281,6 +281,25 @@ export class Recorder {
   }
 }
 
+/**
+ * Who to blame for a turn that ended on a stream `error` part. If the model
+ * never produced anything (no tokens, no tool calls, no text or reasoning)
+ * the failure came from configuration or the provider, not the agent. Some
+ * harnesses emit `start-step` before the request fails, so an empty step on
+ * its own does not count as model work.
+ */
+export function turnErrorStatus(transcript: Transcript, turn: number): 'agent-error' | 'infra-error' {
+  const steps = transcript.steps.filter((s) => s.turn === turn);
+  const usages = [
+    ...steps.map((s) => s.usage),
+    transcript.turns.find((t) => t.turn === turn)?.totalUsage,
+  ];
+  const tokens = usages.reduce((sum, u) => sum + (u ? u.inputTokens + u.outputTokens : 0), 0);
+  const toolCalls = transcript.toolCalls.filter((c) => c.turn === turn).length;
+  const output = steps.some((s) => s.firstOutputMs !== undefined || s.text || s.reasoning);
+  return tokens === 0 && toolCalls === 0 && !output ? 'infra-error' : 'agent-error';
+}
+
 export function errorText(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
