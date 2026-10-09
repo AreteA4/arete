@@ -9,13 +9,15 @@ a4 install stack <stack-ref> --python
 Follow the generated package metadata for installation. If the Arete Python runtime is not published for the selected release, use the OSS source or workspace dependency documented by the project rather than inventing a PyPI version.
 
 ```python
+import os
+
 import arete
 from my_generated_stack import MY_STACK
 
-async def read_positions(publishable_key: str, owner: str) -> None:
+async def read_positions(owner: str) -> None:
     async with await arete.Arete.connect(
         MY_STACK,
-        auth=arete.AuthConfig(publishable_key=publishable_key),
+        auth=arete.AuthConfig(secret_key=os.environ["ARETE_API_KEY"]),
     ) as client:
         current = await client.views.position.state.get(owner=owner)
         print(current)
@@ -24,6 +26,8 @@ async def read_positions(publishable_key: str, owner: str) -> None:
             print(position)
             break
 ```
+
+`secret_key` takes an agent key (`a4_ak_...`) or secret key (`a4_sk_...`). With no auth option, the SDK reads `ARETE_API_KEY` itself. `publishable_key` is for origin-bound keys used by browser apps; a publishable key passed as `secret_key` is refused.
 
 Inspect the generated module for exact snake_case names and key keyword arguments.
 

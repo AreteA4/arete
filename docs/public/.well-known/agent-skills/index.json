@@ -13,14 +13,14 @@
       "type": "archive",
       "description": "Query or subscribe to deployed Arete stack views from TypeScript, React, Rust, Python, the a4 CLI, or the Arete MCP server. Use for dashboards, bots, backends, current-state reads, live entity updates, view filtering, or stream debugging. Do not use for program accounts or transaction construction; use arete-programs for those.",
       "url": "/.well-known/agent-skills/arete-streams.tar.gz",
-      "digest": "sha256:9ea9b14479a09f96b4b08c3da296582667fe8708d73baab8c942f5275f7db063"
+      "digest": "sha256:da0e5074b532af0090ef30825ec9f3bdaee942f5699199cb4bc63c1fda6366c2"
     },
     {
       "name": "arete-programs",
       "type": "archive",
       "description": "Use generated Arete program SDKs, standalone or included in a stack, to read accounts, derive PDAs, build instructions, prepare semantic operations, inspect transactions, or execute them through a wallet. Use for Solana protocol integrations and transaction workflows. Do not use for stack views or subscriptions; use arete-streams. Do not publish a program or deploy a stack; use arete-deploy.",
       "url": "/.well-known/agent-skills/arete-programs.tar.gz",
-      "digest": "sha256:d0d5d3899b2adf786294bd7774d3cbfe9a70448a545dbe9510736be818236366"
+      "digest": "sha256:c034dbd9e00f4471f2e594c46cb4648048ee3c1eb8ecc0b4dc188299c97b738f"
     },
     {
       "name": "arete-stack-authoring",
