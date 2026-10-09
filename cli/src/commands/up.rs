@@ -216,9 +216,8 @@ fn rejects_program_sdks(error: &anyhow::Error) -> bool {
 
 /// A requested program SDK the registry refused, with the fix.
 fn program_sdk_guidance(error: anyhow::Error, pins: Option<&ReleasePins<'_>>) -> anyhow::Error {
-    let invalid = api_error_details(&error).is_some_and(|http| {
-        http.status == 409 && http.code == Some(PROGRAM_SDK_REFERENCE_INVALID)
-    });
+    let invalid = api_error_details(&error)
+        .is_some_and(|http| http.status == 409 && http.code == Some(PROGRAM_SDK_REFERENCE_INVALID));
     if !invalid {
         return error;
     }

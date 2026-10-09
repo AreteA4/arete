@@ -31,8 +31,9 @@ pub fn ensure_arete_home() -> Result<PathBuf> {
 ///
 /// A missing directory is created with mode 700. An existing directory whose
 /// mode grants group or other access is tightened to 700 when
-/// `tighten_existing` is set and the current user owns it; otherwise this
-/// fails with the `chmod` command that fixes it.
+/// `tighten_existing` is set, the current user owns it, and `path` itself is
+/// not a symlink (so a shared directory the link points at is never changed
+/// implicitly); otherwise this fails with the `chmod` command that fixes it.
 pub fn ensure_private_dir(path: &Path, tighten_existing: bool) -> Result<()> {
     #[cfg(unix)]
     {
@@ -71,7 +72,12 @@ mod unix {
         }
 
         let owned = metadata.uid() == current_uid();
-        if tighten_existing && owned && set_owner_only(path).is_ok() {
+        // Never chmod through a symlink: the target may be a shared directory
+        // this CLI did not create. Leave that decision to the user.
+        let is_symlink = fs::symlink_metadata(path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(true);
+        if tighten_existing && owned && !is_symlink && set_owner_only(path).is_ok() {
             eprintln!(
                 "note: restricted {} to mode 700 (was {mode:o}) because it holds credentials",
                 path.display()
@@ -172,6 +178,35 @@ mod unix {
                 "{error}"
             );
             assert_eq!(mode(&dir), 0o755);
+        }
+
+        #[test]
+        fn does_not_tighten_through_symlink() {
+            let root = tempfile::tempdir().unwrap();
+            let shared = root.path().join("shared");
+            fs::create_dir(&shared).unwrap();
+            fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).unwrap();
+            let link = root.path().join(".arete");
+            std::os::unix::fs::symlink(&shared, &link).unwrap();
+
+            let error = ensure_private_dir(&link, true).unwrap_err().to_string();
+
+            assert!(error.contains("too broad (755)"), "{error}");
+            assert_eq!(mode(&shared), 0o755);
+        }
+
+        #[test]
+        fn accepts_symlink_to_private_directory() {
+            let root = tempfile::tempdir().unwrap();
+            let private = root.path().join("private");
+            fs::create_dir(&private).unwrap();
+            fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+            let link = root.path().join(".arete");
+            std::os::unix::fs::symlink(&private, &link).unwrap();
+
+            ensure_private_dir(&link, true).unwrap();
+
+            assert_eq!(mode(&private), 0o700);
         }
 
         #[test]
