@@ -9,7 +9,7 @@
   "tools": [
     {
       "name": "search_docs",
-      "description": "Search the Arete documentation. Returns matching page snippets ranked by relevance."
+      "description": "Search the Arete documentation. Returns matching page snippets ranked by relevance. `query` is required; `limit` is optional (1-20, default 5). Example: {\"query\": \"subscribe to a view from React\"}"
     },
     {
       "name": "fetch_page",

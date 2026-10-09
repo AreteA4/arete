@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use arete_mcp::catalog_view;
 use arete_mcp::descriptor::{
     self as shape, AccountSummary, EntityField, ErrorSummary, EventSummary, InstructionSummary,
     ProgramSurface, TypeSummary,
@@ -2251,7 +2252,31 @@ fn catalog_slug(value: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-pub fn catalog_search(args: CatalogSearchArgs<'_>, json: bool) -> Result<()> {
+/// Output shaping requested with `--fields` or `--brief`; `None` keeps the raw
+/// server JSON and the text rendering.
+pub fn catalog_output_shape(fields: &[String], brief: bool) -> Option<catalog_view::Shape> {
+    if brief {
+        return Some(catalog_view::Shape::Fields(catalog_view::brief_fields()));
+    }
+    let fields = catalog_view::parse_fields(fields);
+    (!fields.is_empty()).then_some(catalog_view::Shape::Fields(fields))
+}
+
+/// Print a catalog or knowledge search response as JSON, shaped when asked.
+pub fn print_search_json(value: &Value, shape: Option<&catalog_view::Shape>) -> Result<()> {
+    let value = match shape {
+        Some(shape) => catalog_view::shape_search(value, shape),
+        None => value.clone(),
+    };
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+pub fn catalog_search(
+    args: CatalogSearchArgs<'_>,
+    json: bool,
+    shape: Option<&catalog_view::Shape>,
+) -> Result<()> {
     let non_empty = |value: Option<&str>| {
         value
             .map(str::trim)
@@ -2287,22 +2312,30 @@ pub fn catalog_search(args: CatalogSearchArgs<'_>, json: bool) -> Result<()> {
         args.limit,
         cursor.as_deref(),
     )?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&value)?);
-        return Ok(());
+    if json || shape.is_some() {
+        return print_search_json(&value, shape);
     }
     print!("{}", render_catalog_search(&value));
     Ok(())
 }
 
-pub fn catalog_entry(kind: &str, slug: &str, json: bool) -> Result<()> {
+pub fn catalog_entry(
+    kind: &str,
+    slug: &str,
+    json: bool,
+    shape: Option<&catalog_view::Shape>,
+) -> Result<()> {
     let kind = catalog_choice(Some(kind), "kind", &CATALOG_KINDS)?
         .ok_or_else(|| anyhow::anyhow!("kind must be program or stack"))?;
     let slug = catalog_slug(slug)?;
     let value = ApiClient::new()?.catalog_entry(kind, &slug).with_context(|| {
         format!("{kind} '{slug}' is not in the active catalog; search with `a4 explore catalog --query <intent>`")
     })?;
-    if json {
+    if json || shape.is_some() {
+        let value = match shape {
+            Some(shape) => catalog_view::shape_entry(&value, shape),
+            None => value,
+        };
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
     }
@@ -2483,6 +2516,32 @@ mod tests {
     use super::*;
     use crate::api_client::{DeploymentLiveStatus, DeploymentPhase, DeploymentStatus};
     use serde_json::json;
+
+    #[test]
+    fn catalog_output_shape_resolves_brief_and_fields() {
+        assert_eq!(catalog_output_shape(&[], false), None);
+        assert_eq!(
+            catalog_output_shape(&[" slug".into(), "delivery.status ".into()], false),
+            Some(catalog_view::Shape::Fields(vec![
+                "slug".into(),
+                "delivery.status".into()
+            ]))
+        );
+        let Some(catalog_view::Shape::Fields(brief)) = catalog_output_shape(&[], true) else {
+            panic!("brief resolves to a field list");
+        };
+        assert!(brief.contains(&"delivery.status".to_string()));
+
+        let search = json!({
+            "nextCursor": "c1",
+            "results": [{"kind": "program", "slug": "ore", "name": "ore", "bundleHash": "sha256:bb", "releaseNotes": "...", "delivery": {"status": "active", "kind": "program-read"}}]
+        });
+        let shaped = catalog_view::shape_search(&search, &catalog_output_shape(&[], true).unwrap());
+        assert_eq!(
+            shaped,
+            json!({"nextCursor": "c1", "results": [{"kind": "program", "slug": "ore", "name": "ore", "delivery": {"status": "active"}}]})
+        );
+    }
 
     fn registry_stack(name: &str, visibility: &str, service_class: &str) -> RegistryStackItem {
         RegistryStackItem {

@@ -200,6 +200,21 @@ enum Commands {
         #[arg(long)]
         vocabulary: bool,
 
+        /// Catalog search or entry JSON: keep only these fields of each entry (top-level keys
+        /// or dotted paths like `delivery.status`); implies --json
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            conflicts_with = "brief"
+        )]
+        fields: Vec<String>,
+
+        /// Catalog search or entry JSON: keep only slug, kind, name, version, protocol,
+        /// summary, modes, sdkTargets and delivery status; implies --json
+        #[arg(long)]
+        brief: bool,
+
         /// Root stack list: filter registry entries to `starter` or `standard`
         #[arg(long, value_parser = ["starter", "standard"])]
         service_class: Option<String>,
@@ -538,6 +553,21 @@ enum KnowCommands {
         /// Maximum number of results
         #[arg(long)]
         limit: Option<usize>,
+
+        /// Keep only these fields of each result (top-level keys or dotted paths like
+        /// `coverage.read`); implies --json
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            conflicts_with = "brief"
+        )]
+        fields: Vec<String>,
+
+        /// Keep only slug, type, name, protocol, summary and coverage of each result;
+        /// implies --json
+        #[arg(long)]
+        brief: bool,
     },
 
     /// Show curated knowledge for one protocol
@@ -1083,6 +1113,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             limit,
             cursor,
             vocabulary,
+            fields,
+            brief,
             service_class,
             operation,
             sections,
@@ -1149,6 +1181,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     "--vocabulary cannot be combined with catalog search options"
                 ));
             }
+            let shape = commands::explore::catalog_output_shape(&fields, brief);
+            if shape.is_some() && (target.as_deref() != Some("catalog") || vocabulary) {
+                return Err(anyhow::anyhow!(
+                    "--fields and --brief apply only to `a4 explore catalog` search and `a4 explore catalog <kind> <slug>`"
+                ));
+            }
             let is_stack_list = target.is_none() && reference.is_none() && entity.is_none();
             if service_class.is_some() && !is_stack_list {
                 return Err(anyhow::anyhow!(
@@ -1171,9 +1209,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     cursor: cursor.as_deref(),
                 },
                 cli.json,
+                shape.as_ref(),
             ),
             (Some("catalog"), Some(kind), Some(slug)) => {
-                commands::explore::catalog_entry(kind, slug, cli.json)
+                commands::explore::catalog_entry(kind, slug, cli.json, shape.as_ref())
             }
             (Some("catalog"), Some(_), None) => Err(anyhow::anyhow!(
                 "Usage: a4 explore catalog <program|stack> <slug>"
@@ -1221,12 +1260,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 concept,
                 category,
                 limit,
+                fields,
+                brief,
             } => commands::know::search(
                 query.as_deref(),
                 concept.as_deref(),
                 category.as_deref(),
                 limit,
                 cli.json,
+                commands::explore::catalog_output_shape(&fields, brief).as_ref(),
             ),
             KnowCommands::Protocol { slug } => commands::know::protocol(&slug, cli.json),
             KnowCommands::Program { slug, section } => {
@@ -1795,6 +1837,7 @@ mod tests {
                 concept,
                 category,
                 limit,
+                ..
             })) => {
                 assert_eq!(query.as_deref(), Some("monitor swaps"));
                 assert!(concept.is_none());
@@ -2083,6 +2126,21 @@ mod tests {
             (
                 &["a4", "explore", "catalog", "--operation", "x"][..],
                 "--operation applies only",
+            ),
+            (
+                &["a4", "explore", "stack", "ore", "--brief"][..],
+                "--fields and --brief apply only",
+            ),
+            (
+                &[
+                    "a4",
+                    "explore",
+                    "catalog",
+                    "--vocabulary",
+                    "--fields",
+                    "slug",
+                ][..],
+                "--fields and --brief apply only",
             ),
             (
                 &["a4", "explore", "stack", "ore", "Position", "--summary"][..],

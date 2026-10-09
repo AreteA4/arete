@@ -302,6 +302,8 @@ The key itself is never included in responses or log output.
   view (e.g. `PumpfunToken/list` or `OreRound/latest`). Optional `key` narrows
   to a single entity. Returns a `subscription_id`. The subscription is
   multiplexed over the existing WebSocket — no extra connections are opened.
+  The response also carries `next: { tool: "get_recent", arguments: {
+  subscription_id, n } }`, the call that reads the new subscription.
 - `unsubscribe({ subscription_id })` — cancel.
 - `list_subscriptions({ connection_id? })` — list active subscriptions,
   optionally filtered by connection.
@@ -339,8 +341,10 @@ view. Equivalent subscriptions share one reference-counted wire subscription.
 - `get_entity({ subscription_id, key })` — fetch one entity by key.
 - `list_entities({ subscription_id })` — keys only (no values), to keep the
   response small even on 10k-entity views.
-- `get_recent({ subscription_id, n })` — the first N entities in the
-  subscription's server-defined order.
+- `get_recent({ subscription_id, n? })` — the first `n` entities in the
+  subscription's server-defined order. `n` defaults to 10 (max 1000) and
+  `limit` is accepted as an alias. A malformed call reports every missing or
+  invalid field at once, e.g. `{ "subscription_id": "sub_1", "n": 10 }`.
 - `query_entities({ subscription_id, where?, filters?, select?, limit? })` —
   filter and project. Supports two filter inputs at once, ANDed together:
 
