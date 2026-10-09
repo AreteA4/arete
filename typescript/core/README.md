@@ -25,6 +25,32 @@ for await (const item of session.stacks.myStack.views.MyEntity.list.use()) {
 }
 ```
 
+## Authentication
+
+Pick the key by where the code runs:
+
+```ts
+// Servers, agents and local scripts (Node, Bun, Deno, workers, SSR):
+// an agent key (a4_ak_...) or secret key (a4_sk_...).
+const server = await createSession(
+  { stacks: { myStack: MY_STACK } },
+  { auth: { secretKey: process.env.ARETE_API_KEY } },
+);
+
+// Anything shipped to a browser: an origin-bound publishable key (a4_pk_...).
+// Create one with `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
+const browser = await createSession(
+  { stacks: { myStack: MY_STACK } },
+  { auth: { publishableKey: import.meta.env.VITE_ARETE_PUBLISHABLE_KEY } },
+);
+```
+
+Outside a browser, when no `auth` option is set, the SDK reads `ARETE_API_KEY`
+itself, so `createSession({ stacks })` is enough on a server with that variable
+set. `secretKey` throws in a browser, as does a secret or agent key passed as
+`publishableKey`; a publishable key passed as `secretKey` is refused everywhere.
+Keys are never included in error messages or logs.
+
 ## SDK Shapes
 
 ### Mental Model

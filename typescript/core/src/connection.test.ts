@@ -181,9 +181,11 @@ describe('ConnectionManager auth', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it('mints an anonymous hosted session token when no publishable key is configured', async () => {
+    vi.stubEnv('ARETE_API_KEY', '');
     const nowSeconds = Math.floor(Date.now() / 1000);
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

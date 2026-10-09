@@ -79,8 +79,9 @@ pub use amounts::{
     AmountError, AmountInput, AmountResolutionInput, ResolvedAmount,
 };
 pub use auth::{
-    hosted_websocket_suffixes, is_hosted_websocket_host, AuthConfig, AuthToken, StackRelease,
-    TokenTransport, HOSTED_WEBSOCKET_SUFFIX, HOSTED_WEBSOCKET_SUFFIXES_ENV,
+    classify_api_key, hosted_websocket_suffixes, is_hosted_websocket_host, ApiKeyClass, AuthConfig,
+    AuthToken, StackRelease, TokenTransport, ARETE_API_KEY_ENV, HOSTED_WEBSOCKET_SUFFIX,
+    HOSTED_WEBSOCKET_SUFFIXES_ENV,
 };
 pub use chain::{
     derive_http_endpoint, ChainClient, ChainClock, ChainError, ContextSlotOptions, HttpChainClient,

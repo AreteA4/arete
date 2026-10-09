@@ -405,8 +405,19 @@ export interface AuthConfig {
   getToken?: (request?: AuthTokenRequest) => Promise<string | AuthTokenResult>;
   /** Arete Cloud token endpoint URL */
   tokenEndpoint?: string;
-  /** Publishable key for Arete Cloud */
+  /**
+   * Publishable key (`a4_pk_...`) for code shipped to a browser. It is bound
+   * to the origins it was created for; create one with
+   * `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
+   */
   publishableKey?: string;
+  /**
+   * Agent key (`a4_ak_...`) or secret key (`a4_sk_...`) for servers, agents
+   * and local scripts. Server-only: setting it in a browser throws. When no
+   * auth option is set, outside browsers it defaults to the `ARETE_API_KEY`
+   * environment variable.
+   */
+  secretKey?: string;
   /** Pre-minted static token (for server-side use) */
   token?: string;
   /** How the websocket token is sent to the server */

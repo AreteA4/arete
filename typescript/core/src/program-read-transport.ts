@@ -1,5 +1,6 @@
 import { managedAddress, managedPage, managedReadOptions, type ManagedReadOptions, type NativePositionQuery } from './managed-solana';
 import { ConnectionManager } from './connection';
+import { resolveAuthConfig } from './auth-keys';
 import {
   AreteError,
   parseErrorCode,
@@ -100,8 +101,11 @@ function parseProgramReadResponse<T>(response: Response, path: string, body: str
 
 function hostedAuthConfig(
   binding: ProgramReadBinding,
-  runtimeAuth: AuthConfig | undefined
+  configuredAuth: AuthConfig | undefined
 ): AuthConfig | undefined {
+  // Resolve ARETE_API_KEY before the binding endpoint is filled in, so an
+  // otherwise unconfigured client still authenticates.
+  const runtimeAuth = resolveAuthConfig(configuredAuth);
   const metadata = binding.auth;
   const runtimeStrategyConfigured = runtimeAuth?.token !== undefined
     || runtimeAuth?.getToken !== undefined

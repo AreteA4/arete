@@ -32,7 +32,7 @@ from typing import (
     Tuple,
 )
 
-from arete.auth import AuthConfig
+from arete.auth import AuthConfig, resolve_auth_config
 from arete.chain import ChainClient, HttpChainClient
 from arete.connection import ConnectionManager
 from arete.errors import AreteError
@@ -281,6 +281,8 @@ class Arete:
     ) -> None:
         self._stack = stack
         self._wallet = wallet
+        # ARETE_API_KEY applies before binding session endpoints are filled in.
+        auth = resolve_auth_config(auth)
         self._auth = auth
         self._http_base_url = http_base_url
         self._connect_http_url = connect_http_url

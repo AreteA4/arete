@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, Mapping, Optional
 from urllib.parse import urlsplit
 
-from arete.auth import AuthConfig
+from arete.auth import AuthConfig, resolve_auth_config
 from arete.chain import ChainClient, HttpChainClient
 from arete.errors import AreteError
 from arete.http import SOLANA_GATEWAY_BINDING_KIND, AuthTokenTarget, HttpAuthClient
@@ -189,6 +189,8 @@ def create_hosted_solana_gateway_transports(
     """Construct explicit hosted chain and transaction transports from
     generated gateway descriptors. Tokens are isolated by exact binding
     target and scope."""
+    # ARETE_API_KEY applies before binding session endpoints are filled in.
+    auth = resolve_auth_config(auth)
     validate_gateway_binding("chain", bindings.chain, CHAIN_REQUIRED_SCOPES)
     validate_gateway_binding(
         "transactions", bindings.transactions, TRANSACTIONS_REQUIRED_SCOPES

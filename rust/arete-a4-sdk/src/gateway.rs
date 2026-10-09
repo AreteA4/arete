@@ -206,6 +206,7 @@ pub fn create_hosted_solana_gateway_transports(
     auth: Option<AuthConfig>,
     http: Option<reqwest::Client>,
 ) -> Result<HostedSolanaGatewayTransports, AreteError> {
+    let auth = crate::auth::resolve_auth_config(auth)?;
     validate_gateway_binding("chain", &bindings.chain, CHAIN_REQUIRED_SCOPES)?;
     validate_gateway_binding(
         "transactions",

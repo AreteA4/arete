@@ -64,6 +64,13 @@ Arete can:
         a4 --profile agent auth status
         a4 --profile agent auth whoami --json
 
+    SDK code that runs on a server, in an agent, or as a local script
+    authenticates with an agent key or secret key through the SDK's
+    `secretKey` (TypeScript) or `secret_key` (Python, Rust) option, or with no
+    auth option at all by setting the `ARETE_API_KEY` environment variable.
+    Read it from the environment; never write the key into source. The
+    TypeScript SDK refuses `secretKey` in a browser.
+
     Browser code needs a publishable key instead: it is bound to one origin and
     safe to ship to the client. Create one per origin with
     `a4 auth keys create-publishable --origin <scheme://host[:port]>`.

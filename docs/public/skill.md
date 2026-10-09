@@ -138,8 +138,15 @@ The CLI and the Arete MCP server load stored credentials for you. Do not search
 for, read, print, or copy credential files or keys into code, prompts, tool
 arguments, or transcripts; use `auth status` and `auth whoami` to inspect
 authentication.
-Browser code needs an origin-bound publishable key instead, created per origin
-with `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
+
+SDK code for servers, agents, and local scripts authenticates with an agent or
+secret key: pass it as `secretKey` (TypeScript) or `secret_key` (Python, Rust),
+or set no auth option and provide `ARETE_API_KEY` in the environment. Read the
+key from the environment, never from source. Anything shipped to a browser
+needs an origin-bound publishable key instead (`publishableKey` /
+`publishable_key`), created per origin with
+`a4 auth keys create-publishable --origin <scheme://host[:port]>`. The
+TypeScript SDK refuses `secretKey` in a browser.
 
 ## Use the installed task skill
 

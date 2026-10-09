@@ -433,16 +433,18 @@ impl HttpAuthClient {
 
         let mut headers = HeaderMap::new();
         if let Some(auth) = &self.auth {
-            if let Some(publishable_key) = &auth.publishable_key {
+            if let Some(api_key) = auth.api_key() {
+                // The header error never echoes the key.
+                let field = if auth.secret_key.is_some() {
+                    "secret"
+                } else {
+                    "publishable"
+                };
                 headers.insert(
                     AUTHORIZATION,
-                    HeaderValue::from_str(&format!("Bearer {publishable_key}")).map_err(
-                        |error| {
-                            AreteError::ConnectionFailed(format!(
-                                "Invalid publishable key: {error}"
-                            ))
-                        },
-                    )?,
+                    HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|error| {
+                        AreteError::ConnectionFailed(format!("Invalid {field} key: {error}"))
+                    })?,
                 );
             }
             for (name, value) in &auth.token_endpoint_headers {

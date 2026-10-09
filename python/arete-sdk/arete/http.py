@@ -37,6 +37,7 @@ from arete.auth import (
     build_token_endpoint_request_body,
     parse_jwt_expiry,
     request_token_from_endpoint,
+    resolve_auth_config,
     resolve_token_endpoint,
     should_refresh_token,
     stack_release_fields,
@@ -233,7 +234,7 @@ class HttpAuthClient:
         http_client: Optional[Any] = None,  # httpx.AsyncClient, injectable for tests
         stack_release: Optional[Any] = None,  # arete.stack.StackRelease
     ) -> None:
-        self._auth = auth
+        self._auth = resolve_auth_config(auth)
         self._websocket_url = websocket_url
         # Named only in untargeted session requests; targeted requests never
         # carry it.

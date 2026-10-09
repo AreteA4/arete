@@ -63,7 +63,7 @@ import { MY_STACK } from "./generated/my-stack";
 
 const session = await createSession(
   { stacks: { app: MY_STACK } },
-  { auth: { publishableKey: process.env.ARETE_PUBLISHABLE_KEY } },
+  { auth: { secretKey: process.env.ARETE_API_KEY } },
 );
 
 const current = await session.stacks.app.views.Position.list.get({ take: 20 });
@@ -81,6 +81,13 @@ for await (const update of session.stacks.app.views.Position.list.watch({
 
 `MY_STACK`, `Position`, and the query options shown here are placeholders. The
 generated declarations in your installed package have the real names.
+
+This session runs on a server or in a local script, so it authenticates with an
+agent key (`a4_ak_...`) or secret key (`a4_sk_...`) as `secretKey`. With no
+`auth` option at all, the SDK reads `ARETE_API_KEY` itself outside browsers.
+`secretKey` throws in a browser: anything shipped to a browser uses an
+origin-bound `publishableKey` instead, as in the React example below. Create
+one with `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
 
 The stack already contains its default endpoints. Override them only when you
 deliberately want a local or alternate connection.

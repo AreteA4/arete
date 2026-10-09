@@ -341,7 +341,8 @@ impl SessionBuilder {
             }
         }
 
-        let shared = self.shared;
+        let mut shared = self.shared;
+        shared.auth = crate::auth::resolve_auth_config(shared.auth)?;
         let mut members: Vec<(String, Arc<dyn SessionMember>)> =
             Vec::with_capacity(self.members.len());
         let mut canonical_websocket_url = None;

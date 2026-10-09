@@ -40,19 +40,27 @@ management.
 ## Connect to a generated stack
 
 ```python
+import os
+
 import arete
 from my_generated_stack import MY_STACK
 
 async def main():
     async with await arete.Arete.connect(
         MY_STACK,
-        auth=arete.AuthConfig(publishable_key="a4_pk_..."),
+        auth=arete.AuthConfig(secret_key=os.environ["ARETE_API_KEY"]),
     ) as client:
         rows = await client.views.position.list.get(take=10)
         async for update in client.views.position.list.watch(take=10):
             print(update.op, update.key)
             break
 ```
+
+`secret_key` takes an agent key (`a4_ak_...`) or secret key (`a4_sk_...`) for
+servers, agents and local scripts; with no auth option set, the SDK reads
+`ARETE_API_KEY` itself. Anything shipped to a browser uses an origin-bound
+publishable key (`publishable_key`) instead, created with
+`a4 auth keys create-publishable --origin <scheme://host[:port]>`.
 
 Generated names depend on the installed stack. Inspect its package rather than
 copying identifiers from another example.

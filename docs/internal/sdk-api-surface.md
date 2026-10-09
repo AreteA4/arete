@@ -89,7 +89,7 @@ lexicographically.
   see [managed Solana v1](managed-solana/README.md) for the frozen contracts.
 - **Transaction relay**: `POST <base>/transactions/v1/{latest-blockhash,fee,simulate,send,signature-status,block-height}`.
 - **Auth**: `POST <tokenEndpoint>` `{"websocket_url": "...", "scopes": ["read"]}` (+
-  `Authorization: Bearer <publishableKey>`) → `{"token","expires_at"}`; WS token in
+  `Authorization: Bearer <secretKey | publishableKey>`) → `{"token","expires_at"}`; WS token in
   `?hs_token=` (default) or `Authorization: Bearer` upgrade header. Refresh at `exp − 60s`.
 
 ---
@@ -199,7 +199,7 @@ a4.views.ore_round.state().get("key").await      // Option<T>
 Present and aligned: protocol v2 wire structs (`Subscription`, `SubscriptionQuery`,
 `ServerFrame`, canonical identity + refcounted `SubscriptionRegistry`, stable IDs across
 reconnect), `Update`/`RichUpdate` enums, lazy stream builders, `SharedStore` with
-snapshot staging/authoritative replacement, auth (publishable key / token endpoint /
+snapshot staging/authoritative replacement, auth (secret key / publishable key / token endpoint /
 provider, `hs_token` or Bearer, JWT expiry refresh), reconnect + `SocketIssue`s,
 `serde_utils` string-or-number integer deserializers.
 

@@ -477,8 +477,8 @@ impl RuntimeAuthState {
             .json(&TokenEndpointRequest::new(&self.websocket_url, release));
 
         if let Some(config) = self.config.as_ref() {
-            if let Some(publishable_key) = config.publishable_key.as_ref() {
-                request = request.header("Authorization", format!("Bearer {}", publishable_key));
+            if let Some(api_key) = config.api_key() {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
             }
 
             for (key, value) in &config.token_endpoint_headers {
