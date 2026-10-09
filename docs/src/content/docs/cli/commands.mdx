@@ -569,6 +569,10 @@ a4 explore catalog --vocabulary --json
 # Inspect one exact active entry
 a4 explore catalog program <slug> --json
 a4 explore catalog stack <slug> --json
+
+# Trim JSON output to what you need
+a4 explore catalog --query "monitor swaps" --brief
+a4 explore catalog --query "monitor swaps" --fields slug,kind,version,delivery.health
 ```
 
 | Option                              | Meaning                                 |
@@ -581,6 +585,14 @@ a4 explore catalog stack <slug> --json
 | `--target typescript\|rust\|python` | Require a verified SDK target           |
 | `--limit`, `--cursor`               | Bounded pagination                      |
 | `--vocabulary`                      | List current concept and category slugs |
+| `--fields <a,b.c>`                  | JSON with only these keys per entry     |
+| `--brief`                           | JSON with only identifying fields       |
+
+`--fields` takes top-level keys or dotted paths (`delivery.status`) and applies
+to each search result or to a single entry. `--brief` keeps `kind`, `slug`,
+`name`, `version`, `protocol`, `summary`, `modes`, `sdkTargets` and
+`delivery.status`/`delivery.health`. Both imply `--json`. Filtering happens in
+the CLI, so it works against any server.
 
 Use catalog search when starting from intent. Open the exact result before
 installing or connecting; search summaries are not a substitute for the pinned
@@ -742,14 +754,17 @@ a4 know concepts
 
 **`search` options:**
 
-| Flag                 | Description                                                |
-| -------------------- | ---------------------------------------------------------- |
-| `--query, -q <text>` | Free-text intent; matches concept names and synonyms first |
-| `--concept <slug>`   | Filter by concept slug (see `a4 know concepts`)            |
-| `--category <slug>`  | Filter by category slug (see `a4 know concepts`)           |
-| `--limit <n>`        | Maximum number of results                                  |
+| Flag                 | Description                                                  |
+| -------------------- | ------------------------------------------------------------ |
+| `--query, -q <text>` | Free-text intent; matches concept names and synonyms first   |
+| `--concept <slug>`   | Filter by concept slug (see `a4 know concepts`)              |
+| `--category <slug>`  | Filter by category slug (see `a4 know concepts`)             |
+| `--limit <n>`        | Maximum number of results                                    |
+| `--fields <a,b.c>`   | JSON with only these keys (or dotted paths) per result       |
+| `--brief`            | JSON with only slug, type, name, protocol, summary, coverage |
 
 At least one of `--query`, `--concept`, or `--category` is required.
+`--fields` and `--brief` imply `--json`.
 
 **`program` options:**
 

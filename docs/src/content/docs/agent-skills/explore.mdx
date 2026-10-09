@@ -41,6 +41,16 @@ Available filters:
 | `--target`            | Verified `typescript`, `rust`, or `python` SDK output |
 | `--limit`, `--cursor` | Bounded pagination                                    |
 
+Raw catalog JSON includes identity hashes and release notes for every entry.
+Add `--brief` (slug, kind, name, version, summary, modes, SDK targets, delivery
+status) or `--fields slug,kind,delivery.status` to keep only what you need.
+Both work on search results and on a single entry, and imply `--json`:
+
+```bash
+a4 explore catalog --query "monitor swaps" --brief
+a4 know search --query "monitor swaps" --brief
+```
+
 List canonical concept and category slugs before using exact filters:
 
 ```bash

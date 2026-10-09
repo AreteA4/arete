@@ -37,6 +37,7 @@ pub fn search(
     category: Option<&str>,
     limit: Option<usize>,
     json: bool,
+    shape: Option<&arete_mcp::catalog_view::Shape>,
 ) -> Result<()> {
     let query = non_empty(query);
     let concept = non_empty(concept);
@@ -55,6 +56,9 @@ pub fn search(
     }
 
     let value = ApiClient::new()?.knowledge_search(query, concept, category, limit)?;
+    if shape.is_some() {
+        return super::explore::print_search_json(&value, shape);
+    }
     emit(&value, json, render_search)
 }
 
@@ -1059,7 +1063,7 @@ mod tests {
 
     #[test]
     fn search_requires_at_least_one_filter() {
-        let err = search(None, Some("  "), None, None, false)
+        let err = search(None, Some("  "), None, None, false, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("at least one of"), "{err}");
@@ -1068,7 +1072,7 @@ mod tests {
 
     #[test]
     fn search_rejects_malformed_slug_filters_before_any_request() {
-        let err = search(None, Some("swap/../x"), None, None, false)
+        let err = search(None, Some("swap/../x"), None, None, false, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("invalid character"), "{err}");

@@ -38,19 +38,15 @@ mod lenient {
         }
     }
 
-    pub fn usize<'de, D: Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
-        let v = Value::deserialize(d)?;
-        match value_to_usize::<D::Error>(v)? {
-            Some(n) => Ok(n),
-            None => Err(D::Error::custom(
-                "expected integer, got null or empty string",
-            )),
-        }
-    }
-
     pub fn opt_usize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
         let v = Value::deserialize(d)?;
         value_to_usize::<D::Error>(v)
+    }
+
+    /// Parse an already-decoded value with the same leniency, for
+    /// hand-written deserializers that collect several errors.
+    pub fn value_usize(v: Value) -> Result<Option<usize>, serde_json::Error> {
+        value_to_usize::<serde_json::Error>(v)
     }
 
     #[cfg(test)]
@@ -59,8 +55,8 @@ mod lenient {
 
         #[derive(Deserialize)]
         struct S {
-            #[serde(deserialize_with = "super::usize")]
-            n: usize,
+            #[serde(default, deserialize_with = "super::opt_usize")]
+            n: Option<usize>,
             #[serde(default, deserialize_with = "super::opt_usize")]
             limit: Option<usize>,
         }
@@ -72,14 +68,14 @@ mod lenient {
         #[test]
         fn accepts_int() {
             let s = parse(r#"{"n": 10, "limit": 5}"#).unwrap();
-            assert_eq!(s.n, 10);
+            assert_eq!(s.n, Some(10));
             assert_eq!(s.limit, Some(5));
         }
 
         #[test]
         fn accepts_string() {
             let s = parse(r#"{"n": "10", "limit": "5"}"#).unwrap();
-            assert_eq!(s.n, 10);
+            assert_eq!(s.n, Some(10));
             assert_eq!(s.limit, Some(5));
         }
 
@@ -115,7 +111,7 @@ use crate::recovery::{RecoveryApiError, RecoveryClient};
 use crate::registry::{RegistryClient, MAX_RESPONSE_BYTES};
 use crate::stack_knowledge::{self, StackKnowledge, LOOKUP_TIMEOUT};
 use crate::subscriptions::SubscriptionRegistry;
-use crate::{credentials, descriptor, filter};
+use crate::{catalog_view, credentials, descriptor, filter};
 
 #[derive(Clone)]
 pub struct AreteMcp {
@@ -295,6 +291,16 @@ pub struct SearchCatalogArgs {
     /// active catalog changes.
     #[serde(default)]
     pub cursor: Option<String>,
+    /// Keep only these fields of each result: top-level keys or dotted paths
+    /// such as `delivery.status`. A list or a comma-separated string, e.g.
+    /// `"slug,kind,name,version,modes,delivery.health"`.
+    #[serde(default)]
+    pub fields: Option<StringList>,
+    /// Return each result as the server sent it, including identity hashes
+    /// (`packageReleaseHash`, `bundleHash`, `setHash`), `programIds` and
+    /// release notes. Results are compact by default.
+    #[serde(default)]
+    pub full: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -304,6 +310,20 @@ pub struct GetCatalogEntryArgs {
     /// Bare package slug as returned by `search_catalog` (e.g. `ore`). Not a
     /// URL and not a path.
     pub slug: String,
+    /// Keep only these fields of the entry: top-level keys or dotted paths
+    /// such as `delivery.status`. A list or a comma-separated string.
+    #[serde(default)]
+    pub fields: Option<StringList>,
+    /// Return the entry as the server sent it, including identity hashes
+    /// (`packageReleaseHash`, `bundleHash`, `setHash`, ...), `programIds` and
+    /// release notes. The entry is compact by default.
+    #[serde(default)]
+    pub full: Option<bool>,
+}
+
+fn catalog_shape(fields: Option<StringList>, full: Option<bool>) -> catalog_view::Shape {
+    let fields = catalog_view::parse_fields(&fields.map(StringList::into_vec).unwrap_or_default());
+    catalog_view::Shape::from_args(fields, full == Some(true))
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -353,15 +373,79 @@ pub struct ListEntitiesArgs {
     pub subscription_id: String,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+/// Arguments for `get_recent`. Deserialization is hand-written so a bad call
+/// reports every missing or invalid field at once, with an example, instead of
+/// serde's first failure only.
+#[derive(Debug, schemars::JsonSchema)]
 pub struct GetRecentArgs {
-    /// Subscription ID returned from `subscribe`.
+    /// Subscription ID returned from `subscribe` (required).
     pub subscription_id: String,
-    /// How many recent entities to return. Hard cap is 1000. Accepts either
-    /// an integer (`5`) or a string-encoded integer (`"5"`) because LLM
-    /// tool-call arguments sometimes stringify numbers.
-    #[serde(deserialize_with = "lenient::usize")]
-    pub n: usize,
+    /// How many entities to return. Optional, defaults to 10, hard cap 1000.
+    /// `limit` is accepted as an alias. Accepts either an integer (`5`) or a
+    /// string-encoded integer (`"5"`) because LLM tool-call arguments
+    /// sometimes stringify numbers.
+    #[serde(default, alias = "limit")]
+    pub n: Option<usize>,
+}
+
+const GET_RECENT_DEFAULT: usize = 10;
+const GET_RECENT_EXAMPLE: &str = r#"{"subscription_id": "sub_1", "n": 10}"#;
+
+impl<'de> Deserialize<'de> for GetRecentArgs {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let serde_json::Value::Object(map) = value else {
+            return Err(D::Error::custom(format!(
+                "get_recent arguments must be an object, e.g. {GET_RECENT_EXAMPLE}"
+            )));
+        };
+        let mut problems = Vec::new();
+        let subscription_id = match map.get("subscription_id") {
+            Some(serde_json::Value::String(id)) if !id.trim().is_empty() => Some(id.clone()),
+            Some(serde_json::Value::String(_)) => {
+                problems.push("`subscription_id` must not be empty".to_string());
+                None
+            }
+            Some(other) => {
+                problems.push(format!("`subscription_id` must be a string, got {other}"));
+                None
+            }
+            None => {
+                problems
+                    .push("missing `subscription_id` (the id returned by `subscribe`)".to_string());
+                None
+            }
+        };
+        let n = match (map.get("n"), map.get("limit")) {
+            (Some(_), Some(_)) => {
+                problems.push("pass either `n` or its alias `limit`, not both".to_string());
+                None
+            }
+            (Some(value), None) | (None, Some(value)) => {
+                let name = if map.contains_key("n") { "n" } else { "limit" };
+                match lenient::value_usize(value.clone()) {
+                    Ok(n) => n,
+                    Err(error) => {
+                        problems.push(format!("`{name}`: {error}"));
+                        None
+                    }
+                }
+            }
+            (None, None) => None,
+        };
+        if !problems.is_empty() {
+            return Err(D::Error::custom(format!(
+                "invalid get_recent arguments: {}. Example: {GET_RECENT_EXAMPLE}",
+                problems.join("; ")
+            )));
+        }
+        Ok(GetRecentArgs {
+            subscription_id: subscription_id.expect("validated above"),
+            n,
+        })
+    }
 }
 
 /// Hard ceiling on entities returned by any single query tool call.
@@ -400,6 +484,35 @@ struct SubscriptionInfo {
     view: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     key: Option<String>,
+}
+
+/// `subscribe` result: the subscription plus a `next` hint naming the call
+/// that reads its entities.
+#[derive(Debug, Serialize)]
+struct SubscribeResponse {
+    #[serde(flatten)]
+    info: SubscriptionInfo,
+    next: NextCall,
+}
+
+#[derive(Debug, Serialize)]
+struct NextCall {
+    tool: &'static str,
+    arguments: serde_json::Value,
+}
+
+fn subscribe_response(info: SubscriptionInfo) -> SubscribeResponse {
+    let arguments = serde_json::json!({
+        "subscription_id": info.subscription_id,
+        "n": GET_RECENT_DEFAULT,
+    });
+    SubscribeResponse {
+        info,
+        next: NextCall {
+            tool: "get_recent",
+            arguments,
+        },
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -674,15 +787,21 @@ impl AreteMcp {
         description = "Search the active public Arete catalog for installable programs \
                           and stacks by intent. Start here: every result is a catalog \
                           entry with a verified SDK target, curated knowledge, and \
-                          evidenced capabilities (`modes`: build/read/subscribe), plus \
-                          the exact `packageReleaseHash` that `a4 install` will pin and a \
-                          sanitized `delivery.health` (`ready` or `degraded`).\n\n\
+                          evidenced capabilities (`modes`: build/read/subscribe), the \
+                          exact `version` to install, and a sanitized `delivery.health` \
+                          (`ready` or `degraded`).\n\n\
                           `query` is free text; `concept`/`category` filter by slug \
                           (see `list_catalog_vocabulary`); `kind`, `mode`, and `target` \
                           narrow to what you can actually use. At least one filter is \
                           required. When a page returns `nextCursor`, pass it back as \
                           `cursor` with the same filters to continue. Drill in with \
                           `get_catalog_entry`.\n\n\
+                          Results are compact by default: identity hashes \
+                          (`packageReleaseHash`, `bundleHash`, `setHash`), `programIds` \
+                          and release notes are dropped. Pass `fields` (e.g. \
+                          `\"slug,kind,name,version,modes,delivery.health\"`, dotted paths \
+                          allowed) to keep only those keys, or `full: true` for every \
+                          field.\n\n\
                           No credential is required; an API key widens results to \
                           global-visibility entries."
     )]
@@ -690,7 +809,7 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<SearchCatalogArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.registry_result(
+        self.catalog_result(
             self.registry
                 .catalog_search(
                     args.query.as_deref(),
@@ -703,27 +822,37 @@ impl AreteMcp {
                     args.cursor.as_deref(),
                 )
                 .await,
+            &catalog_shape(args.fields, args.full),
+            true,
         )
         .await
     }
 
     #[tool(
         description = "Fetch one active catalog entry by kind and slug: exact package \
-                          version and `packageReleaseHash`, bundle and set identities, \
-                          the curated knowledge summary, verified SDK targets, \
+                          version, the curated knowledge summary, verified SDK targets, \
                           capabilities keyed by stable language-neutral `operationId` \
                           values (e.g. `program/<programId>/raw-instruction/deploy`), and \
                           sanitized delivery state. Use after `search_catalog`; install \
                           the exact version shown with \
-                          `a4 install <kind> <slug>@=<version>` and confirm the lockfile \
-                          records the same `packageReleaseHash`."
+                          `a4 install <kind> <slug>@=<version>`.\n\n\
+                          The entry is compact by default: identity hashes \
+                          (`packageReleaseHash`, `bundleHash`, `setHash`, ...), \
+                          `programIds` and release notes are dropped. Pass `full: true` \
+                          to get them (e.g. to confirm the lockfile records the same \
+                          `packageReleaseHash`), or `fields` (dotted paths allowed) to \
+                          keep only specific keys."
     )]
     async fn get_catalog_entry(
         &self,
         Parameters(args): Parameters<GetCatalogEntryArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.registry_result(self.registry.catalog_entry(&args.kind, &args.slug).await)
-            .await
+        self.catalog_result(
+            self.registry.catalog_entry(&args.kind, &args.slug).await,
+            &catalog_shape(args.fields, args.full),
+            false,
+        )
+        .await
     }
 
     #[tool(
@@ -1022,7 +1151,7 @@ impl AreteMcp {
             key: entry.key.clone(),
         };
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string(&info).unwrap_or_default(),
+            serde_json::to_string(&subscribe_response(info)).unwrap_or_default(),
         )]))
     }
 
@@ -1160,15 +1289,19 @@ impl AreteMcp {
         )]))
     }
 
-    #[tool(description = "Return up to N entities from a subscription's exact \
-                          ordered query membership.")]
+    #[tool(description = "Return up to `n` entities from a subscription's exact \
+                          ordered query membership.\n\n\
+                          Parameters: `subscription_id` (required, string returned by \
+                          `subscribe`); `n` (optional integer, default 10, max 1000; \
+                          `limit` is accepted as an alias). \
+                          Example: {\"subscription_id\": \"sub_1\", \"n\": 10}")]
     async fn get_recent(
         &self,
         Parameters(args): Parameters<GetRecentArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (store, wire_subscription_id, view) =
             self.resolve_subscription(&args.subscription_id)?;
-        let n = args.n.min(QUERY_LIMIT_MAX);
+        let n = args.n.unwrap_or(GET_RECENT_DEFAULT).min(QUERY_LIMIT_MAX);
         let all: Vec<serde_json::Value> = store.list_for_subscription(&wire_subscription_id).await;
         let total = all.len();
         let recent: Vec<serde_json::Value> = all.into_iter().take(n).collect();
@@ -1406,6 +1539,18 @@ impl AreteMcp {
     ) -> Result<CallToolResult, McpError> {
         let body = self.registry_body(result).await?;
         Ok(CallToolResult::success(vec![Content::text(body)]))
+    }
+
+    async fn catalog_result(
+        &self,
+        result: anyhow::Result<String>,
+        shape: &catalog_view::Shape,
+        search: bool,
+    ) -> Result<CallToolResult, McpError> {
+        let body = self.registry_body(result).await?;
+        Ok(CallToolResult::success(vec![Content::text(
+            catalog_view::shape_body(body, shape, search),
+        )]))
     }
 
     async fn recovery_error(&self, error: anyhow::Error) -> McpError {
@@ -2057,6 +2202,102 @@ mod registry_result_tests {
         assert!(
             !rendered.contains("1000000000.0"),
             "number must not be reformatted: {rendered}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod ergonomics_tests {
+    use super::*;
+
+    #[test]
+    fn get_recent_defaults_n_and_accepts_limit_alias() {
+        let args: GetRecentArgs =
+            serde_json::from_value(serde_json::json!({ "subscription_id": "sub_1" })).unwrap();
+        assert_eq!(args.n, None);
+        let args: GetRecentArgs = serde_json::from_value(serde_json::json!({
+            "subscription_id": "sub_1",
+            "limit": "5"
+        }))
+        .unwrap();
+        assert_eq!(args.n, Some(5));
+        let args: GetRecentArgs = serde_json::from_value(serde_json::json!({
+            "subscription_id": "sub_1",
+            "n": 3
+        }))
+        .unwrap();
+        assert_eq!(args.n, Some(3));
+    }
+
+    #[test]
+    fn get_recent_reports_every_problem_with_an_example() {
+        let err = serde_json::from_value::<GetRecentArgs>(serde_json::json!({ "n": "many" }))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("missing `subscription_id`"), "{err}");
+        assert!(err.contains("`n`"), "{err}");
+        assert!(err.contains("Example:"), "{err}");
+
+        let err = serde_json::from_value::<GetRecentArgs>(serde_json::json!({
+            "subscription_id": 7,
+            "n": 1,
+            "limit": 2
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("must be a string"), "{err}");
+        assert!(err.contains("not both"), "{err}");
+    }
+
+    #[test]
+    fn get_recent_schema_marks_only_subscription_id_required() {
+        let schema = serde_json::to_value(schemars::schema_for!(GetRecentArgs)).unwrap();
+        assert_eq!(schema["required"], serde_json::json!(["subscription_id"]));
+        assert!(schema["properties"].get("n").is_some());
+    }
+
+    #[test]
+    fn subscribe_response_includes_get_recent_hint() {
+        let value = serde_json::to_value(subscribe_response(SubscriptionInfo {
+            subscription_id: "sub_9".into(),
+            connection_id: "conn_1".into(),
+            view: "OreRound/latest".into(),
+            key: None,
+        }))
+        .unwrap();
+        assert_eq!(value["subscription_id"], "sub_9");
+        assert_eq!(value["view"], "OreRound/latest");
+        assert_eq!(value["next"]["tool"], "get_recent");
+        assert_eq!(value["next"]["arguments"]["subscription_id"], "sub_9");
+        assert_eq!(value["next"]["arguments"]["n"], GET_RECENT_DEFAULT);
+    }
+
+    #[test]
+    fn catalog_args_accept_fields_and_full() {
+        let args: SearchCatalogArgs = serde_json::from_value(serde_json::json!({
+            "query": "swaps",
+            "fields": "slug, delivery.status"
+        }))
+        .unwrap();
+        assert_eq!(
+            catalog_shape(args.fields, args.full),
+            catalog_view::Shape::Fields(vec!["slug".into(), "delivery.status".into()])
+        );
+        let args: GetCatalogEntryArgs = serde_json::from_value(serde_json::json!({
+            "kind": "program",
+            "slug": "ore",
+            "full": true
+        }))
+        .unwrap();
+        assert_eq!(
+            catalog_shape(args.fields, args.full),
+            catalog_view::Shape::Full
+        );
+        let args: GetCatalogEntryArgs =
+            serde_json::from_value(serde_json::json!({ "kind": "stack", "slug": "ore" })).unwrap();
+        assert_eq!(
+            catalog_shape(args.fields, args.full),
+            catalog_view::Shape::Compact
         );
     }
 }

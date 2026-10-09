@@ -58,7 +58,11 @@ const INDEX_TTL_MS = 5 * 60 * 1000;
 // JSON exposed at GET /mcp (via zodToJsonSchema below). Editing one place
 // stays in sync with the other.
 const SearchDocsInput = z.object({
-  query: z.string().describe("Search query — keywords or a full question"),
+  query: z
+    .string()
+    .describe(
+      "Required. Search query — keywords or a full question, e.g. 'subscribe to a view from React'",
+    ),
   limit: z
     .number()
     .int()
@@ -77,7 +81,7 @@ const FetchPageInput = z.object({
 });
 
 const SEARCH_DOCS_DESCRIPTION =
-  "Search the Arete documentation. Returns matching page snippets ranked by relevance. Use this when answering questions about Arete features, the Rust DSL, SDKs, or CLI.";
+  'Search the Arete documentation. Returns matching page snippets ranked by relevance. Use this when answering questions about Arete features, the Rust DSL, SDKs, or CLI. `query` is required; `limit` is optional (1-20, default 5). Example: {"query": "subscribe to a view from React", "limit": 5}';
 
 const FETCH_PAGE_DESCRIPTION =
   "Fetch a documentation page as raw markdown. Use after search_docs to get the full content of a relevant page.";
