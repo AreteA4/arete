@@ -1,8 +1,9 @@
 //! The SDK runtime that generated code needs, and what a project has
 //! installed.
 //!
-//! `a4 install` prints the TypeScript runtime set (it never edits
-//! `package.json` or runs a package manager), `a4 doctor` checks the installed
+//! `a4 install` prints the TypeScript runtime set and the development tools
+//! still missing (it never edits `package.json` or `tsconfig.json`, or runs a
+//! package manager), `a4 doctor` checks the installed
 //! set, and SDK generation compares an extension's `extensionApi` with the
 //! installed runtime's.
 
@@ -28,6 +29,10 @@ pub const TYPESCRIPT_LOCKSTEP: [&str; 4] = [
 /// `@usearete/sdk` itself declares (`typescript/core/package.json`).
 pub const ZOD: &str = "zod";
 pub const ZOD_RANGE: &str = "^3.24.1";
+/// The development tools a Node app type-checks and runs generated
+/// TypeScript with: the compiler, a runner, and Node's own type declarations
+/// (without them `tsc` reports `process`, `Buffer` and the like as TS2591).
+pub const TYPESCRIPT_NODE_DEV_TOOLS: [&str; 3] = ["typescript", "tsx", "@types/node"];
 
 pub const RUST_SDK_CRATE: &str = "arete-a4-sdk";
 pub const PYTHON_SDK_DISTRIBUTION: &str = "arete-sdk";
@@ -140,6 +145,54 @@ pub fn app_dependencies(output: &Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// Whether an app that declares `declared` is a browser (React) app rather
+/// than a Node app: its bundler, not Node, runs the generated TypeScript.
+pub fn is_browser_app(declared: &BTreeSet<String>) -> bool {
+    declared.contains("react")
+}
+
+/// The development tools an app that declares `declared` still needs to
+/// type-check and run generated TypeScript: `typescript` always, and for a
+/// Node app `tsx` and `@types/node` too. Only those not already declared.
+pub fn typescript_dev_tools(declared: &BTreeSet<String>) -> Vec<String> {
+    TYPESCRIPT_NODE_DEV_TOOLS
+        .iter()
+        .filter(|tool| **tool == "typescript" || !is_browser_app(declared))
+        .filter(|tool| !declared.contains(**tool))
+        .map(|tool| tool.to_string())
+        .collect()
+}
+
+/// One copy-pasteable `npm install -D` line for development tools.
+pub fn npm_install_dev_command(tools: &[String]) -> String {
+    let mut command = "npm install -D".to_string();
+    for tool in tools {
+        command.push(' ');
+        command.push_str(tool);
+    }
+    command
+}
+
+/// The nearest `tsconfig.json` at or above `start`.
+pub fn nearest_tsconfig(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .map(|ancestor| ancestor.join("tsconfig.json"))
+        .find(|candidate| candidate.is_file())
+}
+
+/// The nearest `tsconfig.json` of a TypeScript output when its
+/// `compilerOptions.types`, with what it inherits through `extends`, is a list
+/// without `node`. `tsc --init` writes `"types": []`, which hides
+/// `@types/node` even once it is installed. `None` without a `tsconfig.json`
+/// or when Node's types load.
+pub fn tsconfig_hiding_node_types(output: &Path) -> Option<PathBuf> {
+    let tsconfig = nearest_tsconfig(output)?;
+    let types = compiler_option(&tsconfig, "types", 0)?;
+    let types = types.as_array()?;
+    (!types.iter().any(|entry| entry.as_str() == Some("node"))).then_some(tsconfig)
+}
+
 /// `tsconfig.json` `module` settings under which `package.json` `"type"`
 /// decides whether a `.ts` file is an ES module or CommonJS. Under
 /// `commonjs` every file is CommonJS whatever `"type"` says.
@@ -162,10 +215,7 @@ pub fn commonjs_package_json_rejecting_imports(output: &Path) -> Option<PathBuf>
     if package.get("type").and_then(serde_json::Value::as_str) == Some("module") {
         return None;
     }
-    let tsconfig = output
-        .ancestors()
-        .map(|ancestor| ancestor.join("tsconfig.json"))
-        .find(|candidate| candidate.is_file())?;
+    let tsconfig = nearest_tsconfig(output)?;
     let verbatim = compiler_option(&tsconfig, "verbatimModuleSyntax", 0)
         == Some(serde_json::Value::Bool(true));
     let module = compiler_option(&tsconfig, "module", 0)
@@ -697,6 +747,68 @@ mod tests {
             r#"{"extends":"./tsconfig.json"}"#,
         );
         assert_eq!(commonjs_package_json_rejecting_imports(&output), None);
+    }
+
+    #[test]
+    fn dev_tools_list_only_what_the_app_lacks() {
+        let declared = |names: &[&str]| names.iter().map(|name| name.to_string()).collect();
+        assert_eq!(
+            typescript_dev_tools(&declared(&[])),
+            vec!["typescript", "tsx", "@types/node"]
+        );
+        assert_eq!(
+            typescript_dev_tools(&declared(&["typescript", "@types/node"])),
+            vec!["tsx"]
+        );
+        // A React app's bundler runs the code: no Node runner or types.
+        assert_eq!(
+            typescript_dev_tools(&declared(&["react"])),
+            vec!["typescript"]
+        );
+        assert!(typescript_dev_tools(&declared(&["react", "typescript"])).is_empty());
+        assert_eq!(
+            npm_install_dev_command(&typescript_dev_tools(&declared(&[]))),
+            "npm install -D typescript tsx @types/node"
+        );
+    }
+
+    #[test]
+    fn tsc_init_types_hide_node_types() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let output = root.join("generated/typescript/stacks/ore");
+        assert_eq!(tsconfig_hiding_node_types(&output), None);
+        // `tsc --init` (TypeScript 5.9) writes `"types": []`.
+        write(
+            &root.join("tsconfig.json"),
+            &TSC_INIT_TSCONFIG
+                .replace("\"strict\": true,", "\"strict\": true,\n    \"types\": [],"),
+        );
+        assert_eq!(
+            tsconfig_hiding_node_types(&output),
+            Some(root.join("tsconfig.json"))
+        );
+        write(
+            &root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"types":["node"]}}"#,
+        );
+        assert_eq!(tsconfig_hiding_node_types(&output), None);
+        // Without `types`, every `@types` package loads.
+        write(&root.join("tsconfig.json"), TSC_INIT_TSCONFIG);
+        assert_eq!(tsconfig_hiding_node_types(&output), None);
+        // Inherited through `extends`.
+        write(
+            &root.join("tsconfig.base.json"),
+            r#"{"compilerOptions":{"types":["vitest"]}}"#,
+        );
+        write(
+            &root.join("tsconfig.json"),
+            r#"{"extends":"./tsconfig.base.json"}"#,
+        );
+        assert_eq!(
+            tsconfig_hiding_node_types(&output),
+            Some(root.join("tsconfig.json"))
+        );
     }
 
     #[test]
