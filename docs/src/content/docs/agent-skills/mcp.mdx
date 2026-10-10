@@ -113,7 +113,12 @@ to choose your own:
   `summary`, `modes`, `sdkTargets` and `delivery.status`/`delivery.health` for
   each result, returns 10 results per page unless you pass `limit`, and adds a
   top-level `hint` string naming `full`, `fields` and, when there is another
-  page, `cursor`. Without any filter it returns an overview: up to 5 programs
+  page, `cursor`. Two keys are derived from those fields: `live` on stacks
+  (`true`: a hosted stream to subscribe to now, i.e. `modes` include
+  `subscribe`; `false`: definition-only, which installs as an SDK and streams
+  once you deploy it) and `related`, the other results on the page with the
+  same `protocol` as `kind:slug`. `mode: "subscribe"` returns only live
+  stacks. `full: true` returns the server's results without them. Without any filter it returns an overview: up to 5 programs
   and 5 stacks (or `limit` of each), with `nextCursors.program` and
   `nextCursors.stack` to page one kind with `kind` and `cursor`.
 - **`search_knowledge`** keeps `type`, `slug`, `name`, `protocol`, `summary`
@@ -127,25 +132,32 @@ to choose your own:
   `entities`, `visibility`, `serviceClass` and `websocket_auth.required`.
 - **`explore_programs`** drops release and spec hashes.
 - **`get_catalog_entry`** stays complete apart from identity hashes, release
-  notes and `programIds`; `full: true` restores them.
+  notes and `programIds`, and adds `live` to a stack; `full: true` returns the
+  entry as sent.
 
 The stack and program lists stay JSON arrays, so they carry no `hint`.
 
 `explore_stack` and `explore_program` return a **summary by default**, cut
 from the full descriptor on the client:
 
-- **`explore_stack { stack }`**: entities with their subscribable view ids,
-  the program SDKs the stack carries, stream, chain, transaction and Program
-  Read endpoints, and auth requirements. The auth requirements list the
-  accepted key classes and scopes, whether browser (publishable) keys are
-  bound to an origin, and whether a transaction entitlement is required.
-- **`explore_stack { stack, views: ["OreRound/latest"] }`**: only those views,
-  each with its entity's field schema and primary key. Prefix `alias:` when
-  several LiveSpecs select the same view id.
-- **`explore_program { program }`**: identity and hashes, the names of the
-  program's accounts, instructions, events and types, its semantic SDK
-  operations (for example `transactions.mining.deployWithCheckpoint`), and its
-  Program Read and transaction transports.
+- **`explore_stack { stack }`**: `live` (whether the stack has a hosted
+  stream), entities with their subscribable view ids and their token-amount
+  fields (`amountFields`, with `scale` and `decimals`), the `read.*` helpers
+  the stack's SDK extension adds (`reads`, e.g. `read.currentRound()`), the
+  program SDKs the stack carries, stream endpoints, and stream auth: the
+  accepted key classes, whether transactions need an entitlement, and the
+  command for an origin-bound browser key when publishable keys are accepted.
+  No identity hashes or SDK metadata.
+- **`explore_stack { stack, views: ["OreRound/latest", "OreMiner/state"] }`**:
+  only those views, each with its entity's field schema (with descriptions
+  and token-amount units) and primary key. Prefix `alias:` when several
+  LiveSpecs select the same view id.
+- **`explore_program { program }`**: identity, the names of the program's
+  accounts, instructions, events and types with the first line of each
+  instruction's and account's docs (`descriptions`), the PDAs it derives with
+  their seeds (`pdas`), its semantic SDK operations (for example
+  `transactions.mining.deployWithCheckpoint`), and its Program Read and
+  transaction transports.
 - **`explore_program { program, operationId }`**: one operation, by semantic
   path, full operation id, generated binding or raw IDL instruction name
   (`deploy`). It returns the generated paths, input type, required and derived
@@ -156,8 +168,16 @@ from the full descriptor on the client:
   `instructions` (with error codes), `operations` (every SDK surface entry) or
   `types`, in detail. Pass a list or a comma-separated string.
 - **`full: true`** (or `summary: false` on `explore_stack`): the whole
-  descriptor `a4 install` consumes, unchanged. This can run to hundreds of
-  KB, so ask for it only when you need artifact bodies.
+  descriptor `a4 install` consumes, unchanged, with identity hashes (for
+  `resolve_artifact`), every auth surface and endpoint, and SDK extension
+  sources. This can run to hundreds of KB, so ask for it only when you need
+  those.
+
+A definition-only stack is not an error: `explore_stack` and
+`explore_stack_schema` return `kind: "stack-definition-only"`, `live: false`,
+its catalog `version`, `protocol` and `summary`, and `next` steps: install its
+SDK with `a4 install stack <slug> --ts`, deploy it yourself with `a4 up`, or
+search for a live stack with `mode: "subscribe"`.
 
 `get_catalog_entry` is **compact by default**: identity hashes
 (`packageReleaseHash`, `bundleHash`, `setHash`, ...), `programIds` and release
@@ -172,10 +192,9 @@ an API key. Without one, the summary says why operations are unavailable, and
 raw IDL instruction names still resolve through `operationId`.
 
 **Field descriptions.** When a stack is published in the catalog,
-`explore_stack_schema` and the `explore_stack` summary and views attach the
-curated field descriptions from its catalog knowledge. Fields carry a
-`description` (the summary lists them as `fieldDescriptions`), and entities and
-views carry a `summary`. Descriptions carry usage guidance, such as which of two
+`explore_stack_schema` and the `explore_stack` views attach the curated field
+descriptions from its catalog knowledge. Fields carry a `description`, and
+entities and views carry a `summary` (in the `explore_stack` summary too). Descriptions carry usage guidance, such as which of two
 similar fields a live UI should show or when a field fills in, so read them
 before choosing fields. `knowledge` names the source document. Descriptions
 are attached only when the knowledge was published for the StackManifest the
@@ -183,7 +202,8 @@ registry serves for that stack. No API key is needed, and a stack without a
 catalog entry returns its schema unchanged.
 
 **Token amounts.** `explore_stack_schema` and `explore_stack` views attach
-`amount` to each field the stack scales with `ui_amount(decimals)`, read from
+`amount` to each field (the `explore_stack` summary lists them per entity as
+`amountFields`) the stack scales with `ui_amount(decimals)`, read from
 the stack's own computations: `scale: "ui"` is whole token units (the raw
 amount divided by `10^decimals`, a float), `scale: "raw"` the integer base
 units it is computed from (often a string-encoded `u64`; for SOL, lamports).
@@ -205,7 +225,7 @@ Read the keys you actually receive rather than assuming one convention:
 | Tool                                                   | Casing                                                                                                                                                                                          |
 | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `explore_stacks`, `explore_stack_schema`               | **snake_case** — `websocket_url`, `http_auth`, `stack_name`, `primary_keys`, `rust_type`                                                                                                        |
-| `explore_stack`, `explore_programs`, `explore_program` | **camelCase** — `websocketUrl`, `installName`, `programSpecHash`, `stackManifestHash` (summaries, sections, views and operations too)                                                           |
+| `explore_stack`, `explore_programs`, `explore_program` | **camelCase** — `websocketUrl`, `installName`, `programSpecHash`, `stackManifestHash` (`full: true`; summaries, sections, views and operations are camelCase too)                               |
 | `resolve_artifact`                                     | camelCase envelope (`artifactHash`, `artifactVersion`, `kind`, `payload`); the payload is the stored artifact and may be snake_case inside, e.g. an embedded IDL's `program_id` and `is_signer` |
 
 Separately, `a4 explore --json` is camelCase throughout, so CLI field names do not transfer to `explore_stacks` or `explore_stack_schema` field-for-field.

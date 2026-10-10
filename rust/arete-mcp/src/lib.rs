@@ -8,6 +8,7 @@ pub mod catalog_view;
 mod connections;
 pub mod credentials;
 pub mod descriptor;
+pub mod extension_reads;
 pub mod field_amounts;
 mod filter;
 pub mod oneshot;

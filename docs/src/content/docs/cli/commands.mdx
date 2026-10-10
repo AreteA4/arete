@@ -602,10 +602,22 @@ human output, the package release hash beside each install command.
 `--vocabulary` lists each concept's and category's slug and name; `--full`
 adds descriptions, synonyms and related slugs.
 
+Two keys are derived from those fields. `live` (stacks only) is `true` when
+the stack has a hosted stream you can subscribe to now, which is when its
+`modes` include `subscribe`, and `false` for a definition-only stack: it
+installs as a typed SDK with its Program SDKs (build transactions, read
+accounts) and streams once you deploy it yourself. `--mode subscribe` returns
+only live stacks. `related` lists the other results on the page that share the
+entry's `protocol`, as `kind:slug`; program, stack and protocol slugs often
+differ for the same protocol. Human output marks stacks `[live]` or
+`[definition-only]` and prints each result's protocol and related slugs.
+
 Brief JSON carries a top-level `hint` string saying how to get more fields
 and, when `nextCursor` is present, the next page. `--full` JSON is the server
-response unchanged. `--fields` takes top-level keys or dotted paths
-(`delivery.status`) and applies to each search result or to a single entry.
+response unchanged (without `live` and `related`); when it runs past 20,000
+characters, a note on stderr suggests a `--fields` list instead. `--fields`
+takes top-level keys or dotted paths (`delivery.status`) and applies to each
+search result or to a single entry.
 `--fields`, `--brief` and `--summary` imply `--json`. Shaping happens in the
 CLI, so it works against any server.
 
@@ -650,9 +662,11 @@ a4 explore stack <stack-ref> --json
 a4 explore program spl-token --json
 a4 explore <stack-ref> <Entity> --json
 
-# Just what you need
-a4 explore stack ore --summary --json
+# Compact by default; ask for the part you need
+a4 explore stack ore --json
 a4 explore stack ore --views OreRound/latest,OreMiner/state --json
+a4 explore stack ore --full --json
+a4 explore program ore --full --json
 a4 explore program ore --operation transactions.mining.deployWithCheckpoint --json
 a4 explore program ore --operation deploy --json
 a4 explore program ore --section accounts,types --json
@@ -671,28 +685,48 @@ a4 explore stack ore --operation transactions.mining.deployWithCheckpoint --json
 
 | Flag               | Applies to         | Description                                                                                                                                            |
 | ------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--summary`        | `stack`            | Entities with their view ids, program SDKs, endpoints, and auth requirements; no artifact bodies                                                       |
-| `--views <ids>`    | `stack`            | Only these selected views, each with its entity's field schema. Comma-separated; prefix `alias:` when several LiveSpecs select the same id             |
+| `--summary`        | `stack`, `program` | The compact summary, which is also the default                                                                                                         |
+| `--full`           | `stack`, `program` | The full exploration: identity hashes, every auth surface and endpoint, SDK metadata; for a program, the IDL-level dump                                |
+| `--views <ids>`    | `stack`            | Only these selected views, each with its entity's field schema. Comma-separated or repeated; prefix `alias:` when several LiveSpecs select the same id |
 | `--operation <id>` | `program`, `stack` | One operation, by semantic path (`transactions.mining.deployWithCheckpoint`), full operation id, generated binding, or raw instruction name (`deploy`) |
 | `--section <name>` | `program`          | Only `accounts`, `events`, `instructions` (with error codes), `operations`, or `types`. Repeat the flag or comma-separate                              |
 
 **Output varies by specificity:**
 
-| Command                                | Shows                                                                                                                                     |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `a4 explore`, `a4 explore stacks`      | Available stacks                                                                                                                          |
-| `a4 explore programs`                  | Complete promoted Program Release + Program Read installations. Release and spec hashes need `--full`; `--fields` chooses keys            |
-| `a4 explore stack <ref>`               | Exact identities, aliases, selected views, programs, auth and auth requirements, SDK targets, the endpoints the SDK uses, install command |
-| `a4 explore stack <ref> --summary`     | A compact stack summary                                                                                                                   |
-| `a4 explore stack <ref> --views …`     | The named views' schemas and endpoints                                                                                                    |
-| `a4 explore program <ref>`             | Program identity, accounts, instructions, events, types, Program Read, and install command                                                |
-| `a4 explore program <ref> --operation` | One operation: generated paths, input type, required and derived accounts, signers, transaction count, errors, transport, usage           |
-| `a4 explore program <ref> --section`   | The named sections in detail                                                                                                              |
-| `a4 explore <stack> [entity]`          | Legacy syntax routed through descriptor-backed stack exploration                                                                          |
+| Command                                | Shows                                                                                                                                        |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `a4 explore`, `a4 explore stacks`      | Available stacks                                                                                                                             |
+| `a4 explore programs`                  | Complete promoted Program Release + Program Read installations. Release and spec hashes need `--full`; `--fields` chooses keys               |
+| `a4 explore stack <ref>`               | Compact summary: `live`, entities and views, token-amount fields, `read.*` helpers, Program SDKs, stream endpoints and auth, install command |
+| `a4 explore stack <ref> --full`        | Exact identities, aliases, selected views, programs, auth and auth requirements, SDK targets, the endpoints the SDK uses, install command    |
+| `a4 explore stack <ref> --views …`     | The named views' schemas (field descriptions and token-amount units) and endpoints                                                           |
+| `a4 explore program <ref>`             | Compact summary: instructions and accounts with their first doc line, PDAs and seeds, SDK operations, transports, install command            |
+| `a4 explore program <ref> --full`      | Program identity, accounts, instructions, events and types in full, Program Read, and install command                                        |
+| `a4 explore program <ref> --operation` | One operation: generated paths, input type, required and derived accounts, signers, transaction count, errors, transport, usage              |
+| `a4 explore program <ref> --section`   | The named sections in detail                                                                                                                 |
+| `a4 explore <stack> [entity]`          | Legacy syntax routed through descriptor-backed stack exploration                                                                             |
 
 Everything is cut from the same pinned install descriptor on the client, so
-the compact forms agree with the full one. One operation or a stack summary is
-a few KB.
+the compact forms agree with the full one. A stack or program summary, one
+operation, or one view is a few KB; compact JSON carries a `hint` naming the
+next narrower or fuller form, and a `--full` output past 20,000 characters ends
+with one (on stderr for JSON).
+
+**Stack summary.** `live` says whether the stack has a hosted stream. Each
+entity lists its views and, under `amountFields`, the fields it scales as
+token amounts (see Token amounts below). `reads` lists the `read.*` helpers
+the stack's SDK extension adds, with their arguments and titles, for example
+`read.currentRound()` on ORE: call them on the installed stack. Identity
+hashes, the auth of every surface and the SDK extension metadata are in
+`--full`.
+
+**Definition-only stacks.** Exploring a stack that has no hosted stream (a
+catalog package nobody has deployed) does not fail. It prints `kind:
+"stack-definition-only"` and `live: false` with the catalog version,
+protocol and summary, and the next steps: `a4 install stack <slug> --ts` for
+its typed SDK and Program SDKs, `a4 up <alias>` to deploy it yourself, or
+`a4 explore catalog --kind stack --mode subscribe` for a stack that streams
+now. It exits 0.
 
 **Operations.** Semantic operations (`transactions.*`, `instructions.*`,
 `read.*`) and their generated paths come from the knowledge layer's SDK
@@ -702,9 +736,10 @@ operation reports only what the descriptor and surface carry. Anything else,
 such as reads made while preparing, is listed under `notReported` rather than
 guessed. `--operation` on a stack searches the stack's program SDKs.
 
-**Auth requirements.** Stack output includes `authRequirements` (in
-`--summary`, `auth`). For each surface (stream, query, chain, transaction and
-Program Read) it lists the accepted key classes and scopes, and whether a
+**Auth requirements.** The summary's `auth` lists the stream and query key
+classes, whether transactions need an entitlement, and the command for an
+origin-bound browser key. `--full` output includes `authRequirements`: for
+each surface (stream, query, chain, transaction and Program Read) it lists the accepted key classes and scopes, and whether a
 transaction entitlement is required. `browser` appears when publishable keys
 are accepted; each one is bound to exactly one origin. When the stack's
 transactions need an entitlement, `account.transactions` says whether your
@@ -716,11 +751,10 @@ attaches the curated field descriptions from the stack's catalog knowledge.
 They say how to use a field, for example which of two similar fields a live UI
 should show, so read them before choosing fields. The entity drill-down
 (`a4 explore stack <ref> <Entity>`) and `--views` add `description` to each
-described field and `summary` to the entity and its views. `--summary` adds
-`summary` to entities and views and lists the described fields as
-`fieldDescriptions`. The full output adds `summary` to `selectedViews` and a
-`knowledge` block with each described entity. Human output prints a
-description under its field. `knowledge` names the source document (`slug`,
+described field and `summary` to the entity and its views. The summary adds
+`summary` to entities and views. The full output adds `summary` to
+`selectedViews` and a `knowledge` block with each described entity and its
+`fieldDescriptions`. Human output prints a description under its field. `knowledge` names the source document (`slug`,
 `documentHash`). Descriptions are attached only when the knowledge was
 published for the exact StackManifest being explored. Stacks without a catalog
 entry, such as private or local stacks, print as before. Explore skips the
@@ -761,7 +795,9 @@ counts is in its description when the catalog has one. Human output prints an
 dependency, `sdkEndpoints` shows which stream endpoints the generated SDK
 reads. Endpoints that `a4 up` recorded in `arete.toml` take precedence over the
 registry's hosted endpoints. The set in use is `used`, and the other is
-labelled "not used". You can pass the dependency alias as `<stack-ref>`.
+labelled "not used". The summary and `--views` print `sdkEndpoints` only when
+`arete.toml` endpoints are in use; otherwise the hosted endpoints they list are
+the ones the SDK reads. You can pass the dependency alias as `<stack-ref>`.
 
 Every JSON response includes `schemaVersion`. Exploration never selects a
 latest AST independently and never falls back when an install descriptor is
