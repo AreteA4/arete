@@ -694,10 +694,17 @@ pub struct VmContext {
     /// Rows of earlier segments, kept for `ReadOrInitState` to unpack into
     /// (see [`PackedRow::unpack_into`]). See [`SpareRows`].
     spare_rows: SpareRows,
+    /// Where `UpdateState` packs rows (see [`PackedRow::pack_in`]), kept
+    /// between segments unless it grew past [`MAX_KEPT_PACK_BUFFER`].
+    pack_buffer: Vec<u8>,
     /// Entities to send whole at the end of the next call; see
     /// [`WholeEntityRequests`].
     whole_entity_requests: Option<WholeEntityRequests>,
 }
+
+/// The largest buffer the VM keeps for packing rows in between segments;
+/// one that grew larger for an unusually large row is dropped after it.
+const MAX_KEPT_PACK_BUFFER: usize = 1 << 20;
 
 /// Entity rows a handler segment is done with, kept so the next one can
 /// unpack its row into one of them rather than build it from scratch.
@@ -1549,7 +1556,11 @@ impl StateTable {
     /// Packing reads `value` without consuming it, so a caller that still
     /// needs the entity passes a reference rather than a copy.
     pub fn insert_with_eviction(&self, key: Value, value: impl Borrow<Value>) {
-        let row = PackedRow::pack(value.borrow());
+        self.insert_packed_with_eviction(key, PackedRow::pack(value.borrow()));
+    }
+
+    /// [`Self::insert_with_eviction`] of a row already packed.
+    pub(crate) fn insert_packed_with_eviction(&self, key: Value, row: PackedRow) {
         let resident = self.data.contains_key(&key);
         if self.data.len() >= self.config.max_entries && !resident {
             #[cfg(feature = "otel")]
@@ -1828,6 +1839,7 @@ impl VmContext {
             taken_entity: None,
             row_register: None,
             spare_rows: SpareRows::default(),
+            pack_buffer: Vec::new(),
             whole_entity_requests: None,
         };
         vm.states.insert(
@@ -2037,6 +2049,7 @@ impl VmContext {
             taken_entity: None,
             row_register: None,
             spare_rows: SpareRows::default(),
+            pack_buffer: Vec::new(),
             whole_entity_requests: None,
         }
     }
@@ -2071,6 +2084,7 @@ impl VmContext {
             taken_entity: None,
             row_register: None,
             spare_rows: SpareRows::default(),
+            pack_buffer: Vec::new(),
             whole_entity_requests: None,
         };
         vm.states.insert(
@@ -3974,7 +3988,11 @@ impl VmContext {
                     }
                     // Packed from the register, which keeps the entity for
                     // the mutation built from it and any hook after the event.
-                    state.insert_with_eviction(key_value, &self.registers[*value]);
+                    let row = PackedRow::pack_in(&self.registers[*value], &mut self.pack_buffer);
+                    if self.pack_buffer.capacity() > MAX_KEPT_PACK_BUFFER {
+                        self.pack_buffer = Vec::new();
+                    }
+                    state.insert_packed_with_eviction(key_value, row);
                     pc += 1;
                 }
                 OpCode::AppendToArray {

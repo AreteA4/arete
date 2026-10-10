@@ -82,9 +82,21 @@ pub(crate) struct PackedRow(Box<[u8]>);
 impl PackedRow {
     /// Pack `value`.
     pub(crate) fn pack(value: &Value) -> Self {
-        let mut packer = Packer::new();
+        let mut packer = Packer::new(Vec::with_capacity(256));
         packer.value(value);
-        PackedRow(packer.finish())
+        PackedRow(packer.finish().into_boxed_slice())
+    }
+
+    /// Pack `value`, using `buffer` to pack it in. The row is then copied
+    /// out in one allocation of its exact size, and `buffer` keeps its
+    /// capacity for the next row, so packing does not grow a buffer row by
+    /// row. The result is the same as [`Self::pack`]'s.
+    pub(crate) fn pack_in(value: &Value, buffer: &mut Vec<u8>) -> Self {
+        buffer.clear();
+        let mut packer = Packer::new(std::mem::take(buffer));
+        packer.value(value);
+        *buffer = packer.finish();
+        PackedRow(Box::from(buffer.as_slice()))
     }
 
     /// The value packed, rebuilt.
@@ -132,24 +144,47 @@ fn put_varint(out: &mut Vec<u8>, mut value: u64) {
     out.push(value as u8);
 }
 
+/// Dictionaries up to this many keys are searched in order; larger ones get
+/// a hash map. Entity rows mostly have a few dozen keys at most, which a
+/// scan finds sooner than a hash, and without allocating the map.
+const SCANNED_KEYS: usize = 32;
+
 struct Packer<'a> {
     out: Vec<u8>,
     keys: Vec<&'a str>,
+    /// Ids of `keys`, once there are more than [`SCANNED_KEYS`].
     key_ids: HashMap<&'a str, u32>,
 }
 
 impl<'a> Packer<'a> {
-    fn new() -> Self {
-        let mut out = Vec::with_capacity(256);
+    /// A packer writing to `out`, which must be empty.
+    fn new(mut out: Vec<u8>) -> Self {
         out.extend_from_slice(&[0; HEADER]);
         Packer {
             out,
-            keys: Vec::new(),
+            keys: Vec::with_capacity(SCANNED_KEYS),
             key_ids: HashMap::new(),
         }
     }
 
+    /// The key's index in the dictionary, added if it is new. Ids follow
+    /// the order keys are first seen in, however they are looked up.
     fn key_id(&mut self, key: &'a str) -> u32 {
+        if self.key_ids.is_empty() {
+            if let Some(id) = self.keys.iter().position(|known| *known == key) {
+                return id as u32;
+            }
+            if self.keys.len() < SCANNED_KEYS {
+                self.keys.push(key);
+                return (self.keys.len() - 1) as u32;
+            }
+            self.key_ids = self
+                .keys
+                .iter()
+                .enumerate()
+                .map(|(id, known)| (*known, id as u32))
+                .collect();
+        }
         if let Some(id) = self.key_ids.get(key) {
             return *id;
         }
@@ -263,7 +298,7 @@ impl<'a> Packer<'a> {
         }
     }
 
-    fn finish(mut self) -> Box<[u8]> {
+    fn finish(mut self) -> Vec<u8> {
         let dictionary = u32::try_from(self.out.len()).expect("a packed row is under 4 GiB");
         self.out[..HEADER].copy_from_slice(&dictionary.to_le_bytes());
         put_varint(&mut self.out, self.keys.len() as u64);
@@ -271,7 +306,7 @@ impl<'a> Packer<'a> {
             put_varint(&mut self.out, key.len() as u64);
             self.out.extend_from_slice(key.as_bytes());
         }
-        self.out.into_boxed_slice()
+        self.out
     }
 }
 
@@ -654,6 +689,23 @@ mod tests {
             target["recent"][0]["amount"].as_str().unwrap().as_ptr(),
             amount
         );
+    }
+
+    #[test]
+    fn packing_in_a_buffer_gives_the_same_row() {
+        let mut values = assorted_values();
+        // More keys than are scanned, so the dictionary switches to a map
+        // part way through.
+        let many: Map<String, Value> = (0..SCANNED_KEYS * 3)
+            .map(|index| (format!("key{index}"), json!({"inner": index, "key3": "x"})))
+            .collect();
+        values.push(Value::Object(many));
+        let mut buffer = Vec::new();
+        for value in &values {
+            let packed = PackedRow::pack_in(value, &mut buffer);
+            assert_eq!(packed.0, PackedRow::pack(value).0, "{value}");
+            assert_eq!(&packed.unpack(), value);
+        }
     }
 
     #[test]
