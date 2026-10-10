@@ -682,9 +682,69 @@ pub struct VmContext {
     /// `ReadOrInitState` and has not written back yet: state id, key and the
     /// register holding it. See [`VmContext::execute_handler_segment`].
     taken_entity: Option<(u32, Value, Register)>,
+    /// The register the last handler segment loaded its entity into with
+    /// `ReadOrInitState`, and the packed size of the row it loaded, so the
+    /// next segment can keep the row as a spare.
+    row_register: Option<(Register, usize)>,
+    /// Rows of earlier segments, kept for `ReadOrInitState` to unpack into
+    /// (see [`PackedRow::unpack_into`]). See [`SpareRows`].
+    spare_rows: SpareRows,
     /// Entities to send whole at the end of the next call; see
     /// [`WholeEntityRequests`].
     whole_entity_requests: Option<WholeEntityRequests>,
+}
+
+/// Entity rows a handler segment is done with, kept so the next one can
+/// unpack its row into one of them rather than build it from scratch.
+///
+/// Unpacking a row into a `Value` costs an allocation per object, string and
+/// array in it, and freeing the row at the end of the segment a free per
+/// each. Unpacking into a row of the same shape reuses them instead (see
+/// [`PackedRow::unpack_into`]), so a segment allocates little more than the
+/// fields that differ. Rows are only ever overwritten, never read.
+///
+/// Rows of one entity often come in two kinds, such as accounts with a full
+/// activity history and accounts with none, and a stream interleaves them.
+/// So a few rows are kept, and a row is unpacked into the one whose packed
+/// size was closest to its own. The rows kept are bounded by
+/// [`SpareRows::CAPACITY`]; where only one was kept before, the register the
+/// last segment loaded its row into held it until the next segment.
+#[derive(Default)]
+struct SpareRows(Vec<(usize, Value)>);
+
+impl SpareRows {
+    const CAPACITY: usize = 2;
+
+    /// The index of the row whose packed size is closest to `packed_len`.
+    fn closest(&self, packed_len: usize) -> Option<usize> {
+        (0..self.0.len()).min_by_key(|index| self.0[*index].0.abs_diff(packed_len))
+    }
+
+    /// Unpack `packed` into the closest spare row, or from scratch if there
+    /// is none.
+    fn unpack(&mut self, packed: &PackedRow) -> Value {
+        match self.closest(packed.len()) {
+            Some(index) => {
+                let (_, mut row) = self.0.swap_remove(index);
+                packed.unpack_into(&mut row);
+                row
+            }
+            None => packed.unpack(),
+        }
+    }
+
+    /// Keep `row`, unpacked from `packed_len` bytes, replacing the closest
+    /// spare if there is no room: the rows kept stay of different sizes.
+    fn keep(&mut self, packed_len: usize, row: Value) {
+        if !row.is_object() {
+            return;
+        }
+        if self.0.len() < Self::CAPACITY {
+            self.0.push((packed_len, row));
+        } else if let Some(index) = self.closest(packed_len) {
+            self.0[index] = (packed_len, row);
+        }
+    }
 }
 
 /// Event field that restricts a replayed event to one handler segment.
@@ -1439,11 +1499,15 @@ impl StateTable {
     /// The packed row is dropped rather than kept beside the unpacked entity
     /// the handler works on, since the write replaces it anyway.
     pub fn take_and_touch(&self, key: &Value) -> Option<Value> {
-        let result = self.data.remove(key).map(|(_, row)| row.unpack());
-        if result.is_some() {
-            self.touch(key, false);
-        }
-        result
+        self.take_packed_and_touch(key).map(|row| row.unpack())
+    }
+
+    /// [`Self::take_and_touch`], leaving the row packed for the caller to
+    /// unpack as it likes.
+    pub(crate) fn take_packed_and_touch(&self, key: &Value) -> Option<PackedRow> {
+        let (_, row) = self.data.remove(key)?;
+        self.touch(key, false);
+        Some(row)
     }
 
     /// Check if an update is fresh and update the version tracker.
@@ -1705,6 +1769,8 @@ impl VmContext {
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
+            row_register: None,
+            spare_rows: SpareRows::default(),
             whole_entity_requests: None,
         };
         vm.states.insert(
@@ -1912,6 +1978,8 @@ impl VmContext {
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
+            row_register: None,
+            spare_rows: SpareRows::default(),
             whole_entity_requests: None,
         }
     }
@@ -1944,6 +2012,8 @@ impl VmContext {
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
+            row_register: None,
+            spare_rows: SpareRows::default(),
             whole_entity_requests: None,
         };
         vm.states.insert(
@@ -2677,7 +2747,13 @@ impl VmContext {
         Ok(())
     }
 
+    /// Clear the registers for the next handler segment, keeping the last
+    /// segment's entity row as the spare the next one unpacks into.
     fn reset_registers(&mut self) {
+        if let Some((register, packed_len)) = self.row_register.take() {
+            let row = std::mem::take(&mut self.registers[register]);
+            self.spare_rows.keep(packed_len, row);
+        }
         self.registers.fill(Value::Null);
     }
 
@@ -3799,25 +3875,30 @@ impl VmContext {
                             }
                         }
                     }
-                    let existing_state = state.take_and_touch(&key_value);
-                    if existing_state.is_some() {
-                        self.taken_entity = Some((actual_state_id, key_value.clone(), *dest));
-                    }
+                    let packed = state.take_packed_and_touch(&key_value);
+                    let existing = packed.is_some();
+                    let (loaded_state, packed_len) = match packed {
+                        Some(packed) => {
+                            self.taken_entity = Some((actual_state_id, key_value.clone(), *dest));
+                            (self.spare_rows.unpack(&packed), packed.len())
+                        }
+                        None => (default.clone(), 0),
+                    };
 
                     if self.is_debug_enabled() {
-                        let loaded_state =
-                            existing_state.clone().unwrap_or_else(|| default.clone());
+                        let existing_state = existing.then(|| loaded_state.clone());
                         self.emit_debug(|| VmDebugEvent::ReadOrInitState {
                             entity_name: entity_name.to_string(),
                             event_type: event_type.to_string(),
                             key: key_value,
-                            existing_state: existing_state.clone(),
-                            loaded_state,
+                            existing_state,
+                            loaded_state: loaded_state.clone(),
                             skipped_reason: None,
                         });
                     }
 
-                    self.registers[*dest] = existing_state.unwrap_or_else(|| default.clone());
+                    self.registers[*dest] = loaded_state;
+                    self.row_register = Some((*dest, packed_len));
                     pc += 1;
                 }
                 OpCode::UpdateState {
@@ -7297,6 +7378,178 @@ mod tests {
             value: 2,
         });
         handler
+    }
+
+    /// Handlers that leave rows of different shapes: `t::AState` sets an
+    /// identity and a balance, `t::BIxState` appends to a history.
+    fn mixed_shape_bytecode() -> crate::compiler::MultiEntityBytecode {
+        let handler = |body: Vec<OpCode>| {
+            let mut handler = vec![
+                OpCode::LoadEventField {
+                    path: FieldPath::new(&["key"]),
+                    dest: 0,
+                    default: None,
+                },
+                OpCode::ReadOrInitState {
+                    state_id: 0,
+                    key: 0,
+                    default: json!({}),
+                    dest: 2,
+                },
+            ];
+            handler.extend(body);
+            handler.extend([
+                OpCode::UpdateState {
+                    state_id: 0,
+                    key: 0,
+                    value: 2,
+                },
+                OpCode::EmitMutation {
+                    entity_name: "Row".to_string(),
+                    key: 0,
+                    state: 2,
+                },
+            ]);
+            handler
+        };
+        let set = |field: &str, path: &str, register| {
+            [
+                OpCode::LoadEventField {
+                    path: FieldPath::new(&[field]),
+                    dest: register,
+                    default: None,
+                },
+                OpCode::SetField {
+                    object: 2,
+                    path: path.to_string(),
+                    value: register,
+                },
+            ]
+        };
+        let mut account = Vec::new();
+        account.extend(set("name", "id.name", 3));
+        account.extend(set("amount", "balance.amount", 4));
+        let mut transfer = vec![
+            OpCode::LoadEventField {
+                path: FieldPath::new(&["entry"]),
+                dest: 3,
+                default: None,
+            },
+            OpCode::AppendToArray {
+                object: 2,
+                path: "activity.history".to_string(),
+                value: 3,
+            },
+        ];
+        transfer.extend(set("amount", "activity.last", 4));
+        let handlers = HashMap::from([
+            ("t::AState".to_string(), handler(account)),
+            ("t::BIxState".to_string(), handler(transfer)),
+        ]);
+        crate::compiler::MultiEntityBytecode {
+            event_routing: handlers
+                .keys()
+                .map(|event| (event.clone(), vec!["Row".to_string()]))
+                .collect(),
+            entities: HashMap::from([(
+                "Row".to_string(),
+                crate::compiler::EntityBytecode {
+                    state_id: 0,
+                    handlers,
+                    entity_name: "Row".to_string(),
+                    when_events: HashSet::new(),
+                    non_emitted_fields: HashSet::new(),
+                    computed_paths: vec![],
+                    computed_fields_evaluator: None,
+                },
+            )]),
+            when_events: HashSet::new(),
+            proto_router: Default::default(),
+        }
+    }
+
+    #[test]
+    fn reusing_spare_rows_changes_nothing_a_handler_produces() {
+        let bytecode = mixed_shape_bytecode();
+        let config = StateTableConfig {
+            max_entries: 4,
+            max_array_length: 3,
+        };
+        let mut reusing = VmContext::new_with_config(config.clone());
+        let mut fresh = VmContext::new_with_config(config);
+        let amounts = [
+            json!(5),
+            json!("123456789012345678901234567890"),
+            json!(1.0),
+            json!(null),
+            json!(-3),
+            json!("12"),
+            json!({"nested": [1, 2]}),
+        ];
+        for event in 0..200usize {
+            let key = format!("k{}", event * 7 % 6);
+            let amount = amounts[event % amounts.len()].clone();
+            let (event_type, value) = if event % 3 == 0 {
+                (
+                    "t::BIxState",
+                    json!({"key": key, "amount": amount, "entry": {"to": format!("d{event}"), "n": event}}),
+                )
+            } else {
+                (
+                    "t::AState",
+                    json!({"key": key, "amount": amount, "name": "n".repeat(event % 50)}),
+                )
+            };
+            // The fresh VM never has a spare row, so it builds every row from
+            // scratch as before spare rows existed.
+            fresh.spare_rows = SpareRows::default();
+            let expected = fresh
+                .process_event(&bytecode, value.clone(), event_type, None, None)
+                .unwrap();
+            let got = reusing
+                .process_event(&bytecode, value, event_type, None, None)
+                .unwrap();
+            assert_eq!(
+                serde_json::to_string(&got).unwrap(),
+                serde_json::to_string(&expected).unwrap(),
+                "event {event}"
+            );
+        }
+        assert!(!reusing.spare_rows.0.is_empty());
+        assert!(reusing.spare_rows.0.len() <= SpareRows::CAPACITY);
+        for key in 0..6 {
+            let key = json!(format!("k{key}"));
+            let expected = fresh.get_entity_state(0, &key);
+            let got = reusing.get_entity_state(0, &key);
+            assert_eq!(
+                serde_json::to_string(&got).unwrap(),
+                serde_json::to_string(&expected).unwrap(),
+            );
+        }
+        assert_eq!(reusing.states[&0].row_bytes(), fresh.states[&0].row_bytes());
+    }
+
+    #[test]
+    fn spare_rows_are_bounded_and_matched_by_size() {
+        let mut spares = SpareRows::default();
+        spares.keep(10, json!({"small": 1}));
+        spares.keep(1_000, json!({"large": 1}));
+        // Not a row: never kept.
+        spares.keep(5, json!("text"));
+        assert_eq!(spares.0.len(), SpareRows::CAPACITY);
+        // A third row replaces the one closest to it in size.
+        spares.keep(900, json!({"larger": 1}));
+        assert_eq!(spares.0.len(), SpareRows::CAPACITY);
+        assert_eq!(spares.closest(950), Some(1));
+        assert_eq!(spares.0[1], (900, json!({"larger": 1})));
+
+        // A row is unpacked into the spare closest to it in size, which
+        // leaves the other.
+        let row = json!({"small": 2});
+        let unpacked = spares.unpack(&PackedRow::pack(&row));
+        assert_eq!(unpacked, row);
+        assert_eq!(spares.0, vec![(900, json!({"larger": 1}))]);
+        assert_eq!(SpareRows::default().unpack(&PackedRow::pack(&row)), row);
     }
 
     #[test]

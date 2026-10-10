@@ -93,6 +93,25 @@ impl PackedRow {
         reader.value()
     }
 
+    /// Unpack into `target`, reusing its allocations where it has the same
+    /// shape.
+    ///
+    /// `target` ends up equal to [`Self::unpack`]'s result, field order and
+    /// number representation included; what it held before only decides
+    /// which allocations are reused. Its strings are overwritten in place, an
+    /// array keeps its buffer and reuses its elements, and an object with the
+    /// same keys in the same order keeps its map and has only its values
+    /// overwritten. An object with other keys is rebuilt, reusing the keys
+    /// and values it shares with the packed one.
+    ///
+    /// Rows of one entity share most of their shape, so a handler that
+    /// unpacks each row into the one before it allocates and frees little
+    /// more than the fields that differ.
+    pub(crate) fn unpack_into(&self, target: &mut Value) {
+        let mut reader = Reader::new(&self.0);
+        reader.value_into(target);
+    }
+
     /// Heap bytes the row takes.
     pub(crate) fn len(&self) -> usize {
         self.0.len()
@@ -318,19 +337,32 @@ impl<'a> Reader<'a> {
     }
 
     fn digits(&mut self) -> String {
+        let mut digits = String::new();
+        self.digits_into(&mut digits);
+        digits
+    }
+
+    /// Replace `digits` with the packed digit string.
+    fn digits_into(&mut self, digits: &mut String) {
         let count = self.length();
-        let mut digits = Vec::with_capacity(count);
+        digits.clear();
+        digits.reserve(count);
         for pair in self.take(count.div_ceil(2)) {
-            digits.push(b'0' + (pair >> 4));
+            digits.push(char::from(b'0' + (pair >> 4)));
             if digits.len() < count {
-                digits.push(b'0' + (pair & 0x0f));
+                digits.push(char::from(b'0' + (pair & 0x0f)));
             }
         }
-        String::from_utf8(digits).expect("ASCII digits are UTF-8")
     }
 
     fn value(&mut self) -> Value {
-        match self.byte() {
+        let tag = self.byte();
+        self.tagged_value(tag)
+    }
+
+    /// The value whose tag was just read.
+    fn tagged_value(&mut self, tag: u8) -> Value {
+        match tag {
             NULL => Value::Null,
             FALSE => Value::Bool(false),
             TRUE => Value::Bool(true),
@@ -372,6 +404,71 @@ impl<'a> Reader<'a> {
             tag if tag >= SMALL_UNSIGNED => Value::from(u64::from(tag - SMALL_UNSIGNED)),
             tag => unreachable!("unknown packed row tag {tag}"),
         }
+    }
+
+    /// Read a value into `target`. See [`PackedRow::unpack_into`].
+    fn value_into(&mut self, target: &mut Value) {
+        let tag = self.byte();
+        match (tag, target) {
+            (STRING, Value::String(string)) => {
+                let text = self.text();
+                string.clear();
+                string.push_str(text);
+            }
+            (DIGITS, Value::String(string)) => self.digits_into(string),
+            (ARRAY, Value::Array(items)) => self.array_into(items),
+            (OBJECT, Value::Object(fields)) => self.object_into(fields),
+            (tag, target) => *target = self.tagged_value(tag),
+        }
+    }
+
+    fn array_into(&mut self, items: &mut Vec<Value>) {
+        let count = self.length();
+        items.truncate(count);
+        for item in items.iter_mut() {
+            self.value_into(item);
+        }
+        items.reserve_exact(count - items.len());
+        while items.len() < count {
+            items.push(self.value());
+        }
+    }
+
+    fn object_into(&mut self, fields: &mut Map<String, Value>) {
+        let start = self.position;
+        let count = self.length();
+        if fields.len() == count {
+            // The same keys in the same order: overwrite the values where
+            // they are. Values overwritten before a key turns out to differ
+            // are rebuilt below like the rest.
+            let mut same_keys = true;
+            for (key, value) in fields.iter_mut() {
+                let id = self.length();
+                if self.keys[id] != key.as_str() {
+                    same_keys = false;
+                    break;
+                }
+                self.value_into(value);
+            }
+            if same_keys {
+                return;
+            }
+            self.position = start;
+            self.length();
+        }
+        let mut old = std::mem::take(fields);
+        let mut rebuilt = Vec::with_capacity(count);
+        for _ in 0..count {
+            let id = self.length();
+            let key = self.keys[id];
+            let (key, mut value) = old
+                .remove_entry(key)
+                .unwrap_or_else(|| (key.to_owned(), Value::Null));
+            self.value_into(&mut value);
+            rebuilt.push((key, value));
+        }
+        // As in `tagged_value`: the fields come in the map's own order.
+        *fields = rebuilt.into_iter().collect();
     }
 }
 
@@ -463,6 +560,100 @@ mod tests {
             5,
             {"a": 1, "b": 2},
         ]));
+    }
+
+    /// Values of many shapes, including ones that differ from each other
+    /// only in a key, a key's position, a value's kind or a number's
+    /// representation.
+    fn assorted_values() -> Vec<Value> {
+        vec![
+            json!(null),
+            json!(true),
+            json!(7),
+            json!(1.0),
+            json!(1),
+            json!(-1),
+            json!(u64::MAX),
+            json!(""),
+            json!("plain text"),
+            json!("1234567890"),
+            json!("12"),
+            json!([]),
+            json!([1, "two", null]),
+            json!([{"a": 1}, {"a": 2}, {"b": 3}]),
+            json!({}),
+            json!({"a": 1}),
+            json!({"a": "1"}),
+            json!({"a": 1.0}),
+            json!({"b": 1}),
+            json!({"a": 1, "b": 2}),
+            json!({"a": 1, "c": 2}),
+            json!({"id": {"address": "Addr1111", "owner": null}, "balance": {"amount": "1000"}}),
+            json!({
+                "id": {"address": "Addr2222", "owner": "Owner", "mint": "Mint"},
+                "balance": {"amount": 5, "state": "initialized"},
+                "activity": {
+                    "transfers_out": 3,
+                    "recent": [
+                        {"destination": "D1", "amount": "100"},
+                        {"destination": "D2", "amount": "2000000000"},
+                    ],
+                },
+            }),
+            json!({
+                "id": {"address": "Addr3333", "owner": "Owner", "mint": "Mint"},
+                "balance": {"amount": "5", "state": null},
+                "activity": {
+                    "transfers_out": 4,
+                    "recent": [{"destination": "D3", "amount": 7}],
+                },
+            }),
+        ]
+    }
+
+    #[test]
+    fn unpacking_into_any_value_gives_the_packed_value() {
+        let values = assorted_values();
+        for packed in &values {
+            let row = PackedRow::pack(packed);
+            for previous in &values {
+                let mut target = previous.clone();
+                row.unpack_into(&mut target);
+                assert_eq!(&target, packed, "unpacked into {previous}");
+                assert_eq!(
+                    serde_json::to_string(&target).unwrap(),
+                    serde_json::to_string(packed).unwrap(),
+                    "unpacked into {previous}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unpacking_into_a_value_of_the_same_shape_reuses_its_buffers() {
+        let row = |address: &str, amounts: &[u64]| {
+            json!({
+                "id": {"address": address},
+                "recent": amounts
+                    .iter()
+                    .map(|amount| json!({"amount": amount.to_string()}))
+                    .collect::<Vec<_>>(),
+            })
+        };
+        let mut target = row(&"A".repeat(44), &[100, 200, 300]);
+        let address = target["id"]["address"].as_str().unwrap().as_ptr();
+        let recent = target["recent"].as_array().unwrap().as_ptr();
+        let amount = target["recent"][0]["amount"].as_str().unwrap().as_ptr();
+
+        let next = row(&"B".repeat(44), &[123456, 7]);
+        PackedRow::pack(&next).unpack_into(&mut target);
+        assert_eq!(target, next);
+        assert_eq!(target["id"]["address"].as_str().unwrap().as_ptr(), address);
+        assert_eq!(target["recent"].as_array().unwrap().as_ptr(), recent);
+        assert_eq!(
+            target["recent"][0]["amount"].as_str().unwrap().as_ptr(),
+            amount
+        );
     }
 
     #[test]
