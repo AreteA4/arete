@@ -47,8 +47,8 @@ Search gives the stack slug, `--views` gives the view's fields and units, and
 Which protocols in a category can I stream, and which can I build with?
 Take `<category>` from the vocabulary:
 
-    a4 explore catalog --category <category> --mode subscribe --kind stack --fields slug,protocol,modes
-    a4 explore catalog --category <category> --mode build --kind program --fields slug,protocol,modes
+    a4 explore catalog --category <category> --mode subscribe --kind stack --limit 50 --fields slug,protocol,modes
+    a4 explore catalog --category <category> --mode build --kind program --limit 50 --fields slug,protocol,modes
 
 ## Capabilities
 
