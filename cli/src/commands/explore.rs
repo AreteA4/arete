@@ -2130,6 +2130,9 @@ fn render_field(field: &EntityField, indent: &str) -> String {
     if let Some(description) = &field.description {
         text.push_str(&format!("{indent}    {description}\n"));
     }
+    if let Some(amount) = &field.amount {
+        text.push_str(&format!("{indent}    amount: {}\n", amount.describe()));
+    }
     text
 }
 

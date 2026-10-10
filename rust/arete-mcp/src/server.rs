@@ -670,6 +670,52 @@ pub struct QueryEntitiesArgs {
     pub limit: Option<usize>,
 }
 
+/// Default and ceiling for how long `read_view` waits for its snapshot.
+const READ_VIEW_TIMEOUT_DEFAULT_SECS: usize = 15;
+const READ_VIEW_TIMEOUT_MAX_SECS: usize = 60;
+const READ_VIEW_LIMIT_DEFAULT: usize = 10;
+
+/// How long a cache read on a subscription whose snapshot has not arrived
+/// yet waits for it, so a read straight after `subscribe` is not empty.
+const SNAPSHOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReadViewArgs {
+    /// Bare stack reference as listed by `explore_stacks` (e.g. `ore`); its
+    /// WebSocket endpoint is looked up in the registry. Pass `stack` or
+    /// `url`.
+    #[serde(default)]
+    pub stack: Option<String>,
+    /// WebSocket URL of the stack, instead of `stack` (e.g. a stack with
+    /// several endpoints, or a local `ws://localhost:8878`).
+    #[serde(default)]
+    pub url: Option<String>,
+    /// View id shaped `EntityName/mode`, e.g. `OreRound/latest`.
+    pub view: String,
+    /// Entity key, to read one entity (usually with an `EntityName/state`
+    /// view).
+    #[serde(default)]
+    pub key: Option<String>,
+    /// String-DSL filters, ANDed: `field=value`, `field>N`, `field~regex`,
+    /// `field?`, `field!?`, `field!=value`, `field!~re`.
+    #[serde(default)]
+    pub r#where: Vec<String>,
+    /// Structured filter predicates, ANDed with `where`.
+    #[serde(default)]
+    pub filters: Vec<StructuredPredicate>,
+    /// Comma-separated dot-paths to project from each entity
+    /// (e.g. `id.round_id,state.motherlode`).
+    #[serde(default)]
+    pub select: Option<String>,
+    /// Most entities to return. Defaults to 10, capped at 1000.
+    #[serde(default, deserialize_with = "lenient::opt_usize")]
+    pub limit: Option<usize>,
+    /// Seconds to wait for the connection and snapshot. Defaults to 15,
+    /// capped at 60.
+    #[serde(default, deserialize_with = "lenient::opt_usize")]
+    pub timeout_secs: Option<usize>,
+}
+
 #[derive(Debug, Serialize)]
 struct SubscriptionInfo {
     subscription_id: String,
@@ -795,7 +841,9 @@ impl AreteMcp {
                           catalog, entities and views carry a curated `summary` and \
                           fields a `description` (the summary lists them as \
                           `fieldDescriptions`) with usage guidance, e.g. which of two \
-                          similar fields a live UI should show. `full: true` returns the whole \
+                          similar fields a live UI should show. Token-amount fields carry \
+                          `amount` (`scale` `ui` or `raw`, `decimals`; see \
+                          explore_stack_schema). `full: true` returns the whole \
                           descriptor `a4 install` consumes (StackManifest, LiveSpecs, \
                           programs, extensions) — hundreds of KB, so ask for it only \
                           when you need artifact bodies.\n\n\
@@ -867,7 +915,15 @@ impl AreteMcp {
                           them before choosing fields. They are attached only when the \
                           knowledge was published for the StackManifest the registry \
                           serves for this stack. `knowledge` names the document they \
-                          come from."
+                          come from.\n\n\
+                          Token amounts: a field the stack scales carries `amount`: \
+                          `scale: \"ui\"` is whole token units (raw / 10^decimals, a \
+                          float), `scale: \"raw\"` is integer base units (often a \
+                          string-encoded u64; for SOL, lamports), with `decimals` (or \
+                          `decimalsFrom`, the field holding them) and `counterpart`, the \
+                          same amount at the other scale. Which token a field counts \
+                          is in its `description` when the catalog has one. To read \
+                          values, use `read_view`."
     )]
     async fn explore_stack_schema(
         &self,
@@ -882,8 +938,20 @@ impl AreteMcp {
             .get("name")
             .and_then(serde_json::Value::as_str)
             .unwrap_or(&args.stack);
-        let knowledge = self.schema_knowledge(&args.stack, slug).await;
-        described_schema_result(body, schema, knowledge.as_ref())
+        // The install descriptor pins the knowledge to the served
+        // StackManifest and carries the LiveSpecs that say how token
+        // amounts are scaled. Both lookups only ever add to the output.
+        let deadline = std::time::Instant::now() + LOOKUP_TIMEOUT;
+        let descriptor = self
+            .registry
+            .stack_install_within(&args.stack, Some(LOOKUP_TIMEOUT))
+            .await
+            .ok();
+        let knowledge = self
+            .schema_knowledge(slug, descriptor.as_deref(), deadline)
+            .await;
+        let descriptor = descriptor.and_then(|body| serde_json::from_str(&body).ok());
+        described_schema_result(body, schema, knowledge.as_ref(), descriptor.as_ref())
     }
 
     #[tool(
@@ -1344,10 +1412,144 @@ impl AreteMcp {
         }
     }
 
+    #[tool(
+        description = "Read the current entities of a view once: connects, subscribes, \
+                          waits for the snapshot, returns the entities and disconnects. \
+                          Use this to answer \"what is the current X\" (e.g. the current \
+                          ORE round: `{\"stack\": \"ore\", \"view\": \"OreRound/latest\", \
+                          \"limit\": 1}`) \
+                          instead of connect + subscribe + get_recent, and instead of \
+                          writing a script. Use `subscribe` only to follow changes over \
+                          time.\n\n\
+                          Pass `stack` (a bare reference like `ore`) or `url`. Auth is \
+                          resolved like `connect`'s, so omit any key. `key` reads one \
+                          entity; `where`/`filters` and `select` work as in \
+                          `query_entities`; `limit` defaults to 10 (entities come in \
+                          the view's order, so `limit: 1` on a sorted view like \
+                          `OreRound/latest` is its current entity).\n\n\
+                          Token amounts: a float field is usually in whole token units \
+                          and an integer (often string-encoded) one in raw base units. \
+                          `explore_stack_schema` reports each scaled field's `amount` \
+                          (`scale`: `ui` or `raw`, `decimals`) — check it before \
+                          converting or labelling values."
+    )]
+    async fn read_view(
+        &self,
+        Parameters(args): Parameters<ReadViewArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        validate_view_name(&args.view)?;
+        let mut compiled = Filter::parse(&args.r#where)
+            .map_err(|e| McpError::invalid_params(format!("invalid where: {e}"), None))?;
+        let structured = Filter::from_structured(&args.filters)
+            .map_err(|e| McpError::invalid_params(format!("invalid filters: {e}"), None))?;
+        compiled.extend(structured);
+        let select_paths = args.select.as_deref().map(filter::parse_select);
+        let limit = args
+            .limit
+            .unwrap_or(READ_VIEW_LIMIT_DEFAULT)
+            .clamp(1, QUERY_LIMIT_MAX);
+        let timeout = std::time::Duration::from_secs(
+            args.timeout_secs
+                .unwrap_or(READ_VIEW_TIMEOUT_DEFAULT_SECS)
+                .clamp(1, READ_VIEW_TIMEOUT_MAX_SECS) as u64,
+        );
+
+        // One deadline covers the stack lookup, the connection and the
+        // snapshot.
+        let deadline = tokio::time::Instant::now() + timeout;
+        let url =
+            match (args.url, args.stack) {
+                (Some(url), _) if !url.trim().is_empty() => url.trim().to_string(),
+                (_, Some(stack)) if !stack.trim().is_empty() => {
+                    self.stack_websocket_url(&stack, deadline).await?
+                }
+                _ => return Err(McpError::invalid_params(
+                    "pass `stack` (a bare reference like `ore`, from `explore_stacks`) or `url` \
+                     (the stack's WebSocket URL)"
+                        .to_string(),
+                    None,
+                )),
+            };
+        let resolved = credentials::resolve(None, &url)
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+
+        // Without filters the server can cut the snapshot to `limit`; with
+        // them the whole snapshot is needed to find the matches.
+        let take = (args.key.is_none() && compiled.is_empty()).then_some(limit);
+        let entities = match crate::oneshot::read_view(
+            url.clone(),
+            resolved.key,
+            args.view.trim(),
+            args.key.clone(),
+            take,
+            deadline,
+        )
+        .await
+        {
+            Ok(entities) => entities,
+            Err(crate::oneshot::ReadError::Sdk(error)) => return Err(self.sdk_error(error).await),
+
+            Err(crate::oneshot::ReadError::TimedOut { waiting_for }) => {
+                return Err(McpError::internal_error(
+                    format!(
+                        "timed out after {}s waiting for {waiting_for} of `{}`. Check the view id \
+                         with explore_stack_schema (it must be `EntityName/mode`), or raise \
+                         `timeout_secs`.",
+                        timeout.as_secs(),
+                        args.view
+                    ),
+                    None,
+                ))
+            }
+        };
+
+        let total = entities.len();
+        let mut matched = Vec::new();
+        for value in entities {
+            if !compiled.is_empty() && !compiled.matches(&value) {
+                continue;
+            }
+            matched.push(match &select_paths {
+                Some(paths) => filter::select_fields(&value, paths),
+                None => value,
+            });
+        }
+        let matching = matched.len();
+        matched.truncate(limit);
+        if let Some(key) = &args.key {
+            if total == 0 {
+                return Err(McpError::invalid_params(
+                    format!(
+                        "no entity with key `{key}` in `{}`. Keyed reads usually need the \
+                         entity's `/state` view; check the key format with read_view on \
+                         `EntityName/list`.",
+                        args.view
+                    ),
+                    None,
+                ));
+            }
+        }
+        let mut payload = serde_json::json!({
+            "view": args.view.trim(),
+            "total": total,
+            "matching": matching,
+            "returned": matched.len(),
+            "truncated": matching > matched.len(),
+            "entities": matched,
+        });
+        if let Some(key) = &args.key {
+            payload["key"] = serde_json::json!(key);
+        }
+        // A large view can exceed the tool-result cap; `select` or a
+        // smaller `limit` narrows it.
+        shaped_result(&payload)
+    }
+
     #[tool(description = "Subscribe to a Arete view on an existing connection. \
                           Streamed entities land in an in-memory cache that the query \
                           tools (get_entity, list_entities, get_recent, query_entities) \
-                          read from.\n\n\
+                          read from. To read a view's current value once, use \
+                          `read_view` instead: it needs no connection or subscription.\n\n\
                           VIEW NAMING: A view name ALWAYS has the shape \
                           `EntityName/mode` — an entity name, a slash, and a mode. \
                           Pass the full string, never just the mode. Concrete \
@@ -1457,7 +1659,8 @@ impl AreteMcp {
                           Accepts both a string-DSL `where` (CLI-compatible) and \
                           structured `filters` (LLM-friendly). Both are ANDed. \
                           `select` projects fields by dot-path. `limit` defaults \
-                          to 100 and is capped at 1000.\n\n\
+                          to 100 and is capped at 1000. Waits up to 5s for the \
+                          subscription's snapshot (`ready`).\n\n\
                           If this returns 0 entities, the view may be empty on this \
                           deployment — consider resubscribing with a different mode \
                           suffix (e.g. /list instead of /state); see the `subscribe` \
@@ -1469,6 +1672,9 @@ impl AreteMcp {
     ) -> Result<CallToolResult, McpError> {
         let (store, wire_subscription_id, view) =
             self.resolve_subscription(&args.subscription_id)?;
+        let ready = store
+            .wait_for_subscription_ready(&wire_subscription_id, SNAPSHOT_WAIT)
+            .await;
 
         let mut compiled = Filter::parse(&args.r#where)
             .map_err(|e| McpError::invalid_params(format!("invalid where: {e}"), None))?;
@@ -1503,6 +1709,7 @@ impl AreteMcp {
 
         let payload = serde_json::json!({
             "view": view,
+            "ready": ready,
             "total_scanned": total_scanned,
             "returned": matched.len(),
             "limit_applied": limit,
@@ -1513,18 +1720,27 @@ impl AreteMcp {
         )]))
     }
 
-    #[tool(description = "Fetch a single entity by key from a subscription's cache.")]
+    #[tool(
+        description = "Fetch a single entity by key from a subscription's cache. \
+                          Waits up to 5s for the subscription's snapshot (`ready`). To \
+                          read one entity without a subscription, use `read_view` with \
+                          `key`."
+    )]
     async fn get_entity(
         &self,
         Parameters(args): Parameters<GetEntityArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (store, wire_subscription_id, view) =
             self.resolve_subscription(&args.subscription_id)?;
+        let ready = store
+            .wait_for_subscription_ready(&wire_subscription_id, SNAPSHOT_WAIT)
+            .await;
         let value: Option<serde_json::Value> = store
             .get_for_subscription(&wire_subscription_id, &args.key)
             .await;
         let payload = serde_json::json!({
             "view": view,
+            "ready": ready,
             "key": args.key,
             "found": value.is_some(),
             "data": value,
@@ -1551,12 +1767,16 @@ impl AreteMcp {
     ) -> Result<CallToolResult, McpError> {
         let (store, wire_subscription_id, view) =
             self.resolve_subscription(&args.subscription_id)?;
+        let ready = store
+            .wait_for_subscription_ready(&wire_subscription_id, SNAPSHOT_WAIT)
+            .await;
         let all_keys = store.keys_for_subscription(&wire_subscription_id).await;
         let total_cached = all_keys.len();
         let keys: Vec<String> = all_keys.into_iter().take(QUERY_LIMIT_MAX).collect();
         let truncated = total_cached > keys.len();
         let payload = serde_json::json!({
             "view": view,
+            "ready": ready,
             "total_cached": total_cached,
             "returned": keys.len(),
             "truncated": truncated,
@@ -1572,19 +1792,26 @@ impl AreteMcp {
                           Parameters: `subscription_id` (required, string returned by \
                           `subscribe`); `n` (optional integer, default 10, max 1000; \
                           `limit` is accepted as an alias). \
-                          Example: {\"subscription_id\": \"sub_1\", \"n\": 10}")]
+                          Example: {\"subscription_id\": \"sub_1\", \"n\": 10}\n\n\
+                          Waits up to 5s for the subscription's snapshot; `ready: false` \
+                          means it has not arrived (check the view id). For a one-off \
+                          read without a subscription, use `read_view`.")]
     async fn get_recent(
         &self,
         Parameters(args): Parameters<GetRecentArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (store, wire_subscription_id, view) =
             self.resolve_subscription(&args.subscription_id)?;
+        let ready = store
+            .wait_for_subscription_ready(&wire_subscription_id, SNAPSHOT_WAIT)
+            .await;
         let n = args.n.unwrap_or(GET_RECENT_DEFAULT).min(QUERY_LIMIT_MAX);
         let all: Vec<serde_json::Value> = store.list_for_subscription(&wire_subscription_id).await;
         let total = all.len();
         let recent: Vec<serde_json::Value> = all.into_iter().take(n).collect();
         let payload = serde_json::json!({
             "view": view,
+            "ready": ready,
             "total_cached": total,
             "returned": recent.len(),
             "entities": recent,
@@ -1697,7 +1924,7 @@ fn bounded_result(text: String) -> Result<CallToolResult, McpError> {
         return Err(McpError::internal_error(
             format!(
                 "shaped response is {} bytes, over the {MAX_RESPONSE_BYTES} byte limit for a single \
-                 tool result. Narrow it (fewer `views`, `sections` or `fields`, a smaller `limit`, \
+                 tool result. Narrow it (fewer `views`, `sections` or `fields`, a `select`, a smaller `limit`, \
                  or no `full`), or use `a4 explore` on the command line.",
                 text.len()
             ),
@@ -1920,33 +2147,73 @@ impl AreteMcp {
         stack_knowledge_from_body(&body, stack_manifest_hash)
     }
 
+    /// The single WebSocket endpoint the registry serves for `stack`.
+    /// Abandoned at `deadline`.
+    async fn stack_websocket_url(
+        &self,
+        stack: &str,
+        deadline: tokio::time::Instant,
+    ) -> Result<String, McpError> {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let lookup = self
+            .registry
+            .stack_install_within(stack.trim(), Some(remaining));
+        let body = match tokio::time::timeout_at(deadline, lookup).await {
+            Ok(result) => self.registry_body(result).await?,
+            Err(_) => {
+                return Err(McpError::internal_error(
+                    format!(
+                        "timed out after {}s looking up stack `{stack}` in the registry; \
+                         retry, raise `timeout_secs`, or pass `url`",
+                        remaining.as_secs()
+                    ),
+                    None,
+                ))
+            }
+        };
+        let descriptor: serde_json::Value = parse_descriptor(Ok(body))?;
+        descriptor
+            .get("websocketUrl")
+            .and_then(serde_json::Value::as_str)
+            .filter(|url| !url.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!(
+                        "stack `{stack}` has no single WebSocket endpoint; pass `url` with one of \
+                         the endpoints explore_stack lists"
+                    ),
+                    None,
+                )
+            })
+    }
+
     /// The catalog knowledge for a schema response. The schema names no
-    /// StackManifest, so the guidance is pinned to the StackManifest of the
-    /// install descriptor the registry serves for the same `reference`, the
-    /// stack the schema describes. It is omitted when that descriptor cannot
-    /// be read, names no StackManifest, or names another one. The descriptor
-    /// is only fetched once there is knowledge to check, and both requests
-    /// together are abandoned after [`LOOKUP_TIMEOUT`].
-    async fn schema_knowledge(&self, reference: &str, slug: &str) -> Option<StackKnowledge> {
+    /// StackManifest, so the guidance is pinned to the StackManifest of
+    /// `descriptor`, the install descriptor the registry serves for the same
+    /// stack. It is omitted when that descriptor could not be read, names no
+    /// StackManifest, or names another one, and when the knowledge cannot
+    /// be fetched before `deadline`.
+    async fn schema_knowledge(
+        &self,
+        slug: &str,
+        descriptor: Option<&str>,
+        deadline: std::time::Instant,
+    ) -> Option<StackKnowledge> {
         if !stack_knowledge::may_have_catalog_knowledge(slug, None) {
             return None;
         }
-        let deadline = std::time::Instant::now() + LOOKUP_TIMEOUT;
-        let knowledge = self
-            .registry
-            .catalog_entry_knowledge("stack", slug, LOOKUP_TIMEOUT)
-            .await
-            .ok()?;
+        let descriptor = descriptor?;
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             return None;
         }
-        let descriptor = self
+        let knowledge = self
             .registry
-            .stack_install_within(reference, Some(remaining))
+            .catalog_entry_knowledge("stack", slug, remaining)
             .await
             .ok()?;
-        schema_knowledge_from_bodies(&knowledge, &descriptor)
+        schema_knowledge_from_bodies(&knowledge, descriptor)
     }
 }
 
@@ -1969,17 +2236,22 @@ fn schema_knowledge_from_bodies(knowledge: &str, descriptor: &str) -> Option<Sta
 }
 
 /// A stack schema response (`body`, parsed as `schema`) with its catalog
-/// knowledge attached. Without knowledge the registry's bytes pass through
-/// unchanged.
+/// knowledge and the token-amount scale of its fields (read from the
+/// install `descriptor`) attached. With neither the registry's bytes pass
+/// through unchanged.
 fn described_schema_result(
     body: String,
     mut schema: serde_json::Value,
     knowledge: Option<&StackKnowledge>,
+    descriptor: Option<&serde_json::Value>,
 ) -> Result<CallToolResult, McpError> {
-    let Some(knowledge) = knowledge else {
+    let amounts = descriptor
+        .is_some_and(|descriptor| descriptor::annotate_schema_amounts(&mut schema, descriptor));
+    if let Some(knowledge) = knowledge {
+        stack_knowledge::describe_schema(&mut schema, knowledge);
+    } else if !amounts {
         return registry_result(Ok(body));
-    };
-    stack_knowledge::describe_schema(&mut schema, knowledge);
+    }
     shaped_result(&schema)
 }
 
@@ -2198,13 +2470,13 @@ mod explore_args_tests {
 
         // No knowledge (no catalog entry, or a registry without the route):
         // the registry's bytes pass through unchanged.
-        let result = described_schema_result(body.clone(), schema.clone(), None).unwrap();
+        let result = described_schema_result(body.clone(), schema.clone(), None, None).unwrap();
         assert_eq!(result_text(&result), body);
 
         let knowledge = crate::stack_knowledge::tests::ore_knowledge().to_string();
         let descriptor = serde_json::json!({"name": "ore", "stackManifestHash": "manifest-exact"});
         let knowledge = schema_knowledge_from_bodies(&knowledge, &descriptor.to_string()).unwrap();
-        let result = described_schema_result(body, schema, Some(&knowledge)).unwrap();
+        let result = described_schema_result(body, schema, Some(&knowledge), None).unwrap();
         let described: serde_json::Value = serde_json::from_str(&result_text(&result)).unwrap();
         let round = &described["schema"]["entities"][0];
         assert_eq!(round["summary"], "One mining round.");
@@ -2278,7 +2550,11 @@ mod explore_args_tests {
             .await
             .is_none());
         assert!(server
-            .schema_knowledge("vault", "Vault Stack")
+            .schema_knowledge(
+                "Vault Stack",
+                Some(r#"{"stackManifestHash":"manifest-exact"}"#),
+                std::time::Instant::now() + LOOKUP_TIMEOUT,
+            )
             .await
             .is_none());
         assert_eq!(

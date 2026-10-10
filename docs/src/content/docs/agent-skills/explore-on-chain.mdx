@@ -140,13 +140,13 @@ stack SDK.
 MCP is for investigating, debugging, and helping your agent reason. Code that
 ships should use the generated SDKs:
 
-| Need                                     | Use                                      |
-| ---------------------------------------- | ---------------------------------------- |
-| Ask an ad hoc question                   | MCP                                      |
-| Inspect a live view during development   | MCP or `a4 stream`                       |
-| Read program accounts in an application  | Generated Program SDK                    |
-| Maintain a live application subscription | Generated stack SDK                      |
-| Build or execute transactions            | Generated Program SDK and wallet adapter |
+| Need                                     | Use                                       |
+| ---------------------------------------- | ----------------------------------------- |
+| Ask an ad hoc question                   | MCP                                       |
+| Inspect a live view during development   | `a4 get`, MCP `read_view`, or `a4 stream` |
+| Read program accounts in an application  | Generated Program SDK                     |
+| Maintain a live application subscription | Generated stack SDK                       |
+| Build or execute transactions            | Generated Program SDK and wallet adapter  |
 
 The MCP server doesn't replace SDK generation, and it never deploys custom
 infrastructure behind your back.

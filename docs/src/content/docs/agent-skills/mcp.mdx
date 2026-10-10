@@ -182,6 +182,19 @@ are attached only when the knowledge was published for the StackManifest the
 registry serves for that stack. No API key is needed, and a stack without a
 catalog entry returns its schema unchanged.
 
+**Token amounts.** `explore_stack_schema` and `explore_stack` views attach
+`amount` to each field the stack scales with `ui_amount(decimals)`, read from
+the stack's own computations: `scale: "ui"` is whole token units (the raw
+amount divided by `10^decimals`, a float), `scale: "raw"` the integer base
+units it is computed from (often a string-encoded `u64`; for SOL, lamports).
+`decimals` (or `decimalsFrom`, the field holding them) and `counterpart`, the
+field with the same amount at the other scale, come with it. Check `amount`
+before converting or labelling a value.
+
+```json
+{ "path": "state.total_deployed", "rust_type": "Option < f64 >", "amount": { "scale": "ui", "decimals": 9 } }
+```
+
 A summary, one operation or a few views is usually a few KB. Full bodies are
 the registry's JSON, passed through unchanged. Any response over 512 KB is
 refused rather than truncated; use `a4 explore` for payloads that large.
@@ -271,9 +284,39 @@ get_program_knowledge({ program: "<programs[].slug>", section: "surface" })
   → callable operations with bindings; then `a4 install …` from the CLI
 ```
 
+### Reading a view once
+
+`read_view` answers "what is the current X" in one call: it connects,
+subscribes, waits for the snapshot, returns the entities and disconnects.
+Nothing it opens outlives the call. Pass `stack` (a bare reference like `ore`)
+or `url`, and the view id; credentials resolve as for `connect`.
+
+| Argument           | Description                                                          |
+| ------------------ | -------------------------------------------------------------------- |
+| `stack` or `url`   | Bare stack reference, or the stack's WebSocket URL                   |
+| `view`             | `<EntityName>/<view>`, e.g. `OreRound/latest`                        |
+| `key`              | Read one entity (usually with an `<EntityName>/state` view)          |
+| `where`, `filters` | Same filters as `query_entities`, ANDed                              |
+| `select`           | Comma-separated dot paths to project                                 |
+| `limit`            | Most entities, in the view's order (default 10, max 1000)            |
+| `timeout_secs`     | Seconds to wait for the connection and snapshot (default 15, max 60) |
+
+```
+read_view({ stack: "ore", view: "OreRound/latest", limit: 1,
+            select: "id.round_id,state.total_deployed,treasury.motherlode" })
+→ { "view": "OreRound/latest", "total": 1, "matching": 1, "returned": 1, "truncated": false,
+    "entities": [{ "id.round_id": "434165", "state.total_deployed": 4.93, "treasury.motherlode": 37.2 }] }
+```
+
+An unknown view, a `key` with no entity, or a snapshot that does not arrive
+in time is an error that says so.
+
 ### Streaming tools
 
-Stateful. A session calls `connect` once, then `subscribe`, then reads the cache.
+Stateful, for following a view over time. A session calls `connect` once, then
+`subscribe`, then reads the cache. The cache reads wait up to 5 seconds for
+the subscription's snapshot and report `ready`; `ready: false` means it has not
+arrived, usually because the view id is wrong.
 
 | Tool                 | Purpose                                                                                                                                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -295,7 +338,10 @@ View ids follow the `<EntityName>/<view>` template — e.g. `OreRound/list`, `Or
 
 ```
 explore_stacks()                        → pick a stack, note its websocket_url
-explore_stack_schema({ stack: "ore" })  → get the exact view id
+explore_stack_schema({ stack: "ore" })  → get the exact view id and field amounts
+read_view({ stack: "ore", view })       → the current entities, once
+
+# or, to follow updates:
 connect({ url })                        → connection_id
 subscribe({ connection_id, view })      → subscription_id
 query_entities({ subscription_id, … })  → data

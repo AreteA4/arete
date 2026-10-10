@@ -89,17 +89,31 @@ descriptor before installation.
 ## Explore live data
 
 `a4 init` configures the Arete MCP server for agent-led exploration. Use the
-tools exposed by the current server to inspect schemas, connect, subscribe,
-query a bounded sample, and disconnect.
+tools exposed by the current server to inspect schemas and read views
+(`read_view` reads a view's current entities in one call), or connect,
+subscribe, query a bounded sample, and disconnect.
 
-The CLI can inspect a deployed view directly:
+To answer "what is the current X", read the view once instead of writing a
+script:
 
 ```bash
-a4 stream <Entity>/<view> --stack <stack-ref> --first
+a4 get <Entity>/<view> --stack <stack-ref> --limit 1
+a4 get <Entity>/<view> --stack <stack-ref> --select <field>,<field> --limit 10
+a4 get <Entity>/state --stack <stack-ref> --key <key>
+```
+
+To watch it change:
+
+```bash
 a4 stream <Entity>/<view> --stack <stack-ref> --take 10 --duration 15
 ```
 
-Use MCP or `a4 stream` for investigation. Use a generated SDK for application
+Before reporting token amounts, check each field's `amount` in
+`a4 explore stack <stack-ref> --views <Entity>/<view>`: `scale: "ui"` values
+are whole tokens, `scale: "raw"` values are base units (divide by
+`10^decimals`; for SOL these are lamports).
+
+Use MCP, `a4 get` or `a4 stream` for investigation. Use a generated SDK for application
 code.
 
 ## Install an exact dependency

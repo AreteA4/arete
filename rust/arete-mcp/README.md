@@ -128,13 +128,16 @@ under the tool reference for the exact precedence.
 
 A typical session starts with discovery — `search_knowledge` to find which
 protocols serve an intent (API key required), `explore_stacks` to see what
-exists, `explore_stack_schema` to get the view ids — then calls `connect` once,
+exists, `explore_stack_schema` to get the view ids. To read a view's current
+entities once, it then calls `read_view`, which connects, waits for the
+snapshot and disconnects in one call. To follow updates it calls `connect` once,
 then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
 `get_recent` / `query_entities`. Everything from `connect` onward is stateful.
 
 | Group | Tools | Auth |
 |-------|-------|------|
 | Discovery | `explore_stacks`, `explore_stack`, `explore_stack_schema`, `explore_programs`, `explore_program`, `resolve_artifact` | None required; a resolved key widens `explore_stacks` |
+| One-shot read | `read_view` | Key resolved automatically; required for hosted stacks |
 | Knowledge | `search_knowledge`, `get_protocol`, `get_program_knowledge`, `get_recipe`, `list_concepts` | **API key required** — fails up front without one |
 | Connection | `connect`, `disconnect`, `list_connections` | Key resolved automatically; required for hosted stacks |
 | Subscription | `subscribe`, `unsubscribe`, `list_subscriptions` | Per connection |
@@ -326,7 +329,31 @@ discoverable via the MCP protocol — the stack author must document them out
 of band, or the agent must be told by its user. If you're the author, list
 them in whatever README the agent has access to.
 
+### Reading a view once
+
+`read_view({ stack | url, view, key?, where?, filters?, select?, limit?, timeout_secs? })`
+connects, subscribes, waits for the view's snapshot, returns its entities and
+disconnects; nothing outlives the call. `stack` is a bare registry reference
+(`ore`) whose single WebSocket endpoint is looked up; `url` overrides it.
+`where`, `filters` and `select` work as in `query_entities`. `limit` defaults to
+10 (max 1000) and entities come in the view's order, so `limit: 1` on a sorted
+view such as `OreRound/latest` is its current entity. Without filters the
+server sends only `limit` entities. `timeout_secs` defaults to 15 (max 60). The
+result is `{ view, key?, total, matching, returned, truncated, entities }`. An
+unknown view, a `key` with no entity, or a timeout is an error.
+
+### Token amounts
+
+`explore_stack_schema` and `explore_stack` views attach `amount` to the fields
+a stack scales with `ui_amount(decimals)`: `{ scale: "ui" | "raw", decimals?,
+decimalsFrom?, counterpart? }`. `ui` is whole token units (raw / 10^decimals),
+`raw` the integer base units the computation reads (for SOL, lamports). The
+scale is read from the LiveSpec's computed fields, never guessed from names.
+
 ### Querying the cache
+
+Each read waits up to 5 seconds for the subscription's snapshot and reports
+`ready`, so a read straight after `subscribe` is not spuriously empty.
 
 Streamed entities land in the SDK's `SharedStore`, which keeps normalized
 entities separate from protocol v2 query membership. Every query tool below

@@ -36,7 +36,7 @@ Never read, print, or copy credential files or keys. Never put a key in source.
 Arete can:
 
 - discover relevant programs and stacks from intent through the public catalog;
-- explore deployed live views through MCP or `a4 stream`;
+- read deployed live views once with `a4 get` (or MCP `read_view`), or follow them with MCP or `a4 stream`;
 - generate typed TypeScript, React, Rust, or Python SDKs when supported;
 - read typed program accounts and generic Solana chain state;
 - derive addresses and build instructions, transactions, and multi-step flows;

@@ -380,6 +380,7 @@ pub(crate) mod tests {
                 rust_type: "Option<u8>".into(),
                 nullable: true,
                 description: None,
+                amount: None,
             },
             EntityField {
                 section: "results".into(),
@@ -387,6 +388,7 @@ pub(crate) mod tests {
                 rust_type: "Option<u64>".into(),
                 nullable: true,
                 description: None,
+                amount: None,
             },
         ];
         round.describe_fields(&mut fields);

@@ -104,6 +104,8 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 explore programs`                                                         | Discover installable standalone programs                         |
 | `a4 explore stack <ref>`                                                      | Inspect an exact stack install descriptor                        |
 | `a4 explore program <ref>`                                                    | Inspect an exact program install descriptor                      |
+| `a4 get <Entity>/<view> --stack <ref>`                                        | Read a view's current entities once, as JSON                     |
+| `a4 stream <Entity>/<view> --stack <ref>`                                     | Stream a view's live updates                                     |
 | `a4 know search --query <intent>`                                             | Search the knowledge layer by intent                             |
 | `a4 know protocol <slug>`                                                     | Curated knowledge for one protocol                               |
 | `a4 know program <slug>`                                                      | Curated annotations for one program                              |
@@ -734,6 +736,27 @@ lookup for private stacks and gives up on it after 2 seconds.
 }
 ```
 
+**Token amounts.** A field the stack scales with `ui_amount(decimals)` (as a
+`#[map]` `transform` or in a `#[computed]` expression) carries `amount`, read
+from the stack's own computations rather than guessed from names. `scale` is
+`ui` for whole token units (the raw amount divided by `10^decimals`, a float)
+or `raw` for the integer base units the computation reads (often a
+string-encoded `u64`; for SOL, lamports). `decimals` is the token's decimals,
+or `decimalsFrom` names the field holding them, and `counterpart` names the
+emitted field with the same amount at the other scale. Which token a field
+counts is in its description when the catalog has one. Human output prints an
+`amount:` line under the field.
+
+```json
+{
+  "path": "state.deployed_per_square",
+  "rustType": "Option < Vec < u64 > >",
+  "nullable": true,
+  "section": "state",
+  "amount": { "scale": "raw", "decimals": 9, "counterpart": "state.deployed_per_square_ui" }
+}
+```
+
 **Endpoints inside a project.** When `arete.toml` declares the stack as a
 dependency, `sdkEndpoints` shows which stream endpoints the generated SDK
 reads. Endpoints that `a4 up` recorded in `arete.toml` take precedence over the
@@ -804,6 +827,71 @@ Slugs are bare identifiers (`meteora-damm`), not URLs or paths; unknown slugs
 return a not-found error. The catalog is growing, so a protocol with no entry
 is not evidence that it is unsupported — fall back to `a4 explore` and
 `a4 idl`.
+
+---
+
+## Reading Live Data
+
+### a4 get \<Entity\>/\<view\>
+
+Read a view's current entities once and exit. `a4 get` connects the way
+`a4 stream` does (same stack resolution and credentials), waits for the
+view's snapshot, prints one JSON document and disconnects. Use it to answer
+"what is the current value" questions without writing a script.
+
+```bash
+# The current ORE round (OreRound/latest is sorted newest first)
+a4 get OreRound/latest --stack ore --limit 1
+
+# Only the fields you need
+a4 get OreRound/latest --stack ore --limit 1 \
+  --select id.round_id,state.total_deployed,treasury.motherlode
+
+# One entity by key
+a4 get OreRound/state --stack ore --key 434161
+
+# Filter the snapshot
+a4 get OreRound/latest --stack ore --where 'state.total_deployed>8' --limit 5
+```
+
+| Flag                 | Description                                                                 |
+| -------------------- | --------------------------------------------------------------------------- |
+| `-s, --stack <name>` | Owned deployment or registry stack name                                     |
+| `--url <ws-url>`     | WebSocket URL instead of `--stack`                                          |
+| `-k, --key <key>`    | Read the one entity with this key (usually an `<Entity>/state` view)        |
+| `--where <expr>`     | Filter: `field=value`, `field>N`, `field~regex` (repeatable, ANDed)         |
+| `--select <paths>`   | Comma-separated dot paths to output                                         |
+| `--limit <n>`        | Most entities to print, in the view's order (default 10)                    |
+| `--timeout <secs>`   | Seconds to wait for the connection and snapshot before failing (default 15) |
+
+Output:
+
+```json
+{
+  "entities": [
+    { "id.round_id": "434161", "state.total_deployed": 5.002337026, "treasury.motherlode": 36.6 }
+  ],
+  "matching": 1,
+  "returned": 1,
+  "total": 1,
+  "truncated": false,
+  "view": "OreRound/latest"
+}
+```
+
+Without `--where`, the server sends only `--limit` entities. With `--where`,
+`total` counts the whole snapshot and `matching` the entities that passed.
+`a4 get` exits non-zero with a message when the view is unknown, a `--key`
+has no entity, or the snapshot does not arrive within `--timeout`.
+
+Float token amounts are usually whole units and the integer fields they come
+from raw base units; `a4 explore stack <ref> --views <view>` shows each scaled
+field's `amount` (see [Token amounts](#a4-explore)).
+
+### a4 stream \<Entity\>/\<view\>
+
+Follow a view's live updates. Run `a4 stream --help` for filtering,
+selection, history, recording and TUI options.
 
 ---
 
