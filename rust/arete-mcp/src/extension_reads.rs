@@ -147,7 +147,9 @@ fn identifier_occurrences(source: &str, word: &str) -> Vec<usize> {
 /// without escapes; values are an argument count of at most
 /// [`MAX_READ_ARGS`], a `[min, max]` pair of them, or a nested object (at
 /// most [`MAX_NESTING`] deep). Entries are separated by commas, with an
-/// optional trailing comma; only whitespace may appear between tokens.
+/// optional trailing comma; only whitespace and `//` or `/* */` comments
+/// may appear between tokens (the grammar has no regex literals, so a
+/// comment there is unambiguous).
 /// Anything else fails the whole candidate. Returns the text after the brace.
 fn parse_object<'a>(
     mut text: &'a str,
@@ -159,7 +161,7 @@ fn parse_object<'a>(
         return None;
     }
     loop {
-        text = text.trim_start();
+        text = skip_ws(text);
         if let Some(rest) = text.strip_prefix('}') {
             return Some(rest);
         }
@@ -167,7 +169,7 @@ fn parse_object<'a>(
             return None;
         }
         let (key, rest) = parse_key(text)?;
-        let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+        let rest = skip_ws(skip_ws(rest).strip_prefix(':')?);
         let path = if prefix.is_empty() {
             key.to_string()
         } else {
@@ -176,10 +178,10 @@ fn parse_object<'a>(
         text = if let Some(nested) = rest.strip_prefix('{') {
             parse_object(nested, &path, depth + 1, out)?
         } else if let Some(list) = rest.strip_prefix('[') {
-            let (first, list) = parse_count(list.trim_start())?;
-            let list = list.trim_start().strip_prefix(',')?.trim_start();
+            let (first, list) = parse_count(skip_ws(list))?;
+            let list = skip_ws(skip_ws(list).strip_prefix(',')?);
             let (second, list) = parse_count(list)?;
-            let list = list.trim_start().strip_prefix(']')?;
+            let list = skip_ws(list).strip_prefix(']')?;
             out.push(ReadArity {
                 path,
                 required: first.min(second),
@@ -195,11 +197,27 @@ fn parse_object<'a>(
             });
             rest
         };
-        text = text.trim_start();
+        text = skip_ws(text);
         match text.strip_prefix(',') {
             Some(rest) => text = rest,
             None if text.starts_with('}') => {}
             None => return None,
+        }
+    }
+}
+
+/// `text` without leading whitespace and `//` / `/* */` comments. Used only
+/// inside the strict object grammar, never to scan for candidates. An
+/// unterminated block comment leaves nothing, which fails the parse.
+fn skip_ws(mut text: &str) -> &str {
+    loop {
+        text = text.trim_start();
+        if let Some(rest) = text.strip_prefix("//") {
+            text = rest.find('\n').map_or("", |end| &rest[end..]);
+        } else if let Some(rest) = text.strip_prefix("/*") {
+            text = rest.find("*/").map_or("", |end| &rest[end + 2..]);
+        } else {
+            return text;
         }
     }
 }
@@ -465,5 +483,23 @@ export default defineStackExtensions()({
             stack_extension_reads(&extension(source)),
             vec![json!({"call": "read.x(arg1)"})]
         );
+    }
+
+    #[test]
+    fn comments_between_entries_are_whitespace() {
+        let source = "x({ readArgCounts: { // reads\n  currentRound: 0, // current round\n  \
+                      /* one round */ round: /* id */ 1,\n  range: [ /* min */ 0, 2 /* max */ ],\n  \
+                      ns: { /* nested */ inner: 0, },\n  // trailing\n} })";
+        assert_eq!(
+            stack_extension_reads(&extension(source)),
+            vec![
+                json!({"call": "read.currentRound()"}),
+                json!({"call": "read.round(arg1)"}),
+                json!({"call": "read.range(arg1?, arg2?)"}),
+                json!({"call": "read.ns.inner()"}),
+            ]
+        );
+        // An unterminated block comment fails the candidate.
+        assert!(stack_extension_reads(&extension("readArgCounts: { a: 0 /* }")).is_empty());
     }
 }
