@@ -4,7 +4,7 @@
 //! enabling efficient windowed subscriptions (take/skip) with minimal
 //! recomputation on updates.
 
-use crate::shared_entity::{lookup, EntityFields, SharedEntity};
+use crate::shared_entity::{lookup, EntityFields, Fields, SharedEntity};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -362,16 +362,30 @@ impl SortedViewCache {
     fn merge_entity(base: SharedEntity, patch: SharedEntity) -> SharedEntity {
         let (base_fields, base_version) = base.into_parts();
         let (patch_fields, patch_version) = patch.into_parts();
-        if !(base_fields.is_object() && patch_fields.is_object()) {
+        let (Fields::Object(base_members), Fields::Object(patch_members)) =
+            (&*base_fields, &*patch_fields)
+        else {
             return SharedEntity::from_parts(patch_fields, patch_version);
-        }
-        let fields = if Arc::ptr_eq(&base_fields, &patch_fields)
-            || !keeps_fields(&base_fields, &patch_fields)
-        {
-            patch_fields
+        };
+        // A top-level field both share adds nothing, so only the fields the
+        // update replaced are looked into.
+        let keeps = !Arc::ptr_eq(&base_fields, &patch_fields)
+            && base_members.iter().any(|(key, base)| {
+                patch_members
+                    .get(key)
+                    .is_none_or(|patch| !Arc::ptr_eq(base, patch) && keeps_fields(base, patch))
+            });
+        let fields = if keeps {
+            let base = match Arc::try_unwrap(base_fields) {
+                Ok(fields) => fields.into_value(),
+                Err(shared) => shared.to_value(),
+            };
+            Arc::new(Fields::from_value(Self::deep_merge(
+                base,
+                patch_fields.to_value(),
+            )))
         } else {
-            let base = Arc::try_unwrap(base_fields).unwrap_or_else(|shared| Value::clone(&shared));
-            Arc::new(Self::deep_merge(base, Value::clone(&patch_fields)))
+            patch_fields
         };
         let version = match (base_version, patch_version) {
             (Some(base), Some(patch)) => Some(Self::deep_merge(base, patch)),
