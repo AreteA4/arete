@@ -27,17 +27,21 @@ test("agent.md opens with the raw-fetch banner", () => {
 });
 
 test("agent.md setup commands are the first code block, verbatim", () => {
-  const match = /```sh\n([\s\S]*?)\n```/.exec(text);
-  assert.ok(match, "missing ```sh setup block");
-  assert.deepEqual(match[1].split("\n"), SETUP_COMMANDS);
-  const end = match.index + match[0].length;
+  // The first code of any kind: a fenced block in any language, or an
+  // indented block.
+  const fence = /^```(\w*)\n([\s\S]*?)\n```/m.exec(text);
+  assert.ok(fence, "missing setup code block");
+  assert.equal(fence[1], "sh", "the first fenced block is the setup block");
+  assert.deepEqual(fence[2].split("\n"), SETUP_COMMANDS);
+  const end = fence.index + fence[0].length;
   assert.ok(
     end <= SETUP_BUDGET,
     `setup block ends at char ${end}; keep it within ${SETUP_BUDGET}`,
   );
+  const before = text.slice(0, fence.index);
   assert.ok(
-    !text.slice(0, match.index).includes("    a4 "),
-    "no other commands before the setup block",
+    !/^(    |\t)\S/m.test(before),
+    "no indented code block before the setup block",
   );
 });
 
