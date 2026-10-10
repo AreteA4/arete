@@ -6,7 +6,7 @@ import { parseArgs } from 'node:util';
 import { z } from 'zod';
 import { classify } from '../classify.js';
 import { resultsDir } from '../env.js';
-import { taskLabel } from '../history.js';
+import { runLabel } from '../history.js';
 import { print, redact } from '../report.js';
 import { renderTranscript } from '../transcript.js';
 import type { RunReport, Transcript } from '../types.js';
@@ -167,7 +167,7 @@ async function aggregate(dirs: string[], since: string, model: LanguageModel, mo
     .filter(({ report }) => report.status !== 'infra-error' && report.status !== 'setup-error')
     .map(({ d, report }) => {
       const { reviewer: _reviewer, ...review } = JSON.parse(readFileSync(join(d, 'review.json'), 'utf8')) as Review & { reviewer?: unknown };
-      return { run: report.runId, task: taskLabel(report.task), harness: report.config.harness, model: report.config.model, passed: report.verification.passed, ...review };
+      return { run: report.runId, task: runLabel(report), harness: report.config.harness, model: report.config.model, passed: report.verification.passed, ...review };
     });
   if (!reviews.length) throw new Error(`No reviewed runs since ${since}; run \`npm run review\` first.`);
   const { output, usage } = await generateText({

@@ -1,14 +1,13 @@
 {
   "agents": [
     { "harness": "claude-code", "model": "anthropic/claude-sonnet-5.5", "label": "sonnet-5.5" },
-    { "harness": "claude-code", "model": "anthropic/claude-opus-5.5", "label": "opus-5.5" },
     { "harness": "codex", "model": "openai/gpt-6.1-sol", "label": "gpt-6.1-sol" },
-    { "harness": "codex", "model": "openai/gpt-6-luna", "label": "gpt-6-luna" },
     { "harness": "opencode", "model": "deepseek/deepseek-v4-flash", "label": "deepseek-v4-flash" }
   ],
-  "tasks": ["onboarding.ts", "ore-live-round.ts", "launchpad-discovery.ts"],
-  "repetitions": 3,
-  "concurrency": 4,
+  "tasks": ["onboarding.ts"],
+  "keyMode": "fresh",
+  "repetitions": 1,
+  "concurrency": 3,
   "a4Version": "latest",
   "sandbox": { "image": "vercel/sandbox/universal", "vcpus": 2, "timeoutMinutes": 45 }
 }

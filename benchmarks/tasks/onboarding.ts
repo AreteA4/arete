@@ -1,5 +1,5 @@
 import type { TaskDefinition } from '../src/types.js';
-import { check, doctorOk, liveDataCalls, noSecretsInWorkspace, oreGroundTruth } from './lib.js';
+import { check, doctorOk, freshAccountChecks, liveDataCalls, noSecretsInWorkspace, oreGroundTruth } from './lib.js';
 
 /** The exact prompt arete.run tells users to paste into their agent. */
 export const ARETE_RUN_PROMPT =
@@ -17,7 +17,8 @@ const CAPABILITY_WORDS = ['catalog', 'stream', 'view', 'sdk', 'transaction', 'in
  * Onboarding track: an empty project and the arete.run prompt, verbatim.
  * Turn 2 runs in a fresh session (the "restart your agent host" step) and
  * asks a question that needs live data, proving the new skills and MCP
- * servers actually work.
+ * servers actually work. In `fresh` key mode the agent also has to create
+ * its own agent account, and the credential handling is graded.
  */
 export const task: TaskDefinition = {
   name: 'onboarding',
@@ -43,6 +44,8 @@ export const task: TaskDefinition = {
     },
   ],
   async verify({ shell, config, transcript }) {
+    // First, before verification's own `a4` calls can touch ~/.arete.
+    const fresh = config.keyMode === 'fresh' ? await freshAccountChecks(shell, transcript) : [];
     const version = await shell.run('a4 --version');
     const toml = await shell.run('test -f arete.toml');
     const auth = await shell.run('a4 --profile agent auth whoami --json', { timeoutSeconds: 60 });
@@ -73,6 +76,7 @@ export const task: TaskDefinition = {
       ),
       check('used-live-data', live.length > 0, live.length ? live.join(', ') : 'no MCP or a4 stream call in turn 2', false),
       await noSecretsInWorkspace(shell),
+      ...fresh,
     ];
   },
 };
