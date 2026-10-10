@@ -471,17 +471,17 @@ fn read_counts(body: &str) -> Option<Vec<(String, Option<usize>)>> {
     let mut rest = body;
     let mut counts = Vec::new();
     loop {
-        rest = rest.trim_start();
+        rest = skip_space(rest)?;
         if rest.starts_with('}') {
             return Some(counts);
         }
         let (key, after) = object_key(rest)?;
-        rest = after.trim_start().strip_prefix(':')?.trim_start();
+        rest = skip_space(skip_space(after)?.strip_prefix(':')?)?;
         let count = if let Some(after) = rest.strip_prefix('[') {
-            let (min, after) = count_literal(after.trim_start())?;
-            let after = after.trim_start().strip_prefix(',')?;
-            let (max, after) = count_literal(after.trim_start())?;
-            rest = after.trim_start().strip_prefix(']')?;
+            let (min, after) = count_literal(skip_space(after)?)?;
+            let after = skip_space(after)?.strip_prefix(',')?;
+            let (max, after) = count_literal(skip_space(after)?)?;
+            rest = skip_space(after)?.strip_prefix(']')?;
             min.zip(max).map(|(min, max)| min.max(max))
         } else {
             let (count, after) = count_literal(rest)?;
@@ -489,12 +489,29 @@ fn read_counts(body: &str) -> Option<Vec<(String, Option<usize>)>> {
             count
         };
         counts.push((key, count.filter(|count| *count <= MAX_READ_ARGS)));
-        rest = rest.trim_start();
+        rest = skip_space(rest)?;
         if let Some(after) = rest.strip_prefix(',') {
             rest = after;
         } else if !rest.starts_with('}') {
             return None;
         }
+    }
+}
+
+/// `text` after its leading whitespace and comments: between the tokens of
+/// an object literal or parameter list, `//` and `/* */` are only comments.
+/// `None` for a block comment that does not end.
+fn skip_space(text: &str) -> Option<&str> {
+    let mut rest = text.trim_start();
+    loop {
+        if let Some(comment) = rest.strip_prefix("//") {
+            rest = comment.find('\n').map_or("", |end| &comment[end..]);
+        } else if let Some(comment) = rest.strip_prefix("/*") {
+            rest = &comment[comment.find("*/")? + 2..];
+        } else {
+            return Some(rest);
+        }
+        rest = rest.trim_start();
     }
 }
 
@@ -558,31 +575,39 @@ fn read_function(extension: &str, name: &str) -> Option<(Vec<String>, Option<Str
 /// and the text after its `)`. `None` when the brackets do not balance
 /// before the end of `text`, or a parameter has no usable name.
 fn parameter_list(text: &str) -> Option<(Vec<String>, &str)> {
+    // The list without its comments, which may hold any character.
+    let mut list = String::new();
     let mut depth = 0usize;
-    let mut end = None;
-    for (at, character) in text.char_indices() {
+    let mut rest = text;
+    loop {
+        if rest.starts_with("//") || rest.starts_with("/*") {
+            let after = skip_space(rest)?;
+            list.push(' ');
+            rest = after;
+            continue;
+        }
+        let character = rest.chars().next()?;
         match character {
             '(' | '[' | '{' | '<' => depth += 1,
-            ')' if depth == 0 => {
-                end = Some(at);
-                break;
-            }
+            ')' if depth == 0 => break,
             ')' | ']' | '}' => depth = depth.checked_sub(1)?,
             // `=>` closes nothing.
-            '>' if !text[..at].ends_with('=') => depth = depth.checked_sub(1)?,
+            '>' if !list.ends_with('=') => depth = depth.checked_sub(1)?,
             ';' if depth == 0 => return None,
             _ => {}
         }
+        list.push(character);
+        rest = &rest[character.len_utf8()..];
     }
-    let end = end?;
-    let params = split_top_level(&text[..end]);
+    let after = &rest[1..];
+    let params = split_top_level(&list);
     let named = params.iter().all(|param| {
         let name = param.trim_start_matches("...");
         let name = name.split([':', '=']).next().unwrap_or_default().trim();
         let name = name.trim_end_matches('?');
         is_identifier(name) || name.starts_with('{') || name.starts_with('[')
     });
-    named.then(|| (params, &text[end + 1..]))
+    named.then_some((params, after))
 }
 
 /// Whether `text`, after a parameter list, starts a function body: an
@@ -1027,6 +1052,21 @@ export default defineStackExtensions<typeof CORE>()({
         let method =
             "readArgCounts: { quote: 1 },\nconst x = quote(input);\nasync quote(amount: bigint) {}";
         assert_eq!(stack_reads(method)[0].signature(), "quote(amount)");
+        // Comments between tokens are space, in the object and in the
+        // parameter list alike.
+        let commented = r#"readArgCounts: { /* reads */ currentRound: 0, /* accepts an address */ miner: 1, // trailing
+  // after the trailing comma
+  /* and a block */ },
+async function miner(
+  authority: Address, // (the miner's owner, not the miner)
+  /* no more */
+) {}"#;
+        let reads = stack_reads(commented)
+            .iter()
+            .map(StackRead::signature)
+            .collect::<Vec<_>>();
+        assert_eq!(reads, vec!["currentRound()", "miner(authority)"]);
+        assert_eq!(read_counts("a: 0, /* unterminated }"), None);
         // Anything but a strict object literal is not a declaration.
         assert_eq!(read_counts("a: 1, b: x }"), None);
         assert_eq!(read_counts("a: [1, 2, 3] }"), None);
