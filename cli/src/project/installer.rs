@@ -27,7 +27,8 @@ use super::resolver::{
     ResolvedStackDelivery, ServedVersionReplacement,
 };
 use super::runtime;
-use super::typescript_usage::{self, StackUsage};
+use super::typescript_setup::{self, SetupReport};
+use super::typescript_usage::{self, AppKind, StackUsage};
 use super::{InstallPlan, ProjectLock, ProjectManifest, GENERATOR_CONTRACT, RESOLVER_CONTRACT};
 
 const INSTALL_JOURNAL: &str = ".arete/install-journal.json";
@@ -66,6 +67,9 @@ pub struct InstallOptions<'a> {
     pub allow_outside_project: bool,
     pub dry_run: bool,
     pub update: Option<UpdateSelection<'a>>,
+    /// Make a TypeScript project root with no `package.json` a Node project:
+    /// see [`typescript_setup`].
+    pub setup: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,6 +87,7 @@ pub struct AddDependencyOptions {
     pub typescript_package: Option<String>,
     pub module: bool,
     pub allow_outside_project: bool,
+    pub setup: bool,
 }
 
 #[derive(Debug, Default)]
@@ -333,6 +338,7 @@ pub fn add_and_install(
         manifest_path,
         InstallOptions {
             allow_outside_project: options.allow_outside_project,
+            setup: options.setup,
             ..InstallOptions::default()
         },
         &[(kind, alias.clone())],
@@ -1061,6 +1067,21 @@ fn install_loaded_project(
     if let Some(selection) = options.update {
         requested.extend(updated_dependencies(&manifest, selection));
     }
+    let setup = options
+        .setup
+        .then(|| {
+            set_up_typescript_project(
+                &manifest.root,
+                &manifest
+                    .root
+                    .join(&manifest.document.sdk.typescript.output_dir),
+                plan.outputs
+                    .iter()
+                    .filter(|output| output.target == InstallTarget::TypeScript)
+                    .map(|output| output.path.as_path()),
+            )
+        })
+        .flatten();
     let report = InstallReport {
         lockfile: lock_path.display().to_string(),
         installed: prospective_lock.dependencies.len(),
@@ -1080,9 +1101,9 @@ fn install_loaded_project(
                 .filter(|output| output.target == InstallTarget::TypeScript)
                 .map(|output| output.path.as_path()),
         ),
+        setup,
         typescript: TypeScriptGuidance::for_outputs(
             &manifest.root,
-            &manifest.document.sdk.typescript.package,
             plan.outputs
                 .iter()
                 .filter(|output| output.target == InstallTarget::TypeScript),
@@ -1155,6 +1176,9 @@ struct InstallReport {
     /// written to package.json.
     #[serde(skip_serializing_if = "Option::is_none")]
     module_type: Option<ModuleTypeRequirement>,
+    /// What `--setup` wrote and installed, when it set up the project root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    setup: Option<SetupReport>,
     #[serde(flatten)]
     typescript: TypeScriptGuidance,
     notes: Vec<String>,
@@ -1212,10 +1236,53 @@ impl ModuleTypeRequirement {
     }
 }
 
+/// Run `--setup` for the project at `root` when TypeScript `outputs`
+/// beneath it land where no `package.json` declares their packages, and
+/// `root` has none either. Outputs outside `root` are left to the guidance:
+/// a package set up at `root` would not serve them. `None` when there is
+/// nothing to set up.
+fn set_up_typescript_project<'a>(
+    root: &Path,
+    output_dir: &Path,
+    outputs: impl IntoIterator<Item = &'a Path>,
+) -> Option<SetupReport> {
+    let outputs = outputs
+        .into_iter()
+        .filter(|output| inside(output, root).is_some())
+        .filter(|output| runtime::nearest_package_json(output).is_none())
+        .map(Path::to_path_buf)
+        .collect::<Vec<_>>();
+    if outputs.is_empty() || runtime::nearest_package_json(root).is_some() {
+        return None;
+    }
+    // The configured output directory first, so the tsconfig.json also
+    // covers stacks installed there later.
+    let covered = inside(output_dir, root)
+        .into_iter()
+        .chain(outputs)
+        .collect::<Vec<_>>();
+    let runtime = runtime::typescript_runtime_set(&BTreeSet::new());
+    Some(typescript_setup::set_up(
+        root,
+        &covered,
+        &runtime,
+        json_output(),
+    ))
+}
+
+/// `path` with `.` and `..` resolved lexically, when it is `root` or
+/// beneath it once resolved (`root/sub/../generated` is `root/generated`;
+/// `root/../generated` is outside). `None` otherwise.
+fn inside(path: &Path, root: &Path) -> Option<PathBuf> {
+    let path = super::paths::normalize_absolute(path).ok()?;
+    let root = super::paths::normalize_absolute(root).ok()?;
+    path.starts_with(&root).then_some(path)
+}
+
 /// What else a TypeScript project needs before it can type-check and run the
 /// generated SDK, and the first lines of code that use it, for each app that
-/// receives TypeScript output. Printed, never written: `a4` does not create
-/// or edit `package.json` or `tsconfig.json`.
+/// receives TypeScript output. Printed, never written, unless `--setup`
+/// created the missing `package.json` and `tsconfig.json` first.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TypeScriptGuidance {
@@ -1231,6 +1298,8 @@ struct TypeScriptGuidance {
 #[serde(rename_all = "camelCase")]
 struct TypeScriptAppGuidance {
     directory: String,
+    /// `node` (a Node service or script) or `browser` (a React app).
+    kind: &'static str,
     /// Development tools the app's `package.json` does not declare yet:
     /// `typescript`, and for a Node app `tsx` and `@types/node`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1247,11 +1316,14 @@ struct TypeScriptAppGuidance {
     usage: Vec<StackUsage>,
 }
 
-/// Commands that create the missing `package.json`, run in `directory`.
+/// How to make `directory`, which has no `package.json`, a Node ES module
+/// project with the packages and `tsconfig.json` the generated code needs:
+/// `command` does all of it, `commands` are the same steps by hand.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectSetup {
     directory: String,
+    command: &'static str,
     commands: Vec<String>,
 }
 
@@ -1273,7 +1345,6 @@ struct TsconfigRequirement {
 impl TypeScriptGuidance {
     fn for_outputs<'a>(
         root: &Path,
-        sdk_package: &str,
         outputs: impl IntoIterator<Item = &'a super::graph::PlannedOutput>,
     ) -> Self {
         // Group outputs by app, keeping the order apps first appear in.
@@ -1295,15 +1366,20 @@ impl TypeScriptGuidance {
             typescript_apps: apps
                 .into_iter()
                 .map(|(directory, package_json, outputs)| {
-                    TypeScriptAppGuidance::for_app(
-                        &directory,
-                        package_json.as_deref(),
-                        &outputs,
-                        sdk_package,
-                    )
+                    TypeScriptAppGuidance::for_app(&directory, package_json.as_deref(), &outputs)
                 })
                 .collect(),
         }
+    }
+
+    /// Whether every app still needs a `package.json`: its setup block then
+    /// carries the runtime install line.
+    fn every_app_needs_setup(&self) -> bool {
+        !self.typescript_apps.is_empty()
+            && self
+                .typescript_apps
+                .iter()
+                .all(|app| app.project_setup.is_some())
     }
 
     fn emit(&self) {
@@ -1312,10 +1388,12 @@ impl TypeScriptGuidance {
             .iter()
             .filter_map(|app| app.project_setup.as_ref())
         {
+            let directory = display_path(&setup.directory);
             println!(
-                "Package:     no package.json found, so nothing declares the packages below. The generated TypeScript is ES modules; create one in {}:",
-                display_path(&setup.directory)
+                "Setup:       no package.json found in {directory}, so nothing declares the packages the generated TypeScript (ES modules) needs. Make it a Node TypeScript project with:"
             );
+            println!("             {}", setup.command);
+            println!("             or by hand, in {directory}:");
             for command in &setup.commands {
                 println!("             {command}");
             }
@@ -1336,18 +1414,18 @@ impl TypeScriptAppGuidance {
         directory: &Path,
         package_json: Option<&Path>,
         outputs: &[&super::graph::PlannedOutput],
-        sdk_package: &str,
     ) -> Self {
         let declared = package_json
             .map(runtime::declared_dependencies)
             .unwrap_or_default();
-        let browser = runtime::is_browser_app(&declared);
-        let project_setup = package_json.is_none().then(|| ProjectSetup {
-            directory: directory.display().to_string(),
-            commands: vec!["npm init -y".into(), "npm pkg set type=module".into()],
-        });
+        let app = if runtime::is_browser_app(&declared) {
+            AppKind::Browser(crate::commands::auth::detect_framework(directory))
+        } else {
+            AppKind::Node
+        };
         let first = &outputs[0].path;
-        let tsconfig = if browser {
+        let dev_runtime = runtime::typescript_dev_tools(&declared);
+        let tsconfig = if app != AppKind::Node {
             None
         } else if let Some(tsconfig) = runtime::tsconfig_hiding_node_types(first) {
             Some(TsconfigRequirement {
@@ -1376,22 +1454,40 @@ impl TypeScriptAppGuidance {
         } else {
             None
         };
+        // Everything a directory with no package.json needs, in the order it
+        // works: an ES module package, its packages, then a tsconfig.json.
+        let project_setup = package_json.is_none().then(|| {
+            let mut commands = vec![
+                "npm init -y".to_string(),
+                "npm pkg set type=module".to_string(),
+                runtime::npm_install_command(&runtime::typescript_runtime_set(&declared)),
+            ];
+            if !dev_runtime.is_empty() {
+                commands.push(runtime::npm_install_dev_command(&dev_runtime));
+            }
+            if let Some(tsconfig) = &tsconfig {
+                commands.extend(tsconfig.commands.iter().cloned());
+            }
+            ProjectSetup {
+                directory: directory.display().to_string(),
+                command: typescript_setup::SETUP_COMMAND,
+                commands,
+            }
+        });
         let usage = outputs
             .iter()
             .filter(|output| output.kind == DependencyKind::Stack)
             .filter_map(|output| {
-                typescript_usage::stack_usage(
-                    &output.alias,
-                    &output.path,
-                    directory,
-                    browser,
-                    sdk_package,
-                )
+                typescript_usage::stack_usage(&output.alias, &output.path, directory, app)
             })
             .collect();
         Self {
             directory: directory.display().to_string(),
-            dev_runtime: runtime::typescript_dev_tools(&declared),
+            kind: match app {
+                AppKind::Node => "node",
+                AppKind::Browser(_) => "browser",
+            },
+            dev_runtime,
             project_setup,
             tsconfig,
             usage,
@@ -1399,7 +1495,10 @@ impl TypeScriptAppGuidance {
     }
 
     fn emit_tools(&self) {
-        if !self.dev_runtime.is_empty() {
+        // The setup block already lists the dev tools, and the commands that
+        // create a tsconfig.json; an existing one that hides Node's types
+        // still needs its own line.
+        if self.project_setup.is_none() && !self.dev_runtime.is_empty() {
             println!(
                 "Dev tools:   to type-check and run it, also install in {}:",
                 display_path(&self.directory)
@@ -1415,7 +1514,7 @@ impl TypeScriptAppGuidance {
                     "Tsconfig:    {} sets compilerOptions.types without \"node\", so tsc does not load @types/node (TS2591 on process, Buffer). Add \"node\" to that list.",
                     display_path(path)
                 ),
-                None => {
+                None if self.project_setup.is_none() => {
                     println!(
                         "Tsconfig:    no tsconfig.json found. Create one that loads Node's types, in {}:",
                         display_path(&tsconfig.directory)
@@ -1424,6 +1523,7 @@ impl TypeScriptAppGuidance {
                         println!("             {command}");
                     }
                 }
+                None => {}
             }
         }
         for usage in &self.usage {
@@ -1649,6 +1749,21 @@ impl InstallReport {
         self
     }
 
+    /// Whether the `Runtime` line would repeat what the summary already
+    /// says: every app's setup block lists the install, or `--setup`
+    /// installed the runtime in the only app.
+    fn runtime_listed_elsewhere(&self) -> bool {
+        let set_up_only_app = self.setup.as_ref().is_some_and(|setup| {
+            setup.failed.is_none()
+                && self
+                    .typescript
+                    .typescript_apps
+                    .iter()
+                    .all(|app| app.directory == setup.directory)
+        });
+        set_up_only_app || self.typescript.every_app_needs_setup()
+    }
+
     fn emit(&self) -> Result<()> {
         if json_output() {
             // Warnings are for whoever runs the command, not only for the
@@ -1688,8 +1803,11 @@ impl InstallReport {
         for shared in &self.shared {
             println!("{}", describe_shared(shared));
         }
+        if let Some(setup) = &self.setup {
+            setup.emit(&display_path(&setup.directory));
+        }
         self.typescript.emit();
-        if !self.runtime.is_empty() {
+        if !self.runtime.is_empty() && !self.runtime_listed_elsewhere() {
             println!(
                 "Runtime:     the generated TypeScript needs these packages (a4 does not change package.json):"
             );
@@ -4071,7 +4189,7 @@ mod tests {
     #[test]
     fn typescript_guidance_without_package_json_prints_project_setup() {
         let (temp, output) = typescript_stack_project();
-        let guidance = TypeScriptGuidance::for_outputs(temp.path(), "@usearete/sdk", [&output]);
+        let guidance = TypeScriptGuidance::for_outputs(temp.path(), [&output]);
         let value = serde_json::to_value(&guidance).unwrap();
         let apps = value["typescriptApps"].as_array().unwrap();
         assert_eq!(apps.len(), 1, "{value}");
@@ -4081,9 +4199,19 @@ mod tests {
             app["devRuntime"],
             serde_json::json!(["typescript", "tsx", "@types/node"])
         );
+        assert_eq!(app["kind"], "node");
+        // One known-good sequence: an ES module package, the runtime, the dev
+        // tools, then a tsconfig.json that loads Node's types.
+        assert_eq!(app["projectSetup"]["command"], "a4 install --setup");
         assert_eq!(
             app["projectSetup"]["commands"],
-            serde_json::json!(["npm init -y", "npm pkg set type=module"])
+            serde_json::json!([
+                "npm init -y",
+                "npm pkg set type=module",
+                runtime::npm_install_command(&runtime::typescript_runtime_set(&BTreeSet::new())),
+                "npm install -D typescript tsx @types/node",
+                "npx tsc --init --types node",
+            ])
         );
         assert_eq!(
             app["projectSetup"]["directory"],
@@ -4104,6 +4232,20 @@ mod tests {
         );
         assert_eq!(usage["view"], "Vault/list");
         assert_eq!(usage["run"], "npx tsx index.ts");
+        // A Node script imports the SDK, whatever `[sdk.typescript].package`
+        // says, and authenticates with a server-side key, never a
+        // publishable one.
+        assert_eq!(
+            usage["snippet"][0],
+            r#"import { createSession } from "@usearete/sdk";"#
+        );
+        assert_eq!(usage["auth"]["option"], "secretKey");
+        assert_eq!(usage["auth"]["envVar"], "ARETE_API_KEY");
+        assert_eq!(usage["auth"]["fallback"], "a4-login");
+        assert!(
+            !usage["snippet"].to_string().contains("ublishable"),
+            "{usage}"
+        );
     }
 
     #[test]
@@ -4117,7 +4259,7 @@ mod tests {
             r#"{"name":"app","devDependencies":{"typescript":"^5.9.3"}}"#,
         )
         .unwrap();
-        let guidance = TypeScriptGuidance::for_outputs(root, "@usearete/sdk", [&output]);
+        let guidance = TypeScriptGuidance::for_outputs(root, [&output]);
         let value = app(&serde_json::to_value(&guidance).unwrap());
         assert!(value.get("projectSetup").is_none(), "{value}");
         assert_eq!(
@@ -4135,12 +4277,8 @@ mod tests {
             r#"{"compilerOptions":{"module":"esnext","types":[]}}"#,
         )
         .unwrap();
-        let value = app(&serde_json::to_value(TypeScriptGuidance::for_outputs(
-            root,
-            "@usearete/sdk",
-            [&output],
-        ))
-        .unwrap());
+        let value =
+            app(&serde_json::to_value(TypeScriptGuidance::for_outputs(root, [&output])).unwrap());
         assert_eq!(
             value["tsconfig"]["tsconfig"],
             root.join("tsconfig.json").display().to_string()
@@ -4150,21 +4288,30 @@ mod tests {
         // A React app with everything installed: only the hook snippet.
         fs::write(
             root.join("package.json"),
-            r#"{"type":"module","dependencies":{"react":"^19"},"devDependencies":{"typescript":"^5"}}"#,
+            r#"{"type":"module","dependencies":{"react":"^19"},"devDependencies":{"typescript":"^5","vite":"^7"}}"#,
         )
         .unwrap();
-        let value = app(&serde_json::to_value(TypeScriptGuidance::for_outputs(
-            root,
-            "@usearete/sdk",
-            [&output],
-        ))
-        .unwrap());
+        let value =
+            app(&serde_json::to_value(TypeScriptGuidance::for_outputs(root, [&output])).unwrap());
         assert!(value.get("devRuntime").is_none(), "{value}");
         assert!(value.get("tsconfig").is_none(), "{value}");
         assert!(value["usage"][0].get("run").is_none(), "{value}");
+        assert_eq!(value["kind"], "browser");
+        // A Vite app reads its origin-bound publishable key from
+        // import.meta.env.
+        assert_eq!(
+            value["usage"][0]["auth"]["envVar"],
+            "VITE_ARETE_PUBLISHABLE_KEY"
+        );
+        assert!(value["usage"][0]["snippet"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;"
+            )));
         assert_eq!(
             value["usage"][0]["snippet"][0],
-            r#"import { useArete } from "@usearete/react";"#
+            r#"import { AreteProvider, useArete } from "@usearete/react";"#
         );
     }
 
@@ -4194,7 +4341,6 @@ mod tests {
 
         let value = serde_json::to_value(TypeScriptGuidance::for_outputs(
             root,
-            "@usearete/sdk",
             [&web_output, &server_output],
         ))
         .unwrap();
@@ -4206,10 +4352,12 @@ mod tests {
         assert_eq!(web_app["devRuntime"], serde_json::json!(["typescript"]));
         assert!(web_app.get("tsconfig").is_none(), "{value}");
         assert!(web_app.get("projectSetup").is_none(), "{value}");
+        assert_eq!(web_app["kind"], "browser");
+        assert_eq!(web_app["usage"][0]["auth"]["option"], "publishableKey");
         assert_eq!(web_app["usage"][0]["stack"], "vault-web");
         assert_eq!(
             web_app["usage"][0]["snippet"][0],
-            r#"import { useArete } from "@usearete/react";"#
+            r#"import { AreteProvider, useArete } from "@usearete/react";"#
         );
 
         let server_app = &apps[1];
@@ -4235,10 +4383,39 @@ mod tests {
     }
 
     #[test]
+    fn inside_the_root_resolves_dot_dot_first() {
+        // An absolute root on every platform.
+        let base = std::env::temp_dir();
+        let root = base.join("app");
+        let generated = Some(root.join("generated"));
+        assert_eq!(inside(&root.join("generated"), &root), generated);
+        assert_eq!(inside(&root.join("./generated"), &root), generated);
+        assert_eq!(inside(&root.join("sub/../generated"), &root), generated);
+        assert_eq!(inside(&root.join("../generated"), &root), None);
+        assert_eq!(inside(&root.join("generated/../../x"), &root), None);
+        assert_eq!(inside(&base.join("other"), &root), None);
+    }
+
+    #[test]
+    fn setup_skips_outputs_outside_the_project_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("project");
+        fs::create_dir(&root).unwrap();
+        // A sibling output: a package set up in the root would not serve it.
+        let sibling = temp.path().join("generated/ore");
+        assert!(set_up_typescript_project(
+            &root,
+            &root.join("generated/typescript"),
+            [sibling.as_path()]
+        )
+        .is_none());
+        assert!(!root.join("package.json").exists());
+    }
+
+    #[test]
     fn typescript_guidance_is_empty_without_typescript_outputs() {
         let value = serde_json::to_value(TypeScriptGuidance::for_outputs(
             Path::new("/app"),
-            "@usearete/sdk",
             std::iter::empty(),
         ))
         .unwrap();
@@ -6771,6 +6948,7 @@ version = "^1.0.0"
             auth: Vec::new(),
             runtime: runtime::typescript_runtime_set(&BTreeSet::from(["react".to_string()])),
             module_type: None,
+            setup: None,
             typescript: TypeScriptGuidance::default(),
             notes: Vec::new(),
             warnings: Vec::new(),
@@ -6813,6 +6991,7 @@ version = "^1.0.0"
             auth: Vec::new(),
             runtime: Vec::new(),
             module_type: None,
+            setup: None,
             typescript: TypeScriptGuidance::default(),
             notes: Vec::new(),
             warnings: Vec::new(),
