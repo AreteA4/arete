@@ -133,7 +133,7 @@ MCP and the generated SDK share the same catalog identities and view contracts.
 So when your app behaves in a way you didn't expect, go back to exploring:
 
 - inspect the installed descriptor and lockfile;
-- query the view directly through MCP or `a4 stream`;
+- read the view directly with `a4 get` or MCP `read_view`, or follow it with `a4 stream`;
 - compare the view's watermark with your application state;
 - update the dependency on purpose when you need a newer package; and
 - regenerate instead of editing generated files.

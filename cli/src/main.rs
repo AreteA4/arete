@@ -378,6 +378,10 @@ enum Commands {
     /// Stream live entity data from a deployed stack via WebSocket
     #[command(after_long_help = commands::stream::RECONNECT_HELP)]
     Stream(commands::stream::StreamArgs),
+
+    /// Read a view's current entities once, print them as JSON and exit
+    #[command(after_long_help = commands::stream::GET_HELP)]
+    Get(commands::stream::GetArgs),
 }
 
 #[derive(Subcommand)]
@@ -1061,6 +1065,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Telemetry(_) => "telemetry",
         Commands::Idl(_) => "idl",
         Commands::Stream(_) => "stream",
+        Commands::Get(_) => "get",
     }
 }
 
@@ -1614,6 +1619,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         },
         Commands::Idl(args) => commands::idl::run(args),
         Commands::Stream(args) => commands::stream::run(args, &cli.config),
+        Commands::Get(args) => commands::stream::run_get(args),
         Commands::Telemetry(telemetry_cmd) => match telemetry_cmd {
             TelemetryCommands::Status => commands::telemetry::status(),
             TelemetryCommands::Enable => commands::telemetry::enable(),

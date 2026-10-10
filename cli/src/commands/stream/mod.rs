@@ -1,5 +1,6 @@
 mod client;
 mod filter;
+mod once;
 mod output;
 mod session;
 mod snapshot;
@@ -14,6 +15,8 @@ use clap::Args;
 
 use crate::api_client::{ApiClient, DeploymentPhase, DeploymentResponse, DeploymentStatus};
 use crate::commands::stack::deployment_selection_key;
+
+pub use once::{run as run_get, GetArgs, GET_HELP};
 
 #[derive(Args)]
 pub struct StreamArgs {
@@ -244,14 +247,20 @@ fn validate_ws_url(url: &str) -> Result<()> {
 }
 
 fn resolve_url(args: &StreamArgs, _config_path: &str, _view: &str) -> Result<String> {
+    resolve_ws_url(args.url.as_deref(), args.stack.as_deref())
+}
+
+/// The WebSocket URL for `--url`, or for the owned deployment or hosted
+/// registry stack `--stack` names.
+fn resolve_ws_url(url: Option<&str>, stack: Option<&str>) -> Result<String> {
     // 1. Explicit --url
-    if let Some(url) = &args.url {
+    if let Some(url) = url {
         validate_ws_url(url)?;
-        return Ok(url.clone());
+        return Ok(url.to_string());
     }
 
     // 2. Explicit owned deployment or hosted registry stack name
-    if let Some(stack_name) = &args.stack {
+    if let Some(stack_name) = stack {
         return resolve_stack_url(&ApiClient::new()?, stack_name);
     }
 

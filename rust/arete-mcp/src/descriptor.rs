@@ -13,10 +13,13 @@
 //! snake_case or camelCase keys, unknown fields are ignored, and anything the
 //! descriptor does not carry is left out of the output rather than guessed.
 
+use std::collections::BTreeMap;
+
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::field_amounts::{self, FieldAmount};
 use crate::stack_knowledge::{KeyCase, StackKnowledge};
 
 /// Sections accepted by `explore_program { sections }` and
@@ -1353,6 +1356,11 @@ pub struct EntityField {
     /// describes this field (see [`crate::stack_knowledge`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The token-amount scale of the field (whole units or raw base units,
+    /// with the decimals), when the stack's `ui_amount`/`raw_amount`
+    /// computations say (see [`crate::field_amounts`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<FieldAmount>,
 }
 
 /// An entity's state name (`stateName` or `state_name`).
@@ -1391,10 +1399,76 @@ pub fn entity_fields(entity: &Value) -> Vec<EntityField> {
                     .into(),
                 nullable: first_bool(field, &["isOptional", "is_optional"]),
                 description: None,
+                amount: None,
             });
         }
     }
+    let visible = fields.iter().map(|field| field.path.clone()).collect();
+    let mut amounts = field_amounts::entity_field_amounts(entity, &visible);
+    for field in &mut fields {
+        field.amount = amounts.remove(&field.path);
+    }
     fields
+}
+
+/// Attach each field's token-amount scale (`amount`, see
+/// [`crate::field_amounts`]) to a registry stack schema response
+/// (`schema.entities[].fields[]`), read from the LiveSpecs of `descriptor`,
+/// the install descriptor the registry serves for the same stack. Entities
+/// are matched by name and fields by path; nothing else changes. Returns
+/// whether any field was annotated.
+pub fn annotate_schema_amounts(schema: &mut Value, descriptor: &Value) -> bool {
+    let mut by_entity: BTreeMap<String, BTreeMap<String, FieldAmount>> = BTreeMap::new();
+    for live in live_specs(descriptor) {
+        let artifact = live.get("artifact").unwrap_or(&Value::Null);
+        for entity in live_entities(artifact) {
+            let Some(name) = entity_name(entity) else {
+                continue;
+            };
+            let amounts: BTreeMap<String, FieldAmount> = entity_fields(entity)
+                .into_iter()
+                .filter_map(|field| Some((field.path, field.amount?)))
+                .collect();
+            if !amounts.is_empty() {
+                by_entity
+                    .entry(name.to_string())
+                    .or_default()
+                    .extend(amounts);
+            }
+        }
+    }
+    let Some(entities) = schema
+        .pointer_mut("/schema/entities")
+        .and_then(Value::as_array_mut)
+    else {
+        return false;
+    };
+    let mut annotated = false;
+    for entity in entities {
+        let Some(amounts) = entity
+            .get("name")
+            .and_then(Value::as_str)
+            .and_then(|name| by_entity.get(name))
+        else {
+            continue;
+        };
+        for field in entity
+            .get_mut("fields")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            let amount = field
+                .get("path")
+                .and_then(Value::as_str)
+                .and_then(|path| amounts.get(path));
+            if let (Some(amount), Some(field)) = (amount, field.as_object_mut()) {
+                field.insert("amount".into(), json!(amount));
+                annotated = true;
+            }
+        }
+    }
+    annotated
 }
 
 /// The entities of one LiveSpec artifact.
@@ -2189,5 +2263,75 @@ mod tests {
         assert_eq!(program_key("spl-token"), "splToken");
         assert_eq!(program_key("ore"), "ore");
         assert_eq!(program_key("Meteora_cp_amm"), "meteoraCpAmm");
+    }
+
+    /// A stack descriptor whose LiveSpec scales `state.total` with
+    /// `ui_amount(raw, 9)`, as `#[map(.., transform = ui_amount(9))]` does.
+    fn amount_descriptor() -> Value {
+        json!({"liveSpecs": [{"alias": "main", "artifact": {"payload": {"entities": [{
+            "state_name": "Pool",
+            "sections": [{"name": "state", "fields": [
+                {"field_name": "total", "rust_type_name": "Option<f64>", "is_optional": true},
+                {"field_name": "__total_raw", "rust_type_name": "Option<u64>", "is_optional": true, "emit": false},
+                {"field_name": "count", "rust_type_name": "u64", "is_optional": false},
+            ]}],
+            "computed_field_specs": [{
+                "target_path": "state.total",
+                "result_type": "Option < f64 >",
+                "expression": {"ResolverComputed": {
+                    "resolver": "TokenMetadata",
+                    "method": "ui_amount",
+                    "args": [{"FieldRef": {"path": "state.__total_raw"}}, {"Literal": {"value": 9}}],
+                }},
+            }],
+        }]}}}]})
+    }
+
+    #[test]
+    fn entity_fields_carry_their_amount_scale() {
+        let descriptor = amount_descriptor();
+        let entity = &live_entities(&descriptor["liveSpecs"][0]["artifact"])[0];
+        let fields = entity_fields(entity);
+        assert_eq!(fields.len(), 2, "the hidden raw field is not emitted");
+        assert_eq!(
+            serde_json::to_value(&fields[0]).unwrap(),
+            json!({
+                "section": "state",
+                "path": "state.total",
+                "rustType": "Option<f64>",
+                "nullable": true,
+                "amount": {"scale": "ui", "decimals": 9},
+            })
+        );
+        assert!(fields[1].amount.is_none());
+        assert!(serde_json::to_value(&fields[1])
+            .unwrap()
+            .get("amount")
+            .is_none());
+    }
+
+    #[test]
+    fn schema_responses_gain_amounts_by_entity_and_path() {
+        let mut schema = json!({"schema": {"entities": [
+            {"name": "Pool", "fields": [
+                {"path": "state.total", "rust_type": "Option < f64 >"},
+                {"path": "state.count", "rust_type": "u64"},
+            ]},
+            {"name": "Other", "fields": [{"path": "state.total"}]},
+        ]}});
+        assert!(annotate_schema_amounts(&mut schema, &amount_descriptor()));
+        let entities = &schema["schema"]["entities"];
+        assert_eq!(
+            entities[0]["fields"][0]["amount"],
+            json!({"scale": "ui", "decimals": 9})
+        );
+        assert!(entities[0]["fields"][1].get("amount").is_none());
+        assert!(entities[1]["fields"][0].get("amount").is_none());
+
+        let mut unchanged = json!({"schema": {"entities": [{"name": "Pool", "fields": []}]}});
+        assert!(!annotate_schema_amounts(
+            &mut unchanged,
+            &json!({"name": "x"})
+        ));
     }
 }

@@ -29,7 +29,7 @@ pub fn check_interval() -> chrono::Duration {
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Commands that never nudge (they own the update flow or stdout/stderr).
-const QUIET_COMMANDS: &[&str] = &["self", "upgrade", "mcp", "stream"];
+const QUIET_COMMANDS: &[&str] = &["self", "upgrade", "mcp", "stream", "get"];
 
 /// Contents of `~/.arete/update-check.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,7 +204,7 @@ mod tests {
     fn allowed_respects_json_tty_and_quiet_commands() {
         assert!(!allowed("init", true, true));
         assert!(!allowed("init", false, false));
-        for quiet in ["self", "upgrade", "mcp", "stream"] {
+        for quiet in ["self", "upgrade", "mcp", "stream", "get"] {
             assert!(!allowed(quiet, false, true), "{quiet} must not nudge");
         }
         // The environment-dependent branch is exercised by the integration test.
