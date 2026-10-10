@@ -1327,6 +1327,57 @@ impl VersionTracker {
         self.cache.lock().unwrap().put(key, (slot, ordering_value));
     }
 
+    /// Record `(slot, ordering_value)` for the key unless what is recorded
+    /// is already as late; returns whether it was recorded. The same as
+    /// [`Self::get`] then [`Self::insert`], formatting the key once and
+    /// allocating it only for a new entry.
+    fn record_if_later(
+        &self,
+        primary_key: &Value,
+        event_type: &str,
+        slot: u64,
+        ordering_value: u64,
+    ) -> bool {
+        let key = Self::make_key(primary_key, event_type);
+        let mut cache = self.cache.lock().unwrap();
+        match cache.get_mut(&key) {
+            Some(recorded) if (slot, ordering_value) <= *recorded => false,
+            Some(recorded) => {
+                *recorded = (slot, ordering_value);
+                true
+            }
+            None => {
+                cache.put(key, (slot, ordering_value));
+                true
+            }
+        }
+    }
+
+    /// Record `(slot, ordering_value)` for the key, returning whether it was
+    /// already what is recorded. The same as [`Self::get`] then, unless
+    /// equal, [`Self::insert`], formatting the key once.
+    fn record_unless_equal(
+        &self,
+        primary_key: &Value,
+        event_type: &str,
+        slot: u64,
+        ordering_value: u64,
+    ) -> bool {
+        let key = Self::make_key(primary_key, event_type);
+        let mut cache = self.cache.lock().unwrap();
+        match cache.get_mut(&key) {
+            Some(recorded) if *recorded == (slot, ordering_value) => true,
+            Some(recorded) => {
+                *recorded = (slot, ordering_value);
+                false
+            }
+            None => {
+                cache.put(key, (slot, ordering_value));
+                false
+            }
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.cache.lock().unwrap().len()
     }
@@ -1551,19 +1602,8 @@ impl StateTable {
         slot: u64,
         ordering_value: u64,
     ) -> bool {
-        let dominated = self
-            .version_tracker
-            .get(primary_key, event_type)
-            .map(|(last_slot, last_version)| (slot, ordering_value) <= (last_slot, last_version))
-            .unwrap_or(false);
-
-        if dominated {
-            return false;
-        }
-
         self.version_tracker
-            .insert(primary_key, event_type, slot, ordering_value);
-        true
+            .record_if_later(primary_key, event_type, slot, ordering_value)
     }
 
     /// Check if an instruction is a duplicate of one we've seen recently.
@@ -1591,21 +1631,10 @@ impl StateTable {
             None => Cow::Borrowed(event_type),
         };
 
-        // Check if we've seen this exact occurrence before
-        let is_duplicate = self
-            .instruction_dedup_cache
-            .get(primary_key, &scope)
-            .map(|(last_slot, last_txn_index)| slot == last_slot && txn_index == last_txn_index)
-            .unwrap_or(false);
-
-        if is_duplicate {
-            return true;
-        }
-
-        // Record this occurrence for deduplication
+        // A duplicate if this exact occurrence is the one recorded last;
+        // otherwise it is recorded.
         self.instruction_dedup_cache
-            .insert(primary_key, &scope, slot, txn_index);
-        false
+            .record_unless_equal(primary_key, &scope, slot, txn_index)
     }
 
     /// Dump the durable subset of this table into a serializable snapshot.
@@ -7508,6 +7537,47 @@ mod tests {
             );
         }
         assert_eq!(reusing.states[&0].row_bytes(), fresh.states[&0].row_bytes());
+    }
+
+    #[test]
+    fn version_tracker_records_as_get_then_insert_did() {
+        // The single-lookup checks against what `get` then `insert` did,
+        // eviction order included, on a tracker small enough to evict.
+        let combined = VersionTracker::with_capacity(4);
+        let separate = VersionTracker::with_capacity(4);
+        let combined_dedup = VersionTracker::with_capacity(4);
+        let separate_dedup = VersionTracker::with_capacity(4);
+        let mut seed = 7u64;
+        for _ in 0..2_000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let key = json!(format!("k{}", (seed >> 33) % 7));
+            let event = if (seed >> 20).is_multiple_of(2) {
+                "A"
+            } else {
+                "B"
+            };
+            let slot = (seed >> 40) % 5;
+            let ordering = (seed >> 50) % 3;
+
+            let fresh = !separate
+                .get(&key, event)
+                .is_some_and(|last| (slot, ordering) <= last);
+            if fresh {
+                separate.insert(&key, event, slot, ordering);
+            }
+            assert_eq!(combined.record_if_later(&key, event, slot, ordering), fresh);
+
+            let duplicate = separate_dedup.get(&key, event) == Some((slot, ordering));
+            if !duplicate {
+                separate_dedup.insert(&key, event, slot, ordering);
+            }
+            assert_eq!(
+                combined_dedup.record_unless_equal(&key, event, slot, ordering),
+                duplicate
+            );
+        }
+        assert_eq!(combined.dump_entries(), separate.dump_entries());
+        assert_eq!(combined_dedup.dump_entries(), separate_dedup.dump_entries());
     }
 
     #[test]
