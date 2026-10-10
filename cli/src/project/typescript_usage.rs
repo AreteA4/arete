@@ -576,10 +576,21 @@ fn read_function(extension: &str, name: &str) -> Option<(Vec<String>, Option<Str
 /// before the end of `text`, or a parameter has no usable name.
 fn parameter_list(text: &str) -> Option<(Vec<String>, &str)> {
     // The list without its comments, which may hold any character.
+    // Strings are kept whole: a `//` or `)` in a default is not syntax.
     let mut list = String::new();
     let mut depth = 0usize;
     let mut rest = text;
     loop {
+        if let Some(quote) = rest
+            .chars()
+            .next()
+            .filter(|c| matches!(c, '\'' | '"' | '`'))
+        {
+            let end = string_end(&rest[1..], quote)? + 1;
+            list.push_str(&rest[..end]);
+            rest = &rest[end..];
+            continue;
+        }
         if rest.starts_with("//") || rest.starts_with("/*") {
             let after = skip_space(rest)?;
             list.push(' ');
@@ -608,6 +619,23 @@ fn parameter_list(text: &str) -> Option<(Vec<String>, &str)> {
         is_identifier(name) || name.starts_with('{') || name.starts_with('[')
     });
     named.then_some((params, after))
+}
+
+/// The length of a string literal's body and closing `quote`, from the
+/// text after its opening quote, honouring backslash escapes. `None` when it
+/// does not close.
+fn string_end(text: &str, quote: char) -> Option<usize> {
+    let mut escaped = false;
+    for (at, character) in text.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == quote {
+            return Some(at + 1);
+        }
+    }
+    None
 }
 
 /// Whether `text`, after a parameter list, starts a function body: an
@@ -1067,6 +1095,15 @@ async function miner(
             .collect::<Vec<_>>();
         assert_eq!(reads, vec!["currentRound()", "miner(authority)"]);
         assert_eq!(read_counts("a: 0, /* unterminated }"), None);
+        // Strings in defaults are opaque: a URL's `//`, or `/*` and `)`.
+        let defaults = r#"readArgCounts: { quote: 1, label: 2 },
+async function quote(endpoint: string = "https://example.com") {}
+async function label(text = 'a /* b ) \' c', suffix = `)`) {}"#;
+        let reads = stack_reads(defaults)
+            .iter()
+            .map(StackRead::signature)
+            .collect::<Vec<_>>();
+        assert_eq!(reads, vec!["quote(endpoint?)", "label(text?, suffix?)"]);
         // Anything but a strict object literal is not a declaration.
         assert_eq!(read_counts("a: 1, b: x }"), None);
         assert_eq!(read_counts("a: [1, 2, 3] }"), None);
