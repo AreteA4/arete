@@ -84,6 +84,11 @@ pub fn search(
     let full = *shape == catalog_view::Shape::Full;
     let hint = search_hint(&value, full, limit);
     if json {
+        // --full JSON is the response as sent, without a hint.
+        if full {
+            println!("{}", serde_json::to_string_pretty(&value)?);
+            return Ok(());
+        }
         let mut shaped = catalog_view::shape_search(&value, shape);
         if let Some(hint) = hint {
             shaped = catalog_view::with_hint(shaped, hint);

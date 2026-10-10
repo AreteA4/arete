@@ -480,20 +480,18 @@ const KNOWLEDGE_BRIEF_HINT: &str = "Brief fields per result. Pass `full: true` f
 /// Shape a `search_knowledge` body and attach a `hint`. Knowledge search has
 /// no cursor, so a page cut at `limit` says to raise it.
 fn knowledge_search_body(body: String, shape: &catalog_view::Shape, limit: usize) -> String {
+    // `full` returns the response as sent, without a hint.
+    if *shape == catalog_view::Shape::Full {
+        return body;
+    }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
         return body;
     };
-    let mut parts = Vec::new();
-    if *shape != catalog_view::Shape::Full {
-        parts.push(KNOWLEDGE_BRIEF_HINT.to_string());
-    }
+    let mut parts = vec![KNOWLEDGE_BRIEF_HINT.to_string()];
     if catalog_view::may_have_more(&value, limit) {
         parts.push(format!(
             "There may be more results: raise `limit` above {limit}."
         ));
-    }
-    if *shape == catalog_view::Shape::Full && parts.is_empty() {
-        return body;
     }
     let shaped = catalog_view::shape_search(&value, shape);
     serde_json::to_string(&catalog_view::with_hint(shaped, parts.join(" "))).unwrap_or(body)
@@ -773,9 +771,7 @@ impl AreteMcp {
         let body = self
             .registry_body(self.registry.list_stacks().await)
             .await?;
-        Ok(CallToolResult::success(vec![Content::text(list_body(
-            body, &shape,
-        ))]))
+        bounded_result(list_body(body, &shape))
     }
 
     #[tool(
@@ -907,9 +903,7 @@ impl AreteMcp {
         let body = self
             .registry_body(self.registry.list_programs().await)
             .await?;
-        Ok(CallToolResult::success(vec![Content::text(list_body(
-            body, &shape,
-        ))]))
+        bounded_result(list_body(body, &shape))
     }
 
     #[tool(
@@ -1086,9 +1080,7 @@ impl AreteMcp {
                     .await,
             )
             .await?;
-        Ok(CallToolResult::success(vec![Content::text(search_body(
-            body, &shape,
-        ))]))
+        bounded_result(search_body(body, &shape))
     }
 
     #[tool(
@@ -1133,9 +1125,7 @@ impl AreteMcp {
         let body = self
             .registry_body(self.registry.catalog_vocabulary().await)
             .await?;
-        Ok(CallToolResult::success(vec![Content::text(
-            vocabulary_body(body, args.full == Some(true)),
-        )]))
+        bounded_result(vocabulary_body(body, args.full == Some(true)))
     }
 
     #[tool(
@@ -1180,9 +1170,7 @@ impl AreteMcp {
                     .await,
             )
             .await?;
-        Ok(CallToolResult::success(vec![Content::text(
-            knowledge_search_body(body, &shape, limit),
-        )]))
+        bounded_result(knowledge_search_body(body, &shape, limit))
     }
 
     #[tool(
@@ -1269,9 +1257,7 @@ impl AreteMcp {
         let body = self
             .registry_body(self.registry.knowledge_vocabulary().await)
             .await?;
-        Ok(CallToolResult::success(vec![Content::text(
-            vocabulary_body(body, args.full == Some(true)),
-        )]))
+        bounded_result(vocabulary_body(body, args.full == Some(true)))
     }
 
     #[tool(
@@ -1700,12 +1686,20 @@ fn parse_descriptor(body: anyhow::Result<String>) -> Result<serde_json::Value, M
 fn shaped_result(value: &serde_json::Value) -> Result<CallToolResult, McpError> {
     let text = serde_json::to_string(value)
         .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+    bounded_result(text)
+}
+
+/// Return reshaped text (a brief list, search page or vocabulary) only if it
+/// still fits the 512 KiB tool-result cap. Re-serializing can expand what
+/// the registry sent (numbers, an added `hint`), so the cap is re-checked on
+/// the bytes actually returned.
+fn bounded_result(text: String) -> Result<CallToolResult, McpError> {
     if text.len() > MAX_RESPONSE_BYTES {
         return Err(McpError::internal_error(
             format!(
                 "shaped response is {} bytes, over the {MAX_RESPONSE_BYTES} byte limit for a single \
-                 tool result. Narrow it (fewer `views` or `sections`), or use `a4 explore` on the \
-                 command line.",
+                 tool result. Narrow it (fewer `views`, `sections` or `fields`, a smaller `limit`, \
+                 or no `full`), or use `a4 explore` on the command line.",
                 text.len()
             ),
             None,
@@ -1841,9 +1835,7 @@ impl AreteMcp {
         search: bool,
     ) -> Result<CallToolResult, McpError> {
         let body = self.registry_body(result).await?;
-        Ok(CallToolResult::success(vec![Content::text(
-            catalog_view::shape_body(body, shape, search),
-        )]))
+        bounded_result(catalog_view::shape_body(body, shape, search))
     }
 
     async fn recovery_error(&self, error: anyhow::Error) -> McpError {
@@ -2336,6 +2328,11 @@ mod explore_args_tests {
         let oversized = serde_json::json!({"blob": "x".repeat(MAX_RESPONSE_BYTES + 1)});
         let err = shaped_result(&oversized).unwrap_err();
         assert!(err.message.contains("byte limit"), "{}", err.message);
+
+        // Reshaped list, search and vocabulary text is held to the same cap.
+        let err = bounded_result("x".repeat(MAX_RESPONSE_BYTES + 1)).unwrap_err();
+        assert!(err.message.contains("byte limit"), "{}", err.message);
+        assert!(bounded_result("[]".to_string()).is_ok());
     }
 
     #[test]

@@ -2308,6 +2308,11 @@ fn catalog_search_hint(
     shape: &catalog_view::Shape,
     overview: Option<&str>,
 ) -> Option<String> {
+    // `--full` prints a search page as the server sent it, without a hint.
+    // The overview is assembled by the CLI, so it keeps its hint.
+    if *shape == catalog_view::Shape::Full && overview.is_none() {
+        return None;
+    }
     let mut parts = Vec::new();
     if let Some(overview) = overview {
         parts.push(overview.to_string());
@@ -2404,6 +2409,7 @@ pub fn catalog_search(
     print!("{}", render_catalog_search(&value, full));
     if let Some(overview) = overview {
         println!("\n{overview}");
+        print!("{}", render_overview_cursors(&value));
     }
     if !full {
         println!("\n{CATALOG_BRIEF_HINT}");
@@ -2510,6 +2516,23 @@ fn pinned_install_command(entry: &Value) -> String {
         Some(version) => format!("a4 install {kind} {slug}@={version}"),
         None => format!("a4 install {kind} {slug}"),
     }
+}
+
+/// The continuation command for each kind the overview cut short, with its
+/// actual cursor.
+fn render_overview_cursors(value: &Value) -> String {
+    let Some(cursors) = value.get("nextCursors").and_then(Value::as_object) else {
+        return String::new();
+    };
+    let mut text = String::new();
+    for (kind, cursor) in cursors {
+        if let Some(cursor) = cursor.as_str() {
+            text.push_str(&format!(
+                "  More {kind}s: a4 explore catalog --kind {kind} --cursor {cursor}\n"
+            ));
+        }
+    }
+    text
 }
 
 fn render_catalog_search(value: &Value, full: bool) -> String {
@@ -2760,9 +2783,16 @@ mod tests {
 
         let full = catalog_list_shape(&[], true);
         assert_eq!(full, catalog_view::Shape::Full);
-        let hint = catalog_search_hint(&page, &full, None).unwrap();
-        assert!(!hint.contains("--full") && hint.contains("--cursor"));
-        assert!(catalog_search_hint(&json!({"results": []}), &full, None).is_none());
+        // --full JSON is the server page unchanged: no hint, even with a cursor.
+        assert!(catalog_search_hint(&page, &full, None).is_none());
+        let hint = catalog_search_hint(&page, &full, Some("Catalog overview.")).unwrap();
+        assert!(hint.starts_with("Catalog overview.") && !hint.contains("--full"));
+
+        let overview = json!({"results": [], "nextCursors": {"program": "p1", "stack": "s1"}});
+        let cursors = render_overview_cursors(&overview);
+        assert!(cursors.contains("a4 explore catalog --kind program --cursor p1"));
+        assert!(cursors.contains("a4 explore catalog --kind stack --cursor s1"));
+        assert!(render_overview_cursors(&json!({"results": []})).is_empty());
         let hint = catalog_search_hint(&json!({"results": []}), &shape, Some("Catalog overview."))
             .unwrap();
         assert!(hint.starts_with("Catalog overview."));
