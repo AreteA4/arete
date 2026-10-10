@@ -661,8 +661,129 @@ fn operation_list(surface: &ProgramSurface) -> Value {
     )
 }
 
-/// Names only: identity, what the IDL declares, the semantic operations the
-/// surface lists, transports and the SDK extension.
+/// The first line of an IDL item's `docs`, when it has any.
+fn first_doc_line(item: &Value) -> Option<String> {
+    let docs = item.get("docs")?;
+    let text = match docs {
+        Value::Array(lines) => lines
+            .iter()
+            .find_map(|line| line.as_str().map(str::trim).filter(|line| !line.is_empty()))?,
+        Value::String(text) => text.lines().map(str::trim).find(|line| !line.is_empty())?,
+        _ => return None,
+    };
+    Some(text.to_string())
+}
+
+/// `{name: first doc line}` for the IDL items under `key` that have docs.
+fn doc_lines(idl: &Value, key: &str) -> Map<String, Value> {
+    get_array(idl, &[key])
+        .iter()
+        .filter_map(|item| {
+            Some((
+                get_str(item, &["name"])?.to_string(),
+                json!(first_doc_line(item)?),
+            ))
+        })
+        .collect()
+}
+
+/// One PDA seed in brief: a constant byte seed as its text when it is
+/// printable (else hex), an account or argument seed as `account:<path>` /
+/// `arg:<path>`, anything else as sent. Reads IDL seeds (`kind`) and
+/// ProgramSpec seeds (`type`: `literal`, `accountRef`, `argRef`).
+fn seed_label(seed: &Value) -> Value {
+    if let Some(kind) = get_str(seed, &["type"]) {
+        if kind == "literal" {
+            if let Some(value) = seed.get("value") {
+                return value.clone();
+            }
+        }
+        if kind == "bytes" {
+            if let Some(label) = bytes_label(get_array(seed, &["value"])) {
+                return label;
+            }
+        }
+        if let Some(prefix) = kind.strip_suffix("Ref") {
+            if let Some(name) = get_str(
+                seed,
+                &[
+                    "account_name",
+                    "accountName",
+                    "arg_name",
+                    "argName",
+                    "path",
+                    "name",
+                ],
+            ) {
+                return json!(format!("{prefix}:{name}"));
+            }
+        }
+        return seed.clone();
+    }
+    let kind = get_str(seed, &["kind"]);
+    match kind {
+        Some("const") => bytes_label(get_array(seed, &["value"])).unwrap_or_else(|| seed.clone()),
+        Some(kind @ ("account" | "arg")) => match get_str(seed, &["path"]) {
+            Some(path) => json!(format!("{kind}:{path}")),
+            None => seed.clone(),
+        },
+        _ => seed.clone(),
+    }
+}
+
+/// A constant byte seed as its text when every byte is printable ASCII,
+/// else as `0x`-prefixed hex. `None` when the values are not bytes.
+fn bytes_label(values: &[Value]) -> Option<Value> {
+    let bytes = values
+        .iter()
+        .map(|byte| byte.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+        .collect::<Option<Vec<u8>>>()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    if bytes.iter().all(u8::is_ascii_graphic) {
+        return Some(json!(String::from_utf8_lossy(&bytes)));
+    }
+    let hex = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Some(json!(format!("0x{hex}")))
+}
+
+/// The program's PDA accounts with their seeds, by account name: from the
+/// ProgramSpec's account resolutions, else the IDL's `pda` seeds. The first
+/// instruction that derives an account names its seeds.
+fn program_pdas(program: &Value) -> Map<String, Value> {
+    let mut out = Map::new();
+    let spec = program
+        .pointer("/definition/programSpec/payload/instructions")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let idl = get_array(program_idl(program), &["instructions"]);
+    for instruction in spec.iter().chain(idl) {
+        let mut flattened = Vec::new();
+        flatten_accounts(get_array(instruction, &["accounts"]), "", &mut flattened);
+        for (name, account) in flattened {
+            let seeds = account
+                .pointer("/resolution/seeds")
+                .or_else(|| account.pointer("/pda/seeds"))
+                .and_then(Value::as_array);
+            let Some(seeds) = seeds else { continue };
+            let leaf = name.rsplit('.').next().unwrap_or(&name).to_string();
+            out.entry(leaf)
+                .or_insert_with(|| Value::Array(seeds.iter().map(seed_label).collect()));
+        }
+    }
+    out
+}
+
+/// Names and one-line descriptions: what the IDL declares (with the first
+/// line of each instruction's and account's docs), the PDAs it derives, the
+/// semantic operations the surface lists, transports and the SDK extension
+/// entry. No identity hashes; `program_sections` and the full descriptor
+/// carry the detail.
 pub fn program_summary(program: &Value, surface: SurfaceState<'_>) -> Value {
     let idl = program_idl(program);
     let names = |key: &str| {
@@ -676,9 +797,35 @@ pub fn program_summary(program: &Value, surface: SurfaceState<'_>) -> Value {
     };
     let mut out = Map::new();
     out.insert("kind".into(), json!("program-summary"));
-    out.insert("program".into(), program_identity(program));
+    let mut identity = Map::new();
+    put_str(
+        &mut identity,
+        "installName",
+        get_str(program, &["installName"]),
+    );
+    put_str(
+        &mut identity,
+        "displayName",
+        get_str(program, &["displayName"]),
+    );
+    put_str(&mut identity, "programId", program_id(program));
+    out.insert("program".into(), Value::Object(identity));
     out.insert("accounts".into(), names("accounts"));
     out.insert("instructions".into(), names("instructions"));
+    let mut descriptions = Map::new();
+    for key in ["instructions", "accounts"] {
+        let lines = doc_lines(idl, key);
+        if !lines.is_empty() {
+            descriptions.insert(key.into(), Value::Object(lines));
+        }
+    }
+    if !descriptions.is_empty() {
+        out.insert("descriptions".into(), Value::Object(descriptions));
+    }
+    let pdas = program_pdas(program);
+    if !pdas.is_empty() {
+        out.insert("pdas".into(), Value::Object(pdas));
+    }
     out.insert("events".into(), names("events"));
     out.insert("types".into(), names("types"));
     out.insert(
@@ -714,13 +861,20 @@ pub fn program_summary(program: &Value, surface: SurfaceState<'_>) -> Value {
         "transaction",
         binding_transport(program.get("transactionBinding")),
     );
-    put(
-        &mut out,
-        "sdkExtension",
-        extension_summary(program.pointer("/definition/extensions")),
-    );
+    if let Some(Value::Object(mut extension)) =
+        extension_summary(program.pointer("/definition/extensions"))
+    {
+        extension.retain(|key, _| key == "entry" || key == "sdkRange");
+        out.insert("sdkExtension".into(), Value::Object(extension));
+    }
     Value::Object(out)
 }
+
+/// The hint the program summary ends with.
+pub const PROGRAM_SUMMARY_HINT: &str = "Compact summary. For one operation pass its id \
+     (semantic path, operation id or raw instruction name); for accounts, events, \
+     instructions, operations or types in detail, those sections; for the IDL, identity \
+     hashes and SDK metadata, the full output.";
 
 /// The requested sections in full detail. `instructions` also carries the
 /// program's error codes.
@@ -1348,6 +1502,9 @@ fn idl_operation(
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct EntityField {
+    /// The section the field is emitted under; `path` starts with it. Left
+    /// out of view schemas, so it defaults to empty when read back.
+    #[serde(default)]
     pub section: String,
     pub path: String,
     pub rust_type: String,
@@ -1605,15 +1762,65 @@ pub fn described_entity_fields(
     fields
 }
 
-/// Entities with their selected views, program SDKs, endpoints and auth
-/// requirements. No artifact bodies.
+/// The stream auth an agent needs to connect, in brief: per stream surface
+/// whether a key is required and which key classes are accepted, whether
+/// transactions need an entitlement, and how to mint a browser key when
+/// publishable keys are accepted. [`auth_requirements`] has every surface
+/// with its scopes.
+fn brief_auth(descriptor: &Value) -> Value {
+    let full = auth_requirements(descriptor);
+    let mut out = Map::new();
+    for key in ["stream", "query"] {
+        if let Some(surface) = full.get(key) {
+            let mut brief = Map::new();
+            put(&mut brief, "required", surface.get("required").cloned());
+            put(
+                &mut brief,
+                "acceptedKeyClasses",
+                surface.get("acceptedKeyClasses").cloned(),
+            );
+            out.insert(key.into(), Value::Object(brief));
+        }
+    }
+    out.insert(
+        "transactionEntitlementRequired".into(),
+        full.get("transactionEntitlementRequired")
+            .cloned()
+            .unwrap_or(json!(false)),
+    );
+    if let Some(create) = full.pointer("/browser/create") {
+        out.insert("browserKey".into(), create.clone());
+    }
+    Value::Object(out)
+}
+
+/// Whether any LiveSpec of a stack descriptor has a hosted WebSocket
+/// endpoint to subscribe to.
+pub fn stack_is_live(descriptor: &Value) -> bool {
+    live_specs(descriptor).iter().any(|live| {
+        live.get("binding")
+            .and_then(|binding| get_str(binding, &["websocketEndpoint", "websocket_endpoint"]))
+            .is_some_and(|endpoint| !endpoint.is_empty())
+    })
+}
+
+/// The hint the compact stack forms end with.
+pub const STACK_SUMMARY_HINT: &str = "Compact summary. For one view's fields (descriptions, \
+     token-amount units) pass views `<Entity>/<view>` (several at once, comma-separated); \
+     for one program operation, its id; for identity hashes, per-surface auth, endpoints \
+     and SDK metadata, the full output.";
+
+/// Entities with their selected views, the token-amount fields, the stack's
+/// `read.*` helpers, program SDKs, stream endpoints and the stream auth. No
+/// artifact bodies, identity hashes or SDK metadata; the full output has them.
 ///
 /// With the stack's catalog `knowledge`, each described entity and view
-/// gains its `summary`, an entity lists its described fields as
-/// `fieldDescriptions` (`[{path, description}]`), and a top-level
-/// `knowledge` names the document. Without it the output is unchanged.
+/// gains its `summary`. Field descriptions are in [`stack_views`]. Without
+/// knowledge the output is unchanged otherwise.
 pub fn stack_summary(descriptor: &Value, knowledge: Option<&StackKnowledge>) -> Value {
     let mut out = stack_header(descriptor, "stack-summary");
+    out.remove("stackManifestHash");
+    out.insert("live".into(), json!(stack_is_live(descriptor)));
     let selected = selected_view_refs(descriptor);
 
     let mut entities = Vec::new();
@@ -1660,76 +1867,55 @@ pub fn stack_summary(descriptor: &Value, knowledge: Option<&StackKnowledge>) -> 
             summary.insert("primaryKeys".into(), json!(entity_primary_keys(entity)));
             summary.insert("fieldCount".into(), json!(fields.len()));
             summary.insert("views".into(), Value::Array(views));
-            if let Some(entity_knowledge) = entity_knowledge {
-                let described = entity_knowledge
-                    .field_descriptions(fields.iter().map(|field| field.path.as_str()));
-                if !described.is_empty() {
-                    summary.insert("fieldDescriptions".into(), Value::Array(described));
-                }
+            let amounts = fields
+                .iter()
+                .filter_map(|field| Some((field.path.clone(), json!(field.amount.as_ref()?))))
+                .collect::<Map<_, _>>();
+            if !amounts.is_empty() {
+                summary.insert("amountFields".into(), Value::Object(amounts));
             }
             entities.push(Value::Object(summary));
         }
     }
     out.insert("entities".into(), Value::Array(entities));
 
+    if let Some(extension) = descriptor
+        .get("extensions")
+        .filter(|value| value.is_object())
+    {
+        let reads = crate::extension_reads::stack_extension_reads(extension);
+        if !reads.is_empty() {
+            out.insert("reads".into(), Value::Array(reads));
+        }
+    }
+
     let programs = get_array(descriptor, &["programs"])
         .iter()
         .map(|program| {
-            let mut summary = match program_identity(program) {
-                Value::Object(map) => map,
-                _ => Map::new(),
-            };
-            put(
+            let mut summary = Map::new();
+            put_str(
                 &mut summary,
-                "sdkExtension",
-                extension_summary(program.pointer("/definition/extensions")),
+                "installName",
+                get_str(program, &["installName"]),
             );
+            put_str(&mut summary, "programId", program_id(program));
             Value::Object(summary)
         })
         .collect::<Vec<_>>();
     out.insert("programs".into(), Value::Array(programs));
-    put(
-        &mut out,
-        "stackExtension",
-        extension_summary(descriptor.get("extensions")),
-    );
 
-    let mut endpoints = Map::new();
-    endpoints.insert(
-        "liveSpecs".into(),
-        Value::Array(live_specs(descriptor).iter().map(live_endpoint).collect()),
-    );
-    put_str(
-        &mut endpoints,
-        "chain",
-        descriptor
-            .pointer("/chainBinding/endpoint")
-            .and_then(Value::as_str),
-    );
-    put_str(
-        &mut endpoints,
-        "transaction",
-        descriptor
-            .pointer("/transactionBinding/endpoint")
-            .and_then(Value::as_str),
-    );
-    let program_reads = get_array(descriptor, &["programs"])
+    let streams = live_specs(descriptor)
         .iter()
-        .filter_map(|program| {
-            let endpoint = program
-                .pointer("/transport/binding/endpoint")
-                .and_then(Value::as_str)?;
-            Some(json!({ "program": program_install_name(program), "endpoint": endpoint }))
+        .map(|live| {
+            let mut endpoint = live_endpoint(live);
+            if let Value::Object(map) = &mut endpoint {
+                map.remove("liveSpecHash");
+            }
+            endpoint
         })
         .collect::<Vec<_>>();
-    if !program_reads.is_empty() {
-        endpoints.insert("programReads".into(), Value::Array(program_reads));
-    }
-    out.insert("endpoints".into(), Value::Object(endpoints));
-    out.insert("auth".into(), auth_requirements(descriptor));
-    if let Some(knowledge) = knowledge {
-        out.insert("knowledge".into(), knowledge.source(KeyCase::Camel));
-    }
+    out.insert("endpoints".into(), json!({ "liveSpecs": streams }));
+    out.insert("auth".into(), brief_auth(descriptor));
     Value::Object(out)
 }
 
@@ -1823,7 +2009,7 @@ pub fn stack_views<S: AsRef<str>>(
                 entry.insert("primaryKeys".into(), json!(entity_primary_keys(entity)));
                 entry.insert(
                     "fields".into(),
-                    json!(described_entity_fields(entity, knowledge)),
+                    view_fields(&described_entity_fields(entity, knowledge)),
                 );
             }
             None => {
@@ -1847,11 +2033,29 @@ pub fn stack_views<S: AsRef<str>>(
         out_views.push(Value::Object(entry));
     }
     let mut out = stack_header(descriptor, "stack-views");
+    out.remove("stackManifestHash");
     out.insert("views".into(), Value::Array(out_views));
     if let Some(knowledge) = knowledge {
         out.insert("knowledge".into(), knowledge.source(KeyCase::Camel));
     }
     Ok(Value::Object(out))
+}
+
+/// A view's fields without `section`, which every `path` already starts
+/// with.
+fn view_fields(fields: &[EntityField]) -> Value {
+    Value::Array(
+        fields
+            .iter()
+            .map(|field| {
+                let mut value = json!(field);
+                if let Value::Object(map) = &mut value {
+                    map.remove("section");
+                }
+                value
+            })
+            .collect(),
+    )
 }
 
 /// Merge a stack's chain and transaction bindings into one of its program
@@ -2083,8 +2287,21 @@ mod tests {
         );
         assert_eq!(summary["operations"]["read"], json!(["read.vault"]));
         assert_eq!(summary["operationCounts"]["constant"], 1);
-        assert_eq!(summary["sdkExtension"]["entry"], "demo.ts");
+        assert_eq!(
+            summary["sdkExtension"],
+            json!({"entry": "demo.ts", "sdkRange": "^0.23.0"})
+        );
+        assert_eq!(
+            summary["descriptions"],
+            json!({"instructions": {"set_value": "Sets the value."}})
+        );
+        assert_eq!(summary["pdas"], json!({"config": ["config"]}));
+        assert_eq!(
+            summary["program"],
+            json!({"installName": "demo-program", "displayName": "Demo", "programId": "Demo111"})
+        );
         assert!(!summary.to_string().contains("export {}"));
+        assert!(!summary.to_string().contains("release-exact"));
         let without = program_summary(&program(), Err("log in"));
         assert_eq!(without["operationsUnavailable"], "log in");
     }
@@ -2159,22 +2376,36 @@ mod tests {
             entity["views"],
             json!([{"id": "Round/latest", "output": "collection"}, {"id": "Round/state", "output": "keyed"}])
         );
-        assert_eq!(summary["programs"][0]["installName"], "demo-program");
         assert_eq!(
-            summary["endpoints"]["liveSpecs"][0]["websocket"],
-            "wss://demo.test"
+            summary["programs"],
+            json!([{"installName": "demo-program", "programId": "Demo111"}])
+        );
+        assert_eq!(summary["live"], true);
+        assert_eq!(
+            summary["endpoints"],
+            json!({"liveSpecs": [{"alias": "live", "websocket": "wss://demo.test", "query": "https://demo.test"}]})
         );
         assert_eq!(
-            summary["endpoints"]["programReads"][0]["endpoint"],
-            "https://read.test"
+            summary["auth"],
+            json!({
+                "stream": {"required": true, "acceptedKeyClasses": ["publishable", "secret"]},
+                "transactionEntitlementRequired": true,
+                "browserKey": "a4 auth keys create-publishable --origin <origin>"
+            })
         );
-        assert_eq!(
-            summary["auth"]["stream"]["acceptedKeyClasses"],
-            json!(["publishable", "secret"])
-        );
-        assert_eq!(summary["auth"]["browser"]["originsPerKey"], 1);
-        assert_eq!(summary["auth"]["transactionEntitlementRequired"], true);
-        assert!(!summary.to_string().contains("export {}"));
+        assert!(summary.get("reads").is_none(), "no extension, no reads");
+        // No artifact bodies, identity hashes or SDK metadata.
+        let text = summary.to_string();
+        for absent in [
+            "export {}",
+            "manifest-exact",
+            "live-exact",
+            "release-exact",
+            "spec-exact",
+            "sdkRange",
+        ] {
+            assert!(!text.contains(absent), "{absent} in {text}");
+        }
     }
 
     #[test]
@@ -2185,9 +2416,10 @@ mod tests {
         assert_eq!(view["entity"], "Round");
         assert_eq!(
             view["fields"],
-            json!([{"section": "id", "path": "id.round_id", "rustType": "u64", "nullable": false}])
+            json!([{"path": "id.round_id", "rustType": "u64", "nullable": false}])
         );
         assert_eq!(view["endpoint"]["websocket"], "wss://demo.test");
+        assert!(output.get("stackManifestHash").is_none());
         assert!(stack_views(&stack(), &["live:round/LATEST"], None).is_ok());
         let error = stack_views(&stack(), &["Round/unselected"], None)
             .unwrap_err()
@@ -2224,24 +2456,16 @@ mod tests {
                 {"id": "Round/state", "output": "keyed"}
             ])
         );
-        assert_eq!(
-            entity["fieldDescriptions"],
-            json!([{"path": "id.round_id", "description": "Round number."}]),
-            "reported with the schema's own path; undescribed and absent fields are left out"
-        );
-        assert_eq!(
-            summary["knowledge"],
-            json!({"slug": "demo-stream", "documentHash": "doc-hash"})
+        assert!(
+            entity.get("fieldDescriptions").is_none(),
+            "field descriptions are in the views"
         );
 
         // Without knowledge the summary is exactly what it was.
         let plain = stack_summary(&stack(), None);
-        assert!(plain.get("knowledge").is_none());
         let mut described = summary.clone();
-        described.as_object_mut().unwrap().remove("knowledge");
         let entity = described["entities"][0].as_object_mut().unwrap();
         entity.remove("summary");
-        entity.remove("fieldDescriptions");
         entity["views"][0]
             .as_object_mut()
             .unwrap()
@@ -2254,13 +2478,80 @@ mod tests {
         assert_eq!(view["entitySummary"], "One round.");
         assert_eq!(
             view["fields"],
-            json!([{"section": "id", "path": "id.round_id", "rustType": "u64", "nullable": false, "description": "Round number."}])
+            json!([{"path": "id.round_id", "rustType": "u64", "nullable": false, "description": "Round number."}])
         );
         assert_eq!(views["knowledge"]["slug"], "demo-stream");
         let plain = stack_views(&stack(), &["Round/state"], None).unwrap();
         assert!(plain["views"][0].get("summary").is_none());
         assert!(plain["views"][0].get("entitySummary").is_none());
         assert!(plain.get("knowledge").is_none());
+    }
+
+    #[test]
+    fn stack_summary_lists_amount_fields_and_extension_reads() {
+        let mut descriptor = amount_descriptor();
+        descriptor["extensions"] = json!({
+            "manifest": {"entry": "demo-stack-extensions.ts"},
+            "files": {"demo-stack-extensions.ts": "defineStackExtensions()({ readArgCounts: { currentRound: 0 }, createRead(client) {\n  /** @title Current round */\n  async function currentRound() { return null; }\n  return { currentRound };\n} })"}
+        });
+        let summary = stack_summary(&descriptor, None);
+        assert_eq!(
+            summary["reads"],
+            json!([{"call": "read.currentRound()", "title": "Current round"}])
+        );
+        assert_eq!(
+            summary["entities"][0]["amountFields"],
+            json!({"state.total": {"scale": "ui", "decimals": 9}}),
+            "only scaled, emitted fields are listed"
+        );
+    }
+
+    #[test]
+    fn stacks_without_a_hosted_websocket_are_not_live() {
+        let mut descriptor = stack();
+        descriptor["liveSpecs"][0]["binding"] = json!({});
+        assert!(!stack_is_live(&descriptor));
+        assert_eq!(stack_summary(&descriptor, None)["live"], false);
+        assert!(stack_is_live(&stack()));
+    }
+
+    #[test]
+    fn idl_pda_seeds_are_labelled() {
+        let program = json!({
+            "definition": {"idlPayload": {"instructions": [{
+                "name": "init",
+                "accounts": [
+                    {"name": "vault", "pda": {"seeds": [
+                        {"kind": "const", "value": [118, 97, 117, 108, 116]},
+                        {"kind": "account", "path": "owner"},
+                        {"kind": "arg", "path": "id"},
+                        {"kind": "const", "value": [0, 255]}
+                    ]}},
+                    {"name": "owner", "signer": true}
+                ]
+            }]}}
+        });
+        assert_eq!(
+            program_summary(&program, Err("no key"))["pdas"],
+            json!({"vault": ["vault", "account:owner", "arg:id", "0x00ff"]})
+        );
+        // ProgramSpec seeds.
+        assert_eq!(
+            seed_label(&json!({"type": "bytes", "value": [0, 0]})),
+            json!("0x0000")
+        );
+        assert_eq!(
+            seed_label(&json!({"type": "literal", "value": "launch"})),
+            json!("launch")
+        );
+        assert_eq!(
+            seed_label(&json!({"type": "accountRef", "account_name": "launch.admin"})),
+            json!("account:launch.admin")
+        );
+        assert_eq!(
+            seed_label(&json!({"type": "argRef", "arg_name": "id"})),
+            json!("arg:id")
+        );
     }
 
     #[test]

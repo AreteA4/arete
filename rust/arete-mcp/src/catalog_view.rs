@@ -13,6 +13,17 @@
 //! List, search and vocabulary responses are brief by default; callers opt
 //! out with `full` / `--full` or choose keys with `fields` / `--fields`, and a
 //! top-level `hint` string says how.
+//!
+//! Shaped (non-`full`) output also gains two derived keys, computed only from
+//! fields the server already sends:
+//!
+//! - `live` on stack entries: whether the stack has a hosted stream to
+//!   subscribe to now (see [`is_live_stack`]). A stack with `live: false` is
+//!   definition-only.
+//! - `related` on search results: the other results of the same page that
+//!   share the entry's `protocol`, as `kind:slug` (e.g. the program a stack
+//!   streams). Program, stack and protocol slugs often differ for the same
+//!   protocol, so this saves a lookup per result.
 
 use serde_json::{Map, Value};
 
@@ -28,11 +39,24 @@ pub const BRIEF_FIELDS: &[&str] = &[
     "protocol",
     "summary",
     "modes",
+    "live",
+    "related",
     "sdkTargets",
     "coverage",
     "delivery.status",
     "delivery.health",
 ];
+
+/// The catalog access mode a hosted stream is published under.
+const SUBSCRIBE_MODE: &str = "subscribe";
+
+/// The delivery kind of a stack whose stream is hosted.
+const DEPLOYED_STACK_DELIVERY: &str = "deployed-stack";
+
+/// What `live` and `related` mean, for hints and help text.
+pub const LIVE_HINT: &str = "`live`: true = a hosted stream to subscribe to now; false = \
+     definition-only (install its SDK to build and read, or deploy it to stream). `related`: \
+     other results for the same protocol, as `kind:slug`.";
 
 /// Page size used for catalog searches when the caller passes no limit. The
 /// server's own default is larger; a smaller first page keeps discovery
@@ -66,6 +90,194 @@ pub fn merge_overview(pages: &[(&str, Value)]) -> Value {
         out.insert("nextCursors".to_string(), Value::Object(cursors));
     }
     Value::Object(out)
+}
+
+/// Whether a catalog entry is a stack with a hosted stream. `None` for
+/// anything that is not a stack (programs have no stream).
+///
+/// A stack is live when its evidenced `modes` include `subscribe`, the mode
+/// `--mode subscribe` / `mode: "subscribe"` filters on. An entry that carries
+/// no `modes` falls back to its delivery: `delivery.kind` `deployed-stack`
+/// is a hosted deployment. A stack with neither is definition-only.
+pub fn is_live_stack(entry: &Value) -> Option<bool> {
+    if entry.get("kind").and_then(Value::as_str) != Some("stack") {
+        return None;
+    }
+    if let Some(modes) = entry.get("modes").and_then(Value::as_array) {
+        return Some(
+            modes
+                .iter()
+                .any(|mode| mode.as_str() == Some(SUBSCRIBE_MODE)),
+        );
+    }
+    Some(
+        entry
+            .pointer("/delivery/kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind == DEPLOYED_STACK_DELIVERY),
+    )
+}
+
+/// Add the derived `live` key to a stack entry (see [`is_live_stack`]). A key
+/// the server already sends is kept.
+pub fn annotate_entry(entry: &Value) -> Value {
+    let mut out = entry.clone();
+    if let (Some(live), Value::Object(map)) = (is_live_stack(entry), &mut out) {
+        map.entry("live").or_insert(Value::Bool(live));
+    }
+    out
+}
+
+/// Whether a search page (or a bare result list) holds a stack entry, so
+/// its hint should say what `live` means.
+pub fn has_stacks(value: &Value) -> bool {
+    let results = match value {
+        Value::Array(items) => items.as_slice(),
+        _ => value
+            .get("results")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+    };
+    results.iter().any(|entry| is_live_stack(entry).is_some())
+}
+
+/// `kind:slug` (or `type:slug` for knowledge results) of one result.
+fn result_ref(entry: &Value) -> Option<String> {
+    let kind = entry
+        .get("kind")
+        .or_else(|| entry.get("type"))
+        .and_then(Value::as_str)?;
+    let slug = entry.get("slug").and_then(Value::as_str)?;
+    Some(format!("{kind}:{slug}"))
+}
+
+/// Annotate every result of a page with `live` and, where other results of
+/// the page share its `protocol`, `related` (their `kind:slug`, in page
+/// order). Linking uses only the page: a related package outside it is not
+/// looked up.
+pub fn annotate_results(results: &[Value]) -> Vec<Value> {
+    let refs: Vec<(Option<&str>, Option<String>)> = results
+        .iter()
+        .map(|entry| {
+            (
+                entry
+                    .get("protocol")
+                    .and_then(Value::as_str)
+                    .filter(|protocol| !protocol.is_empty()),
+                result_ref(entry),
+            )
+        })
+        .collect();
+    results
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let mut out = annotate_entry(entry);
+            let (protocol, own) = &refs[index];
+            let Some(protocol) = protocol else {
+                return out;
+            };
+            let mut related: Vec<Value> = Vec::new();
+            for (other_index, (other_protocol, other_ref)) in refs.iter().enumerate() {
+                let Some(other_ref) = other_ref else { continue };
+                if other_index == index || other_protocol != &Some(*protocol) {
+                    continue;
+                }
+                if own.as_ref() == Some(other_ref)
+                    || related.iter().any(|seen| seen.as_str() == Some(other_ref))
+                {
+                    continue;
+                }
+                related.push(Value::String(other_ref.clone()));
+            }
+            if let (false, Value::Object(map)) = (related.is_empty(), &mut out) {
+                map.entry("related").or_insert(Value::Array(related));
+            }
+            out
+        })
+        .collect()
+}
+
+/// The problem code the registry answers a stack install with when the stack
+/// is a catalog package with no hosted deployment.
+pub const DEFINITION_ONLY_CODE: &str = "stack-definition-only";
+
+/// The catalog facts a definition-only answer repeats: slug, version,
+/// protocol, summary and modes. A single catalog entry carries its summary
+/// and protocols under `knowledge`, a search result at the top level.
+fn entry_brief(entry: &Value) -> Value {
+    let knowledge = entry.get("knowledge").unwrap_or(&Value::Null);
+    let text = |value: Option<&Value>| value.and_then(Value::as_str).map(str::to_string);
+    let mut out = Map::new();
+    for key in ["slug", "version"] {
+        if let Some(value) = text(entry.get(key)) {
+            out.insert(key.into(), Value::String(value));
+        }
+    }
+    let protocol = text(entry.get("protocol"))
+        .or_else(|| text(knowledge.get("protocol")))
+        .or_else(|| text(knowledge.pointer("/protocols/0")));
+    if let Some(protocol) = protocol {
+        out.insert("protocol".into(), Value::String(protocol));
+    }
+    if let Some(summary) = text(entry.get("summary")).or_else(|| text(knowledge.get("summary"))) {
+        out.insert("summary".into(), Value::String(summary));
+    }
+    if let Some(modes) = entry.get("modes") {
+        out.insert("modes".into(), modes.clone());
+    }
+    Value::Object(out)
+}
+
+/// The structured answer to exploring a stack that has no hosted stream,
+/// instead of an error: the registry refused its install descriptor with
+/// [`DEFINITION_ONLY_CODE`] (`registry_says`), or the catalog lists a stack
+/// under `reference` that is not live (`catalog_entry`, the stack's catalog
+/// entry when it could be read). `None` when neither holds, so the original
+/// error stands.
+///
+/// `detail` is the registry's message; `find_live` says how to search for a
+/// live stack in the caller's interface (CLI flags or MCP arguments).
+pub fn definition_only_stack(
+    reference: &str,
+    registry_says: bool,
+    detail: Option<&str>,
+    catalog_entry: Option<&Value>,
+    find_live: &str,
+) -> Option<Value> {
+    let catalog_live = catalog_entry.and_then(is_live_stack);
+    if !registry_says && catalog_live != Some(false) {
+        return None;
+    }
+    let slug = catalog_entry
+        .and_then(|entry| entry.get("slug"))
+        .and_then(Value::as_str)
+        .unwrap_or(reference);
+    let mut out = Map::new();
+    out.insert("kind".into(), Value::String("stack-definition-only".into()));
+    out.insert("stack".into(), Value::String(slug.to_string()));
+    out.insert("live".into(), Value::Bool(false));
+    if let Some(detail) = detail.filter(|detail| !detail.is_empty()) {
+        out.insert("detail".into(), Value::String(detail.to_string()));
+    }
+    if let Some(entry) = catalog_entry {
+        out.insert("catalog".into(), entry_brief(entry));
+    }
+    out.insert(
+        "next".into(),
+        serde_json::json!([
+            format!(
+                "`a4 install stack {slug} --ts` installs its typed SDK and program SDKs: build \
+                 transactions and read accounts now; its views have no endpoint until it is deployed"
+            ),
+            "`a4 up <alias>` (the dependency alias `a4 install` printed) deploys it yourself so \
+             its views stream"
+                .to_string(),
+            find_live.to_string(),
+        ]),
+    );
+    Some(Value::Object(out))
 }
 
 /// How a catalog response should be shaped before it is returned.
@@ -192,21 +404,33 @@ pub fn shape_search(value: &Value, shape: &Shape) -> Value {
             if let Some(Value::Array(results)) = map.get("results") {
                 out.insert(
                     "results".to_string(),
-                    Value::Array(results.iter().map(|item| shape_one(item, shape)).collect()),
+                    Value::Array(
+                        annotate_results(results)
+                            .iter()
+                            .map(|item| shape_one(item, shape))
+                            .collect(),
+                    ),
                 );
             }
             Value::Object(out)
         }
-        Value::Array(items) => {
-            Value::Array(items.iter().map(|item| shape_one(item, shape)).collect())
-        }
+        Value::Array(items) => Value::Array(
+            annotate_results(items)
+                .iter()
+                .map(|item| shape_one(item, shape))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
 
-/// Shape a single catalog entry response.
+/// Shape a single catalog entry response. Shaped (non-`full`) stack entries
+/// gain `live`.
 pub fn shape_entry(value: &Value, shape: &Shape) -> Value {
-    shape_one(value, shape)
+    match shape {
+        Shape::Full => value.clone(),
+        _ => shape_one(&annotate_entry(value), shape),
+    }
 }
 
 /// The brief preset as a [`Shape`].
@@ -429,5 +653,128 @@ mod tests {
         );
         let shaped = shape_body(entry().to_string(), &Shape::Compact, false);
         assert!(!shaped.contains("bundleHash"));
+    }
+
+    fn launchpad_page() -> Value {
+        json!({
+            "results": [
+                {"kind": "program", "slug": "jurassic-fi-token-sale", "protocol": "jurassic",
+                 "modes": ["build", "read"],
+                 "delivery": {"kind": "program-read", "status": "active", "health": "ready"}},
+                {"kind": "stack", "slug": "jurassic-launchpad", "protocol": "jurassic",
+                 "modes": ["build", "read", "subscribe"],
+                 "delivery": {"kind": "deployed-stack", "status": "active", "health": "ready"}},
+                {"kind": "stack", "slug": "pumpfun", "protocol": "pump-fun", "modes": ["build", "read"]},
+                {"kind": "program", "slug": "pumpfun", "protocol": "pump-fun", "modes": ["build", "read"]},
+                {"kind": "stack", "slug": "solo", "protocol": "solo", "modes": ["build", "read"]}
+            ]
+        })
+    }
+
+    #[test]
+    fn stacks_are_live_only_with_a_hosted_stream() {
+        let page = launchpad_page();
+        let results = page["results"].as_array().unwrap();
+        assert_eq!(is_live_stack(&results[0]), None, "programs have no stream");
+        assert_eq!(is_live_stack(&results[1]), Some(true));
+        assert_eq!(is_live_stack(&results[2]), Some(false));
+        // Without `modes`, a hosted delivery decides.
+        assert_eq!(
+            is_live_stack(&json!({"kind": "stack", "delivery": {"kind": "deployed-stack"}})),
+            Some(true)
+        );
+        assert_eq!(is_live_stack(&json!({"kind": "stack"})), Some(false));
+        // `modes` wins over delivery when both are present.
+        assert_eq!(
+            is_live_stack(
+                &json!({"kind": "stack", "modes": ["read"], "delivery": {"kind": "deployed-stack"}})
+            ),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn brief_search_marks_live_stacks_and_links_results_by_protocol() {
+        let out = shape_search(&launchpad_page(), &brief());
+        let results = out["results"].as_array().unwrap();
+        assert!(results[0].get("live").is_none());
+        assert_eq!(results[0]["related"], json!(["stack:jurassic-launchpad"]));
+        assert_eq!(results[1]["live"], true);
+        assert_eq!(
+            results[1]["related"],
+            json!(["program:jurassic-fi-token-sale"])
+        );
+        assert_eq!(results[2]["live"], false);
+        assert_eq!(results[2]["related"], json!(["program:pumpfun"]));
+        assert_eq!(results[3]["related"], json!(["stack:pumpfun"]));
+        assert_eq!(results[4]["live"], false);
+        assert!(
+            results[4].get("related").is_none(),
+            "nothing shares its protocol"
+        );
+
+        // An explicit field list keeps only what it names; `full` is untouched.
+        let fields = shape_search(&launchpad_page(), &Shape::Fields(vec!["slug".into()]));
+        assert_eq!(fields["results"][1], json!({"slug": "jurassic-launchpad"}));
+        let live = shape_search(
+            &launchpad_page(),
+            &Shape::Fields(vec!["slug".into(), "live".into()]),
+        );
+        assert_eq!(
+            live["results"][1],
+            json!({"slug": "jurassic-launchpad", "live": true})
+        );
+        assert_eq!(
+            shape_search(&launchpad_page(), &Shape::Full),
+            launchpad_page()
+        );
+    }
+
+    #[test]
+    fn shaped_entries_gain_live_but_full_entries_do_not() {
+        let stack = launchpad_page()["results"][2].clone();
+        assert_eq!(shape_entry(&stack, &Shape::Compact)["live"], false);
+        assert!(shape_entry(&stack, &Shape::Full).get("live").is_none());
+        let program = launchpad_page()["results"][0].clone();
+        assert!(shape_entry(&program, &Shape::Compact).get("live").is_none());
+    }
+
+    #[test]
+    fn definition_only_answers_come_from_the_registry_code_or_the_catalog() {
+        let entry = json!({"kind": "stack", "slug": "pumpfun", "version": "1.1.4",
+            "protocol": "pump-fun", "summary": "Pump.", "modes": ["build", "read"],
+            "packageReleaseHash": "sha256:aa"});
+        let answer = definition_only_stack("pumpfun", false, None, Some(&entry), "find").unwrap();
+        assert_eq!(answer["kind"], "stack-definition-only");
+        assert_eq!(answer["live"], false);
+        assert_eq!(answer["catalog"]["protocol"], "pump-fun");
+        assert!(answer["catalog"].get("packageReleaseHash").is_none());
+        assert!(answer["next"][0]
+            .as_str()
+            .unwrap()
+            .contains("a4 install stack pumpfun --ts"));
+        assert_eq!(answer["next"][2], "find");
+
+        let registry =
+            definition_only_stack("pumpfun", true, Some("no hosted stream"), None, "f").unwrap();
+        assert_eq!(registry["detail"], "no hosted stream");
+        assert!(registry.get("catalog").is_none());
+
+        // A live catalog stack, a program, or nothing at all keeps the error.
+        // A single entry: summary and protocols under `knowledge`, no modes.
+        let single = json!({"kind": "stack", "slug": "pumpfun", "version": "1.1.4",
+            "knowledge": {"summary": "Pump.", "protocols": ["pump-fun"]}});
+        let answer = definition_only_stack("pumpfun", false, None, Some(&single), "f").unwrap();
+        assert_eq!(
+            answer["catalog"],
+            json!({"slug": "pumpfun", "version": "1.1.4", "protocol": "pump-fun", "summary": "Pump."})
+        );
+
+        let mut live = entry.clone();
+        live["modes"] = json!(["subscribe"]);
+        assert!(definition_only_stack("pumpfun", false, None, Some(&live), "f").is_none());
+        let program = json!({"kind": "program", "slug": "pumpfun"});
+        assert!(definition_only_stack("pumpfun", false, None, Some(&program), "f").is_none());
+        assert!(definition_only_stack("pumpfun", false, None, None, "f").is_none());
     }
 }

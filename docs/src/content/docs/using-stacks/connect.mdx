@@ -18,10 +18,12 @@ a4 explore catalog --query "<intent>" --kind stack --mode subscribe --json
 a4 explore catalog stack <slug> --json
 ```
 
-The exact descriptor lists the stack's views, programs, sign-in requirements,
-connection details, verified SDK targets, and install command. If the search
-returns nothing that is subscribe-ready, stop there. Don't construct a URL from
-a package name.
+Every stack result carries `live`: `true` when it has a hosted stream to
+subscribe to now, `false` when it is definition-only (it installs as an SDK
+and streams once you deploy it yourself). The exact descriptor lists the
+stack's views, programs, sign-in requirements, connection details, verified
+SDK targets, and install command. If the search returns nothing that is
+subscribe-ready, stop there. Don't construct a URL from a package name.
 
 ## Explore it before writing code
 

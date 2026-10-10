@@ -48,6 +48,20 @@ including identity hashes and release notes), `--fields`, and the next
 `--cursor` when there is one. Without filters, `a4 explore catalog` prints an
 overview of the first programs and stacks.
 
+Two derived keys answer the questions agents otherwise spend extra calls on:
+
+- **`live`** (stacks only): `true` when the stack has a hosted stream you can
+  subscribe to now, which is when its `modes` include `subscribe`; `false`
+  when it is definition-only. A definition-only stack still installs as a
+  typed SDK with its Program SDKs (build transactions, read accounts); it
+  streams once you deploy it yourself. `--mode subscribe` returns only live
+  stacks. Programs have no stream, so they carry no `live`.
+- **`related`**: the other results on the same page that share the entry's
+  `protocol`, as `kind:slug`. Program, stack and protocol slugs often differ
+  for the same thing (protocol `jurassic`, stack `jurassic-launchpad`,
+  program `jurassic-fi-token-sale`), so cite the slug of the kind you use:
+  the stack to stream, the program to build.
+
 ```bash
 a4 explore catalog --query "monitor swaps" --json
 a4 explore catalog --query "monitor swaps" --full --json
@@ -107,26 +121,34 @@ a4 explore stack <ref> --json
 a4 explore program <ref> --json
 ```
 
-When you need only part of a descriptor, ask for that part. It keeps the output
-to a few KB:
+`a4 explore stack` and `a4 explore program` print a compact summary of a few
+KB by default. Ask for the part you need next:
 
 ```bash
-a4 explore stack <ref> --summary --json
+a4 explore stack <ref> --views <Entity>/<view>,<Entity>/<view> --json
 a4 explore stack <ref> --operation <operation> --json
 a4 explore program <ref> --operation <operation> --json
 a4 explore program <ref> --section instructions --json
+a4 explore stack <ref> --full --json     # identity hashes, every auth surface, SDK metadata
+a4 explore program <ref> --full --json   # the IDL-level dump
 ```
 
-`--summary` lists a stack's entities and views, its Program SDKs, endpoints, and
-auth requirements. `--operation` shows one operation, and on a stack it
-searches the stack's Program SDKs. See [`a4 explore`](/cli/commands/#a4-explore)
-for every option.
+The stack summary says whether the stack is `live`, and lists its entities
+and views, the token-amount fields with their units (`amountFields`), the
+`read.*` helpers its SDK extension adds (such as ORE's `read.currentRound()`),
+its Program SDKs, stream endpoints, stream auth and the install command. The
+program summary lists instructions and accounts with the first line of their
+docs, the PDAs the program derives with their seeds, its SDK operations and
+transports. `--operation` shows one operation, and on a stack it searches the
+stack's Program SDKs. Exploring a definition-only stack prints what you can do
+with it instead of failing. See [`a4 explore`](/cli/commands/#a4-explore) for
+every option.
 
 For a stack published in the catalog, entities and views also carry a curated
-`summary`, and fields a `description` (`--summary` lists them as
-`fieldDescriptions`). Read them before choosing fields: they say, for example,
-which of two similar fields a live UI should show. To see every field of one
-entity with its description, run `a4 explore stack <ref> <Entity> --json`.
+`summary`, and the fields in `--views` a `description`. Read them before
+choosing fields: they say, for example, which of two similar fields a live UI
+should show. To see every field of one entity with its description, run
+`a4 explore stack <ref> <Entity> --json`.
 
 Prefer `a4 explore catalog` when starting from intent or filtering by capability
 mode. Prefer the explicit `stack` and `program` forms over legacy positional

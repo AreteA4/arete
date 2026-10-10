@@ -181,7 +181,8 @@ enum Commands {
         #[arg(long)]
         kind: Option<String>,
 
-        /// Catalog search: require `build`, `read`, or `subscribe`
+        /// Catalog search: require `build`, `read`, or `subscribe` (`subscribe`: only live
+        /// stacks, those with a hosted stream)
         #[arg(long)]
         mode: Option<String>,
 
@@ -212,14 +213,16 @@ enum Commands {
         fields: Vec<String>,
 
         /// Catalog search or entry JSON with only slug, kind, name, version, protocol,
-        /// summary, modes, sdkTargets and delivery status (the search default); implies
-        /// --json. `--summary` is accepted as an alias on `explore catalog`
+        /// summary, modes, live (stacks), related, sdkTargets and delivery status (the search
+        /// default); implies --json. `--summary` is accepted as an alias on `explore catalog`
         #[arg(long)]
         brief: bool,
 
         /// Catalog search, `--vocabulary`, or `explore programs`: every field instead of the
-        /// brief default (identity hashes, scores, descriptions, synonyms)
-        #[arg(long, conflicts_with_all = ["brief", "fields"])]
+        /// brief default (identity hashes, scores, descriptions, synonyms). Stack or program:
+        /// the full exploration instead of the compact summary (identity hashes, every auth
+        /// surface and endpoint, SDK metadata; for a program, the IDL-level dump)
+        #[arg(long, conflicts_with_all = ["brief", "fields", "views", "operation", "sections"])]
         full: bool,
 
         /// Root stack list: filter registry entries to `starter` or `standard`
@@ -241,12 +244,15 @@ enum Commands {
         )]
         sections: Vec<String>,
 
-        /// Stack: compact summary of entities, views, program SDKs, endpoints and auth
-        #[arg(long, conflicts_with_all = ["operation", "views"])]
+        /// Stack or program: the compact summary, which is also the default (stack: whether
+        /// it is live, entities, views, amount fields, `read.*` helpers, program SDKs, stream
+        /// endpoints and auth; program: instructions and accounts with one-line docs, PDAs,
+        /// operations and transports)
+        #[arg(long, conflicts_with_all = ["operation", "views", "sections"])]
         summary: bool,
 
-        /// Stack: only these views with their entity schemas (`OreRound/latest,OreMiner/list`;
-        /// prefix `alias:` when several LiveSpecs select the same id)
+        /// Stack: only these views with their entity schemas (`OreRound/latest,OreMiner/list`,
+        /// or repeat the flag; prefix `alias:` when several LiveSpecs select the same id)
         #[arg(
             long,
             value_name = "VIEWS",
@@ -1189,9 +1195,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     "--section applies only to `a4 explore program <ref>`"
                 ));
             }
-            if (summary || !views.is_empty()) && !stack_form {
+            if !views.is_empty() && !stack_form {
                 return Err(anyhow::anyhow!(
-                    "--summary and --views apply only to `a4 explore stack <ref>`"
+                    "--views applies only to `a4 explore stack <ref>`"
+                ));
+            }
+            if summary && full && !catalog_target {
+                return Err(anyhow::anyhow!(
+                    "--summary (the default) and --full are alternatives; pass one"
+                ));
+            }
+            if summary && !(stack_form || program_form) {
+                return Err(anyhow::anyhow!(
+                    "--summary applies only to `a4 explore stack <ref>`, `a4 explore program <ref>` and `a4 explore catalog`"
                 ));
             }
             if operation.is_some() && !(program_form || stack_form) {
@@ -1199,7 +1215,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     "--operation applies only to `a4 explore program <ref>` or `a4 explore stack <ref>`"
                 ));
             }
-            let stack_detail = summary || !views.is_empty() || operation.is_some();
+            let stack_detail = summary || full || !views.is_empty() || operation.is_some();
             let entity_form = match target.as_deref() {
                 Some("stack") => entity.is_some(),
                 Some("catalog" | "programs" | "program") | None => false,
@@ -1207,12 +1223,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             };
             if stack_detail && entity_form {
                 return Err(anyhow::anyhow!(
-                    "--summary, --views and --operation cannot be combined with an entity drill-down"
+                    "--summary, --full, --views and --operation cannot be combined with an entity drill-down"
                 ));
             }
             let stack_options = commands::explore::StackOptions {
                 entity: None,
-                summary,
+                full,
                 views,
                 operation: operation.as_deref(),
                 config_path: &cli.config,
@@ -1255,9 +1271,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 ));
             }
             // `a4 explore catalog <kind> <slug>` is already complete, so --full is a no-op there.
-            if full && !(catalog_target || is_program_list) {
+            if full && !(catalog_target || is_program_list || stack_form || program_form) {
                 return Err(anyhow::anyhow!(
-                    "--full applies only to `a4 explore catalog` and `a4 explore programs`; stacks are complete unless --summary or --views is passed"
+                    "--full applies only to `a4 explore catalog`, `a4 explore programs`, `a4 explore stack <ref>` and `a4 explore program <ref>`"
                 ));
             }
             let list_shape = commands::explore::catalog_list_shape(&fields, full);
@@ -1303,6 +1319,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 commands::explore::ProgramOptions {
                     operation: operation.as_deref(),
                     sections,
+                    full,
                 },
                 cli.json,
             ),
@@ -2146,6 +2163,38 @@ mod tests {
             _ => panic!("expected explore command"),
         }
 
+        // Several views: comma-separated or a repeated flag.
+        let cli = Cli::try_parse_from([
+            "a4",
+            "explore",
+            "stack",
+            "ore",
+            "--views",
+            "OreRound/latest",
+            "--views",
+            "OreMiner/state,OreBoard/state",
+        ])
+        .expect("repeated views parse");
+        match cli.command {
+            Some(Commands::Explore { views, .. }) => assert_eq!(
+                views,
+                vec!["OreRound/latest", "OreMiner/state", "OreBoard/state"]
+            ),
+            _ => panic!("expected explore command"),
+        }
+
+        // `--full` is the full stack or program exploration.
+        for args in [
+            &["a4", "explore", "stack", "ore", "--full"][..],
+            &["a4", "explore", "program", "ore", "--full", "--json"][..],
+        ] {
+            let cli = Cli::try_parse_from(args).expect("--full parses");
+            assert!(matches!(
+                cli.command,
+                Some(Commands::Explore { full: true, .. })
+            ));
+        }
+
         let cli = Cli::try_parse_from([
             "a4",
             "explore",
@@ -2192,6 +2241,25 @@ mod tests {
                 "--operation",
                 "x",
             ][..],
+            &["a4", "explore", "stack", "ore", "--full", "--views", "A/b"][..],
+            &[
+                "a4",
+                "explore",
+                "program",
+                "ore",
+                "--full",
+                "--section",
+                "types",
+            ][..],
+            &[
+                "a4",
+                "explore",
+                "program",
+                "ore",
+                "--summary",
+                "--section",
+                "types",
+            ][..],
         ] {
             assert!(
                 Cli::try_parse_from(conflicting).is_err(),
@@ -2234,8 +2302,16 @@ mod tests {
                 "--section applies only",
             ),
             (
-                &["a4", "explore", "program", "ore", "--summary"][..],
-                "--summary and --views apply only",
+                &["a4", "explore", "program", "ore", "--views", "A/b"][..],
+                "--views applies only",
+            ),
+            (
+                &["a4", "explore", "programs", "--summary"][..],
+                "--summary applies only",
+            ),
+            (
+                &["a4", "explore", "stack", "ore", "--summary", "--full"][..],
+                "alternatives",
             ),
             (
                 &["a4", "explore", "catalog", "--operation", "x"][..],
@@ -2261,8 +2337,12 @@ mod tests {
                 "pass --full",
             ),
             (
-                &["a4", "explore", "stack", "ore", "--full"][..],
+                &["a4", "explore", "stacks", "--full"][..],
                 "--full applies only",
+            ),
+            (
+                &["a4", "explore", "stack", "ore", "Position", "--full"][..],
+                "entity drill-down",
             ),
             (
                 &["a4", "explore", "catalog", "--cursor", "c1"][..],

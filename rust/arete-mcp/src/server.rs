@@ -185,9 +185,10 @@ pub struct ExploreStackArgs {
     /// Bare stack reference as listed by `explore_stacks` (e.g. `ore`).
     /// Not a URL and not a path.
     pub stack: String,
-    /// Return the compact summary: entities with their subscribable view ids,
-    /// program SDKs, endpoints and auth requirements. This is the default;
-    /// `false` is the same as `full: true`.
+    /// Return the compact summary: whether the stack is live, entities with
+    /// their subscribable view ids and token-amount fields, the stack's
+    /// `read.*` helpers, program SDKs, stream endpoints and stream auth. This
+    /// is the default; `false` is the same as `full: true`.
     #[serde(default)]
     pub summary: Option<bool>,
     /// Only these selected views, each with its entity's field schema. View
@@ -196,7 +197,8 @@ pub struct ExploreStackArgs {
     #[serde(default)]
     pub views: Option<StringList>,
     /// Return the whole pinned install descriptor (hundreds of KB for real
-    /// stacks) instead of the summary.
+    /// stacks: identity hashes, every auth surface, SDK extension sources)
+    /// instead of the summary.
     #[serde(default)]
     pub full: Option<bool>,
 }
@@ -310,8 +312,9 @@ pub struct SearchCatalogArgs {
     pub fields: Option<StringList>,
     /// Return each result as the server sent it, including `concepts`,
     /// `score`, identity hashes (`packageReleaseHash`, `bundleHash`,
-    /// `setHash`), `programIds` and release notes. By default each result
-    /// keeps only kind, slug, name, version, protocol, summary, modes,
+    /// `setHash`), `programIds` and release notes, but without the derived
+    /// `live` and `related`. By default each result keeps only kind, slug,
+    /// name, version, protocol, summary, modes, live (stacks), related,
     /// sdkTargets and delivery status/health.
     #[serde(default)]
     pub full: Option<bool>,
@@ -412,6 +415,10 @@ const SEARCH_BRIEF_HINT: &str = "Brief fields per result. Pass `full: true` for 
      (concepts, score, identity hashes) or `fields` to choose keys; drill in with \
      `get_catalog_entry`.";
 
+/// How to find a live stack, for the definition-only answer.
+const FIND_LIVE_HINT: &str = "For a stack that streams now, call `search_catalog` with \
+     `kind: \"stack\", mode: \"subscribe\"` (results with `live: true`).";
+
 /// Shape a `search_catalog` body and attach a `hint` naming how to get more
 /// fields and the next page. `full` bodies are returned as sent.
 fn search_body(body: String, shape: &catalog_view::Shape) -> String {
@@ -434,6 +441,9 @@ fn search_value(
     let mut parts: Vec<&str> = overview.into_iter().collect();
     if *shape != catalog_view::Shape::Full {
         parts.push(SEARCH_BRIEF_HINT);
+        if catalog_view::has_stacks(value) {
+            parts.push(catalog_view::LIVE_HINT);
+        }
     }
     if catalog_view::next_cursor(value).is_some() {
         parts.push("More results: pass `nextCursor` as `cursor` with the same filters.");
@@ -830,23 +840,26 @@ impl AreteMcp {
 
     #[tool(
         description = "Describe one stack from its pinned install descriptor.\n\n\
-                          By default returns a compact summary: entities with their \
-                          subscribable view ids, the program SDKs the stack carries, \
-                          stream/chain/transaction/Program Read endpoints, and auth \
-                          requirements (accepted key classes, scopes, whether browser \
-                          keys are origin-bound, whether a transaction entitlement is \
-                          required).\n\n\
-                          `views: [\"OreRound/latest\"]` returns only those views with \
-                          their entity field schemas. When the stack is published in the \
-                          catalog, entities and views carry a curated `summary` and \
-                          fields a `description` (the summary lists them as \
-                          `fieldDescriptions`) with usage guidance, e.g. which of two \
-                          similar fields a live UI should show. Token-amount fields carry \
-                          `amount` (`scale` `ui` or `raw`, `decimals`; see \
-                          explore_stack_schema). `full: true` returns the whole \
-                          descriptor `a4 install` consumes (StackManifest, LiveSpecs, \
-                          programs, extensions) — hundreds of KB, so ask for it only \
-                          when you need artifact bodies.\n\n\
+                          By default returns a compact summary (a few KB): `live` (whether \
+                          it has a hosted stream), entities with their subscribable view \
+                          ids and token-amount fields (`amountFields`: `scale` `ui` or \
+                          `raw`, `decimals`), the stack's `read.*` helpers from its SDK \
+                          extension (e.g. `read.currentRound()`), the program SDKs it \
+                          carries, stream endpoints, and stream auth (accepted key \
+                          classes, whether transactions need an entitlement).\n\n\
+                          `views: [\"OreRound/latest\", \"OreMiner/state\"]` returns only \
+                          those views with their entity field schemas. When the stack is \
+                          published in the catalog, entities and views carry a curated \
+                          `summary` and view fields a `description` with usage guidance, \
+                          e.g. which of two similar fields a live UI should show. \
+                          `full: true` returns the whole descriptor `a4 install` consumes \
+                          (identity hashes, every auth surface and endpoint, \
+                          StackManifest, LiveSpecs, programs, extension sources) — \
+                          hundreds of KB, so ask for it only when you need those.\n\n\
+                          A definition-only stack (a catalog package with no hosted \
+                          stream) is not an error: the result has `kind: \
+                          \"stack-definition-only\"`, `live: false` and `next` steps \
+                          (install its SDK, or deploy it yourself).\n\n\
                           Pass a bare stack reference (e.g. `ore`), not a URL."
     )]
     async fn explore_stack(
@@ -866,9 +879,15 @@ impl AreteMcp {
                 None,
             ));
         }
-        let body = self
-            .registry_body(self.registry.stack_install(&args.stack).await)
-            .await?;
+        let body = match self.registry.stack_install(&args.stack).await {
+            Ok(body) => body,
+            Err(error) => {
+                if let Some(answer) = self.definition_only(&args.stack, &error).await {
+                    return shaped_result(&answer);
+                }
+                self.registry_body(Err(error)).await?
+            }
+        };
         if full {
             return self.registry_result(Ok(body)).await;
         }
@@ -893,7 +912,7 @@ impl AreteMcp {
         let shaped = if views.is_empty() {
             let mut summary = descriptor::stack_summary(&stack, knowledge.as_ref());
             summary["next"] = serde_json::json!(
-                "Pass `views` for view schemas (subscribe with those ids), or `full: true` for the whole descriptor. Program operations: explore_program { program, operationId }."
+                "Pass `views` (e.g. [\"OreRound/latest\"], several at once) for view fields with descriptions and token-amount units; subscribe or read_view with those ids. Program operations: explore_program { program, operationId }. `full: true` for identity hashes, every auth surface and SDK metadata."
             );
             summary
         } else {
@@ -923,15 +942,23 @@ impl AreteMcp {
                           `decimalsFrom`, the field holding them) and `counterpart`, the \
                           same amount at the other scale. Which token a field counts \
                           is in its `description` when the catalog has one. To read \
-                          values, use `read_view`."
+                          values, use `read_view`. A definition-only stack (no hosted \
+                          stream) returns `kind: \"stack-definition-only\"` with `next` \
+                          steps instead of an error."
     )]
     async fn explore_stack_schema(
         &self,
         Parameters(args): Parameters<ExploreStackSchemaArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let body = self
-            .registry_body(self.registry.stack_schema(&args.stack).await)
-            .await?;
+        let body = match self.registry.stack_schema(&args.stack).await {
+            Ok(body) => body,
+            Err(error) => {
+                if let Some(answer) = self.definition_only(&args.stack, &error).await {
+                    return shaped_result(&answer);
+                }
+                self.registry_body(Err(error)).await?
+            }
+        };
         let schema: serde_json::Value = parse_descriptor(Ok(body.clone()))?;
         // The response names the catalog package it resolved to.
         let slug = schema
@@ -977,9 +1004,11 @@ impl AreteMcp {
     #[tool(
         description = "Describe one standalone program from its pinned install \
                           descriptor.\n\n\
-                          By default returns a compact summary: identity and hashes, the \
-                          names of its accounts, instructions, events and types, its \
-                          semantic SDK operations (e.g. \
+                          By default returns a compact summary: identity, the names of \
+                          its accounts, instructions, events and types with the first \
+                          line of each instruction's and account's docs \
+                          (`descriptions`), the PDAs it derives with their seeds \
+                          (`pdas`), its semantic SDK operations (e.g. \
                           `transactions.mining.deployWithCheckpoint`), and its Program \
                           Read and transaction transports.\n\n\
                           `operationId` returns one operation: generated paths, input \
@@ -988,8 +1017,9 @@ impl AreteMcp {
                           usage line. It accepts a semantic path, a full operation id, or \
                           a raw IDL instruction name (`deploy`). `sections` returns \
                           `accounts`, `events`, `instructions`, `operations` or `types` \
-                          in detail. `full: true` returns the whole descriptor (IDL, \
-                          ProgramSpec, SDK extension sources) — hundreds of KB.\n\n\
+                          in detail. `full: true` returns the whole descriptor (identity \
+                          hashes, IDL, ProgramSpec, SDK extension sources) — hundreds of \
+                          KB.\n\n\
                           Semantic operations come from the knowledge surface, which \
                           needs an API key (`a4 auth login`); without one, raw IDL \
                           instructions still resolve. Pass a bare program reference \
@@ -1044,7 +1074,7 @@ impl AreteMcp {
         } else {
             let mut summary = descriptor::program_summary(&program, surface_state);
             summary["next"] = serde_json::json!(
-                "Pass `operationId` for one operation, `sections` (accounts, events, instructions, operations, types) for detail, or `full: true` for the whole descriptor."
+                "Pass `operationId` for one operation, `sections` (accounts, events, instructions, operations, types) for detail, or `full: true` for the whole descriptor with identity hashes."
             );
             summary
         };
@@ -1054,8 +1084,9 @@ impl AreteMcp {
     #[tool(
         description = "Fetch a content-addressed artifact by hash. `kind` must be one \
                           of `program-spec`, `live-spec`, or `stack-manifest`; the hash \
-                          comes from explore_stack or explore_program (`stackManifestHash`, \
-                          `liveSpecHash`, `programSpecHash`).\n\n\
+                          comes from the full explore_stack or explore_program descriptor \
+                          (`full: true`: `stackManifestHash`, `liveSpecHash`, \
+                          `programSpecHash`).\n\n\
                           Large artifacts are refused rather than truncated — use the \
                           `a4` CLI for those."
     )]
@@ -1084,8 +1115,14 @@ impl AreteMcp {
                           same filters to continue. Drill in with `get_catalog_entry`.\n\n\
                           Results are brief by default: each keeps only `kind`, `slug`, \
                           `name`, `version`, `protocol`, `summary`, `modes`, `sdkTargets` \
-                          and `delivery.status`/`delivery.health`, and the response \
-                          carries a top-level `hint`. Pass `fields` (e.g. \
+                          and `delivery.status`/`delivery.health`, plus two derived keys: \
+                          `live` on stacks (`true`: a hosted stream to subscribe to now, \
+                          i.e. `modes` include `subscribe`; `false`: definition-only, \
+                          install its SDK or deploy it yourself; `mode: \"subscribe\"` \
+                          returns only live stacks) and `related`, the other results on \
+                          the page with the same `protocol` as `kind:slug` (program, \
+                          stack and protocol slugs often differ). The response carries a \
+                          top-level `hint`. Pass `fields` (e.g. \
                           `\"slug,kind,name,version,modes,delivery.health\"`, dotted paths \
                           allowed) to keep only those keys, or `full: true` for every \
                           field as the server sent it.\n\n\
@@ -1161,7 +1198,8 @@ impl AreteMcp {
                           `a4 install <kind> <slug>@=<version>`.\n\n\
                           The entry is compact by default: identity hashes \
                           (`packageReleaseHash`, `bundleHash`, `setHash`, ...), \
-                          `programIds` and release notes are dropped. Pass `full: true` \
+                          `programIds` and release notes are dropped, and a stack gains \
+                          `live` (whether it has a hosted stream). Pass `full: true` \
                           to get them (e.g. to confirm the lockfile records the same \
                           `packageReleaseHash`), or `fields` (dotted paths allowed) to \
                           keep only specific keys."
@@ -2125,6 +2163,38 @@ impl AreteMcp {
 }
 
 impl AreteMcp {
+    /// The definition-only answer for a stack whose install descriptor or
+    /// schema lookup failed: the registry refused it as definition-only, or
+    /// it was not found and the catalog lists a stack under the reference
+    /// that is not live (one catalog request, on the failure path only).
+    /// `None` keeps the original error.
+    async fn definition_only(
+        &self,
+        stack: &str,
+        error: &anyhow::Error,
+    ) -> Option<serde_json::Value> {
+        let api_error = error.downcast_ref::<crate::registry::RegistryApiError>()?;
+        let registry_says =
+            api_error.problem.code.as_deref() == Some(catalog_view::DEFINITION_ONLY_CODE);
+        if !registry_says && api_error.status != reqwest::StatusCode::NOT_FOUND {
+            return None;
+        }
+        let entry = self
+            .registry
+            .catalog_entry("stack", stack.trim())
+            .await
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok());
+        catalog_view::definition_only_stack(
+            stack.trim(),
+            registry_says,
+            // A not-found message would only mislead next to the answer.
+            registry_says.then_some(api_error.problem.error.as_str()),
+            entry.as_ref(),
+            FIND_LIVE_HINT,
+        )
+    }
+
     /// The catalog knowledge of the stack published as `slug`, when there is
     /// one and it was published for `stack_manifest_hash`, the StackManifest
     /// being described. Any failure, including a registry without the route,
@@ -2434,6 +2504,123 @@ mod explore_args_tests {
             let err = server.explore_program(Parameters(args)).await.unwrap_err();
             assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "{}", err.message);
         }
+    }
+
+    /// A registry that answers each request path from `routes` (status and
+    /// body; anything else is a 404), on a background thread.
+    fn canned_registry(routes: Vec<(&'static str, u16, String)>) -> AreteMcp {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 4096];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    match stream.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => request.extend_from_slice(&buffer[..read]),
+                    }
+                }
+                let request = String::from_utf8_lossy(&request);
+                let target = request.split_whitespace().nth(1).unwrap_or("");
+                let target = target.split('?').next().unwrap_or("");
+                let (status, body) = routes
+                    .iter()
+                    .find(|(route, _, _)| *route == target)
+                    .map(|(_, status, body)| (*status, body.clone()))
+                    .unwrap_or((404, r#"{"error":"not found"}"#.to_string()));
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        AreteMcp {
+            registry: RegistryClient::with_base_url(&format!("http://{address}")),
+            ..AreteMcp::new()
+        }
+    }
+
+    fn pumpfun_entry(modes: serde_json::Value) -> String {
+        serde_json::json!({
+            "kind": "stack", "slug": "pumpfun", "version": "1.1.4", "protocol": "pump-fun",
+            "summary": "Pump bonding curves.", "modes": modes, "bundleHash": "sha256:aa"
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn definition_only_stacks_are_a_structured_answer_not_an_error() {
+        let refusal = r#"{"schemaVersion":1,"error":"Stack 'pumpfun' is a definition-only package with no hosted stream","code":"stack-definition-only","retryable":false}"#;
+        let server = canned_registry(vec![
+            (
+                "/api/registry/stacks/pumpfun/install",
+                409,
+                refusal.to_string(),
+            ),
+            (
+                "/api/registry/v1/catalog/entries/stack/pumpfun",
+                200,
+                pumpfun_entry(serde_json::json!(["build", "read"])),
+            ),
+        ]);
+        let result = server
+            .explore_stack(Parameters(ExploreStackArgs {
+                stack: "pumpfun".into(),
+                summary: None,
+                views: None,
+                full: None,
+            }))
+            .await
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_str(&result_text(&result)).unwrap();
+        assert_eq!(answer["kind"], "stack-definition-only");
+        assert_eq!(answer["live"], false);
+        assert!(answer["detail"]
+            .as_str()
+            .unwrap()
+            .contains("definition-only"));
+        assert_eq!(answer["catalog"]["protocol"], "pump-fun");
+        assert!(answer["next"][2]
+            .as_str()
+            .unwrap()
+            .contains("mode: \"subscribe\""));
+
+        // Not found, but the catalog lists it as a definition-only stack.
+        let result = server
+            .explore_stack_schema(Parameters(ExploreStackSchemaArgs {
+                stack: "pumpfun".into(),
+            }))
+            .await
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_str(&result_text(&result)).unwrap();
+        assert_eq!(answer["kind"], "stack-definition-only");
+        assert!(
+            answer.get("detail").is_none(),
+            "a not-found message would mislead"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_live_stack_keeps_its_error() {
+        let server = canned_registry(vec![(
+            "/api/registry/v1/catalog/entries/stack/pumpfun",
+            200,
+            pumpfun_entry(serde_json::json!(["build", "read", "subscribe"])),
+        )]);
+        let error = server
+            .explore_stack(Parameters(ExploreStackArgs {
+                stack: "pumpfun".into(),
+                summary: None,
+                views: None,
+                full: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("not found"), "{}", error.message);
     }
 
     fn result_text(result: &CallToolResult) -> String {

@@ -7,13 +7,14 @@ use arete_mcp::descriptor::{
     self as shape, AccountSummary, EntityField, ErrorSummary, EventSummary, InstructionSummary,
     ProgramSurface, TypeSummary,
 };
+use arete_mcp::field_amounts::FieldAmount;
 use arete_mcp::stack_knowledge::{KeyCase, StackKnowledge};
 use colored::Colorize;
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::api_client::{
-    ApiClient, DeploymentResponse, RegistryCapabilityInstallBinding,
+    ApiClient, ApiClientError, DeploymentResponse, RegistryCapabilityInstallBinding,
     RegistryProgramInstallResponse, RegistryProgramInstallTransport, RegistryProgramItem,
     RegistrySdkExtensionArtifact, RegistryStackInstallResponse, RegistryStackItem,
     CAPABILITY_TRANSACTION_INSPECT, CAPABILITY_TRANSACTION_SEND, DEFAULT_DOMAIN_SUFFIX,
@@ -265,8 +266,10 @@ struct StackEntityExploreOutput {
 pub struct StackOptions<'a> {
     /// Legacy entity drill-down.
     pub entity: Option<&'a str>,
-    /// Compact summary instead of the full exploration.
-    pub summary: bool,
+    /// The full exploration instead of the compact summary (the default,
+    /// also requested with `--summary`): identities, every auth surface and endpoint,
+    /// and SDK metadata.
+    pub full: bool,
     /// Only these selected views, with their entity schemas.
     pub views: Vec<String>,
     /// One operation from the stack's program SDKs.
@@ -282,6 +285,45 @@ pub struct ProgramOptions<'a> {
     pub operation: Option<&'a str>,
     /// Only these sections (see `shape::PROGRAM_SECTIONS`).
     pub sections: Vec<String>,
+    /// The full IDL-level exploration instead of the compact summary.
+    pub full: bool,
+}
+
+/// Output above this many characters ends with a hint naming a narrower
+/// form.
+const LARGE_OUTPUT_CHARS: usize = 20_000;
+
+const STACK_SUMMARY_HINT: &str = "Compact summary. --views <Entity>/<view> shows one view's \
+     fields with descriptions and token-amount units (several: comma-separated or repeat the \
+     flag); --operation <id> one program operation; --full identity hashes, every auth \
+     surface and endpoint, and SDK metadata.";
+
+const STACK_VIEWS_HINT: &str = "Only the named views. --views takes several ids at once \
+     (comma-separated or repeat the flag); without it, the stack summary; --full for identity \
+     hashes and SDK metadata.";
+
+const PROGRAM_SUMMARY_HINT: &str = "Compact summary. --operation <id> shows one operation \
+     (semantic path, operation id or raw instruction name); --section accounts,instructions,\
+     events,types,operations those sections in detail; --full the IDL-level dump with identity \
+     hashes.";
+
+const FIND_LIVE_HINT: &str = "For a stack that streams now: a4 explore catalog --query \
+     <intent> --kind stack --mode subscribe (results with `live: true`).";
+
+/// A stderr note for a large JSON output, naming a narrower form. Nothing
+/// for output under [`LARGE_OUTPUT_CHARS`].
+fn large_output_note(chars: usize, narrower: &str) -> Option<String> {
+    (chars > LARGE_OUTPUT_CHARS)
+        .then(|| format!("Hint: this output is {chars} characters; {narrower}"))
+}
+
+fn print_json_with_note(value: &impl Serialize, narrower: &str) -> Result<()> {
+    let text = serde_json::to_string_pretty(value)?;
+    println!("{text}");
+    if let Some(note) = large_output_note(text.chars().count(), narrower) {
+        eprintln!("{}", note.dimmed());
+    }
+    Ok(())
 }
 
 /// A registry stack this project depends on (`[dependencies.stacks]`).
@@ -492,7 +534,10 @@ pub fn show_stack(reference: &str, options: StackOptions<'_>, json: bool) -> Res
         .map_or(reference, |project| project.package.as_str());
 
     if let Some(entity) = options.entity {
-        let (_, typescript, _) = resolve_stack_descriptors(&client, lookup)?;
+        let (_, typescript, _) = match resolve_stack_descriptors(&client, lookup) {
+            Ok(resolved) => resolved,
+            Err(error) => return answer_definition_only(&client, lookup, error, json),
+        };
         let knowledge = stack_knowledge(&client, &typescript);
         let output = build_entity_output(&typescript, entity, knowledge.as_ref())?;
         if json {
@@ -503,29 +548,43 @@ pub fn show_stack(reference: &str, options: StackOptions<'_>, json: bool) -> Res
         return Ok(());
     }
 
-    let compact = options.summary || !options.views.is_empty() || options.operation.is_some();
-    if !compact {
-        let (install_ref, typescript, rust) = resolve_stack_descriptors(&client, lookup)?;
+    if options.full {
+        let (install_ref, typescript, rust) = match resolve_stack_descriptors(&client, lookup) {
+            Ok(resolved) => resolved,
+            Err(error) => return answer_definition_only(&client, lookup, error, json),
+        };
         let knowledge = stack_knowledge(&client, &typescript);
         let mut output = build_stack_output(&install_ref, &typescript, &rust, knowledge.as_ref())?;
         output.sdk_endpoints = sdk_endpoints(&typescript, project.as_ref());
         output.account = account_readiness(&client, &output.auth_requirements);
+        let narrower = format!(
+            "omit --full for the compact summary, or `a4 explore stack {install_ref} --views <Entity>/<view>` for one view's fields."
+        );
         if json {
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            print_json_with_note(&output, &narrower)?;
         } else {
-            print!("{}", render_stack(&output));
+            let text = render_stack(&output);
+            print!("{text}");
+            if let Some(note) = large_output_note(text.chars().count(), &narrower) {
+                println!("\n{note}");
+            }
         }
         return Ok(());
     }
 
-    // The compact forms are cut from the TypeScript descriptor alone.
-    let (install_ref, typescript) = resolve_stack_descriptor(&client, lookup, None)?;
+    // The compact forms (the default) are cut from the TypeScript descriptor
+    // alone.
+    let (install_ref, typescript) = match resolve_stack_descriptor(&client, lookup, None) {
+        Ok(resolved) => resolved,
+        Err(error) => return answer_definition_only(&client, lookup, error, json),
+    };
     let stack = serde_json::to_value(&typescript)?;
     if let Some(operation) = options.operation {
         return show_stack_operation(&client, &install_ref, &stack, operation, json);
     }
     let knowledge = stack_knowledge(&client, &typescript);
-    let mut output = if options.views.is_empty() {
+    let summary = options.views.is_empty();
+    let mut output = if summary {
         let mut summary = shape::stack_summary(&stack, knowledge.as_ref());
         if let Some(account) = account_readiness(&client, &summary["auth"]) {
             summary["account"] = account;
@@ -537,15 +596,115 @@ pub fn show_stack(reference: &str, options: StackOptions<'_>, json: bool) -> Res
     };
     output["schemaVersion"] = json!(EXPLORE_SCHEMA_VERSION);
     output["installRef"] = json!(install_ref);
-    output["sdkEndpoints"] = sdk_endpoints(&typescript, project.as_ref());
+    // The hosted endpoints are already listed; the SDK endpoints only add
+    // something when arete.toml overrides them.
+    let endpoints = sdk_endpoints(&typescript, project.as_ref());
+    if endpoints["used"] == "project" {
+        output["sdkEndpoints"] = endpoints;
+    }
+    output["hint"] = json!(if summary {
+        STACK_SUMMARY_HINT
+    } else {
+        STACK_VIEWS_HINT
+    });
     if json {
         println!("{}", serde_json::to_string_pretty(&output)?);
-    } else if options.views.is_empty() {
+    } else if summary {
         print!("{}", render_stack_summary(&output));
     } else {
         print!("{}", render_stack_views(&output));
     }
     Ok(())
+}
+
+/// Answer a failed stack descriptor lookup that is a definition-only stack
+/// (see [`catalog_view::definition_only_stack`]) with a structured result
+/// instead of an error; any other failure is returned unchanged.
+fn answer_definition_only(
+    client: &ApiClient,
+    reference: &str,
+    error: anyhow::Error,
+    json: bool,
+) -> Result<()> {
+    let Some(answer) = definition_only_answer(client, reference, &error) else {
+        return Err(error);
+    };
+    let mut answer = answer;
+    answer["schemaVersion"] = json!(EXPLORE_SCHEMA_VERSION);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&answer)?);
+    } else {
+        print!("{}", render_definition_only(&answer));
+    }
+    Ok(())
+}
+
+/// Whether the registry refused a stack descriptor because the stack is
+/// definition-only.
+fn is_definition_only_refusal(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<ApiClientError>())
+        .any(|error| error.problem.code.as_deref() == Some(catalog_view::DEFINITION_ONLY_CODE))
+}
+
+/// The definition-only answer for `reference`: the registry refused its
+/// descriptor as definition-only, or did not find it and the catalog lists
+/// a stack under that slug that is not live. The catalog is read only on
+/// this failure path.
+fn definition_only_answer(
+    client: &ApiClient,
+    reference: &str,
+    error: &anyhow::Error,
+) -> Option<Value> {
+    let api_error = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<ApiClientError>())?;
+    let registry_says = is_definition_only_refusal(error);
+    if !registry_says && api_error.status != reqwest::StatusCode::NOT_FOUND {
+        return None;
+    }
+    let entry = catalog_slug(reference)
+        .ok()
+        .and_then(|slug| client.catalog_entry("stack", &slug).ok());
+    catalog_view::definition_only_stack(
+        reference,
+        registry_says,
+        registry_says.then_some(api_error.problem.error.as_str()),
+        entry.as_ref(),
+        FIND_LIVE_HINT,
+    )
+}
+
+fn render_definition_only(answer: &Value) -> String {
+    let mut text = format!(
+        "\nStack: {}  definition-only (no hosted stream)\n",
+        answer["stack"].as_str().unwrap_or("-")
+    );
+    let catalog = &answer["catalog"];
+    if let Some(summary) = catalog["summary"].as_str() {
+        text.push_str(&format!("  {summary}\n"));
+    }
+    if catalog.is_object() {
+        let mut line = format!(
+            "  version: {}  protocol: {}",
+            catalog["version"].as_str().unwrap_or("-"),
+            catalog["protocol"].as_str().unwrap_or("-"),
+        );
+        if catalog.get("modes").is_some() {
+            line.push_str(&format!("  modes: {}", string_list(catalog, "modes")));
+        }
+        text.push_str(&line);
+        text.push('\n');
+    }
+    if let Some(detail) = answer["detail"].as_str() {
+        text.push_str(&format!("  {detail}\n"));
+    }
+    text.push_str("\nNext\n");
+    for step in value_array(answer, "next") {
+        text.push_str(&format!("  {}\n", step.as_str().unwrap_or("-")));
+    }
+    text
 }
 
 pub fn show_program(reference: &str, options: ProgramOptions<'_>, json: bool) -> Result<()> {
@@ -558,22 +717,32 @@ pub fn show_program(reference: &str, options: ProgramOptions<'_>, json: bool) ->
                 "Unable to assemble the install descriptor for program '{reference}'. Explore does not fall back to raw or latest IDL artifacts; verify that a promoted Program Release and healthy Program Read binding exist."
             )
         })?;
-    if options.operation.is_none() && sections.is_empty() {
+    if options.full {
         let output = build_program_output(&descriptor)?;
+        let narrower = format!(
+            "omit --full for the compact summary, or use `a4 explore program {} --section <name>` or `--operation <id>`.",
+            descriptor.install_name
+        );
         if json {
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            print_json_with_note(&output, &narrower)?;
         } else {
-            print!("{}", render_program(&output));
+            let text = render_program(&output);
+            print!("{text}");
+            if let Some(note) = large_output_note(text.chars().count(), &narrower) {
+                println!("\n{note}");
+            }
         }
         return Ok(());
     }
 
     let program = serde_json::to_value(&descriptor)?;
-    let surface = if options.operation.is_some() || sections.iter().any(|s| s == "operations") {
-        program_surface(&client, &program)
-    } else {
-        Err("not requested".to_string())
-    };
+    let summary = options.operation.is_none() && sections.is_empty();
+    let surface =
+        if summary || options.operation.is_some() || sections.iter().any(|s| s == "operations") {
+            program_surface(&client, &program)
+        } else {
+            Err("not requested".to_string())
+        };
     let state = surface.as_ref().map_err(String::as_str);
     if let Some(operation) = options.operation {
         let mut output = shape::program_operation(&program, state, operation)?;
@@ -581,14 +750,23 @@ pub fn show_program(reference: &str, options: ProgramOptions<'_>, json: bool) ->
         add_operation_account(&client, &mut output);
         return print_operation(&output, json);
     }
-    let mut output = shape::program_sections(&program, state, &sections);
+    let mut output = if summary {
+        shape::program_summary(&program, state)
+    } else {
+        shape::program_sections(&program, state, &sections)
+    };
     output["schemaVersion"] = json!(EXPLORE_SCHEMA_VERSION);
     output["installCommand"] = json!(format!(
         "a4 install program {} --ts",
         descriptor.install_name
     ));
+    if summary {
+        output["hint"] = json!(PROGRAM_SUMMARY_HINT);
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if summary {
+        print!("{}", render_program_summary(&output));
     } else {
         print!("{}", render_program_sections(&output));
     }
@@ -918,6 +1096,11 @@ fn resolve_stack_descriptor(
         Ok(descriptor) => return Ok((reference.to_string(), descriptor)),
         Err(error) => error,
     };
+    // A definition-only stack has no deployment for another name to
+    // translate to.
+    if is_definition_only_refusal(&direct_error) {
+        return Err(direct_error).with_context(|| descriptor_diagnostic(reference));
+    }
 
     // Legacy explore accepted the display name emitted by `a4 explore`. The
     // install endpoint resolves deployment references, so translate through
@@ -1596,30 +1779,26 @@ fn render_auth_surface(auth: &Value) -> String {
 
 fn render_stack_summary(output: &Value) -> String {
     let mut text = format!(
-        "\nStack: {} (install reference {})\n",
+        "\nStack: {} (install reference {})  {}\n",
         output["name"].as_str().unwrap_or("-"),
-        output["installRef"].as_str().unwrap_or("-")
+        output["installRef"].as_str().unwrap_or("-"),
+        if output["live"] == true {
+            "live"
+        } else {
+            "not live: no hosted stream"
+        }
     );
     if let Some(description) = output["description"].as_str() {
         text.push_str(&format!("  {description}\n"));
     }
-    text.push_str(&format!(
-        "  StackManifest: {}\n\nEntities\n",
-        output["stackManifestHash"].as_str().unwrap_or("-")
-    ));
+    text.push_str("\nEntities\n");
     for entity in value_array(output, "entities") {
-        let described = value_array(entity, "fieldDescriptions").len();
         text.push_str(&format!(
-            "  {}:{}  key {}  {} field(s){}\n",
+            "  {}:{}  key {}  {} field(s)\n",
             entity["liveAlias"].as_str().unwrap_or("-"),
             entity["name"].as_str().unwrap_or("-"),
             string_list(entity, "primaryKeys"),
             entity["fieldCount"].as_u64().unwrap_or(0),
-            if described > 0 {
-                format!(", {described} described")
-            } else {
-                String::new()
-            }
         ));
         if let Some(summary) = entity["summary"].as_str() {
             text.push_str(&format!("    {summary}\n"));
@@ -1637,6 +1816,27 @@ fn render_stack_summary(output: &Value) -> String {
         if !views.is_empty() {
             text.push_str(&format!("    views: {}\n", views.join(", ")));
         }
+        if let Some(amounts) = entity["amountFields"].as_object() {
+            for (path, amount) in amounts {
+                if let Ok(amount) = serde_json::from_value::<FieldAmount>(amount.clone()) {
+                    text.push_str(&format!("    {path}: {}\n", amount.describe()));
+                }
+            }
+        }
+    }
+    let reads = value_array(output, "reads");
+    if !reads.is_empty() {
+        text.push_str("\nStack reads (installed SDK)\n");
+        for read in reads {
+            text.push_str(&format!(
+                "  {}{}\n",
+                read["call"].as_str().unwrap_or("-"),
+                read["title"]
+                    .as_str()
+                    .map(|title| format!("  {title}"))
+                    .unwrap_or_default()
+            ));
+        }
     }
     text.push_str("\nProgram SDKs\n");
     let programs = value_array(output, "programs");
@@ -1645,63 +1845,148 @@ fn render_stack_summary(output: &Value) -> String {
     }
     for program in programs {
         text.push_str(&format!(
-            "  {}  {}  release {}{}\n",
+            "  {}  {}\n",
             program["installName"].as_str().unwrap_or("-"),
             program["programId"].as_str().unwrap_or("-"),
-            program["programReleaseHash"].as_str().unwrap_or("-"),
-            program["sdkExtension"]["entry"]
-                .as_str()
-                .map(|entry| format!("  extension {entry}"))
-                .unwrap_or_default()
         ));
     }
-    text.push_str(&render_sdk_endpoints(&output["sdkEndpoints"]));
-    let endpoints = &output["endpoints"];
-    for (label, key) in [("Chain", "chain"), ("Transaction", "transaction")] {
-        if let Some(endpoint) = endpoints[key].as_str() {
-            text.push_str(&format!("  {label}: {endpoint}\n"));
-        }
-    }
-    for read in value_array(endpoints, "programReads") {
+    text.push_str("\nStream endpoints\n");
+    for live in value_array(&output["endpoints"], "liveSpecs") {
         text.push_str(&format!(
-            "  Program Read {}: {}\n",
-            read["program"].as_str().unwrap_or("-"),
-            read["endpoint"].as_str().unwrap_or("-")
+            "  {}  {}  {}\n",
+            live["alias"].as_str().unwrap_or("-"),
+            live["websocket"].as_str().unwrap_or("-"),
+            live["query"].as_str().unwrap_or("-"),
         ));
+    }
+    if output.get("sdkEndpoints").is_some() {
+        text.push_str(&render_sdk_endpoints(&output["sdkEndpoints"]));
     }
     text.push_str("\nAuthentication\n");
     let auth = &output["auth"];
-    for key in ["stream", "query", "chain", "transaction"] {
+    for key in ["stream", "query"] {
         if let Some(surface) = auth.get(key) {
-            text.push_str(&format!("  {key}: {}\n", render_auth_surface(surface)));
+            let keys = if surface["required"] == false {
+                "not required".to_string()
+            } else {
+                format!("keys {}", string_list(surface, "acceptedKeyClasses"))
+            };
+            text.push_str(&format!("  {key}: {keys}\n"));
         }
     }
-    for read in value_array(auth, "programReads") {
+    if let Some(create) = auth["browserKey"].as_str() {
         text.push_str(&format!(
-            "  Program Read {}: {}\n",
-            read["program"].as_str().unwrap_or("-"),
-            render_auth_surface(read)
+            "  Browser: a publishable key, bound to exactly one origin ({create})\n"
         ));
     }
-    text.push_str(&render_auth_notes(auth, output.get("account")));
+    if auth["transactionEntitlementRequired"] == true {
+        text.push_str("  Transactions: require transaction access on your account\n");
+    }
+    text.push_str(&render_auth_notes(&Value::Null, output.get("account")));
     text.push_str(&format!(
-        "\nInstall\n  {}\n\nMore: --views <Entity/view,...> for view schemas{}, --operation <id> for one program operation\n",
+        "\nInstall\n  {}\n",
         output["installCommand"].as_str().unwrap_or("-"),
-        if output.get("knowledge").is_some() {
-            " and field descriptions"
-        } else {
-            ""
-        }
     ));
+    if let Some(hint) = output["hint"].as_str() {
+        text.push_str(&format!("\n{hint}\n"));
+    }
+    text
+}
+
+fn render_program_summary(output: &Value) -> String {
+    let program = &output["program"];
+    let mut text = format!(
+        "\nProgram: {} ({})\n  Program ID: {}\n",
+        program["displayName"].as_str().unwrap_or("-"),
+        program["installName"].as_str().unwrap_or("-"),
+        program["programId"].as_str().unwrap_or("-"),
+    );
+    let descriptions = &output["descriptions"];
+    for (title, key) in [("Instructions", "instructions"), ("Accounts", "accounts")] {
+        text.push_str(&format!("\n{title}\n"));
+        let names = value_array(output, key);
+        if names.is_empty() {
+            text.push_str("  none\n");
+        }
+        for name in names.iter().filter_map(Value::as_str) {
+            match descriptions[key][name].as_str() {
+                Some(doc) => text.push_str(&format!("  {name}  {doc}\n")),
+                None => text.push_str(&format!("  {name}\n")),
+            }
+        }
+    }
+    if let Some(pdas) = output["pdas"].as_object() {
+        text.push_str("\nPDAs\n");
+        for (name, seeds) in pdas {
+            let seeds = seeds
+                .as_array()
+                .map(|seeds| {
+                    seeds
+                        .iter()
+                        .map(compact_json)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            text.push_str(&format!("  {name}  seeds [{seeds}]\n"));
+        }
+    }
+    for (title, key) in [("Events", "events"), ("Types", "types")] {
+        text.push_str(&format!("\n{title}\n  {}\n", string_list(output, key)));
+    }
+    if let Some(reason) = output["operationsUnavailable"].as_str() {
+        text.push_str(&format!("\nOperations\n  unavailable: {reason}\n"));
+    } else if let Some(operations) = output["operations"].as_object() {
+        text.push_str("\nOperations\n");
+        for (kind, paths) in operations {
+            text.push_str(&format!(
+                "  {kind}: {}\n",
+                string_list(&json!({ "p": paths }), "p")
+            ));
+        }
+        if let Some(counts) = output["operationCounts"].as_object() {
+            let others = counts
+                .iter()
+                .filter(|(kind, _)| !operations.contains_key(*kind))
+                .map(|(kind, count)| format!("{kind} {count}"))
+                .collect::<Vec<_>>();
+            if !others.is_empty() {
+                text.push_str(&format!("  also: {}\n", others.join(", ")));
+            }
+        }
+    }
+    if let Some(read) = output.get("programRead") {
+        text.push_str(&format!(
+            "\nProgram Read\n  {}  {}\n",
+            read["endpoint"].as_str().unwrap_or("-"),
+            render_auth_surface(&read["auth"])
+        ));
+    }
+    if let Some(transaction) = output.get("transaction") {
+        text.push_str(&format!(
+            "  Transaction: {}  {}\n",
+            transaction["endpoint"].as_str().unwrap_or("-"),
+            render_auth_surface(&transaction["auth"])
+        ));
+    }
+    if let Some(entry) = output["sdkExtension"]["entry"].as_str() {
+        text.push_str(&format!("\nSDK extension\n  {entry}\n"));
+    }
+    text.push_str(&format!(
+        "\nInstall\n  {}\n",
+        output["installCommand"].as_str().unwrap_or("-")
+    ));
+    if let Some(hint) = output["hint"].as_str() {
+        text.push_str(&format!("\n{hint}\n"));
+    }
     text
 }
 
 fn render_stack_views(output: &Value) -> String {
     let mut text = format!(
-        "\nStack: {} (install reference {})\n  StackManifest: {}\n",
+        "\nStack: {} (install reference {})\n",
         output["name"].as_str().unwrap_or("-"),
         output["installRef"].as_str().unwrap_or("-"),
-        output["stackManifestHash"].as_str().unwrap_or("-")
     );
     for view in value_array(output, "views") {
         text.push_str(&format!(
@@ -1733,7 +2018,12 @@ fn render_stack_views(output: &Value) -> String {
             text.push_str(&render_field(field, "    "));
         }
     }
-    text.push_str(&render_sdk_endpoints(&output["sdkEndpoints"]));
+    if output.get("sdkEndpoints").is_some() {
+        text.push_str(&render_sdk_endpoints(&output["sdkEndpoints"]));
+    }
+    if let Some(hint) = output["hint"].as_str() {
+        text.push_str(&format!("\n{hint}\n"));
+    }
     text
 }
 
@@ -2322,12 +2612,31 @@ fn catalog_search_hint(
     }
     if *shape != catalog_view::Shape::Full {
         parts.push(CATALOG_BRIEF_HINT.to_string());
+        if catalog_view::has_stacks(value) {
+            parts.push(format!(
+                "{} --mode subscribe returns only live stacks.",
+                catalog_view::LIVE_HINT
+            ));
+        }
     }
     if catalog_view::next_cursor(value).is_some() {
         parts.push("More results: repeat the same search with --cursor <nextCursor>.".to_string());
     }
     (!parts.is_empty()).then(|| parts.join(" "))
 }
+
+/// A search page with `live` and `related` on its results (see
+/// [`catalog_view::annotate_results`]), for the human rendering.
+fn annotated_page(value: &Value) -> Value {
+    let mut out = value.clone();
+    if let Some(results) = value.get("results").and_then(Value::as_array) {
+        out["results"] = Value::Array(catalog_view::annotate_results(results));
+    }
+    out
+}
+
+/// The `--fields` list suggested when `--full` output is large.
+const CATALOG_NARROW_FIELDS: &str = "slug,kind,version,protocol,modes,live,related,delivery.health";
 
 /// The overview printed by `a4 explore catalog` without filters: the first
 /// page of programs and of stacks, and a hint naming the filters.
@@ -2406,16 +2715,28 @@ pub fn catalog_search(
         if let Some(hint) = catalog_search_hint(&value, shape, overview.as_deref()) {
             shaped = catalog_view::with_hint(shaped, hint);
         }
-        println!("{}", serde_json::to_string_pretty(&shaped)?);
+        // `--full` JSON stays the server response; a note on stderr says
+        // how to narrow it when it is large.
+        let narrower = format!(
+            "replace --full with --fields {CATALOG_NARROW_FIELDS} (or any keys) to keep only those."
+        );
+        if full {
+            print_json_with_note(&shaped, &narrower)?;
+        } else {
+            println!("{}", serde_json::to_string_pretty(&shaped)?);
+        }
         return Ok(());
     }
-    print!("{}", render_catalog_search(&value, full));
+    print!("{}", render_catalog_search(&annotated_page(&value), full));
     if let Some(overview) = overview {
         println!("\n{overview}");
         print!("{}", render_overview_cursors(&value));
     }
     if !full {
         println!("\n{CATALOG_BRIEF_HINT}");
+    }
+    if catalog_view::has_stacks(&value) {
+        println!("Stacks marked live have a hosted stream to subscribe to now; definition-only stacks install as an SDK (build, read) and stream once you deploy them. --mode subscribe lists only live stacks.");
     }
     Ok(())
 }
@@ -2557,8 +2878,13 @@ fn render_catalog_search(value: &Value, full: bool) -> String {
             .pointer("/delivery/health")
             .and_then(Value::as_str)
             .unwrap_or("n/a");
+        let stream = match result["live"].as_bool() {
+            Some(true) => "  [live]",
+            Some(false) => "  [definition-only]",
+            None => "",
+        };
         text.push_str(&format!(
-            "  {kind} {slug}@{}  {}\n",
+            "  {kind} {slug}@{}  {}{stream}\n",
             result["version"].as_str().unwrap_or("-"),
             result["name"].as_str().unwrap_or("")
         ));
@@ -2571,6 +2897,14 @@ fn render_catalog_search(value: &Value, full: bool) -> String {
             string_list(result, "modes"),
             string_list(result, "sdkTargets")
         ));
+        if let Some(protocol) = result["protocol"].as_str() {
+            let related = string_list(result, "related");
+            if related == "none" {
+                text.push_str(&format!("    protocol: {protocol}\n"));
+            } else {
+                text.push_str(&format!("    protocol: {protocol}  related: {related}\n"));
+            }
+        }
         if full {
             text.push_str(&format!(
                 "    install: {}  ({})\n",
@@ -2655,6 +2989,13 @@ fn render_catalog_entry(value: &Value) -> String {
             delivery["identity"].as_str().unwrap_or("-")
         )),
         None => text.push_str("\nDelivery: none advertised\n"),
+    }
+    match catalog_view::is_live_stack(value) {
+        Some(true) => text.push_str("Live: yes, a hosted stream to subscribe to now\n"),
+        Some(false) => text.push_str(
+            "Live: no, definition-only: install its SDK to build and read; deploy it to stream\n",
+        ),
+        None => {}
     }
     text
 }
@@ -3168,6 +3509,159 @@ mod tests {
         )
     }
 
+    fn definition_only_refusal() -> (u16, String) {
+        (
+            409,
+            json!({
+                "schemaVersion": 1,
+                "error": "Stack 'pumpfun' is a definition-only package with no hosted stream",
+                "code": "stack-definition-only",
+                "retryable": false
+            })
+            .to_string(),
+        )
+    }
+
+    fn pumpfun_catalog_entry(live: bool) -> (u16, String) {
+        let mut entry = json!({
+            "kind": "stack", "slug": "pumpfun", "version": "1.1.4",
+            "knowledge": {"summary": "Pump bonding curves.", "protocols": ["pump-fun"]}
+        });
+        if live {
+            entry["delivery"] =
+                json!({"kind": "deployed-stack", "status": "active", "health": "ready"});
+        }
+        (200, entry.to_string())
+    }
+
+    #[test]
+    fn definition_only_stacks_are_answered_without_an_error() {
+        let registry = MockRegistry::new(vec![
+            definition_only_refusal(),
+            pumpfun_catalog_entry(false),
+        ]);
+        show_stack(
+            "pumpfun",
+            StackOptions {
+                config_path: "/definitely/missing/arete.toml",
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(registry.next_target(), install_target("pumpfun", None));
+        // No legacy-name or deployment translation for a definition-only stack.
+        assert_eq!(
+            registry.next_target(),
+            "/api/registry/v1/catalog/entries/stack/pumpfun"
+        );
+        drop(registry);
+
+        let registry = MockRegistry::new(vec![definition_only_refusal(), not_found()]);
+        let client = ApiClient::new().unwrap();
+        let error = resolve_stack_descriptor(&client, "pumpfun", None).unwrap_err();
+        let answer = definition_only_answer(&client, "pumpfun", &error).unwrap();
+        assert_eq!(answer["kind"], "stack-definition-only");
+        assert!(answer["detail"]
+            .as_str()
+            .unwrap()
+            .contains("definition-only"));
+        assert!(answer.get("catalog").is_none(), "the catalog lookup failed");
+        let rendered = render_definition_only(&answer);
+        assert!(rendered.contains("Stack: pumpfun  definition-only (no hosted stream)"));
+        assert!(rendered.contains("a4 install stack pumpfun --ts"));
+        assert!(rendered.contains("--mode subscribe"));
+        drop(registry);
+    }
+
+    #[test]
+    fn a_not_found_stack_is_definition_only_only_when_the_catalog_says_so() {
+        let not_found_error = || -> anyhow::Error {
+            ApiClientError {
+                status: reqwest::StatusCode::NOT_FOUND,
+                headers: Default::default(),
+                problem: serde_json::from_value(
+                    json!({"error": "Stack 'pumpfun' not found in registry"}),
+                )
+                .unwrap(),
+            }
+            .into()
+        };
+        let _registry = MockRegistry::new(vec![pumpfun_catalog_entry(false)]);
+        let client = ApiClient::new().unwrap();
+        let answer = definition_only_answer(&client, "pumpfun", &not_found_error()).unwrap();
+        assert_eq!(answer["catalog"]["protocol"], "pump-fun");
+        assert!(answer.get("detail").is_none());
+        drop(_registry);
+
+        let _registry = MockRegistry::new(vec![pumpfun_catalog_entry(true)]);
+        let client = ApiClient::new().unwrap();
+        assert!(definition_only_answer(&client, "pumpfun", &not_found_error()).is_none());
+        let other = anyhow::anyhow!("connection refused");
+        assert!(definition_only_answer(&client, "pumpfun", &other).is_none());
+    }
+
+    #[test]
+    fn catalog_search_marks_live_stacks_and_related_slugs() {
+        let page = json!({"results": [
+            {"kind": "program", "slug": "jurassic-fi-token-sale", "version": "1.0.9", "protocol": "jurassic",
+             "modes": ["build", "read"], "delivery": {"kind": "program-read", "health": "ready"}},
+            {"kind": "stack", "slug": "jurassic-launchpad", "version": "2.0.9", "protocol": "jurassic", "name": "Jurassic",
+             "modes": ["build", "read", "subscribe"], "delivery": {"kind": "deployed-stack", "health": "ready"}},
+            {"kind": "stack", "slug": "pumpfun", "version": "1.1.4", "protocol": "pump-fun", "name": "Pump", "modes": ["build", "read"]}
+        ]});
+        let rendered = render_catalog_search(&annotated_page(&page), false);
+        assert!(
+            rendered.contains("stack jurassic-launchpad@2.0.9  Jurassic  [live]"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("stack pumpfun@1.1.4  Pump  [definition-only]"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("protocol: jurassic  related: stack:jurassic-launchpad"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("    protocol: pump-fun\n"), "{rendered}");
+
+        let hint = catalog_search_hint(&page, &catalog_view::brief(), None).unwrap();
+        assert!(
+            hint.contains("`live`") && hint.contains("--mode subscribe"),
+            "{hint}"
+        );
+        let programs = json!({"results": [page["results"][0].clone()]});
+        let hint = catalog_search_hint(&programs, &catalog_view::brief(), None).unwrap();
+        assert!(!hint.contains("`live`"), "no stacks, no live hint: {hint}");
+
+        assert!(large_output_note(LARGE_OUTPUT_CHARS, "x").is_none());
+        let note = large_output_note(LARGE_OUTPUT_CHARS + 1, "narrow it.").unwrap();
+        assert!(note.contains("20001 characters; narrow it."), "{note}");
+    }
+
+    #[test]
+    fn program_summaries_render_docs_pdas_and_the_hint() {
+        let program = serde_json::to_value(program_descriptor()).unwrap();
+        let mut output = shape::program_summary(&program, Err("log in"));
+        output["installCommand"] = json!("a4 install program demo --ts");
+        output["hint"] = json!(PROGRAM_SUMMARY_HINT);
+        let rendered = render_program_summary(&output);
+        assert!(rendered.contains("\nInstructions\n"), "{rendered}");
+        assert!(
+            rendered.contains("Operations\n  unavailable: log in"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("a4 install program demo --ts"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("--full the IDL-level dump"), "{rendered}");
+        assert!(
+            !rendered.contains("Program Release"),
+            "no identity hashes: {rendered}"
+        );
+    }
+
     #[test]
     fn explore_reuses_a_catalog_slug_even_when_the_descriptor_names_a_subdomain() {
         let registry = MockRegistry::new(vec![
@@ -3554,6 +4048,7 @@ mod tests {
             ProgramOptions {
                 operation: Some("set_value"),
                 sections: Vec::new(),
+                full: false,
             },
             true,
         )
@@ -3581,6 +4076,7 @@ mod tests {
             ProgramOptions {
                 operation: None,
                 sections: vec!["idl".into()],
+                full: false,
             },
             true,
         )
@@ -3805,22 +4301,19 @@ mod tests {
         let entity = &summary["entities"][0];
         assert_eq!(entity["summary"], "One position.");
         assert_eq!(entity["views"][0]["summary"], "One position by address.");
-        assert_eq!(
-            entity["fieldDescriptions"],
-            json!([
-                {"path": "results.winning_square", "description": "Only set once the next round opens."},
-                {"path": "results.pre_reveal_winning_square", "description": "The winning square before reveal; show this in a live UI."}
-            ])
+        assert!(
+            entity.get("fieldDescriptions").is_none(),
+            "field descriptions are in the views and the full output"
         );
-        let described = entity["fieldDescriptions"].clone();
+        let described = json!([
+            {"path": "results.winning_square", "description": "Only set once the next round opens."},
+            {"path": "results.pre_reveal_winning_square", "description": "The winning square before reveal; show this in a live UI."}
+        ]);
         summary["installRef"] = json!("ore");
         summary["installCommand"] = json!("a4 install stack ore --ts");
-        summary["sdkEndpoints"] = sdk_endpoints(&descriptor, None);
         let rendered = render_stack_summary(&summary);
         assert!(
-            rendered.contains(
-                "primary:Position  key id.address  4 field(s), 2 described\n    One position.\n"
-            ),
+            rendered.contains("primary:Position  key id.address  4 field(s)\n    One position.\n"),
             "{rendered}"
         );
 
