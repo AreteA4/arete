@@ -45,9 +45,14 @@ const browser = await createSession(
 );
 ```
 
-Outside a browser, when no `auth` option is set, the SDK reads `ARETE_API_KEY`
-itself, so `createSession({ stacks })` is enough on a server with that variable
-set. `secretKey` throws in a browser, as does a secret or agent key passed as
+Outside a browser, when no `auth` option is set, the SDK uses `ARETE_API_KEY`
+if it is set, and otherwise the agent or secret key from your `a4` login
+(`a4 auth login`, `a4 auth signup` or `a4 init`). So `createSession({ stacks })`
+is enough in a script on a machine where you are logged in with `a4`. The login
+is read in Node (20.16+ / 22.3+), Bun and Deno (only with read permission
+already granted), never in a browser, and browser bundles contain no Node
+imports for it. If several `a4` profiles hold a key, set `ARETE_PROFILE` to pick
+one. `secretKey` throws in a browser, as does a secret or agent key passed as
 `publishableKey`; a publishable key passed as `secretKey` is refused everywhere.
 Keys are never included in error messages or logs.
 

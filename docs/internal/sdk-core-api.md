@@ -69,9 +69,44 @@ only the spelling changes per language.
    - `secret_key` (`secretKey` in TS) takes an agent key (`a4_ak_…`) or secret key
      (`a4_sk_…`) for servers, agents and local scripts. When no auth option is set
      (no token, token provider, token endpoint, publishable key or secret key),
-     the `ARETE_API_KEY` environment variable supplies it; a publishable key there
-     is ignored with a warning. TS reads the environment only in Node, Bun and Deno
-     (Deno only with env permission already granted) and never in a browser.
+     the server-side credential chain supplies it: (1) the explicit option, else
+     (2) the `ARETE_API_KEY` environment variable (a publishable key there is
+     ignored with a warning), else (3) the key from the active `a4` CLI login.
+     TS reads the environment and the login only in Node, Bun and Deno (Deno only
+     with env/read permission already granted; Node through
+     `process.getBuiltinModule`, so there is no static `fs` import) and never in a
+     browser.
+   - **`a4` login lookup** (step 3) mirrors the CLI exactly and lives in one
+     place per SDK (Rust `arete_sdk::credentials`, shared with the CLI and MCP
+     server; TS `a4-profile.ts`; Python `arete._a4_profile`). Credentials file:
+     `ARETE_CREDENTIALS_PATH`, else `credentials.toml` in the per-user Arete home.
+     Profile: a project `.arete/auth.toml` in the working directory (it may pin
+     only `agent`), else `ARETE_PROFILE`, else the single profile holding a key;
+     several candidates means no key (warn once: set `ARETE_PROFILE` or
+     `ARETE_API_KEY`). Only the key stored for `https://api.arete.run` is used,
+     the API the default token endpoint belongs to: a key the CLI stored for
+     another API URL (`--api-url` / `ARETE_API_URL`) is never sent elsewhere.
+     The discovered key is also only ever sent to `https://api.arete.run`
+     (https, default port, no userinfo): a token or session endpoint on any
+     other host, such as one named by a stack binding, gets no key. The
+     restriction is recorded on the resolved auth config (it survives copies
+     made by binding paths and is lifted when that copy gets its own key),
+     never process-wide, so the same key passed explicitly is unaffected.
+     If the working directory or the project file cannot be checked (for
+     example Deno without read permission for it), no key is used.
+     Only secret-class keys (`a4_ak_`, `a4_sk_`, legacy `hsk_`) are accepted.
+     A missing, unreadable, malformed or ambiguous file means no key, never an
+     error. Unlike the CLI, an `ARETE_API_KEY` outranks a selected profile, so
+     existing scripts keep their key. Low-level constructors that only validate
+     keys (Rust `ConnectionManager::new`, `HttpAuthClient::new`, used by the MCP
+     server with its own resolved key) read neither the environment nor the
+     login.
+   - **Missing key errors.** When a hosted connection or session request is
+     refused without any key, the error says how to supply one — "No Arete API
+     key found. Run `a4 auth login` (or `a4 auth signup` for an agent), or set
+     ARETE_API_KEY, or pass the secret key option." — and never names where
+     credentials are stored. The hint is only added when the request carried
+     no credential at all (no key and no custom `Authorization` header).
    - `publishable_key` (`publishableKey`) takes an origin-bound publishable key
      (`a4_pk_…`) for anything shipped to a browser, created with
      `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
@@ -621,7 +656,7 @@ A language SDK claims alignment when it implements, with these exact semantics:
    language backend.
 6. HTTP surfaces: auth token machinery (strategy order token > provider >
    token_endpoint > hosted default; bearer key secret_key > publishable_key, with
-   the `ARETE_API_KEY` fallback and prefix validation of §2; targeted tokens w/ LRU; refresh-replay-once;
+   the `ARETE_API_KEY` and `a4` login fallbacks and prefix validation of §2; targeted tokens w/ LRU; refresh-replay-once;
    predispatch marker), chain (9 routes), transaction relay (6 routes), program reads
    (v1 contract).
 7. Execution: prepared operations + composition, wallet adapter interface, signer

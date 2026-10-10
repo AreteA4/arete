@@ -6,8 +6,13 @@
 //! on the decoded JSON, so they apply to any server version: unknown keys are
 //! passed through by [`compact`] and silently skipped by [`project`].
 //!
-//! Shared by the MCP tools (`search_catalog`, `get_catalog_entry`) and the
-//! CLI (`a4 explore catalog --fields/--brief`, `a4 know search`).
+//! Shared by the MCP tools (`search_catalog`, `get_catalog_entry`,
+//! `list_catalog_vocabulary`, `list_concepts`, `explore_programs`) and the
+//! CLI (`a4 explore catalog`, `a4 explore programs`, `a4 know search`).
+//!
+//! List, search and vocabulary responses are brief by default; callers opt
+//! out with `full` / `--full` or choose keys with `fields` / `--fields`, and a
+//! top-level `hint` string says how.
 
 use serde_json::{Map, Value};
 
@@ -28,6 +33,40 @@ pub const BRIEF_FIELDS: &[&str] = &[
     "delivery.status",
     "delivery.health",
 ];
+
+/// Page size used for catalog searches when the caller passes no limit. The
+/// server's own default is larger; a smaller first page keeps discovery
+/// output short, and `nextCursor` continues it.
+pub const DEFAULT_SEARCH_LIMIT: usize = 10;
+
+/// Entries per kind in the overview a catalog search without filters
+/// returns (the server itself requires a filter).
+pub const OVERVIEW_LIMIT: usize = 5;
+
+/// Kinds listed by the unfiltered catalog overview, in order.
+pub const OVERVIEW_KINDS: [&str; 2] = ["program", "stack"];
+
+/// Merge one search page per kind into an overview: the pages' results in
+/// order, and `nextCursors` keyed by kind for the kinds that have another
+/// page (omitted when none do).
+pub fn merge_overview(pages: &[(&str, Value)]) -> Value {
+    let mut results = Vec::new();
+    let mut cursors = Map::new();
+    for (kind, page) in pages {
+        if let Some(Value::Array(items)) = page.get("results") {
+            results.extend(items.iter().cloned());
+        }
+        if let Some(cursor) = next_cursor(page) {
+            cursors.insert(kind.to_string(), Value::String(cursor.to_string()));
+        }
+    }
+    let mut out = Map::new();
+    out.insert("results".to_string(), Value::Array(results));
+    if !cursors.is_empty() {
+        out.insert("nextCursors".to_string(), Value::Object(cursors));
+    }
+    Value::Object(out)
+}
 
 /// How a catalog response should be shaped before it is returned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +209,60 @@ pub fn shape_entry(value: &Value, shape: &Shape) -> Value {
     shape_one(value, shape)
 }
 
+/// The brief preset as a [`Shape`].
+pub fn brief() -> Shape {
+    Shape::Fields(brief_fields())
+}
+
+/// Attach a top-level `hint` string to an object response. Other values are
+/// returned unchanged. Readers that ignore unknown keys are unaffected.
+pub fn with_hint(value: Value, hint: impl Into<String>) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            map.insert("hint".to_string(), Value::String(hint.into()));
+            Value::Object(map)
+        }
+        other => other,
+    }
+}
+
+/// The `nextCursor` of a search page, when there is another page.
+pub fn next_cursor(value: &Value) -> Option<&str> {
+    value
+        .get("nextCursor")
+        .and_then(Value::as_str)
+        .filter(|cursor| !cursor.is_empty())
+}
+
+/// Whether a search page that has no cursor (knowledge search) may have been
+/// cut at `limit`: it returned at least that many results.
+pub fn may_have_more(value: &Value, limit: usize) -> bool {
+    value
+        .get("results")
+        .and_then(Value::as_array)
+        .is_some_and(|results| results.len() >= limit)
+}
+
+/// Keep only `slug` and `name` of each concept and category of a vocabulary
+/// response; descriptions, synonyms, related slugs and snapshot hashes are
+/// dropped. Lists other than `concepts` and `categories` are dropped too.
+pub fn compact_vocabulary(value: &Value) -> Value {
+    let Value::Object(source) = value else {
+        return value.clone();
+    };
+    let keep = ["slug".to_string(), "name".to_string()];
+    let mut out = Map::new();
+    for key in ["concepts", "categories"] {
+        if let Some(Value::Array(items)) = source.get(key) {
+            out.insert(
+                key.to_string(),
+                Value::Array(items.iter().map(|item| project(item, &keep)).collect()),
+            );
+        }
+    }
+    Value::Object(out)
+}
+
 /// Shape a raw JSON body. Bodies that are not JSON are returned unchanged.
 pub fn shape_body(body: String, shape: &Shape, search: bool) -> String {
     if *shape == Shape::Full {
@@ -279,6 +372,53 @@ mod tests {
             Shape::from_args(vec!["slug".into()], true),
             Shape::Fields(vec!["slug".into()])
         );
+    }
+
+    #[test]
+    fn vocabulary_compacts_to_slugs_and_names() {
+        let vocabulary = json!({
+            "concepts": [{"slug": "swap", "name": "Swap", "description": "d", "synonyms": ["trade"], "related": ["dex"]}],
+            "categories": [{"slug": "dex", "name": "DEX", "description": "d"}],
+            "sets": ["arete:h1:catalog-publication-set:sha256:aa"]
+        });
+        assert_eq!(
+            compact_vocabulary(&vocabulary),
+            json!({
+                "concepts": [{"slug": "swap", "name": "Swap"}],
+                "categories": [{"slug": "dex", "name": "DEX"}]
+            })
+        );
+    }
+
+    #[test]
+    fn overview_merges_pages_and_keys_cursors_by_kind() {
+        let programs = json!({"results": [{"slug": "a"}], "nextCursor": "p1", "sets": []});
+        let stacks = json!({"results": [{"slug": "b"}]});
+        assert_eq!(
+            merge_overview(&[("program", programs), ("stack", stacks.clone())]),
+            json!({"results": [{"slug": "a"}, {"slug": "b"}], "nextCursors": {"program": "p1"}})
+        );
+        assert_eq!(
+            merge_overview(&[("stack", stacks)]),
+            json!({"results": [{"slug": "b"}]})
+        );
+    }
+
+    #[test]
+    fn full_pages_may_have_more() {
+        let page = json!({"results": [{}, {}]});
+        assert!(may_have_more(&page, 2));
+        assert!(!may_have_more(&page, 3));
+        assert!(!may_have_more(&json!({}), 1));
+    }
+
+    #[test]
+    fn hints_attach_to_objects_and_cursors_are_read() {
+        let page = json!({"results": [], "nextCursor": "c1"});
+        assert_eq!(next_cursor(&page), Some("c1"));
+        assert_eq!(next_cursor(&json!({"nextCursor": ""})), None);
+        assert_eq!(with_hint(page, "more")["hint"], "more");
+        assert_eq!(with_hint(json!([1]), "more"), json!([1]));
     }
 
     #[test]

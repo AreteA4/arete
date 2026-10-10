@@ -25,6 +25,11 @@ from typing import (
 
 import httpx
 
+from arete._a4_profile import (
+    ProfileKey,
+    is_login_key_destination,
+)
+from arete._a4_profile import read_profile_key as read_profile_key_default
 from arete.errors import AreteError, AuthError
 
 if TYPE_CHECKING:  # arete.stack imports this module through arete.gateway.
@@ -284,7 +289,7 @@ class AuthConfig:
     5. Custom token endpoint - for self-hosted token servers
 
     For servers, agents and scripts, pass ``secret_key=``, or set no auth at
-    all and export ``ARETE_API_KEY``:
+    all and rely on ``ARETE_API_KEY`` or your ``a4`` login:
 
         auth = AuthConfig(secret_key="a4_sk_...")  # or an agent key "a4_ak_..."
 
@@ -317,7 +322,15 @@ class AuthConfig:
     token_endpoint_credentials: Optional[str] = None  # 'omit', 'same-origin', 'include'
     secret_key: Optional[str] = field(default=None, repr=False)
     """Agent key (``a4_ak_...``) or secret key (``a4_sk_...``). Server-side
-    only; defaults to ``ARETE_API_KEY`` when no auth option is set."""
+    only; defaults to ``ARETE_API_KEY``, then the active ``a4`` CLI login's
+    key, when no auth option is set."""
+    _a4_login_secret_key: Optional[str] = field(
+        default=None, repr=False, compare=False
+    )
+    """Internal: set to ``secret_key`` when the ``a4`` login supplied it. It is
+    copied by ``dataclasses.replace`` (binding paths copy the resolved config)
+    and only applies while ``secret_key`` is still that key. Per config, so
+    the same key passed explicitly elsewhere is unaffected."""
 
     @classmethod
     def from_api_key(cls, api_key: str, **kwargs) -> "AuthConfig":
@@ -397,29 +410,55 @@ def _has_explicit_auth(config: Optional[AuthConfig]) -> bool:
     )
 
 
-def resolve_auth_config(config: Optional[AuthConfig]) -> Optional[AuthConfig]:
-    """Apply the ``ARETE_API_KEY`` fallback.
+NO_API_KEY_HINT = (
+    "No Arete API key found. Run `a4 auth login` (or `a4 auth signup` for an "
+    "agent), or set ARETE_API_KEY, or pass AuthConfig(secret_key=...)."
+)
+"""Appended when a request that carried no API key is refused. It names the
+commands and options that supply one, never where credentials are stored."""
+
+
+def _with_secret_key(config: Optional[AuthConfig], key: str) -> AuthConfig:
+    if config is None:
+        return AuthConfig(secret_key=key)
+    return replace(config, secret_key=key)
+
+
+def resolve_auth_config(
+    config: Optional[AuthConfig],
+    read_profile_key: Optional[Callable[[], "ProfileKey"]] = None,
+) -> Optional[AuthConfig]:
+    """Apply the server-side credential chain.
 
     When no auth option is set (no token, token provider, token endpoint,
     publishable key or secret key), a non-empty ``ARETE_API_KEY`` supplies
-    ``secret_key``. A publishable key there is ignored with a warning.
+    ``secret_key``; without it, the agent or secret key from the active ``a4``
+    CLI login does. A publishable key in either place is ignored.
     """
     if _has_explicit_auth(config):
         return config
     env_key = (os.environ.get(ARETE_API_KEY_ENV) or "").strip()
-    if not env_key:
-        return config
-    if classify_api_key(env_key) == "publishable":
+    if env_key:
+        if classify_api_key(env_key) != "publishable":
+            return _with_secret_key(config, env_key)
         _warn_once(
             "publishable-in-env",
             f"{ARETE_API_KEY_ENV} holds a publishable key (a4_pk_...) and was "
             "ignored. Set it to an agent key (a4_ak_...) or secret key "
             "(a4_sk_...), or pass the publishable key as auth.publishable_key.",
         )
-        return config
-    if config is None:
-        return AuthConfig(secret_key=env_key)
-    return replace(config, secret_key=env_key)
+
+    profile = (read_profile_key or read_profile_key_default)()
+    if profile.ambiguous:
+        _warn_once(
+            "ambiguous-a4-profile",
+            "More than one a4 login profile holds a key; not choosing one. Set "
+            f"ARETE_PROFILE (for example `agent`) or {ARETE_API_KEY_ENV}.",
+        )
+    if profile.key and classify_api_key(profile.key) == "secret":
+        resolved = _with_secret_key(config, profile.key)
+        return replace(resolved, _a4_login_secret_key=profile.key)
+    return config
 
 
 def parse_jwt_expiry(token: str) -> Optional[int]:
@@ -566,6 +605,23 @@ def _stack_version_refusal_error(
     )
 
 
+def api_key_for_endpoint(config: Optional[AuthConfig], endpoint: str) -> Optional[str]:
+    """The key sent as the bearer credential to ``endpoint``, if any.
+
+    A key taken from the ``a4`` login is only sent to the Arete API it was
+    stored for.
+    """
+    if config is None:
+        return None
+    from_login = (
+        config.secret_key is not None
+        and config._a4_login_secret_key == config.secret_key
+    )
+    if from_login and not is_login_key_destination(endpoint):
+        return None
+    return config.api_key
+
+
 async def request_token_from_endpoint(
     http_client: httpx.AsyncClient,
     endpoint: str,
@@ -578,9 +634,10 @@ async def request_token_from_endpoint(
     configured endpoint headers. Raises :class:`AuthError` on failure.
     """
     headers: Dict[str, str] = {"Content-Type": "application/json"}
+    api_key = api_key_for_endpoint(config, endpoint)
     if config is not None:
-        if config.api_key:
-            headers["Authorization"] = f"Bearer {config.api_key}"
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         headers.update(config.token_endpoint_headers or {})
 
     try:
@@ -620,6 +677,14 @@ async def request_token_from_endpoint(
                 error_data,
                 error_code_header,
             )
+        # A 401 for a request that carried no credential at all: say how to
+        # supply one. Custom Authorization headers have their own advice.
+        sent_credential = bool(api_key) or any(
+            name.lower() == "authorization"
+            for name in ((config.token_endpoint_headers if config else None) or {})
+        )
+        if response.status_code == 401 and not sent_credential:
+            error_message = f"{error_message}. {NO_API_KEY_HINT}"
         raise AuthError(
             f"Token endpoint returned {response.status_code}: {error_message}",
             error_code,
@@ -761,9 +826,9 @@ class AuthState:
         if self.config is None:
             if is_hosted_arete_websocket_url(self.websocket_url):
                 raise AuthError(
-                    "Hosted Arete websocket connections require auth.secret_key "
-                    "(or ARETE_API_KEY), auth.publishable_key, auth.get_token, "
-                    "auth.token_endpoint, or auth.token",
+                    f"{NO_API_KEY_HINT} Hosted Arete websocket connections need "
+                    "an API key or one of auth.publishable_key, auth.get_token, "
+                    "auth.token_endpoint or auth.token.",
                     AuthErrorCode.AUTH_REQUIRED,
                 )
             return None
@@ -800,7 +865,8 @@ class AuthState:
         # No auth strategy matched
         if is_hosted_arete_websocket_url(self.websocket_url):
             raise AuthError(
-                "Hosted Arete websocket connections require authentication",
+                f"{NO_API_KEY_HINT} Hosted Arete websocket connections require "
+                "authentication.",
                 AuthErrorCode.AUTH_REQUIRED,
             )
 

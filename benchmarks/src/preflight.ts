@@ -1,5 +1,6 @@
 import { Sandbox } from '@vercel/sandbox';
 import { join } from 'node:path';
+import { A4_NPM_PACKAGE, stalePinWarning, type ResolvedA4Version } from './a4-version.js';
 import { fetchAgentProfile, type AgentProfile } from './arete-setup.js';
 import { agentKeys, cachedAgentKey, resultsDir, vercelCredentials } from './env.js';
 import { createHarness } from './harnesses.js';
@@ -53,6 +54,36 @@ async function checkA4Release(version: string): Promise<PreflightCheck> {
   } catch (err) {
     return { name: `a4 ${version}`, ok: false, detail: errorText(err), blocking: true };
   }
+}
+
+/**
+ * How the sweep's `a4` release was chosen. A pin behind npm `latest` is a
+ * warning, not a failure: older pins are how a regression gets bisected.
+ */
+export function a4VersionCheck(a4: ResolvedA4Version): PreflightCheck {
+  const name = 'a4 version';
+  if (a4.source === 'latest') {
+    return { name, ok: true, detail: `${a4.version}: latest ${A4_NPM_PACKAGE} on npm, recorded in every report`, blocking: false };
+  }
+  const stale = stalePinWarning(a4);
+  if (stale) return { name, ok: false, detail: `${stale}; drop the pin (or pass --a4-version latest) to test the current release`, blocking: false };
+  if (!a4.latest) return { name, ok: false, detail: `${a4.version} pinned; could not read npm latest (${a4.lookupError})`, blocking: false };
+  return { name, ok: true, detail: `${a4.version} pinned (latest release)`, blocking: false };
+}
+
+/**
+ * `fresh` runs promise the agent an empty HOME, which an `initialized` task
+ * cannot keep: its setup installs `a4` and signs the agent in first.
+ */
+export function keyModeTaskChecks(runs: RunConfig[], tasks: Map<string, TaskDefinition>): PreflightCheck[] {
+  const conflicting = [...new Set(runs.filter((r) => r.keyMode === 'fresh' && tasks.get(r.task)?.setup !== 'bare').map((r) => r.task))];
+  if (!conflicting.length) return [];
+  return [{
+    name: 'key mode fresh',
+    ok: false,
+    detail: `only tasks that start from an empty project support it; remove ${conflicting.join(', ')}`,
+    blocking: true,
+  }];
 }
 
 async function errorBody(response: Response): Promise<string> {
@@ -119,6 +150,16 @@ function describeAgent(profile: AgentProfile): string {
 
 async function checkAgentKeys(runs: RunConfig[]): Promise<PreflightCheck[]> {
   const keyMode = runs[0]?.keyMode ?? 'pool';
+  if (keyMode === 'fresh') {
+    return [{
+      name: 'arete agent',
+      ok: runs.length <= 5,
+      detail:
+        `no key is provisioned: each of the ${runs.length} run(s) signs up a new live trial agent itself ` +
+        '(Arete allows 5/hour/IP; there is no public way to delete them, they stay unclaimed trial agents)',
+      blocking: false,
+    }];
+  }
   if (keyMode === 'signup') {
     const signups = runs.filter((r) => r.keyMode === 'signup').length;
     return [{
@@ -195,9 +236,10 @@ async function estimateCost(runs: RunConfig[], tasks: Map<string, TaskDefinition
 export async function preflight(
   runs: RunConfig[],
   tasks: Map<string, TaskDefinition>,
-  opts: { probeModels?: boolean } = {},
+  opts: { probeModels?: boolean; a4?: ResolvedA4Version } = {},
 ): Promise<PreflightResult> {
-  const checks: PreflightCheck[] = [];
+  const checks: PreflightCheck[] = [...keyModeTaskChecks(runs, tasks)];
+  if (opts.a4) checks.push(a4VersionCheck(opts.a4));
   const agents = new Map<string, RunConfig>();
   for (const run of runs) agents.set(`${run.harness}\u0000${run.model}\u0000${run.modelAuth}`, run);
 

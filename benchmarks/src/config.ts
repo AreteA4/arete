@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
+import { LATEST, type ResolvedA4Version } from './a4-version.js';
 import { resolveModelAuth } from './env.js';
 import type { RunConfig } from './types.js';
 
@@ -18,9 +19,10 @@ const sandboxSchema = z
 
 /** Settings shared by single runs and every cell of a sweep. */
 const sharedSchema = z.object({
-  a4Version: z.string().default('0.32.0'),
+  /** `latest` (resolved from npm once per sweep) or a release such as `0.33.0`. */
+  a4Version: z.string().min(1).default(LATEST),
   skillsRef: z.string().optional(),
-  keyMode: z.enum(['pool', 'signup']).default('pool'),
+  keyMode: z.enum(['pool', 'signup', 'fresh']).default('pool'),
   modelAuth: z.enum(['auto', 'ai-gateway', 'direct']).default('auto'),
   instructions: z.string().optional(),
   turnTimeoutMinutes: z.number().min(1).default(20),
@@ -66,7 +68,14 @@ export function loadConfigFile(path: string): SweepConfig {
   });
 }
 
-export function expandSweep(sweep: SweepConfig): RunConfig[] {
+/**
+ * One run per agent × task × repetition. `a4` is the sweep's resolved
+ * release (see `resolveA4Version`); without it the config must already pin
+ * a concrete version.
+ */
+export function expandSweep(sweep: SweepConfig, a4?: ResolvedA4Version): RunConfig[] {
+  const a4Version = a4?.version ?? sweep.a4Version;
+  if (a4Version === LATEST) throw new Error('resolve a4Version "latest" before expanding the sweep');
   const runs: RunConfig[] = [];
   for (let rep = 0; rep < sweep.repetitions; rep++) {
     for (const task of sweep.tasks) {
@@ -74,7 +83,8 @@ export function expandSweep(sweep: SweepConfig): RunConfig[] {
         runs.push({
           ...agent,
           task,
-          a4Version: sweep.a4Version,
+          a4Version,
+          a4VersionSource: a4?.source ?? 'pinned',
           skillsRef: sweep.skillsRef,
           keyMode: sweep.keyMode,
           modelAuth: resolveModelAuth(sweep.modelAuth),

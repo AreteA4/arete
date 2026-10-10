@@ -644,8 +644,9 @@ impl<S: Stack> AreteBuilder<S> {
     }
 
     /// Agent key (`a4_ak_...`) or secret key (`a4_sk_...`) for servers,
-    /// agents and local scripts. Without any auth option, `ARETE_API_KEY`
-    /// supplies it at connect time.
+    /// agents and local scripts. Without any auth option, `ARETE_API_KEY`,
+    /// then the key from the active `a4` CLI login, supplies it at connect
+    /// time.
     pub fn secret_key(mut self, secret_key: impl Into<String>) -> Self {
         let auth = self
             .config

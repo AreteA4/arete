@@ -452,7 +452,7 @@ impl HttpAuthClient {
 
         let mut headers = HeaderMap::new();
         if let Some(auth) = &self.auth {
-            if let Some(api_key) = auth.api_key() {
+            if let Some(api_key) = auth.api_key_for(endpoint) {
                 // The header error never echoes the key.
                 let field = if auth.secret_key.is_some() {
                     "secret"
@@ -503,13 +503,25 @@ impl HttpAuthClient {
             .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
 
         if !status.is_success() {
-            return Err(AreteError::from_auth_response(
+            let mut error = AreteError::from_auth_response(
                 status.as_u16(),
                 header_code.as_deref(),
                 Some(&body),
                 status.canonical_reason(),
                 retry_after,
-            ));
+            );
+            // A 401 for a request that carried no credential at all: say how
+            // to supply one. Custom Authorization headers have their own
+            // advice to give.
+            let sent_credential = self.auth.as_ref().is_some_and(|auth| {
+                auth.api_key_for(endpoint).is_some() || auth.has_authorization_header()
+            });
+            if status.as_u16() == 401 && !sent_credential {
+                if let AreteError::AuthRequestFailed { message, .. } = &mut error {
+                    *message = format!("{message}. {}", crate::auth::NO_API_KEY_HINT);
+                }
+            }
+            return Err(error);
         }
 
         let data: EndpointTokenResponse = serde_json::from_slice(&body)

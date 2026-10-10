@@ -8,6 +8,7 @@ pub mod paths;
 pub mod registry_cache;
 pub mod resolver;
 pub mod runtime;
+pub mod typescript_setup;
 pub mod typescript_usage;
 
 pub use graph::InstallPlan;

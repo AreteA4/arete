@@ -310,7 +310,11 @@ let a4 = Arete::<MyStack>::builder()
 ```
 
 Servers, agents and local scripts use an agent key or secret key via
-`secret_key`; with no auth option set, `connect()` reads `ARETE_API_KEY` itself.
+`secret_key`. With no auth option set, `connect()` uses `ARETE_API_KEY` if it is
+set, and otherwise the agent or secret key from your `a4` login (`a4 auth login`,
+`a4 auth signup` or `a4 init`); if several `a4` profiles hold a key, set
+`ARETE_PROFILE` to pick one. The low-level `ConnectionManager::new` and
+`HttpAuthClient::new` constructors use only the auth you pass.
 Publishable keys are for anything shipped to a browser; create one with
 `a4 auth keys create-publishable --origin <scheme://host[:port]>`. `api_key`
 picks the matching field from the key's prefix. A publishable key passed to

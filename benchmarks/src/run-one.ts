@@ -4,10 +4,12 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
+  assertFreshHome,
   ensureAgentAuth,
   fetchAgentUsage,
   initProject,
   installA4,
+  readFreshAgent,
   readSkillsHash,
   runDoctor,
   trustProject,
@@ -150,6 +152,10 @@ export async function runOne(config: RunConfig, task: TaskDefinition, opts: RunO
         const homeDir = await resolveHomeDir(sandboxSession);
         shell = createShell(sandboxSession, sessionWorkDir, homeDir, (line) => log(`[${phase}] ${line}`));
         await trustProject(shell, config.harness);
+        if (config.keyMode === 'fresh') {
+          if (task.setup !== 'bare') throw new Error(`key mode fresh needs a bare task; ${task.name} is ${task.setup}`);
+          await assertFreshHome(shell);
+        }
         if (lease.key && config.keyMode === 'pool') await writeAgentCredential(shell, lease.key);
         if (task.setup === 'initialized') {
           arete.a4Version = await installA4(shell, config.a4Version);
@@ -219,6 +225,21 @@ export async function runOne(config: RunConfig, task: TaskDefinition, opts: RunO
     phases.agentMs = Math.round(performance.now() - agentStart);
     Object.assign(nativeSessionIds, nativeIds(await session.stop().catch(() => undefined)));
     session = undefined;
+
+    // Read before verification, whose own live-data checks consume usage.
+    if (config.keyMode === 'fresh' && shell) {
+      const fresh = await readFreshAgent(shell);
+      if (fresh) {
+        arete.freshAgent = fresh.agent;
+        if (fresh.usage) {
+          arete.usageDelta = fresh.usage;
+          arete.usageAttribution = 'exclusive';
+        }
+        log(`agent created account ${fresh.agent.slug} (${fresh.agent.claimState ?? 'unknown claim state'})`);
+      } else {
+        log('no agent account found after the agent finished');
+      }
+    }
 
     // ---- verification ------------------------------------------------------
     const verifyStart = performance.now();

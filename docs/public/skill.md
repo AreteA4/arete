@@ -1,5 +1,9 @@
 # Arete CLI Guide for Agents
 
+> Read this page verbatim. If a tool summarised it for you (for example
+> WebFetch), run `curl -fsSL https://docs.arete.run/skill.md` and read the
+> output instead. Copy commands exactly; do not paraphrase them.
+
 Arete is operated through the `a4` CLI. Use it for setup, authentication,
 catalog discovery, exact descriptors, project dependencies, SDK generation,
 live-data inspection, and hosted lifecycle commands. Do not recreate its HTTP
@@ -16,6 +20,7 @@ https://docs.arete.run/agent.md
 ```bash
 curl -fsSL https://arete.run/install.sh | sh
 a4 init -y
+a4 --profile agent auth signup --if-missing --json
 a4 doctor --json
 ```
 
@@ -42,6 +47,11 @@ Useful filters are:
 - `--mode read|build|subscribe`
 - `--target typescript|rust|python`
 - `--concept <slug>` and `--category <slug>` from the vocabulary
+
+Search results and the vocabulary are brief by default, and brief JSON names
+the next step in a top-level `hint`. Add `--full` for every field or
+`--fields a,b` for specific keys, and pass a page's `nextCursor` back as
+`--cursor` with the same filters.
 
 Catalog results report which delivery modes are currently available. A known
 program does not imply that every read, build, or subscription surface is ready.
@@ -154,9 +164,11 @@ arguments, or transcripts; use `auth status` and `auth whoami` to inspect
 authentication.
 
 SDK code for servers, agents, and local scripts authenticates with an agent or
-secret key: pass it as `secretKey` (TypeScript) or `secret_key` (Python, Rust),
-or set no auth option and provide `ARETE_API_KEY` in the environment. Read the
-key from the environment, never from source. Anything shipped to a browser
+secret key. With no auth option the SDKs use `ARETE_API_KEY` from the
+environment if set, and otherwise the key from your `a4` login, so after
+`a4 init` or `a4 auth signup` scripts need no key setup. To pass a key
+explicitly, use `secretKey` (TypeScript) or `secret_key` (Python, Rust) and
+read it from the environment, never from source. Anything shipped to a browser
 needs an origin-bound publishable key instead (`publishableKey` /
 `publishable_key`), created per origin with
 `a4 auth keys create-publishable --origin <scheme://host[:port]>`. The

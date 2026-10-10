@@ -26,6 +26,16 @@ export function taskLabel(task: RunReport['task']): string {
   return grading > 1 ? `${task.name} (grading ${grading})` : task.name;
 }
 
+/**
+ * A run's comparison label: its task label, marked when the agent had to
+ * create its own account, since that adds signup to the work being timed
+ * and graded.
+ */
+export function runLabel(report: Pick<RunReport, 'task' | 'config'>): string {
+  const label = taskLabel(report.task);
+  return report.config.keyMode === 'fresh' ? `${label} [fresh account]` : label;
+}
+
 export function quantile(values: number[], q: number): number | undefined {
   if (!values.length) return undefined;
   const sorted = [...values].sort((a, b) => a - b);

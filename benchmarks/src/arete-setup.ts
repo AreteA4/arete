@@ -1,4 +1,4 @@
-import type { HarnessKind, KeyMode, SandboxShell } from './types.js';
+import type { AreteState, HarnessKind, KeyMode, SandboxShell } from './types.js';
 
 export const ARETE_API_URL = 'https://api.arete.run';
 
@@ -68,12 +68,64 @@ export async function installA4(shell: SandboxShell, version: string): Promise<s
   if (install.exitCode !== 0) {
     throw new Error(`a4 install failed: ${install.stderr || install.stdout}`);
   }
-  // `a4 self install` leaves ~/.arete at 0755, but credential writes demand
-  // 0700, so a fresh install cannot sign up until this is fixed.
+  // Before 0.33.0, `a4 self install` left ~/.arete at 0755 and credential
+  // writes refused it. Harmless on newer releases; `fresh` runs never reach
+  // this, so they exercise the CLI's own private-directory handling.
   await shell.run('chmod 700 ~/.arete');
   const check = await shell.run('a4 --version');
   if (check.exitCode !== 0) throw new Error(`a4 not on PATH after install: ${check.stderr}`);
   return check.stdout.trim().replace(/^a4\s+/, '');
+}
+
+/**
+ * Lists anything Arete-related that already exists for the sandbox user, one
+ * item per line: a `fresh` run must start with none of it.
+ */
+export const FRESH_HOME_PROBE = [
+  'test -e "$HOME/.arete" && echo "~/.arete exists"',
+  'command -v a4 >/dev/null 2>&1 && echo "a4 on PATH"',
+  ...['ARETE_API_KEY', 'ARETE_PROFILE', 'ARETE_CREDENTIALS_PATH', 'ARETE_HOME'].map(
+    (name) => `test -n "\${${name}:-}" && echo "${name} set"`,
+  ),
+  'true',
+].join('; ');
+
+export function parseFreshHomeProbe(stdout: string): string[] {
+  return stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+}
+
+/** Fail setup unless the sandbox has no Arete install, home directory or credential. */
+export async function assertFreshHome(shell: SandboxShell): Promise<void> {
+  const found = parseFreshHomeProbe((await shell.run(FRESH_HOME_PROBE)).stdout);
+  if (found.length) throw new Error(`fresh key mode needs an empty Arete home, found: ${found.join(', ')}`);
+}
+
+export type FreshAgent = NonNullable<AreteState['freshAgent']>;
+
+/**
+ * The agent account a `fresh` run created and its usage so far, from
+ * `a4 auth whoami` inside the sandbox, so the key never leaves it. The
+ * account did not exist before the run, so its consumed meters are the run's
+ * own usage.
+ */
+export async function readFreshAgent(
+  shell: SandboxShell,
+): Promise<{ agent: FreshAgent; usage?: Record<string, number> } | undefined> {
+  const result = await shell.run('a4 --profile agent auth whoami --json', { timeoutSeconds: 60 });
+  if (result.exitCode !== 0) return undefined;
+  const me = parseJson<{
+    slug?: string;
+    plan?: string;
+    claimState?: string;
+    entitlementExpiresAt?: string;
+    usage?: { meters?: Array<{ meter: string; consumed: number }> };
+  }>(result.stdout);
+  if (!me?.slug) return undefined;
+  const meters = me.usage?.meters;
+  return {
+    agent: { slug: me.slug, plan: me.plan, claimState: me.claimState, entitlementExpiresAt: me.entitlementExpiresAt },
+    ...(meters ? { usage: Object.fromEntries(meters.map((m) => [m.meter, Number(m.consumed) || 0])) } : {}),
+  };
 }
 
 export async function initProject(

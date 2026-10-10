@@ -128,8 +128,8 @@ pub struct ConnectArgs {
     /// (e.g. `wss://your-stack.stack.arete.run`).
     pub url: String,
     /// Optional explicit API key (override). If omitted, the server resolves
-    /// the key from the `ARETE_API_KEY` env var, then from
-    /// `~/.arete/credentials.toml` (the file managed by `a4 auth login`).
+    /// the key from the `ARETE_API_KEY` env var, then from the a4 login
+    /// (`a4 auth signup` / `a4 auth login`).
     /// Prefer leaving this blank in agent calls so the key does not enter
     /// the model context or chat transcript.
     #[serde(default)]
@@ -253,11 +253,21 @@ pub struct SearchKnowledgeArgs {
     /// `list_concepts`.
     #[serde(default)]
     pub category: Option<String>,
-    /// Maximum number of results. Accepts either an integer (`5`) or a
-    /// string-encoded integer (`"5"`) because LLM tool-call arguments
-    /// sometimes stringify numbers.
+    /// Maximum number of results, 10 by default. Accepts either an integer
+    /// (`5`) or a string-encoded integer (`"5"`) because LLM tool-call
+    /// arguments sometimes stringify numbers.
     #[serde(default, deserialize_with = "lenient::opt_usize")]
     pub limit: Option<usize>,
+    /// Keep only these fields of each result: top-level keys or dotted paths
+    /// such as `coverage.read`. A list or a comma-separated string. Replaces
+    /// the brief default field set.
+    #[serde(default)]
+    pub fields: Option<StringList>,
+    /// Return each result as the server sent it, including `score` and
+    /// `coverage_via`. By default each result keeps only type, slug, name,
+    /// protocol, summary and coverage.
+    #[serde(default)]
+    pub full: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -284,6 +294,7 @@ pub struct SearchCatalogArgs {
     #[serde(default)]
     pub target: Option<String>,
     /// Maximum number of results (integer or string-encoded integer).
+    /// Defaults to 10; continue with `cursor`.
     #[serde(default, deserialize_with = "lenient::opt_usize")]
     pub limit: Option<usize>,
     /// `nextCursor` from a previous `search_catalog` page. Repeat the same
@@ -293,12 +304,74 @@ pub struct SearchCatalogArgs {
     pub cursor: Option<String>,
     /// Keep only these fields of each result: top-level keys or dotted paths
     /// such as `delivery.status`. A list or a comma-separated string, e.g.
-    /// `"slug,kind,name,version,modes,delivery.health"`.
+    /// `"slug,kind,name,version,modes,delivery.health"`. Replaces the brief
+    /// default field set.
     #[serde(default)]
     pub fields: Option<StringList>,
-    /// Return each result as the server sent it, including identity hashes
-    /// (`packageReleaseHash`, `bundleHash`, `setHash`), `programIds` and
-    /// release notes. Results are compact by default.
+    /// Return each result as the server sent it, including `concepts`,
+    /// `score`, identity hashes (`packageReleaseHash`, `bundleHash`,
+    /// `setHash`), `programIds` and release notes. By default each result
+    /// keeps only kind, slug, name, version, protocol, summary, modes,
+    /// sdkTargets and delivery status/health.
+    #[serde(default)]
+    pub full: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct VocabularyArgs {
+    /// Return every concept and category with its description, synonyms and
+    /// related slugs. By default each item keeps only `slug` and `name`.
+    #[serde(default)]
+    pub full: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct ExploreStacksArgs {
+    /// Keep only these fields of each stack: top-level keys or dotted paths
+    /// such as `websocket_auth.mode`. A list or a comma-separated string.
+    /// Replaces the brief default field set.
+    #[serde(default)]
+    pub fields: Option<StringList>,
+    /// Return each stack as the server sent it, including `http_url`,
+    /// `subdomain` and the full `websocket_auth`/`http_auth` objects. By
+    /// default each stack keeps only `name`, `description`, `websocket_url`,
+    /// `entities`, `visibility`, `serviceClass` and `websocket_auth.required`.
+    #[serde(default)]
+    pub full: Option<bool>,
+}
+
+/// Fields `explore_stacks` keeps by default: enough to pick a stack and
+/// `connect` to it. `explore_stack` reports the auth requirements in full.
+const STACK_LIST_BRIEF_FIELDS: &[&str] = &[
+    "name",
+    "description",
+    "websocket_url",
+    "entities",
+    "visibility",
+    "serviceClass",
+    "websocket_auth.required",
+];
+
+fn stack_list_shape(fields: Option<StringList>, full: Option<bool>) -> catalog_view::Shape {
+    match catalog_shape(fields, full) {
+        catalog_view::Shape::Compact => catalog_view::Shape::Fields(
+            STACK_LIST_BRIEF_FIELDS
+                .iter()
+                .map(|field| field.to_string())
+                .collect(),
+        ),
+        shape => shape,
+    }
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct ExploreProgramsArgs {
+    /// Keep only these fields of each program: top-level keys such as
+    /// `installName,programId,sdkTargets`. A list or a comma-separated string.
+    #[serde(default)]
+    pub fields: Option<StringList>,
+    /// Return each program as the server sent it, including its release and
+    /// spec hashes. By default hash fields are dropped.
     #[serde(default)]
     pub full: Option<bool>,
 }
@@ -324,6 +397,126 @@ pub struct GetCatalogEntryArgs {
 fn catalog_shape(fields: Option<StringList>, full: Option<bool>) -> catalog_view::Shape {
     let fields = catalog_view::parse_fields(&fields.map(StringList::into_vec).unwrap_or_default());
     catalog_view::Shape::from_args(fields, full == Some(true))
+}
+
+/// Search results default to the brief field set rather than the compact
+/// entry shape: a page of results is for choosing, not for installing.
+fn search_shape(fields: Option<StringList>, full: Option<bool>) -> catalog_view::Shape {
+    match catalog_shape(fields, full) {
+        catalog_view::Shape::Compact => catalog_view::brief(),
+        shape => shape,
+    }
+}
+
+const SEARCH_BRIEF_HINT: &str = "Brief fields per result. Pass `full: true` for every field \
+     (concepts, score, identity hashes) or `fields` to choose keys; drill in with \
+     `get_catalog_entry`.";
+
+/// Shape a `search_catalog` body and attach a `hint` naming how to get more
+/// fields and the next page. `full` bodies are returned as sent.
+fn search_body(body: String, shape: &catalog_view::Shape) -> String {
+    if *shape == catalog_view::Shape::Full {
+        return body;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return body;
+    };
+    serde_json::to_string(&search_value(&value, shape, None)).unwrap_or(body)
+}
+
+/// Shape a search page (or the unfiltered overview) and attach its `hint`.
+/// `overview` leads the hint when the page is the overview.
+fn search_value(
+    value: &serde_json::Value,
+    shape: &catalog_view::Shape,
+    overview: Option<&str>,
+) -> serde_json::Value {
+    let mut parts: Vec<&str> = overview.into_iter().collect();
+    if *shape != catalog_view::Shape::Full {
+        parts.push(SEARCH_BRIEF_HINT);
+    }
+    if catalog_view::next_cursor(value).is_some() {
+        parts.push("More results: pass `nextCursor` as `cursor` with the same filters.");
+    }
+    let shaped = catalog_view::shape_search(value, shape);
+    if parts.is_empty() {
+        shaped
+    } else {
+        catalog_view::with_hint(shaped, parts.join(" "))
+    }
+}
+
+/// The hint leading the unfiltered `search_catalog` overview.
+fn overview_hint(limit: usize, paged: bool) -> String {
+    let mut hint = format!(
+        "Catalog overview (no filters): up to {limit} programs and {limit} stacks. Narrow \
+         with `query`, `concept` or `category` (slugs: `list_catalog_vocabulary`), or \
+         `kind`."
+    );
+    if paged {
+        hint.push_str(" Page one kind with `kind` and `cursor` set to `nextCursors.<kind>`.");
+    }
+    hint
+}
+
+/// Whether a catalog search names no filter at all.
+fn unfiltered(args: &SearchCatalogArgs) -> bool {
+    [
+        &args.query,
+        &args.concept,
+        &args.category,
+        &args.kind,
+        &args.mode,
+        &args.target,
+    ]
+    .iter()
+    .all(|value| value.as_deref().is_none_or(|value| value.trim().is_empty()))
+}
+
+const KNOWLEDGE_BRIEF_HINT: &str = "Brief fields per result. Pass `full: true` for every \
+     field (score, coverage_via) or `fields` to choose keys; drill in with `get_protocol`, \
+     `get_program_knowledge` or `get_recipe`.";
+
+/// Shape a `search_knowledge` body and attach a `hint`. Knowledge search has
+/// no cursor, so a page cut at `limit` says to raise it.
+fn knowledge_search_body(body: String, shape: &catalog_view::Shape, limit: usize) -> String {
+    // `full` returns the response as sent, without a hint.
+    if *shape == catalog_view::Shape::Full {
+        return body;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return body;
+    };
+    let mut parts = vec![KNOWLEDGE_BRIEF_HINT.to_string()];
+    if catalog_view::may_have_more(&value, limit) {
+        parts.push(format!(
+            "There may be more results: raise `limit` above {limit}."
+        ));
+    }
+    let shaped = catalog_view::shape_search(&value, shape);
+    serde_json::to_string(&catalog_view::with_hint(shaped, parts.join(" "))).unwrap_or(body)
+}
+
+/// Compact a vocabulary body to slugs and names unless `full` is set.
+fn vocabulary_body(body: String, full: bool) -> String {
+    if full {
+        return body;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return body;
+    };
+    let compact = catalog_view::with_hint(
+        catalog_view::compact_vocabulary(&value),
+        "Slugs and names only. Pass `full: true` for descriptions, synonyms and related slugs.",
+    );
+    serde_json::to_string(&compact).unwrap_or(body)
+}
+
+/// Shape a stack or program list body (a JSON array). The list stays an
+/// array, so a hint cannot be attached; the tool descriptions document
+/// `full`/`fields`.
+fn list_body(body: String, shape: &catalog_view::Shape) -> String {
+    catalog_view::shape_body(body, shape, true)
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -567,8 +760,8 @@ struct ConnectionInfo {
     url: String,
     state: String,
     /// Where the api key came from for this connect call. One of
-    /// `explicit_argument`, `env:ARETE_API_KEY`,
-    /// `~/.arete/credentials.toml`, or `none`. Never contains the key
+    /// `explicit_argument`, `env:ARETE_API_KEY`, `a4-login`, or `none`.
+    /// Never names where credentials are stored. Never contains the key
     /// itself — this field is safe to log and to expose to the agent.
     /// Only populated on `connect`; omitted from `list_connections` because
     /// we don't store per-connection credential provenance.
@@ -609,10 +802,22 @@ impl AreteMcp {
                           throughout, so it does not match this tool field-for-field.\n\n\
                           No auth required — public stacks are always listed. If an \
                           api key is resolvable (ARETE_API_KEY or `a4 auth login`), \
-                          global stacks are included too.")]
-    async fn explore_stacks(&self) -> Result<CallToolResult, McpError> {
-        self.registry_result(self.registry.list_stacks().await)
-            .await
+                          global stacks are included too.\n\n\
+                          Each stack is brief by default: `name`, `description`, \
+                          `websocket_url`, `entities`, `visibility`, `serviceClass` and \
+                          `websocket_auth.required`. Pass `full: true` for every field \
+                          (`http_url`, `subdomain`, full `websocket_auth`/`http_auth`), \
+                          or `fields` to choose keys; `explore_stack` reports one \
+                          stack's auth requirements in full.")]
+    async fn explore_stacks(
+        &self,
+        Parameters(args): Parameters<ExploreStacksArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let shape = stack_list_shape(args.fields, args.full);
+        let body = self
+            .registry_body(self.registry.list_stacks().await)
+            .await?;
+        bounded_result(list_body(body, &shape))
     }
 
     #[tool(
@@ -751,11 +956,22 @@ impl AreteMcp {
 
     #[tool(
         description = "List standalone Solana programs installable from the Arete \
-                          registry, independent of any stack. No auth required."
+                          registry, independent of any stack. No auth required.\n\n\
+                          Each program keeps its install name, display name, program id \
+                          and SDK targets; release and spec hashes are dropped by \
+                          default. Pass `full: true` for every field, or `fields` (e.g. \
+                          `\"installName,sdkTargets\"`) to keep only those keys. Drill in \
+                          with `explore_program`."
     )]
-    async fn explore_programs(&self) -> Result<CallToolResult, McpError> {
-        self.registry_result(self.registry.list_programs().await)
-            .await
+    async fn explore_programs(
+        &self,
+        Parameters(args): Parameters<ExploreProgramsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let shape = catalog_shape(args.fields, args.full);
+        let body = self
+            .registry_body(self.registry.list_programs().await)
+            .await?;
+        bounded_result(list_body(body, &shape))
     }
 
     #[tool(
@@ -860,16 +1076,19 @@ impl AreteMcp {
                           (`ready` or `degraded`).\n\n\
                           `query` is free text; `concept`/`category` filter by slug \
                           (see `list_catalog_vocabulary`); `kind`, `mode`, and `target` \
-                          narrow to what you can actually use. At least one filter is \
-                          required. When a page returns `nextCursor`, pass it back as \
-                          `cursor` with the same filters to continue. Drill in with \
-                          `get_catalog_entry`.\n\n\
-                          Results are compact by default: identity hashes \
-                          (`packageReleaseHash`, `bundleHash`, `setHash`), `programIds` \
-                          and release notes are dropped. Pass `fields` (e.g. \
+                          narrow to what you can actually use. Without any filter the \
+                          tool returns an overview: up to 5 programs and 5 stacks (or \
+                          `limit` of each), with `nextCursors.program`/`nextCursors.stack` \
+                          to page one kind. Pages hold 10 results unless you pass `limit`; when a \
+                          page returns `nextCursor`, pass it back as `cursor` with the \
+                          same filters to continue. Drill in with `get_catalog_entry`.\n\n\
+                          Results are brief by default: each keeps only `kind`, `slug`, \
+                          `name`, `version`, `protocol`, `summary`, `modes`, `sdkTargets` \
+                          and `delivery.status`/`delivery.health`, and the response \
+                          carries a top-level `hint`. Pass `fields` (e.g. \
                           `\"slug,kind,name,version,modes,delivery.health\"`, dotted paths \
                           allowed) to keep only those keys, or `full: true` for every \
-                          field.\n\n\
+                          field as the server sent it.\n\n\
                           No credential is required; an API key widens results to \
                           global-visibility entries."
     )]
@@ -877,23 +1096,59 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<SearchCatalogArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.catalog_result(
-            self.registry
-                .catalog_search(
-                    args.query.as_deref(),
-                    args.concept.as_deref(),
-                    args.category.as_deref(),
-                    args.kind.as_deref(),
-                    args.mode.as_deref(),
-                    args.target.as_deref(),
-                    args.limit,
-                    args.cursor.as_deref(),
-                )
-                .await,
-            &catalog_shape(args.fields, args.full),
-            true,
-        )
-        .await
+        let is_unfiltered = unfiltered(&args);
+        let shape = search_shape(args.fields, args.full);
+        if is_unfiltered {
+            if args.cursor.as_deref().is_some_and(|c| !c.trim().is_empty()) {
+                return Err(McpError::invalid_params(
+                    "`cursor` continues a search: repeat the filters of the page that returned it \
+                     (e.g. `kind: \"program\"` with `nextCursors.program`)"
+                        .to_string(),
+                    None,
+                ));
+            }
+            let limit = args.limit.unwrap_or(catalog_view::OVERVIEW_LIMIT);
+            let mut pages = Vec::new();
+            for kind in catalog_view::OVERVIEW_KINDS {
+                let body = self
+                    .registry_body(
+                        self.registry
+                            .catalog_search(
+                                None,
+                                None,
+                                None,
+                                Some(kind),
+                                None,
+                                None,
+                                Some(limit),
+                                None,
+                            )
+                            .await,
+                    )
+                    .await?;
+                pages.push((kind, parse_descriptor(Ok(body))?));
+            }
+            let overview = catalog_view::merge_overview(&pages);
+            let hint = overview_hint(limit, overview.get("nextCursors").is_some());
+            return shaped_result(&search_value(&overview, &shape, Some(&hint)));
+        }
+        let body = self
+            .registry_body(
+                self.registry
+                    .catalog_search(
+                        args.query.as_deref(),
+                        args.concept.as_deref(),
+                        args.category.as_deref(),
+                        args.kind.as_deref(),
+                        args.mode.as_deref(),
+                        args.target.as_deref(),
+                        Some(args.limit.unwrap_or(catalog_view::DEFAULT_SEARCH_LIMIT)),
+                        args.cursor.as_deref(),
+                    )
+                    .await,
+            )
+            .await?;
+        bounded_result(search_body(body, &shape))
     }
 
     #[tool(
@@ -926,11 +1181,19 @@ impl AreteMcp {
     #[tool(
         description = "List the concept and category vocabularies of the active \
                           catalog snapshot. Use it to map a user's phrasing onto \
-                          `search_catalog` concept/category slugs. No credential required."
+                          `search_catalog` concept/category slugs. No credential required.\n\n\
+                          By default each concept and category keeps only `slug` and \
+                          `name`. Pass `full: true` for descriptions, synonyms and related \
+                          slugs when a name alone does not settle the mapping."
     )]
-    async fn list_catalog_vocabulary(&self) -> Result<CallToolResult, McpError> {
-        self.registry_result(self.registry.catalog_vocabulary().await)
-            .await
+    async fn list_catalog_vocabulary(
+        &self,
+        Parameters(args): Parameters<VocabularyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let body = self
+            .registry_body(self.registry.catalog_vocabulary().await)
+            .await?;
+        bounded_result(vocabulary_body(body, args.full == Some(true)))
     }
 
     #[tool(
@@ -948,6 +1211,11 @@ impl AreteMcp {
                           (stream live entities from a hosted stack) — pick the mode you \
                           need, then drill in with get_protocol, get_program_knowledge, \
                           or get_recipe.\n\n\
+                          Results are brief by default (10 of them unless you pass \
+                          `limit`): each keeps `type`, `slug`, `name`, `protocol`, \
+                          `summary` and `coverage`, and the response carries a top-level \
+                          `hint`. Pass `full: true` for every field (`score`, \
+                          `coverage_via`) or `fields` to choose keys.\n\n\
                           AUTH: unlike the explore_* tools, this requires an Arete API \
                           key (`ARETE_API_KEY` env var, or the file `a4 auth login` \
                           writes)."
@@ -956,17 +1224,21 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<SearchKnowledgeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.registry_result(
-            self.registry
-                .knowledge_search(
-                    args.query.as_deref(),
-                    args.concept.as_deref(),
-                    args.category.as_deref(),
-                    args.limit,
-                )
-                .await,
-        )
-        .await
+        let shape = search_shape(args.fields, args.full);
+        let limit = args.limit.unwrap_or(catalog_view::DEFAULT_SEARCH_LIMIT);
+        let body = self
+            .registry_body(
+                self.registry
+                    .knowledge_search(
+                        args.query.as_deref(),
+                        args.concept.as_deref(),
+                        args.category.as_deref(),
+                        Some(limit),
+                    )
+                    .await,
+            )
+            .await?;
+        bounded_result(knowledge_search_body(body, &shape, limit))
     }
 
     #[tool(
@@ -1036,21 +1308,28 @@ impl AreteMcp {
 
     #[tool(
         description = "List the controlled vocabularies of the knowledge layer: concept \
-                          slugs (actions/observables like `swap` or `add-liquidity`, \
-                          with synonyms and related concepts) and category slugs \
-                          (protocol classifications like `dex` or `launchpad`).\n\n\
+                          slugs (actions/observables like `swap` or `add-liquidity`) and \
+                          category slugs (protocol classifications like `dex` or \
+                          `launchpad`).\n\n\
                           Call this first when you want to filter search_knowledge by \
                           `concept`/`category`, or to map a user's phrasing onto a \
-                          canonical concept slug.\n\n\
+                          canonical concept slug. By default each item keeps only `slug` \
+                          and `name`; pass `full: true` for descriptions, synonyms and \
+                          related concepts.\n\n\
                           Requires an API key (`a4 auth login`)."
     )]
-    async fn list_concepts(&self) -> Result<CallToolResult, McpError> {
-        self.registry_result(self.registry.knowledge_vocabulary().await)
-            .await
+    async fn list_concepts(
+        &self,
+        Parameters(args): Parameters<VocabularyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let body = self
+            .registry_body(self.registry.knowledge_vocabulary().await)
+            .await?;
+        bounded_result(vocabulary_body(body, args.full == Some(true)))
     }
 
     #[tool(
-        description = "Show the authenticated agent account, including slug, status, plan, entitlement expiry, claim state, whether trial access is enabled, and starter-stack guidance. The API key is resolved from the environment or credentials file and is never returned."
+        description = "Show the authenticated agent account, including slug, status, plan, entitlement expiry, claim state, whether trial access is enabled, and starter-stack guidance. The API key is resolved from ARETE_API_KEY or the a4 login and is never returned."
     )]
     async fn account_status(&self) -> Result<CallToolResult, McpError> {
         match self.recovery.account_status().await {
@@ -1075,9 +1354,8 @@ impl AreteMcp {
                           Returns a connection_id used by subscribe and query tools.\n\n\
                           AUTH: Prefer omitting `api_key` in agent calls — the \
                           server resolves it automatically from (1) explicit arg, \
-                          (2) `ARETE_API_KEY` env var, (3) \
-                          `~/.arete/credentials.toml` (managed by \
-                          `a4 auth login`). Passing the key as an argument puts it \
+                          (2) `ARETE_API_KEY` env var, (3) the a4 login \
+                          (`a4 auth signup` / `a4 auth login`). Passing the key as an argument puts it \
                           in the model context and chat transcript, which is \
                           usually not what you want. The response includes a \
                           `key_source` field so you can see which lookup path \
@@ -1634,12 +1912,20 @@ fn parse_descriptor(body: anyhow::Result<String>) -> Result<serde_json::Value, M
 fn shaped_result(value: &serde_json::Value) -> Result<CallToolResult, McpError> {
     let text = serde_json::to_string(value)
         .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+    bounded_result(text)
+}
+
+/// Return reshaped text (a brief list, search page or vocabulary) only if it
+/// still fits the 512 KiB tool-result cap. Re-serializing can expand what
+/// the registry sent (numbers, an added `hint`), so the cap is re-checked on
+/// the bytes actually returned.
+fn bounded_result(text: String) -> Result<CallToolResult, McpError> {
     if text.len() > MAX_RESPONSE_BYTES {
         return Err(McpError::internal_error(
             format!(
                 "shaped response is {} bytes, over the {MAX_RESPONSE_BYTES} byte limit for a single \
-                 tool result. Narrow it (fewer `views` or `sections`), or use `a4 explore` on the \
-                 command line.",
+                 tool result. Narrow it (fewer `views`, `sections` or `fields`, a smaller `limit`, \
+                 or no `full`), or use `a4 explore` on the command line.",
                 text.len()
             ),
             None,
@@ -1775,9 +2061,7 @@ impl AreteMcp {
         search: bool,
     ) -> Result<CallToolResult, McpError> {
         let body = self.registry_body(result).await?;
-        Ok(CallToolResult::success(vec![Content::text(
-            catalog_view::shape_body(body, shape, search),
-        )]))
+        bounded_result(catalog_view::shape_body(body, shape, search))
     }
 
     async fn recovery_error(&self, error: anyhow::Error) -> McpError {
@@ -2319,6 +2603,11 @@ mod explore_args_tests {
         let oversized = serde_json::json!({"blob": "x".repeat(MAX_RESPONSE_BYTES + 1)});
         let err = shaped_result(&oversized).unwrap_err();
         assert!(err.message.contains("byte limit"), "{}", err.message);
+
+        // Reshaped list, search and vocabulary text is held to the same cap.
+        let err = bounded_result("x".repeat(MAX_RESPONSE_BYTES + 1)).unwrap_err();
+        assert!(err.message.contains("byte limit"), "{}", err.message);
+        assert!(bounded_result("[]".to_string()).is_ok());
     }
 
     #[test]
@@ -2575,5 +2864,174 @@ mod ergonomics_tests {
             catalog_shape(args.fields, args.full),
             catalog_view::Shape::Compact
         );
+    }
+
+    #[test]
+    fn unfiltered_catalog_search_is_an_overview_with_a_hint() {
+        let args: SearchCatalogArgs =
+            serde_json::from_value(serde_json::json!({ "query": "  ", "limit": 3 })).unwrap();
+        assert!(unfiltered(&args));
+        let args: SearchCatalogArgs =
+            serde_json::from_value(serde_json::json!({ "kind": "stack" })).unwrap();
+        assert!(!unfiltered(&args));
+
+        let overview = catalog_view::merge_overview(&[
+            (
+                "program",
+                serde_json::json!({"results": [{"kind": "program", "slug": "a", "score": 1}], "nextCursor": "p1"}),
+            ),
+            (
+                "stack",
+                serde_json::json!({"results": [{"kind": "stack", "slug": "b"}]}),
+            ),
+        ]);
+        let hint = overview_hint(5, true);
+        let out = search_value(&overview, &catalog_view::brief(), Some(&hint));
+        assert_eq!(
+            out["results"][0],
+            serde_json::json!({"kind": "program", "slug": "a"})
+        );
+        assert_eq!(out["nextCursors"]["program"], "p1");
+        let hint = out["hint"].as_str().unwrap();
+        assert!(hint.starts_with("Catalog overview"));
+        assert!(hint.contains("nextCursors.<kind>") && hint.contains("full: true"));
+        assert!(!overview_hint(5, false).contains("nextCursors"));
+    }
+
+    #[test]
+    fn knowledge_search_defaults_to_brief_results_with_a_hint() {
+        let args: SearchKnowledgeArgs =
+            serde_json::from_value(serde_json::json!({ "query": "swaps" })).unwrap();
+        let shape = search_shape(args.fields, args.full);
+        let body = serde_json::json!({
+            "matched_concepts": ["swap"],
+            "results": [{
+                "type": "program", "slug": "raydium-cp-swap", "name": "raydium_cp_swap",
+                "protocol": "raydium", "summary": "AMM.", "score": 6.1,
+                "coverage": {"read": true, "build": true, "subscribe": false},
+                "coverage_via": {"read": ["raydium-cp-swap"]}
+            }]
+        })
+        .to_string();
+        let out: serde_json::Value =
+            serde_json::from_str(&knowledge_search_body(body.clone(), &shape, 10)).unwrap();
+        let first = out["results"][0].as_object().unwrap();
+        assert!(!first.contains_key("score") && !first.contains_key("coverage_via"));
+        assert_eq!(first["coverage"]["read"], true);
+        assert_eq!(out["matched_concepts"][0], "swap");
+        let hint = out["hint"].as_str().unwrap();
+        assert!(hint.contains("full: true") && !hint.contains("raise `limit`"));
+
+        let out: serde_json::Value =
+            serde_json::from_str(&knowledge_search_body(body.clone(), &shape, 1)).unwrap();
+        assert!(out["hint"]
+            .as_str()
+            .unwrap()
+            .contains("raise `limit` above 1"));
+        let full = search_shape(None, Some(true));
+        assert_eq!(knowledge_search_body(body.clone(), &full, 10), body);
+    }
+
+    #[test]
+    fn search_defaults_to_brief_results_with_a_hint() {
+        let args: SearchCatalogArgs =
+            serde_json::from_value(serde_json::json!({ "query": "swaps" })).unwrap();
+        let shape = search_shape(args.fields, args.full);
+        assert_eq!(shape, catalog_view::brief());
+        let body = serde_json::json!({
+            "matchedConcepts": ["swap"],
+            "nextCursor": "c1",
+            "results": [{
+                "kind": "program", "slug": "ore", "name": "ORE", "version": "1.0.0",
+                "summary": "ORE mining.", "modes": ["build"], "sdkTargets": ["typescript"],
+                "score": 2.5, "concepts": ["mining"], "packageReleaseHash": "sha256:aa",
+                "delivery": {"kind": "program-read", "status": "active", "health": "ready"}
+            }]
+        })
+        .to_string();
+        let out: serde_json::Value =
+            serde_json::from_str(&search_body(body.clone(), &shape)).unwrap();
+        assert_eq!(out["nextCursor"], "c1");
+        let first = out["results"][0].as_object().unwrap();
+        assert_eq!(first["slug"], "ore");
+        assert!(!first.contains_key("score"));
+        assert!(!first.contains_key("packageReleaseHash"));
+        let hint = out["hint"].as_str().unwrap();
+        assert!(hint.contains("full: true") && hint.contains("cursor"));
+
+        let full = search_shape(None, Some(true));
+        assert_eq!(search_body(body.clone(), &full), body);
+        let fields = search_shape(Some(StringList::One("slug".into())), None);
+        let out: serde_json::Value = serde_json::from_str(&search_body(body, &fields)).unwrap();
+        assert_eq!(out["results"][0], serde_json::json!({"slug": "ore"}));
+    }
+
+    #[test]
+    fn vocabularies_default_to_slugs_and_names() {
+        let args: VocabularyArgs = serde_json::from_value(serde_json::json!({})).unwrap();
+        let body = serde_json::json!({
+            "concepts": [{"slug": "swap", "name": "Swap", "synonyms": ["trade"]}],
+            "categories": [{"slug": "dex", "name": "DEX", "description": "d"}]
+        })
+        .to_string();
+        let out: serde_json::Value =
+            serde_json::from_str(&vocabulary_body(body.clone(), args.full == Some(true))).unwrap();
+        assert_eq!(
+            out["concepts"],
+            serde_json::json!([{"slug": "swap", "name": "Swap"}])
+        );
+        assert!(out["hint"].as_str().unwrap().contains("full: true"));
+        assert_eq!(vocabulary_body(body.clone(), true), body);
+    }
+
+    #[test]
+    fn stack_lists_default_to_brief_fields() {
+        let body = serde_json::json!([{
+            "name": "ore", "description": "ORE.", "subdomain": "ore-1",
+            "websocket_url": "wss://ore", "http_url": "https://ore",
+            "websocket_auth": {"required": true, "mode": "signed_session"},
+            "http_auth": {"required": true},
+            "entities": ["OreRound"], "visibility": "public", "serviceClass": "standard"
+        }])
+        .to_string();
+        let args: ExploreStacksArgs = serde_json::from_value(serde_json::json!({})).unwrap();
+        let out: serde_json::Value = serde_json::from_str(&list_body(
+            body.clone(),
+            &stack_list_shape(args.fields, args.full),
+        ))
+        .unwrap();
+        assert_eq!(
+            out,
+            serde_json::json!([{
+                "name": "ore", "description": "ORE.", "websocket_url": "wss://ore",
+                "entities": ["OreRound"], "visibility": "public", "serviceClass": "standard",
+                "websocket_auth": {"required": true}
+            }])
+        );
+        assert_eq!(
+            list_body(body.clone(), &stack_list_shape(None, Some(true))),
+            body
+        );
+    }
+
+    #[test]
+    fn program_lists_drop_hashes_unless_full() {
+        let body = serde_json::json!([{
+            "installName": "spl-token", "programId": "Tok", "sdkTargets": ["rust"],
+            "programReleaseHash": "arete:h1:program-release:sha256:aa",
+            "programSpecHash": "arete:h1:program-spec:sha256:bb"
+        }])
+        .to_string();
+        let args: ExploreProgramsArgs = serde_json::from_value(serde_json::json!({})).unwrap();
+        let out: serde_json::Value = serde_json::from_str(&list_body(
+            body.clone(),
+            &catalog_shape(args.fields, args.full),
+        ))
+        .unwrap();
+        assert_eq!(
+            out,
+            serde_json::json!([{"installName": "spl-token", "programId": "Tok", "sdkTargets": ["rust"]}])
+        );
+        assert_eq!(list_body(body.clone(), &catalog_view::Shape::Full), body);
     }
 }
