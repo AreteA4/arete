@@ -1,12 +1,11 @@
 import { sharedAgentKey } from '../agent-key.js';
-import { expandSweep } from '../config.js';
 import { agentKeys, assertCredentials, resolveModelAuth, resultsDir } from '../env.js';
 import { KeyPool } from '../keys.js';
 import { formatPreflight, preflight } from '../preflight.js';
 import { print } from '../report.js';
 import { loadTask, prewarmTemplate, runOne } from '../run-one.js';
 import type { RunReport, TaskDefinition } from '../types.js';
-import { sweepFromArgs } from './args.js';
+import { prepareSweep } from './args.js';
 
 /** Run promise-returning jobs with at most `limit` in flight. */
 async function pool<T>(jobs: Array<() => Promise<T>>, limit: number): Promise<PromiseSettledResult<T>[]> {
@@ -27,24 +26,30 @@ async function pool<T>(jobs: Array<() => Promise<T>>, limit: number): Promise<Pr
 }
 
 async function main(): Promise<void> {
-  const { sweep, skipPreflight } = sweepFromArgs(process.argv.slice(2));
+  const { sweep, skipPreflight, a4, runs } = await prepareSweep(process.argv.slice(2));
   assertCredentials(resolveModelAuth(sweep.modelAuth));
-  const runs = expandSweep(sweep);
   const tasks = new Map<string, TaskDefinition>();
   for (const ref of new Set(sweep.tasks)) tasks.set(ref, await loadTask(ref));
   const log = (line: string) => print(`${line}\n`);
 
   if (!skipPreflight) {
-    const result = await preflight(runs, tasks);
+    const result = await preflight(runs, tasks, { a4 });
     log(`${formatPreflight(result)}\n`);
     if (!result.ok) throw new Error('preflight failed; fix the ✗ items above (or pass --skip-preflight)');
   }
 
-  // Without configured keys, every run shares one benchmark agent.
-  const keys = sweep.keyMode === 'pool' && agentKeys().length === 0 ? [await sharedAgentKey(runs[0]!, log)] : agentKeys();
+  // Without configured keys, every run shares one benchmark agent. Fresh
+  // runs get no key at all: the agent must create its own account.
+  const keys =
+    sweep.keyMode === 'fresh'
+      ? []
+      : sweep.keyMode === 'pool' && agentKeys().length === 0
+        ? [await sharedAgentKey(runs[0]!, log)]
+        : agentKeys();
   const keyPool = new KeyPool(keys);
   print(
     `${runs.length} run(s): ${sweep.agents.length} agent(s) × ${sweep.tasks.length} task(s) × ${sweep.repetitions} rep(s), concurrency ${sweep.concurrency}\n` +
+      `a4 ${a4.version} (${a4.source === 'latest' ? 'latest release' : 'pinned'}), key mode ${sweep.keyMode}\n` +
       `results → ${resultsDir()}\n`,
   );
 

@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { resultsDir } from '../env.js';
-import { loadReports, quantile, taskLabel } from '../history.js';
+import { loadReports, quantile, runLabel } from '../history.js';
 import type { RunReport } from '../types.js';
 
 const fmt = {
@@ -12,7 +12,7 @@ const fmt = {
 };
 
 /**
- * Markdown comparison table grouped by task × grading × harness × model,
+ * Markdown comparison table grouped by task × grading × fresh account × harness × model,
  * with medians (p90 for duration) across repetitions. Runs graded under
  * different rules never share a row, since their pass flags mean different
  * things.
@@ -20,7 +20,7 @@ const fmt = {
 export function compareTable(reports: RunReport[]): string {
   const groups = new Map<string, RunReport[]>();
   for (const r of reports) {
-    const key = `${taskLabel(r.task)}\u0000${r.config.harness}\u0000${r.config.model}`;
+    const key = `${runLabel(r)}\u0000${r.config.harness}\u0000${r.config.model}`;
     groups.set(key, [...(groups.get(key) ?? []), r]);
   }
   const header =

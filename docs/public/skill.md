@@ -1,5 +1,9 @@
 # Arete CLI Guide for Agents
 
+> Read this page verbatim. If a tool summarised it for you (for example
+> WebFetch), run `curl -fsSL https://docs.arete.run/skill.md` and read the
+> output instead. Copy commands exactly; do not paraphrase them.
+
 Arete is operated through the `a4` CLI. Use it for setup, authentication,
 catalog discovery, exact descriptors, project dependencies, SDK generation,
 live-data inspection, and hosted lifecycle commands. Do not recreate its HTTP
@@ -16,6 +20,7 @@ https://docs.arete.run/agent.md
 ```bash
 curl -fsSL https://arete.run/install.sh | sh
 a4 init -y
+a4 --profile agent auth signup --if-missing --json
 a4 doctor --json
 ```
 
