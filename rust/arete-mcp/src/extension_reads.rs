@@ -14,6 +14,17 @@
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
+/// Most arguments a read may declare. A declaration above it is not a
+/// plausible read signature and is skipped, so a hostile or broken source
+/// cannot make the summary allocate one placeholder per declared argument.
+const MAX_READ_ARGS: usize = 16;
+
+/// Most reads reported from one declaration.
+const MAX_READS: usize = 256;
+
+/// Deepest namespace nesting followed inside `readArgCounts`.
+const MAX_NESTING: usize = 8;
+
 /// One read and how many arguments it takes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReadArity {
@@ -56,6 +67,8 @@ pub fn stack_extension_reads(extension: &Value) -> Vec<Value> {
     };
     arities
         .into_iter()
+        .filter(|arity| arity.max <= MAX_READ_ARGS && arity.required <= arity.max)
+        .take(MAX_READS)
         .map(|arity| {
             let leaf = arity.path.rsplit('.').next().unwrap_or(&arity.path);
             let declared = function_signature(source, leaf);
@@ -89,21 +102,76 @@ pub fn stack_extension_reads(extension: &Value) -> Vec<Value> {
         .collect()
 }
 
-/// The entries of the `readArgCounts` object literal in `source`, in source
-/// order.
+/// The entries of the first `readArgCounts: { … }` object literal in
+/// `source`, in source order. Mentions inside comments and string literals
+/// are skipped, as are occurrences not followed by an object literal.
 fn read_arg_counts(source: &str) -> Option<Vec<ReadArity>> {
-    let start = source.find("readArgCounts")?;
-    let rest = &source[start + "readArgCounts".len()..];
-    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
-    let body = rest.strip_prefix('{')?;
-    let mut arities = Vec::new();
-    parse_object(body, "", &mut arities)?;
-    (!arities.is_empty()).then_some(arities)
+    code_occurrences(source, "readArgCounts")
+        .into_iter()
+        .find_map(|start| {
+            let rest = skip_trivia(&source[start + "readArgCounts".len()..]);
+            let body = skip_trivia(rest.strip_prefix(':')?).strip_prefix('{')?;
+            let mut arities = Vec::new();
+            parse_object(body, "", 0, &mut arities)?;
+            (!arities.is_empty()).then_some(arities)
+        })
+}
+
+/// Byte offsets of `word` (as a whole identifier) in the code of `source`:
+/// not inside a `//` or `/* */` comment or a `'`, `"` or `` ` `` string.
+fn code_occurrences(source: &str, word: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    let is_ident = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$';
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index = source[index..]
+                    .find('\n')
+                    .map_or(bytes.len(), |end| index + end);
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = source[index + 2..]
+                    .find("*/")
+                    .map_or(bytes.len(), |end| index + 2 + end + 2);
+            }
+            quote @ (b'\'' | b'"' | b'`') => {
+                index += 1;
+                while index < bytes.len() && bytes[index] != quote {
+                    if bytes[index] == b'\\' {
+                        index += 1;
+                    }
+                    index += 1;
+                }
+                index += 1;
+            }
+            _ if bytes[index..].starts_with(word.as_bytes())
+                && (index == 0 || !is_ident(bytes[index - 1]))
+                && bytes
+                    .get(index + word.len())
+                    .is_none_or(|&next| !is_ident(next)) =>
+            {
+                found.push(index);
+                index += word.len();
+            }
+            _ => index += 1,
+        }
+    }
+    found
 }
 
 /// Parse `key: 0, key: [1, 2], ns: { … } }` up to the object's closing
 /// brace, appending leaves. Returns the text after the brace.
-fn parse_object<'a>(mut text: &'a str, prefix: &str, out: &mut Vec<ReadArity>) -> Option<&'a str> {
+fn parse_object<'a>(
+    mut text: &'a str,
+    prefix: &str,
+    depth: usize,
+    out: &mut Vec<ReadArity>,
+) -> Option<&'a str> {
+    if depth > MAX_NESTING {
+        return None;
+    }
     loop {
         text = skip_trivia(text);
         if let Some(rest) = text.strip_prefix('}') {
@@ -118,7 +186,7 @@ fn parse_object<'a>(mut text: &'a str, prefix: &str, out: &mut Vec<ReadArity>) -
             format!("{prefix}.{key}")
         };
         text = if let Some(nested) = rest.strip_prefix('{') {
-            parse_object(nested, &path, out)?
+            parse_object(nested, &path, depth + 1, out)?
         } else if let Some(list) = rest.strip_prefix('[') {
             let end = list.find(']')?;
             let counts = list[..end]
@@ -333,6 +401,38 @@ export default defineStackExtensions<typeof CORE>()({
         assert_eq!(
             stack_extension_reads(&extension(source)),
             vec![json!({"call": "read.quoted(arg1?, arg2?)"})]
+        );
+    }
+
+    #[test]
+    fn unreasonable_argument_counts_are_skipped_without_allocating_them() {
+        let source = "x({ readArgCounts: { huge: 1000000000, range: [0, 4000000000], ok: 1 } })";
+        assert_eq!(
+            stack_extension_reads(&extension(source)),
+            vec![json!({"call": "read.ok(arg1)"})]
+        );
+        let deep = format!(
+            "readArgCounts: {}a: 0{}",
+            "{ n: ".repeat(64),
+            " }".repeat(65)
+        );
+        assert!(stack_extension_reads(&extension(&deep)).is_empty());
+    }
+
+    #[test]
+    fn mentions_in_comments_and_strings_do_not_hide_the_declaration() {
+        let source = r#"
+// readArgCounts describes optional arguments — même ici: «readArgCounts»
+/* readArgCounts: { wrong: 0 } */
+const note = "readArgCounts: { alsoWrong: 0 }";
+const myreadArgCounts = 1;
+export default defineStackExtensions()({
+  readArgCounts: { currentRound: 0 },
+});
+"#;
+        assert_eq!(
+            stack_extension_reads(&extension(source)),
+            vec![json!({"call": "read.currentRound()"})]
         );
     }
 }
