@@ -22,7 +22,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
 if sys.version_info >= (3, 11):  # pragma: no cover - version dependent
@@ -42,20 +42,6 @@ AGENT_PROFILE = "agent"
 HUMAN_PROFILE = "human"
 _PROJECT_AUTH_RELATIVE_PATH = (".arete", "auth.toml")
 _PROFILE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-
-
-_LOGIN_KEYS: Set[str] = set()
-"""Keys taken from the ``a4`` login. Tracked by value so the destination
-restriction survives config copies (binding paths ``replace`` the token
-endpoint on the resolved config)."""
-
-
-def remember_login_key(key: str) -> None:
-    _LOGIN_KEYS.add(key)
-
-
-def is_login_key(key: str) -> bool:
-    return key in _LOGIN_KEYS
 
 
 def is_login_key_destination(url: str) -> bool:

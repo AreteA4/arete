@@ -70,10 +70,21 @@ function readEnvironmentVariable(name: string): string | undefined {
 const warned = new Set<string>();
 
 /**
- * Keys taken from the `a4` login. Tracked by value so the restriction
- * survives config copies (binding paths spread the resolved config).
+ * Marks a resolved config whose `secretKey` came from the `a4` login. It holds
+ * that key, so the mark is carried through object spreads (binding paths copy
+ * the resolved config) and only applies while `secretKey` is still that key:
+ * a copy given another `secretKey` is no longer restricted. Per config, never
+ * process-wide, so the same key passed explicitly elsewhere is unaffected.
  */
-const a4LoginKeys = new Set<string>();
+const A4_LOGIN_SECRET_KEY: unique symbol = Symbol('arete.a4LoginSecretKey');
+
+type MarkedAuthConfig = AuthConfig & { [A4_LOGIN_SECRET_KEY]?: string };
+
+/** True when `auth.secretKey` was supplied by the `a4` login fallback. */
+export function secretKeyFromA4Login(auth: AuthConfig | undefined): boolean {
+  const marked = auth as MarkedAuthConfig | undefined;
+  return marked?.secretKey !== undefined && marked[A4_LOGIN_SECRET_KEY] === marked.secretKey;
+}
 
 function warnOnce(id: string, message: string): void {
   if (warned.has(id)) return;
@@ -180,8 +191,12 @@ export function resolveAuthConfig(
     );
   }
   if (profile.key && classifyApiKey(profile.key) === 'secret') {
-    a4LoginKeys.add(profile.key);
-    return { ...auth, secretKey: profile.key };
+    const resolved: MarkedAuthConfig = {
+      ...auth,
+      secretKey: profile.key,
+      [A4_LOGIN_SECRET_KEY]: profile.key,
+    };
+    return resolved;
   }
   return auth;
 }
@@ -202,11 +217,8 @@ export function tokenEndpointApiKey(
   auth: AuthConfig | undefined,
   endpoint: string
 ): string | undefined {
-  const key = auth?.secretKey ?? auth?.publishableKey;
-  if (key !== undefined && a4LoginKeys.has(key) && !isA4LoginKeyDestination(endpoint)) {
-    return undefined;
-  }
-  return key;
+  if (secretKeyFromA4Login(auth) && !isA4LoginKeyDestination(endpoint)) return undefined;
+  return auth?.secretKey ?? auth?.publishableKey;
 }
 
 /** True when `headers` carries its own `Authorization` header. */

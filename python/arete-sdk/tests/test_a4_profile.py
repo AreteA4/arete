@@ -203,3 +203,29 @@ async def test_401_hint_only_without_any_credential(config, hinted):
                 client, "https://api.arete.run/ws/sessions", config, {}
             )
     assert ("No Arete API key found" in str(caught.value)) is hinted
+
+
+def test_restriction_follows_the_config_not_the_key_value(monkeypatch):
+    from dataclasses import replace
+
+    from arete.auth import api_key_for_endpoint
+
+    monkeypatch.delenv("ARETE_API_KEY", raising=False)
+    key = "a4_ak_sharedbetweenclients"
+    custom = "https://auth.example.com/token"
+    discovered = resolve_auth_config(None, lambda: ProfileKey(key=key))
+    # Another client in the same process passes the same key explicitly.
+    explicit = resolve_auth_config(
+        AuthConfig(secret_key=key, token_endpoint=custom), lambda: ProfileKey(key=key)
+    )
+    assert api_key_for_endpoint(explicit, custom) == key
+    assert api_key_for_endpoint(discovered, custom) is None
+    # Giving the discovered config its own key lifts the restriction.
+    assert api_key_for_endpoint(replace(discovered, secret_key=HUMAN), custom) == HUMAN
+    # ARETE_API_KEY keys are not restricted.
+    monkeypatch.setenv("ARETE_API_KEY", AGENT)
+    from_env = resolve_auth_config(None, lambda: ProfileKey(key=key))
+    assert api_key_for_endpoint(from_env, custom) == AGENT
+    # The marker stays out of repr and equality.
+    assert "a4_ak_" not in repr(discovered)
+    assert discovered == AuthConfig(secret_key=key)

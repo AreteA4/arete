@@ -88,7 +88,10 @@ only the spelling changes per language.
      another API URL (`--api-url` / `ARETE_API_URL`) is never sent elsewhere.
      The discovered key is also only ever sent to `https://api.arete.run`
      (https, default port, no userinfo): a token or session endpoint on any
-     other host, such as one named by a stack binding, gets no key.
+     other host, such as one named by a stack binding, gets no key. The
+     restriction is recorded on the resolved auth config (it survives copies
+     made by binding paths and is lifted when that copy gets its own key),
+     never process-wide, so the same key passed explicitly is unaffected.
      If the working directory or the project file cannot be checked (for
      example Deno without read permission for it), no key is used.
      Only secret-class keys (`a4_ak_`, `a4_sk_`, legacy `hsk_`) are accepted.

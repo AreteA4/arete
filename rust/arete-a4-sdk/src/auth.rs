@@ -160,6 +160,18 @@ pub enum TokenTransport {
     Bearer,
 }
 
+/// Where an [`AuthConfig`]'s secret key came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SecretKeySource {
+    /// Passed by the caller (or there is no secret key).
+    #[default]
+    Option,
+    /// [`ARETE_API_KEY_ENV`].
+    Env,
+    /// The active `a4` CLI login; only ever sent to the Arete API.
+    A4Login,
+}
+
 #[derive(Clone, Default)]
 pub struct AuthConfig {
     pub(crate) token: Option<String>,
@@ -167,6 +179,10 @@ pub struct AuthConfig {
     pub(crate) token_endpoint: Option<String>,
     pub(crate) publishable_key: Option<String>,
     pub(crate) secret_key: Option<String>,
+    /// Where `secret_key` came from. Carried through clones, so binding
+    /// paths that copy the resolved config keep the destination restriction
+    /// of an `a4` login key; reset by [`Self::with_secret_key`].
+    pub(crate) secret_key_source: SecretKeySource,
     pub(crate) token_endpoint_headers: HashMap<String, String>,
     pub(crate) token_transport: TokenTransport,
     /// Served stack version named in untargeted session requests. Set by the
@@ -185,6 +201,7 @@ impl fmt::Debug for AuthConfig {
                 &self.publishable_key.as_ref().map(|_| "***"),
             )
             .field("secret_key", &self.secret_key.as_ref().map(|_| "***"))
+            .field("secret_key_source", &self.secret_key_source)
             .field(
                 "token_endpoint_headers",
                 &self.token_endpoint_headers.keys().collect::<Vec<_>>(),
@@ -216,6 +233,13 @@ impl AuthConfig {
     /// supplies it when connecting through the client or session builder.
     pub fn with_secret_key(mut self, secret_key: impl Into<String>) -> Self {
         self.secret_key = Some(secret_key.into());
+        self.secret_key_source = SecretKeySource::Option;
+        self
+    }
+
+    fn with_secret_key_from(mut self, secret_key: String, source: SecretKeySource) -> Self {
+        self = self.with_secret_key(secret_key);
+        self.secret_key_source = source;
         self
     }
 
@@ -241,10 +265,12 @@ impl AuthConfig {
     /// taken from the `a4` login is only sent to the Arete API it was stored
     /// for.
     pub(crate) fn api_key_for(&self, endpoint: &str) -> Option<&str> {
-        self.api_key().filter(|key| {
-            !crate::credentials::is_login_key(key)
-                || crate::credentials::is_login_key_destination(endpoint)
-        })
+        let from_login =
+            self.secret_key.is_some() && self.secret_key_source == SecretKeySource::A4Login;
+        if from_login && !crate::credentials::is_login_key_destination(endpoint) {
+            return None;
+        }
+        self.api_key()
     }
 
     /// Whether the token endpoint headers carry their own `Authorization`.
@@ -521,7 +547,10 @@ pub(crate) fn resolve_auth_config_with_sources(
         .filter(|value| !value.is_empty());
     if let Some(env_key) = env_key {
         if classify_api_key(&env_key) != ApiKeyClass::Publishable {
-            return Ok(Some(auth.unwrap_or_default().with_secret_key(env_key)));
+            return Ok(Some(
+                auth.unwrap_or_default()
+                    .with_secret_key_from(env_key, SecretKeySource::Env),
+            ));
         }
         warn_once(
             &WARNED_PUBLISHABLE_IN_ENV,
@@ -534,10 +563,10 @@ pub(crate) fn resolve_auth_config_with_sources(
     }
 
     match read_profile_key() {
-        Some(profile_key) => {
-            crate::credentials::remember_login_key(&profile_key);
-            Ok(Some(auth.unwrap_or_default().with_secret_key(profile_key)))
-        }
+        Some(profile_key) => Ok(Some(
+            auth.unwrap_or_default()
+                .with_secret_key_from(profile_key, SecretKeySource::A4Login),
+        )),
         None => Ok(auth),
     }
 }
@@ -804,6 +833,44 @@ mod tests {
             explicit.api_key_for("https://evil.example/sessions"),
             Some(SECRET)
         );
+    }
+
+    #[test]
+    fn restriction_follows_the_config_not_the_key_value() {
+        let key = "a4_ak_sharedbetweenclients";
+        let custom = "https://auth.example.com/token";
+        let discovered =
+            resolve_auth_config_with_sources(None, env_with(None), || Some(key.into()))
+                .unwrap()
+                .unwrap();
+        // Another client in the same process passes the same key explicitly.
+        let explicit = resolve_auth_config_with_sources(
+            Some(
+                AuthConfig::default()
+                    .with_secret_key(key)
+                    .with_token_endpoint(custom),
+            ),
+            env_with(None),
+            || Some(key.into()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(explicit.api_key_for(custom), Some(key));
+        assert_eq!(discovered.api_key_for(custom), None);
+        // Giving the discovered config its own key lifts the restriction.
+        assert_eq!(
+            discovered
+                .clone()
+                .with_secret_key(SECRET)
+                .api_key_for(custom),
+            Some(SECRET)
+        );
+        // ARETE_API_KEY keys are not restricted.
+        let from_env =
+            resolve_auth_config_with_sources(None, env_with(Some(AGENT)), || Some(key.into()))
+                .unwrap()
+                .unwrap();
+        assert_eq!(from_env.api_key_for(custom), Some(AGENT));
     }
 
     #[test]

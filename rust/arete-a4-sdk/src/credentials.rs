@@ -19,7 +19,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
@@ -83,26 +82,6 @@ fn project_profile(content: Option<Result<String, std::io::Error>>) -> ProjectPr
 const AMBIGUOUS_PROFILES_PREFIX: &str = "multiple Arete profiles match";
 
 static WARNED_AMBIGUOUS_PROFILE: AtomicBool = AtomicBool::new(false);
-
-/// Keys taken from the `a4` login. Tracked by value so the destination
-/// restriction survives config clones (binding paths copy the resolved
-/// config and swap in their own token endpoint).
-static LOGIN_KEYS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-pub(crate) fn remember_login_key(key: &str) {
-    let mut keys = LOGIN_KEYS.lock().unwrap_or_else(|e| e.into_inner());
-    if !keys.iter().any(|known| known == key) {
-        keys.push(key.to_string());
-    }
-}
-
-pub(crate) fn is_login_key(key: &str) -> bool {
-    LOGIN_KEYS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .any(|known| known == key)
-}
 
 /// True when `url` is on the API the `a4` login key was stored for
 /// ([`DEFAULT_API_URL`]). A login key is never sent anywhere else, such as a

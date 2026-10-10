@@ -27,9 +27,7 @@ import httpx
 
 from arete._a4_profile import (
     ProfileKey,
-    is_login_key,
     is_login_key_destination,
-    remember_login_key,
 )
 from arete._a4_profile import read_profile_key as read_profile_key_default
 from arete.errors import AreteError, AuthError
@@ -326,6 +324,13 @@ class AuthConfig:
     """Agent key (``a4_ak_...``) or secret key (``a4_sk_...``). Server-side
     only; defaults to ``ARETE_API_KEY``, then the active ``a4`` CLI login's
     key, when no auth option is set."""
+    _a4_login_secret_key: Optional[str] = field(
+        default=None, repr=False, compare=False
+    )
+    """Internal: set to ``secret_key`` when the ``a4`` login supplied it. It is
+    copied by ``dataclasses.replace`` (binding paths copy the resolved config)
+    and only applies while ``secret_key`` is still that key. Per config, so
+    the same key passed explicitly elsewhere is unaffected."""
 
     @classmethod
     def from_api_key(cls, api_key: str, **kwargs) -> "AuthConfig":
@@ -451,8 +456,8 @@ def resolve_auth_config(
             f"ARETE_PROFILE (for example `agent`) or {ARETE_API_KEY_ENV}.",
         )
     if profile.key and classify_api_key(profile.key) == "secret":
-        remember_login_key(profile.key)
-        return _with_secret_key(config, profile.key)
+        resolved = _with_secret_key(config, profile.key)
+        return replace(resolved, _a4_login_secret_key=profile.key)
     return config
 
 
@@ -606,10 +611,15 @@ def api_key_for_endpoint(config: Optional[AuthConfig], endpoint: str) -> Optiona
     A key taken from the ``a4`` login is only sent to the Arete API it was
     stored for.
     """
-    key = config.api_key if config is not None else None
-    if key and is_login_key(key) and not is_login_key_destination(endpoint):
+    if config is None:
         return None
-    return key
+    from_login = (
+        config.secret_key is not None
+        and config._a4_login_secret_key == config.secret_key
+    )
+    if from_login and not is_login_key_destination(endpoint):
+        return None
+    return config.api_key
 
 
 async def request_token_from_endpoint(

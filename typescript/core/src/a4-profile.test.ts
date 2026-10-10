@@ -208,6 +208,20 @@ describe('resolveAuthConfig credential chain', () => {
     expect(tokenEndpointApiKey({ secretKey: HUMAN }, 'https://evil.example/s')).toBe(HUMAN);
   });
 
+  it('restricts only the config whose key came from the a4 login', () => {
+    const custom = 'https://auth.example.com/token';
+    const discovered = resolveAuthConfig(undefined, profileKey);
+    // The same key, passed explicitly by another client in the same process.
+    const explicit = resolveAuthConfig({ secretKey: AGENT, tokenEndpoint: custom }, profileKey);
+    expect(tokenEndpointApiKey(explicit, custom)).toBe(AGENT);
+    expect(tokenEndpointApiKey(discovered, custom)).toBeUndefined();
+    // A copy of the discovered config given its own key is no longer restricted.
+    expect(tokenEndpointApiKey({ ...discovered, secretKey: HUMAN }, custom)).toBe(HUMAN);
+    // ARETE_API_KEY keys are not restricted either.
+    vi.stubEnv('ARETE_API_KEY', AGENT);
+    expect(tokenEndpointApiKey(resolveAuthConfig(undefined, profileKey), custom)).toBe(AGENT);
+  });
+
   it('recognises only the Arete API as the login key destination', () => {
     expect(isA4LoginKeyDestination('https://api.arete.run/ws/sessions')).toBe(true);
     for (const url of [
