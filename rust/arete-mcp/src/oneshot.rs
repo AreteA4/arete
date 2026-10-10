@@ -6,8 +6,6 @@
 //! and a subscription across several calls. Nothing it opens outlives the
 //! call.
 
-use std::time::Duration;
-
 use arete_sdk::{
     AreteError, AuthConfig, ConnectionConfig, ConnectionManager, SharedStore, SocketIssue,
     Subscription, SubscriptionQuery,
@@ -27,16 +25,15 @@ pub enum ReadError {
 }
 
 /// Read the entities of `view` (at `key`, when given; at most `take`, when
-/// given) on the stack at `url`, in the view's order, within `timeout`.
+/// given) on the stack at `url`, in the view's order, by `deadline`.
 pub async fn read_view(
     url: String,
     api_key: Option<String>,
     view: &str,
     key: Option<String>,
     take: Option<usize>,
-    timeout: Duration,
-) -> Result<Vec<(String, Value)>, ReadError> {
-    let deadline = Instant::now() + timeout;
+    deadline: Instant,
+) -> Result<Vec<Value>, ReadError> {
     let mut config = ConnectionConfig {
         // A one-shot read reports a dropped connection instead of retrying
         // past its deadline.
@@ -67,7 +64,7 @@ async fn read_on(
     key: Option<String>,
     take: Option<usize>,
     deadline: Instant,
-) -> Result<Vec<(String, Value)>, ReadError> {
+) -> Result<Vec<Value>, ReadError> {
     let mut issues = manager.subscribe_socket_issues();
     let mut query = SubscriptionQuery::new(view);
     query.key = key;
@@ -91,12 +88,9 @@ async fn read_on(
         issue = refusal(&mut issues, &wire_id) => return Err(ReadError::Sdk(AreteError::SocketIssue(Box::new(issue)))),
     }
 
-    let mut entities = Vec::new();
-    for key in store.keys_for_subscription(&wire_id).await {
-        if let Some(value) = store.get_for_subscription::<Value>(&wire_id, &key).await {
-            entities.push((key, value));
-        }
-    }
+    // One read under one store lock, in the view's declared order: live
+    // updates arriving meanwhile cannot drop or reorder rows mid-read.
+    let entities = store.list_for_subscription::<Value>(&wire_id).await;
     drop(lease);
     Ok(entities)
 }

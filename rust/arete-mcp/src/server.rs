@@ -1176,11 +1176,14 @@ impl AreteMcp {
                 .clamp(1, READ_VIEW_TIMEOUT_MAX_SECS) as u64,
         );
 
+        // One deadline covers the stack lookup, the connection and the
+        // snapshot.
+        let deadline = tokio::time::Instant::now() + timeout;
         let url =
             match (args.url, args.stack) {
                 (Some(url), _) if !url.trim().is_empty() => url.trim().to_string(),
                 (_, Some(stack)) if !stack.trim().is_empty() => {
-                    self.stack_websocket_url(&stack).await?
+                    self.stack_websocket_url(&stack, deadline).await?
                 }
                 _ => return Err(McpError::invalid_params(
                     "pass `stack` (a bare reference like `ore`, from `explore_stacks`) or `url` \
@@ -1201,7 +1204,7 @@ impl AreteMcp {
             args.view.trim(),
             args.key.clone(),
             take,
-            timeout,
+            deadline,
         )
         .await
         {
@@ -1224,7 +1227,7 @@ impl AreteMcp {
 
         let total = entities.len();
         let mut matched = Vec::new();
-        for (_, value) in entities {
+        for value in entities {
             if !compiled.is_empty() && !compiled.matches(&value) {
                 continue;
             }
@@ -1861,10 +1864,29 @@ impl AreteMcp {
     }
 
     /// The single WebSocket endpoint the registry serves for `stack`.
-    async fn stack_websocket_url(&self, stack: &str) -> Result<String, McpError> {
-        let body = self
-            .registry_body(self.registry.stack_install(stack.trim()).await)
-            .await?;
+    /// Abandoned at `deadline`.
+    async fn stack_websocket_url(
+        &self,
+        stack: &str,
+        deadline: tokio::time::Instant,
+    ) -> Result<String, McpError> {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let lookup = self
+            .registry
+            .stack_install_within(stack.trim(), Some(remaining));
+        let body = match tokio::time::timeout_at(deadline, lookup).await {
+            Ok(result) => self.registry_body(result).await?,
+            Err(_) => {
+                return Err(McpError::internal_error(
+                    format!(
+                        "timed out after {}s looking up stack `{stack}` in the registry; \
+                         retry, raise `timeout_secs`, or pass `url`",
+                        remaining.as_secs()
+                    ),
+                    None,
+                ))
+            }
+        };
         let descriptor: serde_json::Value = parse_descriptor(Ok(body))?;
         descriptor
             .get("websocketUrl")

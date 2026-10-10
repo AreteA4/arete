@@ -1415,10 +1415,13 @@ pub fn entity_fields(entity: &Value) -> Vec<EntityField> {
 /// [`crate::field_amounts`]) to a registry stack schema response
 /// (`schema.entities[].fields[]`), read from the LiveSpecs of `descriptor`,
 /// the install descriptor the registry serves for the same stack. Entities
-/// are matched by name and fields by path; nothing else changes. Returns
-/// whether any field was annotated.
+/// are matched by name and fields by path; nothing else changes. The schema
+/// names no LiveSpec alias, so when several LiveSpecs define an entity of
+/// the same name, a field is annotated only when every one of them scales
+/// it the same way. Returns whether any field was annotated.
 pub fn annotate_schema_amounts(schema: &mut Value, descriptor: &Value) -> bool {
-    let mut by_entity: BTreeMap<String, BTreeMap<String, FieldAmount>> = BTreeMap::new();
+    // Every definition of each entity name, as its fields' amounts.
+    let mut definitions: BTreeMap<String, Vec<BTreeMap<String, FieldAmount>>> = BTreeMap::new();
     for live in live_specs(descriptor) {
         let artifact = live.get("artifact").unwrap_or(&Value::Null);
         for entity in live_entities(artifact) {
@@ -1429,14 +1432,24 @@ pub fn annotate_schema_amounts(schema: &mut Value, descriptor: &Value) -> bool {
                 .into_iter()
                 .filter_map(|field| Some((field.path, field.amount?)))
                 .collect();
-            if !amounts.is_empty() {
-                by_entity
-                    .entry(name.to_string())
-                    .or_default()
-                    .extend(amounts);
-            }
+            definitions
+                .entry(name.to_string())
+                .or_default()
+                .push(amounts);
         }
     }
+    let by_entity: BTreeMap<String, BTreeMap<String, FieldAmount>> = definitions
+        .into_iter()
+        .map(|(name, mut definitions)| {
+            let mut agreed = definitions.pop().unwrap_or_default();
+            agreed.retain(|path, amount| {
+                definitions
+                    .iter()
+                    .all(|other| other.get(path) == Some(&*amount))
+            });
+            (name, agreed)
+        })
+        .collect();
     let Some(entities) = schema
         .pointer_mut("/schema/entities")
         .and_then(Value::as_array_mut)
@@ -2333,5 +2346,32 @@ mod tests {
             &mut unchanged,
             &json!({"name": "x"})
         ));
+    }
+
+    #[test]
+    fn entities_shared_by_aliases_get_amounts_only_where_they_agree() {
+        let with_decimals = |alias: &str, decimals: u64| {
+            let mut live = amount_descriptor()["liveSpecs"][0].clone();
+            live["alias"] = json!(alias);
+            live["artifact"]["payload"]["entities"][0]["computed_field_specs"][0]["expression"]
+                ["ResolverComputed"]["args"][1] = json!({"Literal": {"value": decimals}});
+            live
+        };
+        let schema = || json!({"schema": {"entities": [{"name": "Pool", "fields": [{"path": "state.total"}]}]}});
+
+        let mut disagree = schema();
+        let descriptor = json!({"liveSpecs": [with_decimals("a", 9), with_decimals("b", 6)]});
+        assert!(!annotate_schema_amounts(&mut disagree, &descriptor));
+        assert!(disagree["schema"]["entities"][0]["fields"][0]
+            .get("amount")
+            .is_none());
+
+        let mut agree = schema();
+        let descriptor = json!({"liveSpecs": [with_decimals("a", 9), with_decimals("b", 9)]});
+        assert!(annotate_schema_amounts(&mut agree, &descriptor));
+        assert_eq!(
+            agree["schema"]["entities"][0]["fields"][0]["amount"]["decimals"],
+            9
+        );
     }
 }
