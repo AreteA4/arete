@@ -1540,9 +1540,9 @@ impl AreteMcp {
         if let Some(key) = &args.key {
             payload["key"] = serde_json::json!(key);
         }
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string(&payload).unwrap_or_default(),
-        )]))
+        // A large view can exceed the tool-result cap; `select` or a
+        // smaller `limit` narrows it.
+        shaped_result(&payload)
     }
 
     #[tool(description = "Subscribe to a Arete view on an existing connection. \
@@ -1924,7 +1924,7 @@ fn bounded_result(text: String) -> Result<CallToolResult, McpError> {
         return Err(McpError::internal_error(
             format!(
                 "shaped response is {} bytes, over the {MAX_RESPONSE_BYTES} byte limit for a single \
-                 tool result. Narrow it (fewer `views`, `sections` or `fields`, a smaller `limit`, \
+                 tool result. Narrow it (fewer `views`, `sections` or `fields`, a `select`, a smaller `limit`, \
                  or no `full`), or use `a4 explore` on the command line.",
                 text.len()
             ),
