@@ -1107,7 +1107,8 @@ fn install_loaded_project(
             plan.outputs
                 .iter()
                 .filter(|output| output.target == InstallTarget::TypeScript),
-        ),
+        )
+        .with_fields_commands(&manifest),
         notes: redeploy_notes(&manifest, previous_lock.as_ref(), &prospective_lock)
             .into_iter()
             .chain(composition_notes(&resolved))
@@ -1318,14 +1319,23 @@ struct TypeScriptAppGuidance {
 
 /// How to make `directory`, which has no `package.json`, a Node ES module
 /// project with the packages and `tsconfig.json` the generated code needs:
-/// `command` does all of it, `commands` are the same steps by hand.
+/// `command` does all of it, `commands` are the same steps by hand. Neither
+/// runs unless asked: the user may set the project up their own way.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectSetup {
     directory: String,
+    /// What the generated TypeScript needs that `directory` lacks:
+    /// `package.json`, the runtime packages, `"type": "module"`, and
+    /// `tsconfig.json` when none is at or above it.
+    missing: Vec<String>,
+    /// When to use which: the user's own setup first.
+    note: &'static str,
     command: &'static str,
     commands: Vec<String>,
 }
+
+const PROJECT_SETUP_NOTE: &str = "If the user has a preferred setup (package manager such as pnpm or bun, a workspace, their own tsconfig), follow it. Otherwise run `command` (npm), or `commands` in order.";
 
 /// A `tsconfig.json` that loads Node's types (`compilerOptions.types`
 /// includes `"node"`): the commands that create one in `directory`, or the
@@ -1372,6 +1382,32 @@ impl TypeScriptGuidance {
         }
     }
 
+    /// Point each registry stack's usage at the command that lists its
+    /// view's fields with their units.
+    fn with_fields_commands(mut self, manifest: &ProjectManifest) -> Self {
+        for usage in self
+            .typescript_apps
+            .iter_mut()
+            .flat_map(|app| app.usage.iter_mut())
+        {
+            let registry = match manifest.document.dependencies.stacks.get(&usage.stack) {
+                Some(DependencyV1 {
+                    source: DependencySourceV1::Registry(RegistrySourceV1 { registry }),
+                    ..
+                }) => registry,
+                _ => continue,
+            };
+            if let Some(view) = &usage.view {
+                usage.fields = Some(format!(
+                    "a4 explore stack {} --views {}",
+                    shell_quoted(registry),
+                    shell_quoted(view)
+                ));
+            }
+        }
+        self
+    }
+
     /// Whether every app still needs a `package.json`: its setup block then
     /// carries the runtime install line.
     fn every_app_needs_setup(&self) -> bool {
@@ -1390,12 +1426,19 @@ impl TypeScriptGuidance {
         {
             let directory = display_path(&setup.directory);
             println!(
-                "Setup:       no package.json found in {directory}, so nothing declares the packages the generated TypeScript (ES modules) needs. Make it a Node TypeScript project with:"
+                "Setup:       {directory} has no package.json. The generated TypeScript (ES modules) needs: {}.",
+                setup.missing.join(", ")
             );
-            println!("             {}", setup.command);
-            println!("             or by hand, in {directory}:");
-            for command in &setup.commands {
-                println!("             {command}");
+            println!(
+                "             If the user has a preferred setup (pnpm, bun, a workspace, their own tsconfig), follow it. Otherwise either:"
+            );
+            println!(
+                "             - run `{}` (npm: writes package.json and tsconfig.json, installs the packages), or",
+                setup.command
+            );
+            println!("             - run these in order, in {directory}:");
+            for (step, command) in setup.commands.iter().enumerate() {
+                println!("               {}. {command}", step + 1);
             }
         }
     }
@@ -1439,7 +1482,7 @@ impl TypeScriptAppGuidance {
                 commands: Vec::new(),
             })
         } else if runtime::nearest_tsconfig(first).is_none() {
-            let mut commands = vec!["npx tsc --init --types node".to_string()];
+            let mut commands = vec![typescript_setup::TSC_INIT_COMMAND.to_string()];
             // `tsc --init` compiles Node ES modules: in a CommonJS package it
             // rejects every import.
             if package_json.is_some_and(|package_json| !is_module_package(package_json)) {
@@ -1455,23 +1498,24 @@ impl TypeScriptAppGuidance {
             None
         };
         // Everything a directory with no package.json needs, in the order it
-        // works: an ES module package, its packages, then a tsconfig.json.
+        // works: the steps `--setup` takes.
         let project_setup = package_json.is_none().then(|| {
-            let mut commands = vec![
-                "npm init -y".to_string(),
-                "npm pkg set type=module".to_string(),
-                runtime::npm_install_command(&runtime::typescript_runtime_set(&declared)),
-            ];
-            if !dev_runtime.is_empty() {
-                commands.push(runtime::npm_install_dev_command(&dev_runtime));
-            }
-            if let Some(tsconfig) = &tsconfig {
-                commands.extend(tsconfig.commands.iter().cloned());
+            let runtime = runtime::typescript_runtime_set(&declared);
+            let needs_tsconfig = tsconfig
+                .as_ref()
+                .is_some_and(|tsconfig| tsconfig.tsconfig.is_none());
+            let mut missing = vec!["package.json".to_string()];
+            missing.extend(runtime.iter().map(|package| package.package.clone()));
+            missing.push(r#""type": "module""#.to_string());
+            if needs_tsconfig {
+                missing.push("tsconfig.json".to_string());
             }
             ProjectSetup {
                 directory: directory.display().to_string(),
+                missing,
+                note: PROJECT_SETUP_NOTE,
                 command: typescript_setup::SETUP_COMMAND,
-                commands,
+                commands: typescript_setup::manual_commands(&runtime, &dev_runtime, needs_tsconfig),
             }
         });
         let usage = outputs
@@ -1527,15 +1571,19 @@ impl TypeScriptAppGuidance {
             }
         }
         for usage in &self.usage {
-            let file = if usage.run.is_some() {
-                format!(
-                    "{}/index.ts",
+            if usage.run.is_some() {
+                println!(
+                    "Next steps:  read stack {} once from {}/index.ts:",
+                    usage.stack,
                     display_path(&usage.from_dir).trim_end_matches('/')
-                )
+                );
             } else {
-                format!("a component in {}", display_path(&usage.from_dir))
-            };
-            println!("Next steps:  use stack {} from {file}:", usage.stack);
+                println!(
+                    "Next steps:  use stack {} from a component in {}:",
+                    usage.stack,
+                    display_path(&usage.from_dir)
+                );
+            }
             for line in &usage.snippet {
                 if line.is_empty() {
                     println!();
@@ -1545,6 +1593,29 @@ impl TypeScriptAppGuidance {
             }
             if let Some(run) = &usage.run {
                 println!("             Run it with: {run}");
+            }
+            if let Some(stream) = &usage.stream {
+                println!("             To stream instead: {stream} (.watch() for raw updates)");
+            }
+            if let Some(fields) = &usage.fields {
+                println!("             Fields and units: {fields}");
+            }
+            if let Some(reads_call) = &usage.reads_call {
+                println!("Stack reads: derived values in one call, as {reads_call}:");
+                let width = usage
+                    .reads
+                    .iter()
+                    .map(|read| read.signature().len())
+                    .max()
+                    .unwrap_or(0);
+                for read in &usage.reads {
+                    match &read.title {
+                        Some(title) => {
+                            println!("             {:width$}  {title}", read.signature())
+                        }
+                        None => println!("             {}", read.signature()),
+                    }
+                }
             }
         }
     }
@@ -1803,6 +1874,10 @@ impl InstallReport {
         for shared in &self.shared {
             println!("{}", describe_shared(shared));
         }
+        // What to do next comes last, where `tail` shows it.
+        for auth in &self.auth {
+            print_auth_requirements(auth);
+        }
         if let Some(setup) = &self.setup {
             setup.emit(&display_path(&setup.directory));
         }
@@ -1826,9 +1901,6 @@ impl InstallReport {
         self.typescript.emit_tools();
         for note in &self.notes {
             println!("{note}");
-        }
-        for auth in &self.auth {
-            print_auth_requirements(auth);
         }
         for warning in &self.warnings {
             crate::ui::print_warning(warning);
@@ -4200,8 +4272,24 @@ mod tests {
             serde_json::json!(["typescript", "tsx", "@types/node"])
         );
         assert_eq!(app["kind"], "node");
-        // One known-good sequence: an ES module package, the runtime, the dev
-        // tools, then a tsconfig.json that loads Node's types.
+        // What is missing, the one command, and the same steps by hand in
+        // the order that works from an empty directory: an ES module
+        // package, the runtime, the dev tools, then a tsconfig.json that
+        // loads Node's types.
+        assert_eq!(
+            app["projectSetup"]["missing"],
+            serde_json::json!([
+                "package.json",
+                "@usearete/sdk",
+                "zod",
+                r#""type": "module""#,
+                "tsconfig.json"
+            ])
+        );
+        assert!(app["projectSetup"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("preferred setup"));
         assert_eq!(app["projectSetup"]["command"], "a4 install --setup");
         assert_eq!(
             app["projectSetup"]["commands"],
@@ -4210,7 +4298,7 @@ mod tests {
                 "npm pkg set type=module",
                 runtime::npm_install_command(&runtime::typescript_runtime_set(&BTreeSet::new())),
                 "npm install -D typescript tsx @types/node",
-                "npx tsc --init --types node",
+                typescript_setup::TSC_INIT_COMMAND,
             ])
         );
         assert_eq!(
@@ -4220,7 +4308,7 @@ mod tests {
         // The new package is already ES modules: tsc --init alone.
         assert_eq!(
             app["tsconfig"]["commands"],
-            serde_json::json!(["npx tsc --init --types node"])
+            serde_json::json!([typescript_setup::TSC_INIT_COMMAND])
         );
         assert!(app["tsconfig"].get("tsconfig").is_none());
         let usage = &app["usage"][0];
@@ -4232,6 +4320,8 @@ mod tests {
         );
         assert_eq!(usage["view"], "Vault/list");
         assert_eq!(usage["run"], "npx tsx index.ts");
+        // The fields command needs the registry name, which the manifest has.
+        assert!(usage.get("fields").is_none(), "{usage}");
         // A Node script imports the SDK, whatever `[sdk.typescript].package`
         // says, and authenticates with a server-side key, never a
         // publishable one.
@@ -4245,6 +4335,24 @@ mod tests {
         assert!(
             !usage["snippet"].to_string().contains("ublishable"),
             "{usage}"
+        );
+    }
+
+    #[test]
+    fn registry_stack_usage_names_the_command_that_lists_field_units() {
+        let (temp, output) = typescript_stack_project();
+        let root = temp.path();
+        fs::write(
+            root.join("arete.toml"),
+            "manifest_version = 1\n\n[project]\nname = \"app\"\n\n[dependencies.stacks.vault]\nsource = { registry = \"acme/vault\" }\nversion = \"^1\"\n",
+        )
+        .unwrap();
+        let manifest = ProjectManifest::load(root.join("arete.toml")).unwrap();
+        let guidance =
+            TypeScriptGuidance::for_outputs(root, [&output]).with_fields_commands(&manifest);
+        assert_eq!(
+            guidance.typescript_apps[0].usage[0].fields.as_deref(),
+            Some("a4 explore stack acme/vault --views Vault/list")
         );
     }
 
@@ -4268,7 +4376,10 @@ mod tests {
         );
         assert_eq!(
             value["tsconfig"]["commands"],
-            serde_json::json!(["npx tsc --init --types node", "npm pkg set type=module"])
+            serde_json::json!([
+                typescript_setup::TSC_INIT_COMMAND,
+                "npm pkg set type=module"
+            ])
         );
 
         // A tsconfig.json that hides Node's types is named, not recreated.
@@ -4372,7 +4483,7 @@ mod tests {
         );
         assert_eq!(
             server_app["tsconfig"]["commands"],
-            serde_json::json!(["npx tsc --init --types node"])
+            serde_json::json!([typescript_setup::TSC_INIT_COMMAND])
         );
         assert_eq!(server_app["usage"][0]["stack"], "vault");
         assert_eq!(server_app["usage"][0]["run"], "npx tsx index.ts");

@@ -319,9 +319,11 @@ enum Commands {
         #[arg(long)]
         exact: bool,
 
-        /// When TypeScript output has no package.json, create an ES module
-        /// package.json and a tsconfig.json (existing files are kept) and npm
-        /// install the runtime and dev tools
+        /// When TypeScript output has no package.json, make it a Node
+        /// TypeScript project with npm: create an ES module package.json and a
+        /// tsconfig.json (existing files are kept) and npm install the runtime
+        /// and dev tools. Without --setup, a4 changes no project files and
+        /// prints what is missing with the steps to set it up your own way
         #[arg(long, conflicts_with_all = ["no_save", "dry_run"])]
         setup: bool,
     },

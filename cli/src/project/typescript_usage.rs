@@ -1,6 +1,6 @@
 //! The first lines of code after `a4 install stack <package> --ts`: importing
-//! the generated stack and subscribing to one of its views, spelled from the
-//! files that were generated.
+//! the generated stack and reading one of its views once, spelled from the
+//! files that were generated, and the reads its stack extension adds.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -24,7 +24,7 @@ pub struct StackUsage {
     /// The directory the snippet's file lives in: the app's `package.json`
     /// directory.
     pub from_dir: String,
-    /// The list view the snippet subscribes to, e.g. `Round/list`.
+    /// The list view the snippet reads, e.g. `Round/latest`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub view: Option<String>,
     /// How the snippet authenticates.
@@ -34,6 +34,41 @@ pub struct StackUsage {
     /// How to run the snippet, when Node runs it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
+    /// How to stream the view's merged rows instead of reading it once
+    /// (`.watch()` streams the raw updates).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<String>,
+    /// The command that lists the view's fields with their units, for a
+    /// registry stack.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<String>,
+    /// How the stack extension's reads are called, e.g.
+    /// `await session.stacks.ore.read.<name>(...)`, when it has any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reads_call: Option<String>,
+    /// The stack extension's reads: derived values that combine views,
+    /// program accounts and chain state in one call.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<StackRead>,
+}
+
+/// One read a stack extension adds, e.g. ORE's `currentRound()`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StackRead {
+    pub name: String,
+    /// Parameter names, an optional one ending in `?`.
+    pub params: Vec<String>,
+    /// The read's `@title`, else the first sentence of its doc comment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+impl StackRead {
+    /// `currentRound()`, `roundState(roundId)`.
+    pub fn signature(&self) -> String {
+        format!("{}({})", self.name, self.params.join(", "))
+    }
 }
 
 /// The key a snippet authenticates with: a server-side key the SDK finds by
@@ -157,7 +192,10 @@ pub fn stack_usage(
     let export = &generated.export_name;
     let view = generated.list_view.as_ref();
     let auth = app.auth(app_dir_from_current(from_dir));
+    // The session key: the alias, when it is an identifier.
+    let key = if is_identifier(alias) { alias } else { "app" };
     let mut snippet = Vec::new();
+    let mut stream = None;
     let run = match app {
         AppKind::Browser(framework) => {
             if framework == Framework::NextJs {
@@ -218,21 +256,32 @@ pub fn stack_usage(
                 "// No auth option: server-side, the SDK uses {SERVER_KEY_ENV} if set, else your a4 login."
             ));
             snippet.push(format!(
-                "const session = await createSession({{ stacks: {{ app: {export} }} }});"
+                "const session = await createSession({{ stacks: {{ {key}: {export} }} }});"
             ));
+            // One read that ends: the script exits once the session closes.
             if let Some(view) = view {
                 snippet.push(format!(
-                    "for await (const update of session.stacks.app.views{}.watch({{ take: 20 }})) {{",
+                    "const row = await session.stacks.{key}.views{}.getOne({{ timeoutMs: 10_000 }});",
                     view.access
                 ));
-                snippet.push("  console.log(update);".to_string());
-                snippet.push("}".to_string());
+                snippet.push("console.log(row);".to_string());
+                stream = Some(format!(
+                    "for await (const row of session.stacks.{key}.views{}.use()) {{ ... }}",
+                    view.access
+                ));
             } else {
-                snippet.push("console.log(Object.keys(session.stacks.app.views));".to_string());
+                snippet.push(format!(
+                    "console.log(Object.keys(session.stacks.{key}.views));"
+                ));
             }
+            snippet.push("session.close();".to_string());
             Some(format!("npx tsx {NODE_ENTRY}"))
         }
     };
+    let reads_call = (!generated.reads.is_empty()).then(|| match app {
+        AppKind::Node => format!("await session.stacks.{key}.read.<name>(...)"),
+        AppKind::Browser(_) => "arete.read.<name>.use(...)".to_string(),
+    });
     Some(StackUsage {
         stack: alias.to_string(),
         export_name: generated.export_name.clone(),
@@ -242,7 +291,21 @@ pub fn stack_usage(
         auth,
         snippet,
         run,
+        stream,
+        fields: None,
+        reads_call,
+        reads: generated.reads,
     })
+}
+
+/// Whether `name` can be written as `a.name` and `{ name: ... }`.
+fn is_identifier(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_' || first == '$')
+        && characters
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '$'))
 }
 
 /// What a generated stack exports, read from its files.
@@ -251,6 +314,7 @@ struct GeneratedStack {
     entry: PathBuf,
     export_name: String,
     list_view: Option<ListView>,
+    reads: Vec<StackRead>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -293,15 +357,22 @@ impl GeneratedStack {
             .iter()
             .find_map(|(_, text)| text.find(&core_marker).map(|at| &text[at..]))
             .and_then(first_list_view);
+        let reads = extension_entry(&directory)
+            .and_then(|entry| fs::read_to_string(entry).ok())
+            .map(|text| stack_reads(&text))
+            .unwrap_or_default();
         Some(Self {
             entry,
             export_name,
             list_view,
+            reads,
         })
     }
 }
 
-/// The first list view in a generated stack definition's `views` block.
+/// The list view a one-shot read starts from in a generated stack
+/// definition's `views` block: the first `latest` view, else the first list
+/// view.
 fn first_list_view(definition: &str) -> Option<ListView> {
     let entity_line = Regex::new(r"^ {4}(.+): \{$").expect("entity regex should compile");
     let list_line = Regex::new(r"^ {6}(\w+): listView<[^>]*>\('([^']+)'\)")
@@ -309,6 +380,7 @@ fn first_list_view(definition: &str) -> Option<ListView> {
     let mut lines = definition.lines().skip_while(|line| *line != "  views: {");
     lines.next()?;
     let mut entity: Option<String> = None;
+    let mut first = None;
     for line in lines {
         if line.starts_with("  }") {
             break;
@@ -318,13 +390,156 @@ fn first_list_view(definition: &str) -> Option<ListView> {
             continue;
         }
         if let (Some(entity), Some(captures)) = (&entity, list_line.captures(line)) {
-            return Some(ListView {
+            let view = ListView {
                 access: format!("{}.{}", member(entity), &captures[1]),
                 path: captures[2].to_string(),
-            });
+            };
+            if &captures[1] == "latest" {
+                return Some(view);
+            }
+            first.get_or_insert(view);
         }
     }
-    None
+    first
+}
+
+/// The stack extension entry beside a generated stack, named by its
+/// `extensions.json`.
+fn extension_entry(directory: &Path) -> Option<PathBuf> {
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("extensions.json")).ok()?).ok()?;
+    let entry = manifest.get("entry")?.as_str()?;
+    let path = directory.join(entry);
+    path.is_file().then_some(path)
+}
+
+/// The reads a stack extension declares in its `readArgCounts`, with the
+/// parameters and title of the function that implements each.
+fn stack_reads(extension: &str) -> Vec<StackRead> {
+    let count_line = Regex::new(r"^\s*([A-Za-z_$][\w$]*)\s*:\s*(\d+|\[[^\]]*\])")
+        .expect("read count regex should compile");
+    let mut lines = extension
+        .lines()
+        .skip_while(|line| line.trim() != "readArgCounts: {");
+    if lines.next().is_none() {
+        return Vec::new();
+    }
+    let mut reads = Vec::new();
+    for line in lines {
+        if line.trim_start().starts_with('}') {
+            break;
+        }
+        let Some(captures) = count_line.captures(line) else {
+            continue;
+        };
+        let name = captures[1].to_string();
+        // An array lists the argument counts a read accepts.
+        let count = captures[2]
+            .trim_matches(|c| c == '[' || c == ']')
+            .split(',')
+            .filter_map(|count| count.trim().parse::<usize>().ok())
+            .max()
+            .unwrap_or(0);
+        let (params, title) = read_function(extension, &name);
+        let params = params.unwrap_or_else(|| (1..=count).map(|n| format!("arg{n}")).collect());
+        reads.push(StackRead {
+            name,
+            params,
+            title,
+        });
+    }
+    reads
+}
+
+/// The parameter names of `function <name>(...)` in `extension`, and the
+/// title of the doc comment right before it.
+fn read_function(extension: &str, name: &str) -> (Option<Vec<String>>, Option<String>) {
+    let function = Regex::new(&format!(
+        r"(?:async\s+)?function\s+{}\s*\(([^)]*)\)",
+        regex::escape(name)
+    ))
+    .expect("read function regex should compile");
+    let Some(captures) = function.captures(extension) else {
+        return (None, None);
+    };
+    let params = split_top_level(&captures[1])
+        .into_iter()
+        .enumerate()
+        .map(|(index, param)| param_name(&param, index))
+        .collect();
+    let before = extension[..captures.get(0).map_or(0, |found| found.start())].trim_end();
+    let title = before
+        .strip_suffix("*/")
+        .and_then(|before| before.rfind("/**").map(|at| &before[at + 3..]))
+        .and_then(doc_title);
+    (Some(params), title)
+}
+
+/// A doc comment's `@title`, else its first sentence when that is short.
+fn doc_title(comment: &str) -> Option<String> {
+    let lines = comment
+        .lines()
+        .map(|line| line.trim().trim_start_matches('*').trim())
+        .collect::<Vec<_>>();
+    if let Some(title) = lines.iter().find_map(|line| line.strip_prefix("@title ")) {
+        return Some(title.trim().to_string());
+    }
+    let description = lines
+        .iter()
+        .take_while(|line| !line.starts_with('@'))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let sentence = description.split(". ").next()?.trim().trim_end_matches('.');
+    (!sentence.is_empty() && sentence.len() <= 80).then(|| sentence.to_string())
+}
+
+/// `params` split at commas outside brackets.
+fn split_top_level(params: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut current = String::new();
+    for character in params.chars() {
+        match character {
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' | '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(std::mem::take(&mut current));
+                continue;
+            }
+            _ => {}
+        }
+        current.push(character);
+    }
+    parts.push(current);
+    parts
+        .into_iter()
+        .map(|part| part.trim().to_string())
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+/// A parameter's name, `?` marking an optional one; `input` for a
+/// destructured object, `args` for a destructured array.
+fn param_name(param: &str, index: usize) -> String {
+    let param = param.trim_start_matches("...");
+    let name = param.split([':', '=']).next().unwrap_or_default().trim();
+    let optional = name.ends_with('?') || param.contains(" = ");
+    let name = name.trim_end_matches('?');
+    let name = if is_identifier(name) {
+        name.to_string()
+    } else if name.starts_with('{') {
+        "input".to_string()
+    } else if name.starts_with('[') {
+        "args".to_string()
+    } else {
+        format!("arg{}", index + 1)
+    };
+    if optional {
+        format!("{name}?")
+    } else {
+        name
+    }
 }
 
 /// A property access for an object key as the generator writes it.
@@ -400,6 +615,8 @@ mod tests {
                 path: "Vault/list".into(),
             })
         );
+        // Its stack extension adds defaults, no reads.
+        assert_eq!(generated.reads, Vec::new());
     }
 
     #[test]
@@ -430,18 +647,115 @@ mod tests {
                 directory: None,
             }
         );
+        // One read that ends, then the stream as an alternative.
         assert_eq!(
             usage.snippet.join("\n"),
             r#"import { createSession } from "@usearete/sdk";
 import { VAULT_STREAM_STACK } from "./stacks/vault/vault.js";
 
 // No auth option: server-side, the SDK uses ARETE_API_KEY if set, else your a4 login.
-const session = await createSession({ stacks: { app: VAULT_STREAM_STACK } });
-for await (const update of session.stacks.app.views.Vault.list.watch({ take: 20 })) {
-  console.log(update);
-}"#
+const session = await createSession({ stacks: { vault: VAULT_STREAM_STACK } });
+const row = await session.stacks.vault.views.Vault.list.getOne({ timeoutMs: 10_000 });
+console.log(row);
+session.close();"#
+        );
+        assert_eq!(
+            usage.stream.as_deref(),
+            Some("for await (const row of session.stacks.vault.views.Vault.list.use()) { ... }")
         );
         assert!(!usage.snippet.join("\n").contains("publishable"));
+        assert_eq!((usage.reads_call, usage.reads), (None, Vec::new()));
+        // An alias that is not an identifier keys the session as `app`.
+        let usage = stack_usage("vault-v2", &output, &app, AppKind::Node).unwrap();
+        assert!(usage.snippet[4].contains("{ app: VAULT_STREAM_STACK }"));
+        assert!(usage.snippet[5].starts_with("const row = await session.stacks.app."));
+    }
+
+    #[test]
+    fn node_usage_lists_the_stack_extension_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("stacks/ore");
+        let golden = golden("installed-typescript/stacks/vault");
+        fs::create_dir_all(&output).unwrap();
+        for file in ["vault.ts", "vault-core.ts"] {
+            fs::copy(golden.join(file), output.join(file)).unwrap();
+        }
+        fs::write(
+            output.join("extensions.json"),
+            r#"{"entry":"ore-stack-extensions.ts","files":["ore-stack-extensions.ts"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            output.join("ore-stack-extensions.ts"),
+            r#"export default defineStackExtensions<typeof CORE>()({
+  readArgCounts: {
+    roundState: 1,
+    currentRound: 0,
+    claimPreview: [1, 2],
+    quote: 1,
+  },
+  createRead(client) {
+    /**
+     * Reads the round entity for a round id.
+     *
+     * @title Round state
+     */
+    async function roundState(roundId: bigint) {
+      return client.views.OreRound.state.get({ roundId });
+    }
+
+    /** The current round, with its phase. */
+    async function currentRound() {
+      return null;
+    }
+
+    async function claimPreview(
+      authority: Address,
+      bps: bigint | number = BPS_DENOMINATOR,
+    ) {
+      return null;
+    }
+
+    return { roundState, currentRound, claimPreview, quote: (input) => input };
+  },
+});
+"#,
+        )
+        .unwrap();
+        let usage = stack_usage("ore", &output, temp.path(), AppKind::Node).unwrap();
+        assert_eq!(
+            usage.reads_call.as_deref(),
+            Some("await session.stacks.ore.read.<name>(...)")
+        );
+        let reads = usage
+            .reads
+            .iter()
+            .map(|read| (read.signature(), read.title.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reads,
+            vec![
+                ("roundState(roundId)".to_string(), Some("Round state")),
+                (
+                    "currentRound()".to_string(),
+                    Some("The current round, with its phase")
+                ),
+                ("claimPreview(authority, bps?)".to_string(), None),
+                // No function to read parameters from: the count names them.
+                ("quote(arg1)".to_string(), None),
+            ]
+        );
+        let browser = stack_usage(
+            "ore",
+            &output,
+            temp.path(),
+            AppKind::Browser(Framework::Vite),
+        )
+        .unwrap();
+        assert_eq!(
+            browser.reads_call.as_deref(),
+            Some("arete.read.<name>.use(...)")
+        );
     }
 
     #[test]
@@ -529,6 +843,18 @@ function Rows() {
         assert_eq!(auth.directory.as_deref(), Some("apps/-web"));
         let node = AppKind::Node.auth(Some("apps/-web".into()));
         assert_eq!((node.command, node.directory), (None, None));
+    }
+
+    #[test]
+    fn a_latest_view_is_read_before_the_first_list_view() {
+        let definition = "export const X_STACK_CORE = {\n  views: {\n    Round: {\n      list: listView<Round>('Round/list'),\n      latest: listView<Round>('Round/latest'),\n    },\n  },\n};\n";
+        assert_eq!(
+            first_list_view(definition),
+            Some(ListView {
+                access: ".Round.latest".into(),
+                path: "Round/latest".into(),
+            })
+        );
     }
 
     #[test]

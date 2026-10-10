@@ -1280,30 +1280,45 @@ or runs a package manager; run the line with the package manager you use. In
 `{ "package", "version" }` pair.
 
 The summary also lists what the project still needs to type-check and run the
-generated code, and how to start using it. Without `--setup`, `a4` prints these
-steps; it never creates `package.json` or `tsconfig.json`. In a directory with
-no `package.json`, they come as one block that works in order:
+generated code, and how to start using it, after the auth requirements so it
+ends the output. Without `--setup`, `a4` prints these steps; it never creates
+`package.json` or `tsconfig.json`, so you can set the project up your own way
+(another package manager, a workspace, your own `tsconfig.json`). In a
+directory with no `package.json`, they come as one block: what is missing,
+the one command that sets it up with npm, and the same steps by hand,
+numbered, in the order that works from an empty directory:
 
 ```text
-Setup:       no package.json found in ., so nothing declares the packages the generated TypeScript (ES modules) needs. Make it a Node TypeScript project with:
-             a4 install --setup
-             or by hand, in .:
-             npm init -y
-             npm pkg set type=module
-             npm install @usearete/sdk@0.33.0 "zod@^3.24.1"
-             npm install -D typescript tsx @types/node
-             npx tsc --init --types node
-Next steps:  use stack ore from ./index.ts:
+Setup:       . has no package.json. The generated TypeScript (ES modules) needs: package.json, @usearete/sdk, zod, "type": "module", tsconfig.json.
+             If the user has a preferred setup (pnpm, bun, a workspace, their own tsconfig), follow it. Otherwise either:
+             - run `a4 install --setup` (npm: writes package.json and tsconfig.json, installs the packages), or
+             - run these in order, in .:
+               1. npm init -y
+               2. npm pkg set type=module
+               3. npm install @usearete/sdk@0.34.0 "zod@^3.24.1"
+               4. npm install -D typescript tsx @types/node
+               5. npx tsc --init --module nodenext --target es2022 --types node
+Next steps:  read stack ore once from ./index.ts:
              import { createSession } from "@usearete/sdk";
              import { ORE_STREAM_STACK } from "./generated/typescript/stacks/ore/ore.js";
 
              // No auth option: server-side, the SDK uses ARETE_API_KEY if set, else your a4 login.
-             const session = await createSession({ stacks: { app: ORE_STREAM_STACK } });
-             for await (const update of session.stacks.app.views.OreRound.list.watch({ take: 20 })) {
-               console.log(update);
-             }
+             const session = await createSession({ stacks: { ore: ORE_STREAM_STACK } });
+             const row = await session.stacks.ore.views.OreRound.latest.getOne({ timeoutMs: 10_000 });
+             console.log(row);
+             session.close();
              Run it with: npx tsx index.ts
+             To stream instead: for await (const row of session.stacks.ore.views.OreRound.latest.use()) { ... } (.watch() for raw updates)
+             Fields and units: a4 explore stack ore --views OreRound/latest
+Stack reads: derived values in one call, as await session.stacks.ore.read.<name>(...):
+             boardState()              Board state
+             roundState(roundId)       Round state
+             currentRound()            Current round
+             miningContext(authority)  Mining context
 ```
+
+`a4 install --setup` re-runs the install from `arete.toml`, so it keeps the
+options the stack was added with.
 
 `--setup` (on `a4 install` or a package add such as
 `a4 install stack ore --ts --setup`) does those steps itself when a TypeScript
@@ -1313,7 +1328,7 @@ root it writes a private `package.json` with
 `"type": "module"` and `start` (`tsx index.ts`) and `typecheck`
 (`tsc --noEmit`) scripts, writes a `tsconfig.json` for Node ES modules
 (`module`/`moduleResolution` `NodeNext`, `target` `ES2022`, `strict`,
-`types: ["node"]`; `include` covers the root's own `.ts` files, the
+`types: ["node"]`; `include` covers the root's own `.ts` files, `src/`, the
 `[sdk.typescript]` output directory (so stacks installed later are checked
 too) and any outputs configured elsewhere, so other apps beneath the root are
 not checked as Node code) unless one is at or above the root, then runs
@@ -1323,7 +1338,7 @@ for an app that already has a `package.json`. The summary reports what it did:
 
 ```text
 Setup:       created package.json, tsconfig.json in .
-Setup:       ran npm install @usearete/sdk@0.33.0 zod@^3.24.1
+Setup:       ran npm install @usearete/sdk@0.34.0 zod@^3.24.1
 Setup:       ran npm install -D typescript tsx @types/node
 ```
 
@@ -1338,9 +1353,12 @@ its nearest `package.json` (or the project root when there is none), so a
 project whose outputs land in separate Node and React apps gets separate
 advice for each.
 
-- `Setup` appears when no `package.json` is at or above an output, with
-  `a4 install --setup` and the same steps by hand. The generated code is ES
-  modules, so the new package is set to `"type": "module"`. The separate
+- `Setup` appears when no `package.json` is at or above an output. It names
+  what is missing, then gives `a4 install --setup` and the same steps by hand
+  (`npm init -y` comes first: `npm pkg set` needs a `package.json`). The
+  generated code is ES modules, so the new package is set to
+  `"type": "module"`, and the `tsc --init` step sets the options the generated
+  code depends on, as `--setup` writes them. The separate
   `Runtime`, `Dev tools` and `Tsconfig` lines are then left out, as the block
   covers them, except the `Tsconfig` line for an existing `tsconfig.json` that
   hides Node's types.
@@ -1348,14 +1366,20 @@ advice for each.
   not declare yet: `typescript`, plus `tsx` and `@types/node` for a Node app
   (one that does not depend on `react`).
 - `Tsconfig` appears for a Node app with no `tsconfig.json` (create one with
-  `tsc --init --types node`, plus `npm pkg set type=module` for a CommonJS
-  package), or with one whose `compilerOptions.types` omits `"node"`.
+  `tsc --init --module nodenext --target es2022 --types node`, plus
+  `npm pkg set type=module` for a CommonJS package), or with one whose
+  `compilerOptions.types` omits `"node"`.
   `tsc --init` writes `"types": []`, which hides `@types/node` and makes `tsc`
   report `process` and `Buffer` as unknown (TS2591).
 - `Next steps` shows, for each stack, the generated export, its import path
-  from the app's `package.json` directory, and a subscription to its first list
-  view. A Node app (one that does not depend on `react`) gets a script that
-  imports `createSession` from `@usearete/sdk` and passes no auth option:
+  from the app's `package.json` directory, and a read of one of its list views
+  (a `latest` view when the stack has one, else the first). A Node app (one
+  that does not depend on `react`) gets a script that reads the view once with
+  `getOne({ timeoutMs })`, prints the row and closes the session, so it exits;
+  the `use()` loop that streams the view instead follows it, and, for a
+  registry stack, the `a4 explore stack` command that lists the view's fields
+  with their units. The script imports `createSession` from `@usearete/sdk`
+  and passes no auth option:
   outside browsers the SDK uses an agent or secret key from `ARETE_API_KEY`
   when it is set, else the key of the `a4` login, so after `a4 init` or
   `a4 auth signup` the script needs no key setup.
@@ -1369,17 +1393,24 @@ advice for each.
   command that creates it. That command picks the variable name from, and
   writes the env file in, the directory it runs in, so when the app is not the
   current directory the snippet says which directory to run it in.
+- `Stack reads` lists the reads a stack's extension adds (ORE's
+  `currentRound()`, for example), with their parameters and titles: derived
+  values that combine views, program accounts and chain state in one call.
+  A Node script awaits `session.stacks.<alias>.read.<name>(...)`; a React
+  component calls `arete.read.<name>.use(...)`.
 
 In `--json` output these are `typescriptApps[]`, one entry per app with
 `directory`, `kind` (`node` or `browser`), `devRuntime[]` (package names),
-`projectSetup` (`directory`, `command` (`a4 install --setup`), `commands[]`),
+`projectSetup` (`directory`, `missing[]`, `note`, `command`
+(`a4 install --setup`), `commands[]`),
 `tsconfig` (`tsconfig` when one exists, `directory`, `types[]`, `commands[]`)
 and `usage[]` (`stack`, `exportName`, `importPath`, `fromDir`, `view`, `auth`
 (`option`: `secretKey` or `publishableKey`, `envVar`, `fallback` (`a4-login`
 for a server-side key: the SDK uses the `a4` login when `envVar` is unset, so
 the variable is optional), and for a publishable key
 `command` plus `directory` when it must run in another directory),
-`snippet[]` lines and `run`). Each field is absent when there is
+`snippet[]` lines, `run`, `stream`, `fields`, `readsCall`, and `reads[]`
+with `name`, `params[]` and `title`). Each field is absent when there is
 nothing to report, and `typescriptApps` is absent without TypeScript output.
 
 Generated TypeScript is ES module source (`import`/`export` with `.js`
