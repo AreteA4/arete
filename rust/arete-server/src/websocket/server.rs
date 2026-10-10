@@ -5594,7 +5594,15 @@ mod tests {
                 .try_send(MutationBatch::flush_marker(ack))
                 .unwrap();
             wait.await.unwrap();
-            let frame = next_frame(&mut socket).await;
+            // Usually both batches land before the socket reads and arrive as
+            // one upsert. Under load the socket can read between them, so the
+            // delete may arrive on its own first. Either way the recreated
+            // entity must not carry the deleted one's fields.
+            let mut frame = next_frame(&mut socket).await;
+            if frame["op"] == "delete" {
+                assert_eq!(frame["key"], "a", "{frame}");
+                frame = next_frame(&mut socket).await;
+            }
             assert_eq!(frame["op"], "upsert", "{frame}");
             assert_eq!(frame["data"]["fresh"], true);
             assert!(frame["data"].get("old").is_none(), "{frame}");
