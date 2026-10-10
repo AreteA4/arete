@@ -6,17 +6,20 @@
 
 ## Do this first
 
-Run these commands in order, in the project root. Each is one line.
+Run these commands in order, in the project root. Each command is one line.
 
-1. `curl -fsSL https://arete.run/install.sh | sh`
+1. macOS / Linux: `curl -fsSL https://arete.run/install.sh | sh`
+   Windows PowerShell: `irm https://arete.run/install.ps1 | iex`
 2. `a4 init -y`
 3. `a4 --profile agent auth signup --if-missing --json`
 4. `a4 doctor --json`
 5. `a4 explore catalog --vocabulary --json`
 
+Before step 2: step 1 prints `A4_BIN=<absolute path>`. If `a4` is not found in
+the current shell, run steps 2–5 with that absolute path in place of `a4`.
+
 Then:
 
-- Step 1 prints `A4_BIN=<absolute path>`. If `a4` is not on PATH, use that path.
 - Step 2 installs the Arete skills and MCP servers. Use the skills from then
   on; they hold the full workflows.
 - Step 3 must report `"credentialStored": true`.
@@ -45,10 +48,10 @@ Arete can:
 
 ### Install
 
-Other installers (also signed, no Rust toolchain needed):
+Both installers are signed and need no Rust toolchain. An npm bootstrap is
+also available:
 
-    irm https://arete.run/install.ps1 | iex             # Windows PowerShell
-    npx @usearete/a4 install                            # npm bootstrap
+    npx @usearete/a4 install
 
 Update later with `a4 self update`. Do not substitute a Cargo install.
 
