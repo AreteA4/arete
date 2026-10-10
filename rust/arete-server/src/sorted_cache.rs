@@ -83,7 +83,9 @@ impl Ranked<'_> {
             (SortValue::String(left), SortValue::String(right)) => {
                 match (&self.decimal, &other.decimal) {
                     (Some(a), Some(b)) => a.cmp(left, b, right),
-                    _ => left.cmp(right),
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => left.cmp(right),
                 }
             }
             (left, right) => left.cmp(right),
@@ -137,9 +139,7 @@ impl Ord for SortValue {
             (SortValue::Bool(a), SortValue::Bool(b)) => a.cmp(b),
             (SortValue::Integer(a), SortValue::Integer(b)) => a.cmp(b),
             (SortValue::Float(a), SortValue::Float(b)) => a.cmp(b),
-            (SortValue::String(a), SortValue::String(b)) => {
-                compare_decimal_strings(a, b).unwrap_or_else(|| a.cmp(b))
-            }
+            (SortValue::String(a), SortValue::String(b)) => compare_strings(a, b),
             // Cross-type comparisons: numbers < strings
             (SortValue::Integer(_), SortValue::String(_)) => Ordering::Less,
             (SortValue::String(_), SortValue::Integer(_)) => Ordering::Greater,
@@ -335,10 +335,16 @@ impl SortedViewCache {
 
             // Sort key changed - need to reposition. The order's own copy of
             // the key moves, so the entity key is not copied again.
-            let (mut ordered, ()) = self
-                .sorted
-                .remove_entry(sort_key)
-                .expect("every held entity is in the order");
+            let mut ordered = match self.sorted.remove_entry(sort_key) {
+                Some((ordered, ())) => ordered,
+                // Only an order that is not total can lose a held key. Drop
+                // whatever copy it holds rather than stop the view.
+                None => {
+                    let stale = sort_key.entity_key.as_str();
+                    self.sorted.retain(|held, ()| held.entity_key != stale);
+                    sort_key.clone()
+                }
+            };
             ordered.set_sort_value(sort_value);
             sort_key.sort_value = ordered.sort_value.clone();
             sort_key.decimal = ordered.decimal;
@@ -765,6 +771,22 @@ impl DecimalKey {
     }
 }
 
+/// How two string sort values order: decimal integers by value, before every
+/// other string, and other strings by their bytes.
+///
+/// Ranking decimals apart from the rest keeps the order total. Comparing a
+/// decimal with any string by bytes would not: `"2" < "10"` by value, but
+/// `"10" < "1a" < "2"` by bytes, and an order with a cycle loses entries.
+fn compare_strings(left: &str, right: &str) -> Ordering {
+    compare_decimal_strings(left, right).unwrap_or_else(|| {
+        let left_decimal = DecimalKey::parse(left).is_some();
+        let right_decimal = DecimalKey::parse(right).is_some();
+        right_decimal
+            .cmp(&left_decimal)
+            .then_with(|| left.cmp(right))
+    })
+}
+
 fn compare_decimal_strings(left: &str, right: &str) -> Option<Ordering> {
     fn parts(value: &str) -> Option<(bool, &str)> {
         let (negative, digits) = match value.strip_prefix('-') {
@@ -1180,6 +1202,54 @@ mod tests {
         assert_eq!(cache.ordered_keys(), vec!["100", "10", "9"]);
     }
 
+    /// Decimal and other strings in one view rank decimals first, so the
+    /// order stays total and moving an entity never loses it.
+    #[test]
+    fn test_mixed_decimal_and_text_sort_values() {
+        let mut cache = SortedViewCache::new(
+            "test/latest".to_string(),
+            vec!["name".to_string()],
+            SortOrder::Asc,
+        );
+
+        cache.upsert("two".to_string(), json!({"name": "2"}));
+        cache.upsert("ten".to_string(), json!({"name": "10"}));
+        cache.upsert("text".to_string(), json!({"name": "1a"}));
+        assert_eq!(cache.ordered_keys(), vec!["two", "ten", "text"]);
+
+        cache.put("ten".to_string(), json!({"name": "11"}));
+        assert_eq!(cache.ordered_keys(), vec!["two", "ten", "text"]);
+        cache.put("ten".to_string(), json!({"name": "1"}));
+        assert_eq!(cache.ordered_keys(), vec!["ten", "two", "text"]);
+        cache.put("text".to_string(), json!({"name": "0"}));
+        assert_eq!(cache.ordered_keys(), vec!["text", "ten", "two"]);
+        assert_eq!(cache.len(), 3);
+        assert_eq!(cache.sorted.len(), 3);
+    }
+
+    /// String ordering is transitive across decimal and other strings.
+    #[test]
+    fn string_order_is_transitive() {
+        let texts = [
+            "", "-", "-1", "-10", "0", "007", "1", "10", "1a", "2", "a", "+5", "1.5",
+        ];
+        for a in texts {
+            for b in texts {
+                for c in texts {
+                    if compare_strings(a, b) != Ordering::Greater
+                        && compare_strings(b, c) != Ordering::Greater
+                    {
+                        assert_ne!(
+                            compare_strings(a, c),
+                            Ordering::Greater,
+                            "{a:?} <= {b:?} <= {c:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_descending_string_sort_field() {
         let mut cache = SortedViewCache::new(
@@ -1379,8 +1449,7 @@ mod tests {
         ];
         for left in texts {
             for right in texts {
-                let expected =
-                    compare_decimal_strings(left, right).unwrap_or_else(|| left.cmp(right));
+                let expected = compare_strings(left, right);
                 for order in [SortOrder::Asc, SortOrder::Desc] {
                     let a = SortKey::new(SortValue::String(left.to_string()), "k".into(), order);
                     let b = SortKey::new(SortValue::String(right.to_string()), "k".into(), order);
