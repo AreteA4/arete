@@ -100,7 +100,7 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 status`                                                                   | Show project overview                                            |
 | `a4 stack list`                                                               | List deployed stacks                                             |
 | `a4 telemetry status`                                                         | Show telemetry status                                            |
-| `a4 explore`                                                                  | Discover installable stacks                                      |
+| `a4 explore`, `a4 explore stacks`                                             | Discover installable stacks                                      |
 | `a4 explore programs`                                                         | Discover installable standalone programs                         |
 | `a4 explore stack <ref>`                                                      | Inspect an exact stack install descriptor                        |
 | `a4 explore program <ref>`                                                    | Inspect an exact program install descriptor                      |
@@ -560,39 +560,60 @@ it is safe to script, and exits non-zero when the API call fails (as does
 Search the public active catalog by intent and required delivery mode:
 
 ```bash
+a4 explore catalog --json                     # overview: first programs and stacks
 a4 explore catalog --query "monitor swaps" --json
 a4 explore catalog --concept <slug> --kind program --mode read --json
 a4 explore catalog --category <slug> --kind stack --mode subscribe --json
 a4 explore catalog --kind program --target typescript --json
-a4 explore catalog --vocabulary --json
+a4 explore catalog --vocabulary --json        # slugs and names
 
 # Inspect one exact active entry
 a4 explore catalog program <slug> --json
 a4 explore catalog stack <slug> --json
 
-# Trim JSON output to what you need
-a4 explore catalog --query "monitor swaps" --brief
+# More or fewer fields than the brief default
+a4 explore catalog --query "monitor swaps" --full --json
 a4 explore catalog --query "monitor swaps" --fields slug,kind,version,delivery.health
+a4 explore catalog --vocabulary --full --json
 ```
 
-| Option                              | Meaning                                 |
-| ----------------------------------- | --------------------------------------- |
-| `--query <text>`                    | Free-text intent search                 |
-| `--concept <slug>`                  | Require an exact concept                |
-| `--category <slug>`                 | Require an exact category               |
-| `--kind program\|stack`             | Restrict package kind                   |
-| `--mode read\|build\|subscribe`     | Require a delivery mode                 |
-| `--target typescript\|rust\|python` | Require a verified SDK target           |
-| `--limit`, `--cursor`               | Bounded pagination                      |
-| `--vocabulary`                      | List current concept and category slugs |
-| `--fields <a,b.c>`                  | JSON with only these keys per entry     |
-| `--brief`                           | JSON with only identifying fields       |
+| Option                              | Meaning                                                                                           |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `--query <text>`                    | Free-text intent search                                                                           |
+| `--concept <slug>`                  | Require an exact concept                                                                          |
+| `--category <slug>`                 | Require an exact category                                                                         |
+| `--kind program\|stack`             | Restrict package kind                                                                             |
+| `--mode read\|build\|subscribe`     | Require a delivery mode                                                                           |
+| `--target typescript\|rust\|python` | Require a verified SDK target                                                                     |
+| `--limit`, `--cursor`               | Pagination: 10 results per page by default; pass `nextCursor` as `--cursor` with the same filters |
+| `--vocabulary`                      | List current concept and category slugs and names                                                 |
+| `--full`                            | Every field instead of the brief default (search and `--vocabulary`)                              |
+| `--fields <a,b.c>`                  | JSON with only these keys per entry                                                               |
+| `--brief`, `--summary`              | JSON with the brief field set                                                                     |
 
-`--fields` takes top-level keys or dotted paths (`delivery.status`) and applies
-to each search result or to a single entry. `--brief` keeps `kind`, `slug`,
-`name`, `version`, `protocol`, `summary`, `modes`, `sdkTargets` and
-`delivery.status`/`delivery.health`. Both imply `--json`. Filtering happens in
-the CLI, so it works against any server.
+**Brief by default.** Search results keep `kind`, `slug`, `name`, `version`,
+`protocol`, `summary`, `modes`, `sdkTargets` and
+`delivery.status`/`delivery.health`, in human and `--json` output alike.
+`--full` restores every field the server sent (`concepts`, `score`, identity
+hashes such as `packageReleaseHash`, `programIds`, release notes) and, in
+human output, the package release hash beside each install command.
+`--vocabulary` lists each concept's and category's slug and name; `--full`
+adds descriptions, synonyms and related slugs.
+
+Brief JSON carries a top-level `hint` string saying how to get more fields
+and, when `nextCursor` is present, the next page. `--full` JSON is the server
+response unchanged. `--fields` takes top-level keys or dotted paths
+(`delivery.status`) and applies to each search result or to a single entry.
+`--fields`, `--brief` and `--summary` imply `--json`. Shaping happens in the
+CLI, so it works against any server.
+
+Without filters, `a4 explore catalog` prints an overview: up to 5 programs and
+5 stacks (or `--limit` of each), with `nextCursors.program` and
+`nextCursors.stack` to page one kind with `--kind <kind> --cursor <cursor>`.
+It exits 0. `--cursor` without filters is an error.
+
+A single entry (`a4 explore catalog <kind> <slug>`) is always complete;
+`--brief` or `--fields` trim it on request.
 
 Use catalog search when starting from intent. Open the exact result before
 installing or connecting; search summaries are not a substitute for the pinned
@@ -657,8 +678,8 @@ a4 explore stack ore --operation transactions.mining.deployWithCheckpoint --json
 
 | Command                                | Shows                                                                                                                                     |
 | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `a4 explore`                           | Available stacks                                                                                                                          |
-| `a4 explore programs`                  | Complete promoted Program Release + Program Read installations                                                                            |
+| `a4 explore`, `a4 explore stacks`      | Available stacks                                                                                                                          |
+| `a4 explore programs`                  | Complete promoted Program Release + Program Read installations. Release and spec hashes need `--full`; `--fields` chooses keys            |
 | `a4 explore stack <ref>`               | Exact identities, aliases, selected views, programs, auth and auth requirements, SDK targets, the endpoints the SDK uses, install command |
 | `a4 explore stack <ref> --summary`     | A compact stack summary                                                                                                                   |
 | `a4 explore stack <ref> --views …`     | The named views' schemas and endpoints                                                                                                    |
@@ -728,8 +749,9 @@ incomplete. For an owned stack diagnostic, use `a4 stack show <ref>`.
 Query the curated knowledge layer: which protocols, programs, stacks, and
 recipes serve an intent, and what the platform can do for each (`read` account
 state, `build` transactions, `subscribe` to a hosted stack). Every subcommand
-requires an API key saved by `a4 auth login` and accepts `--json`, which
-prints the API response verbatim.
+requires an API key saved by `a4 auth login` and accepts `--json`. `search`
+and `concepts` are brief by default (see below); the other subcommands print
+the API response verbatim.
 
 ```bash
 # Search by intent; results carry read / build / subscribe coverage flags
@@ -749,7 +771,8 @@ a4 know program meteora-cp-amm --section surface        # typed SDK operations w
 a4 know recipe execute-presale-purchase-via-squads
 
 # Concept and category slugs for --concept / --category
-a4 know concepts
+a4 know concepts            # slugs and names
+a4 know concepts --full     # with descriptions, synonyms and related concepts
 ```
 
 **`search` options:**
@@ -759,12 +782,17 @@ a4 know concepts
 | `--query, -q <text>` | Free-text intent; matches concept names and synonyms first   |
 | `--concept <slug>`   | Filter by concept slug (see `a4 know concepts`)              |
 | `--category <slug>`  | Filter by category slug (see `a4 know concepts`)             |
-| `--limit <n>`        | Maximum number of results                                    |
+| `--limit <n>`        | Maximum number of results (default 10)                       |
+| `--full`             | Every field per result (`score`, `coverage_via`)             |
 | `--fields <a,b.c>`   | JSON with only these keys (or dotted paths) per result       |
 | `--brief`            | JSON with only slug, type, name, protocol, summary, coverage |
 
 At least one of `--query`, `--concept`, or `--category` is required.
-`--fields` and `--brief` imply `--json`.
+Results keep `type`, `slug`, `name`, `protocol`, `summary` and `coverage` by
+default, in human and `--json` output; brief JSON adds a top-level `hint`
+naming `--full`, `--fields` and, when a page is full, a higher `--limit`.
+`--fields` and `--brief` imply `--json`. `a4 know concepts` lists slugs and
+names; `--full` adds descriptions, synonyms and related concepts.
 
 **`program` options:**
 

@@ -433,16 +433,22 @@ pub fn list(json: bool, service_class: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-pub fn list_programs(json: bool) -> Result<()> {
+const PROGRAM_LIST_BRIEF_HINT: &str = "Release and spec hashes omitted; use --full for every \
+     field or --fields a,b to choose keys. `a4 explore program <ref>` shows one program.";
+
+pub fn list_programs(json: bool, shape: &catalog_view::Shape) -> Result<()> {
     let programs = ApiClient::new()?.list_registry_programs()?;
+    let full = *shape == catalog_view::Shape::Full;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&ExploreProgramListOutput {
-                schema_version: EXPLORE_SCHEMA_VERSION,
-                programs,
-            })?
-        );
+        let mut output = serde_json::to_value(ExploreProgramListOutput {
+            schema_version: EXPLORE_SCHEMA_VERSION,
+            programs,
+        })?;
+        if !full {
+            output["programs"] = catalog_view::shape_search(&output["programs"], shape);
+            output = catalog_view::with_hint(output, PROGRAM_LIST_BRIEF_HINT);
+        }
+        println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
     }
 
@@ -459,14 +465,20 @@ pub fn list_programs(json: bool) -> Result<()> {
             program.display_name
         );
         println!("    Program ID: {}", program.program_id.cyan());
-        println!("    Release: {}", program.program_release_hash);
+        if full {
+            println!("    Release: {}", program.program_release_hash);
+        }
         println!("    SDK targets: {}", program.sdk_targets.join(", "));
         println!();
     }
-    println!(
-        "{}",
-        "Tip: Run `a4 explore program <ref>` for accounts and instructions".dimmed()
-    );
+    if full {
+        println!(
+            "{}",
+            "Tip: Run `a4 explore program <ref>` for accounts and instructions".dimmed()
+        );
+    } else {
+        println!("{}", PROGRAM_LIST_BRIEF_HINT.dimmed());
+    }
     Ok(())
 }
 
@@ -2262,20 +2274,85 @@ pub fn catalog_output_shape(fields: &[String], brief: bool) -> Option<catalog_vi
     (!fields.is_empty()).then_some(catalog_view::Shape::Fields(fields))
 }
 
-/// Print a catalog or knowledge search response as JSON, shaped when asked.
-pub fn print_search_json(value: &Value, shape: Option<&catalog_view::Shape>) -> Result<()> {
-    let value = match shape {
-        Some(shape) => catalog_view::shape_search(value, shape),
-        None => value.clone(),
-    };
-    println!("{}", serde_json::to_string_pretty(&value)?);
-    Ok(())
+/// The shape of a catalog search page or the program list: brief by
+/// default, every field with `--full`, or the `--fields` projection.
+pub fn catalog_list_shape(fields: &[String], full: bool) -> catalog_view::Shape {
+    let fields = catalog_view::parse_fields(fields);
+    if !fields.is_empty() {
+        catalog_view::Shape::Fields(fields)
+    } else if full {
+        catalog_view::Shape::Full
+    } else {
+        catalog_view::brief()
+    }
+}
+
+/// The shape of `a4 explore programs`: identity hashes dropped by default
+/// (the brief catalog field set does not apply to program list items).
+pub fn program_list_shape(fields: &[String], full: bool) -> catalog_view::Shape {
+    match catalog_list_shape(fields, full) {
+        shape if shape == catalog_view::brief() => catalog_view::Shape::Compact,
+        shape => shape,
+    }
+}
+
+const CATALOG_BRIEF_HINT: &str = "Showing brief fields; use --full for every field \
+     (concepts, score, identity hashes) or --json --fields a,b to choose keys. \
+     `a4 explore catalog <kind> <slug>` shows one complete entry.";
+
+/// The `hint` for one search page: how to see more fields (unless `--full`),
+/// how to fetch the next page, and, for the unfiltered overview, how to
+/// narrow it.
+fn catalog_search_hint(
+    value: &Value,
+    shape: &catalog_view::Shape,
+    overview: Option<&str>,
+) -> Option<String> {
+    // `--full` prints a search page as the server sent it, without a hint.
+    // The overview is assembled by the CLI, so it keeps its hint.
+    if *shape == catalog_view::Shape::Full && overview.is_none() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if let Some(overview) = overview {
+        parts.push(overview.to_string());
+    }
+    if *shape != catalog_view::Shape::Full {
+        parts.push(CATALOG_BRIEF_HINT.to_string());
+    }
+    if catalog_view::next_cursor(value).is_some() {
+        parts.push("More results: repeat the same search with --cursor <nextCursor>.".to_string());
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+/// The overview printed by `a4 explore catalog` without filters: the first
+/// page of programs and of stacks, and a hint naming the filters.
+fn catalog_overview(client: &ApiClient, limit: usize) -> Result<(Value, String)> {
+    let pages = catalog_view::OVERVIEW_KINDS
+        .iter()
+        .map(|kind| {
+            client
+                .catalog_search(None, None, None, Some(kind), None, None, Some(limit), None)
+                .map(|page| (*kind, page))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let overview = catalog_view::merge_overview(&pages);
+    let mut hint = format!(
+        "Catalog overview: up to {limit} programs and {limit} stacks. Narrow with --query <intent>, \
+         --concept <slug> or --category <slug> (slugs: `a4 explore catalog --vocabulary`), \
+         or --kind program|stack."
+    );
+    if overview.get("nextCursors").is_some() {
+        hint.push_str(" Page one kind with --kind <kind> --cursor <nextCursors.kind>.");
+    }
+    Ok((overview, hint))
 }
 
 pub fn catalog_search(
     args: CatalogSearchArgs<'_>,
     json: bool,
-    shape: Option<&catalog_view::Shape>,
+    shape: &catalog_view::Shape,
 ) -> Result<()> {
     let non_empty = |value: Option<&str>| {
         value
@@ -2290,32 +2367,53 @@ pub fn catalog_search(
     let mode = catalog_choice(args.mode, "--mode", &CATALOG_MODES)?;
     let target = catalog_choice(args.target, "--target", &CATALOG_TARGETS)?;
     let cursor = non_empty(args.cursor);
-    if query.is_none()
+    let client = ApiClient::new()?;
+    let unfiltered = query.is_none()
         && concept.is_none()
         && category.is_none()
         && kind.is_none()
         && mode.is_none()
-        && target.is_none()
-    {
-        anyhow::bail!(
-            "Provide at least one of --query, --concept, --category, --kind, --mode, or --target. \
-             Run `a4 explore catalog --vocabulary` to list concept and category slugs."
-        );
+        && target.is_none();
+    let (value, overview) = if unfiltered {
+        if cursor.is_some() {
+            anyhow::bail!(
+                "--cursor continues a search: repeat the filters of the page that returned it \
+                 (e.g. --kind program --cursor <nextCursor>)"
+            );
+        }
+        let (value, hint) =
+            catalog_overview(&client, args.limit.unwrap_or(catalog_view::OVERVIEW_LIMIT))?;
+        (value, Some(hint))
+    } else {
+        let value = client.catalog_search(
+            query.as_deref(),
+            concept.as_deref(),
+            category.as_deref(),
+            kind,
+            mode,
+            target,
+            Some(args.limit.unwrap_or(catalog_view::DEFAULT_SEARCH_LIMIT)),
+            cursor.as_deref(),
+        )?;
+        (value, None)
+    };
+    let full = *shape == catalog_view::Shape::Full;
+    if json {
+        let mut shaped = catalog_view::shape_search(&value, shape);
+        if let Some(hint) = catalog_search_hint(&value, shape, overview.as_deref()) {
+            shaped = catalog_view::with_hint(shaped, hint);
+        }
+        println!("{}", serde_json::to_string_pretty(&shaped)?);
+        return Ok(());
     }
-    let value = ApiClient::new()?.catalog_search(
-        query.as_deref(),
-        concept.as_deref(),
-        category.as_deref(),
-        kind,
-        mode,
-        target,
-        args.limit,
-        cursor.as_deref(),
-    )?;
-    if json || shape.is_some() {
-        return print_search_json(&value, shape);
+    print!("{}", render_catalog_search(&value, full));
+    if let Some(overview) = overview {
+        println!("\n{overview}");
+        print!("{}", render_overview_cursors(&value));
     }
-    print!("{}", render_catalog_search(&value));
+    if !full {
+        println!("\n{CATALOG_BRIEF_HINT}");
+    }
     Ok(())
 }
 
@@ -2343,30 +2441,53 @@ pub fn catalog_entry(
     Ok(())
 }
 
-pub fn catalog_vocabulary(json: bool) -> Result<()> {
+const VOCABULARY_BRIEF_HINT: &str =
+    "Showing slugs and names; use --full for descriptions, synonyms and related slugs.";
+
+pub fn catalog_vocabulary(json: bool, full: bool) -> Result<()> {
     let value = ApiClient::new()?.catalog_vocabulary()?;
     if json {
+        let value = if full {
+            value
+        } else {
+            catalog_view::with_hint(
+                catalog_view::compact_vocabulary(&value),
+                VOCABULARY_BRIEF_HINT,
+            )
+        };
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
     }
-    let mut text = String::from("\nConcepts\n");
-    for concept in value_array(&value, "concepts") {
-        text.push_str(&format!(
-            "  {}  {}\n",
-            concept["slug"].as_str().unwrap_or("-"),
-            concept["description"].as_str().unwrap_or("")
-        ));
-    }
-    text.push_str("\nCategories\n");
-    for category in value_array(&value, "categories") {
-        text.push_str(&format!(
-            "  {}  {}\n",
-            category["slug"].as_str().unwrap_or("-"),
-            category["description"].as_str().unwrap_or("")
-        ));
-    }
-    print!("{text}");
+    print!("{}", render_vocabulary(&value, full));
     Ok(())
+}
+
+fn render_vocabulary(value: &Value, full: bool) -> String {
+    let mut text = String::new();
+    for (title, key) in [("Concepts", "concepts"), ("Categories", "categories")] {
+        text.push_str(&format!("\n{title}\n"));
+        for item in value_array(value, key) {
+            let slug = item["slug"].as_str().unwrap_or("-");
+            let name = item["name"].as_str().unwrap_or("");
+            text.push_str(&format!("  {slug}  {name}\n"));
+            if !full {
+                continue;
+            }
+            if let Some(description) = item["description"].as_str() {
+                text.push_str(&format!("    {description}\n"));
+            }
+            for list in ["synonyms", "related"] {
+                let values = string_list(item, list);
+                if values != "none" {
+                    text.push_str(&format!("    {list}: {values}\n"));
+                }
+            }
+        }
+    }
+    if !full {
+        text.push_str(&format!("\n{VOCABULARY_BRIEF_HINT}\n"));
+    }
+    text
 }
 
 fn string_list(value: &Value, key: &str) -> String {
@@ -2397,7 +2518,24 @@ fn pinned_install_command(entry: &Value) -> String {
     }
 }
 
-fn render_catalog_search(value: &Value) -> String {
+/// The continuation command for each kind the overview cut short, with its
+/// actual cursor.
+fn render_overview_cursors(value: &Value) -> String {
+    let Some(cursors) = value.get("nextCursors").and_then(Value::as_object) else {
+        return String::new();
+    };
+    let mut text = String::new();
+    for (kind, cursor) in cursors {
+        if let Some(cursor) = cursor.as_str() {
+            text.push_str(&format!(
+                "  More {kind}s: a4 explore catalog --kind {kind} --cursor {cursor}\n"
+            ));
+        }
+    }
+    text
+}
+
+fn render_catalog_search(value: &Value, full: bool) -> String {
     let results = value_array(value, "results");
     let mut text = String::new();
     let matched = string_list(value, "matchedConcepts");
@@ -2430,13 +2568,20 @@ fn render_catalog_search(value: &Value) -> String {
             string_list(result, "modes"),
             string_list(result, "sdkTargets")
         ));
-        text.push_str(&format!(
-            "    install: {}  ({})\n",
-            pinned_install_command(result),
-            result["packageReleaseHash"].as_str().unwrap_or("-")
-        ));
+        if full {
+            text.push_str(&format!(
+                "    install: {}  ({})\n",
+                pinned_install_command(result),
+                result["packageReleaseHash"].as_str().unwrap_or("-")
+            ));
+        } else {
+            text.push_str(&format!(
+                "    install: {}\n",
+                pinned_install_command(result)
+            ));
+        }
     }
-    if let Some(cursor) = value["nextCursor"].as_str() {
+    if let Some(cursor) = catalog_view::next_cursor(value) {
         text.push_str(&format!(
             "\nMore results: repeat the same search with --cursor {cursor}\n"
         ));
@@ -2603,13 +2748,73 @@ mod tests {
             "sets": ["arete:h1:catalog-publication-set:sha256:cc"],
             "nextCursor": "eyJ2IjoxfQ"
         });
-        let rendered = render_catalog_search(&page);
+        let rendered = render_catalog_search(&page, true);
         assert!(rendered.contains("Matched concepts: mining"));
         assert!(rendered.contains("program ore@1.0.0"));
         assert!(rendered.contains("install: a4 install program ore@=1.0.0"));
+        assert!(rendered.contains("arete:registry-package-release:v2:sha256:aa"));
         assert!(rendered.contains("delivery: degraded"));
         assert!(rendered.contains("--cursor eyJ2IjoxfQ"));
-        assert!(render_catalog_search(&json!({"results": []})).contains("No catalog entries match"));
+        assert!(render_catalog_search(&json!({"results": []}), false)
+            .contains("No catalog entries match"));
+
+        // The brief default keeps the pinned install command but not the hash.
+        let brief = render_catalog_search(&page, false);
+        assert!(brief.contains("install: a4 install program ore@=1.0.0\n"));
+        assert!(!brief.contains("sha256"));
+    }
+
+    #[test]
+    fn catalog_search_json_is_brief_with_a_hint_by_default() {
+        let page = json!({
+            "matchedConcepts": ["mining"],
+            "results": [{"kind": "program", "slug": "ore", "version": "1.0.0", "name": "ore", "summary": "ORE mining.", "modes": ["build"], "sdkTargets": ["typescript"], "score": 2.5, "concepts": ["mining"], "packageReleaseHash": "arete:registry-package-release:v2:sha256:aa", "delivery": {"kind": "program-read", "health": "ready", "status": "active"}}],
+            "nextCursor": "c1"
+        });
+        let shape = catalog_list_shape(&[], false);
+        assert_eq!(shape, catalog_view::brief());
+        let shaped = catalog_view::shape_search(&page, &shape);
+        assert_eq!(
+            shaped["results"][0],
+            json!({"kind": "program", "slug": "ore", "version": "1.0.0", "name": "ore", "summary": "ORE mining.", "modes": ["build"], "sdkTargets": ["typescript"], "delivery": {"health": "ready", "status": "active"}})
+        );
+        let hint = catalog_search_hint(&page, &shape, None).unwrap();
+        assert!(hint.contains("--full") && hint.contains("--fields") && hint.contains("--cursor"));
+
+        let full = catalog_list_shape(&[], true);
+        assert_eq!(full, catalog_view::Shape::Full);
+        // --full JSON is the server page unchanged: no hint, even with a cursor.
+        assert!(catalog_search_hint(&page, &full, None).is_none());
+        let hint = catalog_search_hint(&page, &full, Some("Catalog overview.")).unwrap();
+        assert!(hint.starts_with("Catalog overview.") && !hint.contains("--full"));
+
+        let overview = json!({"results": [], "nextCursors": {"program": "p1", "stack": "s1"}});
+        let cursors = render_overview_cursors(&overview);
+        assert!(cursors.contains("a4 explore catalog --kind program --cursor p1"));
+        assert!(cursors.contains("a4 explore catalog --kind stack --cursor s1"));
+        assert!(render_overview_cursors(&json!({"results": []})).is_empty());
+        let hint = catalog_search_hint(&json!({"results": []}), &shape, Some("Catalog overview."))
+            .unwrap();
+        assert!(hint.starts_with("Catalog overview."));
+
+        assert_eq!(
+            catalog_list_shape(&["slug,name".into()], true),
+            catalog_view::Shape::Fields(vec!["slug".into(), "name".into()])
+        );
+    }
+
+    #[test]
+    fn vocabulary_renders_slugs_and_names_unless_full() {
+        let vocabulary = json!({
+            "concepts": [{"slug": "swap", "name": "Swap", "description": "Exchange tokens.", "synonyms": ["trade"], "related": ["dex"]}],
+            "categories": [{"slug": "dex", "name": "DEX", "description": "Exchanges."}]
+        });
+        let brief = render_vocabulary(&vocabulary, false);
+        assert!(brief.contains("  swap  Swap\n") && brief.contains("  dex  DEX\n"));
+        assert!(!brief.contains("Exchange tokens.") && brief.contains("--full"));
+        let full = render_vocabulary(&vocabulary, true);
+        assert!(full.contains("Exchange tokens.") && full.contains("synonyms: trade"));
+        assert!(full.contains("related: dex") && !full.contains("--full"));
     }
 
     #[test]

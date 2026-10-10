@@ -48,6 +48,11 @@ Useful filters are:
 - `--target typescript|rust|python`
 - `--concept <slug>` and `--category <slug>` from the vocabulary
 
+Search results and the vocabulary are brief by default, and brief JSON names
+the next step in a top-level `hint`. Add `--full` for every field or
+`--fields a,b` for specific keys, and pass a page's `nextCursor` back as
+`--cursor` with the same filters.
+
 Catalog results report which delivery modes are currently available. A known
 program does not imply that every read, build, or subscription surface is ready.
 

@@ -149,8 +149,11 @@ a key happens to resolve (see [Authentication](#authentication)), it is attached
 so `explore_stacks` also returns global stacks — but a missing key is never an
 error here.
 
-- `explore_stacks()` — stacks in the registry. The `websocket_url` in each entry
-  is what `connect` takes; `entities` tells you what to look for in the schema.
+- `explore_stacks({ fields?, full? })` — stacks in the registry. The
+  `websocket_url` in each entry is what `connect` takes; `entities` tells you
+  what to look for in the schema. Brief by default (`name`, `description`,
+  `websocket_url`, `entities`, `visibility`, `serviceClass`,
+  `websocket_auth.required`); `full: true` returns every field.
 - `explore_stack({ stack, summary?, views?, full? })` — one stack from its pinned
   install descriptor. By default a compact summary: entities with their view ids,
   program SDKs, endpoints, and auth requirements (key classes, scopes, origin-bound
@@ -167,8 +170,9 @@ error here.
   Descriptions are attached only when the knowledge was published for the
   StackManifest the registry serves for the stack. Stacks without a catalog
   entry return their schema unchanged.
-- `explore_programs()` — standalone Solana programs installable independent of
-  any stack.
+- `explore_programs({ fields?, full? })` — standalone Solana programs
+  installable independent of any stack. Release and spec hashes are dropped
+  unless `full: true`.
 - `explore_program({ program, operationId?, sections?, full? })` — one program
   from its pinned install descriptor. By default a compact summary: identity,
   account/instruction/event/type names, semantic SDK operations, transports.
@@ -217,11 +221,13 @@ immediately with an error pointing at `a4 auth login` — there is no public
 subset. The same HTTPS-origin rule as discovery applies: a key is only sent to
 `https://arete.run`, `https://*.arete.run`, or a loopback address.
 
-- `search_knowledge({ query?, concept?, category?, limit? })` — search by
-  free-text intent (matched against concept names and synonyms first, then
-  protocols/programs/recipes via full-text search) or filter by exact
-  `concept` / `category` slug. At least one of the three is required. Each
-  result carries `coverage: { read, build, subscribe }`.
+- `search_knowledge({ query?, concept?, category?, limit?, fields?, full? })` —
+  search by free-text intent (matched against concept names and synonyms
+  first, then protocols/programs/recipes via full-text search) or filter by
+  exact `concept` / `category` slug. At least one of the three is required.
+  Each result carries `coverage: { read, build, subscribe }`. Brief by default
+  (type, slug, name, protocol, summary, coverage; 10 results) with a `hint`;
+  `full: true` adds `score` and `coverage_via`.
 - `get_protocol({ protocol })` — one protocol by slug (e.g. `meteora-damm`):
   description, categories, links, programs with roles
   (core/periphery/deprecated), related protocols, the public stacks streaming
@@ -235,9 +241,10 @@ subset. The same HTTPS-origin rule as discovery applies: a key is only sent to
 - `get_recipe({ recipe })` — one cross-protocol recipe by slug: an ordered
   sequence of steps, each referencing a real SDK surface entry (resolved in the
   response), plus a path to example code. The catalog is growing.
-- `list_concepts()` — concept slugs (with synonyms and related concepts) and
-  category slugs. Call first to map a user's phrasing onto a canonical slug or
-  to pick `search_knowledge` filters.
+- `list_concepts({ full? })` — concept and category slugs with their names.
+  `full: true` adds descriptions, synonyms and related concepts. Call first to
+  map a user's phrasing onto a canonical slug or to pick `search_knowledge`
+  filters.
 
 Slugs are bare identifiers, not URLs or paths; the client rejects anything with
 `/`, `\`, `?`, `#`, `%`, `&`, or whitespace before a request is made. The

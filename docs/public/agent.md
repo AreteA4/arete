@@ -97,9 +97,10 @@ Only search when the user has a concrete intent; do not invent one.
     a4 explore catalog stack <slug> --json
 
 Filter with `--kind program|stack`, `--mode read|build|subscribe`, and
-`--target typescript|rust|python`. A catalog result is not permission to invent
-missing delivery: respect its modes, SDK targets, authentication, bindings, and
-install command.
+`--target typescript|rust|python`. Results are brief by default; the JSON
+`hint` says how to get `--full` fields or the next page. A catalog result is
+not permission to invent missing delivery: respect its modes, SDK targets,
+authentication, bindings, and install command.
 
 ### Route to a skill
 
