@@ -34,7 +34,8 @@ npm run preflight        # checks every credential and estimates cost; starts no
 ```
 
 Preflight confirms Vercel access, sends a 16-token request to each model (or
-looks it up for provider keys), checks that the pinned `a4` release exists,
+looks it up for provider keys), resolves the `a4` release the sweep will use
+and checks that it is published,
 shows the Arete agent's remaining allowances, and prints an estimated cost.
 `npm run bench` runs the same checks first and stops before any sandbox starts
 if one fails.
@@ -46,6 +47,7 @@ npm run bench -- configs/smoke.json      # one discovery run, about $0.05
 npm run bench -- --task ore-live-round.ts --harness codex --model openai/gpt-6.1-sol
 npm run preflight -- configs/matrix.json # see the cost of the full matrix first
 npm run bench -- configs/matrix.json     # 5 agents × 3 tasks × 3 repetitions, 4 at a time
+npm run bench -- configs/fresh-onboarding.json  # 3 onboarding runs that each sign up a new agent
 npm run compare
 ```
 
@@ -189,9 +191,9 @@ A config file holds either one run (`harness`, `model`, `task`) or a sweep
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `a4Version` | `0.32.0` | Pinned `a4` release, also exported as `A4_VERSION` so an agent's own `install.sh` call gets the same version. |
+| `a4Version` | `latest` | `latest` or a release such as `0.33.0`; `--a4-version` overrides it. See [Which `a4` release](#which-a4-release). |
 | `skillsRef` | latest | `AreteA4/skills` tag passed to `a4 init --skills-ref`. |
-| `keyMode` | `pool` | `pool` writes a configured or shared agent key into each sandbox; `signup` makes every run sign up its own trial agent (5/hour/IP). |
+| `keyMode` | `pool` | `pool` writes a configured or shared agent key into each sandbox; `signup` makes every run sign up its own trial agent during setup (5/hour/IP); `fresh` provisions nothing, so the agent must sign up itself. See [Fresh-account onboarding](#fresh-account-onboarding). |
 | `modelAuth` | `auto` | `auto` uses the gateway when `AI_GATEWAY_API_KEY` is set, otherwise provider keys. `direct` forces provider keys (OpenCode supports only `anthropic/` and `openai/` models there). |
 | `turnTimeoutMinutes` | `20` | Per-turn abort. |
 | `sandbox.image` | `vercel/sandbox/universal` | Ubuntu 26.04. `sandbox.runtime: "node24"` selects the legacy Amazon Linux 2023 image, where `a4` ≤ 0.32.0 cannot start (its linux-x64 binary needs glibc 2.39). |
@@ -200,6 +202,76 @@ A config file holds either one run (`harness`, `model`, `task`) or a sweep
 
 Agents in a sweep take `harness`, `model` (an AI Gateway id such as
 `anthropic/claude-sonnet-5.5`), optional `label` and optional `effort`.
+
+### Which `a4` release
+
+By default a sweep tests the release users get today: `latest` is resolved
+once, from the `latest` dist-tag of `@usearete/a4` on npm, when the sweep
+starts. Every run in the sweep then installs that same release. It is also
+exported as `A4_VERSION`, so an agent's own `install.sh` call gets it too.
+Each report records it in `config.a4Version` and `versions.a4`, and records
+in `config.a4VersionSource` whether it was `latest` or `pinned`.
+
+Pin a release in the config or with `--a4-version 0.32.0` to reproduce an
+older run or bisect a regression. Preflight warns, without failing, when a
+pin is behind npm `latest`. If npm can't be reached, `latest` fails before any
+sandbox starts rather than guessing; a pin still works.
+
+`compare` does not split rows by `a4` release, so a weekly table can mix
+releases. Filter with `--since` around a release when that matters.
+
+## Fresh-account onboarding
+
+In the default `pool` mode, every sandbox starts with an agent key already
+written to `~/.arete/credentials.toml`, and the runner creates `~/.arete`
+with mode 700 itself. That keeps runs cheap and inside the signup rate limit,
+but the agent never signs up and the CLI never creates its own private
+directory.
+
+`keyMode: "fresh"` (`--key-mode fresh`) covers that path. No key is leased,
+nothing is written to the sandbox's home directory, and setup fails as
+`setup-error` if `~/.arete`, an `a4` binary on `PATH` or an `ARETE_*`
+credential variable is already there. The agent has to install `a4` and run
+`a4 --profile agent auth signup --if-missing` itself, as `agent.md` tells it
+to. There is no human step: signup needs no captcha, email or claim, and
+creates an unclaimed trial agent. Only `bare` tasks support it; preflight
+blocks a fresh sweep that includes an `initialized` task, because that setup
+installs `a4` and signs in first.
+
+`configs/fresh-onboarding.json` runs the onboarding task once each with
+Claude Code, Codex and OpenCode, for well under $1 in model spend (one Claude
+Code · Sonnet 5.5 run came to $0.38 on 2026-10-10). On top of the usual onboarding
+checks, a fresh run is graded on:
+
+| Check | Required | Passes when |
+| --- | --- | --- |
+| `fresh-account-created` | yes | `a4 --profile agent auth whoami --json` reports an agent identity. |
+| `credentials-dir-private` | yes | `~/.arete` is mode 700. |
+| `credentials-file-private` | yes | `~/.arete/credentials.toml` is mode 600. |
+| `key-not-in-transcript` | yes | No `a4_ak_`/`a4_sk_` key appears in the agent's text, reasoning, tool inputs or tool outputs. This uses the raw transcript, before redaction. |
+| `key-not-in-files` | yes | No key appears in any file under the home directory outside `~/.arete`, including the project. |
+| `fresh-signup-via-cli` | no | A shell call ran `auth signup`. |
+| `no-credential-file-access` | no | No tool call named the credentials file. |
+
+The report records the new account under `arete.freshAgent` (slug, plan,
+claim state, trial expiry). It also records the account's usage meters, read
+inside the sandbox right after the agent finishes, as `arete.usageDelta`;
+the account is new, so this usage belongs to the run alone (`exclusive`).
+`compare` and `review` label these runs `onboarding [fresh account]`, so they
+never share a row with pooled runs.
+
+Things to know before running it:
+
+- Each run creates a real trial agent on the live service. Arete allows 5
+  signups per hour per IP, and preflight warns when a sweep would need more.
+- The CLI and API have no public way to delete an agent account. Fresh
+  accounts are not cleaned up: they stay unclaimed and lose trial access when
+  the trial ends (`entitlementExpiresAt`, about a week). The signup prompt
+  leaves the display name to the agent, so the accounts can't be tagged as
+  benchmark accounts either; use the slugs recorded in the reports to find
+  them.
+- The weekly matrix doesn't include fresh runs. Run the config by hand, or
+  through the workflow's `config` input.
 
 ## Sandbox environment
 
@@ -267,6 +339,7 @@ src/
   cli/rescore.ts   recompute transcript-derived metrics for saved runs
   run-one.ts       sandbox → setup → turns → verify → collect → report
   preflight.ts     the checks and estimate behind `npm run preflight`
+  a4-version.ts    `latest` resolution from npm and stale-pin warnings
   agent-key.ts     the shared benchmark agent, signed up once and cached
   history.ts       loading earlier run reports
   arete-setup.ts   a4 install, init, trust, credentials, doctor, usage
@@ -281,7 +354,7 @@ src/
   transcript.ts    transcript.md renderer
   report.ts        redaction, run directory writer, console summary
 tasks/             task definitions and verifier helpers
-test/              unit tests (`npm test`): redaction and downloaded-tree handling
-configs/           smoke and matrix configs
+test/              unit tests (`npm test`): redaction, downloaded trees, configs, a4 version resolution, fresh-account setup and grading
+configs/           smoke, matrix and fresh-onboarding configs
 scripts/           probe-image.ts: inspect a sandbox image's toolchain
 ```

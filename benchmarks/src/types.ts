@@ -10,7 +10,13 @@ export type KeyMode =
   /** Write a pooled `a4_ak_*` key into the `agent` profile before the agent starts. */
   | 'pool'
   /** Let `a4 auth signup --if-missing` create a fresh trial agent (5/hour/IP). */
-  | 'signup';
+  | 'signup'
+  /**
+   * Nothing Arete-related is provisioned: the sandbox HOME has no `~/.arete`
+   * and no key, so the agent itself must install `a4` and sign up through
+   * the documented onboarding flow. Only valid for `bare` tasks.
+   */
+  | 'fresh';
 
 export interface SandboxSettings {
   /**
@@ -33,8 +39,10 @@ export interface RunConfig {
   /** Optional label used in run ids and comparison tables. */
   label?: string;
   effort?: Effort;
-  /** Pinned `a4` release installed in the sandbox. */
+  /** Concrete `a4` release installed in the sandbox (never `latest`). */
   a4Version: string;
+  /** Whether `a4Version` was resolved from npm `latest` or pinned by the config. */
+  a4VersionSource?: 'latest' | 'pinned';
   /** Pinned `AreteA4/skills` ref passed to `a4 init --skills-ref`. */
   skillsRef?: string;
   keyMode: KeyMode;
@@ -271,6 +279,12 @@ export interface AreteState {
   doctorAfter?: { status: string; nonOk: string[] };
   /** Change in `/api/agents/me` usage meters across the agent phase. */
   usageDelta?: Record<string, number>;
+  /**
+   * `fresh` key mode: the agent account the agent created, read with
+   * `a4 auth whoami` right after the agent finished. There is no public way
+   * to delete it; it stays an unclaimed trial agent until its trial lapses.
+   */
+  freshAgent?: { slug?: string; plan?: string; claimState?: string; entitlementExpiresAt?: string };
   usageAttribution: 'exclusive' | 'shared' | 'unknown';
 }
 
