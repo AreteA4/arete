@@ -87,7 +87,9 @@ Arete can:
         a4 explore catalog --query "<user intent>" --json
 
     Filter with `--kind program|stack`, `--mode read|build|subscribe`, and
-    `--target typescript|rust|python` when useful. Then inspect an exact result:
+    `--target typescript|rust|python` when useful. Results are brief by
+    default; the JSON `hint` says how to get `--full` fields or the next page.
+    Then inspect an exact result:
 
         a4 explore catalog program <slug> --json
         a4 explore catalog stack <slug> --json

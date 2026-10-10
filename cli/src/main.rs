@@ -156,7 +156,7 @@ enum Commands {
 
     /// Discover installable stacks and programs through the catalog and pinned descriptors
     Explore {
-        /// `catalog`, `stack`, `program`, `programs`, or a legacy stack reference
+        /// `catalog`, `stacks`, `stack`, `program`, `programs`, or a legacy stack reference
         target: Option<String>,
 
         /// Resource reference, `catalog <kind>`, or an entity for legacy `explore <stack> <entity>`
@@ -189,7 +189,7 @@ enum Commands {
         #[arg(long = "target")]
         sdk_target: Option<String>,
 
-        /// Catalog search: maximum number of results
+        /// Catalog search: maximum number of results (default 10; 5 per kind without filters)
         #[arg(long)]
         limit: Option<usize>,
 
@@ -201,8 +201,8 @@ enum Commands {
         #[arg(long)]
         vocabulary: bool,
 
-        /// Catalog search or entry JSON: keep only these fields of each entry (top-level keys
-        /// or dotted paths like `delivery.status`); implies --json
+        /// Catalog search or entry, or `explore programs`: keep only these fields of each
+        /// entry (top-level keys or dotted paths like `delivery.status`); implies --json
         #[arg(
             long,
             value_name = "FIELDS",
@@ -211,10 +211,16 @@ enum Commands {
         )]
         fields: Vec<String>,
 
-        /// Catalog search or entry JSON: keep only slug, kind, name, version, protocol,
-        /// summary, modes, sdkTargets and delivery status; implies --json
+        /// Catalog search or entry JSON with only slug, kind, name, version, protocol,
+        /// summary, modes, sdkTargets and delivery status (the search default); implies
+        /// --json. `--summary` is accepted as an alias on `explore catalog`
         #[arg(long)]
         brief: bool,
+
+        /// Catalog search, `--vocabulary`, or `explore programs`: every field instead of the
+        /// brief default (identity hashes, scores, descriptions, synonyms)
+        #[arg(long, conflicts_with_all = ["brief", "fields"])]
+        full: bool,
 
         /// Root stack list: filter registry entries to `starter` or `standard`
         #[arg(long, value_parser = ["starter", "standard"])]
@@ -1133,12 +1139,24 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             vocabulary,
             fields,
             brief,
+            full,
             service_class,
             operation,
             sections,
             summary,
             views,
         } => {
+            // `a4 explore stacks` is the root stack list, not a stack named `stacks`.
+            let target = target.filter(|target| {
+                !(target == "stacks" && reference.is_none() && entity.is_none())
+            });
+            // On the catalog, `--summary` means the brief field set.
+            let catalog_target = target.as_deref() == Some("catalog");
+            let (brief, summary) = if catalog_target && summary && views.is_empty() {
+                (true, false)
+            } else {
+                (brief, summary)
+            };
             // `a4 explore stack <ref> [entity]`, or legacy `a4 explore <stack> [entity]`.
             let stack_form = match target.as_deref() {
                 Some("stack") => reference.is_some(),
@@ -1200,11 +1218,30 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 ));
             }
             let shape = commands::explore::catalog_output_shape(&fields, brief);
-            if shape.is_some() && (target.as_deref() != Some("catalog") || vocabulary) {
+            let is_program_list =
+                target.as_deref() == Some("programs") && reference.is_none();
+            if brief && !catalog_target {
                 return Err(anyhow::anyhow!(
-                    "--fields and --brief apply only to `a4 explore catalog` search and `a4 explore catalog <kind> <slug>`"
+                    "--brief applies only to `a4 explore catalog`; stacks take --summary (`a4 explore stack <ref> --summary`)"
                 ));
             }
+            if !fields.is_empty() && !(catalog_target && !vocabulary) && !is_program_list {
+                return Err(anyhow::anyhow!(
+                    "--fields applies only to `a4 explore catalog` search, `a4 explore catalog <kind> <slug>` and `a4 explore programs`"
+                ));
+            }
+            if brief && vocabulary {
+                return Err(anyhow::anyhow!(
+                    "--vocabulary is brief by default (slugs and names); pass --full for descriptions and synonyms"
+                ));
+            }
+            // `a4 explore catalog <kind> <slug>` is already complete, so --full is a no-op there.
+            if full && !(catalog_target || is_program_list) {
+                return Err(anyhow::anyhow!(
+                    "--full applies only to `a4 explore catalog` and `a4 explore programs`; stacks are complete unless --summary or --views is passed"
+                ));
+            }
+            let list_shape = commands::explore::catalog_list_shape(&fields, full);
             let is_stack_list = target.is_none() && reference.is_none() && entity.is_none();
             if service_class.is_some() && !is_stack_list {
                 return Err(anyhow::anyhow!(
@@ -1213,7 +1250,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
             match (target.as_deref(), reference.as_deref(), entity.as_deref()) {
             (Some("catalog"), None, None) if vocabulary => {
-                commands::explore::catalog_vocabulary(cli.json)
+                commands::explore::catalog_vocabulary(cli.json, full)
             }
             (Some("catalog"), None, None) => commands::explore::catalog_search(
                 commands::explore::CatalogSearchArgs {
@@ -1226,8 +1263,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     limit,
                     cursor: cursor.as_deref(),
                 },
-                cli.json,
-                shape.as_ref(),
+                cli.json || shape.is_some(),
+                &list_shape,
             ),
             (Some("catalog"), Some(kind), Some(slug)) => {
                 commands::explore::catalog_entry(kind, slug, cli.json, shape.as_ref())
@@ -1236,7 +1273,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 "Usage: a4 explore catalog <program|stack> <slug>"
             )),
             (None, None, None) => commands::explore::list(cli.json, service_class.as_deref()),
-            (Some("programs"), None, None) => commands::explore::list_programs(cli.json),
+            (Some("programs"), None, None) => {
+                commands::explore::list_programs(
+                    cli.json || !fields.is_empty(),
+                    &commands::explore::program_list_shape(&fields, full),
+                )
+            }
             (Some("program"), Some(reference), None) => commands::explore::show_program(
                 reference,
                 commands::explore::ProgramOptions {
@@ -1257,7 +1299,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 "Program reference required. Usage: a4 explore program <ref>"
             )),
             (Some("stack"), None, None) => Err(anyhow::anyhow!(
-                "Stack reference required. Usage: a4 explore stack <ref>"
+                "Stack reference required. Usage: a4 explore stack <ref>; list stacks with `a4 explore stacks`"
             )),
             (Some(stack), entity, None) => commands::explore::show_stack(
                 stack,
@@ -1268,7 +1310,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 cli.json,
             ),
             _ => Err(anyhow::anyhow!(
-                "Invalid explore arguments. Use `a4 explore`, `a4 explore catalog --query <intent>`, `a4 explore catalog <kind> <slug>`, `a4 explore programs`, `a4 explore stack <ref>`, or `a4 explore program <ref>`."
+                "Invalid explore arguments. Use `a4 explore stacks`, `a4 explore catalog --query <intent>`, `a4 explore catalog <kind> <slug>`, `a4 explore programs`, `a4 explore stack <ref>`, or `a4 explore program <ref>`."
             )),
             }
         }
@@ -2135,6 +2177,32 @@ mod tests {
     }
 
     #[test]
+    fn catalog_accepts_summary_and_full_and_stacks_is_the_list() {
+        let cli =
+            Cli::try_parse_from(["a4", "explore", "catalog", "--concept", "swap", "--summary"])
+                .expect("--summary parses on the catalog");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Explore { summary: true, .. })
+        ));
+        let cli = Cli::try_parse_from(["a4", "explore", "catalog", "--vocabulary", "--full"])
+            .expect("--full parses");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Explore { full: true, .. })
+        ));
+        assert!(
+            Cli::try_parse_from(["a4", "explore", "catalog", "--full", "--brief"]).is_err(),
+            "--full conflicts with --brief"
+        );
+        let cli = Cli::try_parse_from(["a4", "explore", "stacks"]).expect("stacks parses");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Explore { target: Some(ref target), reference: None, .. }) if target == "stacks"
+        ));
+    }
+
+    #[test]
     fn selective_explore_flags_are_refused_on_other_targets() {
         for (args, expected) in [
             (
@@ -2151,7 +2219,7 @@ mod tests {
             ),
             (
                 &["a4", "explore", "stack", "ore", "--brief"][..],
-                "--fields and --brief apply only",
+                "--brief applies only to `a4 explore catalog`; stacks take --summary",
             ),
             (
                 &[
@@ -2162,7 +2230,19 @@ mod tests {
                     "--fields",
                     "slug",
                 ][..],
-                "--fields and --brief apply only",
+                "--fields applies only",
+            ),
+            (
+                &["a4", "explore", "catalog", "--vocabulary", "--brief"][..],
+                "pass --full",
+            ),
+            (
+                &["a4", "explore", "stack", "ore", "--full"][..],
+                "--full applies only",
+            ),
+            (
+                &["a4", "explore", "catalog", "--cursor", "c1"][..],
+                "repeat the filters",
             ),
             (
                 &["a4", "explore", "stack", "ore", "Position", "--summary"][..],
