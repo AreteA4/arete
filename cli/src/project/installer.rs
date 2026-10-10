@@ -1072,6 +1072,9 @@ fn install_loaded_project(
         .then(|| {
             set_up_typescript_project(
                 &manifest.root,
+                &manifest
+                    .root
+                    .join(&manifest.document.sdk.typescript.output_dir),
                 plan.outputs
                     .iter()
                     .filter(|output| output.target == InstallTarget::TypeScript)
@@ -1240,6 +1243,7 @@ impl ModuleTypeRequirement {
 /// nothing to set up.
 fn set_up_typescript_project<'a>(
     root: &Path,
+    output_dir: &Path,
     outputs: impl IntoIterator<Item = &'a Path>,
 ) -> Option<SetupReport> {
     let outputs = outputs
@@ -1251,10 +1255,18 @@ fn set_up_typescript_project<'a>(
     if outputs.is_empty() || runtime::nearest_package_json(root).is_some() {
         return None;
     }
+    // The configured output directory first, so the tsconfig.json also
+    // covers stacks installed there later.
+    let covered = output_dir
+        .starts_with(root)
+        .then(|| output_dir.to_path_buf())
+        .into_iter()
+        .chain(outputs)
+        .collect::<Vec<_>>();
     let runtime = runtime::typescript_runtime_set(&BTreeSet::new());
     Some(typescript_setup::set_up(
         root,
-        &outputs,
+        &covered,
         &runtime,
         json_output(),
     ))
@@ -4369,7 +4381,12 @@ mod tests {
         fs::create_dir(&root).unwrap();
         // A sibling output: a package set up in the root would not serve it.
         let sibling = temp.path().join("generated/ore");
-        assert!(set_up_typescript_project(&root, [sibling.as_path()]).is_none());
+        assert!(set_up_typescript_project(
+            &root,
+            &root.join("generated/typescript"),
+            [sibling.as_path()]
+        )
+        .is_none());
         assert!(!root.join("package.json").exists());
     }
 

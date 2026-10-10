@@ -35,18 +35,24 @@ const NODE_COMPILER_OPTIONS: &str = r#"  "compilerOptions": {
 /// A `tsconfig.json` for the Node app in `directory` that covers only its
 /// top-level `.ts` files (the `index.ts` entry) and the generated TypeScript
 /// `outputs`, so other apps beneath it, such as a React app with its own
-/// config, are not type-checked as Node code.
+/// config, are not type-checked as Node code. List the project's TypeScript
+/// output directory first: stacks installed later land there too.
 fn node_tsconfig(directory: &Path, outputs: &[PathBuf]) -> String {
     let mut include = vec!["*.ts".to_string()];
+    let mut covered: Vec<&Path> = Vec::new();
     for output in outputs {
         let dir = if output.extension().and_then(|ext| ext.to_str()) == Some("ts") {
             output.parent().unwrap_or(output)
         } else {
             output.as_path()
         };
+        if covered.iter().any(|covered| dir.starts_with(covered)) {
+            continue;
+        }
         let Ok(relative) = dir.strip_prefix(directory) else {
             continue;
         };
+        covered.push(dir);
         let relative = relative
             .components()
             .map(|component| component.as_os_str().to_string_lossy().into_owned())
@@ -296,7 +302,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("My Ore_App!");
         fs::create_dir(&root).unwrap();
+        // The project's output directory, then outputs: one inside it,
+        // one configured elsewhere.
         let outputs = [
+            root.join("./generated/typescript"),
             root.join("generated/typescript/stacks/ore"),
             root.join("src/ore-sdk.ts"),
         ];
@@ -319,14 +328,11 @@ mod tests {
             tsconfig["compilerOptions"]["types"],
             serde_json::json!(["node"])
         );
-        // Only the entry and the generated outputs: not other apps beneath.
+        // Only the entry and the generated outputs, including stacks installed
+        // later into the output directory: not other apps beneath.
         assert_eq!(
             tsconfig["include"],
-            serde_json::json!([
-                "*.ts",
-                "generated/typescript/stacks/ore/**/*.ts",
-                "src/**/*.ts"
-            ])
+            serde_json::json!(["*.ts", "generated/typescript/**/*.ts", "src/**/*.ts"])
         );
         // The written tsconfig is one the install guidance accepts.
         assert_eq!(runtime::tsconfig_hiding_node_types(&root), None);

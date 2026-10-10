@@ -49,6 +49,12 @@ pub struct UsageAuth {
     /// The command that creates the key, for a publishable key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// The directory to run `command` in, when it is not the current one:
+    /// `a4 auth keys create-publishable` detects the framework (and so the
+    /// variable name) from, and writes the env file in, the directory it runs
+    /// in. Kept out of `command` so it works in any shell.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
 }
 
 /// The kind of app a stack is used from, which decides its first lines.
@@ -71,52 +77,39 @@ const SERVER_KEY_ENV: &str = "ARETE_API_KEY";
 impl AppKind {
     /// `app_dir` is where the key command must run: the app's directory as
     /// [`app_dir_from_current`] spells it, `None` for the current directory.
-    fn auth(self, app_dir: Option<&str>) -> UsageAuth {
+    fn auth(self, app_dir: Option<String>) -> UsageAuth {
         match self {
             AppKind::Node => UsageAuth {
                 option: "secretKey",
                 env_var: SERVER_KEY_ENV,
                 command: None,
+                directory: None,
             },
             AppKind::Browser(framework) => UsageAuth {
                 option: "publishableKey",
                 env_var: framework.env_var(),
-                // `create-publishable` detects the framework, and so the
-                // variable name, from the directory it runs in, and writes
-                // the env file there: the app's own directory.
                 command: Some(format!(
-                    "{}a4 auth keys create-publishable --origin {} --env-file .env.local",
-                    app_dir
-                        .map(|dir| format!("cd {dir} && "))
-                        .unwrap_or_default(),
+                    "a4 auth keys create-publishable --origin {} --env-file .env.local",
                     dev_origin(framework)
                 )),
+                directory: app_dir,
             },
         }
     }
 }
 
-/// `app_dir` as a shell word for `cd` from `current`: `None` when they are
-/// the same directory, relative when it is inside `current`, else absolute.
+/// `app_dir` for people, from `current`: `None` when they are the same
+/// directory, relative when it is inside `current`, else absolute.
 fn app_dir_from(app_dir: &Path, current: Option<&Path>) -> Option<String> {
     let app_dir = fs::canonicalize(app_dir).unwrap_or_else(|_| app_dir.to_path_buf());
     let current = current.and_then(|current| fs::canonicalize(current).ok());
-    let path = match current
+    match current
         .as_deref()
         .map(|current| app_dir.strip_prefix(current))
     {
-        Some(Ok(relative)) if relative.as_os_str().is_empty() => return None,
-        Some(Ok(relative)) => relative.to_path_buf(),
-        _ => app_dir,
-    };
-    let path = path.display().to_string();
-    if path
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || "/._-+@:".contains(character))
-    {
-        Some(path)
-    } else {
-        Some(format!("'{}'", path.replace('\'', r"'\''")))
+        Some(Ok(relative)) if relative.as_os_str().is_empty() => None,
+        Some(Ok(relative)) => Some(relative.display().to_string()),
+        _ => Some(app_dir.display().to_string()),
     }
 }
 
@@ -155,7 +148,7 @@ pub fn stack_usage(
     let import_path = import_specifier(from_dir, &generated.entry);
     let export = &generated.export_name;
     let view = generated.list_view.as_ref();
-    let auth = app.auth(app_dir_from_current(from_dir).as_deref());
+    let auth = app.auth(app_dir_from_current(from_dir));
     let mut snippet = Vec::new();
     let run = match app {
         AppKind::Browser(framework) => {
@@ -168,8 +161,12 @@ pub fn stack_usage(
             ));
             snippet.push(format!(r#"import {{ {export} }} from "{import_path}";"#));
             snippet.push(String::new());
-            snippet
-                .push("// A publishable key bound to this app's origin, created with:".to_string());
+            snippet.push(match &auth.directory {
+                Some(directory) => format!(
+                    "// A publishable key bound to this app's origin, created by running in {directory}:"
+                ),
+                None => "// A publishable key bound to this app's origin, created with:".to_string(),
+            });
             if let Some(command) = &auth.command {
                 snippet.push(format!("// {command}"));
             }
@@ -421,6 +418,7 @@ mod tests {
                 option: "secretKey",
                 env_var: "ARETE_API_KEY",
                 command: None,
+                directory: None,
             }
         );
         assert_eq!(
@@ -448,17 +446,20 @@ for await (const update of session.stacks.app.views.Vault.list.watch({ take: 20 
         assert_eq!(usage.auth.env_var, "VITE_ARETE_PUBLISHABLE_KEY");
         assert_eq!(
             usage.auth.command.as_deref(),
-            // Tests run in the crate directory, so the command enters the
-            // app's directory first.
-            Some("cd tests/golden/installed-typescript/programs && a4 auth keys create-publishable --origin http://localhost:5173 --env-file .env.local")
+            Some("a4 auth keys create-publishable --origin http://localhost:5173 --env-file .env.local")
+        );
+        // Tests run in the crate directory, so the command runs in the app's.
+        assert_eq!(
+            usage.auth.directory.as_deref(),
+            Some("tests/golden/installed-typescript/programs")
         );
         assert_eq!(
             usage.snippet.join("\n"),
             r#"import { AreteProvider, useArete } from "@usearete/react";
 import { VAULT_STREAM_STACK } from "../stacks/vault/vault.js";
 
-// A publishable key bound to this app's origin, created with:
-// cd tests/golden/installed-typescript/programs && a4 auth keys create-publishable --origin http://localhost:5173 --env-file .env.local
+// A publishable key bound to this app's origin, created by running in tests/golden/installed-typescript/programs:
+// a4 auth keys create-publishable --origin http://localhost:5173 --env-file .env.local
 const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
 
 export function App() {
@@ -489,7 +490,7 @@ function Rows() {
         ));
         assert_eq!(
             usage.auth.command.as_deref(),
-            Some("cd tests/golden/installed-typescript && a4 auth keys create-publishable --origin http://localhost:3000 --env-file .env.local")
+            Some("a4 auth keys create-publishable --origin http://localhost:3000 --env-file .env.local")
         );
     }
 
@@ -497,12 +498,12 @@ function Rows() {
     fn the_key_command_runs_in_the_app_directory() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        let web = root.join("apps/my web");
+        let web = root.join("apps/-web");
         fs::create_dir_all(&web).unwrap();
         assert_eq!(app_dir_from(root, Some(root)), None);
         assert_eq!(
-            app_dir_from(&web, Some(root)).as_deref(),
-            Some("'apps/my web'")
+            app_dir_from(&web, Some(root)),
+            Some(Path::new("apps/-web").display().to_string())
         );
         let elsewhere = tempfile::tempdir().unwrap();
         let absolute = fs::canonicalize(elsewhere.path()).unwrap();
@@ -510,15 +511,15 @@ function Rows() {
             app_dir_from(elsewhere.path(), Some(root)),
             Some(absolute.display().to_string())
         );
-        let command = AppKind::Browser(Framework::Vite)
-            .auth(Some("apps/web"))
-            .command
-            .unwrap();
+        // The command itself stays shell-neutral: no `cd`, no `&&`.
+        let auth = AppKind::Browser(Framework::Vite).auth(Some("apps/-web".into()));
         assert_eq!(
-            command,
-            "cd apps/web && a4 auth keys create-publishable --origin http://localhost:5173 --env-file .env.local"
+            auth.command.as_deref(),
+            Some("a4 auth keys create-publishable --origin http://localhost:5173 --env-file .env.local")
         );
-        assert_eq!(AppKind::Node.auth(Some("apps/web")).command, None);
+        assert_eq!(auth.directory.as_deref(), Some("apps/-web"));
+        let node = AppKind::Node.auth(Some("apps/-web".into()));
+        assert_eq!((node.command, node.directory), (None, None));
     }
 
     #[test]
