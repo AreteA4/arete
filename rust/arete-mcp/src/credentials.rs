@@ -31,15 +31,17 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
-use serde::Deserialize;
 
-pub const DEFAULT_API_URL: &str = "https://api.arete.run";
-pub const AGENT_PROFILE: &str = "agent";
-pub const HUMAN_PROFILE: &str = "human";
+// Profile parsing and lookup live in the SDK so the CLI, this server and SDK
+// scripts resolve `a4` logins identically.
+pub use arete_sdk::credentials::{
+    inferred_profile_for_key, lookup_credentials, normalize_api_url, validate_key_for_profile,
+    validate_profile_name, CredentialLookup, AGENT_PROFILE, DEFAULT_API_URL,
+    ENV_VAR_CREDENTIALS_PATH, ENV_VAR_PROFILE, HUMAN_PROFILE,
+};
+
 pub const ENV_VAR_API_KEY: &str = "ARETE_API_KEY";
 const ENV_VAR_API_URL: &str = "ARETE_API_URL";
-pub const ENV_VAR_PROFILE: &str = "ARETE_PROFILE";
-pub const ENV_VAR_CREDENTIALS_PATH: &str = "ARETE_CREDENTIALS_PATH";
 
 /// Ambient environment the resolver reads from. Production code uses
 /// [`SystemEnv`]; tests construct an inline struct implementing this trait.
@@ -50,9 +52,6 @@ pub trait Env {
     /// readable. Errors (missing file, permission denied, bad UTF-8) map to
     /// `None` — the caller decides whether absence is fatal.
     fn credentials_file(&self) -> Option<String>;
-    /// Display path for the credentials file, used only in error messages.
-    /// Must never be called on test data in a way that leaks real paths.
-    fn credentials_file_path_display(&self) -> String;
 }
 
 /// The real implementation used in the shipped binary.
@@ -66,70 +65,10 @@ impl Env for SystemEnv {
     fn credentials_file(&self) -> Option<String> {
         fs::read_to_string(system_credentials_path()?).ok()
     }
-
-    fn credentials_file_path_display(&self) -> String {
-        system_credentials_path()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "~/.arete/credentials.toml".to_string())
-    }
 }
 
 fn system_credentials_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os(ENV_VAR_CREDENTIALS_PATH) {
-        if !path.is_empty() {
-            return Some(PathBuf::from(path));
-        }
-    }
-    dirs::home_dir().map(|h| h.join(".arete").join("credentials.toml"))
-}
-
-/// One profile-aware lookup from a parsed credentials document.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CredentialLookup {
-    pub key: Option<String>,
-    /// The named profile used. `None` means a legacy `[keys]`/`api_key` entry.
-    pub profile: Option<String>,
-}
-
-/// Validate a profile name accepted on the CLI and in credentials files.
-pub fn validate_profile_name(profile: &str) -> Result<&str> {
-    let profile = profile.trim();
-    if profile.is_empty()
-        || profile.len() > 64
-        || !profile
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-    {
-        return Err(anyhow!(
-            "invalid Arete profile `{profile}`; use 1-64 letters, numbers, hyphens, or underscores"
-        ));
-    }
-    Ok(profile)
-}
-
-/// Infer the safe built-in profile from a key prefix.
-pub fn inferred_profile_for_key(key: &str) -> &'static str {
-    if key.trim().starts_with("a4_ak_") {
-        AGENT_PROFILE
-    } else {
-        HUMAN_PROFILE
-    }
-}
-
-/// Ensure reserved profiles cannot accidentally contain the other principal's
-/// credential. Custom profiles remain available for advanced use.
-pub fn validate_key_for_profile(profile: &str, key: &str) -> Result<()> {
-    let profile = validate_profile_name(profile)?;
-    let is_agent_key = key.trim().starts_with("a4_ak_");
-    match profile {
-        AGENT_PROFILE if !is_agent_key => Err(anyhow!(
-            "profile `agent` requires an a4_ak_* agent credential"
-        )),
-        HUMAN_PROFILE if is_agent_key => Err(anyhow!(
-            "profile `human` cannot contain an a4_ak_* agent credential"
-        )),
-        _ => Ok(()),
-    }
+    arete_sdk::credentials::credentials_path(|name| std::env::var(name).ok())
 }
 
 /// Describes where a resolved api key came from. Useful for log lines and the
@@ -148,7 +87,8 @@ impl KeySource {
         match self {
             KeySource::Explicit => "explicit_argument",
             KeySource::EnvVar => "env:ARETE_API_KEY",
-            KeySource::CredentialsFile => "~/.arete/credentials.toml",
+            // Agent-visible: name the source, never where credentials live.
+            KeySource::CredentialsFile => "a4-login",
             KeySource::None => "none",
         }
     }
@@ -238,15 +178,15 @@ pub fn resolve_with<E: Env>(env: &E, explicit: Option<String>, url: &str) -> Res
 
     // Nothing found. Decide whether that's fatal.
     if is_hosted_websocket_url(url) {
-        let file = env.credentials_file_path_display();
-        let profile_hint = selected_profile
-            .as_deref()
-            .map(|profile| format!(" for profile `{profile}`"))
-            .unwrap_or_default();
+        // Agent-visible: say what was checked, never where credentials live.
+        let api_url = selected_api_url(env);
+        let checked = match selected_profile.as_deref() {
+            Some(profile) => format!("the a4 login (profile `{profile}`, API {api_url})"),
+            None => format!("{ENV_VAR_API_KEY} or the a4 login (API {api_url})"),
+        };
         Err(anyhow!(
-            "no Arete api key found{profile_hint} for hosted stack `{url}`. \
-             Checked {file}. Run `a4 auth signup` for an agent credential or \
-             `a4 auth login --profile human` for a human credential."
+            "No Arete API key found in {checked} for hosted stack `{url}`. Run \
+             `a4 auth signup` (agent) or `a4 auth login`, or set {ENV_VAR_API_KEY}."
         ))
     } else {
         Ok(ResolvedKey {
@@ -263,91 +203,6 @@ fn selected_api_url<E: Env>(env: &E) -> String {
         .unwrap_or_else(|| DEFAULT_API_URL.to_string())
 }
 
-/// Parse a credentials document with optional named-profile selection.
-///
-/// When no profile is requested, exactly one matching named profile is used.
-/// Multiple matches are rejected instead of silently choosing a potentially
-/// more privileged credential. Legacy URL-keyed credentials remain supported.
-pub fn lookup_credentials(
-    content: &str,
-    api_url: &str,
-    requested_profile: Option<&str>,
-) -> Result<CredentialLookup> {
-    let parsed: CredentialsFile = toml::from_str(content)
-        .map_err(|error| anyhow!("failed to parse credentials file: {error}"))?;
-
-    if let Some(profile) = requested_profile {
-        let profile = validate_profile_name(profile)?;
-        if let Some(key) = parsed
-            .profiles
-            .as_ref()
-            .and_then(|profiles| profiles.get(profile))
-            .and_then(|profile| find_url_key(&profile.keys, api_url))
-        {
-            validate_key_for_profile(profile, &key)?;
-            return Ok(CredentialLookup {
-                key: Some(key),
-                profile: Some(profile.to_string()),
-            });
-        }
-
-        if let Some(key) = legacy_url_key(&parsed, api_url) {
-            let compatible = match profile {
-                AGENT_PROFILE => key.starts_with("a4_ak_"),
-                HUMAN_PROFILE => !key.starts_with("a4_ak_"),
-                _ => false,
-            };
-            if compatible {
-                return Ok(CredentialLookup {
-                    key: Some(key),
-                    profile: None,
-                });
-            }
-        }
-
-        return Ok(CredentialLookup {
-            key: None,
-            profile: Some(profile.to_string()),
-        });
-    }
-
-    let mut matches = parsed
-        .profiles
-        .as_ref()
-        .into_iter()
-        .flat_map(|profiles| profiles.iter())
-        .filter_map(|(name, profile)| {
-            find_url_key(&profile.keys, api_url).map(|key| (name.clone(), key))
-        })
-        .collect::<Vec<_>>();
-    matches.sort_by(|left, right| left.0.cmp(&right.0));
-    match matches.as_slice() {
-        [] => {}
-        [(profile, key)] => {
-            validate_key_for_profile(profile, key)?;
-            return Ok(CredentialLookup {
-                key: Some(key.clone()),
-                profile: Some(profile.clone()),
-            });
-        }
-        _ => {
-            let profiles = matches
-                .iter()
-                .map(|(profile, _)| profile.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(anyhow!(
-                "multiple Arete profiles match {api_url}: {profiles}; set {ENV_VAR_PROFILE} or pass --profile"
-            ));
-        }
-    }
-
-    Ok(CredentialLookup {
-        key: legacy_url_key(&parsed, api_url),
-        profile: None,
-    })
-}
-
 /// Whether the URL points at a Arete-hosted WebSocket endpoint.
 /// Defers to the SDK so the set of hosted suffixes is decided in one place;
 /// this used to keep its own copy of the constant because the SDK's check was
@@ -361,111 +216,11 @@ fn is_hosted_websocket_url(url: &str) -> bool {
     arete_sdk::is_hosted_websocket_host(&rest[..host_end])
 }
 
-/// Parse a credentials.toml body and return a key if either supported schema
-/// matches. Pure function — easy to unit-test without touching the filesystem.
-/// Normalize an API URL for credential lookup with the same rule
-/// `RegistryClient` applies to its request destination (trim whitespace,
-/// drop trailing slashes), plus the host rules the registry origin check
-/// (`is_arete_origin`) applies: case-fold the scheme and host (both are
-/// case-insensitive per RFC 3986) and drop the host's trailing dot (the
-/// FQDN root label — `api.arete.run.` IS `api.arete.run`). So an
-/// `ARETE_API_URL` of `https://API.Arete.Run.` must still find the key
-/// stored under `https://api.arete.run`. Userinfo and path are left
-/// untouched — they are case-sensitive. Both sides of the `[keys]` match
-/// go through this so `ARETE_API_URL="https://api.arete.run/"` still finds
-/// the key stored under `"https://api.arete.run"` and vice versa.
-pub fn normalize_api_url(url: &str) -> String {
-    let trimmed = url.trim().trim_end_matches('/');
-    let (scheme, rest) = match trimmed.split_once("://") {
-        Some((scheme, rest)) => (scheme.to_ascii_lowercase(), rest),
-        None => (String::new(), trimmed),
-    };
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let authority = &rest[..authority_end];
-    // Keep any `user:pass@` userinfo verbatim; the host starts after it.
-    let host_start = authority.rfind('@').map_or(0, |i| i + 1);
-    let host_port = &authority[host_start..];
-    // Split the port off so the host rules cannot touch it. Bracketed IPv6
-    // literals end at ']'; anything else carries at most one ':'.
-    let (host, port) = if host_port.starts_with('[') {
-        match host_port.find(']') {
-            Some(end) => host_port.split_at(end + 1),
-            None => (host_port, ""),
-        }
-    } else {
-        match host_port.rfind(':') {
-            Some(colon) => host_port.split_at(colon),
-            None => (host_port, ""),
-        }
-    };
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    let mut out = String::with_capacity(trimmed.len());
-    if !scheme.is_empty() {
-        out.push_str(&scheme);
-        out.push_str("://");
-    }
-    out.push_str(&authority[..host_start]);
-    out.push_str(&host);
-    out.push_str(port);
-    out.push_str(&rest[authority_end..]);
-    out
-}
-
-fn find_url_key(keys: &std::collections::HashMap<String, String>, api_url: &str) -> Option<String> {
-    let wanted = normalize_api_url(api_url);
-    let exact = keys
-        .get(api_url)
-        .or_else(|| keys.get(wanted.as_str()))
-        .map(|key| key.trim())
-        .filter(|key| !key.is_empty());
-    exact.map(str::to_string).or_else(|| {
-        let mut candidates = keys
-            .iter()
-            .filter(|(url, _)| normalize_api_url(url) == wanted)
-            .collect::<Vec<_>>();
-        candidates.sort_by_key(|(url, _)| url.as_str());
-        candidates
-            .into_iter()
-            .map(|(_, key)| key.trim())
-            .find(|key| !key.is_empty())
-            .map(str::to_string)
-    })
-}
-
-fn legacy_url_key(parsed: &CredentialsFile, api_url: &str) -> Option<String> {
-    if let Some(key) = parsed
-        .keys
-        .as_ref()
-        .and_then(|keys| find_url_key(keys, api_url))
-    {
-        return Some(key);
-    }
-    parsed
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-        .map(str::to_string)
-}
-
 #[cfg(test)]
 fn parse_credentials_content(content: &str, api_url: &str) -> Option<String> {
     lookup_credentials(content, api_url, None)
         .ok()
         .and_then(|lookup| lookup.key)
-}
-
-#[derive(Default, Deserialize)]
-struct CredentialsFile {
-    profiles: Option<std::collections::HashMap<String, CredentialProfile>>,
-    keys: Option<std::collections::HashMap<String, String>>,
-    api_key: Option<String>,
-}
-
-#[derive(Default, Deserialize)]
-struct CredentialProfile {
-    #[serde(default)]
-    keys: std::collections::HashMap<String, String>,
 }
 
 #[cfg(test)]
@@ -499,9 +254,6 @@ mod tests {
         }
         fn credentials_file(&self) -> Option<String> {
             self.credentials.clone()
-        }
-        fn credentials_file_path_display(&self) -> String {
-            "<test:~/.arete/credentials.toml>".to_string()
         }
     }
 
@@ -854,11 +606,34 @@ mod tests {
         let env = TestEnv::default();
         let err = resolve_with(&env, None, "wss://any.stack.arete.run").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("no Arete api key"), "{msg}");
+        assert!(msg.contains("No Arete API key found"), "{msg}");
+        assert!(msg.contains("ARETE_API_KEY or the a4 login"), "{msg}");
+        assert!(msg.contains("https://api.arete.run"), "{msg}");
         assert!(msg.contains("a4 auth login"), "{msg}");
         assert!(msg.contains("a4 auth signup"), "{msg}");
-        // Should include the test env's display path, not a real $HOME.
-        assert!(msg.contains("<test:"), "{msg}");
+        // Never reveal where credentials are stored.
+        assert!(!msg.contains(".arete/"), "{msg}");
+        assert!(!msg.contains("credentials"), "{msg}");
+
+        let env = TestEnv::default().with_var(ENV_VAR_PROFILE, "agent");
+        let msg = resolve_with(&env, None, "wss://any.stack.arete.run")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("profile `agent`"), "{msg}");
+        assert!(!msg.contains(".arete/"), "{msg}");
+    }
+
+    #[test]
+    fn key_sources_never_name_a_path() {
+        assert_eq!(KeySource::CredentialsFile.as_str(), "a4-login");
+        for source in [
+            KeySource::Explicit,
+            KeySource::EnvVar,
+            KeySource::CredentialsFile,
+            KeySource::None,
+        ] {
+            assert!(!source.as_str().contains('/'), "{}", source.as_str());
+        }
     }
 
     #[test]

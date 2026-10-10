@@ -219,6 +219,48 @@ describe('ConnectionManager auth', () => {
     expect(MockWebSocket.instances[0]?.url).toContain('hs_token=');
   });
 
+  it('says how to supply a key when an unauthenticated session request gets 401', async () => {
+    vi.stubEnv('ARETE_API_KEY', '');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      headers: new Headers(),
+      text: async () => JSON.stringify({ error: 'authentication required' }),
+    }));
+
+    const manager = new ConnectionManager({ websocketUrl: 'wss://demo.stack.arete.run' });
+    const error = await manager.connect().catch((caught: unknown) => caught as Error);
+
+    expect(error.message).toContain('authentication required');
+    expect(error.message).toContain('No Arete API key found. Run `a4 auth login`');
+    expect(error.message).toContain('ARETE_API_KEY');
+    expect(error.message).not.toContain('.arete');
+  });
+
+  it('leaves custom Authorization failures to the custom token endpoint', async () => {
+    vi.stubEnv('ARETE_API_KEY', '');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      headers: new Headers(),
+      text: async () => JSON.stringify({ error: 'bad session cookie' }),
+    }));
+
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://demo.stack.arete.run',
+      auth: {
+        tokenEndpoint: 'https://auth.example.com/token',
+        tokenEndpointHeaders: { authorization: 'Bearer custom' },
+      },
+    });
+    const error = await manager.connect().catch((caught: unknown) => caught as Error);
+
+    expect(error.message).toContain('bad session cookie');
+    expect(error.message).not.toContain('No Arete API key found');
+  });
+
   it('fetches a hosted session token when a publishable key is configured', async () => {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const fetchMock = vi.fn().mockResolvedValue({

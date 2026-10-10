@@ -145,9 +145,11 @@ arguments, or transcripts; use `auth status` and `auth whoami` to inspect
 authentication.
 
 SDK code for servers, agents, and local scripts authenticates with an agent or
-secret key: pass it as `secretKey` (TypeScript) or `secret_key` (Python, Rust),
-or set no auth option and provide `ARETE_API_KEY` in the environment. Read the
-key from the environment, never from source. Anything shipped to a browser
+secret key. With no auth option the SDKs use `ARETE_API_KEY` from the
+environment if set, and otherwise the key from your `a4` login, so after
+`a4 init` or `a4 auth signup` scripts need no key setup. To pass a key
+explicitly, use `secretKey` (TypeScript) or `secret_key` (Python, Rust) and
+read it from the environment, never from source. Anything shipped to a browser
 needs an origin-bound publishable key instead (`publishableKey` /
 `publishable_key`), created per origin with
 `a4 auth keys create-publishable --origin <scheme://host[:port]>`. The

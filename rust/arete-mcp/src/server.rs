@@ -128,8 +128,8 @@ pub struct ConnectArgs {
     /// (e.g. `wss://your-stack.stack.arete.run`).
     pub url: String,
     /// Optional explicit API key (override). If omitted, the server resolves
-    /// the key from the `ARETE_API_KEY` env var, then from
-    /// `~/.arete/credentials.toml` (the file managed by `a4 auth login`).
+    /// the key from the `ARETE_API_KEY` env var, then from the a4 login
+    /// (`a4 auth signup` / `a4 auth login`).
     /// Prefer leaving this blank in agent calls so the key does not enter
     /// the model context or chat transcript.
     #[serde(default)]
@@ -521,8 +521,8 @@ struct ConnectionInfo {
     url: String,
     state: String,
     /// Where the api key came from for this connect call. One of
-    /// `explicit_argument`, `env:ARETE_API_KEY`,
-    /// `~/.arete/credentials.toml`, or `none`. Never contains the key
+    /// `explicit_argument`, `env:ARETE_API_KEY`, `a4-login`, or `none`.
+    /// Never names where credentials are stored. Never contains the key
     /// itself — this field is safe to log and to expose to the agent.
     /// Only populated on `connect`; omitted from `list_connections` because
     /// we don't store per-connection credential provenance.
@@ -982,7 +982,7 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Show the authenticated agent account, including slug, status, plan, entitlement expiry, claim state, whether trial access is enabled, and starter-stack guidance. The API key is resolved from the environment or credentials file and is never returned."
+        description = "Show the authenticated agent account, including slug, status, plan, entitlement expiry, claim state, whether trial access is enabled, and starter-stack guidance. The API key is resolved from ARETE_API_KEY or the a4 login and is never returned."
     )]
     async fn account_status(&self) -> Result<CallToolResult, McpError> {
         match self.recovery.account_status().await {
@@ -1007,9 +1007,8 @@ impl AreteMcp {
                           Returns a connection_id used by subscribe and query tools.\n\n\
                           AUTH: Prefer omitting `api_key` in agent calls — the \
                           server resolves it automatically from (1) explicit arg, \
-                          (2) `ARETE_API_KEY` env var, (3) \
-                          `~/.arete/credentials.toml` (managed by \
-                          `a4 auth login`). Passing the key as an argument puts it \
+                          (2) `ARETE_API_KEY` env var, (3) the a4 login \
+                          (`a4 auth signup` / `a4 auth login`). Passing the key as an argument puts it \
                           in the model context and chat transcript, which is \
                           usually not what you want. The response includes a \
                           `key_source` field so you can see which lookup path \

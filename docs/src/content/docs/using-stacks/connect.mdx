@@ -84,7 +84,10 @@ generated declarations in your installed package have the real names.
 
 This session runs on a server or in a local script, so it authenticates with an
 agent key (`a4_ak_...`) or secret key (`a4_sk_...`) as `secretKey`. With no
-`auth` option at all, the SDK reads `ARETE_API_KEY` itself outside browsers.
+`auth` option at all, outside browsers the SDK uses `ARETE_API_KEY` if it is
+set, and otherwise the key from your `a4` login, so a script on a machine
+logged in with `a4` needs no key setup. If several `a4` profiles hold a key,
+set `ARETE_PROFILE` to pick one.
 `secretKey` throws in a browser: anything shipped to a browser uses an
 origin-bound `publishableKey` instead, as in the React example below. Create
 one with `a4 auth keys create-publishable --origin <scheme://host[:port]>`.

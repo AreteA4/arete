@@ -160,6 +160,18 @@ pub enum TokenTransport {
     Bearer,
 }
 
+/// Where an [`AuthConfig`]'s secret key came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SecretKeySource {
+    /// Passed by the caller (or there is no secret key).
+    #[default]
+    Option,
+    /// [`ARETE_API_KEY_ENV`].
+    Env,
+    /// The active `a4` CLI login; only ever sent to the Arete API.
+    A4Login,
+}
+
 #[derive(Clone, Default)]
 pub struct AuthConfig {
     pub(crate) token: Option<String>,
@@ -167,6 +179,10 @@ pub struct AuthConfig {
     pub(crate) token_endpoint: Option<String>,
     pub(crate) publishable_key: Option<String>,
     pub(crate) secret_key: Option<String>,
+    /// Where `secret_key` came from. Carried through clones, so binding
+    /// paths that copy the resolved config keep the destination restriction
+    /// of an `a4` login key; reset by [`Self::with_secret_key`].
+    pub(crate) secret_key_source: SecretKeySource,
     pub(crate) token_endpoint_headers: HashMap<String, String>,
     pub(crate) token_transport: TokenTransport,
     /// Served stack version named in untargeted session requests. Set by the
@@ -185,6 +201,7 @@ impl fmt::Debug for AuthConfig {
                 &self.publishable_key.as_ref().map(|_| "***"),
             )
             .field("secret_key", &self.secret_key.as_ref().map(|_| "***"))
+            .field("secret_key_source", &self.secret_key_source)
             .field(
                 "token_endpoint_headers",
                 &self.token_endpoint_headers.keys().collect::<Vec<_>>(),
@@ -212,10 +229,17 @@ impl AuthConfig {
     /// Agent key (`a4_ak_...`) or secret key (`a4_sk_...`) for servers,
     /// agents and local scripts. Sent to the token endpoint as the bearer
     /// credential; no `Origin` header is needed. When no auth option is set,
-    /// [`ARETE_API_KEY_ENV`] supplies it when connecting through the client
-    /// or session builder.
+    /// [`ARETE_API_KEY_ENV`], then the key from the active `a4` CLI login,
+    /// supplies it when connecting through the client or session builder.
     pub fn with_secret_key(mut self, secret_key: impl Into<String>) -> Self {
         self.secret_key = Some(secret_key.into());
+        self.secret_key_source = SecretKeySource::Option;
+        self
+    }
+
+    fn with_secret_key_from(mut self, secret_key: String, source: SecretKeySource) -> Self {
+        self = self.with_secret_key(secret_key);
+        self.secret_key_source = source;
         self
     }
 
@@ -230,11 +254,30 @@ impl AuthConfig {
         }
     }
 
-    /// The key sent as the token endpoint bearer credential, if any.
+    /// The configured key, if any.
     pub(crate) fn api_key(&self) -> Option<&str> {
         self.secret_key
             .as_deref()
             .or(self.publishable_key.as_deref())
+    }
+
+    /// The key sent as the bearer credential to `endpoint`, if any. A key
+    /// taken from the `a4` login is only sent to the Arete API it was stored
+    /// for.
+    pub(crate) fn api_key_for(&self, endpoint: &str) -> Option<&str> {
+        let from_login =
+            self.secret_key.is_some() && self.secret_key_source == SecretKeySource::A4Login;
+        if from_login && !crate::credentials::is_login_key_destination(endpoint) {
+            return None;
+        }
+        self.api_key()
+    }
+
+    /// Whether the token endpoint headers carry their own `Authorization`.
+    pub(crate) fn has_authorization_header(&self) -> bool {
+        self.token_endpoint_headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("authorization"))
     }
 
     fn has_explicit_auth(&self) -> bool {
@@ -406,12 +449,18 @@ pub(crate) fn build_websocket_url(
     Ok(url.to_string())
 }
 
-/// Validate the configured API keys and apply the [`ARETE_API_KEY_ENV`]
-/// fallback. Error and warning text never includes key material.
+/// Validate the configured API keys and apply the server-side credential
+/// chain: an explicit auth option, then [`ARETE_API_KEY_ENV`], then the key
+/// from the active `a4` CLI login. Error and warning text never includes key
+/// material.
 pub(crate) fn resolve_auth_config(
     auth: Option<AuthConfig>,
 ) -> Result<Option<AuthConfig>, AreteError> {
-    resolve_auth_config_with_env(auth, |name| std::env::var(name).ok())
+    resolve_auth_config_with_sources(
+        auth,
+        |name| std::env::var(name).ok(),
+        crate::credentials::cli_profile_secret_key,
+    )
 }
 
 fn warn_once(flag: &std::sync::atomic::AtomicBool, message: &str) {
@@ -429,8 +478,9 @@ static WARNED_PUBLISHABLE_IN_ENV: std::sync::atomic::AtomicBool =
 /// as the secret key, or both keys set, is refused; a secret-class key passed
 /// as the publishable key warns once. Error and warning text never includes
 /// key material. Unlike [`resolve_auth_config`], this never reads
-/// [`ARETE_API_KEY_ENV`], so the low-level constructors that call it leave
-/// credential lookup to their caller.
+/// [`ARETE_API_KEY_ENV`] or the `a4` CLI login, so the low-level constructors
+/// that call it (the MCP server's among them) leave credential lookup to their
+/// caller.
 pub(crate) fn validate_auth_config(auth: Option<&AuthConfig>) -> Result<(), AreteError> {
     if let Some(config) = auth {
         if let Some(secret_key) = config.secret_key.as_deref() {
@@ -471,22 +521,37 @@ pub(crate) fn validate_auth_config(auth: Option<&AuthConfig>) -> Result<(), Aret
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_auth_config_with_env(
     auth: Option<AuthConfig>,
     read_env: impl Fn(&str) -> Option<String>,
+) -> Result<Option<AuthConfig>, AreteError> {
+    resolve_auth_config_with_sources(auth, read_env, || None)
+}
+
+/// [`resolve_auth_config`] with injectable sources. `read_profile_key` is
+/// only called when neither an auth option nor a usable environment key is
+/// present.
+pub(crate) fn resolve_auth_config_with_sources(
+    auth: Option<AuthConfig>,
+    read_env: impl Fn(&str) -> Option<String>,
+    read_profile_key: impl FnOnce() -> Option<String>,
 ) -> Result<Option<AuthConfig>, AreteError> {
     validate_auth_config(auth.as_ref())?;
     if auth.as_ref().is_some_and(AuthConfig::has_explicit_auth) {
         return Ok(auth);
     }
 
-    let Some(env_key) = read_env(ARETE_API_KEY_ENV)
+    let env_key = read_env(ARETE_API_KEY_ENV)
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(auth);
-    };
-    if classify_api_key(&env_key) == ApiKeyClass::Publishable {
+        .filter(|value| !value.is_empty());
+    if let Some(env_key) = env_key {
+        if classify_api_key(&env_key) != ApiKeyClass::Publishable {
+            return Ok(Some(
+                auth.unwrap_or_default()
+                    .with_secret_key_from(env_key, SecretKeySource::Env),
+            ));
+        }
         warn_once(
             &WARNED_PUBLISHABLE_IN_ENV,
             &format!(
@@ -495,14 +560,28 @@ pub(crate) fn resolve_auth_config_with_env(
                  key as auth.publishable_key."
             ),
         );
-        return Ok(auth);
     }
-    Ok(Some(auth.unwrap_or_default().with_secret_key(env_key)))
+
+    match read_profile_key() {
+        Some(profile_key) => Ok(Some(
+            auth.unwrap_or_default()
+                .with_secret_key_from(profile_key, SecretKeySource::A4Login),
+        )),
+        None => Ok(auth),
+    }
 }
+
+/// Hint appended when a hosted connection has no API key. It names the
+/// commands and options that supply one, never where credentials are stored.
+pub(crate) const NO_API_KEY_HINT: &str = "No Arete API key found. Run `a4 auth login` (or \
+     `a4 auth signup` for an agent), or set ARETE_API_KEY, or pass auth.secret_key.";
 
 pub(crate) fn hosted_auth_required_error() -> AreteError {
     AreteError::WebSocket {
-        message: "Hosted Arete websocket connections require auth.secret_key (or ARETE_API_KEY), auth.publishable_key, auth.get_token, auth.token_endpoint, or auth.token".to_string(),
+        message: format!(
+            "{NO_API_KEY_HINT} Hosted Arete websocket connections need an API key or one of \
+             auth.publishable_key, auth.get_token, auth.token_endpoint or auth.token."
+        ),
         code: Some(AuthErrorCode::AuthRequired),
     }
 }
@@ -686,6 +765,121 @@ mod tests {
         assert!(resolve_auth_config_with_env(None, env_with(Some("  ")))
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn credential_chain_is_option_then_env_then_profile() {
+        let profile = || Some("a4_ak_fromprofile".to_string());
+        let explicit = AuthConfig::default().with_secret_key(SECRET);
+        let resolved =
+            resolve_auth_config_with_sources(Some(explicit), env_with(Some(AGENT)), || {
+                panic!("profile must not be read when an option is set")
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.api_key(), Some(SECRET));
+
+        let resolved = resolve_auth_config_with_sources(None, env_with(Some(AGENT)), || {
+            panic!("profile must not be read when ARETE_API_KEY is set")
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(resolved.api_key(), Some(AGENT));
+
+        let resolved = resolve_auth_config_with_sources(None, env_with(None), profile)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.secret_key.as_deref(), Some("a4_ak_fromprofile"));
+
+        // A publishable ARETE_API_KEY is ignored and the chain continues.
+        let resolved = resolve_auth_config_with_sources(None, env_with(Some(PUBLISHABLE)), profile)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.secret_key.as_deref(), Some("a4_ak_fromprofile"));
+
+        // The profile key keeps non-credential settings such as the transport.
+        let transport = AuthConfig::default().with_token_transport(TokenTransport::Bearer);
+        let resolved = resolve_auth_config_with_sources(Some(transport), env_with(None), profile)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.token_transport, TokenTransport::Bearer);
+        assert!(
+            resolve_auth_config_with_sources(None, env_with(None), || None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn login_key_is_withheld_from_other_hosts() {
+        let login_key = "a4_ak_loginonlyforarete";
+        let resolved =
+            resolve_auth_config_with_sources(None, env_with(None), || Some(login_key.into()))
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            resolved.api_key_for("https://api.arete.run/ws/sessions"),
+            Some(login_key)
+        );
+        // Binding paths clone the config and point it at a stack-provided
+        // session endpoint; the login key must not follow.
+        let rebound = resolved
+            .clone()
+            .with_token_endpoint("https://evil.example/sessions");
+        assert_eq!(rebound.api_key_for("https://evil.example/sessions"), None);
+        // Explicit keys are unaffected.
+        let explicit = AuthConfig::default().with_secret_key(SECRET);
+        assert_eq!(
+            explicit.api_key_for("https://evil.example/sessions"),
+            Some(SECRET)
+        );
+    }
+
+    #[test]
+    fn restriction_follows_the_config_not_the_key_value() {
+        let key = "a4_ak_sharedbetweenclients";
+        let custom = "https://auth.example.com/token";
+        let discovered =
+            resolve_auth_config_with_sources(None, env_with(None), || Some(key.into()))
+                .unwrap()
+                .unwrap();
+        // Another client in the same process passes the same key explicitly.
+        let explicit = resolve_auth_config_with_sources(
+            Some(
+                AuthConfig::default()
+                    .with_secret_key(key)
+                    .with_token_endpoint(custom),
+            ),
+            env_with(None),
+            || Some(key.into()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(explicit.api_key_for(custom), Some(key));
+        assert_eq!(discovered.api_key_for(custom), None);
+        // Giving the discovered config its own key lifts the restriction.
+        assert_eq!(
+            discovered
+                .clone()
+                .with_secret_key(SECRET)
+                .api_key_for(custom),
+            Some(SECRET)
+        );
+        // ARETE_API_KEY keys are not restricted.
+        let from_env =
+            resolve_auth_config_with_sources(None, env_with(Some(AGENT)), || Some(key.into()))
+                .unwrap()
+                .unwrap();
+        assert_eq!(from_env.api_key_for(custom), Some(AGENT));
+    }
+
+    #[test]
+    fn missing_key_hint_names_commands_not_paths() {
+        let message = hosted_auth_required_error().to_string();
+        assert!(message.contains("a4 auth login"), "{message}");
+        assert!(message.contains("ARETE_API_KEY"), "{message}");
+        assert!(!message.contains("credentials"), "{message}");
+        assert!(!message.contains(".arete"), "{message}");
     }
 
     #[test]

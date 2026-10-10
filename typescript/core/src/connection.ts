@@ -1,5 +1,11 @@
 import type { Frame } from './frame';
-import { resolveAuthConfig, tokenEndpointApiKey } from './auth-keys';
+import {
+  hasAuthorizationHeader,
+  isBrowserEnvironment,
+  NO_API_KEY_HINT,
+  resolveAuthConfig,
+  tokenEndpointApiKey,
+} from './auth-keys';
 import { CursorTracker, parseFrame, parseFrameFromBlob } from './frame';
 import type {
   AuthConfig,
@@ -781,7 +787,7 @@ export class ConnectionManager {
     tokenEndpoint: string,
     request: AuthTokenRequest
   ): Promise<TokenEndpointResponse> {
-    const apiKey = tokenEndpointApiKey(this.authConfig);
+    const apiKey = tokenEndpointApiKey(this.authConfig, tokenEndpoint);
     const response = await this.authFetch(tokenEndpoint, {
       method: 'POST',
       headers: {
@@ -814,9 +820,17 @@ export class ConnectionManager {
         : response.status === 429
           ? 'QUOTA_EXCEEDED'
           : 'AUTH_REQUIRED';
-      const errorMessage = typeof parsedError?.error === 'string' && parsedError.error.length > 0
+      const responseMessage = typeof parsedError?.error === 'string' && parsedError.error.length > 0
         ? parsedError.error
         : rawError || response.statusText || 'Authentication request failed';
+      // A server-side 401 for a request that carried no credential at all:
+      // say how to supply one. Custom Authorization headers have their own
+      // advice to give.
+      const sentCredential = Boolean(apiKey)
+        || hasAuthorizationHeader(this.authConfig?.tokenEndpointHeaders);
+      const errorMessage = response.status === 401 && !sentCredential && !isBrowserEnvironment()
+        ? `${responseMessage}. ${NO_API_KEY_HINT}`
+        : responseMessage;
 
       const retryAfterHeader = response.headers.get('Retry-After');
       const retryAfterSeconds = retryAfterHeader && /^\d+$/.test(retryAfterHeader)

@@ -78,10 +78,13 @@ If the user supplies an existing agent key instead, store it with:
 
 ### Authenticate SDK code
 
-- Server, agent, and script code: pass the key as `secretKey` (TypeScript) or
-  `secret_key` (Python, Rust), or set no auth option and provide
-  `ARETE_API_KEY` in the environment. Read it from the environment, never from
-  source. The TypeScript SDK refuses `secretKey` in a browser.
+- Server, agent, and script code: set no auth option. The SDK uses
+  `ARETE_API_KEY` from the environment if set, and otherwise the key from your
+  `a4` login, so after `a4 init` or `a4 auth signup` scripts need no key
+  setup; do not copy the key into the environment or into code. To pass a key
+  explicitly, use `secretKey` (TypeScript) or `secret_key` (Python, Rust), read
+  from the environment, never from source. The TypeScript SDK refuses
+  `secretKey` in a browser and never reads the `a4` login there.
 - Browser code: use an origin-bound publishable key, one per origin:
   `a4 auth keys create-publishable --origin <scheme://host[:port]>`
 
