@@ -343,6 +343,12 @@ jobs:
             release: a4-cli
             artifact_prefix: cli
     runs-on: ${{ matrix.os }}
+    # Build with the dispatched toolchain directly. Through rust-toolchain.toml,
+    # the first cargo call would also add rustfmt and clippy, which a release
+    # build does not need and which can collide with a runner's preinstalled
+    # cargo-fmt (it failed the cross build's `cargo install cargo-zigbuild`).
+    env:
+      RUSTUP_TOOLCHAIN: ${{ inputs.rust_toolchain }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:

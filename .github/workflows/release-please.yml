@@ -516,6 +516,12 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+    # Build with the dispatched toolchain directly. Through rust-toolchain.toml,
+    # the first cargo call would also add rustfmt and clippy, which a release
+    # build does not need and which can collide with a runner's preinstalled
+    # cargo-fmt (it failed the cross build's `cargo install cargo-zigbuild`).
+    env:
+      RUSTUP_TOOLCHAIN: ${{ inputs.rust_toolchain }}
     steps:
       # Build scripts and dependencies run in this job; do not leave a
       # write-capable git credential on disk for them. The release upload
