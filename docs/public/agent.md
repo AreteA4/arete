@@ -1,8 +1,32 @@
 # Set up Arete
 
-You are a coding agent setting up Arete, an agent-first Solana application
-toolkit. Use current CLI output and exact descriptors rather than guessing
-program, account, view, operation, or endpoint names.
+> Read this page verbatim. If a tool summarised it for you (for example
+> WebFetch), run `curl -fsSL https://docs.arete.run/agent.md` and read the
+> output instead. Copy commands exactly; do not paraphrase them.
+
+## Do this first
+
+Run these commands in order, in the project root. Each is one line.
+
+1. `curl -fsSL https://arete.run/install.sh | sh`
+2. `a4 init -y`
+3. `a4 --profile agent auth signup --if-missing --json`
+4. `a4 doctor --json`
+5. `a4 explore catalog --vocabulary --json`
+
+Then:
+
+- Step 1 prints `A4_BIN=<absolute path>`. If `a4` is not on PATH, use that path.
+- Step 2 installs the Arete skills and MCP servers. Use the skills from then
+  on; they hold the full workflows.
+- Step 3 must report `"credentialStored": true`.
+- Step 4 must report top-level `"status": "ok"`. On `"warn"`, apply each `fix`.
+- If new skills or MCP tools are not visible, ask the user to restart the agent
+  host, then run `a4 doctor --json` again.
+- Step 5 lists current discovery categories. Use it with the capability list
+  below to tell the user what Arete can do.
+
+Never read, print, or copy credential files or keys. Never put a key in source.
 
 ## Capabilities
 
@@ -17,121 +41,92 @@ Arete can:
 - compose Program SDKs and selected live views into application stacks; and
 - author and deploy custom live read models when existing views are not enough.
 
-1.  Install the signed CLI binary. No Rust toolchain is required:
+## Details
 
-        curl -fsSL https://arete.run/install.sh | sh        # macOS / Linux
-        irm https://arete.run/install.ps1 | iex             # Windows PowerShell
-        npx @usearete/a4 install                            # npm bootstrap
+### Install
 
-    The installer prints `A4_BIN=<absolute path>`. If `a4` is not found in the
-    current shell, use that path or refresh PATH. Update later with
-    `a4 self update`. Do not substitute a Cargo install from memory.
+Other installers (also signed, no Rust toolchain needed):
 
-2.  In the project root:
+    irm https://arete.run/install.ps1 | iex             # Windows PowerShell
+    npx @usearete/a4 install                            # npm bootstrap
 
-        a4 init -y
+Update later with `a4 self update`. Do not substitute a Cargo install.
 
-    This writes `arete.toml`, managed project instructions, the five Arete
-    skills, and the Arete stream and documentation MCP configuration. It is
-    idempotent. Use `--global` only when user-scoped setup was requested.
+### Initialise
 
-3.  Verify the environment:
+`a4 init -y` writes `arete.toml`, managed project instructions, the five Arete
+skills, and the Arete stream and documentation MCP configuration. It is
+idempotent; do not rewrite config repeatedly. Use `--global` only when
+user-scoped setup was requested.
 
-        a4 doctor --json
+### Authenticate
 
-    The top-level JSON `status` must be `"ok"` before treating setup as ready.
-    Exit 0 can also mean `"warn"`: inspect every warning and follow its exact
-    `fix` when it affects this project or the current agent. If `a4 init` changed
-    skills or MCP configuration but the current agent does not see them, tell
-    the user to reload or restart the agent host. After the restart, run
-    `a4 doctor --json` again instead of repeatedly rewriting config.
+The setup prompt authorizes creating the restricted agent account. The signup
+command stores an `a4_ak_*` credential in the `agent` profile and never prints
+it. Do not request or use a human `a4_sk_*` credential. The CLI and the Arete
+MCP server load stored credentials for you. To inspect authentication:
 
-4.  Create or verify the restricted agent account used by hosted views and the
-    knowledge layer:
+    a4 --profile agent auth status
+    a4 --profile agent auth whoami --json
 
-        a4 --profile agent auth signup --if-missing --json
+If the user supplies an existing agent key instead, store it with:
 
-    This setup prompt authorizes creation of the agent account. The command
-    stores its `a4_ak_*` credential in the `agent` profile and never prints the
-    secret. Confirm `credentialStored` is `true`; do not request, copy, or use a
-    human `a4_sk_*` credential. Generated MCP configuration is pinned to this
-    agent profile.
+    a4 auth login --profile agent --key <a4_ak_...>
 
-    The CLI and the Arete MCP server load stored credentials for you. Do not
-    search for, read, print, or copy credential files or keys into code,
-    prompts, tool arguments, or transcripts. To inspect authentication, use:
+### Authenticate SDK code
 
-        a4 --profile agent auth status
-        a4 --profile agent auth whoami --json
+- Server, agent, and script code: pass the key as `secretKey` (TypeScript) or
+  `secret_key` (Python, Rust), or set no auth option and provide
+  `ARETE_API_KEY` in the environment. Read it from the environment, never from
+  source. The TypeScript SDK refuses `secretKey` in a browser.
+- Browser code: use an origin-bound publishable key, one per origin:
+  `a4 auth keys create-publishable --origin <scheme://host[:port]>`
 
-    SDK code that runs on a server, in an agent, or as a local script
-    authenticates with an agent key or secret key through the SDK's
-    `secretKey` (TypeScript) or `secret_key` (Python, Rust) option, or with no
-    auth option at all by setting the `ARETE_API_KEY` environment variable.
-    Read it from the environment; never write the key into source. The
-    TypeScript SDK refuses `secretKey` in a browser.
+### Discover from intent
 
-    Browser code needs a publishable key instead: it is bound to one origin and
-    safe to ship to the client. Create one per origin with
-    `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
+Only search when the user has a concrete intent; do not invent one.
 
-5.  Continue from what the user actually asked. For the bootstrap prompt, which
-    asks only what Arete can do, summarize the capability list above and use the
-    catalog vocabulary for current discovery categories:
+    a4 explore catalog --query "<user intent>" --json
+    a4 explore catalog program <slug> --json
+    a4 explore catalog stack <slug> --json
 
-        a4 explore catalog --vocabulary --json
+Filter with `--kind program|stack`, `--mode read|build|subscribe`, and
+`--target typescript|rust|python`. A catalog result is not permission to invent
+missing delivery: respect its modes, SDK targets, authentication, bindings, and
+install command.
 
-    Do not invent an on-chain intent or select a package. When the user has
-    supplied a concrete intent, search for it instead:
+### Route to a skill
 
-        a4 explore catalog --query "<user intent>" --json
+| Skill                   | Use it for                                           |
+| ----------------------- | ---------------------------------------------------- |
+| `arete`                 | Discovery, descriptors, and project dependencies     |
+| `arete-streams`         | Deployed views and live subscriptions                |
+| `arete-programs`        | Account reads, PDAs, operations, and transactions    |
+| `arete-stack-authoring` | Custom read models and portable artifacts            |
+| `arete-deploy`          | Only explicitly authorized publication or deployment |
 
-    Filter with `--kind program|stack`, `--mode read|build|subscribe`, and
-    `--target typescript|rust|python` when useful. Then inspect an exact result:
+Use MCP for exploration and generated SDKs for shipped code. For a live view,
+inspect the exact schema, connect with its descriptor, take a bounded sample,
+answer with provenance, and disconnect. If no suitable view exists, explain the
+gap. Do not construct endpoints.
 
-        a4 explore catalog program <slug> --json
-        a4 explore catalog stack <slug> --json
+### Install capabilities
 
-    A catalog result is not permission to invent missing delivery. Respect its
-    reported modes, SDK targets, authentication, bindings, and install command.
+    a4 install program <slug> --ts
+    a4 install stack <slug> --ts
+    a4 install --locked
 
-6.  Route the task:
-    - Use the `arete` skill for discovery and project dependencies.
-    - Use `arete-streams` for deployed views and live subscriptions.
-    - Use `arete-programs` for account reads, PDAs, operations, and transactions.
-    - Use `arete-stack-authoring` for custom read models and portable artifacts.
-    - Use `arete-deploy` only for an explicitly authorized publication or
-      hosted deployment task.
+Use another target only when the descriptor lists it. Do not edit generated
+output. `arete.toml` records intent; `arete.lock` records exact resolution.
 
-7.  Use MCP for exploration and generated SDKs for shipped code. For a hosted
-    view, inspect the exact schema, connect with its descriptor, take a bounded
-    sample, answer with provenance, and disconnect. If no suitable view exists,
-    explain the gap. Do not construct endpoints.
+A stack includes the program SDKs for the programs its views index, at
+`arete.programs.<name>`. Install a stack when the app needs live views, with or
+without transactions; install a program on its own only when no stack you use
+covers it. Never merge stack and program objects by hand.
 
-8.  Add proven capabilities to the project:
+### Authority boundaries
 
-        a4 install program <slug> --ts
-        a4 install stack <slug> --ts
-        a4 install --locked
-
-    Use another target only when the exact descriptor verifies it. Do not edit
-    generated output. `arete.toml` records intent; `arete.lock` records exact
-    resolution.
-
-    A stack includes the program SDKs for the programs its views index, at
-    `arete.programs.<name>`, and they are the same SDKs a standalone program
-    install gives. Install a stack when the app needs live views, with or
-    without transactions; install a program on its own only when no stack you
-    use covers it. Never merge stack and program objects by hand.
-
-The setup command above is idempotent. When the user has instead supplied an
-existing agent key, store it in the same restricted profile:
-
-       a4 auth login --profile agent --key <a4_ak_...>
-
-Never put a secret key in source, a prompt, or an MCP tool argument.
-
-Preserve authority boundaries: reading, building, preparing, inspecting,
-signing, submitting, compiling, publishing, and deploying are separate actions.
+Reading, building, preparing, inspecting, signing, submitting, compiling,
+publishing, and deploying are separate actions. Do each only when asked.
 
 CLI field guide: https://docs.arete.run/skill.md
