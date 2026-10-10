@@ -469,7 +469,12 @@ impl DirtyTracker {
     /// Mark a field as replaced (full value will be emitted)
     pub fn mark_replaced(&mut self, path: &str) {
         // If there was an append, it's now superseded by a full replacement
-        self.changes.insert(path.to_string(), FieldChange::Replaced);
+        match self.changes.get_mut(path) {
+            Some(change) => *change = FieldChange::Replaced,
+            None => {
+                self.changes.insert(path.to_string(), FieldChange::Replaced);
+            }
+        }
     }
 
     /// Record an appended value for a field
@@ -743,6 +748,29 @@ impl SpareRows {
             self.0.push((packed_len, row));
         } else if let Some(index) = self.closest(packed_len) {
             self.0[index] = (packed_len, row);
+        }
+    }
+}
+
+/// The object at `key` in `map`, inserted empty if `key` is missing; `None`
+/// if what is there is not an object. Allocates a key only to insert one.
+fn child_object<'m>(
+    map: &'m mut serde_json::Map<String, Value>,
+    key: &str,
+) -> Option<&'m mut serde_json::Map<String, Value>> {
+    if !map.contains_key(key) {
+        map.insert(key.to_string(), Value::Object(serde_json::Map::new()));
+    }
+    map.get_mut(key).and_then(Value::as_object_mut)
+}
+
+/// Set `key` in `map` to `value`, as [`serde_json::Map::insert`] does, but
+/// allocating a key only when `key` is new.
+fn set_entry(map: &mut serde_json::Map<String, Value>, key: &str, value: Value) {
+    match map.get_mut(key) {
+        Some(slot) => *slot = value,
+        None => {
+            map.insert(key.to_string(), value);
         }
     }
 }
@@ -2671,15 +2699,11 @@ impl VmContext {
             let mut target = &mut partial;
             for (i, segment) in segments.iter().enumerate() {
                 if i == segments.len() - 1 {
-                    target.insert(segment.to_string(), value_to_insert.clone());
+                    set_entry(target, segment, value_to_insert);
+                    break;
                 } else {
-                    target
-                        .entry(segment.to_string())
-                        .or_insert_with(|| json!({}));
-                    target = target
-                        .get_mut(*segment)
-                        .and_then(|v| v.as_object_mut())
-                        .ok_or("Failed to build nested structure")?;
+                    target =
+                        child_object(target, segment).ok_or("Failed to build nested structure")?;
                 }
             }
         }
@@ -2794,15 +2818,10 @@ impl VmContext {
             let mut target = &mut partial;
             for (i, segment) in segments.iter().enumerate() {
                 if i == segments.len() - 1 {
-                    target.insert(segment.to_string(), current.clone());
+                    set_entry(target, segment, current.clone());
                 } else {
-                    target
-                        .entry(segment.to_string())
-                        .or_insert_with(|| json!({}));
-                    target = target
-                        .get_mut(*segment)
-                        .and_then(|v| v.as_object_mut())
-                        .ok_or("Failed to build nested structure")?;
+                    target =
+                        child_object(target, segment).ok_or("Failed to build nested structure")?;
                 }
             }
         }
@@ -2857,15 +2876,11 @@ impl VmContext {
             let mut target = &mut partial;
             for (i, segment) in segments.iter().enumerate() {
                 if i == segments.len() - 1 {
-                    target.insert(segment.to_string(), value_to_insert.clone());
+                    set_entry(target, segment, value_to_insert);
+                    break;
                 } else {
-                    target
-                        .entry(segment.to_string())
-                        .or_insert_with(|| json!({}));
-                    target = target
-                        .get_mut(*segment)
-                        .and_then(|v| v.as_object_mut())
-                        .ok_or("Failed to build nested structure")?;
+                    target =
+                        child_object(target, segment).ok_or("Failed to build nested structure")?;
                 }
             }
         }
@@ -4042,8 +4057,8 @@ impl VmContext {
                     state,
                 } => {
                     let primary_key = self.registers[*key].clone();
-                    let dirty_fields: Vec<String> =
-                        dirty_tracker.dirty_paths().into_iter().collect();
+                    // Only debug events list the dirty fields.
+                    let dirty_fields = || dirty_tracker.dirty_paths().into_iter().collect();
 
                     let null_key = primary_key.is_null();
                     if null_key || dirty_tracker.is_empty() {
@@ -4059,7 +4074,7 @@ impl VmContext {
                             emitted: false,
                             reason: Some(reason.to_string()),
                             patch: None,
-                            dirty_fields,
+                            dirty_fields: dirty_fields(),
                         });
                         // A null key is a real fault worth surfacing. An event
                         // that moved nothing is not: accounts are rewritten for
@@ -4110,7 +4125,7 @@ impl VmContext {
                             emitted: true,
                             reason: None,
                             patch: Some(mutation.patch.clone()),
-                            dirty_fields,
+                            dirty_fields: dirty_fields(),
                         });
                         output.push(mutation);
                     }
@@ -4992,16 +5007,11 @@ impl VmContext {
         for (i, segment) in segments.iter().enumerate() {
             if i == segments.len() - 1 {
                 let changed = current.get(segment) != Some(&value);
-                current.insert(segment.to_string(), value);
+                set_entry(current, segment, value);
                 return Ok(changed);
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
@@ -5037,18 +5047,13 @@ impl VmContext {
         for (i, segment) in segments.iter().enumerate() {
             if i == segments.len() - 1 {
                 if !current.contains_key(segment) || current.get(segment).unwrap().is_null() {
-                    current.insert(segment.to_string(), value);
+                    set_entry(current, segment, value);
                     return Ok(true);
                 }
                 return Ok(false);
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
@@ -5103,18 +5108,13 @@ impl VmContext {
                 };
 
                 if should_update {
-                    current.insert(segment.to_string(), new_value);
+                    set_entry(current, segment, new_value);
                     return Ok(true);
                 }
                 return Ok(false);
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
@@ -5173,16 +5173,11 @@ impl VmContext {
                     .unwrap_or(0);
 
                 let sum = current_val + new_val_num;
-                current.insert(segment.to_string(), json!(sum));
+                set_entry(current, segment, json!(sum));
                 return Ok(true);
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
@@ -5217,16 +5212,11 @@ impl VmContext {
                     .unwrap_or(0);
 
                 let incremented = current_val + 1;
-                current.insert(segment.to_string(), json!(incremented));
+                set_entry(current, segment, json!(incremented));
                 return Ok(true);
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
@@ -5281,18 +5271,13 @@ impl VmContext {
                 };
 
                 if should_update {
-                    current.insert(segment.to_string(), new_value);
+                    set_entry(current, segment, new_value);
                     return Ok(true);
                 }
                 return Ok(false);
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
@@ -5335,27 +5320,23 @@ impl VmContext {
         let mut current = obj;
         for (i, segment) in segments.iter().enumerate() {
             if i == segments.len() - 1 {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!([]));
+                if !current.contains_key(segment) {
+                    current.insert(segment.to_string(), json!([]));
+                }
                 let arr = current
                     .get_mut(segment)
                     .and_then(|v| v.as_array_mut())
                     .ok_or("Path is not an array")?;
-                arr.push(value.clone());
+                arr.push(value);
 
                 if arr.len() > max_length {
                     let excess = arr.len() - max_length;
                     arr.drain(0..excess);
                 }
+                break;
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
