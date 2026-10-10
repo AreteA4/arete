@@ -1,3 +1,4 @@
+import { isA4LoginKeyDestination, readA4ProfileKey } from './a4-profile';
 import type { AuthConfig } from './types';
 import { AreteError } from './types';
 
@@ -68,6 +69,23 @@ function readEnvironmentVariable(name: string): string | undefined {
 
 const warned = new Set<string>();
 
+/**
+ * Marks a resolved config whose `secretKey` came from the `a4` login. It holds
+ * that key, so the mark is carried through object spreads (binding paths copy
+ * the resolved config) and only applies while `secretKey` is still that key:
+ * a copy given another `secretKey` is no longer restricted. Per config, never
+ * process-wide, so the same key passed explicitly elsewhere is unaffected.
+ */
+const A4_LOGIN_SECRET_KEY: unique symbol = Symbol('arete.a4LoginSecretKey');
+
+type MarkedAuthConfig = AuthConfig & { [A4_LOGIN_SECRET_KEY]?: string };
+
+/** True when `auth.secretKey` was supplied by the `a4` login fallback. */
+export function secretKeyFromA4Login(auth: AuthConfig | undefined): boolean {
+  const marked = auth as MarkedAuthConfig | undefined;
+  return marked?.secretKey !== undefined && marked[A4_LOGIN_SECRET_KEY] === marked.secretKey;
+}
+
 function warnOnce(id: string, message: string): void {
   if (warned.has(id)) return;
   warned.add(id);
@@ -90,17 +108,21 @@ function hasExplicitAuth(auth: AuthConfig | undefined): boolean {
 }
 
 /**
- * Validate the configured API keys and apply the `ARETE_API_KEY` fallback.
+ * Validate the configured API keys and apply the server-side credential chain.
  *
  * - `secretKey` is refused in browsers and refuses publishable keys.
  * - A secret-class key in `publishableKey` is refused in browsers and warned
  *   about elsewhere (it still works server-side, as it always has).
  * - Outside browsers, when no auth option is set at all, `ARETE_API_KEY`
- *   supplies `secretKey`.
+ *   supplies `secretKey`; without it, the agent or secret key from the active
+ *   `a4` CLI login does. Browsers never read either.
  *
  * Error and warning text never includes key material.
  */
-export function resolveAuthConfig(auth: AuthConfig | undefined): AuthConfig | undefined {
+export function resolveAuthConfig(
+  auth: AuthConfig | undefined,
+  readProfileKey: typeof readA4ProfileKey = readA4ProfileKey
+): AuthConfig | undefined {
   const browser = isBrowserEnvironment();
 
   if (auth?.secretKey !== undefined) {
@@ -149,19 +171,57 @@ export function resolveAuthConfig(auth: AuthConfig | undefined): AuthConfig | un
   if (browser || hasExplicitAuth(auth)) return auth;
 
   const environmentKey = readEnvironmentVariable(ARETE_API_KEY_ENV)?.trim();
-  if (!environmentKey) return auth;
-  if (classifyApiKey(environmentKey) === 'publishable') {
+  if (environmentKey) {
+    if (classifyApiKey(environmentKey) !== 'publishable') {
+      return { ...auth, secretKey: environmentKey };
+    }
     warnOnce(
       'publishable-in-env',
       `${ARETE_API_KEY_ENV} holds a publishable key (a4_pk_...) and was ignored. Set it to an agent `
         + 'key (a4_ak_...) or secret key (a4_sk_...), or pass the publishable key as auth.publishableKey.'
     );
-    return auth;
   }
-  return { ...auth, secretKey: environmentKey };
+
+  const profile = readProfileKey();
+  if (profile.ambiguous) {
+    warnOnce(
+      'ambiguous-a4-profile',
+      'More than one a4 login profile holds a key; not choosing one. Set ARETE_PROFILE '
+        + `(for example \`agent\`) or ${ARETE_API_KEY_ENV}.`
+    );
+  }
+  if (profile.key && classifyApiKey(profile.key) === 'secret') {
+    const resolved: MarkedAuthConfig = {
+      ...auth,
+      secretKey: profile.key,
+      [A4_LOGIN_SECRET_KEY]: profile.key,
+    };
+    return resolved;
+  }
+  return auth;
 }
 
-/** The key sent as the token endpoint bearer credential, if any. */
-export function tokenEndpointApiKey(auth: AuthConfig | undefined): string | undefined {
+/**
+ * Appended to a 401 for a request that carried no API key. It names the
+ * commands and options that supply one, never where credentials are stored.
+ */
+export const NO_API_KEY_HINT =
+  'No Arete API key found. Run `a4 auth login` (or `a4 auth signup` for an agent), '
+  + 'or set ARETE_API_KEY, or pass auth.secretKey.';
+
+/**
+ * The key sent as the bearer credential to `endpoint`, if any. A key taken
+ * from the `a4` login is only sent to the Arete API it was stored for.
+ */
+export function tokenEndpointApiKey(
+  auth: AuthConfig | undefined,
+  endpoint: string
+): string | undefined {
+  if (secretKeyFromA4Login(auth) && !isA4LoginKeyDestination(endpoint)) return undefined;
   return auth?.secretKey ?? auth?.publishableKey;
+}
+
+/** True when `headers` carries its own `Authorization` header. */
+export function hasAuthorizationHeader(headers: Record<string, string> | undefined): boolean {
+  return Object.keys(headers ?? {}).some((name) => name.toLowerCase() === 'authorization');
 }

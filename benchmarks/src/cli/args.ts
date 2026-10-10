@@ -1,11 +1,13 @@
 import { parseArgs } from 'node:util';
-import { loadConfigFile, RunConfigSchema, SweepConfigSchema, type SweepConfig } from '../config.js';
+import { resolveA4Version, type FetchLatest, type ResolvedA4Version } from '../a4-version.js';
+import { expandSweep, loadConfigFile, RunConfigSchema, SweepConfigSchema, type SweepConfig } from '../config.js';
+import type { RunConfig } from '../types.js';
 
 export const USAGE = `Usage:
   npm run bench -- <config.json>
   npm run bench -- --task <task.ts> --harness <claude-code|codex|opencode> --model <gateway-model-id>
-                   [--repetitions N] [--concurrency N] [--effort high] [--key-mode pool|signup]
-                   [--model-auth auto|ai-gateway|direct] [--skip-preflight]
+                   [--repetitions N] [--concurrency N] [--effort high] [--key-mode pool|signup|fresh]
+                   [--a4-version latest|<x.y.z>] [--model-auth auto|ai-gateway|direct] [--skip-preflight]
   npm run preflight -- [same arguments]   (defaults to configs/smoke.json)`;
 
 /** Parse a config path or inline flags into a sweep, shared by `bench` and `preflight`. */
@@ -57,4 +59,23 @@ export function sweepFromArgs(argv: string[], defaultConfig?: string): { sweep: 
     ...overrides,
   });
   return { sweep, skipPreflight };
+}
+
+export interface PreparedSweep {
+  sweep: SweepConfig;
+  skipPreflight: boolean;
+  /** The one `a4` release every run installs, and where it came from. */
+  a4: ResolvedA4Version;
+  runs: RunConfig[];
+}
+
+/** Parse arguments, resolve `a4Version` once, and expand the sweep into runs. */
+export async function prepareSweep(
+  argv: string[],
+  defaultConfig?: string,
+  fetchLatest?: FetchLatest,
+): Promise<PreparedSweep> {
+  const { sweep, skipPreflight } = sweepFromArgs(argv, defaultConfig);
+  const a4 = await resolveA4Version(sweep.a4Version, fetchLatest);
+  return { sweep, skipPreflight, a4, runs: expandSweep(sweep, a4) };
 }

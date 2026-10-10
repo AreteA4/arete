@@ -279,9 +279,9 @@ Do not pass `api_key` in tool calls. The server resolves credentials in this ord
 
 1. Explicit `api_key` argument on `connect` (override — avoid in agent calls;
    it must match the selected built-in profile)
-2. When `ARETE_PROFILE` is selected, that named profile in the credentials file
+2. When `ARETE_PROFILE` is selected, that named profile of the `a4` login
 3. Without a selected profile, `ARETE_API_KEY`, then an unambiguous profile or
-   legacy entry in the credentials file
+   legacy entry of the `a4` login
 
 Generated MCP config runs `a4 --profile agent mcp`; the selected profile
 deliberately outranks an ambient human key. Run

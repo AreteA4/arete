@@ -415,7 +415,7 @@ export interface AuthConfig {
    * Agent key (`a4_ak_...`) or secret key (`a4_sk_...`) for servers, agents
    * and local scripts. Server-only: setting it in a browser throws. When no
    * auth option is set, outside browsers it defaults to the `ARETE_API_KEY`
-   * environment variable.
+   * environment variable, then to the key from the active `a4` CLI login.
    */
   secretKey?: string;
   /** Pre-minted static token (for server-side use) */
