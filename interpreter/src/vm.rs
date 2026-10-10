@@ -469,7 +469,12 @@ impl DirtyTracker {
     /// Mark a field as replaced (full value will be emitted)
     pub fn mark_replaced(&mut self, path: &str) {
         // If there was an append, it's now superseded by a full replacement
-        self.changes.insert(path.to_string(), FieldChange::Replaced);
+        match self.changes.get_mut(path) {
+            Some(change) => *change = FieldChange::Replaced,
+            None => {
+                self.changes.insert(path.to_string(), FieldChange::Replaced);
+            }
+        }
     }
 
     /// Record an appended value for a field
@@ -682,9 +687,108 @@ pub struct VmContext {
     /// `ReadOrInitState` and has not written back yet: state id, key and the
     /// register holding it. See [`VmContext::execute_handler_segment`].
     taken_entity: Option<(u32, Value, Register)>,
+    /// The register the last handler segment loaded its entity into with
+    /// `ReadOrInitState`, and the packed size of the row it loaded, so the
+    /// next segment can keep the row as a spare.
+    row_register: Option<(Register, usize)>,
+    /// Rows of earlier segments, kept for `ReadOrInitState` to unpack into
+    /// (see [`PackedRow::unpack_into`]). See [`SpareRows`].
+    spare_rows: SpareRows,
+    /// Where `UpdateState` packs rows (see [`PackedRow::pack_in`]), kept
+    /// between segments unless it grew past [`MAX_KEPT_PACK_BUFFER`].
+    pack_buffer: Vec<u8>,
     /// Entities to send whole at the end of the next call; see
     /// [`WholeEntityRequests`].
     whole_entity_requests: Option<WholeEntityRequests>,
+}
+
+/// The largest buffer the VM keeps for packing rows in between segments;
+/// one that grew larger for an unusually large row is dropped after it.
+const MAX_KEPT_PACK_BUFFER: usize = 1 << 20;
+
+/// Entity rows a handler segment is done with, kept so the next one can
+/// unpack its row into one of them rather than build it from scratch.
+///
+/// Unpacking a row into a `Value` costs an allocation per object, string and
+/// array in it, and freeing the row at the end of the segment a free per
+/// each. Unpacking into a row of the same shape reuses them instead (see
+/// [`PackedRow::unpack_into`]), so a segment allocates little more than the
+/// fields that differ. Rows are only ever overwritten, never read.
+///
+/// Rows of one entity often come in two kinds, such as accounts with a full
+/// activity history and accounts with none, and a stream interleaves them.
+/// So a few rows are kept, and a row is unpacked into the one whose packed
+/// size was closest to its own. The rows kept are bounded by
+/// [`SpareRows::CAPACITY`]; where only one was kept before, the register the
+/// last segment loaded its row into held it until the next segment.
+#[derive(Default)]
+struct SpareRows {
+    rows: Vec<(usize, Value)>,
+    /// How many rows were unpacked into a spare, for tests to check reuse.
+    #[cfg(test)]
+    reused: usize,
+}
+
+impl SpareRows {
+    const CAPACITY: usize = 2;
+
+    /// The index of the row whose packed size is closest to `packed_len`.
+    fn closest(&self, packed_len: usize) -> Option<usize> {
+        (0..self.rows.len()).min_by_key(|index| self.rows[*index].0.abs_diff(packed_len))
+    }
+
+    /// Unpack `packed` into the closest spare row, or from scratch if there
+    /// is none.
+    fn unpack(&mut self, packed: &PackedRow) -> Value {
+        match self.closest(packed.len()) {
+            Some(index) => {
+                let (_, mut row) = self.rows.swap_remove(index);
+                packed.unpack_into(&mut row);
+                #[cfg(test)]
+                {
+                    self.reused += 1;
+                }
+                row
+            }
+            None => packed.unpack(),
+        }
+    }
+
+    /// Keep `row`, unpacked from `packed_len` bytes, replacing the closest
+    /// spare if there is no room: the rows kept stay of different sizes.
+    fn keep(&mut self, packed_len: usize, row: Value) {
+        if !row.is_object() {
+            return;
+        }
+        if self.rows.len() < Self::CAPACITY {
+            self.rows.push((packed_len, row));
+        } else if let Some(index) = self.closest(packed_len) {
+            self.rows[index] = (packed_len, row);
+        }
+    }
+}
+
+/// The object at `key` in `map`, inserted empty if `key` is missing; `None`
+/// if what is there is not an object. Allocates a key only to insert one.
+fn child_object<'m>(
+    map: &'m mut serde_json::Map<String, Value>,
+    key: &str,
+) -> Option<&'m mut serde_json::Map<String, Value>> {
+    if !map.contains_key(key) {
+        map.insert(key.to_string(), Value::Object(serde_json::Map::new()));
+    }
+    map.get_mut(key).and_then(Value::as_object_mut)
+}
+
+/// Set `key` in `map` to `value`, as [`serde_json::Map::insert`] does, but
+/// allocating a key only when `key` is new.
+fn set_entry(map: &mut serde_json::Map<String, Value>, key: &str, value: Value) {
+    match map.get_mut(key) {
+        Some(slot) => *slot = value,
+        None => {
+            map.insert(key.to_string(), value);
+        }
+    }
 }
 
 /// Event field that restricts a replayed event to one handler segment.
@@ -1239,6 +1343,57 @@ impl VersionTracker {
         self.cache.lock().unwrap().put(key, (slot, ordering_value));
     }
 
+    /// Record `(slot, ordering_value)` for the key unless what is recorded
+    /// is already as late; returns whether it was recorded. The same as
+    /// [`Self::get`] then [`Self::insert`], formatting the key once and
+    /// allocating it only for a new entry.
+    fn record_if_later(
+        &self,
+        primary_key: &Value,
+        event_type: &str,
+        slot: u64,
+        ordering_value: u64,
+    ) -> bool {
+        let key = Self::make_key(primary_key, event_type);
+        let mut cache = self.cache.lock().unwrap();
+        match cache.get_mut(&key) {
+            Some(recorded) if (slot, ordering_value) <= *recorded => false,
+            Some(recorded) => {
+                *recorded = (slot, ordering_value);
+                true
+            }
+            None => {
+                cache.put(key, (slot, ordering_value));
+                true
+            }
+        }
+    }
+
+    /// Record `(slot, ordering_value)` for the key, returning whether it was
+    /// already what is recorded. The same as [`Self::get`] then, unless
+    /// equal, [`Self::insert`], formatting the key once.
+    fn record_unless_equal(
+        &self,
+        primary_key: &Value,
+        event_type: &str,
+        slot: u64,
+        ordering_value: u64,
+    ) -> bool {
+        let key = Self::make_key(primary_key, event_type);
+        let mut cache = self.cache.lock().unwrap();
+        match cache.get_mut(&key) {
+            Some(recorded) if *recorded == (slot, ordering_value) => true,
+            Some(recorded) => {
+                *recorded = (slot, ordering_value);
+                false
+            }
+            None => {
+                cache.put(key, (slot, ordering_value));
+                false
+            }
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.cache.lock().unwrap().len()
     }
@@ -1410,7 +1565,11 @@ impl StateTable {
     /// Packing reads `value` without consuming it, so a caller that still
     /// needs the entity passes a reference rather than a copy.
     pub fn insert_with_eviction(&self, key: Value, value: impl Borrow<Value>) {
-        let row = PackedRow::pack(value.borrow());
+        self.insert_packed_with_eviction(key, PackedRow::pack(value.borrow()));
+    }
+
+    /// [`Self::insert_with_eviction`] of a row already packed.
+    pub(crate) fn insert_packed_with_eviction(&self, key: Value, row: PackedRow) {
         let resident = self.data.contains_key(&key);
         if self.data.len() >= self.config.max_entries && !resident {
             #[cfg(feature = "otel")]
@@ -1439,11 +1598,15 @@ impl StateTable {
     /// The packed row is dropped rather than kept beside the unpacked entity
     /// the handler works on, since the write replaces it anyway.
     pub fn take_and_touch(&self, key: &Value) -> Option<Value> {
-        let result = self.data.remove(key).map(|(_, row)| row.unpack());
-        if result.is_some() {
-            self.touch(key, false);
-        }
-        result
+        self.take_packed_and_touch(key).map(|row| row.unpack())
+    }
+
+    /// [`Self::take_and_touch`], leaving the row packed for the caller to
+    /// unpack as it likes.
+    pub(crate) fn take_packed_and_touch(&self, key: &Value) -> Option<PackedRow> {
+        let (_, row) = self.data.remove(key)?;
+        self.touch(key, false);
+        Some(row)
     }
 
     /// Check if an update is fresh and update the version tracker.
@@ -1459,19 +1622,8 @@ impl StateTable {
         slot: u64,
         ordering_value: u64,
     ) -> bool {
-        let dominated = self
-            .version_tracker
-            .get(primary_key, event_type)
-            .map(|(last_slot, last_version)| (slot, ordering_value) <= (last_slot, last_version))
-            .unwrap_or(false);
-
-        if dominated {
-            return false;
-        }
-
         self.version_tracker
-            .insert(primary_key, event_type, slot, ordering_value);
-        true
+            .record_if_later(primary_key, event_type, slot, ordering_value)
     }
 
     /// Check if an instruction is a duplicate of one we've seen recently.
@@ -1499,21 +1651,10 @@ impl StateTable {
             None => Cow::Borrowed(event_type),
         };
 
-        // Check if we've seen this exact occurrence before
-        let is_duplicate = self
-            .instruction_dedup_cache
-            .get(primary_key, &scope)
-            .map(|(last_slot, last_txn_index)| slot == last_slot && txn_index == last_txn_index)
-            .unwrap_or(false);
-
-        if is_duplicate {
-            return true;
-        }
-
-        // Record this occurrence for deduplication
+        // A duplicate if this exact occurrence is the one recorded last;
+        // otherwise it is recorded.
         self.instruction_dedup_cache
-            .insert(primary_key, &scope, slot, txn_index);
-        false
+            .record_unless_equal(primary_key, &scope, slot, txn_index)
     }
 
     /// Dump the durable subset of this table into a serializable snapshot.
@@ -1705,6 +1846,9 @@ impl VmContext {
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
+            row_register: None,
+            spare_rows: SpareRows::default(),
+            pack_buffer: Vec::new(),
             whole_entity_requests: None,
         };
         vm.states.insert(
@@ -1912,6 +2056,9 @@ impl VmContext {
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
+            row_register: None,
+            spare_rows: SpareRows::default(),
+            pack_buffer: Vec::new(),
             whole_entity_requests: None,
         }
     }
@@ -1944,6 +2091,9 @@ impl VmContext {
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
+            row_register: None,
+            spare_rows: SpareRows::default(),
+            pack_buffer: Vec::new(),
             whole_entity_requests: None,
         };
         vm.states.insert(
@@ -2601,15 +2751,11 @@ impl VmContext {
             let mut target = &mut partial;
             for (i, segment) in segments.iter().enumerate() {
                 if i == segments.len() - 1 {
-                    target.insert(segment.to_string(), value_to_insert.clone());
+                    set_entry(target, segment, value_to_insert);
+                    break;
                 } else {
-                    target
-                        .entry(segment.to_string())
-                        .or_insert_with(|| json!({}));
-                    target = target
-                        .get_mut(*segment)
-                        .and_then(|v| v.as_object_mut())
-                        .ok_or("Failed to build nested structure")?;
+                    target =
+                        child_object(target, segment).ok_or("Failed to build nested structure")?;
                 }
             }
         }
@@ -2677,7 +2823,13 @@ impl VmContext {
         Ok(())
     }
 
+    /// Clear the registers for the next handler segment, keeping the last
+    /// segment's entity row as the spare the next one unpacks into.
     fn reset_registers(&mut self) {
+        if let Some((register, packed_len)) = self.row_register.take() {
+            let row = std::mem::take(&mut self.registers[register]);
+            self.spare_rows.keep(packed_len, row);
+        }
         self.registers.fill(Value::Null);
     }
 
@@ -2718,15 +2870,10 @@ impl VmContext {
             let mut target = &mut partial;
             for (i, segment) in segments.iter().enumerate() {
                 if i == segments.len() - 1 {
-                    target.insert(segment.to_string(), current.clone());
+                    set_entry(target, segment, current.clone());
                 } else {
-                    target
-                        .entry(segment.to_string())
-                        .or_insert_with(|| json!({}));
-                    target = target
-                        .get_mut(*segment)
-                        .and_then(|v| v.as_object_mut())
-                        .ok_or("Failed to build nested structure")?;
+                    target =
+                        child_object(target, segment).ok_or("Failed to build nested structure")?;
                 }
             }
         }
@@ -2781,15 +2928,11 @@ impl VmContext {
             let mut target = &mut partial;
             for (i, segment) in segments.iter().enumerate() {
                 if i == segments.len() - 1 {
-                    target.insert(segment.to_string(), value_to_insert.clone());
+                    set_entry(target, segment, value_to_insert);
+                    break;
                 } else {
-                    target
-                        .entry(segment.to_string())
-                        .or_insert_with(|| json!({}));
-                    target = target
-                        .get_mut(*segment)
-                        .and_then(|v| v.as_object_mut())
-                        .ok_or("Failed to build nested structure")?;
+                    target =
+                        child_object(target, segment).ok_or("Failed to build nested structure")?;
                 }
             }
         }
@@ -3799,25 +3942,30 @@ impl VmContext {
                             }
                         }
                     }
-                    let existing_state = state.take_and_touch(&key_value);
-                    if existing_state.is_some() {
-                        self.taken_entity = Some((actual_state_id, key_value.clone(), *dest));
-                    }
+                    let packed = state.take_packed_and_touch(&key_value);
+                    let existing = packed.is_some();
+                    let (loaded_state, packed_len) = match packed {
+                        Some(packed) => {
+                            self.taken_entity = Some((actual_state_id, key_value.clone(), *dest));
+                            (self.spare_rows.unpack(&packed), packed.len())
+                        }
+                        None => (default.clone(), 0),
+                    };
 
                     if self.is_debug_enabled() {
-                        let loaded_state =
-                            existing_state.clone().unwrap_or_else(|| default.clone());
+                        let existing_state = existing.then(|| loaded_state.clone());
                         self.emit_debug(|| VmDebugEvent::ReadOrInitState {
                             entity_name: entity_name.to_string(),
                             event_type: event_type.to_string(),
                             key: key_value,
-                            existing_state: existing_state.clone(),
-                            loaded_state,
+                            existing_state,
+                            loaded_state: loaded_state.clone(),
                             skipped_reason: None,
                         });
                     }
 
-                    self.registers[*dest] = existing_state.unwrap_or_else(|| default.clone());
+                    self.registers[*dest] = loaded_state;
+                    self.row_register = Some((*dest, packed_len));
                     pc += 1;
                 }
                 OpCode::UpdateState {
@@ -3849,7 +3997,11 @@ impl VmContext {
                     }
                     // Packed from the register, which keeps the entity for
                     // the mutation built from it and any hook after the event.
-                    state.insert_with_eviction(key_value, &self.registers[*value]);
+                    let row = PackedRow::pack_in(&self.registers[*value], &mut self.pack_buffer);
+                    if self.pack_buffer.capacity() > MAX_KEPT_PACK_BUFFER {
+                        self.pack_buffer = Vec::new();
+                    }
+                    state.insert_packed_with_eviction(key_value, row);
                     pc += 1;
                 }
                 OpCode::AppendToArray {
@@ -3961,8 +4113,8 @@ impl VmContext {
                     state,
                 } => {
                     let primary_key = self.registers[*key].clone();
-                    let dirty_fields: Vec<String> =
-                        dirty_tracker.dirty_paths().into_iter().collect();
+                    // Only debug events list the dirty fields.
+                    let dirty_fields = || dirty_tracker.dirty_paths().into_iter().collect();
 
                     let null_key = primary_key.is_null();
                     if null_key || dirty_tracker.is_empty() {
@@ -3978,7 +4130,7 @@ impl VmContext {
                             emitted: false,
                             reason: Some(reason.to_string()),
                             patch: None,
-                            dirty_fields,
+                            dirty_fields: dirty_fields(),
                         });
                         // A null key is a real fault worth surfacing. An event
                         // that moved nothing is not: accounts are rewritten for
@@ -4029,7 +4181,7 @@ impl VmContext {
                             emitted: true,
                             reason: None,
                             patch: Some(mutation.patch.clone()),
-                            dirty_fields,
+                            dirty_fields: dirty_fields(),
                         });
                         output.push(mutation);
                     }
@@ -4911,16 +5063,11 @@ impl VmContext {
         for (i, segment) in segments.iter().enumerate() {
             if i == segments.len() - 1 {
                 let changed = current.get(segment) != Some(&value);
-                current.insert(segment.to_string(), value);
+                set_entry(current, segment, value);
                 return Ok(changed);
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
@@ -4956,18 +5103,13 @@ impl VmContext {
         for (i, segment) in segments.iter().enumerate() {
             if i == segments.len() - 1 {
                 if !current.contains_key(segment) || current.get(segment).unwrap().is_null() {
-                    current.insert(segment.to_string(), value);
+                    set_entry(current, segment, value);
                     return Ok(true);
                 }
                 return Ok(false);
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
@@ -5022,18 +5164,13 @@ impl VmContext {
                 };
 
                 if should_update {
-                    current.insert(segment.to_string(), new_value);
+                    set_entry(current, segment, new_value);
                     return Ok(true);
                 }
                 return Ok(false);
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
@@ -5092,16 +5229,11 @@ impl VmContext {
                     .unwrap_or(0);
 
                 let sum = current_val + new_val_num;
-                current.insert(segment.to_string(), json!(sum));
+                set_entry(current, segment, json!(sum));
                 return Ok(true);
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
@@ -5136,16 +5268,11 @@ impl VmContext {
                     .unwrap_or(0);
 
                 let incremented = current_val + 1;
-                current.insert(segment.to_string(), json!(incremented));
+                set_entry(current, segment, json!(incremented));
                 return Ok(true);
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
@@ -5200,18 +5327,13 @@ impl VmContext {
                 };
 
                 if should_update {
-                    current.insert(segment.to_string(), new_value);
+                    set_entry(current, segment, new_value);
                     return Ok(true);
                 }
                 return Ok(false);
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
@@ -5254,27 +5376,23 @@ impl VmContext {
         let mut current = obj;
         for (i, segment) in segments.iter().enumerate() {
             if i == segments.len() - 1 {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!([]));
+                if !current.contains_key(segment) {
+                    current.insert(segment.to_string(), json!([]));
+                }
                 let arr = current
                     .get_mut(segment)
                     .and_then(|v| v.as_array_mut())
                     .ok_or("Path is not an array")?;
-                arr.push(value.clone());
+                arr.push(value);
 
                 if arr.len() > max_length {
                     let excess = arr.len() - max_length;
                     arr.drain(0..excess);
                 }
+                break;
             } else {
-                current
-                    .entry(segment.to_string())
-                    .or_insert_with(|| json!({}));
-                current = current
-                    .get_mut(segment)
-                    .and_then(|v| v.as_object_mut())
-                    .ok_or("Path collision: expected object")?;
+                current =
+                    child_object(current, segment).ok_or("Path collision: expected object")?;
             }
         }
 
@@ -7297,6 +7415,245 @@ mod tests {
             value: 2,
         });
         handler
+    }
+
+    /// Handlers that leave rows of different shapes: `t::AState` sets an
+    /// identity and a balance, `t::BIxState` appends to a history.
+    fn mixed_shape_bytecode() -> crate::compiler::MultiEntityBytecode {
+        let handler = |body: Vec<OpCode>| {
+            let mut handler = vec![
+                OpCode::LoadEventField {
+                    path: FieldPath::new(&["key"]),
+                    dest: 0,
+                    default: None,
+                },
+                OpCode::ReadOrInitState {
+                    state_id: 0,
+                    key: 0,
+                    default: json!({}),
+                    dest: 2,
+                },
+            ];
+            handler.extend(body);
+            handler.extend([
+                OpCode::UpdateState {
+                    state_id: 0,
+                    key: 0,
+                    value: 2,
+                },
+                OpCode::EmitMutation {
+                    entity_name: "Row".to_string(),
+                    key: 0,
+                    state: 2,
+                },
+            ]);
+            handler
+        };
+        let set = |field: &str, path: &str, register| {
+            [
+                OpCode::LoadEventField {
+                    path: FieldPath::new(&[field]),
+                    dest: register,
+                    default: None,
+                },
+                OpCode::SetField {
+                    object: 2,
+                    path: path.to_string(),
+                    value: register,
+                },
+            ]
+        };
+        let mut account = Vec::new();
+        account.extend(set("name", "id.name", 3));
+        account.extend(set("amount", "balance.amount", 4));
+        let mut transfer = vec![
+            OpCode::LoadEventField {
+                path: FieldPath::new(&["entry"]),
+                dest: 3,
+                default: None,
+            },
+            OpCode::AppendToArray {
+                object: 2,
+                path: "activity.history".to_string(),
+                value: 3,
+            },
+        ];
+        transfer.extend(set("amount", "activity.last", 4));
+        let handlers = HashMap::from([
+            ("t::AState".to_string(), handler(account)),
+            ("t::BIxState".to_string(), handler(transfer)),
+        ]);
+        crate::compiler::MultiEntityBytecode {
+            event_routing: handlers
+                .keys()
+                .map(|event| (event.clone(), vec!["Row".to_string()]))
+                .collect(),
+            entities: HashMap::from([(
+                "Row".to_string(),
+                crate::compiler::EntityBytecode {
+                    state_id: 0,
+                    handlers,
+                    entity_name: "Row".to_string(),
+                    when_events: HashSet::new(),
+                    non_emitted_fields: HashSet::new(),
+                    computed_paths: vec![],
+                    computed_fields_evaluator: None,
+                },
+            )]),
+            when_events: HashSet::new(),
+            proto_router: Default::default(),
+        }
+    }
+
+    #[test]
+    fn reusing_spare_rows_changes_nothing_a_handler_produces() {
+        let bytecode = mixed_shape_bytecode();
+        let config = StateTableConfig {
+            max_entries: 4,
+            max_array_length: 3,
+        };
+        let mut reusing = VmContext::new_with_config(config.clone());
+        let mut fresh = VmContext::new_with_config(config);
+        let amounts = [
+            json!(5),
+            json!("123456789012345678901234567890"),
+            json!(1.0),
+            json!(null),
+            json!(-3),
+            json!("12"),
+            json!({"nested": [1, 2]}),
+        ];
+        // Six keys over a four-row table, in an order that rereads rows
+        // still held as well as rows evicted since. Half the events go to
+        // one key, which stays held long enough to fill its history.
+        let mut seed = 11u64;
+        for event in 0..400usize {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let key = if (seed >> 20).is_multiple_of(2) {
+                "k0".to_string()
+            } else {
+                format!("k{}", (seed >> 33) % 6)
+            };
+            let amount = amounts[event % amounts.len()].clone();
+            let (event_type, value) = if event % 3 == 0 {
+                (
+                    "t::BIxState",
+                    json!({"key": key, "amount": amount, "entry": {"to": format!("d{event}"), "n": event}}),
+                )
+            } else {
+                (
+                    "t::AState",
+                    json!({"key": key, "amount": amount, "name": "n".repeat(event % 50)}),
+                )
+            };
+            // The fresh VM never has a spare row, so it builds every row from
+            // scratch as before spare rows existed. Its last row register is
+            // dropped too, or the next segment would keep that row as a spare.
+            fresh.row_register = None;
+            fresh.spare_rows = SpareRows::default();
+            let expected = fresh
+                .process_event(&bytecode, value.clone(), event_type, None, None)
+                .unwrap();
+            let got = reusing
+                .process_event(&bytecode, value, event_type, None, None)
+                .unwrap();
+            assert_eq!(
+                serde_json::to_string(&got).unwrap(),
+                serde_json::to_string(&expected).unwrap(),
+                "event {event}"
+            );
+        }
+        assert!(
+            reusing.spare_rows.reused > 100,
+            "{}",
+            reusing.spare_rows.reused
+        );
+        assert_eq!(fresh.spare_rows.reused, 0);
+        assert!(!reusing.spare_rows.rows.is_empty());
+        assert!(reusing.spare_rows.rows.len() <= SpareRows::CAPACITY);
+        let mut capped_histories = 0;
+        for key in 0..6 {
+            let key = json!(format!("k{key}"));
+            let expected = fresh.get_entity_state(0, &key);
+            let got = reusing.get_entity_state(0, &key);
+            assert_eq!(
+                serde_json::to_string(&got).unwrap(),
+                serde_json::to_string(&expected).unwrap(),
+            );
+            let history = got
+                .as_ref()
+                .and_then(|row| row.pointer("/activity/history"))
+                .and_then(Value::as_array);
+            if history.is_some_and(|history| history.len() == 3) {
+                capped_histories += 1;
+            }
+        }
+        assert!(capped_histories > 0);
+        assert_eq!(reusing.states[&0].row_bytes(), fresh.states[&0].row_bytes());
+    }
+
+    #[test]
+    fn version_tracker_records_as_get_then_insert_did() {
+        // The single-lookup checks against what `get` then `insert` did,
+        // eviction order included, on a tracker small enough to evict.
+        let combined = VersionTracker::with_capacity(4);
+        let separate = VersionTracker::with_capacity(4);
+        let combined_dedup = VersionTracker::with_capacity(4);
+        let separate_dedup = VersionTracker::with_capacity(4);
+        let mut seed = 7u64;
+        for _ in 0..2_000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let key = json!(format!("k{}", (seed >> 33) % 7));
+            let event = if (seed >> 20).is_multiple_of(2) {
+                "A"
+            } else {
+                "B"
+            };
+            let slot = (seed >> 40) % 5;
+            let ordering = (seed >> 50) % 3;
+
+            let fresh = !separate
+                .get(&key, event)
+                .is_some_and(|last| (slot, ordering) <= last);
+            if fresh {
+                separate.insert(&key, event, slot, ordering);
+            }
+            assert_eq!(combined.record_if_later(&key, event, slot, ordering), fresh);
+
+            let duplicate = separate_dedup.get(&key, event) == Some((slot, ordering));
+            if !duplicate {
+                separate_dedup.insert(&key, event, slot, ordering);
+            }
+            assert_eq!(
+                combined_dedup.record_unless_equal(&key, event, slot, ordering),
+                duplicate
+            );
+        }
+        assert_eq!(combined.dump_entries(), separate.dump_entries());
+        assert_eq!(combined_dedup.dump_entries(), separate_dedup.dump_entries());
+    }
+
+    #[test]
+    fn spare_rows_are_bounded_and_matched_by_size() {
+        let mut spares = SpareRows::default();
+        spares.keep(10, json!({"small": 1}));
+        spares.keep(1_000, json!({"large": 1}));
+        // Not a row: never kept.
+        spares.keep(5, json!("text"));
+        assert_eq!(spares.rows.len(), SpareRows::CAPACITY);
+        // A third row replaces the one closest to it in size.
+        spares.keep(900, json!({"larger": 1}));
+        assert_eq!(spares.rows.len(), SpareRows::CAPACITY);
+        assert_eq!(spares.closest(950), Some(1));
+        assert_eq!(spares.rows[1], (900, json!({"larger": 1})));
+
+        // A row is unpacked into the spare closest to it in size, which
+        // leaves the other.
+        let row = json!({"small": 2});
+        let unpacked = spares.unpack(&PackedRow::pack(&row));
+        assert_eq!(unpacked, row);
+        assert_eq!(spares.rows, vec![(900, json!({"larger": 1}))]);
+        assert_eq!(SpareRows::default().unpack(&PackedRow::pack(&row)), row);
     }
 
     #[test]
