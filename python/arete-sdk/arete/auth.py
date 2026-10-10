@@ -25,7 +25,12 @@ from typing import (
 
 import httpx
 
-from arete._a4_profile import ProfileKey
+from arete._a4_profile import (
+    ProfileKey,
+    is_login_key,
+    is_login_key_destination,
+    remember_login_key,
+)
 from arete._a4_profile import read_profile_key as read_profile_key_default
 from arete.errors import AreteError, AuthError
 
@@ -446,6 +451,7 @@ def resolve_auth_config(
             f"ARETE_PROFILE (for example `agent`) or {ARETE_API_KEY_ENV}.",
         )
     if profile.key and classify_api_key(profile.key) == "secret":
+        remember_login_key(profile.key)
         return _with_secret_key(config, profile.key)
     return config
 
@@ -594,6 +600,18 @@ def _stack_version_refusal_error(
     )
 
 
+def api_key_for_endpoint(config: Optional[AuthConfig], endpoint: str) -> Optional[str]:
+    """The key sent as the bearer credential to ``endpoint``, if any.
+
+    A key taken from the ``a4`` login is only sent to the Arete API it was
+    stored for.
+    """
+    key = config.api_key if config is not None else None
+    if key and is_login_key(key) and not is_login_key_destination(endpoint):
+        return None
+    return key
+
+
 async def request_token_from_endpoint(
     http_client: httpx.AsyncClient,
     endpoint: str,
@@ -606,9 +624,10 @@ async def request_token_from_endpoint(
     configured endpoint headers. Raises :class:`AuthError` on failure.
     """
     headers: Dict[str, str] = {"Content-Type": "application/json"}
+    api_key = api_key_for_endpoint(config, endpoint)
     if config is not None:
-        if config.api_key:
-            headers["Authorization"] = f"Bearer {config.api_key}"
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         headers.update(config.token_endpoint_headers or {})
 
     try:
@@ -648,7 +667,13 @@ async def request_token_from_endpoint(
                 error_data,
                 error_code_header,
             )
-        if response.status_code == 401 and not (config is not None and config.api_key):
+        # A 401 for a request that carried no credential at all: say how to
+        # supply one. Custom Authorization headers have their own advice.
+        sent_credential = bool(api_key) or any(
+            name.lower() == "authorization"
+            for name in ((config.token_endpoint_headers if config else None) or {})
+        )
+        if response.status_code == 401 and not sent_credential:
             error_message = f"{error_message}. {NO_API_KEY_HINT}"
         raise AuthError(
             f"Token endpoint returned {response.status_code}: {error_message}",

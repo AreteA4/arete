@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
@@ -83,12 +84,50 @@ const AMBIGUOUS_PROFILES_PREFIX: &str = "multiple Arete profiles match";
 
 static WARNED_AMBIGUOUS_PROFILE: AtomicBool = AtomicBool::new(false);
 
+/// Keys taken from the `a4` login. Tracked by value so the destination
+/// restriction survives config clones (binding paths copy the resolved
+/// config and swap in their own token endpoint).
+static LOGIN_KEYS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub(crate) fn remember_login_key(key: &str) {
+    let mut keys = LOGIN_KEYS.lock().unwrap_or_else(|e| e.into_inner());
+    if !keys.iter().any(|known| known == key) {
+        keys.push(key.to_string());
+    }
+}
+
+pub(crate) fn is_login_key(key: &str) -> bool {
+    LOGIN_KEYS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|known| known == key)
+}
+
+/// True when `url` is on the API the `a4` login key was stored for
+/// ([`DEFAULT_API_URL`]). A login key is never sent anywhere else, such as a
+/// session endpoint a stack names on another host.
+pub(crate) fn is_login_key_destination(url: &str) -> bool {
+    let (Ok(url), Ok(api)) = (url::Url::parse(url), url::Url::parse(DEFAULT_API_URL)) else {
+        return false;
+    };
+    let host = url
+        .host_str()
+        .map(|host| host.trim_end_matches('.').to_ascii_lowercase());
+    url.scheme() == "https"
+        && host.as_deref() == api.host_str()
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+}
+
 /// Where [`cli_profile_secret_key_with`] reads the outside world from.
 pub(crate) struct ProfileSources<'a> {
     pub read_env: &'a dyn Fn(&str) -> Option<String>,
     /// Read a file to a string.
     pub read_file: &'a dyn Fn(&Path) -> Result<String, std::io::Error>,
-    /// Working directory holding the optional project profile file.
+    /// Working directory holding the optional project profile file. `None`
+    /// means the project file cannot be checked, so no key is used.
     pub cwd: Option<PathBuf>,
     pub credentials_path: Option<PathBuf>,
 }
@@ -110,10 +149,13 @@ pub fn cli_profile_secret_key() -> Option<String> {
 /// directory (agent only), then `ARETE_PROFILE`, then the single profile that
 /// holds a key for the API URL.
 pub(crate) fn cli_profile_secret_key_with(sources: &ProfileSources<'_>) -> Option<String> {
-    let project = sources
-        .cwd
-        .as_ref()
-        .map(|cwd| (sources.read_file)(&cwd.join(PROJECT_AUTH_RELATIVE_PATH)));
+    // The project file can pin the agent profile; if it cannot be checked,
+    // choose nothing rather than risk a profile the project excludes.
+    let Some(cwd) = sources.cwd.as_ref() else {
+        tracing::debug!("working directory unknown; not using an a4 login key");
+        return None;
+    };
+    let project = Some((sources.read_file)(&cwd.join(PROJECT_AUTH_RELATIVE_PATH)));
     let profile = match project_profile(project) {
         ProjectProfile::Selected(profile) => Some(profile),
         ProjectProfile::Invalid => {
@@ -435,6 +477,9 @@ mod tests {
             self
         }
         fn key(&self) -> Option<String> {
+            self.key_in(Some(PathBuf::from("/work")))
+        }
+        fn key_in(&self, cwd: Option<PathBuf>) -> Option<String> {
             let read_env = |name: &str| self.vars.get(name).cloned();
             let read_file = |path: &Path| match self.files.get(path) {
                 Some(Ok(content)) => Ok(content.clone()),
@@ -444,7 +489,7 @@ mod tests {
             cli_profile_secret_key_with(&ProfileSources {
                 read_env: &read_env,
                 read_file: &read_file,
-                cwd: Some(PathBuf::from("/work")),
+                cwd,
                 credentials_path: Some(PathBuf::from("/home/creds.toml")),
             })
         }
@@ -506,6 +551,32 @@ mod tests {
                 .var(ENV_VAR_PROFILE, "agent")
                 .project(project);
             assert_eq!(fixture.key(), None, "{project:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_working_directory_gives_no_key() {
+        let fixture = Fixture::new()
+            .credentials(&both_profiles())
+            .var(ENV_VAR_PROFILE, "human");
+        assert_eq!(fixture.key_in(None), None);
+    }
+
+    #[test]
+    fn login_keys_go_only_to_the_arete_api() {
+        assert!(is_login_key_destination(
+            "https://api.arete.run/ws/sessions"
+        ));
+        assert!(is_login_key_destination("https://API.arete.run.:443/x"));
+        for url in [
+            "http://api.arete.run/ws/sessions",
+            "https://api.arete.run:8443/ws/sessions",
+            "https://api.arete.run.evil.example/",
+            "https://user@api.arete.run/",
+            "https://other.arete.run/",
+            "not a url",
+        ] {
+            assert!(!is_login_key_destination(url), "{url}");
         }
     }
 

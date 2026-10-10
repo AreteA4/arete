@@ -1,5 +1,6 @@
 import type { Frame } from './frame';
 import {
+  hasAuthorizationHeader,
   isBrowserEnvironment,
   NO_API_KEY_HINT,
   resolveAuthConfig,
@@ -786,7 +787,7 @@ export class ConnectionManager {
     tokenEndpoint: string,
     request: AuthTokenRequest
   ): Promise<TokenEndpointResponse> {
-    const apiKey = tokenEndpointApiKey(this.authConfig);
+    const apiKey = tokenEndpointApiKey(this.authConfig, tokenEndpoint);
     const response = await this.authFetch(tokenEndpoint, {
       method: 'POST',
       headers: {
@@ -822,8 +823,12 @@ export class ConnectionManager {
       const responseMessage = typeof parsedError?.error === 'string' && parsedError.error.length > 0
         ? parsedError.error
         : rawError || response.statusText || 'Authentication request failed';
-      // A server-side 401 without any key: say how to supply one.
-      const errorMessage = response.status === 401 && !apiKey && !isBrowserEnvironment()
+      // A server-side 401 for a request that carried no credential at all:
+      // say how to supply one. Custom Authorization headers have their own
+      // advice to give.
+      const sentCredential = Boolean(apiKey)
+        || hasAuthorizationHeader(this.authConfig?.tokenEndpointHeaders);
+      const errorMessage = response.status === 401 && !sentCredential && !isBrowserEnvironment()
         ? `${responseMessage}. ${NO_API_KEY_HINT}`
         : responseMessage;
 

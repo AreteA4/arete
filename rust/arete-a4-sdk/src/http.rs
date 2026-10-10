@@ -452,7 +452,7 @@ impl HttpAuthClient {
 
         let mut headers = HeaderMap::new();
         if let Some(auth) = &self.auth {
-            if let Some(api_key) = auth.api_key() {
+            if let Some(api_key) = auth.api_key_for(endpoint) {
                 // The header error never echoes the key.
                 let field = if auth.secret_key.is_some() {
                     "secret"
@@ -510,13 +510,13 @@ impl HttpAuthClient {
                 status.canonical_reason(),
                 retry_after,
             );
-            // A 401 for a request that carried no API key: say how to supply
-            // one.
-            let sent_key = self
-                .auth
-                .as_ref()
-                .is_some_and(|auth| auth.api_key().is_some());
-            if status.as_u16() == 401 && !sent_key {
+            // A 401 for a request that carried no credential at all: say how
+            // to supply one. Custom Authorization headers have their own
+            // advice to give.
+            let sent_credential = self.auth.as_ref().is_some_and(|auth| {
+                auth.api_key_for(endpoint).is_some() || auth.has_authorization_header()
+            });
+            if status.as_u16() == 401 && !sent_credential {
                 if let AreteError::AuthRequestFailed { message, .. } = &mut error {
                     *message = format!("{message}. {}", crate::auth::NO_API_KEY_HINT);
                 }

@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   type A4ProfileHost,
+  isA4LoginKeyDestination,
   lookupA4Credentials,
   parseSimpleToml,
   readA4ProfileKey,
   systemProfileHost,
 } from './a4-profile';
-import { resetAuthKeyWarningsForTesting, resolveAuthConfig } from './auth-keys';
+import { resetAuthKeyWarningsForTesting, resolveAuthConfig, tokenEndpointApiKey } from './auth-keys';
 
 const AGENT = 'a4_ak_agentkey';
 const HUMAN = 'a4_sk_humankey';
@@ -23,7 +24,7 @@ const BOTH_PROFILES = `[profiles.agent.keys]
 function host(options: {
   env?: Record<string, string>;
   files?: Record<string, string | Error>;
-  cwd?: string;
+  cwd?: string | null;
   home?: string;
 }): A4ProfileHost {
   const files = options.files ?? {};
@@ -35,7 +36,7 @@ function host(options: {
       if (content instanceof Error) throw content;
       return content;
     },
-    cwd: () => options.cwd ?? '/work',
+    cwd: () => (options.cwd === null ? undefined : options.cwd ?? '/work'),
     homeDir: () => options.home ?? '/home/me',
     joinPath: (...parts) => parts.join('/'),
   };
@@ -113,6 +114,11 @@ describe('readA4ProfileKey', () => {
     }
   });
 
+  it('uses no key when the project file cannot be checked', () => {
+    const files = { [CREDENTIALS]: BOTH_PROFILES };
+    expect(readA4ProfileKey(host({ files, cwd: null, env: { ARETE_PROFILE: 'human' } }))).toEqual({});
+  });
+
   it('honours the credentials path override', () => {
     const files = { '/elsewhere/creds.toml': `api_key = "${HUMAN}"` };
     const env = { ARETE_CREDENTIALS_PATH: '/elsewhere/creds.toml' };
@@ -188,6 +194,32 @@ describe('resolveAuthConfig credential chain', () => {
     const getBuiltinModule = vi.spyOn(processLike, 'getBuiltinModule' as never);
     expect(resolveAuthConfig(undefined)).toBeUndefined();
     expect(getBuiltinModule).not.toHaveBeenCalled();
+  });
+
+  it('sends an a4 login key only to the Arete API', () => {
+    const auth = resolveAuthConfig(undefined, profileKey);
+    expect(tokenEndpointApiKey(auth, 'https://api.arete.run/ws/sessions')).toBe(AGENT);
+    expect(tokenEndpointApiKey(auth, 'https://API.arete.run.:443/x')).toBe(AGENT);
+    // A stack-provided session endpoint on another host gets no key, even
+    // after the config is copied, as binding paths do.
+    const copied = { ...auth, tokenEndpoint: 'https://evil.example/ws/sessions' };
+    expect(tokenEndpointApiKey(copied, 'https://evil.example/ws/sessions')).toBeUndefined();
+    // Explicit and environment keys are unaffected.
+    expect(tokenEndpointApiKey({ secretKey: HUMAN }, 'https://evil.example/s')).toBe(HUMAN);
+  });
+
+  it('recognises only the Arete API as the login key destination', () => {
+    expect(isA4LoginKeyDestination('https://api.arete.run/ws/sessions')).toBe(true);
+    for (const url of [
+      'http://api.arete.run/ws/sessions',
+      'https://api.arete.run:8443/ws/sessions',
+      'https://api.arete.run.evil.example/',
+      'https://user@api.arete.run/',
+      'https://other.arete.run/',
+      'not a url',
+    ]) {
+      expect(isA4LoginKeyDestination(url), url).toBe(false);
+    }
   });
 
   it('builds a Node host without static imports', () => {

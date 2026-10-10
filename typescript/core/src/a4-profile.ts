@@ -23,6 +23,25 @@
 
 /** API URL whose key the SDK may use: its default token endpoint's origin. */
 export const DEFAULT_A4_API_URL = 'https://api.arete.run';
+
+/**
+ * True when `url` is on the API the `a4` login key was stored for. A key
+ * found in the login is only ever sent there, never to an endpoint a stack
+ * names on another host.
+ */
+export function isA4LoginKeyDestination(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase().replace(/\.+$/, '');
+    return parsed.protocol === 'https:'
+      && host === new URL(DEFAULT_A4_API_URL).hostname
+      && (parsed.port === '' || parsed.port === '443')
+      && parsed.username === ''
+      && parsed.password === '';
+  } catch {
+    return false;
+  }
+}
 const PROFILE_ENV = 'ARETE_PROFILE';
 const CREDENTIALS_PATH_ENV = 'ARETE_CREDENTIALS_PATH';
 const AGENT_PROFILE = 'agent';
@@ -33,7 +52,10 @@ export interface A4ProfileHost {
   readEnv(name: string): string | undefined;
   /** File contents, `null` when the file does not exist; throws otherwise. */
   readTextFile(path: string): string | null;
-  /** Working directory, if known. */
+  /**
+   * Working directory. `undefined` when it cannot be determined, in which
+   * case the project profile file cannot be checked and no key is used.
+   */
   cwd(): string | undefined;
   /** Home directory, if known. */
   homeDir(): string | undefined;
@@ -315,21 +337,23 @@ export function lookupA4Credentials(
 
 /** Selected profile: `undefined` for none, `null` when selection is invalid. */
 function selectProfile(host: A4ProfileHost): string | undefined | null {
+  // The project file can pin the agent profile; if it cannot be checked
+  // (unknown working directory, denied or failed read), choose nothing rather
+  // than risk a profile the project excludes.
   const cwd = host.cwd();
-  if (cwd !== undefined) {
-    let project: string | null;
+  if (cwd === undefined) return null;
+  let project: string | null;
+  try {
+    project = host.readTextFile(host.joinPath(cwd, '.arete', 'auth.toml'));
+  } catch {
+    return null;
+  }
+  if (project !== null) {
     try {
-      project = host.readTextFile(host.joinPath(cwd, '.arete', 'auth.toml'));
+      const profile = parseSimpleToml(project)['default_profile'];
+      return profile === AGENT_PROFILE ? AGENT_PROFILE : null;
     } catch {
       return null;
-    }
-    if (project !== null) {
-      try {
-        const profile = parseSimpleToml(project)['default_profile'];
-        return profile === AGENT_PROFILE ? AGENT_PROFILE : null;
-      } catch {
-        return null;
-      }
     }
   }
   const profile = host.readEnv(PROFILE_ENV)?.trim();
@@ -409,8 +433,10 @@ function denoHost(deno: DenoRuntime): A4ProfileHost {
   return {
     readEnv,
     readTextFile(path) {
-      // Without --allow-read Deno would prompt or throw; ask first.
-      if (!granted({ name: 'read', path }) || !deno.readTextFileSync) return null;
+      // Without --allow-read Deno would prompt or throw; ask first. Denied
+      // access is not a missing file: callers must not treat it as absent.
+      if (!deno.readTextFileSync) throw new Error('file reads unavailable');
+      if (!granted({ name: 'read', path })) throw new Error('read permission not granted');
       try {
         return deno.readTextFileSync(path);
       } catch (error) {

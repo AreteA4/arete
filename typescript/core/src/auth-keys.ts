@@ -1,4 +1,4 @@
-import { readA4ProfileKey } from './a4-profile';
+import { isA4LoginKeyDestination, readA4ProfileKey } from './a4-profile';
 import type { AuthConfig } from './types';
 import { AreteError } from './types';
 
@@ -68,6 +68,12 @@ function readEnvironmentVariable(name: string): string | undefined {
 }
 
 const warned = new Set<string>();
+
+/**
+ * Keys taken from the `a4` login. Tracked by value so the restriction
+ * survives config copies (binding paths spread the resolved config).
+ */
+const a4LoginKeys = new Set<string>();
 
 function warnOnce(id: string, message: string): void {
   if (warned.has(id)) return;
@@ -174,6 +180,7 @@ export function resolveAuthConfig(
     );
   }
   if (profile.key && classifyApiKey(profile.key) === 'secret') {
+    a4LoginKeys.add(profile.key);
     return { ...auth, secretKey: profile.key };
   }
   return auth;
@@ -187,7 +194,22 @@ export const NO_API_KEY_HINT =
   'No Arete API key found. Run `a4 auth login` (or `a4 auth signup` for an agent), '
   + 'or set ARETE_API_KEY, or pass auth.secretKey.';
 
-/** The key sent as the token endpoint bearer credential, if any. */
-export function tokenEndpointApiKey(auth: AuthConfig | undefined): string | undefined {
-  return auth?.secretKey ?? auth?.publishableKey;
+/**
+ * The key sent as the bearer credential to `endpoint`, if any. A key taken
+ * from the `a4` login is only sent to the Arete API it was stored for.
+ */
+export function tokenEndpointApiKey(
+  auth: AuthConfig | undefined,
+  endpoint: string
+): string | undefined {
+  const key = auth?.secretKey ?? auth?.publishableKey;
+  if (key !== undefined && a4LoginKeys.has(key) && !isA4LoginKeyDestination(endpoint)) {
+    return undefined;
+  }
+  return key;
+}
+
+/** True when `headers` carries its own `Authorization` header. */
+export function hasAuthorizationHeader(headers: Record<string, string> | undefined): boolean {
+  return Object.keys(headers ?? {}).some((name) => name.toLowerCase() === 'authorization');
 }

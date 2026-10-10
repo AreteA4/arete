@@ -22,7 +22,8 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple
+from urllib.parse import urlsplit
 
 if sys.version_info >= (3, 11):  # pragma: no cover - version dependent
     import tomllib as _toml
@@ -41,6 +42,41 @@ AGENT_PROFILE = "agent"
 HUMAN_PROFILE = "human"
 _PROJECT_AUTH_RELATIVE_PATH = (".arete", "auth.toml")
 _PROFILE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+_LOGIN_KEYS: Set[str] = set()
+"""Keys taken from the ``a4`` login. Tracked by value so the destination
+restriction survives config copies (binding paths ``replace`` the token
+endpoint on the resolved config)."""
+
+
+def remember_login_key(key: str) -> None:
+    _LOGIN_KEYS.add(key)
+
+
+def is_login_key(key: str) -> bool:
+    return key in _LOGIN_KEYS
+
+
+def is_login_key_destination(url: str) -> bool:
+    """True when ``url`` is on the API the ``a4`` login key was stored for.
+
+    A login key is never sent anywhere else, such as a session endpoint a
+    stack names on another host.
+    """
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    host = (parts.hostname or "").rstrip(".").lower()
+    return (
+        parts.scheme == "https"
+        and host == urlsplit(DEFAULT_API_URL).hostname
+        and port in (None, 443)
+        and parts.username is None
+        and parts.password is None
+    )
 
 
 @dataclass(frozen=True)
@@ -215,7 +251,10 @@ def read_profile_key(
             try:
                 cwd = Path.cwd()
             except OSError:
-                cwd = None
+                # The project file cannot be checked; choose nothing rather
+                # than risk a profile the project excludes.
+                logger.debug("working directory unknown; not using an a4 login key")
+                return ProfileKey()
         ok, profile = _select_profile(env, cwd, read_text)
         if not ok:
             logger.debug("a4 profile selection is invalid; not using an a4 login key")

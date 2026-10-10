@@ -141,3 +141,65 @@ def test_missing_key_hint_names_commands_not_paths():
     assert "a4 auth login" in auth_module.NO_API_KEY_HINT
     assert "ARETE_API_KEY" in auth_module.NO_API_KEY_HINT
     assert ".arete" not in auth_module.NO_API_KEY_HINT
+
+
+def test_unknown_working_directory_gives_no_key(home, monkeypatch):
+    write(home / ".arete/credentials.toml", BOTH)
+
+    def no_cwd():
+        raise FileNotFoundError("cwd removed")
+
+    monkeypatch.setattr(Path, "cwd", staticmethod(no_cwd))
+    assert read_profile_key(env={"ARETE_PROFILE": "human"}, home=home) == ProfileKey()
+
+
+def test_login_key_goes_only_to_the_arete_api(monkeypatch):
+    from dataclasses import replace
+
+    from arete._a4_profile import is_login_key_destination
+    from arete.auth import api_key_for_endpoint
+
+    monkeypatch.delenv("ARETE_API_KEY", raising=False)
+    login_key = "a4_ak_loginonlyforarete"
+    resolved = resolve_auth_config(None, lambda: ProfileKey(key=login_key))
+    assert api_key_for_endpoint(resolved, "https://api.arete.run/ws/sessions") == login_key
+    rebound = replace(resolved, token_endpoint="https://evil.example/sessions")
+    assert api_key_for_endpoint(rebound, "https://evil.example/sessions") is None
+    explicit = AuthConfig(secret_key=HUMAN)
+    assert api_key_for_endpoint(explicit, "https://evil.example/sessions") == HUMAN
+
+    assert is_login_key_destination("https://API.arete.run.:443/x")
+    for url in [
+        "http://api.arete.run/ws/sessions",
+        "https://api.arete.run:8443/ws/sessions",
+        "https://api.arete.run.evil.example/",
+        "https://user@api.arete.run/",
+        "https://other.arete.run/",
+        "not a url",
+    ]:
+        assert not is_login_key_destination(url), url
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config, hinted",
+    [
+        (None, True),
+        (AuthConfig(token_endpoint_headers={"authorization": "Bearer custom"}), False),
+    ],
+)
+async def test_401_hint_only_without_any_credential(config, hinted):
+    import httpx
+
+    from arete.auth import request_token_from_endpoint
+    from arete.errors import AuthError
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(401, json={"error": "rejected"})
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(AuthError) as caught:
+            await request_token_from_endpoint(
+                client, "https://api.arete.run/ws/sessions", config, {}
+            )
+    assert ("No Arete API key found" in str(caught.value)) is hinted

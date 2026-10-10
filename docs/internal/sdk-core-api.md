@@ -86,6 +86,11 @@ only the spelling changes per language.
      `ARETE_API_KEY`). Only the key stored for `https://api.arete.run` is used,
      the API the default token endpoint belongs to: a key the CLI stored for
      another API URL (`--api-url` / `ARETE_API_URL`) is never sent elsewhere.
+     The discovered key is also only ever sent to `https://api.arete.run`
+     (https, default port, no userinfo): a token or session endpoint on any
+     other host, such as one named by a stack binding, gets no key.
+     If the working directory or the project file cannot be checked (for
+     example Deno without read permission for it), no key is used.
      Only secret-class keys (`a4_ak_`, `a4_sk_`, legacy `hsk_`) are accepted.
      A missing, unreadable, malformed or ambiguous file means no key, never an
      error. Unlike the CLI, an `ARETE_API_KEY` outranks a selected profile, so
@@ -97,7 +102,8 @@ only the spelling changes per language.
      refused without any key, the error says how to supply one — "No Arete API
      key found. Run `a4 auth login` (or `a4 auth signup` for an agent), or set
      ARETE_API_KEY, or pass the secret key option." — and never names where
-     credentials are stored.
+     credentials are stored. The hint is only added when the request carried
+     no credential at all (no key and no custom `Authorization` header).
    - `publishable_key` (`publishableKey`) takes an origin-bound publishable key
      (`a4_pk_…`) for anything shipped to a browser, created with
      `a4 auth keys create-publishable --origin <scheme://host[:port]>`.

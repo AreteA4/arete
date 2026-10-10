@@ -230,11 +230,28 @@ impl AuthConfig {
         }
     }
 
-    /// The key sent as the token endpoint bearer credential, if any.
+    /// The configured key, if any.
     pub(crate) fn api_key(&self) -> Option<&str> {
         self.secret_key
             .as_deref()
             .or(self.publishable_key.as_deref())
+    }
+
+    /// The key sent as the bearer credential to `endpoint`, if any. A key
+    /// taken from the `a4` login is only sent to the Arete API it was stored
+    /// for.
+    pub(crate) fn api_key_for(&self, endpoint: &str) -> Option<&str> {
+        self.api_key().filter(|key| {
+            !crate::credentials::is_login_key(key)
+                || crate::credentials::is_login_key_destination(endpoint)
+        })
+    }
+
+    /// Whether the token endpoint headers carry their own `Authorization`.
+    pub(crate) fn has_authorization_header(&self) -> bool {
+        self.token_endpoint_headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("authorization"))
     }
 
     fn has_explicit_auth(&self) -> bool {
@@ -517,7 +534,10 @@ pub(crate) fn resolve_auth_config_with_sources(
     }
 
     match read_profile_key() {
-        Some(profile_key) => Ok(Some(auth.unwrap_or_default().with_secret_key(profile_key))),
+        Some(profile_key) => {
+            crate::credentials::remember_login_key(&profile_key);
+            Ok(Some(auth.unwrap_or_default().with_secret_key(profile_key)))
+        }
         None => Ok(auth),
     }
 }
@@ -758,6 +778,31 @@ mod tests {
             resolve_auth_config_with_sources(None, env_with(None), || None)
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn login_key_is_withheld_from_other_hosts() {
+        let login_key = "a4_ak_loginonlyforarete";
+        let resolved =
+            resolve_auth_config_with_sources(None, env_with(None), || Some(login_key.into()))
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            resolved.api_key_for("https://api.arete.run/ws/sessions"),
+            Some(login_key)
+        );
+        // Binding paths clone the config and point it at a stack-provided
+        // session endpoint; the login key must not follow.
+        let rebound = resolved
+            .clone()
+            .with_token_endpoint("https://evil.example/sessions");
+        assert_eq!(rebound.api_key_for("https://evil.example/sessions"), None);
+        // Explicit keys are unaffected.
+        let explicit = AuthConfig::default().with_secret_key(SECRET);
+        assert_eq!(
+            explicit.api_key_for("https://evil.example/sessions"),
+            Some(SECRET)
         );
     }
 
