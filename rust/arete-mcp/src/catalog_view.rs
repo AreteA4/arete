@@ -39,6 +39,35 @@ pub const BRIEF_FIELDS: &[&str] = &[
 /// output short, and `nextCursor` continues it.
 pub const DEFAULT_SEARCH_LIMIT: usize = 10;
 
+/// Entries per kind in the overview a catalog search without filters
+/// returns (the server itself requires a filter).
+pub const OVERVIEW_LIMIT: usize = 5;
+
+/// Kinds listed by the unfiltered catalog overview, in order.
+pub const OVERVIEW_KINDS: [&str; 2] = ["program", "stack"];
+
+/// Merge one search page per kind into an overview: the pages' results in
+/// order, and `nextCursors` keyed by kind for the kinds that have another
+/// page (omitted when none do).
+pub fn merge_overview(pages: &[(&str, Value)]) -> Value {
+    let mut results = Vec::new();
+    let mut cursors = Map::new();
+    for (kind, page) in pages {
+        if let Some(Value::Array(items)) = page.get("results") {
+            results.extend(items.iter().cloned());
+        }
+        if let Some(cursor) = next_cursor(page) {
+            cursors.insert(kind.to_string(), Value::String(cursor.to_string()));
+        }
+    }
+    let mut out = Map::new();
+    out.insert("results".to_string(), Value::Array(results));
+    if !cursors.is_empty() {
+        out.insert("nextCursors".to_string(), Value::Object(cursors));
+    }
+    Value::Object(out)
+}
+
 /// How a catalog response should be shaped before it is returned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Shape {
@@ -205,6 +234,15 @@ pub fn next_cursor(value: &Value) -> Option<&str> {
         .filter(|cursor| !cursor.is_empty())
 }
 
+/// Whether a search page that has no cursor (knowledge search) may have been
+/// cut at `limit`: it returned at least that many results.
+pub fn may_have_more(value: &Value, limit: usize) -> bool {
+    value
+        .get("results")
+        .and_then(Value::as_array)
+        .is_some_and(|results| results.len() >= limit)
+}
+
 /// Keep only `slug` and `name` of each concept and category of a vocabulary
 /// response; descriptions, synonyms, related slugs and snapshot hashes are
 /// dropped. Lists other than `concepts` and `categories` are dropped too.
@@ -350,6 +388,28 @@ mod tests {
                 "categories": [{"slug": "dex", "name": "DEX"}]
             })
         );
+    }
+
+    #[test]
+    fn overview_merges_pages_and_keys_cursors_by_kind() {
+        let programs = json!({"results": [{"slug": "a"}], "nextCursor": "p1", "sets": []});
+        let stacks = json!({"results": [{"slug": "b"}]});
+        assert_eq!(
+            merge_overview(&[("program", programs), ("stack", stacks.clone())]),
+            json!({"results": [{"slug": "a"}, {"slug": "b"}], "nextCursors": {"program": "p1"}})
+        );
+        assert_eq!(
+            merge_overview(&[("stack", stacks)]),
+            json!({"results": [{"slug": "b"}]})
+        );
+    }
+
+    #[test]
+    fn full_pages_may_have_more() {
+        let page = json!({"results": [{}, {}]});
+        assert!(may_have_more(&page, 2));
+        assert!(!may_have_more(&page, 3));
+        assert!(!may_have_more(&json!({}), 1));
     }
 
     #[test]

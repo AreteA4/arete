@@ -221,11 +221,13 @@ immediately with an error pointing at `a4 auth login` — there is no public
 subset. The same HTTPS-origin rule as discovery applies: a key is only sent to
 `https://arete.run`, `https://*.arete.run`, or a loopback address.
 
-- `search_knowledge({ query?, concept?, category?, limit? })` — search by
-  free-text intent (matched against concept names and synonyms first, then
-  protocols/programs/recipes via full-text search) or filter by exact
-  `concept` / `category` slug. At least one of the three is required. Each
-  result carries `coverage: { read, build, subscribe }`.
+- `search_knowledge({ query?, concept?, category?, limit?, fields?, full? })` —
+  search by free-text intent (matched against concept names and synonyms
+  first, then protocols/programs/recipes via full-text search) or filter by
+  exact `concept` / `category` slug. At least one of the three is required.
+  Each result carries `coverage: { read, build, subscribe }`. Brief by default
+  (type, slug, name, protocol, summary, coverage; 10 results) with a `hint`;
+  `full: true` adds `score` and `coverage_via`.
 - `get_protocol({ protocol })` — one protocol by slug (e.g. `meteora-damm`):
   description, categories, links, programs with roles
   (core/periphery/deprecated), related protocols, the public stacks streaming

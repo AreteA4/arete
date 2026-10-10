@@ -253,11 +253,21 @@ pub struct SearchKnowledgeArgs {
     /// `list_concepts`.
     #[serde(default)]
     pub category: Option<String>,
-    /// Maximum number of results. Accepts either an integer (`5`) or a
-    /// string-encoded integer (`"5"`) because LLM tool-call arguments
-    /// sometimes stringify numbers.
+    /// Maximum number of results, 10 by default. Accepts either an integer
+    /// (`5`) or a string-encoded integer (`"5"`) because LLM tool-call
+    /// arguments sometimes stringify numbers.
     #[serde(default, deserialize_with = "lenient::opt_usize")]
     pub limit: Option<usize>,
+    /// Keep only these fields of each result: top-level keys or dotted paths
+    /// such as `coverage.read`. A list or a comma-separated string. Replaces
+    /// the brief default field set.
+    #[serde(default)]
+    pub fields: Option<StringList>,
+    /// Return each result as the server sent it, including `score` and
+    /// `coverage_via`. By default each result keeps only type, slug, name,
+    /// protocol, summary and coverage.
+    #[serde(default)]
+    pub full: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -411,12 +421,82 @@ fn search_body(body: String, shape: &catalog_view::Shape) -> String {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
         return body;
     };
-    let mut hint = String::from(SEARCH_BRIEF_HINT);
-    if catalog_view::next_cursor(&value).is_some() {
-        hint.push_str(" More results: pass `nextCursor` as `cursor` with the same filters.");
+    serde_json::to_string(&search_value(&value, shape, None)).unwrap_or(body)
+}
+
+/// Shape a search page (or the unfiltered overview) and attach its `hint`.
+/// `overview` leads the hint when the page is the overview.
+fn search_value(
+    value: &serde_json::Value,
+    shape: &catalog_view::Shape,
+    overview: Option<&str>,
+) -> serde_json::Value {
+    let mut parts: Vec<&str> = overview.into_iter().collect();
+    if *shape != catalog_view::Shape::Full {
+        parts.push(SEARCH_BRIEF_HINT);
     }
-    let shaped = catalog_view::with_hint(catalog_view::shape_search(&value, shape), hint);
-    serde_json::to_string(&shaped).unwrap_or(body)
+    if catalog_view::next_cursor(value).is_some() {
+        parts.push("More results: pass `nextCursor` as `cursor` with the same filters.");
+    }
+    let shaped = catalog_view::shape_search(value, shape);
+    if parts.is_empty() {
+        shaped
+    } else {
+        catalog_view::with_hint(shaped, parts.join(" "))
+    }
+}
+
+/// The hint leading the unfiltered `search_catalog` overview.
+fn overview_hint(limit: usize, paged: bool) -> String {
+    let mut hint = format!(
+        "Catalog overview (no filters): up to {limit} programs and {limit} stacks. Narrow \
+         with `query`, `concept` or `category` (slugs: `list_catalog_vocabulary`), or \
+         `kind`."
+    );
+    if paged {
+        hint.push_str(" Page one kind with `kind` and `cursor` set to `nextCursors.<kind>`.");
+    }
+    hint
+}
+
+/// Whether a catalog search names no filter at all.
+fn unfiltered(args: &SearchCatalogArgs) -> bool {
+    [
+        &args.query,
+        &args.concept,
+        &args.category,
+        &args.kind,
+        &args.mode,
+        &args.target,
+    ]
+    .iter()
+    .all(|value| value.as_deref().is_none_or(|value| value.trim().is_empty()))
+}
+
+const KNOWLEDGE_BRIEF_HINT: &str = "Brief fields per result. Pass `full: true` for every \
+     field (score, coverage_via) or `fields` to choose keys; drill in with `get_protocol`, \
+     `get_program_knowledge` or `get_recipe`.";
+
+/// Shape a `search_knowledge` body and attach a `hint`. Knowledge search has
+/// no cursor, so a page cut at `limit` says to raise it.
+fn knowledge_search_body(body: String, shape: &catalog_view::Shape, limit: usize) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return body;
+    };
+    let mut parts = Vec::new();
+    if *shape != catalog_view::Shape::Full {
+        parts.push(KNOWLEDGE_BRIEF_HINT.to_string());
+    }
+    if catalog_view::may_have_more(&value, limit) {
+        parts.push(format!(
+            "There may be more results: raise `limit` above {limit}."
+        ));
+    }
+    if *shape == catalog_view::Shape::Full && parts.is_empty() {
+        return body;
+    }
+    let shaped = catalog_view::shape_search(&value, shape);
+    serde_json::to_string(&catalog_view::with_hint(shaped, parts.join(" "))).unwrap_or(body)
 }
 
 /// Compact a vocabulary body to slugs and names unless `full` is set.
@@ -934,8 +1014,10 @@ impl AreteMcp {
                           (`ready` or `degraded`).\n\n\
                           `query` is free text; `concept`/`category` filter by slug \
                           (see `list_catalog_vocabulary`); `kind`, `mode`, and `target` \
-                          narrow to what you can actually use. At least one filter is \
-                          required. Pages hold 10 results unless you pass `limit`; when a \
+                          narrow to what you can actually use. Without any filter the \
+                          tool returns an overview: up to 5 programs and 5 stacks (or \
+                          `limit` of each), with `nextCursors.program`/`nextCursors.stack` \
+                          to page one kind. Pages hold 10 results unless you pass `limit`; when a \
                           page returns `nextCursor`, pass it back as `cursor` with the \
                           same filters to continue. Drill in with `get_catalog_entry`.\n\n\
                           Results are brief by default: each keeps only `kind`, `slug`, \
@@ -952,7 +1034,42 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<SearchCatalogArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let is_unfiltered = unfiltered(&args);
         let shape = search_shape(args.fields, args.full);
+        if is_unfiltered {
+            if args.cursor.as_deref().is_some_and(|c| !c.trim().is_empty()) {
+                return Err(McpError::invalid_params(
+                    "`cursor` continues a search: repeat the filters of the page that returned it \
+                     (e.g. `kind: \"program\"` with `nextCursors.program`)"
+                        .to_string(),
+                    None,
+                ));
+            }
+            let limit = args.limit.unwrap_or(catalog_view::OVERVIEW_LIMIT);
+            let mut pages = Vec::new();
+            for kind in catalog_view::OVERVIEW_KINDS {
+                let body = self
+                    .registry_body(
+                        self.registry
+                            .catalog_search(
+                                None,
+                                None,
+                                None,
+                                Some(kind),
+                                None,
+                                None,
+                                Some(limit),
+                                None,
+                            )
+                            .await,
+                    )
+                    .await?;
+                pages.push((kind, parse_descriptor(Ok(body))?));
+            }
+            let overview = catalog_view::merge_overview(&pages);
+            let hint = overview_hint(limit, overview.get("nextCursors").is_some());
+            return shaped_result(&search_value(&overview, &shape, Some(&hint)));
+        }
         let body = self
             .registry_body(
                 self.registry
@@ -1036,6 +1153,11 @@ impl AreteMcp {
                           (stream live entities from a hosted stack) — pick the mode you \
                           need, then drill in with get_protocol, get_program_knowledge, \
                           or get_recipe.\n\n\
+                          Results are brief by default (10 of them unless you pass \
+                          `limit`): each keeps `type`, `slug`, `name`, `protocol`, \
+                          `summary` and `coverage`, and the response carries a top-level \
+                          `hint`. Pass `full: true` for every field (`score`, \
+                          `coverage_via`) or `fields` to choose keys.\n\n\
                           AUTH: unlike the explore_* tools, this requires an Arete API \
                           key (`ARETE_API_KEY` env var, or the file `a4 auth login` \
                           writes)."
@@ -1044,17 +1166,23 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<SearchKnowledgeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.registry_result(
-            self.registry
-                .knowledge_search(
-                    args.query.as_deref(),
-                    args.concept.as_deref(),
-                    args.category.as_deref(),
-                    args.limit,
-                )
-                .await,
-        )
-        .await
+        let shape = search_shape(args.fields, args.full);
+        let limit = args.limit.unwrap_or(catalog_view::DEFAULT_SEARCH_LIMIT);
+        let body = self
+            .registry_body(
+                self.registry
+                    .knowledge_search(
+                        args.query.as_deref(),
+                        args.concept.as_deref(),
+                        args.category.as_deref(),
+                        Some(limit),
+                    )
+                    .await,
+            )
+            .await?;
+        Ok(CallToolResult::success(vec![Content::text(
+            knowledge_search_body(body, &shape, limit),
+        )]))
     }
 
     #[tool(
@@ -2464,6 +2592,72 @@ mod ergonomics_tests {
             catalog_shape(args.fields, args.full),
             catalog_view::Shape::Compact
         );
+    }
+
+    #[test]
+    fn unfiltered_catalog_search_is_an_overview_with_a_hint() {
+        let args: SearchCatalogArgs =
+            serde_json::from_value(serde_json::json!({ "query": "  ", "limit": 3 })).unwrap();
+        assert!(unfiltered(&args));
+        let args: SearchCatalogArgs =
+            serde_json::from_value(serde_json::json!({ "kind": "stack" })).unwrap();
+        assert!(!unfiltered(&args));
+
+        let overview = catalog_view::merge_overview(&[
+            (
+                "program",
+                serde_json::json!({"results": [{"kind": "program", "slug": "a", "score": 1}], "nextCursor": "p1"}),
+            ),
+            (
+                "stack",
+                serde_json::json!({"results": [{"kind": "stack", "slug": "b"}]}),
+            ),
+        ]);
+        let hint = overview_hint(5, true);
+        let out = search_value(&overview, &catalog_view::brief(), Some(&hint));
+        assert_eq!(
+            out["results"][0],
+            serde_json::json!({"kind": "program", "slug": "a"})
+        );
+        assert_eq!(out["nextCursors"]["program"], "p1");
+        let hint = out["hint"].as_str().unwrap();
+        assert!(hint.starts_with("Catalog overview"));
+        assert!(hint.contains("nextCursors.<kind>") && hint.contains("full: true"));
+        assert!(!overview_hint(5, false).contains("nextCursors"));
+    }
+
+    #[test]
+    fn knowledge_search_defaults_to_brief_results_with_a_hint() {
+        let args: SearchKnowledgeArgs =
+            serde_json::from_value(serde_json::json!({ "query": "swaps" })).unwrap();
+        let shape = search_shape(args.fields, args.full);
+        let body = serde_json::json!({
+            "matched_concepts": ["swap"],
+            "results": [{
+                "type": "program", "slug": "raydium-cp-swap", "name": "raydium_cp_swap",
+                "protocol": "raydium", "summary": "AMM.", "score": 6.1,
+                "coverage": {"read": true, "build": true, "subscribe": false},
+                "coverage_via": {"read": ["raydium-cp-swap"]}
+            }]
+        })
+        .to_string();
+        let out: serde_json::Value =
+            serde_json::from_str(&knowledge_search_body(body.clone(), &shape, 10)).unwrap();
+        let first = out["results"][0].as_object().unwrap();
+        assert!(!first.contains_key("score") && !first.contains_key("coverage_via"));
+        assert_eq!(first["coverage"]["read"], true);
+        assert_eq!(out["matched_concepts"][0], "swap");
+        let hint = out["hint"].as_str().unwrap();
+        assert!(hint.contains("full: true") && !hint.contains("raise `limit`"));
+
+        let out: serde_json::Value =
+            serde_json::from_str(&knowledge_search_body(body.clone(), &shape, 1)).unwrap();
+        assert!(out["hint"]
+            .as_str()
+            .unwrap()
+            .contains("raise `limit` above 1"));
+        let full = search_shape(None, Some(true));
+        assert_eq!(knowledge_search_body(body.clone(), &full, 10), body);
     }
 
     #[test]
