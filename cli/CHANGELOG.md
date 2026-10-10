@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+## [0.34.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.33.0...a4-cli-v0.34.0) (2026-10-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `a4 know search --json` and `a4 know concepts --json` omit fields by default and add a top-level `hint`. Pass --full for the previous content.
+* **cli:** `a4 explore catalog --json`, `--vocabulary --json` and `a4 explore programs --json` omit fields by default and add a top-level `hint`. Pass --full for the previous content.
+
+### Features
+
+* **cli,mcp:** one-shot view reads and token-amount scale in schemas ([dbccc12](https://github.com/AreteA4/arete/commit/dbccc12d589c0b212291d97effdf196afe548a96))
+* **cli,mcp:** one-shot view reads and token-amount scale in schemas ([fc45dfb](https://github.com/AreteA4/arete/commit/fc45dfbb04eb2b356b63f81c3ca9e22997317ac8))
+* **cli:** make a4 know search and concepts brief by default ([1edfcb2](https://github.com/AreteA4/arete/commit/1edfcb2b32d8a15ae0f31491669d0fb6447f019c))
+* **cli:** make explore catalog and program lists brief by default ([a7c5e49](https://github.com/AreteA4/arete/commit/a7c5e492c48eef10053a72a605da5eb751a36741))
+
+
+### Bug Fixes
+
+* **cli,mcp:** keep --full output unchanged and bound reshaped results ([bf6ae0d](https://github.com/AreteA4/arete/commit/bf6ae0dd9240b06491a4955a62feda42568d7023))
+* **cli:** address review on install --setup and key command ([d2aff88](https://github.com/AreteA4/arete/commit/d2aff88a422ff13c0b2cf23f2915b4f2bcc63cc7))
+* **cli:** correct a4 install TypeScript snippets and add --setup ([e3e94cd](https://github.com/AreteA4/arete/commit/e3e94cda0b95a4e53342d62fa7403318717107aa))
+* **cli:** correct a4 install TypeScript snippets and add --setup ([3be8a9f](https://github.com/AreteA4/arete/commit/3be8a9f449b699f51832aaf1ad5422ac120a1469))
+* **cli:** keep the key command shell-neutral and cover later stacks ([a9d1336](https://github.com/AreteA4/arete/commit/a9d1336f7cd7fe0ec358825cefa31b7ae5c56984))
+* **cli:** resolve .. before deciding a setup path is inside the root ([c8b4f26](https://github.com/AreteA4/arete/commit/c8b4f26c2f511901679bd3c32446a8399e3ddc46))
+* **cli:** treat a .. in setup paths as outside the project root ([bf27f32](https://github.com/AreteA4/arete/commit/bf27f32c66c78866526b8414a5adc9b1eef9f1f7))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.33.0 to 0.34.0
+    * arete-mcp bumped from 0.33.0 to 0.34.0
+
 ## [0.33.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.32.0...a4-cli-v0.33.0) (2026-10-09)
 
 

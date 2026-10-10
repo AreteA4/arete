@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.34.0](https://github.com/AreteA4/arete/compare/arete-server-v0.33.0...arete-server-v0.34.0) (2026-10-10)
+
+
+### Bug Fixes
+
+* **arete-server:** keep sorted view string order total ([91736b4](https://github.com/AreteA4/arete/commit/91736b43197da6e2c2fd56a847c71d53493a0af8))
+
+
+### Performance Improvements
+
+* **arete-server:** drop per-update O(n) work from sorted view caches ([1642143](https://github.com/AreteA4/arete/commit/1642143b872ca9b42c5fc854e2d2ebe93d8779e1))
+* **arete-server:** read only the subscribed window of a sorted view ([c3fc072](https://github.com/AreteA4/arete/commit/c3fc07238a5a7bbf67af34eac927a9ef6eccdf9d))
+* **arete-server:** share cached rows and remove per-update O(n) view work ([036a998](https://github.com/AreteA4/arete/commit/036a998d75544c194244e15114813373e4b75f0a))
+* **arete-server:** share cached rows section by section ([fbd99d7](https://github.com/AreteA4/arete/commit/fbd99d7639bee2e1ab93c4da3c875c4359b1e02e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.33.0 to 0.34.0
+
 ## [0.33.0](https://github.com/AreteA4/arete/compare/arete-server-v0.32.0...arete-server-v0.33.0) (2026-10-09)
 
 

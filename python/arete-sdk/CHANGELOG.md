@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.34.0](https://github.com/AreteA4/arete/compare/arete-python-v0.33.0...arete-python-v0.34.0) (2026-10-10)
+
+
+### Features
+
+* **sdk:** fall back to the a4 CLI login for server-side auth ([76d821d](https://github.com/AreteA4/arete/commit/76d821d150b1ea0c4d7349eb6a2f2c2552000bf6))
+* **sdk:** fall back to the a4 CLI login for server-side auth ([6963931](https://github.com/AreteA4/arete/commit/696393133f7c7a377151c111e4f24610743d7140))
+
+
+### Bug Fixes
+
+* **sdk:** keep a4 login keys on the Arete API and tighten profile checks ([9a287b6](https://github.com/AreteA4/arete/commit/9a287b63017bb3a7415641360db8632e95ac34e0))
+* **sdk:** scope the a4 login key restriction to its own auth config ([37fb91c](https://github.com/AreteA4/arete/commit/37fb91cd9dd6fc6d2567c166cb1f94e6dfb36874))
+
 ## [0.33.0](https://github.com/AreteA4/arete/compare/arete-python-v0.32.0...arete-python-v0.33.0) (2026-10-09)
 
 

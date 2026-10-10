@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.34.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.33.0...arete-mcp-v0.34.0) (2026-10-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **mcp:** search_knowledge omits `score` and `coverage_via` and returns 10 results by default. Pass `full: true` and `limit` for the previous content.
+* **mcp:** the default responses of search_catalog, list_catalog_vocabulary, list_concepts, explore_stacks and explore_programs omit fields they used to include. Pass `full: true` for the previous content.
+
+### Features
+
+* **cli,mcp:** one-shot view reads and token-amount scale in schemas ([dbccc12](https://github.com/AreteA4/arete/commit/dbccc12d589c0b212291d97effdf196afe548a96))
+* **cli,mcp:** one-shot view reads and token-amount scale in schemas ([fc45dfb](https://github.com/AreteA4/arete/commit/fc45dfbb04eb2b356b63f81c3ca9e22997317ac8))
+* **mcp:** brief knowledge search and a catalog overview without filters ([fde07b2](https://github.com/AreteA4/arete/commit/fde07b207aa241ddf887e64541896e78d74b6b72))
+* **mcp:** make discovery list and search tools brief by default ([84f2b5d](https://github.com/AreteA4/arete/commit/84f2b5d2cb137a4247a56606258080b85ef874a2))
+* **sdk:** fall back to the a4 CLI login for server-side auth ([76d821d](https://github.com/AreteA4/arete/commit/76d821d150b1ea0c4d7349eb6a2f2c2552000bf6))
+* **sdk:** fall back to the a4 CLI login for server-side auth ([6963931](https://github.com/AreteA4/arete/commit/696393133f7c7a377151c111e4f24610743d7140))
+
+
+### Bug Fixes
+
+* **cli,mcp:** keep --full output unchanged and bound reshaped results ([bf6ae0d](https://github.com/AreteA4/arete/commit/bf6ae0dd9240b06491a4955a62feda42568d7023))
+* **mcp:** bound read_view results by the tool-result size cap ([f2be647](https://github.com/AreteA4/arete/commit/f2be647991c9e8a78bf36ec9f063783905101c66))
+* **mcp:** bound read_view's stack lookup, read rows in view order, keep alias-ambiguous amounts out ([9700e6f](https://github.com/AreteA4/arete/commit/9700e6f8973896871be247b8d41510150066de5d))
+* **mcp:** stop naming the credentials file in agent-facing output ([f6df8d6](https://github.com/AreteA4/arete/commit/f6df8d61a24a74df19e5ab600582ed221250c347))
+
 ## [0.33.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.32.0...arete-mcp-v0.33.0) (2026-10-09)
 
 
