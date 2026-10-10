@@ -614,7 +614,19 @@ fn spawn_connection_loop(
         while should_run {
             *state.write().await = ConnectionState::Connecting;
 
-            let token = match auth_state.resolve_token(force_token_refresh).await {
+            // A caller that stops waiting for the first connection (a dropped
+            // or timed-out `ConnectionManager::new`) abandons it: nothing can
+            // use the manager, so the task stops instead of finishing a
+            // stalled token request or handshake.
+            let Some(resolved) = until_abandoned(
+                &mut initial_connect_tx,
+                auth_state.resolve_token(force_token_refresh),
+            )
+            .await
+            else {
+                break;
+            };
+            let token = match resolved {
                 Ok(token) => {
                     force_token_refresh = false;
                     token
@@ -637,7 +649,12 @@ fn spawn_connection_loop(
                 }
             };
 
-            match connect_async(request).await {
+            let Some(connected) =
+                until_abandoned(&mut initial_connect_tx, connect_async(request)).await
+            else {
+                break;
+            };
+            match connected {
                 Ok((ws, _)) => {
                     clear_last_error(&last_error).await;
                     *last_socket_issue.write().await = None;
@@ -979,6 +996,23 @@ async fn wait_for_refresh_timer(timer: &mut Option<Pin<Box<Sleep>>>) {
     }
 }
 
+/// `step`'s output, or `None` when the caller of `ConnectionManager::new`
+/// stops waiting for the first connection before `step` finishes. After the
+/// first connection is reported there is no such caller, and `step` simply
+/// runs.
+async fn until_abandoned<F: std::future::Future>(
+    initial_connect_tx: &mut Option<oneshot::Sender<Result<(), AreteError>>>,
+    step: F,
+) -> Option<F::Output> {
+    match initial_connect_tx {
+        Some(tx) => tokio::select! {
+            output = step => Some(output),
+            () = tx.closed() => None,
+        },
+        None => Some(step.await),
+    }
+}
+
 fn report_initial_success(
     initial_connect_tx: &mut Option<oneshot::Sender<Result<(), AreteError>>>,
 ) {
@@ -1070,6 +1104,42 @@ fn refresh_response_error(response: RefreshAuthResponseMessage) -> AreteError {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn an_abandoned_first_connection_stops_its_task() {
+        // A server that accepts TCP but never answers the WebSocket handshake.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+
+        let connecting = super::ConnectionManager::new(
+            url,
+            crate::config::ConnectionConfig::default(),
+            crate::store::SharedStore::new(),
+        );
+        let accept = async { listener.accept().await.unwrap().0 };
+        let (timed_out, mut socket) = tokio::join!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), connecting),
+            accept
+        );
+        assert!(timed_out.is_err(), "the handshake never completes");
+
+        // Giving up on `new` stops the handshake: the client closes its socket.
+        use tokio::io::AsyncReadExt;
+        let mut buf = [0u8; 1024];
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match socket.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => continue,
+                }
+            }
+        })
+        .await;
+        assert!(
+            closed.is_ok(),
+            "the connection task kept the handshake open"
+        );
+    }
+
     use super::*;
 
     fn auth_state_with(
