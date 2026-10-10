@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.34.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.33.0...arete-interpreter-v0.34.0) (2026-10-10)
+
+
+### Performance Improvements
+
+* **interpreter:** cut per-event allocation churn in the VM hot path ([94cb55d](https://github.com/AreteA4/arete/commit/94cb55d87454e84505ff0e9d6834696b2ec7318d))
+* **interpreter:** look up freshness and duplicate checks once ([5dfd403](https://github.com/AreteA4/arete/commit/5dfd403b06e76464a21976cd2f7bf0a3ccc88dca))
+* **interpreter:** pack rows in a reused buffer ([4ceab5e](https://github.com/AreteA4/arete/commit/4ceab5e3ecc048c562f14c9f670428c89bde4c23))
+* **interpreter:** stop allocating keys and copies on every field write ([2da8279](https://github.com/AreteA4/arete/commit/2da8279ee6ffbd8a56471d87eb872f6769e4febc))
+* **interpreter:** unpack entity rows into rows a handler is done with ([2bca7df](https://github.com/AreteA4/arete/commit/2bca7df0e161e79ea6be203076c80b331569bba0))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.33.0 to 0.34.0
+
 ## [0.33.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.32.0...arete-interpreter-v0.33.0) (2026-10-09)
 
 
