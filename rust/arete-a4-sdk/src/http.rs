@@ -503,13 +503,25 @@ impl HttpAuthClient {
             .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
 
         if !status.is_success() {
-            return Err(AreteError::from_auth_response(
+            let mut error = AreteError::from_auth_response(
                 status.as_u16(),
                 header_code.as_deref(),
                 Some(&body),
                 status.canonical_reason(),
                 retry_after,
-            ));
+            );
+            // A 401 for a request that carried no API key: say how to supply
+            // one.
+            let sent_key = self
+                .auth
+                .as_ref()
+                .is_some_and(|auth| auth.api_key().is_some());
+            if status.as_u16() == 401 && !sent_key {
+                if let AreteError::AuthRequestFailed { message, .. } = &mut error {
+                    *message = format!("{message}. {}", crate::auth::NO_API_KEY_HINT);
+                }
+            }
+            return Err(error);
         }
 
         let data: EndpointTokenResponse = serde_json::from_slice(&body)

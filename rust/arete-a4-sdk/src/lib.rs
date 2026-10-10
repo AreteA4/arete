@@ -44,6 +44,8 @@ mod client;
 pub mod collation;
 mod config;
 mod connection;
+#[doc(hidden)]
+pub mod credentials;
 pub mod encoding;
 mod entity;
 mod error;

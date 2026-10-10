@@ -1,5 +1,10 @@
 import type { Frame } from './frame';
-import { resolveAuthConfig, tokenEndpointApiKey } from './auth-keys';
+import {
+  isBrowserEnvironment,
+  NO_API_KEY_HINT,
+  resolveAuthConfig,
+  tokenEndpointApiKey,
+} from './auth-keys';
 import { CursorTracker, parseFrame, parseFrameFromBlob } from './frame';
 import type {
   AuthConfig,
@@ -814,9 +819,13 @@ export class ConnectionManager {
         : response.status === 429
           ? 'QUOTA_EXCEEDED'
           : 'AUTH_REQUIRED';
-      const errorMessage = typeof parsedError?.error === 'string' && parsedError.error.length > 0
+      const responseMessage = typeof parsedError?.error === 'string' && parsedError.error.length > 0
         ? parsedError.error
         : rawError || response.statusText || 'Authentication request failed';
+      // A server-side 401 without any key: say how to supply one.
+      const errorMessage = response.status === 401 && !apiKey && !isBrowserEnvironment()
+        ? `${responseMessage}. ${NO_API_KEY_HINT}`
+        : responseMessage;
 
       const retryAfterHeader = response.headers.get('Retry-After');
       const retryAfterSeconds = retryAfterHeader && /^\d+$/.test(retryAfterHeader)
