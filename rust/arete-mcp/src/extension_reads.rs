@@ -103,66 +103,52 @@ pub fn stack_extension_reads(extension: &Value) -> Vec<Value> {
 }
 
 /// The entries of the first `readArgCounts: { … }` object literal in
-/// `source`, in source order. Mentions inside comments and string literals
-/// are skipped, as are occurrences not followed by an object literal.
+/// `source` that parses strictly (see [`parse_object`]), in source order.
+///
+/// There is no JavaScript lexer here: telling a regex literal from a division
+/// needs a real parser, and a lexer that guesses wrong (a `/'/g` literal
+/// opening a "string") hides every read. Instead every whole-identifier
+/// occurrence followed by `:` and `{` is a candidate, and the first whose
+/// object parses strictly wins. A prose mention (`// readArgCounts describes
+/// optional arguments`) is not followed by an object and is skipped. The
+/// tradeoff: a comment or string holding a well-formed `readArgCounts: {
+/// x: 1 }` before the real declaration would be picked. Hosted extension
+/// files come from the SDK codegen, which emits no such text.
 fn read_arg_counts(source: &str) -> Option<Vec<ReadArity>> {
-    code_occurrences(source, "readArgCounts")
+    identifier_occurrences(source, "readArgCounts")
         .into_iter()
         .find_map(|start| {
-            let rest = skip_trivia(&source[start + "readArgCounts".len()..]);
-            let body = skip_trivia(rest.strip_prefix(':')?).strip_prefix('{')?;
+            let rest = source[start + "readArgCounts".len()..].trim_start();
+            let body = rest.strip_prefix(':')?.trim_start().strip_prefix('{')?;
             let mut arities = Vec::new();
             parse_object(body, "", 0, &mut arities)?;
-            (!arities.is_empty()).then_some(arities)
+            (!arities.is_empty() && arities.len() <= MAX_READS).then_some(arities)
         })
 }
 
-/// Byte offsets of `word` (as a whole identifier) in the code of `source`:
-/// not inside a `//` or `/* */` comment or a `'`, `"` or `` ` `` string.
-fn code_occurrences(source: &str, word: &str) -> Vec<usize> {
+/// Byte offsets of `word` as a whole identifier in `source`.
+fn identifier_occurrences(source: &str, word: &str) -> Vec<usize> {
     let bytes = source.as_bytes();
     let is_ident = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$';
-    let mut found = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'/' if bytes.get(index + 1) == Some(&b'/') => {
-                index = source[index..]
-                    .find('\n')
-                    .map_or(bytes.len(), |end| index + end);
-            }
-            b'/' if bytes.get(index + 1) == Some(&b'*') => {
-                index = source[index + 2..]
-                    .find("*/")
-                    .map_or(bytes.len(), |end| index + 2 + end + 2);
-            }
-            quote @ (b'\'' | b'"' | b'`') => {
-                index += 1;
-                while index < bytes.len() && bytes[index] != quote {
-                    if bytes[index] == b'\\' {
-                        index += 1;
-                    }
-                    index += 1;
-                }
-                index += 1;
-            }
-            _ if bytes[index..].starts_with(word.as_bytes())
-                && (index == 0 || !is_ident(bytes[index - 1]))
+    source
+        .match_indices(word)
+        .map(|(index, _)| index)
+        .filter(|&index| {
+            (index == 0 || !is_ident(bytes[index - 1]))
                 && bytes
                     .get(index + word.len())
-                    .is_none_or(|&next| !is_ident(next)) =>
-            {
-                found.push(index);
-                index += word.len();
-            }
-            _ => index += 1,
-        }
-    }
-    found
+                    .is_none_or(|&next| !is_ident(next))
+        })
+        .collect()
 }
 
-/// Parse `key: 0, key: [1, 2], ns: { … } }` up to the object's closing
-/// brace, appending leaves. Returns the text after the brace.
+/// Strictly parse `key: 0, key: [1, 2], ns: { … }, }` up to the object's
+/// closing brace, appending leaves. Keys are identifiers or quoted strings
+/// without escapes; values are an argument count of at most
+/// [`MAX_READ_ARGS`], a `[min, max]` pair of them, or a nested object (at
+/// most [`MAX_NESTING`] deep). Entries are separated by commas, with an
+/// optional trailing comma; only whitespace may appear between tokens.
+/// Anything else fails the whole candidate. Returns the text after the brace.
 fn parse_object<'a>(
     mut text: &'a str,
     prefix: &str,
@@ -173,13 +159,15 @@ fn parse_object<'a>(
         return None;
     }
     loop {
-        text = skip_trivia(text);
+        text = text.trim_start();
         if let Some(rest) = text.strip_prefix('}') {
             return Some(rest);
         }
+        if out.len() >= MAX_READS {
+            return None;
+        }
         let (key, rest) = parse_key(text)?;
-        let rest = skip_trivia(rest).strip_prefix(':')?;
-        let rest = skip_trivia(rest);
+        let rest = rest.trim_start().strip_prefix(':')?.trim_start();
         let path = if prefix.is_empty() {
             key.to_string()
         } else {
@@ -188,60 +176,68 @@ fn parse_object<'a>(
         text = if let Some(nested) = rest.strip_prefix('{') {
             parse_object(nested, &path, depth + 1, out)?
         } else if let Some(list) = rest.strip_prefix('[') {
-            let end = list.find(']')?;
-            let counts = list[..end]
-                .split(',')
-                .map(|count| count.trim().parse::<usize>().ok())
-                .collect::<Option<Vec<_>>>()?;
-            let required = *counts.iter().min()?;
-            let max = *counts.iter().max()?;
+            let (first, list) = parse_count(list.trim_start())?;
+            let list = list.trim_start().strip_prefix(',')?.trim_start();
+            let (second, list) = parse_count(list)?;
+            let list = list.trim_start().strip_prefix(']')?;
             out.push(ReadArity {
                 path,
-                required,
-                max,
+                required: first.min(second),
+                max: first.max(second),
             });
-            &list[end + 1..]
+            list
         } else {
-            let end = rest
-                .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(rest.len());
-            let count = rest[..end].parse::<usize>().ok()?;
+            let (count, rest) = parse_count(rest)?;
             out.push(ReadArity {
                 path,
                 required: count,
                 max: count,
             });
-            &rest[end..]
+            rest
         };
-        text = skip_trivia(text);
-        text = text.strip_prefix(',').unwrap_or(text);
-    }
-}
-
-fn skip_trivia(mut text: &str) -> &str {
-    loop {
         text = text.trim_start();
-        if let Some(rest) = text.strip_prefix("//") {
-            text = rest.find('\n').map_or("", |end| &rest[end..]);
-        } else if let Some(rest) = text.strip_prefix("/*") {
-            text = rest.find("*/").map_or("", |end| &rest[end + 2..]);
-        } else {
-            return text;
+        match text.strip_prefix(',') {
+            Some(rest) => text = rest,
+            None if text.starts_with('}') => {}
+            None => return None,
         }
     }
 }
 
-/// An identifier or quoted key, and the text after it.
+/// A small non-negative argument count (at most [`MAX_READ_ARGS`]) and the
+/// text after it.
+fn parse_count(text: &str) -> Option<(usize, &str)> {
+    let end = text
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(text.len());
+    if end == 0 || end > 2 {
+        return None;
+    }
+    let count = text[..end].parse::<usize>().ok()?;
+    (count <= MAX_READ_ARGS).then_some((count, &text[end..]))
+}
+
+/// An identifier or a quoted key without escapes, and the text after it.
 fn parse_key(text: &str) -> Option<(&str, &str)> {
-    if let Some(quoted) = text.strip_prefix(['\'', '"']) {
-        let quote = text.chars().next()?;
-        let end = quoted.find(quote)?;
+    if let Some(quote) = text.chars().next().filter(|c| *c == '\'' || *c == '"') {
+        let quoted = &text[1..];
+        let end = quoted.find([quote, '\\', '\n'])?;
+        if !quoted[end..].starts_with(quote) || end == 0 {
+            return None;
+        }
         return Some((&quoted[..end], &quoted[end + 1..]));
+    }
+    if !text
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+    {
+        return None;
     }
     let end = text
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
         .unwrap_or(text.len());
-    (end > 0).then(|| (&text[..end], &text[end..]))
+    Some((&text[..end], &text[end..]))
 }
 
 /// The parameter names of `function name(…)` (or the method `name(…)`) in
@@ -334,7 +330,7 @@ mod tests {
 export default defineStackExtensions<typeof CORE>()({
   readArgCounts: {
     boardState: 0,
-    roundState: 1, // one round
+    roundState: 1,
     claimPreview: [1, 2],
     mining: { context: 1 },
     undeclared: 0,
@@ -405,34 +401,69 @@ export default defineStackExtensions<typeof CORE>()({
     }
 
     #[test]
-    fn unreasonable_argument_counts_are_skipped_without_allocating_them() {
-        let source = "x({ readArgCounts: { huge: 1000000000, range: [0, 4000000000], ok: 1 } })";
-        assert_eq!(
-            stack_extension_reads(&extension(source)),
-            vec![json!({"call": "read.ok(arg1)"})]
-        );
+    fn unreasonable_declarations_are_refused_without_allocating() {
+        for source in [
+            "x({ readArgCounts: { huge: 1000000000, ok: 1 } })",
+            "x({ readArgCounts: { range: [0, 4000000000] } })",
+            "x({ readArgCounts: { tooMany: 17 } })",
+        ] {
+            assert!(
+                stack_extension_reads(&extension(source)).is_empty(),
+                "{source}"
+            );
+        }
         let deep = format!(
             "readArgCounts: {}a: 0{}",
             "{ n: ".repeat(64),
             " }".repeat(65)
         );
         assert!(stack_extension_reads(&extension(&deep)).is_empty());
+        let wide = format!(
+            "readArgCounts: {{ {} }}",
+            (0..300)
+                .map(|n| format!("r{n}: 0"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        assert!(stack_extension_reads(&extension(&wide)).is_empty());
     }
 
     #[test]
-    fn mentions_in_comments_and_strings_do_not_hide_the_declaration() {
+    fn regex_literals_and_comment_mentions_do_not_hide_the_declaration() {
         let source = r#"
 // readArgCounts describes optional arguments — même ici: «readArgCounts»
-/* readArgCounts: { wrong: 0 } */
-const note = "readArgCounts: { alsoWrong: 0 }";
+const apostrophe = /'/g;
+const opener = /\/*/;
+const quote = /"/;
 const myreadArgCounts = 1;
 export default defineStackExtensions()({
-  readArgCounts: { currentRound: 0 },
+  readArgCounts: { currentRound: 0, 'quoted': [2, 1], },
 });
 "#;
         assert_eq!(
             stack_extension_reads(&extension(source)),
-            vec![json!({"call": "read.currentRound()"})]
+            vec![
+                json!({"call": "read.currentRound()"}),
+                json!({"call": "read.quoted(arg1, arg2?)"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_first_candidate_that_parses_strictly_wins() {
+        // Not an object, or not a strict one: skipped.
+        let source = "/* readArgCounts: { see the docs } */ readArgCounts: { a: 0 b: 1 } \
+                      readArgCounts: { real: 1 }";
+        assert_eq!(
+            stack_extension_reads(&extension(source)),
+            vec![json!({"call": "read.real(arg1)"})]
+        );
+        // The accepted tradeoff: a well-formed declaration in a comment that
+        // comes first is picked.
+        let source = "// readArgCounts: { x: 1 }\nreadArgCounts: { real: 0 }";
+        assert_eq!(
+            stack_extension_reads(&extension(source)),
+            vec![json!({"call": "read.x(arg1)"})]
         );
     }
 }
