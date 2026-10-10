@@ -423,123 +423,193 @@ fn extension_entry(directory: &Path) -> Option<PathBuf> {
 const MAX_READ_ARGS: usize = 8;
 
 /// The reads a stack extension declares in its `readArgCounts`, with the
-/// parameters and title of the function that implements each. Comments and
-/// strings are not code: a `readArgCounts` or `function` in them is skipped.
+/// parameters and title of the function that implements each.
+///
+/// The extension is not lexed: every `readArgCounts: {` is a candidate, and
+/// the first whose object literal parses strictly wins. A mention in a
+/// comment or string does not parse as a whole object and is skipped, and
+/// regex literals cannot confuse it. A comment holding a well-formed fake
+/// declaration before the real one would be taken instead; these files come
+/// from the SDK generator, which writes none.
 fn stack_reads(extension: &str) -> Vec<StackRead> {
-    let code = code_only(extension);
     let declaration =
         Regex::new(r"\breadArgCounts\s*:\s*\{").expect("read counts regex should compile");
-    let entry = Regex::new(r"([A-Za-z_$][\w$]*)\s*:\s*(\d+|\[[^\]]*\])")
-        .expect("read count regex should compile");
-    let Some(found) = declaration.find(&code) else {
+    let Some(counts) = declaration
+        .find_iter(extension)
+        .find_map(|found| read_counts(&extension[found.end()..]))
+    else {
         return Vec::new();
     };
-    let block = &code[found.end()..];
-    let block = &block[..block.find('}').unwrap_or(block.len())];
-    let mut reads = Vec::new();
-    for captures in entry.captures_iter(block) {
-        let name = captures[1].to_string();
-        // An array lists the argument counts a read accepts; a count that is
-        // not a small number is not trusted.
-        let count = captures[2]
-            .trim_matches(|c| c == '[' || c == ']')
-            .split(',')
-            .map(|count| count.trim().parse::<usize>().ok())
-            .try_fold(0, |max, count| count.map(|count| max.max(count)))
-            .filter(|count| *count <= MAX_READ_ARGS);
-        let (params, title) = read_function(extension, &code, &name);
-        let params = params.unwrap_or_else(|| match count {
-            Some(count) => (1..=count).map(|n| format!("arg{n}")).collect(),
-            None => vec!["...".to_string()],
-        });
-        reads.push(StackRead {
-            name,
-            params,
-            title,
-        });
-    }
-    reads
-}
-
-/// `source` with its comments and the contents of its strings replaced by
-/// spaces, newlines and byte offsets kept.
-fn code_only(source: &str) -> String {
-    let mut code = String::with_capacity(source.len());
-    let mut characters = source.chars().peekable();
-    let blank = |code: &mut String, character: char| {
-        if character == '\n' {
-            code.push('\n');
-        } else {
-            code.extend(std::iter::repeat_n(' ', character.len_utf8()));
-        }
-    };
-    while let Some(character) = characters.next() {
-        match character {
-            '/' if characters.peek() == Some(&'/') => {
-                blank(&mut code, character);
-                while let Some(&next) = characters.peek() {
-                    if next == '\n' {
-                        break;
-                    }
-                    blank(&mut code, next);
-                    characters.next();
-                }
-            }
-            '/' if characters.peek() == Some(&'*') => {
-                blank(&mut code, character);
-                let mut previous = ' ';
-                for next in characters.by_ref() {
-                    blank(&mut code, next);
-                    if previous == '*' && next == '/' {
-                        break;
-                    }
-                    previous = next;
-                }
-            }
-            '\'' | '"' | '`' => {
-                code.push(character);
-                let mut escaped = false;
-                for next in characters.by_ref() {
-                    if !escaped && next == character {
-                        code.push(next);
-                        break;
-                    }
-                    escaped = !escaped && next == '\\';
-                    blank(&mut code, next);
-                }
-            }
-            _ => code.push(character),
-        }
-    }
-    code
-}
-
-/// The parameter names of `function <name>(...)` in `extension`, found in its
-/// `code` (see [`code_only`]), and the title of the doc comment right before
-/// it.
-fn read_function(extension: &str, code: &str, name: &str) -> (Option<Vec<String>>, Option<String>) {
-    let function = Regex::new(&format!(
-        r"(?:async\s+)?function\s+{}\s*\(([^)]*)\)",
-        regex::escape(name)
-    ))
-    .expect("read function regex should compile");
-    let Some(captures) = function.captures(code) else {
-        return (None, None);
-    };
-    let (Some(found), Some(params)) = (captures.get(0), captures.get(1)) else {
-        return (None, None);
-    };
-    let params = split_top_level(&extension[params.range()])
+    counts
         .into_iter()
-        .enumerate()
-        .map(|(index, param)| param_name(&param, index))
-        .collect();
-    let before = extension[..found.start()].trim_end();
-    let title = before
-        .strip_suffix("*/")
-        .and_then(|before| before.rfind("/**").map(|at| &before[at + 3..]))
-        .and_then(doc_title);
-    (Some(params), title)
+        .map(|(name, count)| {
+            let (params, title) = match read_function(extension, &name) {
+                Some((params, title)) => (params, title),
+                None => {
+                    let params = match count {
+                        Some(count) => (1..=count).map(|n| format!("arg{n}")).collect(),
+                        None => vec!["...".to_string()],
+                    };
+                    (params, None)
+                }
+            };
+            StackRead {
+                name,
+                params,
+                title,
+            }
+        })
+        .collect()
+}
+
+/// A strict parse of the `readArgCounts` object literal whose body starts
+/// at `body` (after its `{`): identifier or quoted keys, each mapped to an
+/// argument count or a `[min, max]` pair, with commas and an optional
+/// trailing comma. `None` when it is anything else. A count above
+/// [`MAX_READ_ARGS`] is kept as `None`: not trusted to name parameters.
+fn read_counts(body: &str) -> Option<Vec<(String, Option<usize>)>> {
+    let mut rest = body;
+    let mut counts = Vec::new();
+    loop {
+        rest = rest.trim_start();
+        if rest.starts_with('}') {
+            return Some(counts);
+        }
+        let (key, after) = object_key(rest)?;
+        rest = after.trim_start().strip_prefix(':')?.trim_start();
+        let count = if let Some(after) = rest.strip_prefix('[') {
+            let (min, after) = count_literal(after.trim_start())?;
+            let after = after.trim_start().strip_prefix(',')?;
+            let (max, after) = count_literal(after.trim_start())?;
+            rest = after.trim_start().strip_prefix(']')?;
+            min.zip(max).map(|(min, max)| min.max(max))
+        } else {
+            let (count, after) = count_literal(rest)?;
+            rest = after;
+            count
+        };
+        counts.push((key, count.filter(|count| *count <= MAX_READ_ARGS)));
+        rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix(',') {
+            rest = after;
+        } else if !rest.starts_with('}') {
+            return None;
+        }
+    }
+}
+
+/// An object key at the start of `text`: an identifier or a quoted string
+/// without escapes.
+fn object_key(text: &str) -> Option<(String, &str)> {
+    if let Some(quote) = text.chars().next().filter(|c| *c == '\'' || *c == '"') {
+        let inner = &text[1..];
+        let end = inner.find(quote)?;
+        let key = &inner[..end];
+        if key.contains(['\\', '\n']) {
+            return None;
+        }
+        return Some((key.to_string(), &inner[end + 1..]));
+    }
+    let end = text
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+        .unwrap_or(text.len());
+    let key = &text[..end];
+    is_identifier(key).then(|| (key.to_string(), &text[end..]))
+}
+
+/// A non-negative integer at the start of `text`: `Some` when it fits a
+/// `usize`, `None` inside when it is too large.
+fn count_literal(text: &str) -> Option<(Option<usize>, &str)> {
+    let end = text
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(text.len());
+    (end > 0).then(|| (text[..end].parse().ok(), &text[end..]))
+}
+
+/// The parameter names and doc title of the function that implements read
+/// `name`: the first `function name(` or method `name(...) {` whose
+/// parameter list parses strictly. A call such as `name(x);` is not one.
+fn read_function(extension: &str, name: &str) -> Option<(Vec<String>, Option<String>)> {
+    let candidate = Regex::new(&format!(r"\b(function\s+)?{}\s*\(", regex::escape(name)))
+        .expect("read function regex should compile");
+    let found = candidate.captures_iter(extension).find_map(|captures| {
+        let found = captures.get(0)?;
+        let (params, after) = parameter_list(&extension[found.end()..])?;
+        if captures.get(1).is_none() && !starts_body(after) {
+            return None;
+        }
+        let params = params
+            .into_iter()
+            .enumerate()
+            .map(|(index, param)| param_name(&param, index))
+            .collect();
+        let before = extension[..found.start()].trim_end();
+        let before = before.strip_suffix("async").unwrap_or(before).trim_end();
+        let title = before
+            .strip_suffix("*/")
+            .and_then(|before| before.rfind("/**").map(|at| &before[at + 3..]))
+            .and_then(doc_title);
+        Some((params, title))
+    });
+    found
+}
+
+/// The parameters of a list whose body starts at `text` (after its `(`),
+/// and the text after its `)`. `None` when the brackets do not balance
+/// before the end of `text`, or a parameter has no usable name.
+fn parameter_list(text: &str) -> Option<(Vec<String>, &str)> {
+    let mut depth = 0usize;
+    let mut end = None;
+    for (at, character) in text.char_indices() {
+        match character {
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' if depth == 0 => {
+                end = Some(at);
+                break;
+            }
+            ')' | ']' | '}' => depth = depth.checked_sub(1)?,
+            // `=>` closes nothing.
+            '>' if !text[..at].ends_with('=') => depth = depth.checked_sub(1)?,
+            ';' if depth == 0 => return None,
+            _ => {}
+        }
+    }
+    let end = end?;
+    let params = split_top_level(&text[..end]);
+    let named = params.iter().all(|param| {
+        let name = param.trim_start_matches("...");
+        let name = name.split([':', '=']).next().unwrap_or_default().trim();
+        let name = name.trim_end_matches('?');
+        is_identifier(name) || name.starts_with('{') || name.starts_with('[')
+    });
+    named.then(|| (params, &text[end + 1..]))
+}
+
+/// Whether `text`, after a parameter list, starts a function body: an
+/// optional return type, then `{`.
+fn starts_body(text: &str) -> bool {
+    let text = text.trim_start();
+    let Some(annotation) = text.strip_prefix(':') else {
+        return text.starts_with('{');
+    };
+    let mut depth = 0usize;
+    for (at, character) in annotation.char_indices() {
+        match character {
+            '{' if depth == 0 => return !annotation[..at].trim().is_empty(),
+            '(' | '[' | '<' | '{' => depth += 1,
+            ')' | ']' | '}' => match depth.checked_sub(1) {
+                Some(next) => depth = next,
+                None => return false,
+            },
+            '>' if !annotation[..at].ends_with('=') => match depth.checked_sub(1) {
+                Some(next) => depth = next,
+                None => return false,
+            },
+            ';' | '\n' if depth == 0 => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// A doc comment's `@title`, else its first sentence when that is short.
@@ -917,13 +987,22 @@ function Rows() {
 
     #[test]
     fn read_counts_in_comments_strings_or_too_large_are_not_trusted() {
-        let extension = r#"// readArgCounts: { fake: 1 },
-/* function currentRound(fake: string) */
-const note = "readArgCounts: { alsoFake: 2 }";
+        let extension = r#"// readArgCounts: { see below
+const slashes = /[/*]/;
+const quote = /'/;
+const note = "readArgCounts: {";
+/* currentRound(fake: string) is documented elsewhere */
 export default defineStackExtensions<typeof CORE>()({
-  readArgCounts: { currentRound: 0, example: 1000000000, huge: 99999999999999999999999, many: [1, 900] },
+  readArgCounts: {
+    currentRound: 0,
+    'round-state': 1,
+    example: 1000000000,
+    huge: 99999999999999999999999,
+    many: [1, 900],
+  },
   createRead(client) {
-    async function currentRound() {
+    const id = roundState(7);
+    async function currentRound(): Promise<{ id: bigint } | null> {
       return null;
     }
     return { currentRound };
@@ -936,14 +1015,25 @@ export default defineStackExtensions<typeof CORE>()({
             .collect::<Vec<_>>();
         assert_eq!(
             reads,
-            vec!["currentRound()", "example(...)", "huge(...)", "many(...)"]
+            vec![
+                "currentRound()",
+                "round-state(arg1)",
+                "example(...)",
+                "huge(...)",
+                "many(...)"
+            ]
         );
-        // Offsets survive blanking, multi-byte characters included.
-        let source = "const a = 'é//'; // ü\nlet b = 1;";
-        let code = code_only(source);
-        assert_eq!(code.len(), source.len());
-        assert!(code.ends_with("\nlet b = 1;"));
-        assert!(!code.contains("//"));
+        // A method body counts as the implementation; a call does not.
+        let method =
+            "readArgCounts: { quote: 1 },\nconst x = quote(input);\nasync quote(amount: bigint) {}";
+        assert_eq!(stack_reads(method)[0].signature(), "quote(amount)");
+        // Anything but a strict object literal is not a declaration.
+        assert_eq!(read_counts("a: 1, b: x }"), None);
+        assert_eq!(read_counts("a: [1, 2, 3] }"), None);
+        assert_eq!(
+            read_counts(" a: 0, \"b\": [1, 2], }"),
+            Some(vec![("a".into(), Some(0)), ("b".into(), Some(2))])
+        );
     }
 
     #[test]
