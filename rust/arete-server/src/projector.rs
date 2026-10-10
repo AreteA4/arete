@@ -504,7 +504,7 @@ impl Projector {
                 let mut caches = sorted.write().await;
                 for derived in self.view_index.get_derived_views_for_source(&spec.id) {
                     if let Some(cache) = caches.get_mut(&derived.id) {
-                        cache.remove(&key);
+                        cache.remove_key(&key);
                     }
                 }
                 drop(caches);
@@ -1005,11 +1005,10 @@ impl Projector {
                 .and_then(|pipeline| pipeline.filter.as_ref())
                 .is_none_or(|filter| filter.matches(&entity));
             if !passes {
-                cache.remove(entity_key);
+                cache.remove_key(entity_key);
                 continue;
             }
-            if cache.would_keep(entity_key, &entity, max_entries) {
-                cache.upsert_bounded(entity_key.to_string(), entity.clone(), max_entries);
+            if cache.upsert_if_kept(entity_key, &entity, max_entries) {
                 debug!(
                     "Updated sorted cache for derived view {} with key {}",
                     spec.id, entity_key
@@ -1074,10 +1073,10 @@ impl Projector {
                 // Replace rather than merge: `entity` is already the whole
                 // merged value, and the cache's own merge knows nothing of
                 // append paths.
-                cache.remove(entity_key);
-                cache.upsert_bounded(entity_key.to_string(), entity, max_entries);
+                cache.remove_key(entity_key);
+                cache.upsert_if_kept(entity_key, &entity, max_entries);
             } else {
-                cache.remove(entity_key);
+                cache.remove_key(entity_key);
             }
         }
     }

@@ -2149,7 +2149,7 @@ async fn apply_collection_source_event(
         let caches = context.view_index.sorted_caches();
         let mut guard = caches.write().await;
         if let Some(cache) = guard.get_mut(&query.view) {
-            cache.remove(&envelope.key);
+            cache.remove_key(&envelope.key);
         }
     }
 }
@@ -2818,13 +2818,13 @@ fn emit_collection_delta(
     metadata: &SourceFrameMetadata,
     undelivered: &mut HashSet<String>,
 ) -> Result<()> {
-    let current_keys: Vec<&str> = current.iter().map(|(key, _)| key.as_str()).collect();
-    let next_keys: Vec<&str> = next.iter().map(|(key, _)| key.as_str()).collect();
-    let next_set: HashSet<&str> = next_keys.iter().copied().collect();
+    let current_keys: HashSet<&str> = current.iter().map(|(key, _)| key.as_str()).collect();
+    let next_set: HashSet<&str> = next.iter().map(|(key, _)| key.as_str()).collect();
 
-    for key in current_keys
+    // In window order, as the frames go out.
+    for key in current
         .iter()
-        .copied()
+        .map(|(key, _)| key.as_str())
         .filter(|key| !next_set.contains(key))
     {
         // A key the client was never sent has nothing to remove.
@@ -2848,7 +2848,7 @@ fn emit_collection_delta(
     }
 
     for (key, data) in next.iter() {
-        let in_window = current_keys.iter().any(|candidate| *candidate == key);
+        let in_window = current_keys.contains(key.as_str());
         match member_action(
             in_window,
             in_window && !undelivered.contains(key),
@@ -3090,17 +3090,30 @@ async fn load_query_entities(
     apply_snapshot_limit: bool,
 ) -> Vec<(String, SharedEntity)> {
     // Rows share their fields with the caches; nothing here copies an entity.
-    let ordered = if let Some(sorted_caches) = sorted_caches {
-        let mut caches = sorted_caches.write().await;
-        caches
-            .get_mut(&view_spec.id)
-            .map(|cache| cache.ordered_entities())
-    } else {
-        None
-    };
-    let (entities, preordered) = if let Some(entities) = ordered {
-        (entities, true)
-    } else if view_spec.is_derived() {
+    let mut query = query.clone();
+    if let Some(limit) = view_spec
+        .pipeline
+        .as_ref()
+        .and_then(|pipeline| pipeline.limit)
+    {
+        query.take = Some(query.take.unwrap_or(limit).min(limit));
+    }
+    if let Some(sorted_caches) = sorted_caches {
+        // A sorted cache is read in order, and only as far as the window
+        // reaches: rows past it are neither visited nor shared.
+        let caches = sorted_caches.read().await;
+        if let Some(cache) = caches.get(&view_spec.id) {
+            return select_window(
+                cache
+                    .iter_ordered()
+                    .filter(|(key, data)| query_matches_entity(&query, key, *data))
+                    .map(|(key, data)| (key.to_string(), data.clone())),
+                &query,
+                apply_snapshot_limit,
+            );
+        }
+    }
+    let (entities, preordered) = if view_spec.is_derived() {
         // Empty and filter-only pipelines have no sorted cache. Evaluate the
         // source rows, retaining the pipeline predicate before query selection.
         let mut entities = entity_cache
@@ -3127,14 +3140,6 @@ async fn load_query_entities(
     } else {
         (entity_cache.get_all_shared(&view_spec.id).await, false)
     };
-    let mut query = query.clone();
-    if let Some(limit) = view_spec
-        .pipeline
-        .as_ref()
-        .and_then(|pipeline| pipeline.limit)
-    {
-        query.take = Some(query.take.unwrap_or(limit).min(limit));
-    }
     select_query_entities(entities, &query, preordered, apply_snapshot_limit)
 }
 
@@ -3158,15 +3163,24 @@ fn select_query_entities<E: EntityFields>(
         });
     }
 
+    select_window(entities.into_iter(), query, apply_snapshot_limit)
+}
+
+/// The `[skip, skip + take)` window of rows already filtered and in order,
+/// cut to the snapshot limit when it applies. Takes no row past the window.
+fn select_window<E>(
+    rows: impl Iterator<Item = (String, E)>,
+    query: &SubscriptionQuery,
+    apply_snapshot_limit: bool,
+) -> Vec<(String, E)> {
     let skip = query.skip.unwrap_or(0);
-    let take = query.take.unwrap_or(usize::MAX);
-    let mut selected: Vec<_> = entities.into_iter().skip(skip).take(take).collect();
+    let mut take = query.take.unwrap_or(usize::MAX);
     if apply_snapshot_limit {
         if let Some(limit) = query.snapshot_limit {
-            selected.truncate(limit);
+            take = take.min(limit);
         }
     }
-    selected
+    rows.skip(skip).take(take).collect()
 }
 
 fn query_matches_entity<E: EntityFields + ?Sized>(
@@ -3935,6 +3949,89 @@ mod tests {
     #[tokio::test]
     async fn derived_source_receiver_is_installed_before_snapshot() {
         assert_list_receiver_precedes_snapshot("Thing/list-source").await;
+    }
+
+    /// A sorted derived view is read only as far as the window reaches, and
+    /// gives exactly the rows filtering and windowing all of it gives.
+    #[tokio::test]
+    async fn sorted_derived_reads_take_the_window_of_the_whole_order() {
+        use crate::materialized_view::{SortConfig, SortOrder, ViewPipeline};
+        use crate::sorted_cache::{SortOrder as CacheOrder, SortedViewCache};
+        let mut sorted =
+            SortedViewCache::new("Thing/top".into(), vec!["score".into()], CacheOrder::Desc);
+        for id in 0..40u64 {
+            sorted.upsert(
+                id.to_string(),
+                json!({
+                    "_seq": format!("{}:0", 100 + id * 7 % 40),
+                    "score": (id * 13 % 17).to_string(),
+                    "owner": if id % 3 == 0 { "alice" } else { "bob" },
+                    "_partition": if id % 2 == 0 { "even" } else { "odd" },
+                }),
+            );
+        }
+        let whole = sorted.ordered_entities();
+        let mut spec = list_spec();
+        spec.id = "Thing/top".into();
+        spec.source_view = Some("Thing/list".into());
+        let caches = Arc::new(tokio::sync::RwLock::new(HashMap::from([(
+            spec.id.clone(),
+            sorted,
+        )])));
+        let cache = EntityCache::new();
+        for limit in [None, Some(5)] {
+            spec.pipeline = Some(ViewPipeline {
+                filter: None,
+                sort: Some(SortConfig {
+                    field_path: vec!["score".into()],
+                    order: SortOrder::Desc,
+                }),
+                limit,
+            });
+            for skip in [None, Some(0), Some(3), Some(50)] {
+                for take in [None, Some(1), Some(4), Some(100)] {
+                    for (owner, after, partition) in [
+                        (None, None, None),
+                        (Some("alice"), None, None),
+                        (None, Some("120:0"), Some("even")),
+                    ] {
+                        let mut query = SubscriptionQuery {
+                            view: spec.id.clone(),
+                            skip,
+                            take,
+                            after: after.map(str::to_string),
+                            partition: partition.map(str::to_string),
+                            snapshot_limit: Some(2),
+                            ..Default::default()
+                        };
+                        if let Some(owner) = owner {
+                            query.filters.insert("owner".into(), json!(owner));
+                        }
+                        for apply_snapshot_limit in [false, true] {
+                            let rows = load_query_entities(
+                                &cache,
+                                Some(caches.clone()),
+                                &spec,
+                                &query,
+                                apply_snapshot_limit,
+                            )
+                            .await;
+                            let mut expected_query = query.clone();
+                            if let Some(limit) = limit {
+                                expected_query.take = Some(take.unwrap_or(limit).min(limit));
+                            }
+                            let expected = select_query_entities(
+                                whole.clone(),
+                                &expected_query,
+                                true,
+                                apply_snapshot_limit,
+                            );
+                            assert_eq!(rows, expected, "{query:?} {limit:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]

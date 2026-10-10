@@ -963,7 +963,7 @@ async fn rebuild_sorted_caches(view_index: &ViewIndex, entity_cache: &EntityCach
             let count = entities.len();
             for (key, entity) in entities {
                 if filter.is_none_or(|filter| filter.matches(&entity)) {
-                    cache.upsert(key, entity);
+                    cache.put(key, entity);
                 }
             }
             // Trim once after the batch; the bound matches the projector's.

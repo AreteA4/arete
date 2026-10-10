@@ -6,7 +6,7 @@
 
 use crate::mutation_batch::SlotIndexDomain;
 use crate::shared_entity::{
-    split_version, with_version, EntityFields, SharedEntity, VERSION_FIELD,
+    split_version, with_version, EntityFields, Fields, SharedEntity, VERSION_FIELD,
 };
 use arete_interpreter::AccountPosition;
 use lru::LruCache;
@@ -616,7 +616,8 @@ impl EntityCache {
     /// [`SharedEntity`]) merge it into them once and keep sharing the result.
     /// That merge happens in place unless something outside these views
     /// (a derived view, a subscriber) still holds the fields, in which case
-    /// they are copied first and the other holder keeps the old ones.
+    /// the merge copies only the top-level fields it changes and the other
+    /// holder keeps the old ones, sharing the rest with the new.
     pub(crate) async fn upsert_views(
         &self,
         key: &str,
@@ -659,8 +660,8 @@ impl EntityCache {
 
         // Take the fields out of every merging view, so views that share them
         // can merge them once: in place when no other holder is left.
-        let placeholder = Arc::new(Value::Null);
-        let mut groups: Vec<(Arc<Value>, Vec<usize>)> = Vec::new();
+        let placeholder = Arc::new(Fields::Other(Value::Null));
+        let mut groups: Vec<(Arc<Fields>, Vec<usize>)> = Vec::new();
         for (index, admission) in admissions.iter_mut().enumerate() {
             if *admission != Admission::Merge {
                 continue;
@@ -690,7 +691,10 @@ impl EntityCache {
             } else {
                 patch.clone()
             };
-            let created = Arc::new(truncate_arrays_if_needed(source, max_array_length));
+            let created = Arc::new(Fields::from_value(truncate_arrays_if_needed(
+                source,
+                max_array_length,
+            )));
             for (index, admission) in admissions.iter().enumerate() {
                 if *admission != Admission::Create {
                     continue;
@@ -717,7 +721,7 @@ impl EntityCache {
             };
             let merge_once = fields.is_object() && group_patch.is_object();
             if merge_once {
-                deep_merge_with_append(
+                merge_fields(
                     Arc::make_mut(&mut fields),
                     std::mem::take(&mut group_patch),
                     append_paths,
@@ -850,7 +854,10 @@ impl EntityCache {
     ) -> Vec<bool> {
         let max_array_length = self.config.max_array_length;
         let (entity, stray_version) = split_version(entity);
-        let fields = Arc::new(truncate_arrays_if_needed(entity, max_array_length));
+        let fields = Arc::new(Fields::from_value(truncate_arrays_if_needed(
+            entity,
+            max_array_length,
+        )));
         let mut caches = self.caches.write().await;
         views
             .iter()
@@ -1370,7 +1377,7 @@ impl EntityCache {
     pub async fn hydrate(&self, views: Vec<(String, Vec<(String, Value)>)>) {
         let mut caches = self.caches.write().await;
         caches.clear();
-        let mut restored: HashMap<(String, String), Vec<Arc<Value>>> = HashMap::new();
+        let mut restored: HashMap<(String, String), Vec<Arc<Fields>>> = HashMap::new();
         for (view_id, entries) in views {
             let export = view_id.split('/').next().unwrap_or_default().to_string();
             let view = caches
@@ -1451,11 +1458,7 @@ fn deep_merge_with_append_inner(
     match (base, patch) {
         (Value::Object(base_map), Value::Object(patch_map)) => {
             for (key, patch_value) in patch_map {
-                let child_path = if current_path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{}.{}", current_path, key)
-                };
+                let child_path = child_path(append_paths, current_path, &key);
 
                 if let Some(base_value) = base_map.get_mut(&key) {
                     deep_merge_with_append_inner(
@@ -1494,6 +1497,170 @@ fn deep_merge_with_append_inner(
         (base, patch_value) => {
             *base = truncate_arrays_if_needed(patch_value, max_array_length);
         }
+    }
+}
+
+/// [`deep_merge_with_append`] for an object's shared fields and an object
+/// patch: the same result, but a top-level field the merge would leave as it
+/// is keeps sharing its value, and one another holder shares is merged into a
+/// copy of what it keeps rather than a copy of the whole field.
+fn merge_fields(
+    fields: &mut Fields,
+    patch: Value,
+    append_paths: &[String],
+    max_array_length: usize,
+) {
+    let (Fields::Object(members), Value::Object(patch)) = (fields, patch) else {
+        unreachable!("merge_fields merges an object patch into an object");
+    };
+    for (key, patch_value) in patch {
+        match members.get_mut(&key) {
+            Some(member) => {
+                if merge_changes_nothing(member, &patch_value, append_paths, &key, max_array_length)
+                {
+                    continue;
+                }
+                match Arc::get_mut(member) {
+                    Some(value) => deep_merge_with_append_inner(
+                        value,
+                        patch_value,
+                        append_paths,
+                        &key,
+                        max_array_length,
+                    ),
+                    None => {
+                        *member = Arc::new(merged_copy(
+                            member,
+                            patch_value,
+                            append_paths,
+                            &key,
+                            max_array_length,
+                        ))
+                    }
+                }
+            }
+            None => members.insert(
+                key,
+                Arc::new(truncate_arrays_if_needed(patch_value, max_array_length)),
+            ),
+        }
+    }
+}
+
+/// Whether [`deep_merge_with_append_inner`] would leave `base` exactly as it
+/// is. Conservative: `false` whenever that is not plain.
+fn merge_changes_nothing(
+    base: &Value,
+    patch: &Value,
+    append_paths: &[String],
+    current_path: &str,
+    max_array_length: usize,
+) -> bool {
+    match (base, patch) {
+        (Value::Object(base_map), Value::Object(patch_map)) => {
+            patch_map.iter().all(|(key, patch_value)| {
+                base_map.get(key).is_some_and(|base_value| {
+                    merge_changes_nothing(
+                        base_value,
+                        patch_value,
+                        append_paths,
+                        &child_path(append_paths, current_path, key),
+                        max_array_length,
+                    )
+                })
+            })
+        }
+        (Value::Array(base_arr), Value::Array(patch_arr)) => {
+            base_arr.len() <= max_array_length
+                && if append_paths.iter().any(|path| path == current_path) {
+                    patch_arr.is_empty()
+                } else {
+                    base_arr == patch_arr
+                }
+        }
+        (Value::Object(_) | Value::Array(_), _) | (_, Value::Object(_) | Value::Array(_)) => false,
+        (base, patch) => base == patch,
+    }
+}
+
+/// What [`deep_merge_with_append_inner`] makes of a copy of `base`, without
+/// copying the parts of `base` the patch replaces.
+fn merged_copy(
+    base: &Value,
+    patch: Value,
+    append_paths: &[String],
+    current_path: &str,
+    max_array_length: usize,
+) -> Value {
+    match (base, patch) {
+        (Value::Object(base_map), Value::Object(patch_map)) => {
+            // The keys `base` has, in its order, then those only the patch
+            // has, in the patch's: where merging into `base` puts them.
+            let mut merged = serde_json::Map::new();
+            for (key, value) in base_map {
+                let value = if patch_map.contains_key(key) {
+                    Value::Null
+                } else {
+                    value.clone()
+                };
+                merged.insert(key.clone(), value);
+            }
+            for (key, patch_value) in patch_map {
+                let child_path = child_path(append_paths, current_path, &key);
+                match (merged.get_mut(&key), base_map.get(&key)) {
+                    (Some(slot), Some(base_value)) => {
+                        *slot = merged_copy(
+                            base_value,
+                            patch_value,
+                            append_paths,
+                            &child_path,
+                            max_array_length,
+                        );
+                    }
+                    _ => {
+                        merged.insert(
+                            key,
+                            truncate_arrays_if_needed(patch_value, max_array_length),
+                        );
+                    }
+                }
+            }
+            Value::Object(merged)
+        }
+        (Value::Array(base_arr), Value::Array(mut patch_arr)) => {
+            if append_paths.iter().any(|path| path == current_path) {
+                // Only the newest `max_array_length` of base and patch stay.
+                let kept = max_array_length
+                    .saturating_sub(patch_arr.len())
+                    .min(base_arr.len());
+                let mut merged = base_arr[base_arr.len() - kept..].to_vec();
+                merged.append(&mut patch_arr);
+                if merged.len() > max_array_length {
+                    let excess = merged.len() - max_array_length;
+                    merged.drain(0..excess);
+                }
+                Value::Array(merged)
+            } else {
+                if patch_arr.len() > max_array_length {
+                    let excess = patch_arr.len() - max_array_length;
+                    patch_arr.drain(0..excess);
+                }
+                Value::Array(patch_arr)
+            }
+        }
+        (_, patch_value) => truncate_arrays_if_needed(patch_value, max_array_length),
+    }
+}
+
+/// The dotted path of field `key` of the value at `current_path`, which only
+/// the append check reads: without append paths there is nothing to build.
+fn child_path(append_paths: &[String], current_path: &str, key: &str) -> String {
+    if append_paths.is_empty() {
+        String::new()
+    } else if current_path.is_empty() {
+        key.to_string()
+    } else {
+        format!("{current_path}.{key}")
     }
 }
 
@@ -1537,7 +1704,7 @@ fn merge_shared(
 ) {
     let (patch, patch_version) = split_version(patch);
     if entity.fields().is_object() && patch.is_object() {
-        deep_merge_with_append(
+        merge_fields(
             Arc::make_mut(entity.fields_mut()),
             patch,
             append_paths,
@@ -1557,9 +1724,10 @@ fn merge_shared(
     // the entity's own goes with it.
     let (fields, _) = std::mem::replace(entity, SharedEntity::new(Value::Null)).into_parts();
     let mut whole = match (&*fields, &patch) {
-        (Value::Array(_), Value::Array(_)) => {
-            Arc::try_unwrap(fields).unwrap_or_else(|shared| Value::clone(&shared))
-        }
+        (Fields::Other(Value::Array(_)), Value::Array(_)) => match Arc::try_unwrap(fields) {
+            Ok(fields) => fields.into_value(),
+            Err(shared) => shared.to_value(),
+        },
         _ => Value::Null,
     };
     deep_merge_with_append(
@@ -3103,6 +3271,123 @@ mod tests {
             cache.get("t/append", "a").await,
             Some(json!({"id": "a", "_version": "e:3"}))
         );
+    }
+
+    /// The value of top-level field `name` of `entity`'s shared fields.
+    fn member<'a>(entity: &'a SharedEntity, name: &str) -> &'a Arc<Value> {
+        match &**entity.fields() {
+            Fields::Object(members) => members.get(name).expect("the field is there"),
+            Fields::Other(other) => panic!("not an object: {other}"),
+        }
+    }
+
+    /// A patch to one section of an entity another holder still shares
+    /// copies that section only: the old and new versions share the rest.
+    #[tokio::test]
+    async fn a_patch_copies_only_the_sections_it_changes() {
+        let cache = EntityCache::new();
+        let row = json!({
+            "id": {"address": "a", "mint": "m"},
+            "balance": {"amount": "1", "state": "initialized"},
+            "activity": {"transfers": 0},
+        });
+        cache.upsert("t/list", "a", row.clone()).await;
+        // A derived view or a subscriber holding the current version.
+        let held = cache.get_shared("t/list", "a").await.unwrap();
+
+        cache
+            .upsert("t/list", "a", json!({"balance": {"amount": "2"}}))
+            .await;
+        let after = cache.get_shared("t/list", "a").await.unwrap();
+        assert!(!after.shares_fields_with(&held));
+        assert!(Arc::ptr_eq(member(&after, "id"), member(&held, "id")));
+        assert!(Arc::ptr_eq(
+            member(&after, "activity"),
+            member(&held, "activity")
+        ));
+        assert!(!Arc::ptr_eq(
+            member(&after, "balance"),
+            member(&held, "balance")
+        ));
+        assert_eq!(held.to_value(), row, "the other holder's copy is as it was");
+        assert_eq!(
+            after.to_value(),
+            json!({
+                "id": {"address": "a", "mint": "m"},
+                "balance": {"amount": "2", "state": "initialized"},
+                "activity": {"transfers": 0},
+            })
+        );
+
+        // A whole row resent with one section changed keeps sharing the
+        // sections it repeats.
+        let held = after;
+        let mut resent = held.to_value();
+        resent["activity"]["transfers"] = json!(1);
+        cache.upsert("t/list", "a", resent.clone()).await;
+        let after = cache.get_shared("t/list", "a").await.unwrap();
+        assert!(Arc::ptr_eq(member(&after, "id"), member(&held, "id")));
+        assert!(Arc::ptr_eq(
+            member(&after, "balance"),
+            member(&held, "balance")
+        ));
+        assert!(!Arc::ptr_eq(
+            member(&after, "activity"),
+            member(&held, "activity")
+        ));
+        assert_eq!(after.to_value(), resent);
+    }
+
+    /// Merging into shared fields, held by another holder or not, gives
+    /// exactly what merging into the whole value gives, and never reaches the
+    /// other holder's copy.
+    #[test]
+    fn a_section_merge_matches_the_whole_value_merge() {
+        let base = json!({
+            "id": {"address": "a", "tags": ["x", "y"]},
+            "balance": {"amount": "1", "nested": {"deep": [1, 2], "n": null}},
+            "events": [1, 2, 3],
+            "list": [1],
+            "scalar": 5,
+        });
+        let patches = [
+            json!({}),
+            json!({"id": {"address": "a", "tags": ["x", "y"]}}),
+            json!({"balance": {"amount": "2"}}),
+            json!({"balance": {"nested": {"deep": [3], "extra": {"arr": [1, 2, 3, 4]}}}}),
+            json!({"balance": {"nested": {"deep": [1, 2, 3, 4]}}}),
+            json!({"events": [4]}),
+            json!({"events": []}),
+            json!({"events": [4, 5, 6, 7, 8]}),
+            json!({"list": [2, 3, 4, 5]}),
+            json!({"list": [1]}),
+            json!({"scalar": {"now": "an object", "arr": [1, 2, 3, 4]}}),
+            json!({"scalar": 5, "new": [1, 2, 3, 4, 5], "id": null}),
+            json!({"balance": [1, 2, 3, 4], "events": {"replaced": true}}),
+            json!({"balance": {"nested": {"n": null}}}),
+            json!({"balance": {"amount": 1}}),
+            json!({"id": {"tags": ["x", "y", "z", "w"]}}),
+        ];
+        let append = ["events".to_string(), "balance.nested.deep".to_string()];
+        for max_array_length in [3, 100] {
+            for patch in &patches {
+                let mut expected = base.clone();
+                deep_merge_with_append(&mut expected, patch.clone(), &append, max_array_length);
+                for shared in [false, true] {
+                    let mut entity = SharedEntity::new(base.clone());
+                    let other = shared.then(|| entity.clone());
+                    merge_shared(&mut entity, patch.clone(), &append, max_array_length);
+                    assert_eq!(
+                        serde_json::to_string(&entity).unwrap(),
+                        serde_json::to_string(&expected).unwrap(),
+                        "{patch} (shared: {shared}, max {max_array_length})"
+                    );
+                    if let Some(other) = other {
+                        assert_eq!(other.to_value(), base, "the other holder's copy");
+                    }
+                }
+            }
+        }
     }
 
     /// Merging into a shared copy that is not an object (or with a patch that

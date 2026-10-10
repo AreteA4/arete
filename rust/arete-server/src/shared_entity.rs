@@ -8,6 +8,14 @@
 //! copies share, and `_version` beside it, per copy. A change replaces or
 //! copies the shared fields before it writes (copy-on-write), so it never
 //! reaches another holder's copy.
+//!
+//! The shared fields of an object are themselves shared one top-level field
+//! at a time (see [`Fields`]): copying them before a write copies a list of
+//! pointers, and the write then copies only the fields it changes. A patch to
+//! one section of a large entity costs that section, not the entity, and the
+//! old version, still held by a derived view or a subscriber, shares every
+//! other section with the new one. Dropping the old version frees only what
+//! the patch replaced.
 
 use std::borrow::Cow;
 use std::ops::Index;
@@ -30,7 +38,7 @@ pub const VERSION_FIELD: &str = "_version";
 #[derive(Clone, Debug)]
 pub struct SharedEntity {
     /// Every field but `_version`. Never has a top-level `_version`.
-    fields: Arc<Value>,
+    fields: Arc<Fields>,
     /// `_version`, if the entity is an object that has one.
     version: Option<Value>,
 }
@@ -40,7 +48,7 @@ impl SharedEntity {
     pub fn new(entity: Value) -> Self {
         let (fields, version) = split_version(entity);
         Self {
-            fields: Arc::new(fields),
+            fields: Arc::new(Fields::from_value(fields)),
             version,
         }
     }
@@ -49,11 +57,9 @@ impl SharedEntity {
     ///
     /// `fields` must not have a top-level `_version`, and only an object
     /// carries one.
-    pub(crate) fn from_parts(fields: Arc<Value>, version: Option<Value>) -> Self {
+    pub(crate) fn from_parts(fields: Arc<Fields>, version: Option<Value>) -> Self {
         debug_assert!(
-            fields
-                .as_object()
-                .is_none_or(|map| !map.contains_key(VERSION_FIELD)),
+            fields.get(VERSION_FIELD).is_none(),
             "shared fields must not carry `_version`"
         );
         debug_assert!(
@@ -63,15 +69,15 @@ impl SharedEntity {
         Self { fields, version }
     }
 
-    pub(crate) fn into_parts(self) -> (Arc<Value>, Option<Value>) {
+    pub(crate) fn into_parts(self) -> (Arc<Fields>, Option<Value>) {
         (self.fields, self.version)
     }
 
-    pub(crate) fn fields(&self) -> &Arc<Value> {
+    pub(crate) fn fields(&self) -> &Arc<Fields> {
         &self.fields
     }
 
-    pub(crate) fn fields_mut(&mut self) -> &mut Arc<Value> {
+    pub(crate) fn fields_mut(&mut self) -> &mut Arc<Fields> {
         &mut self.fields
     }
 
@@ -92,13 +98,16 @@ impl SharedEntity {
 
     /// The whole entity, as an owned value.
     pub fn to_value(&self) -> Value {
-        with_version(Value::clone(&self.fields), self.version.clone())
+        with_version(self.fields.to_value(), self.version.clone())
     }
 
     /// The whole entity, copying the fields only if another holder shares
     /// them.
     pub fn into_value(self) -> Value {
-        let fields = Arc::try_unwrap(self.fields).unwrap_or_else(|shared| Value::clone(&shared));
+        let fields = match Arc::try_unwrap(self.fields) {
+            Ok(fields) => fields.into_value(),
+            Err(shared) => shared.to_value(),
+        };
         with_version(fields, self.version)
     }
 }
@@ -147,13 +156,14 @@ impl SharedEntity {
         F: Serialize,
         O: Serialize,
     {
-        let Value::Object(fields) = &*self.fields else {
-            return other(&self.fields).serialize(serializer);
+        let members = match &*self.fields {
+            Fields::Object(members) => members,
+            Fields::Other(value) => return other(value).serialize(serializer),
         };
         let mut map =
-            serializer.serialize_map(Some(fields.len() + usize::from(self.version.is_some())))?;
+            serializer.serialize_map(Some(members.len() + usize::from(self.version.is_some())))?;
         let mut pending = self.version.as_ref();
-        for (key, value) in fields {
+        for (key, value) in members.iter() {
             if maps_sort_keys() && key.as_str() > VERSION_FIELD {
                 if let Some(version) = pending.take() {
                     map.serialize_entry(VERSION_FIELD, &field(VERSION_FIELD, version))?;
@@ -171,6 +181,148 @@ impl SharedEntity {
 impl<'de> Deserialize<'de> for SharedEntity {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Value::deserialize(deserializer).map(SharedEntity::new)
+    }
+}
+
+/// The fields of a [`SharedEntity`]: every one but `_version`.
+///
+/// An object keeps each top-level field behind an [`Arc`] of its own, so a
+/// copy of the object shares every field with the original and a write to it
+/// copies only the field it changes ([`Arc::make_mut`] on the [`Fields`]
+/// copies the pointers, on a [`Members`] entry that one field). Anything else
+/// is held whole.
+#[derive(Clone, Debug)]
+pub(crate) enum Fields {
+    Object(Members),
+    Other(Value),
+}
+
+impl Fields {
+    pub(crate) fn from_value(value: Value) -> Self {
+        match value {
+            Value::Object(map) => Fields::Object(Members::from_map(map)),
+            other => Fields::Other(other),
+        }
+    }
+
+    /// The fields as one value, copying them.
+    pub(crate) fn to_value(&self) -> Value {
+        match self {
+            Fields::Object(members) => Value::Object(
+                members
+                    .iter()
+                    .map(|(key, value)| (key.clone(), Value::clone(value)))
+                    .collect(),
+            ),
+            Fields::Other(value) => value.clone(),
+        }
+    }
+
+    /// The fields as one value, copying only those another holder shares.
+    pub(crate) fn into_value(self) -> Value {
+        match self {
+            Fields::Object(members) => Value::Object(
+                members
+                    .0
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let value =
+                            Arc::try_unwrap(value).unwrap_or_else(|shared| (*shared).clone());
+                        (key, value)
+                    })
+                    .collect(),
+            ),
+            Fields::Other(value) => value,
+        }
+    }
+
+    /// The top-level field `name`, if these are an object's fields.
+    pub(crate) fn get(&self, name: &str) -> Option<&Value> {
+        match self {
+            Fields::Object(members) => members.get(name).map(|value| &**value),
+            Fields::Other(_) => None,
+        }
+    }
+
+    pub(crate) fn is_object(&self) -> bool {
+        matches!(self, Fields::Object(_))
+    }
+}
+
+/// Equal when the values they stand for are.
+impl PartialEq for Fields {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Fields::Object(left), Fields::Object(right)) => left == right,
+            (Fields::Other(left), Fields::Other(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+/// An object's top-level fields, each shared on its own, in the order
+/// `serde_json` keeps an object's keys (see [`maps_sort_keys`]): sorted by
+/// key, or in insertion order.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Members(Vec<(String, Arc<Value>)>);
+
+impl Members {
+    fn from_map(map: serde_json::Map<String, Value>) -> Self {
+        // A map iterates in the order kept here.
+        Members(
+            map.into_iter()
+                .map(|(key, value)| (key, Arc::new(value)))
+                .collect(),
+        )
+    }
+
+    fn position(&self, name: &str) -> Result<usize, usize> {
+        if maps_sort_keys() {
+            self.0.binary_search_by(|(key, _)| key.as_str().cmp(name))
+        } else {
+            self.0
+                .iter()
+                .position(|(key, _)| key == name)
+                .ok_or(self.0.len())
+        }
+    }
+
+    pub(crate) fn get(&self, name: &str) -> Option<&Arc<Value>> {
+        self.position(name).ok().map(|index| &self.0[index].1)
+    }
+
+    pub(crate) fn get_mut(&mut self, name: &str) -> Option<&mut Arc<Value>> {
+        self.position(name).ok().map(|index| &mut self.0[index].1)
+    }
+
+    /// Set `name` to `value`, where it is if it is there already, otherwise
+    /// where a `serde_json` object would put a new key.
+    pub(crate) fn insert(&mut self, name: String, value: Arc<Value>) {
+        match self.position(&name) {
+            Ok(index) => self.0[index].1 = value,
+            Err(index) => self.0.insert(index, (name, value)),
+        }
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, &Arc<Value>)> {
+        self.0.iter().map(|(key, value)| (key, value))
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+/// Equal as `serde_json` objects are: the same keys with equal values, in
+/// any order.
+impl PartialEq for Members {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len()
+            && self.iter().all(|(key, value)| {
+                other
+                    .get(key)
+                    .is_some_and(|theirs| Arc::ptr_eq(value, theirs) || value == theirs)
+            })
     }
 }
 
@@ -227,9 +379,9 @@ impl EntityFields for SharedEntity {
     }
 
     fn whole(&self) -> Cow<'_, Value> {
-        match self.version {
-            None => Cow::Borrowed(&self.fields),
-            Some(_) => Cow::Owned(self.to_value()),
+        match (&*self.fields, &self.version) {
+            (Fields::Other(value), None) => Cow::Borrowed(value),
+            _ => Cow::Owned(self.to_value()),
         }
     }
 }
