@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.35.0](https://github.com/AreteA4/arete/compare/arete-server-v0.34.0...arete-server-v0.35.0) (2026-10-10)
+
+
+### Miscellaneous Chores
+
+* **arete-server:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.34.0 to 0.35.0
+
 ## [0.34.0](https://github.com/AreteA4/arete/compare/arete-server-v0.33.0...arete-server-v0.34.0) (2026-10-10)
 
 
