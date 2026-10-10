@@ -33,7 +33,7 @@ Use generated `program_sdk::accounts`, `instructions`, and type paths. Do not re
 - `Append`: retained sequence with an explicit retention policy.
 - `Min` / `Max`: extrema with suitable reset semantics.
 
-Choose based on domain lifecycle, not convenience. Keep raw token values in integer types; use current amount helpers or computed fields for display amounts.
+Choose based on domain lifecycle, not convenience. Keep raw token values in integer types; use current amount helpers or computed fields for display amounts. Fields scaled with `ui_amount(decimals)` (in a `#[map]` `transform` or a `#[computed]` expression) carry an `amount` annotation (`scale`, `decimals`, `counterpart`) in schema output, so consumers can tell whole-token values from base units.
 
 ## Cross-Account Resolution
 

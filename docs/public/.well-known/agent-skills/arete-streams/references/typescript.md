@@ -10,16 +10,16 @@ Generated TypeScript bindings import `@usearete/sdk` and Zod schemas. Install th
 npm install @usearete/sdk zod
 ```
 
+In a directory with no `package.json`, `a4 install stack <stack-ref> --ts --setup` creates an ES module `package.json` and `tsconfig.json` and installs these plus `typescript`, `tsx`, and `@types/node`.
+
 Prefer a session when the application uses multiple stacks, standalone programs, shared chain reads, or shared execution:
 
 ```ts
 import { createSession } from '@usearete/sdk';
 import { MY_STACK } from './generated/my-stack';
 
-const session = await createSession(
-  { stacks: { app: MY_STACK } },
-  { auth: { secretKey: process.env.ARETE_API_KEY! } },
-);
+// No auth option: server-side, the SDK uses ARETE_API_KEY if set, else your a4 CLI login.
+const session = await createSession({ stacks: { app: MY_STACK } });
 
 const current = await session.stacks.app.views.Position.state.get({ owner });
 
@@ -33,7 +33,7 @@ session.close();
 
 Pick the key by where the code runs:
 
-- Node.js, Bun, Deno, workers, SSR, agents, and scripts: `auth: { secretKey }` with an agent key (`a4_ak_...`) or secret key (`a4_sk_...`) from the environment. With no `auth` option, the SDK reads `ARETE_API_KEY` itself.
+- Node.js, Bun, Deno, workers, SSR, agents, and scripts: no `auth` option. The SDK uses `ARETE_API_KEY` if set, and otherwise the agent or secret key from the active `a4` login (read in Node, Bun, and Deno). If several `a4` profiles hold a key, set `ARETE_PROFILE`. To pass a key explicitly, use `auth: { secretKey }` with an agent key (`a4_ak_...`) or secret key (`a4_sk_...`) read from the environment.
 - Browser code (Vue, Svelte, plain pages): `auth: { publishableKey }` with an origin-bound publishable key (`a4_pk_...`), for example from `import.meta.env.VITE_ARETE_PUBLISHABLE_KEY`. Create one with `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
 
 `secretKey` throws in a browser, as does a secret or agent key passed as `publishableKey`. A publishable key passed as `secretKey` is refused everywhere.

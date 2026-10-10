@@ -2,8 +2,8 @@
 name: arete
 description: Discover and install exact Arete stacks or program SDKs for a Solana application. Use for generic Arete setup, capability discovery, choosing between a stack, a standalone program SDK, or a composed stack, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for Rust stack definitions or composing stacks use arete-stack-authoring; for hosted publication or deployment use arete-deploy.
 metadata:
-  version: "1.3.1"
-  min-cli: ">=0.25.1"
+  version: "1.4.0"
+  min-cli: ">=0.34.0"
 ---
 
 # Discover and Install Arete Capabilities
@@ -53,6 +53,14 @@ Narrow by `--kind program|stack`, `--mode read|build|subscribe`, and
 `--target typescript|rust|python` when the request already determines those
 constraints.
 
+Search results and the vocabulary are brief by default, and brief JSON names
+the next step in a top-level `hint`. Add `--full` for every field or
+`--fields a,b` for specific keys, and pass a page's `nextCursor` back as
+`--cursor` with the same filters. `a4 explore catalog --json` with no filters
+returns an overview of the first programs and stacks. The MCP `search_catalog`,
+`list_catalog_vocabulary`, `explore_stacks`, and `explore_programs` tools are
+brief the same way; pass `full: true` or `fields` for more.
+
 Read each result's coverage modes, then route by what the application needs:
 
 - **Live views, with or without operations**: a stack. Its program SDKs come with it (see [Stacks include their program SDKs](#stacks-include-their-program-sdks)). Use `arete-streams` for view code and `arete-programs` for the stack's operations.
@@ -77,6 +85,9 @@ a4 explore stack <stack-ref> --json
 a4 explore program <program-ref> --json
 ```
 
+`a4 explore stacks` and `a4 explore programs` list the installable stacks and
+standalone programs.
+
 Keep exploration output small when you only need part of a descriptor:
 
 ```bash
@@ -94,7 +105,9 @@ list of public programs or stacks, infer an endpoint, or treat a search result
 as proof that an unreported mode is available.
 
 For reviewed protocol context and callable operation semantics, use the
-knowledge layer when available:
+knowledge layer when available. `a4 know search` and `a4 know concepts` (MCP
+`search_knowledge` and `list_concepts`) are brief by default; add `--full`
+(`full: true`) for every field, or `--fields` (`fields`) on search:
 
 ```bash
 a4 know search --query "<intent>" --json
@@ -119,6 +132,8 @@ a4 install program <program-ref> --ts
 ```
 
 Choose `--ts`, `--rust`, or `--python` from the existing project language and the descriptor's `sdkTargets`. Standalone program packaging may support fewer targets than a program bundled in a stack; trust the descriptor and command output.
+
+For TypeScript in a directory with no `package.json`, add `--setup` (for example `a4 install stack <stack-ref> --ts --setup`): it creates an ES module `package.json` and `tsconfig.json` and installs the runtime and dev dependencies. The printed Node snippet uses `@usearete/sdk` with no auth option, because server-side SDKs pick up `ARETE_API_KEY` or the active `a4` login.
 
 Use `--no-save` only for a genuinely disposable, one-package generation. Do not hand-edit generated SDKs.
 
