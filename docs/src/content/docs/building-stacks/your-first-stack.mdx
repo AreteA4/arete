@@ -319,7 +319,9 @@ export default function App() {
 ```bash
 mkdir my-ore-app && cd my-ore-app
 npm init -y
-npm install @usearete/sdk zod typescript
+npm pkg set type=module
+npm install @usearete/sdk zod
+npm install -D typescript tsx @types/node
 ```
 
 Copy the generated SDK:
@@ -336,10 +338,10 @@ import { Arete } from "@usearete/sdk";
 import { ORE_STREAM_STACK } from "./ore-sdk";
 
 async function main() {
-  // Connect to your deployed stack using the generated SDK
-  const a4 = await Arete.connect(ORE_STREAM_STACK, {
-    auth: { publishableKey: process.env.ARETE_PUBLISHABLE_KEY! },
-  });
+  // Connect to your deployed stack using the generated SDK. Server-side code
+  // passes no auth option: the SDK reads an agent or secret key from
+  // ARETE_API_KEY.
+  const a4 = await Arete.connect(ORE_STREAM_STACK);
 
   console.log("Connected! Streaming ORE rounds...\n");
 
@@ -367,7 +369,7 @@ main().catch(console.error);
 ### TypeScript: Run your app
 
 ```bash
-ARETE_PUBLISHABLE_KEY=hspk_... npx tsx src/index.ts
+ARETE_API_KEY=a4_sk_... npx tsx src/index.ts
 ```
 
 </TabItem>

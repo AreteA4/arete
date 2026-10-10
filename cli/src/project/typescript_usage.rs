@@ -8,6 +8,9 @@ use std::path::{Component, Path, PathBuf};
 use regex::Regex;
 use serde::Serialize;
 
+use super::runtime::{TYPESCRIPT_REACT, TYPESCRIPT_SDK};
+use crate::commands::auth::Framework;
+
 /// How to use one generated TypeScript stack.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +27,8 @@ pub struct StackUsage {
     /// The list view the snippet subscribes to, e.g. `Round/list`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub view: Option<String>,
+    /// How the snippet authenticates.
+    pub auth: UsageAuth,
     /// The snippet itself, one line per entry.
     pub snippet: Vec<String>,
     /// How to run the snippet, when Node runs it.
@@ -31,66 +36,160 @@ pub struct StackUsage {
     pub run: Option<String>,
 }
 
+/// The key a snippet authenticates with: a server-side key read from the
+/// environment by the SDK itself, or an origin-bound publishable key that the
+/// app's bundler exposes to browser code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageAuth {
+    /// The SDK auth option: `secretKey` or `publishableKey`.
+    pub option: &'static str,
+    /// The environment variable that holds the key.
+    pub env_var: &'static str,
+    /// The command that creates the key, for a publishable key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+/// The kind of app a stack is used from, which decides its first lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppKind {
+    /// A Node service or script: `@usearete/sdk`, authenticated with a
+    /// server-side key from `ARETE_API_KEY`.
+    Node,
+    /// A React app bundled by `Framework`: `@usearete/react`, authenticated
+    /// with a publishable key bound to the app's origin.
+    Browser(Framework),
+}
+
 /// The file the Node snippet is saved as.
 const NODE_ENTRY: &str = "index.ts";
 
-/// How to use the stack generated at `output` from a file in `from_dir`, in a
-/// Node app or, when `browser`, a React app. `None` when `output` holds no
-/// stack definition (a composed stack's session definition, or a program).
+/// The environment variable the SDK reads a server-side key from.
+const SERVER_KEY_ENV: &str = "ARETE_API_KEY";
+
+impl AppKind {
+    fn auth(self) -> UsageAuth {
+        match self {
+            AppKind::Node => UsageAuth {
+                option: "secretKey",
+                env_var: SERVER_KEY_ENV,
+                command: None,
+            },
+            AppKind::Browser(framework) => UsageAuth {
+                option: "publishableKey",
+                env_var: framework.env_var(),
+                command: Some(format!(
+                    "a4 auth keys create-publishable --origin {} --env-file .env.local",
+                    dev_origin(framework)
+                )),
+            },
+        }
+    }
+}
+
+/// The origin a framework's development server serves the app from.
+fn dev_origin(framework: Framework) -> &'static str {
+    match framework {
+        Framework::NextJs => "http://localhost:3000",
+        Framework::Vite => "http://localhost:5173",
+        Framework::Generic => "<origin>",
+    }
+}
+
+/// How browser code reads the publishable key the framework exposes.
+fn browser_env_access(framework: Framework) -> String {
+    match framework {
+        Framework::Vite => format!("import.meta.env.{}", framework.env_var()),
+        Framework::NextJs | Framework::Generic => format!("process.env.{}", framework.env_var()),
+    }
+}
+
+/// How to use the stack generated at `output` from a file in `from_dir`, in an
+/// app of kind `app`. `None` when `output` holds no stack definition (a
+/// composed stack's session definition, or a program).
 pub fn stack_usage(
     alias: &str,
     output: &Path,
     from_dir: &Path,
-    browser: bool,
-    sdk_package: &str,
+    app: AppKind,
 ) -> Option<StackUsage> {
     let generated = GeneratedStack::read(output)?;
     let import_path = import_specifier(from_dir, &generated.entry);
     let export = &generated.export_name;
     let view = generated.list_view.as_ref();
+    let auth = app.auth();
     let mut snippet = Vec::new();
-    let run = if browser {
-        snippet.push(r#"import { useArete } from "@usearete/react";"#.to_string());
-        snippet.push(format!(r#"import {{ {export} }} from "{import_path}";"#));
-        snippet.push(String::new());
-        snippet.push(format!(
-            "// Render inside <AreteProvider stack={{{export}}}>."
-        ));
-        snippet.push("export function Rows() {".to_string());
-        snippet.push(format!("  const arete = useArete({export});"));
-        if let Some(view) = view {
+    let run = match app {
+        AppKind::Browser(framework) => {
+            if framework == Framework::NextJs {
+                snippet.push(r#""use client";"#.to_string());
+                snippet.push(String::new());
+            }
             snippet.push(format!(
-                "  const rows = arete.views{}.use({{ take: 20 }});",
-                view.access
+                r#"import {{ AreteProvider, useArete }} from "{TYPESCRIPT_REACT}";"#
             ));
-            snippet.push("  return <pre>{JSON.stringify(rows.data, null, 2)}</pre>;".to_string());
-        } else {
-            snippet.push("  return <pre>{arete.status}</pre>;".to_string());
-        }
-        snippet.push("}".to_string());
-        None
-    } else {
-        snippet.push(format!(
-            r#"import {{ createSession }} from "{sdk_package}";"#
-        ));
-        snippet.push(format!(r#"import {{ {export} }} from "{import_path}";"#));
-        snippet.push(String::new());
-        snippet.push("const publishableKey = process.env.ARETE_PUBLISHABLE_KEY;".to_string());
-        snippet.push("const session = await createSession(".to_string());
-        snippet.push(format!("  {{ stacks: {{ app: {export} }} }},"));
-        snippet.push("  publishableKey ? { auth: { publishableKey } } : {},".to_string());
-        snippet.push(");".to_string());
-        if let Some(view) = view {
+            snippet.push(format!(r#"import {{ {export} }} from "{import_path}";"#));
+            snippet.push(String::new());
+            snippet
+                .push("// A publishable key bound to this app's origin, created with:".to_string());
+            if let Some(command) = &auth.command {
+                snippet.push(format!("// {command}"));
+            }
             snippet.push(format!(
-                "for await (const update of session.stacks.app.views{}.watch({{ take: 20 }})) {{",
-                view.access
+                "const publishableKey = {};",
+                browser_env_access(framework)
             ));
-            snippet.push("  console.log(update);".to_string());
+            snippet.push(String::new());
+            snippet.push("export function App() {".to_string());
+            snippet.push("  return (".to_string());
+            snippet.push(format!(
+                "    <AreteProvider stack={{{export}}} auth={{{{ publishableKey }}}}>"
+            ));
+            snippet.push("      <Rows />".to_string());
+            snippet.push("    </AreteProvider>".to_string());
+            snippet.push("  );".to_string());
             snippet.push("}".to_string());
-        } else {
-            snippet.push("console.log(Object.keys(session.stacks.app.views));".to_string());
+            snippet.push(String::new());
+            snippet.push("function Rows() {".to_string());
+            snippet.push(format!("  const arete = useArete({export});"));
+            if let Some(view) = view {
+                snippet.push(format!(
+                    "  const rows = arete.views{}.use({{ take: 20 }});",
+                    view.access
+                ));
+                snippet
+                    .push("  return <pre>{JSON.stringify(rows.data, null, 2)}</pre>;".to_string());
+            } else {
+                snippet.push("  return <pre>{arete.status}</pre>;".to_string());
+            }
+            snippet.push("}".to_string());
+            None
         }
-        Some(format!("npx tsx {NODE_ENTRY}"))
+        AppKind::Node => {
+            snippet.push(format!(
+                r#"import {{ createSession }} from "{TYPESCRIPT_SDK}";"#
+            ));
+            snippet.push(format!(r#"import {{ {export} }} from "{import_path}";"#));
+            snippet.push(String::new());
+            snippet.push(format!(
+                "// No auth option: server-side, the SDK reads an agent or secret key from {SERVER_KEY_ENV}."
+            ));
+            snippet.push(format!(
+                "const session = await createSession({{ stacks: {{ app: {export} }} }});"
+            ));
+            if let Some(view) = view {
+                snippet.push(format!(
+                    "for await (const update of session.stacks.app.views{}.watch({{ take: 20 }})) {{",
+                    view.access
+                ));
+                snippet.push("  console.log(update);".to_string());
+                snippet.push("}".to_string());
+            } else {
+                snippet.push("console.log(Object.keys(session.stacks.app.views));".to_string());
+            }
+            Some(format!("npx tsx {NODE_ENTRY}"))
+        }
     };
     Some(StackUsage {
         stack: alias.to_string(),
@@ -98,6 +197,7 @@ pub fn stack_usage(
         import_path,
         from_dir: from_dir.display().to_string(),
         view: view.map(|view| view.path.clone()),
+        auth,
         snippet,
         run,
     })
@@ -271,39 +371,87 @@ mod tests {
     }
 
     #[test]
-    fn node_usage_imports_the_stack_and_watches_a_list_view() {
+    fn node_usage_imports_the_sdk_and_reads_the_server_key_from_the_environment() {
         let output = golden("installed-typescript/stacks/vault");
         let app = golden("installed-typescript");
-        let usage = stack_usage("vault", &output, &app, false, "@usearete/sdk").unwrap();
+        let usage = stack_usage("vault", &output, &app, AppKind::Node).unwrap();
         assert_eq!(usage.import_path, "./stacks/vault/vault.js");
         assert_eq!(usage.view.as_deref(), Some("Vault/list"));
         assert_eq!(usage.run.as_deref(), Some("npx tsx index.ts"));
+        assert_eq!(
+            usage.auth,
+            UsageAuth {
+                option: "secretKey",
+                env_var: "ARETE_API_KEY",
+                command: None,
+            }
+        );
         assert_eq!(
             usage.snippet.join("\n"),
             r#"import { createSession } from "@usearete/sdk";
 import { VAULT_STREAM_STACK } from "./stacks/vault/vault.js";
 
-const publishableKey = process.env.ARETE_PUBLISHABLE_KEY;
-const session = await createSession(
-  { stacks: { app: VAULT_STREAM_STACK } },
-  publishableKey ? { auth: { publishableKey } } : {},
-);
+// No auth option: server-side, the SDK reads an agent or secret key from ARETE_API_KEY.
+const session = await createSession({ stacks: { app: VAULT_STREAM_STACK } });
 for await (const update of session.stacks.app.views.Vault.list.watch({ take: 20 })) {
   console.log(update);
+}"#
+        );
+        assert!(!usage.snippet.join("\n").contains("publishable"));
+    }
+
+    #[test]
+    fn react_usage_wraps_the_hook_in_a_provider_with_a_publishable_key() {
+        let output = golden("installed-typescript/stacks/vault");
+        let app = golden("installed-typescript/programs");
+        let usage = stack_usage("vault", &output, &app, AppKind::Browser(Framework::Vite)).unwrap();
+        assert_eq!(usage.import_path, "../stacks/vault/vault.js");
+        assert_eq!(usage.run, None);
+        assert_eq!(usage.auth.option, "publishableKey");
+        assert_eq!(usage.auth.env_var, "VITE_ARETE_PUBLISHABLE_KEY");
+        assert_eq!(
+            usage.auth.command.as_deref(),
+            Some("a4 auth keys create-publishable --origin http://localhost:5173 --env-file .env.local")
+        );
+        assert_eq!(
+            usage.snippet.join("\n"),
+            r#"import { AreteProvider, useArete } from "@usearete/react";
+import { VAULT_STREAM_STACK } from "../stacks/vault/vault.js";
+
+// A publishable key bound to this app's origin, created with:
+// a4 auth keys create-publishable --origin http://localhost:5173 --env-file .env.local
+const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
+
+export function App() {
+  return (
+    <AreteProvider stack={VAULT_STREAM_STACK} auth={{ publishableKey }}>
+      <Rows />
+    </AreteProvider>
+  );
+}
+
+function Rows() {
+  const arete = useArete(VAULT_STREAM_STACK);
+  const rows = arete.views.Vault.list.use({ take: 20 });
+  return <pre>{JSON.stringify(rows.data, null, 2)}</pre>;
 }"#
         );
     }
 
     #[test]
-    fn react_usage_reads_the_view_with_the_hook() {
+    fn next_usage_is_a_client_component_reading_the_public_env_var() {
         let output = golden("installed-typescript/stacks/vault");
-        let app = golden("installed-typescript/programs");
-        let usage = stack_usage("vault", &output, &app, true, "@usearete/sdk").unwrap();
-        assert_eq!(usage.import_path, "../stacks/vault/vault.js");
-        assert_eq!(usage.run, None);
-        assert!(usage
-            .snippet
-            .contains(&"  const rows = arete.views.Vault.list.use({ take: 20 });".to_string()));
+        let app = golden("installed-typescript");
+        let usage =
+            stack_usage("vault", &output, &app, AppKind::Browser(Framework::NextJs)).unwrap();
+        assert_eq!(usage.snippet[0], r#""use client";"#);
+        assert!(usage.snippet.contains(
+            &"const publishableKey = process.env.NEXT_PUBLIC_ARETE_PUBLISHABLE_KEY;".to_string()
+        ));
+        assert_eq!(
+            usage.auth.command.as_deref(),
+            Some("a4 auth keys create-publishable --origin http://localhost:3000 --env-file .env.local")
+        );
     }
 
     #[test]

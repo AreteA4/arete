@@ -312,6 +312,12 @@ enum Commands {
         /// Save a bare package add as an exact requirement
         #[arg(long)]
         exact: bool,
+
+        /// When TypeScript output has no package.json, create an ES module
+        /// package.json and a tsconfig.json (existing files are kept) and npm
+        /// install the runtime and dev tools
+        #[arg(long, conflicts_with_all = ["no_save", "dry_run"])]
+        setup: bool,
     },
 
     /// Advance registry dependencies within their manifest requirements
@@ -1311,6 +1317,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             no_save,
             alias,
             exact,
+            setup,
         } => match target.as_deref() {
             None
                 if install_name.is_some()
@@ -1336,6 +1343,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     allow_outside_project,
                     dry_run,
                     update: None,
+                    setup,
                 },
             ),
             Some(target) => {
@@ -1408,6 +1416,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 typescript_package: package_name,
                                 module,
                                 allow_outside_project,
+                                setup,
                             },
                         )
                     }

@@ -631,7 +631,7 @@ pub struct CreatePublishableArgs {
 /// The browser framework a project uses, which decides the environment
 /// variable its bundler exposes to client code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Framework {
+pub(crate) enum Framework {
     NextJs,
     Vite,
     Generic,
@@ -646,7 +646,7 @@ impl Framework {
         }
     }
 
-    fn env_var(self) -> &'static str {
+    pub(crate) fn env_var(self) -> &'static str {
         match self {
             Framework::NextJs => "NEXT_PUBLIC_ARETE_PUBLISHABLE_KEY",
             Framework::Vite => "VITE_ARETE_PUBLISHABLE_KEY",
@@ -682,7 +682,7 @@ const VITE_CONFIGS: [&str; 6] = [
 /// Detect the framework from config files and package.json dependencies in
 /// the project directory. Next.js wins over Vite, because a Next.js app may
 /// carry Vite as a test dependency.
-fn detect_framework(root: &Path) -> Framework {
+pub(crate) fn detect_framework(root: &Path) -> Framework {
     let package_deps = std::fs::read_to_string(root.join("package.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
