@@ -43,7 +43,22 @@ Use the target and command the descriptor gives you. The dependency you asked
 for is saved in `arete.toml`, and the exact composition and package identities
 go into `arete.lock`.
 
-Install the TypeScript runtime when needed:
+The install summary ends with what the project still needs and a script that
+reads one of the stack's views once and exits, followed by the stack's reads
+(derived values such as ORE's `read.currentRound()`).
+
+In a directory with no `package.json`, the summary names what the generated
+TypeScript is missing and how to add it. Set the project up your own way
+(npm, pnpm, bun, a workspace), or let `a4` do it with npm:
+
+```bash
+a4 install stack <slug> --ts --setup
+```
+
+`--setup` writes an ES module `package.json` and a `tsconfig.json`, then
+installs the runtime and `typescript`, `tsx` and `@types/node`. It never
+replaces existing files. In an existing project, install the TypeScript
+runtime when needed:
 
 ```bash
 npm install @usearete/sdk

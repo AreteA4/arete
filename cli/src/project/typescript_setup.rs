@@ -16,6 +16,12 @@ use super::runtime::{self, RuntimePackage};
 /// The command that performs the setup from the project root.
 pub const SETUP_COMMAND: &str = "a4 install --setup";
 
+/// The `tsc --init` that creates, by hand, a `tsconfig.json` with the
+/// options of [`NODE_COMPILER_OPTIONS`] the generated SDK depends on: Node ES
+/// module resolution (which follows its `.js` specifiers and allows
+/// top-level `await`) and Node's types.
+pub const TSC_INIT_COMMAND: &str = "npx tsc --init --module nodenext --target es2022 --types node";
+
 /// The `compilerOptions` of the `tsconfig.json` setup writes: Node ES
 /// modules with Node's types. The generated SDK is ES module source with
 /// `.js` import specifiers, which `NodeNext` resolution follows; `tsx` runs it
@@ -33,12 +39,12 @@ const NODE_COMPILER_OPTIONS: &str = r#"  "compilerOptions": {
   }"#;
 
 /// A `tsconfig.json` for the Node app in `directory` that covers only its
-/// top-level `.ts` files (the `index.ts` entry) and the generated TypeScript
-/// `outputs`, so other apps beneath it, such as a React app with its own
-/// config, are not type-checked as Node code. List the project's TypeScript
-/// output directory first: stacks installed later land there too.
+/// top-level `.ts` files (the `index.ts` entry), `src/`, and the generated
+/// TypeScript `outputs`, so other apps beneath it, such as a React app with
+/// its own config, are not type-checked as Node code. List the project's
+/// TypeScript output directory first: stacks installed later land there too.
 fn node_tsconfig(directory: &Path, outputs: &[PathBuf]) -> String {
-    let mut include = vec!["*.ts".to_string()];
+    let mut include = vec!["*.ts".to_string(), "src/**/*.ts".to_string()];
     let mut covered: Vec<&Path> = Vec::new();
     for output in outputs {
         let dir = if output.extension().and_then(|ext| ext.to_str()) == Some("ts") {
@@ -244,6 +250,46 @@ fn package_name(directory: &Path) -> String {
     }
 }
 
+/// What `--setup` does, as commands to run by hand in a directory with no
+/// `package.json`, in the order that works there: an ES module package, the
+/// runtime and dev tools it installs, then, when `tsconfig` is set, a
+/// `tsconfig.json`.
+pub fn manual_commands(
+    runtime: &[RuntimePackage],
+    dev_tools: &[String],
+    tsconfig: bool,
+) -> Vec<String> {
+    let mut commands = vec![
+        "npm init -y".to_string(),
+        "npm pkg set type=module".to_string(),
+    ];
+    commands.extend(npm_install_args(runtime, dev_tools).iter().map(|args| {
+        let args = args
+            .iter()
+            .map(|arg| shell_word(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("npm {args}")
+    }));
+    if tsconfig {
+        commands.push(TSC_INIT_COMMAND.to_string());
+    }
+    commands
+}
+
+/// `arg` as one word in any common shell: quoted when it holds characters
+/// such as `^`.
+fn shell_word(arg: &str) -> String {
+    if arg
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '/' | '.' | '-' | '_'))
+    {
+        arg.to_string()
+    } else {
+        format!("\"{arg}\"")
+    }
+}
+
 /// The npm argument lists that install `runtime` and then `dev_tools`.
 fn npm_install_args(runtime: &[RuntimePackage], dev_tools: &[String]) -> Vec<Vec<String>> {
     let mut commands = Vec::new();
@@ -332,7 +378,7 @@ mod tests {
         // later into the output directory: not other apps beneath.
         assert_eq!(
             tsconfig["include"],
-            serde_json::json!(["*.ts", "generated/typescript/**/*.ts", "src/**/*.ts"])
+            serde_json::json!(["*.ts", "src/**/*.ts", "generated/typescript/**/*.ts"])
         );
         // The written tsconfig is one the install guidance accepts.
         assert_eq!(runtime::tsconfig_hiding_node_types(&root), None);
@@ -376,6 +422,45 @@ mod tests {
                 vec!["install", "-D", "typescript", "tsx", "@types/node"],
             ]
         );
+    }
+
+    #[test]
+    fn manual_commands_are_the_setup_steps_in_order() {
+        let runtime = runtime::typescript_runtime_set_at(&Default::default(), "0.33.0");
+        let dev_tools = runtime::typescript_dev_tools(&Default::default());
+        assert_eq!(
+            manual_commands(&runtime, &dev_tools, true),
+            vec![
+                "npm init -y",
+                "npm pkg set type=module",
+                r#"npm install @usearete/sdk@0.33.0 "zod@^3.24.1""#,
+                "npm install -D typescript tsx @types/node",
+                TSC_INIT_COMMAND,
+            ]
+        );
+        // The runtime line is the one the rest of the install prints.
+        assert_eq!(
+            manual_commands(&runtime, &[], false)[2],
+            runtime::npm_install_command(&runtime)
+        );
+    }
+
+    #[test]
+    fn the_tsc_init_command_sets_the_options_setup_writes() {
+        let options: serde_json::Value =
+            serde_json::from_str(&format!("{{\n{NODE_COMPILER_OPTIONS}\n}}")).unwrap();
+        let options = &options["compilerOptions"];
+        let (_, flags) = TSC_INIT_COMMAND.split_once("--init ").unwrap();
+        let flags = flags.split(" --").collect::<Vec<_>>();
+        assert_eq!(flags.len(), 3);
+        for flag in flags {
+            let (name, value) = flag.trim_start_matches("--").split_once(' ').unwrap();
+            let expected = match &options[name] {
+                serde_json::Value::Array(values) => values[0].as_str().unwrap(),
+                value => value.as_str().unwrap(),
+            };
+            assert!(expected.eq_ignore_ascii_case(value), "--{name} {value}");
+        }
     }
 
     #[test]

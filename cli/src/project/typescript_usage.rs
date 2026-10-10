@@ -1,6 +1,6 @@
 //! The first lines of code after `a4 install stack <package> --ts`: importing
-//! the generated stack and subscribing to one of its views, spelled from the
-//! files that were generated.
+//! the generated stack and reading one of its views once, spelled from the
+//! files that were generated, and the reads its stack extension adds.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -24,7 +24,7 @@ pub struct StackUsage {
     /// The directory the snippet's file lives in: the app's `package.json`
     /// directory.
     pub from_dir: String,
-    /// The list view the snippet subscribes to, e.g. `Round/list`.
+    /// The list view the snippet reads, e.g. `Round/latest`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub view: Option<String>,
     /// How the snippet authenticates.
@@ -34,6 +34,42 @@ pub struct StackUsage {
     /// How to run the snippet, when Node runs it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
+    /// How to stream the view's merged rows instead of reading it once
+    /// (`.watch()` streams the raw updates).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<String>,
+    /// The command that lists the view's fields with their units, for a
+    /// registry stack: as of the registry's current release, which can be
+    /// newer than the one installed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<String>,
+    /// How the stack extension's reads are called, e.g.
+    /// `await session.stacks.ore.read.<name>(...)`, when it has any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reads_call: Option<String>,
+    /// The stack extension's reads: derived values that combine views,
+    /// program accounts and chain state in one call.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<StackRead>,
+}
+
+/// One read a stack extension adds, e.g. ORE's `currentRound()`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StackRead {
+    pub name: String,
+    /// Parameter names, an optional one ending in `?`.
+    pub params: Vec<String>,
+    /// The read's `@title`, else the first sentence of its doc comment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+impl StackRead {
+    /// `currentRound()`, `roundState(roundId)`.
+    pub fn signature(&self) -> String {
+        format!("{}({})", self.name, self.params.join(", "))
+    }
 }
 
 /// The key a snippet authenticates with: a server-side key the SDK finds by
@@ -157,7 +193,10 @@ pub fn stack_usage(
     let export = &generated.export_name;
     let view = generated.list_view.as_ref();
     let auth = app.auth(app_dir_from_current(from_dir));
+    // The session key: the alias, when it is an identifier.
+    let key = if is_identifier(alias) { alias } else { "app" };
     let mut snippet = Vec::new();
+    let mut stream = None;
     let run = match app {
         AppKind::Browser(framework) => {
             if framework == Framework::NextJs {
@@ -218,21 +257,36 @@ pub fn stack_usage(
                 "// No auth option: server-side, the SDK uses {SERVER_KEY_ENV} if set, else your a4 login."
             ));
             snippet.push(format!(
-                "const session = await createSession({{ stacks: {{ app: {export} }} }});"
+                "const session = await createSession({{ stacks: {{ {key}: {export} }} }});"
             ));
+            // One read that ends: the script exits once the session closes,
+            // also when the read fails.
+            snippet.push("try {".to_string());
             if let Some(view) = view {
                 snippet.push(format!(
-                    "for await (const update of session.stacks.app.views{}.watch({{ take: 20 }})) {{",
+                    "  const row = await session.stacks.{key}.views{}.getOne({{ timeoutMs: 10_000 }});",
                     view.access
                 ));
-                snippet.push("  console.log(update);".to_string());
-                snippet.push("}".to_string());
+                snippet.push("  console.log(row);".to_string());
+                stream = Some(format!(
+                    "for await (const row of session.stacks.{key}.views{}.use()) {{ ... }}",
+                    view.access
+                ));
             } else {
-                snippet.push("console.log(Object.keys(session.stacks.app.views));".to_string());
+                snippet.push(format!(
+                    "  console.log(Object.keys(session.stacks.{key}.views));"
+                ));
             }
+            snippet.push("} finally {".to_string());
+            snippet.push("  session.close();".to_string());
+            snippet.push("}".to_string());
             Some(format!("npx tsx {NODE_ENTRY}"))
         }
     };
+    let reads_call = (!generated.reads.is_empty()).then(|| match app {
+        AppKind::Node => format!("await session.stacks.{key}.read.<name>(...)"),
+        AppKind::Browser(_) => "arete.read.<name>.use(...)".to_string(),
+    });
     Some(StackUsage {
         stack: alias.to_string(),
         export_name: generated.export_name.clone(),
@@ -242,7 +296,21 @@ pub fn stack_usage(
         auth,
         snippet,
         run,
+        stream,
+        fields: None,
+        reads_call,
+        reads: generated.reads,
     })
+}
+
+/// Whether `name` can be written as `a.name` and `{ name: ... }`.
+fn is_identifier(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_' || first == '$')
+        && characters
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '$'))
 }
 
 /// What a generated stack exports, read from its files.
@@ -251,6 +319,7 @@ struct GeneratedStack {
     entry: PathBuf,
     export_name: String,
     list_view: Option<ListView>,
+    reads: Vec<StackRead>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -293,15 +362,22 @@ impl GeneratedStack {
             .iter()
             .find_map(|(_, text)| text.find(&core_marker).map(|at| &text[at..]))
             .and_then(first_list_view);
+        let reads = extension_entry(&directory)
+            .and_then(|entry| fs::read_to_string(entry).ok())
+            .map(|text| stack_reads(&text))
+            .unwrap_or_default();
         Some(Self {
             entry,
             export_name,
             list_view,
+            reads,
         })
     }
 }
 
-/// The first list view in a generated stack definition's `views` block.
+/// The list view a one-shot read starts from in a generated stack
+/// definition's `views` block: the first `latest` view, else the first list
+/// view.
 fn first_list_view(definition: &str) -> Option<ListView> {
     let entity_line = Regex::new(r"^ {4}(.+): \{$").expect("entity regex should compile");
     let list_line = Regex::new(r"^ {6}(\w+): listView<[^>]*>\('([^']+)'\)")
@@ -309,6 +385,7 @@ fn first_list_view(definition: &str) -> Option<ListView> {
     let mut lines = definition.lines().skip_while(|line| *line != "  views: {");
     lines.next()?;
     let mut entity: Option<String> = None;
+    let mut first = None;
     for line in lines {
         if line.starts_with("  }") {
             break;
@@ -318,13 +395,341 @@ fn first_list_view(definition: &str) -> Option<ListView> {
             continue;
         }
         if let (Some(entity), Some(captures)) = (&entity, list_line.captures(line)) {
-            return Some(ListView {
+            let view = ListView {
                 access: format!("{}.{}", member(entity), &captures[1]),
                 path: captures[2].to_string(),
-            });
+            };
+            if &captures[1] == "latest" {
+                return Some(view);
+            }
+            first.get_or_insert(view);
+        }
+    }
+    first
+}
+
+/// The stack extension entry beside a generated stack, named by its
+/// `extensions.json`.
+fn extension_entry(directory: &Path) -> Option<PathBuf> {
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("extensions.json")).ok()?).ok()?;
+    let entry = manifest.get("entry")?.as_str()?;
+    let path = directory.join(entry);
+    path.is_file().then_some(path)
+}
+
+/// The most arguments a read is listed with: a larger count names no
+/// placeholder parameters.
+const MAX_READ_ARGS: usize = 8;
+
+/// The reads a stack extension declares in its `readArgCounts`, with the
+/// parameters and title of the function that implements each.
+///
+/// The extension is not lexed: every `readArgCounts: {` is a candidate, and
+/// the first whose object literal parses strictly wins. A mention in a
+/// comment or string does not parse as a whole object and is skipped, and
+/// regex literals cannot confuse it. A comment holding a well-formed fake
+/// declaration before the real one would be taken instead; these files come
+/// from the SDK generator, which writes none.
+fn stack_reads(extension: &str) -> Vec<StackRead> {
+    let declaration =
+        Regex::new(r"\breadArgCounts\s*:\s*\{").expect("read counts regex should compile");
+    let Some(counts) = declaration
+        .find_iter(extension)
+        .find_map(|found| read_counts(&extension[found.end()..]))
+    else {
+        return Vec::new();
+    };
+    counts
+        .into_iter()
+        .map(|(name, count)| {
+            let (params, title) = match read_function(extension, &name) {
+                Some((params, title)) => (params, title),
+                None => {
+                    let params = match count {
+                        Some(count) => (1..=count).map(|n| format!("arg{n}")).collect(),
+                        None => vec!["...".to_string()],
+                    };
+                    (params, None)
+                }
+            };
+            StackRead {
+                name,
+                params,
+                title,
+            }
+        })
+        .collect()
+}
+
+/// A strict parse of the `readArgCounts` object literal whose body starts
+/// at `body` (after its `{`): identifier or quoted keys, each mapped to an
+/// argument count or a `[min, max]` pair, with commas and an optional
+/// trailing comma. `None` when it is anything else. A count above
+/// [`MAX_READ_ARGS`] is kept as `None`: not trusted to name parameters.
+fn read_counts(body: &str) -> Option<Vec<(String, Option<usize>)>> {
+    let mut rest = body;
+    let mut counts = Vec::new();
+    loop {
+        rest = skip_space(rest)?;
+        if rest.starts_with('}') {
+            return Some(counts);
+        }
+        let (key, after) = object_key(rest)?;
+        rest = skip_space(skip_space(after)?.strip_prefix(':')?)?;
+        let count = if let Some(after) = rest.strip_prefix('[') {
+            let (min, after) = count_literal(skip_space(after)?)?;
+            let after = skip_space(after)?.strip_prefix(',')?;
+            let (max, after) = count_literal(skip_space(after)?)?;
+            rest = skip_space(after)?.strip_prefix(']')?;
+            min.zip(max).map(|(min, max)| min.max(max))
+        } else {
+            let (count, after) = count_literal(rest)?;
+            rest = after;
+            count
+        };
+        counts.push((key, count.filter(|count| *count <= MAX_READ_ARGS)));
+        rest = skip_space(rest)?;
+        if let Some(after) = rest.strip_prefix(',') {
+            rest = after;
+        } else if !rest.starts_with('}') {
+            return None;
+        }
+    }
+}
+
+/// `text` after its leading whitespace and comments: between the tokens of
+/// an object literal or parameter list, `//` and `/* */` are only comments.
+/// `None` for a block comment that does not end.
+fn skip_space(text: &str) -> Option<&str> {
+    let mut rest = text.trim_start();
+    loop {
+        if let Some(comment) = rest.strip_prefix("//") {
+            rest = comment.find('\n').map_or("", |end| &comment[end..]);
+        } else if let Some(comment) = rest.strip_prefix("/*") {
+            rest = &comment[comment.find("*/")? + 2..];
+        } else {
+            return Some(rest);
+        }
+        rest = rest.trim_start();
+    }
+}
+
+/// An object key at the start of `text`: an identifier or a quoted string
+/// without escapes.
+fn object_key(text: &str) -> Option<(String, &str)> {
+    if let Some(quote) = text.chars().next().filter(|c| *c == '\'' || *c == '"') {
+        let inner = &text[1..];
+        let end = inner.find(quote)?;
+        let key = &inner[..end];
+        if key.contains(['\\', '\n']) {
+            return None;
+        }
+        return Some((key.to_string(), &inner[end + 1..]));
+    }
+    let end = text
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+        .unwrap_or(text.len());
+    let key = &text[..end];
+    is_identifier(key).then(|| (key.to_string(), &text[end..]))
+}
+
+/// A non-negative integer at the start of `text`: `Some` when it fits a
+/// `usize`, `None` inside when it is too large.
+fn count_literal(text: &str) -> Option<(Option<usize>, &str)> {
+    let end = text
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(text.len());
+    (end > 0).then(|| (text[..end].parse().ok(), &text[end..]))
+}
+
+/// The parameter names and doc title of the function that implements read
+/// `name`: the first `function name(` or method `name(...) {` whose
+/// parameter list parses strictly. A call such as `name(x);` is not one.
+fn read_function(extension: &str, name: &str) -> Option<(Vec<String>, Option<String>)> {
+    let candidate = Regex::new(&format!(r"\b(function\s+)?{}\s*\(", regex::escape(name)))
+        .expect("read function regex should compile");
+    let found = candidate.captures_iter(extension).find_map(|captures| {
+        let found = captures.get(0)?;
+        let (params, after) = parameter_list(&extension[found.end()..])?;
+        if captures.get(1).is_none() && !starts_body(after) {
+            return None;
+        }
+        let params = params
+            .into_iter()
+            .enumerate()
+            .map(|(index, param)| param_name(&param, index))
+            .collect();
+        let before = extension[..found.start()].trim_end();
+        let before = before.strip_suffix("async").unwrap_or(before).trim_end();
+        let title = before
+            .strip_suffix("*/")
+            .and_then(|before| before.rfind("/**").map(|at| &before[at + 3..]))
+            .and_then(doc_title);
+        Some((params, title))
+    });
+    found
+}
+
+/// The parameters of a list whose body starts at `text` (after its `(`),
+/// and the text after its `)`. `None` when the brackets do not balance
+/// before the end of `text`, or a parameter has no usable name.
+fn parameter_list(text: &str) -> Option<(Vec<String>, &str)> {
+    // The list without its comments, which may hold any character.
+    // Strings are kept whole: a `//` or `)` in a default is not syntax.
+    let mut list = String::new();
+    let mut depth = 0usize;
+    let mut rest = text;
+    loop {
+        if let Some(quote) = rest
+            .chars()
+            .next()
+            .filter(|c| matches!(c, '\'' | '"' | '`'))
+        {
+            let end = string_end(&rest[1..], quote)? + 1;
+            list.push_str(&rest[..end]);
+            rest = &rest[end..];
+            continue;
+        }
+        if rest.starts_with("//") || rest.starts_with("/*") {
+            let after = skip_space(rest)?;
+            list.push(' ');
+            rest = after;
+            continue;
+        }
+        let character = rest.chars().next()?;
+        match character {
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' if depth == 0 => break,
+            ')' | ']' | '}' => depth = depth.checked_sub(1)?,
+            // `=>` closes nothing.
+            '>' if !list.ends_with('=') => depth = depth.checked_sub(1)?,
+            ';' if depth == 0 => return None,
+            _ => {}
+        }
+        list.push(character);
+        rest = &rest[character.len_utf8()..];
+    }
+    let after = &rest[1..];
+    let params = split_top_level(&list);
+    let named = params.iter().all(|param| {
+        let name = param.trim_start_matches("...");
+        let name = name.split([':', '=']).next().unwrap_or_default().trim();
+        let name = name.trim_end_matches('?');
+        is_identifier(name) || name.starts_with('{') || name.starts_with('[')
+    });
+    named.then_some((params, after))
+}
+
+/// The length of a string literal's body and closing `quote`, from the
+/// text after its opening quote, honouring backslash escapes. `None` when it
+/// does not close.
+fn string_end(text: &str, quote: char) -> Option<usize> {
+    let mut escaped = false;
+    for (at, character) in text.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == quote {
+            return Some(at + 1);
         }
     }
     None
+}
+
+/// Whether `text`, after a parameter list, starts a function body: an
+/// optional return type, then `{`.
+fn starts_body(text: &str) -> bool {
+    let text = text.trim_start();
+    let Some(annotation) = text.strip_prefix(':') else {
+        return text.starts_with('{');
+    };
+    let mut depth = 0usize;
+    for (at, character) in annotation.char_indices() {
+        match character {
+            '{' if depth == 0 => return !annotation[..at].trim().is_empty(),
+            '(' | '[' | '<' | '{' => depth += 1,
+            ')' | ']' | '}' => match depth.checked_sub(1) {
+                Some(next) => depth = next,
+                None => return false,
+            },
+            '>' if !annotation[..at].ends_with('=') => match depth.checked_sub(1) {
+                Some(next) => depth = next,
+                None => return false,
+            },
+            ';' | '\n' if depth == 0 => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A doc comment's `@title`, else its first sentence when that is short.
+fn doc_title(comment: &str) -> Option<String> {
+    let lines = comment
+        .lines()
+        .map(|line| line.trim().trim_start_matches('*').trim())
+        .collect::<Vec<_>>();
+    if let Some(title) = lines.iter().find_map(|line| line.strip_prefix("@title ")) {
+        return Some(title.trim().to_string());
+    }
+    let description = lines
+        .iter()
+        .take_while(|line| !line.starts_with('@'))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let sentence = description.split(". ").next()?.trim().trim_end_matches('.');
+    (!sentence.is_empty() && sentence.len() <= 80).then(|| sentence.to_string())
+}
+
+/// `params` split at commas outside brackets.
+fn split_top_level(params: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut current = String::new();
+    for character in params.chars() {
+        match character {
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' | '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(std::mem::take(&mut current));
+                continue;
+            }
+            _ => {}
+        }
+        current.push(character);
+    }
+    parts.push(current);
+    parts
+        .into_iter()
+        .map(|part| part.trim().to_string())
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+/// A parameter's name, `?` marking an optional one; `input` for a
+/// destructured object, `args` for a destructured array.
+fn param_name(param: &str, index: usize) -> String {
+    let param = param.trim_start_matches("...");
+    let name = param.split([':', '=']).next().unwrap_or_default().trim();
+    let optional = name.ends_with('?') || param.contains(" = ");
+    let name = name.trim_end_matches('?');
+    let name = if is_identifier(name) {
+        name.to_string()
+    } else if name.starts_with('{') {
+        "input".to_string()
+    } else if name.starts_with('[') {
+        "args".to_string()
+    } else {
+        format!("arg{}", index + 1)
+    };
+    if optional {
+        format!("{name}?")
+    } else {
+        name
+    }
 }
 
 /// A property access for an object key as the generator writes it.
@@ -400,6 +805,8 @@ mod tests {
                 path: "Vault/list".into(),
             })
         );
+        // Its stack extension adds defaults, no reads.
+        assert_eq!(generated.reads, Vec::new());
     }
 
     #[test]
@@ -430,18 +837,118 @@ mod tests {
                 directory: None,
             }
         );
+        // One read that ends, then the stream as an alternative.
         assert_eq!(
             usage.snippet.join("\n"),
             r#"import { createSession } from "@usearete/sdk";
 import { VAULT_STREAM_STACK } from "./stacks/vault/vault.js";
 
 // No auth option: server-side, the SDK uses ARETE_API_KEY if set, else your a4 login.
-const session = await createSession({ stacks: { app: VAULT_STREAM_STACK } });
-for await (const update of session.stacks.app.views.Vault.list.watch({ take: 20 })) {
-  console.log(update);
+const session = await createSession({ stacks: { vault: VAULT_STREAM_STACK } });
+try {
+  const row = await session.stacks.vault.views.Vault.list.getOne({ timeoutMs: 10_000 });
+  console.log(row);
+} finally {
+  session.close();
 }"#
         );
+        assert_eq!(
+            usage.stream.as_deref(),
+            Some("for await (const row of session.stacks.vault.views.Vault.list.use()) { ... }")
+        );
         assert!(!usage.snippet.join("\n").contains("publishable"));
+        assert_eq!((usage.reads_call, usage.reads), (None, Vec::new()));
+        // An alias that is not an identifier keys the session as `app`.
+        let usage = stack_usage("vault-v2", &output, &app, AppKind::Node).unwrap();
+        assert!(usage.snippet[4].contains("{ app: VAULT_STREAM_STACK }"));
+        assert!(usage.snippet[6].starts_with("  const row = await session.stacks.app."));
+    }
+
+    #[test]
+    fn node_usage_lists_the_stack_extension_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("stacks/ore");
+        let golden = golden("installed-typescript/stacks/vault");
+        fs::create_dir_all(&output).unwrap();
+        for file in ["vault.ts", "vault-core.ts"] {
+            fs::copy(golden.join(file), output.join(file)).unwrap();
+        }
+        fs::write(
+            output.join("extensions.json"),
+            r#"{"entry":"ore-stack-extensions.ts","files":["ore-stack-extensions.ts"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            output.join("ore-stack-extensions.ts"),
+            r#"export default defineStackExtensions<typeof CORE>()({
+  readArgCounts: {
+    roundState: 1,
+    currentRound: 0,
+    claimPreview: [1, 2],
+    quote: 1,
+  },
+  createRead(client) {
+    /**
+     * Reads the round entity for a round id.
+     *
+     * @title Round state
+     */
+    async function roundState(roundId: bigint) {
+      return client.views.OreRound.state.get({ roundId });
+    }
+
+    /** The current round, with its phase. */
+    async function currentRound() {
+      return null;
+    }
+
+    async function claimPreview(
+      authority: Address,
+      bps: bigint | number = BPS_DENOMINATOR,
+    ) {
+      return null;
+    }
+
+    return { roundState, currentRound, claimPreview, quote: (input) => input };
+  },
+});
+"#,
+        )
+        .unwrap();
+        let usage = stack_usage("ore", &output, temp.path(), AppKind::Node).unwrap();
+        assert_eq!(
+            usage.reads_call.as_deref(),
+            Some("await session.stacks.ore.read.<name>(...)")
+        );
+        let reads = usage
+            .reads
+            .iter()
+            .map(|read| (read.signature(), read.title.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reads,
+            vec![
+                ("roundState(roundId)".to_string(), Some("Round state")),
+                (
+                    "currentRound()".to_string(),
+                    Some("The current round, with its phase")
+                ),
+                ("claimPreview(authority, bps?)".to_string(), None),
+                // No function to read parameters from: the count names them.
+                ("quote(arg1)".to_string(), None),
+            ]
+        );
+        let browser = stack_usage(
+            "ore",
+            &output,
+            temp.path(),
+            AppKind::Browser(Framework::Vite),
+        )
+        .unwrap();
+        assert_eq!(
+            browser.reads_call.as_deref(),
+            Some("arete.read.<name>.use(...)")
+        );
     }
 
     #[test]
@@ -529,6 +1036,93 @@ function Rows() {
         assert_eq!(auth.directory.as_deref(), Some("apps/-web"));
         let node = AppKind::Node.auth(Some("apps/-web".into()));
         assert_eq!((node.command, node.directory), (None, None));
+    }
+
+    #[test]
+    fn read_counts_in_comments_strings_or_too_large_are_not_trusted() {
+        let extension = r#"// readArgCounts: { see below
+const slashes = /[/*]/;
+const quote = /'/;
+const note = "readArgCounts: {";
+/* currentRound(fake: string) is documented elsewhere */
+export default defineStackExtensions<typeof CORE>()({
+  readArgCounts: {
+    currentRound: 0,
+    'round-state': 1,
+    example: 1000000000,
+    huge: 99999999999999999999999,
+    many: [1, 900],
+  },
+  createRead(client) {
+    const id = roundState(7);
+    async function currentRound(): Promise<{ id: bigint } | null> {
+      return null;
+    }
+    return { currentRound };
+  },
+});
+"#;
+        let reads = stack_reads(extension)
+            .iter()
+            .map(StackRead::signature)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reads,
+            vec![
+                "currentRound()",
+                "round-state(arg1)",
+                "example(...)",
+                "huge(...)",
+                "many(...)"
+            ]
+        );
+        // A method body counts as the implementation; a call does not.
+        let method =
+            "readArgCounts: { quote: 1 },\nconst x = quote(input);\nasync quote(amount: bigint) {}";
+        assert_eq!(stack_reads(method)[0].signature(), "quote(amount)");
+        // Comments between tokens are space, in the object and in the
+        // parameter list alike.
+        let commented = r#"readArgCounts: { /* reads */ currentRound: 0, /* accepts an address */ miner: 1, // trailing
+  // after the trailing comma
+  /* and a block */ },
+async function miner(
+  authority: Address, // (the miner's owner, not the miner)
+  /* no more */
+) {}"#;
+        let reads = stack_reads(commented)
+            .iter()
+            .map(StackRead::signature)
+            .collect::<Vec<_>>();
+        assert_eq!(reads, vec!["currentRound()", "miner(authority)"]);
+        assert_eq!(read_counts("a: 0, /* unterminated }"), None);
+        // Strings in defaults are opaque: a URL's `//`, or `/*` and `)`.
+        let defaults = r#"readArgCounts: { quote: 1, label: 2 },
+async function quote(endpoint: string = "https://example.com") {}
+async function label(text = 'a /* b ) \' c', suffix = `)`) {}"#;
+        let reads = stack_reads(defaults)
+            .iter()
+            .map(StackRead::signature)
+            .collect::<Vec<_>>();
+        assert_eq!(reads, vec!["quote(endpoint?)", "label(text?, suffix?)"]);
+        // Anything but a strict object literal is not a declaration.
+        assert_eq!(read_counts("a: 1, b: x }"), None);
+        assert_eq!(read_counts("a: [1, 2, 3] }"), None);
+        assert_eq!(
+            read_counts(" a: 0, \"b\": [1, 2], }"),
+            Some(vec![("a".into(), Some(0)), ("b".into(), Some(2))])
+        );
+    }
+
+    #[test]
+    fn a_latest_view_is_read_before_the_first_list_view() {
+        let definition = "export const X_STACK_CORE = {\n  views: {\n    Round: {\n      list: listView<Round>('Round/list'),\n      latest: listView<Round>('Round/latest'),\n    },\n  },\n};\n";
+        assert_eq!(
+            first_list_view(definition),
+            Some(ListView {
+                access: ".Round.latest".into(),
+                path: "Round/latest".into(),
+            })
+        );
     }
 
     #[test]

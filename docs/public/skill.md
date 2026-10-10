@@ -140,7 +140,14 @@ install updates:
 - generated SDK output, which should be regenerated rather than edited.
 
 Inspect generated exports and types before writing application code. They are
-the authority for names, parameters, and return shapes.
+the authority for names, parameters, and return shapes. The TypeScript install
+summary ends with a script that reads a view once and exits, and lists the
+stack's reads (such as ORE's `read.currentRound()`): start from those.
+
+In a directory with no `package.json`, the summary says what the generated
+TypeScript is missing. Set the project up the way the user prefers, or run
+`a4 install stack <slug> --ts --setup` (later, `a4 install --setup`) to create
+an npm ES module project with a `tsconfig.json`.
 
 ## Authenticate during setup
 
