@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## [0.35.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.34.0...a4-cli-v0.35.0) (2026-10-10)
+
+
+### Features
+
+* **cli,mcp:** live-stream indicator, related slugs and compact explore output ([790d608](https://github.com/AreteA4/arete/commit/790d608bb8a5f0ddf28358a63f90fc8c2b80f49b))
+* **cli,mcp:** mark live stacks and make explore stack/program compact by default ([041952a](https://github.com/AreteA4/arete/commit/041952a8c4d787659271c5ccc2ca310ef576f605))
+
+
+### Bug Fixes
+
+* **cli:** allow comments between tokens when parsing stack reads ([c8c1b7a](https://github.com/AreteA4/arete/commit/c8c1b7ae0473342686739daca4825e7be4308ce5))
+* **cli:** close the session on failed reads and harden read parsing ([f79d71b](https://github.com/AreteA4/arete/commit/f79d71b231b05e4b4de7cfbe55e252940b3afe01))
+* **cli:** find stack reads by strict parse instead of lexing comments ([420b0eb](https://github.com/AreteA4/arete/commit/420b0ebde5f6617730faf002914c78ce1d784bd4))
+* **cli:** keep string defaults whole when parsing read parameters ([5f3d578](https://github.com/AreteA4/arete/commit/5f3d578da0bd403d0b6d478341b104f15aaa0fe9))
+* **cli:** lead TypeScript install next steps with a one-shot read ([8d91897](https://github.com/AreteA4/arete/commit/8d91897ccd60455b950c45ee9304b98b61ed8c24))
+* **cli:** lead TypeScript install next steps with a one-shot read ([2ba6694](https://github.com/AreteA4/arete/commit/2ba66943188809f33aebfdc643828211f70bfa5c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.34.0 to 0.35.0
+    * arete-mcp bumped from 0.34.0 to 0.35.0
+
 ## [0.34.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.33.0...a4-cli-v0.34.0) (2026-10-10)
 
 

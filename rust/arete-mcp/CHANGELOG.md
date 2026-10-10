@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.35.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.34.0...arete-mcp-v0.35.0) (2026-10-10)
+
+
+### Features
+
+* **cli,mcp:** live-stream indicator, related slugs and compact explore output ([790d608](https://github.com/AreteA4/arete/commit/790d608bb8a5f0ddf28358a63f90fc8c2b80f49b))
+* **cli,mcp:** mark live stacks and make explore stack/program compact by default ([041952a](https://github.com/AreteA4/arete/commit/041952a8c4d787659271c5ccc2ca310ef576f605))
+
+
+### Bug Fixes
+
+* **mcp:** allow comments between readArgCounts entries ([e0d6a90](https://github.com/AreteA4/arete/commit/e0d6a909aaff5847b307205bfdd63fbd82374327))
+* **mcp:** bound and harden stack extension read parsing ([93c77c4](https://github.com/AreteA4/arete/commit/93c77c4ec4a0daca960a3dc1ae47abd294cd9e5a))
+* **mcp:** find readArgCounts by strict parse instead of lexing ([dbeb934](https://github.com/AreteA4/arete/commit/dbeb934c84e451d0e2642caa821c6159f3c2a891))
+
 ## [0.34.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.33.0...arete-mcp-v0.34.0) (2026-10-10)
 
 
