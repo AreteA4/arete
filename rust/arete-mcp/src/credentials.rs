@@ -52,9 +52,6 @@ pub trait Env {
     /// readable. Errors (missing file, permission denied, bad UTF-8) map to
     /// `None` — the caller decides whether absence is fatal.
     fn credentials_file(&self) -> Option<String>;
-    /// Display path for the credentials file, used only in error messages.
-    /// Must never be called on test data in a way that leaks real paths.
-    fn credentials_file_path_display(&self) -> String;
 }
 
 /// The real implementation used in the shipped binary.
@@ -67,12 +64,6 @@ impl Env for SystemEnv {
 
     fn credentials_file(&self) -> Option<String> {
         fs::read_to_string(system_credentials_path()?).ok()
-    }
-
-    fn credentials_file_path_display(&self) -> String {
-        system_credentials_path()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "~/.arete/credentials.toml".to_string())
     }
 }
 
@@ -96,7 +87,8 @@ impl KeySource {
         match self {
             KeySource::Explicit => "explicit_argument",
             KeySource::EnvVar => "env:ARETE_API_KEY",
-            KeySource::CredentialsFile => "~/.arete/credentials.toml",
+            // Agent-visible: name the source, never where credentials live.
+            KeySource::CredentialsFile => "a4-login",
             KeySource::None => "none",
         }
     }
@@ -186,15 +178,15 @@ pub fn resolve_with<E: Env>(env: &E, explicit: Option<String>, url: &str) -> Res
 
     // Nothing found. Decide whether that's fatal.
     if is_hosted_websocket_url(url) {
-        let file = env.credentials_file_path_display();
-        let profile_hint = selected_profile
-            .as_deref()
-            .map(|profile| format!(" for profile `{profile}`"))
-            .unwrap_or_default();
+        // Agent-visible: say what was checked, never where credentials live.
+        let api_url = selected_api_url(env);
+        let checked = match selected_profile.as_deref() {
+            Some(profile) => format!("the a4 login (profile `{profile}`, API {api_url})"),
+            None => format!("{ENV_VAR_API_KEY} or the a4 login (API {api_url})"),
+        };
         Err(anyhow!(
-            "no Arete api key found{profile_hint} for hosted stack `{url}`. \
-             Checked {file}. Run `a4 auth signup` for an agent credential or \
-             `a4 auth login --profile human` for a human credential."
+            "No Arete API key found in {checked} for hosted stack `{url}`. Run \
+             `a4 auth signup` (agent) or `a4 auth login`, or set {ENV_VAR_API_KEY}."
         ))
     } else {
         Ok(ResolvedKey {
@@ -262,9 +254,6 @@ mod tests {
         }
         fn credentials_file(&self) -> Option<String> {
             self.credentials.clone()
-        }
-        fn credentials_file_path_display(&self) -> String {
-            "<test:~/.arete/credentials.toml>".to_string()
         }
     }
 
@@ -617,11 +606,34 @@ mod tests {
         let env = TestEnv::default();
         let err = resolve_with(&env, None, "wss://any.stack.arete.run").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("no Arete api key"), "{msg}");
+        assert!(msg.contains("No Arete API key found"), "{msg}");
+        assert!(msg.contains("ARETE_API_KEY or the a4 login"), "{msg}");
+        assert!(msg.contains("https://api.arete.run"), "{msg}");
         assert!(msg.contains("a4 auth login"), "{msg}");
         assert!(msg.contains("a4 auth signup"), "{msg}");
-        // Should include the test env's display path, not a real $HOME.
-        assert!(msg.contains("<test:"), "{msg}");
+        // Never reveal where credentials are stored.
+        assert!(!msg.contains(".arete/"), "{msg}");
+        assert!(!msg.contains("credentials"), "{msg}");
+
+        let env = TestEnv::default().with_var(ENV_VAR_PROFILE, "agent");
+        let msg = resolve_with(&env, None, "wss://any.stack.arete.run")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("profile `agent`"), "{msg}");
+        assert!(!msg.contains(".arete/"), "{msg}");
+    }
+
+    #[test]
+    fn key_sources_never_name_a_path() {
+        assert_eq!(KeySource::CredentialsFile.as_str(), "a4-login");
+        for source in [
+            KeySource::Explicit,
+            KeySource::EnvVar,
+            KeySource::CredentialsFile,
+            KeySource::None,
+        ] {
+            assert!(!source.as_str().contains('/'), "{}", source.as_str());
+        }
     }
 
     #[test]

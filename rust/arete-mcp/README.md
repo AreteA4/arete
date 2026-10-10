@@ -212,7 +212,7 @@ stack).
 
 **Unlike the discovery tools, every knowledge tool requires an API key.** The
 key resolves through the same precedence as `connect` (`ARETE_API_KEY`, then
-`~/.arete/credentials.toml`), and when none resolves the call fails
+the `a4` login), and when none resolves the call fails
 immediately with an error pointing at `a4 auth login` — there is no public
 subset. The same HTTPS-origin rule as discovery applies: a key is only sent to
 `https://arete.run`, `https://*.arete.run`, or a loopback address.
@@ -265,24 +265,13 @@ chat transcript, and the JSON-RPC stdio traffic between the client and
 
 1. **Explicit `api_key` argument** on the `connect` call (override, useful
    for testing or multi-stack setups; it must match a selected built-in profile)
-2. When **`ARETE_PROFILE` is selected**, that named profile in the credentials
-   file. A selected profile deliberately outranks `ARETE_API_KEY`.
-3. Without a selected profile, **`ARETE_API_KEY`**, then an unambiguous named
-   profile or legacy entry in **`~/.arete/credentials.toml`**:
+2. When **`ARETE_PROFILE` is selected**, that named profile of the `a4`
+   login. A selected profile deliberately outranks `ARETE_API_KEY`.
+3. Without a selected profile, **`ARETE_API_KEY`**, then the single `a4` login
+   profile holding a key (`a4 auth signup` stores the `agent` profile,
+   `a4 auth login --profile human` the `human` one).
 
-   ```toml
-   [profiles.agent.keys]
-   "https://api.arete.run" = "a4_ak_..."
-
-   [profiles.human.keys]
-   "https://api.arete.run" = "a4_sk_..."
-
-   # Legacy format (still honored when unambiguous/compatible):
-   [keys]
-   "https://api.arete.run" = "a4_sk_..."
-   ```
-
-   The file lookup honors `ARETE_API_URL` if set; otherwise falls back
+   The login lookup honors `ARETE_API_URL` if set; otherwise falls back
    to `https://api.arete.run`.
 
 If none of the three produces a key **and** the target stack URL is a
@@ -293,7 +282,7 @@ may not require auth at all.
 
 The `connect` tool response includes a `key_source` field identifying
 which of the three lookup paths won (`explicit_argument`,
-`env:ARETE_API_KEY`, `~/.arete/credentials.toml`, or `none`).
+`env:ARETE_API_KEY`, `a4-login`, or `none`).
 The key itself is never included in responses or log output.
 
 ### Subscription management
