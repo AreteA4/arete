@@ -722,14 +722,19 @@ const MAX_KEPT_PACK_BUFFER: usize = 1 << 20;
 /// [`SpareRows::CAPACITY`]; where only one was kept before, the register the
 /// last segment loaded its row into held it until the next segment.
 #[derive(Default)]
-struct SpareRows(Vec<(usize, Value)>);
+struct SpareRows {
+    rows: Vec<(usize, Value)>,
+    /// How many rows were unpacked into a spare, for tests to check reuse.
+    #[cfg(test)]
+    reused: usize,
+}
 
 impl SpareRows {
     const CAPACITY: usize = 2;
 
     /// The index of the row whose packed size is closest to `packed_len`.
     fn closest(&self, packed_len: usize) -> Option<usize> {
-        (0..self.0.len()).min_by_key(|index| self.0[*index].0.abs_diff(packed_len))
+        (0..self.rows.len()).min_by_key(|index| self.rows[*index].0.abs_diff(packed_len))
     }
 
     /// Unpack `packed` into the closest spare row, or from scratch if there
@@ -737,8 +742,12 @@ impl SpareRows {
     fn unpack(&mut self, packed: &PackedRow) -> Value {
         match self.closest(packed.len()) {
             Some(index) => {
-                let (_, mut row) = self.0.swap_remove(index);
+                let (_, mut row) = self.rows.swap_remove(index);
                 packed.unpack_into(&mut row);
+                #[cfg(test)]
+                {
+                    self.reused += 1;
+                }
                 row
             }
             None => packed.unpack(),
@@ -751,10 +760,10 @@ impl SpareRows {
         if !row.is_object() {
             return;
         }
-        if self.0.len() < Self::CAPACITY {
-            self.0.push((packed_len, row));
+        if self.rows.len() < Self::CAPACITY {
+            self.rows.push((packed_len, row));
         } else if let Some(index) = self.closest(packed_len) {
-            self.0[index] = (packed_len, row);
+            self.rows[index] = (packed_len, row);
         }
     }
 }
@@ -7514,8 +7523,17 @@ mod tests {
             json!("12"),
             json!({"nested": [1, 2]}),
         ];
-        for event in 0..200usize {
-            let key = format!("k{}", event * 7 % 6);
+        // Six keys over a four-row table, in an order that rereads rows
+        // still held as well as rows evicted since. Half the events go to
+        // one key, which stays held long enough to fill its history.
+        let mut seed = 11u64;
+        for event in 0..400usize {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let key = if (seed >> 20).is_multiple_of(2) {
+                "k0".to_string()
+            } else {
+                format!("k{}", (seed >> 33) % 6)
+            };
             let amount = amounts[event % amounts.len()].clone();
             let (event_type, value) = if event % 3 == 0 {
                 (
@@ -7529,7 +7547,9 @@ mod tests {
                 )
             };
             // The fresh VM never has a spare row, so it builds every row from
-            // scratch as before spare rows existed.
+            // scratch as before spare rows existed. Its last row register is
+            // dropped too, or the next segment would keep that row as a spare.
+            fresh.row_register = None;
             fresh.spare_rows = SpareRows::default();
             let expected = fresh
                 .process_event(&bytecode, value.clone(), event_type, None, None)
@@ -7543,8 +7563,15 @@ mod tests {
                 "event {event}"
             );
         }
-        assert!(!reusing.spare_rows.0.is_empty());
-        assert!(reusing.spare_rows.0.len() <= SpareRows::CAPACITY);
+        assert!(
+            reusing.spare_rows.reused > 100,
+            "{}",
+            reusing.spare_rows.reused
+        );
+        assert_eq!(fresh.spare_rows.reused, 0);
+        assert!(!reusing.spare_rows.rows.is_empty());
+        assert!(reusing.spare_rows.rows.len() <= SpareRows::CAPACITY);
+        let mut capped_histories = 0;
         for key in 0..6 {
             let key = json!(format!("k{key}"));
             let expected = fresh.get_entity_state(0, &key);
@@ -7553,7 +7580,15 @@ mod tests {
                 serde_json::to_string(&got).unwrap(),
                 serde_json::to_string(&expected).unwrap(),
             );
+            let history = got
+                .as_ref()
+                .and_then(|row| row.pointer("/activity/history"))
+                .and_then(Value::as_array);
+            if history.is_some_and(|history| history.len() == 3) {
+                capped_histories += 1;
+            }
         }
+        assert!(capped_histories > 0);
         assert_eq!(reusing.states[&0].row_bytes(), fresh.states[&0].row_bytes());
     }
 
@@ -7605,19 +7640,19 @@ mod tests {
         spares.keep(1_000, json!({"large": 1}));
         // Not a row: never kept.
         spares.keep(5, json!("text"));
-        assert_eq!(spares.0.len(), SpareRows::CAPACITY);
+        assert_eq!(spares.rows.len(), SpareRows::CAPACITY);
         // A third row replaces the one closest to it in size.
         spares.keep(900, json!({"larger": 1}));
-        assert_eq!(spares.0.len(), SpareRows::CAPACITY);
+        assert_eq!(spares.rows.len(), SpareRows::CAPACITY);
         assert_eq!(spares.closest(950), Some(1));
-        assert_eq!(spares.0[1], (900, json!({"larger": 1})));
+        assert_eq!(spares.rows[1], (900, json!({"larger": 1})));
 
         // A row is unpacked into the spare closest to it in size, which
         // leaves the other.
         let row = json!({"small": 2});
         let unpacked = spares.unpack(&PackedRow::pack(&row));
         assert_eq!(unpacked, row);
-        assert_eq!(spares.0, vec![(900, json!({"larger": 1}))]);
+        assert_eq!(spares.rows, vec![(900, json!({"larger": 1}))]);
         assert_eq!(SpareRows::default().unpack(&PackedRow::pack(&row)), row);
     }
 
