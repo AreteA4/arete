@@ -4234,6 +4234,7 @@ mod tests {
         );
         assert_eq!(usage["auth"]["option"], "secretKey");
         assert_eq!(usage["auth"]["envVar"], "ARETE_API_KEY");
+        assert_eq!(usage["auth"]["fallback"], "a4-login");
         assert!(
             !usage["snippet"].to_string().contains("ublishable"),
             "{usage}"

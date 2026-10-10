@@ -36,16 +36,22 @@ pub struct StackUsage {
     pub run: Option<String>,
 }
 
-/// The key a snippet authenticates with: a server-side key read from the
-/// environment by the SDK itself, or an origin-bound publishable key that the
-/// app's bundler exposes to browser code.
+/// The key a snippet authenticates with: a server-side key the SDK finds by
+/// itself (`ARETE_API_KEY`, else the `a4` login), or an origin-bound
+/// publishable key that the app's bundler exposes to browser code.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageAuth {
     /// The SDK auth option: `secretKey` or `publishableKey`.
     pub option: &'static str,
-    /// The environment variable that holds the key.
+    /// The environment variable that holds the key. For a server-side key it
+    /// is optional: it overrides the `a4` login.
     pub env_var: &'static str,
+    /// Where the SDK finds a server-side key when `env_var` is unset:
+    /// `a4-login`, the key of the `a4` CLI login on this machine. So after
+    /// `a4 init` or `a4 auth signup` a script needs no key setup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<&'static str>,
     /// The command that creates the key, for a publishable key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
@@ -61,7 +67,7 @@ pub struct UsageAuth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppKind {
     /// A Node service or script: `@usearete/sdk`, authenticated with a
-    /// server-side key from `ARETE_API_KEY`.
+    /// server-side key from `ARETE_API_KEY` or the `a4` login.
     Node,
     /// A React app bundled by `Framework`: `@usearete/react`, authenticated
     /// with a publishable key bound to the app's origin.
@@ -82,12 +88,14 @@ impl AppKind {
             AppKind::Node => UsageAuth {
                 option: "secretKey",
                 env_var: SERVER_KEY_ENV,
+                fallback: Some("a4-login"),
                 command: None,
                 directory: None,
             },
             AppKind::Browser(framework) => UsageAuth {
                 option: "publishableKey",
                 env_var: framework.env_var(),
+                fallback: None,
                 command: Some(format!(
                     "a4 auth keys create-publishable --origin {} --env-file .env.local",
                     dev_origin(framework)
@@ -207,7 +215,7 @@ pub fn stack_usage(
             snippet.push(format!(r#"import {{ {export} }} from "{import_path}";"#));
             snippet.push(String::new());
             snippet.push(format!(
-                "// No auth option: server-side, the SDK reads an agent or secret key from {SERVER_KEY_ENV}."
+                "// No auth option: server-side, the SDK uses {SERVER_KEY_ENV} if set, else your a4 login."
             ));
             snippet.push(format!(
                 "const session = await createSession({{ stacks: {{ app: {export} }} }});"
@@ -417,6 +425,7 @@ mod tests {
             UsageAuth {
                 option: "secretKey",
                 env_var: "ARETE_API_KEY",
+                fallback: Some("a4-login"),
                 command: None,
                 directory: None,
             }
@@ -426,7 +435,7 @@ mod tests {
             r#"import { createSession } from "@usearete/sdk";
 import { VAULT_STREAM_STACK } from "./stacks/vault/vault.js";
 
-// No auth option: server-side, the SDK reads an agent or secret key from ARETE_API_KEY.
+// No auth option: server-side, the SDK uses ARETE_API_KEY if set, else your a4 login.
 const session = await createSession({ stacks: { app: VAULT_STREAM_STACK } });
 for await (const update of session.stacks.app.views.Vault.list.watch({ take: 20 })) {
   console.log(update);

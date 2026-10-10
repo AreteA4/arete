@@ -1181,7 +1181,7 @@ Next steps:  use stack ore from ./index.ts:
              import { createSession } from "@usearete/sdk";
              import { ORE_STREAM_STACK } from "./generated/typescript/stacks/ore/ore.js";
 
-             // No auth option: server-side, the SDK reads an agent or secret key from ARETE_API_KEY.
+             // No auth option: server-side, the SDK uses ARETE_API_KEY if set, else your a4 login.
              const session = await createSession({ stacks: { app: ORE_STREAM_STACK } });
              for await (const update of session.stacks.app.views.OreRound.list.watch({ take: 20 })) {
                console.log(update);
@@ -1240,7 +1240,9 @@ advice for each.
   from the app's `package.json` directory, and a subscription to its first list
   view. A Node app (one that does not depend on `react`) gets a script that
   imports `createSession` from `@usearete/sdk` and passes no auth option:
-  outside browsers the SDK reads an agent or secret key from `ARETE_API_KEY`.
+  outside browsers the SDK uses an agent or secret key from `ARETE_API_KEY`
+  when it is set, else the key of the `a4` login, so after `a4 init` or
+  `a4 auth signup` the script needs no key setup.
   A React app gets an `AreteProvider` and `useArete` component from
   `@usearete/react` that passes an origin-bound publishable key as
   `auth={{ publishableKey }}`, read from the variable its bundler exposes to
@@ -1257,7 +1259,9 @@ In `--json` output these are `typescriptApps[]`, one entry per app with
 `projectSetup` (`directory`, `command` (`a4 install --setup`), `commands[]`),
 `tsconfig` (`tsconfig` when one exists, `directory`, `types[]`, `commands[]`)
 and `usage[]` (`stack`, `exportName`, `importPath`, `fromDir`, `view`, `auth`
-(`option`: `secretKey` or `publishableKey`, `envVar`, and for a publishable key
+(`option`: `secretKey` or `publishableKey`, `envVar`, `fallback` (`a4-login`
+for a server-side key: the SDK uses the `a4` login when `envVar` is unset, so
+the variable is optional), and for a publishable key
 `command` plus `directory` when it must run in another directory),
 `snippet[]` lines and `run`). Each field is absent when there is
 nothing to report, and `typescriptApps` is absent without TypeScript output.

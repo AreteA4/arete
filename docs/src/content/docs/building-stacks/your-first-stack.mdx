@@ -339,8 +339,8 @@ import { ORE_STREAM_STACK } from "./ore-sdk";
 
 async function main() {
   // Connect to your deployed stack using the generated SDK. Server-side code
-  // passes no auth option: the SDK reads an agent or secret key from
-  // ARETE_API_KEY.
+  // passes no auth option: the SDK uses ARETE_API_KEY if set, else the key of
+  // your a4 login.
   const a4 = await Arete.connect(ORE_STREAM_STACK);
 
   console.log("Connected! Streaming ORE rounds...\n");
@@ -369,8 +369,12 @@ main().catch(console.error);
 ### TypeScript: Run your app
 
 ```bash
-ARETE_API_KEY=a4_sk_... npx tsx src/index.ts
+npx tsx src/index.ts
 ```
+
+On a machine logged in with `a4` (after `a4 init` or `a4 auth signup`) this
+needs no key setup. Elsewhere, such as on a server, set `ARETE_API_KEY` to an
+agent or secret key: `ARETE_API_KEY=a4_sk_... npx tsx src/index.ts`.
 
 </TabItem>
 </Tabs>
