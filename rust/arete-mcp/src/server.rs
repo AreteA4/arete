@@ -284,6 +284,7 @@ pub struct SearchCatalogArgs {
     #[serde(default)]
     pub target: Option<String>,
     /// Maximum number of results (integer or string-encoded integer).
+    /// Defaults to 10; continue with `cursor`.
     #[serde(default, deserialize_with = "lenient::opt_usize")]
     pub limit: Option<usize>,
     /// `nextCursor` from a previous `search_catalog` page. Repeat the same
@@ -293,12 +294,74 @@ pub struct SearchCatalogArgs {
     pub cursor: Option<String>,
     /// Keep only these fields of each result: top-level keys or dotted paths
     /// such as `delivery.status`. A list or a comma-separated string, e.g.
-    /// `"slug,kind,name,version,modes,delivery.health"`.
+    /// `"slug,kind,name,version,modes,delivery.health"`. Replaces the brief
+    /// default field set.
     #[serde(default)]
     pub fields: Option<StringList>,
-    /// Return each result as the server sent it, including identity hashes
-    /// (`packageReleaseHash`, `bundleHash`, `setHash`), `programIds` and
-    /// release notes. Results are compact by default.
+    /// Return each result as the server sent it, including `concepts`,
+    /// `score`, identity hashes (`packageReleaseHash`, `bundleHash`,
+    /// `setHash`), `programIds` and release notes. By default each result
+    /// keeps only kind, slug, name, version, protocol, summary, modes,
+    /// sdkTargets and delivery status/health.
+    #[serde(default)]
+    pub full: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct VocabularyArgs {
+    /// Return every concept and category with its description, synonyms and
+    /// related slugs. By default each item keeps only `slug` and `name`.
+    #[serde(default)]
+    pub full: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct ExploreStacksArgs {
+    /// Keep only these fields of each stack: top-level keys or dotted paths
+    /// such as `websocket_auth.mode`. A list or a comma-separated string.
+    /// Replaces the brief default field set.
+    #[serde(default)]
+    pub fields: Option<StringList>,
+    /// Return each stack as the server sent it, including `http_url`,
+    /// `subdomain` and the full `websocket_auth`/`http_auth` objects. By
+    /// default each stack keeps only `name`, `description`, `websocket_url`,
+    /// `entities`, `visibility`, `serviceClass` and `websocket_auth.required`.
+    #[serde(default)]
+    pub full: Option<bool>,
+}
+
+/// Fields `explore_stacks` keeps by default: enough to pick a stack and
+/// `connect` to it. `explore_stack` reports the auth requirements in full.
+const STACK_LIST_BRIEF_FIELDS: &[&str] = &[
+    "name",
+    "description",
+    "websocket_url",
+    "entities",
+    "visibility",
+    "serviceClass",
+    "websocket_auth.required",
+];
+
+fn stack_list_shape(fields: Option<StringList>, full: Option<bool>) -> catalog_view::Shape {
+    match catalog_shape(fields, full) {
+        catalog_view::Shape::Compact => catalog_view::Shape::Fields(
+            STACK_LIST_BRIEF_FIELDS
+                .iter()
+                .map(|field| field.to_string())
+                .collect(),
+        ),
+        shape => shape,
+    }
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct ExploreProgramsArgs {
+    /// Keep only these fields of each program: top-level keys such as
+    /// `installName,programId,sdkTargets`. A list or a comma-separated string.
+    #[serde(default)]
+    pub fields: Option<StringList>,
+    /// Return each program as the server sent it, including its release and
+    /// spec hashes. By default hash fields are dropped.
     #[serde(default)]
     pub full: Option<bool>,
 }
@@ -324,6 +387,58 @@ pub struct GetCatalogEntryArgs {
 fn catalog_shape(fields: Option<StringList>, full: Option<bool>) -> catalog_view::Shape {
     let fields = catalog_view::parse_fields(&fields.map(StringList::into_vec).unwrap_or_default());
     catalog_view::Shape::from_args(fields, full == Some(true))
+}
+
+/// Search results default to the brief field set rather than the compact
+/// entry shape: a page of results is for choosing, not for installing.
+fn search_shape(fields: Option<StringList>, full: Option<bool>) -> catalog_view::Shape {
+    match catalog_shape(fields, full) {
+        catalog_view::Shape::Compact => catalog_view::brief(),
+        shape => shape,
+    }
+}
+
+const SEARCH_BRIEF_HINT: &str = "Brief fields per result. Pass `full: true` for every field \
+     (concepts, score, identity hashes) or `fields` to choose keys; drill in with \
+     `get_catalog_entry`.";
+
+/// Shape a `search_catalog` body and attach a `hint` naming how to get more
+/// fields and the next page. `full` bodies are returned as sent.
+fn search_body(body: String, shape: &catalog_view::Shape) -> String {
+    if *shape == catalog_view::Shape::Full {
+        return body;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return body;
+    };
+    let mut hint = String::from(SEARCH_BRIEF_HINT);
+    if catalog_view::next_cursor(&value).is_some() {
+        hint.push_str(" More results: pass `nextCursor` as `cursor` with the same filters.");
+    }
+    let shaped = catalog_view::with_hint(catalog_view::shape_search(&value, shape), hint);
+    serde_json::to_string(&shaped).unwrap_or(body)
+}
+
+/// Compact a vocabulary body to slugs and names unless `full` is set.
+fn vocabulary_body(body: String, full: bool) -> String {
+    if full {
+        return body;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return body;
+    };
+    let compact = catalog_view::with_hint(
+        catalog_view::compact_vocabulary(&value),
+        "Slugs and names only. Pass `full: true` for descriptions, synonyms and related slugs.",
+    );
+    serde_json::to_string(&compact).unwrap_or(body)
+}
+
+/// Shape a stack or program list body (a JSON array). The list stays an
+/// array, so a hint cannot be attached; the tool descriptions document
+/// `full`/`fields`.
+fn list_body(body: String, shape: &catalog_view::Shape) -> String {
+    catalog_view::shape_body(body, shape, true)
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -563,10 +678,24 @@ impl AreteMcp {
                           throughout, so it does not match this tool field-for-field.\n\n\
                           No auth required — public stacks are always listed. If an \
                           api key is resolvable (ARETE_API_KEY or `a4 auth login`), \
-                          global stacks are included too.")]
-    async fn explore_stacks(&self) -> Result<CallToolResult, McpError> {
-        self.registry_result(self.registry.list_stacks().await)
-            .await
+                          global stacks are included too.\n\n\
+                          Each stack is brief by default: `name`, `description`, \
+                          `websocket_url`, `entities`, `visibility`, `serviceClass` and \
+                          `websocket_auth.required`. Pass `full: true` for every field \
+                          (`http_url`, `subdomain`, full `websocket_auth`/`http_auth`), \
+                          or `fields` to choose keys; `explore_stack` reports one \
+                          stack's auth requirements in full.")]
+    async fn explore_stacks(
+        &self,
+        Parameters(args): Parameters<ExploreStacksArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let shape = stack_list_shape(args.fields, args.full);
+        let body = self
+            .registry_body(self.registry.list_stacks().await)
+            .await?;
+        Ok(CallToolResult::success(vec![Content::text(list_body(
+            body, &shape,
+        ))]))
     }
 
     #[tool(
@@ -683,11 +812,24 @@ impl AreteMcp {
 
     #[tool(
         description = "List standalone Solana programs installable from the Arete \
-                          registry, independent of any stack. No auth required."
+                          registry, independent of any stack. No auth required.\n\n\
+                          Each program keeps its install name, display name, program id \
+                          and SDK targets; release and spec hashes are dropped by \
+                          default. Pass `full: true` for every field, or `fields` (e.g. \
+                          `\"installName,sdkTargets\"`) to keep only those keys. Drill in \
+                          with `explore_program`."
     )]
-    async fn explore_programs(&self) -> Result<CallToolResult, McpError> {
-        self.registry_result(self.registry.list_programs().await)
-            .await
+    async fn explore_programs(
+        &self,
+        Parameters(args): Parameters<ExploreProgramsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let shape = catalog_shape(args.fields, args.full);
+        let body = self
+            .registry_body(self.registry.list_programs().await)
+            .await?;
+        Ok(CallToolResult::success(vec![Content::text(list_body(
+            body, &shape,
+        ))]))
     }
 
     #[tool(
@@ -793,15 +935,16 @@ impl AreteMcp {
                           `query` is free text; `concept`/`category` filter by slug \
                           (see `list_catalog_vocabulary`); `kind`, `mode`, and `target` \
                           narrow to what you can actually use. At least one filter is \
-                          required. When a page returns `nextCursor`, pass it back as \
-                          `cursor` with the same filters to continue. Drill in with \
-                          `get_catalog_entry`.\n\n\
-                          Results are compact by default: identity hashes \
-                          (`packageReleaseHash`, `bundleHash`, `setHash`), `programIds` \
-                          and release notes are dropped. Pass `fields` (e.g. \
+                          required. Pages hold 10 results unless you pass `limit`; when a \
+                          page returns `nextCursor`, pass it back as `cursor` with the \
+                          same filters to continue. Drill in with `get_catalog_entry`.\n\n\
+                          Results are brief by default: each keeps only `kind`, `slug`, \
+                          `name`, `version`, `protocol`, `summary`, `modes`, `sdkTargets` \
+                          and `delivery.status`/`delivery.health`, and the response \
+                          carries a top-level `hint`. Pass `fields` (e.g. \
                           `\"slug,kind,name,version,modes,delivery.health\"`, dotted paths \
                           allowed) to keep only those keys, or `full: true` for every \
-                          field.\n\n\
+                          field as the server sent it.\n\n\
                           No credential is required; an API key widens results to \
                           global-visibility entries."
     )]
@@ -809,23 +952,26 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<SearchCatalogArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.catalog_result(
-            self.registry
-                .catalog_search(
-                    args.query.as_deref(),
-                    args.concept.as_deref(),
-                    args.category.as_deref(),
-                    args.kind.as_deref(),
-                    args.mode.as_deref(),
-                    args.target.as_deref(),
-                    args.limit,
-                    args.cursor.as_deref(),
-                )
-                .await,
-            &catalog_shape(args.fields, args.full),
-            true,
-        )
-        .await
+        let shape = search_shape(args.fields, args.full);
+        let body = self
+            .registry_body(
+                self.registry
+                    .catalog_search(
+                        args.query.as_deref(),
+                        args.concept.as_deref(),
+                        args.category.as_deref(),
+                        args.kind.as_deref(),
+                        args.mode.as_deref(),
+                        args.target.as_deref(),
+                        Some(args.limit.unwrap_or(catalog_view::DEFAULT_SEARCH_LIMIT)),
+                        args.cursor.as_deref(),
+                    )
+                    .await,
+            )
+            .await?;
+        Ok(CallToolResult::success(vec![Content::text(search_body(
+            body, &shape,
+        ))]))
     }
 
     #[tool(
@@ -858,11 +1004,21 @@ impl AreteMcp {
     #[tool(
         description = "List the concept and category vocabularies of the active \
                           catalog snapshot. Use it to map a user's phrasing onto \
-                          `search_catalog` concept/category slugs. No credential required."
+                          `search_catalog` concept/category slugs. No credential required.\n\n\
+                          By default each concept and category keeps only `slug` and \
+                          `name`. Pass `full: true` for descriptions, synonyms and related \
+                          slugs when a name alone does not settle the mapping."
     )]
-    async fn list_catalog_vocabulary(&self) -> Result<CallToolResult, McpError> {
-        self.registry_result(self.registry.catalog_vocabulary().await)
-            .await
+    async fn list_catalog_vocabulary(
+        &self,
+        Parameters(args): Parameters<VocabularyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let body = self
+            .registry_body(self.registry.catalog_vocabulary().await)
+            .await?;
+        Ok(CallToolResult::success(vec![Content::text(
+            vocabulary_body(body, args.full == Some(true)),
+        )]))
     }
 
     #[tool(
@@ -968,17 +1124,26 @@ impl AreteMcp {
 
     #[tool(
         description = "List the controlled vocabularies of the knowledge layer: concept \
-                          slugs (actions/observables like `swap` or `add-liquidity`, \
-                          with synonyms and related concepts) and category slugs \
-                          (protocol classifications like `dex` or `launchpad`).\n\n\
+                          slugs (actions/observables like `swap` or `add-liquidity`) and \
+                          category slugs (protocol classifications like `dex` or \
+                          `launchpad`).\n\n\
                           Call this first when you want to filter search_knowledge by \
                           `concept`/`category`, or to map a user's phrasing onto a \
-                          canonical concept slug.\n\n\
+                          canonical concept slug. By default each item keeps only `slug` \
+                          and `name`; pass `full: true` for descriptions, synonyms and \
+                          related concepts.\n\n\
                           Requires an API key (`a4 auth login`)."
     )]
-    async fn list_concepts(&self) -> Result<CallToolResult, McpError> {
-        self.registry_result(self.registry.knowledge_vocabulary().await)
-            .await
+    async fn list_concepts(
+        &self,
+        Parameters(args): Parameters<VocabularyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let body = self
+            .registry_body(self.registry.knowledge_vocabulary().await)
+            .await?;
+        Ok(CallToolResult::success(vec![Content::text(
+            vocabulary_body(body, args.full == Some(true)),
+        )]))
     }
 
     #[tool(
@@ -2299,5 +2464,108 @@ mod ergonomics_tests {
             catalog_shape(args.fields, args.full),
             catalog_view::Shape::Compact
         );
+    }
+
+    #[test]
+    fn search_defaults_to_brief_results_with_a_hint() {
+        let args: SearchCatalogArgs =
+            serde_json::from_value(serde_json::json!({ "query": "swaps" })).unwrap();
+        let shape = search_shape(args.fields, args.full);
+        assert_eq!(shape, catalog_view::brief());
+        let body = serde_json::json!({
+            "matchedConcepts": ["swap"],
+            "nextCursor": "c1",
+            "results": [{
+                "kind": "program", "slug": "ore", "name": "ORE", "version": "1.0.0",
+                "summary": "ORE mining.", "modes": ["build"], "sdkTargets": ["typescript"],
+                "score": 2.5, "concepts": ["mining"], "packageReleaseHash": "sha256:aa",
+                "delivery": {"kind": "program-read", "status": "active", "health": "ready"}
+            }]
+        })
+        .to_string();
+        let out: serde_json::Value =
+            serde_json::from_str(&search_body(body.clone(), &shape)).unwrap();
+        assert_eq!(out["nextCursor"], "c1");
+        let first = out["results"][0].as_object().unwrap();
+        assert_eq!(first["slug"], "ore");
+        assert!(!first.contains_key("score"));
+        assert!(!first.contains_key("packageReleaseHash"));
+        let hint = out["hint"].as_str().unwrap();
+        assert!(hint.contains("full: true") && hint.contains("cursor"));
+
+        let full = search_shape(None, Some(true));
+        assert_eq!(search_body(body.clone(), &full), body);
+        let fields = search_shape(Some(StringList::One("slug".into())), None);
+        let out: serde_json::Value = serde_json::from_str(&search_body(body, &fields)).unwrap();
+        assert_eq!(out["results"][0], serde_json::json!({"slug": "ore"}));
+    }
+
+    #[test]
+    fn vocabularies_default_to_slugs_and_names() {
+        let args: VocabularyArgs = serde_json::from_value(serde_json::json!({})).unwrap();
+        let body = serde_json::json!({
+            "concepts": [{"slug": "swap", "name": "Swap", "synonyms": ["trade"]}],
+            "categories": [{"slug": "dex", "name": "DEX", "description": "d"}]
+        })
+        .to_string();
+        let out: serde_json::Value =
+            serde_json::from_str(&vocabulary_body(body.clone(), args.full == Some(true))).unwrap();
+        assert_eq!(
+            out["concepts"],
+            serde_json::json!([{"slug": "swap", "name": "Swap"}])
+        );
+        assert!(out["hint"].as_str().unwrap().contains("full: true"));
+        assert_eq!(vocabulary_body(body.clone(), true), body);
+    }
+
+    #[test]
+    fn stack_lists_default_to_brief_fields() {
+        let body = serde_json::json!([{
+            "name": "ore", "description": "ORE.", "subdomain": "ore-1",
+            "websocket_url": "wss://ore", "http_url": "https://ore",
+            "websocket_auth": {"required": true, "mode": "signed_session"},
+            "http_auth": {"required": true},
+            "entities": ["OreRound"], "visibility": "public", "serviceClass": "standard"
+        }])
+        .to_string();
+        let args: ExploreStacksArgs = serde_json::from_value(serde_json::json!({})).unwrap();
+        let out: serde_json::Value = serde_json::from_str(&list_body(
+            body.clone(),
+            &stack_list_shape(args.fields, args.full),
+        ))
+        .unwrap();
+        assert_eq!(
+            out,
+            serde_json::json!([{
+                "name": "ore", "description": "ORE.", "websocket_url": "wss://ore",
+                "entities": ["OreRound"], "visibility": "public", "serviceClass": "standard",
+                "websocket_auth": {"required": true}
+            }])
+        );
+        assert_eq!(
+            list_body(body.clone(), &stack_list_shape(None, Some(true))),
+            body
+        );
+    }
+
+    #[test]
+    fn program_lists_drop_hashes_unless_full() {
+        let body = serde_json::json!([{
+            "installName": "spl-token", "programId": "Tok", "sdkTargets": ["rust"],
+            "programReleaseHash": "arete:h1:program-release:sha256:aa",
+            "programSpecHash": "arete:h1:program-spec:sha256:bb"
+        }])
+        .to_string();
+        let args: ExploreProgramsArgs = serde_json::from_value(serde_json::json!({})).unwrap();
+        let out: serde_json::Value = serde_json::from_str(&list_body(
+            body.clone(),
+            &catalog_shape(args.fields, args.full),
+        ))
+        .unwrap();
+        assert_eq!(
+            out,
+            serde_json::json!([{"installName": "spl-token", "programId": "Tok", "sdkTargets": ["rust"]}])
+        );
+        assert_eq!(list_body(body.clone(), &catalog_view::Shape::Full), body);
     }
 }

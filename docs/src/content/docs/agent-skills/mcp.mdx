@@ -93,17 +93,37 @@ It speaks MCP over stdio and writes logs to stderr only. Install `a4` with `curl
 
 Read-only lookups against the public `/api/registry/*` endpoints. No signup required — public stacks and programs are visible to unauthenticated callers. When an api key resolves, `explore_stacks` also returns global stacks; a missing key is never an error here.
 
-| Tool                      | Parameters                                                                                | Purpose                                                                                             |
-| ------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `explore_stacks`          | —                                                                                         | List stacks in the registry. The `websocket_url` in each entry is what `connect` takes.             |
-| `explore_stack`           | `{ stack, summary?, views?, full? }`                                                      | One stack, from its pinned install descriptor. Returns a compact summary unless you ask for more.   |
-| `explore_stack_schema`    | `{ stack }`                                                                               | Entity and view schema: field paths, types, primary keys, and the view ids `subscribe` accepts.     |
-| `explore_programs`        | —                                                                                         | List standalone Solana programs installable independent of any stack.                               |
-| `explore_program`         | `{ program, operationId?, sections?, full? }`                                             | One program, from its pinned install descriptor. Returns a compact summary unless you ask for more. |
-| `resolve_artifact`        | `{ kind, hash }`                                                                          | Fetch a content-addressed artifact. `kind` is `program-spec`, `live-spec`, or `stack-manifest`.     |
-| `search_catalog`          | `{ query?, concept?, category?, kind?, mode?, target?, limit?, cursor?, fields?, full? }` | Search the active catalog by intent. Results are compact unless you ask for more.                   |
-| `get_catalog_entry`       | `{ kind, slug, fields?, full? }`                                                          | One active catalog entry. Compact unless you ask for more.                                          |
-| `list_catalog_vocabulary` | —                                                                                         | Concept and category slugs for `search_catalog` filters.                                            |
+| Tool                      | Parameters                                                                                | Purpose                                                                                                   |
+| ------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `explore_stacks`          | `{ fields?, full? }`                                                                      | List stacks in the registry. The `websocket_url` in each entry is what `connect` takes. Brief by default. |
+| `explore_stack`           | `{ stack, summary?, views?, full? }`                                                      | One stack, from its pinned install descriptor. Returns a compact summary unless you ask for more.         |
+| `explore_stack_schema`    | `{ stack }`                                                                               | Entity and view schema: field paths, types, primary keys, and the view ids `subscribe` accepts.           |
+| `explore_programs`        | `{ fields?, full? }`                                                                      | List standalone Solana programs installable independent of any stack. Hashes omitted by default.          |
+| `explore_program`         | `{ program, operationId?, sections?, full? }`                                             | One program, from its pinned install descriptor. Returns a compact summary unless you ask for more.       |
+| `resolve_artifact`        | `{ kind, hash }`                                                                          | Fetch a content-addressed artifact. `kind` is `program-spec`, `live-spec`, or `stack-manifest`.           |
+| `search_catalog`          | `{ query?, concept?, category?, kind?, mode?, target?, limit?, cursor?, fields?, full? }` | Search the active catalog by intent. Brief results, 10 per page, unless you ask for more.                 |
+| `get_catalog_entry`       | `{ kind, slug, fields?, full? }`                                                          | One active catalog entry. Compact unless you ask for more.                                                |
+| `list_catalog_vocabulary` | `{ full? }`                                                                               | Concept and category slugs and names for `search_catalog` filters.                                        |
+
+List, search and vocabulary tools are **brief by default**. Pass `full: true`
+for every field the server sent, or `fields` (top-level keys or dotted paths)
+to choose your own:
+
+- **`search_catalog`** keeps `kind`, `slug`, `name`, `version`, `protocol`,
+  `summary`, `modes`, `sdkTargets` and `delivery.status`/`delivery.health` for
+  each result, returns 10 results per page unless you pass `limit`, and adds a
+  top-level `hint` string naming `full`, `fields` and, when there is another
+  page, `cursor`.
+- **`list_catalog_vocabulary`** and **`list_concepts`** keep each concept's and
+  category's `slug` and `name`, plus a `hint`. `full: true` adds descriptions,
+  synonyms and related slugs.
+- **`explore_stacks`** keeps `name`, `description`, `websocket_url`,
+  `entities`, `visibility`, `serviceClass` and `websocket_auth.required`.
+- **`explore_programs`** drops release and spec hashes.
+- **`get_catalog_entry`** stays complete apart from identity hashes, release
+  notes and `programIds`; `full: true` restores them.
+
+The stack and program lists stay JSON arrays, so they carry no `hint`.
 
 `explore_stack` and `explore_program` return a **summary by default**, cut
 from the full descriptor on the client:
@@ -213,11 +233,11 @@ Read-only lookups against `/api/registry/knowledge/*` — the curated, human-rev
 >
 > Pass a bare slug, not a URL. Requires an API key (`a4 auth login`).
 
-**`list_concepts`** `{}`
+**`list_concepts`** `{ full? }`
 
-> List the controlled vocabularies of the knowledge layer: concept slugs (actions/observables like `swap` or `add-liquidity`, with synonyms and related concepts) and category slugs (protocol classifications like `dex` or `launchpad`).
+> List the controlled vocabularies of the knowledge layer: concept slugs (actions/observables like `swap` or `add-liquidity`) and category slugs (protocol classifications like `dex` or `launchpad`).
 >
-> Call this first when you want to filter search_knowledge by `concept`/`category`, or to map a user's phrasing onto a canonical concept slug.
+> Call this first when you want to filter search_knowledge by `concept`/`category`, or to map a user's phrasing onto a canonical concept slug. By default each item keeps only `slug` and `name`; pass `full: true` for descriptions, synonyms and related concepts.
 >
 > Requires an API key (`a4 auth login`).
 

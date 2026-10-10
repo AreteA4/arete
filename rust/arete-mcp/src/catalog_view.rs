@@ -6,8 +6,13 @@
 //! on the decoded JSON, so they apply to any server version: unknown keys are
 //! passed through by [`compact`] and silently skipped by [`project`].
 //!
-//! Shared by the MCP tools (`search_catalog`, `get_catalog_entry`) and the
-//! CLI (`a4 explore catalog --fields/--brief`, `a4 know search`).
+//! Shared by the MCP tools (`search_catalog`, `get_catalog_entry`,
+//! `list_catalog_vocabulary`, `list_concepts`, `explore_programs`) and the
+//! CLI (`a4 explore catalog`, `a4 explore programs`, `a4 know search`).
+//!
+//! List, search and vocabulary responses are brief by default; callers opt
+//! out with `full` / `--full` or choose keys with `fields` / `--fields`, and a
+//! top-level `hint` string says how.
 
 use serde_json::{Map, Value};
 
@@ -28,6 +33,11 @@ pub const BRIEF_FIELDS: &[&str] = &[
     "delivery.status",
     "delivery.health",
 ];
+
+/// Page size used for catalog searches when the caller passes no limit. The
+/// server's own default is larger; a smaller first page keeps discovery
+/// output short, and `nextCursor` continues it.
+pub const DEFAULT_SEARCH_LIMIT: usize = 10;
 
 /// How a catalog response should be shaped before it is returned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +180,51 @@ pub fn shape_entry(value: &Value, shape: &Shape) -> Value {
     shape_one(value, shape)
 }
 
+/// The brief preset as a [`Shape`].
+pub fn brief() -> Shape {
+    Shape::Fields(brief_fields())
+}
+
+/// Attach a top-level `hint` string to an object response. Other values are
+/// returned unchanged. Readers that ignore unknown keys are unaffected.
+pub fn with_hint(value: Value, hint: impl Into<String>) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            map.insert("hint".to_string(), Value::String(hint.into()));
+            Value::Object(map)
+        }
+        other => other,
+    }
+}
+
+/// The `nextCursor` of a search page, when there is another page.
+pub fn next_cursor(value: &Value) -> Option<&str> {
+    value
+        .get("nextCursor")
+        .and_then(Value::as_str)
+        .filter(|cursor| !cursor.is_empty())
+}
+
+/// Keep only `slug` and `name` of each concept and category of a vocabulary
+/// response; descriptions, synonyms, related slugs and snapshot hashes are
+/// dropped. Lists other than `concepts` and `categories` are dropped too.
+pub fn compact_vocabulary(value: &Value) -> Value {
+    let Value::Object(source) = value else {
+        return value.clone();
+    };
+    let keep = ["slug".to_string(), "name".to_string()];
+    let mut out = Map::new();
+    for key in ["concepts", "categories"] {
+        if let Some(Value::Array(items)) = source.get(key) {
+            out.insert(
+                key.to_string(),
+                Value::Array(items.iter().map(|item| project(item, &keep)).collect()),
+            );
+        }
+    }
+    Value::Object(out)
+}
+
 /// Shape a raw JSON body. Bodies that are not JSON are returned unchanged.
 pub fn shape_body(body: String, shape: &Shape, search: bool) -> String {
     if *shape == Shape::Full {
@@ -279,6 +334,31 @@ mod tests {
             Shape::from_args(vec!["slug".into()], true),
             Shape::Fields(vec!["slug".into()])
         );
+    }
+
+    #[test]
+    fn vocabulary_compacts_to_slugs_and_names() {
+        let vocabulary = json!({
+            "concepts": [{"slug": "swap", "name": "Swap", "description": "d", "synonyms": ["trade"], "related": ["dex"]}],
+            "categories": [{"slug": "dex", "name": "DEX", "description": "d"}],
+            "sets": ["arete:h1:catalog-publication-set:sha256:aa"]
+        });
+        assert_eq!(
+            compact_vocabulary(&vocabulary),
+            json!({
+                "concepts": [{"slug": "swap", "name": "Swap"}],
+                "categories": [{"slug": "dex", "name": "DEX"}]
+            })
+        );
+    }
+
+    #[test]
+    fn hints_attach_to_objects_and_cursors_are_read() {
+        let page = json!({"results": [], "nextCursor": "c1"});
+        assert_eq!(next_cursor(&page), Some("c1"));
+        assert_eq!(next_cursor(&json!({"nextCursor": ""})), None);
+        assert_eq!(with_hint(page, "more")["hint"], "more");
+        assert_eq!(with_hint(json!([1]), "more"), json!([1]));
     }
 
     #[test]
