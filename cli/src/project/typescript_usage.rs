@@ -39,7 +39,8 @@ pub struct StackUsage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<String>,
     /// The command that lists the view's fields with their units, for a
-    /// registry stack.
+    /// registry stack: as of the registry's current release, which can be
+    /// newer than the one installed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fields: Option<String>,
     /// How the stack extension's reads are called, e.g.
@@ -258,23 +259,27 @@ pub fn stack_usage(
             snippet.push(format!(
                 "const session = await createSession({{ stacks: {{ {key}: {export} }} }});"
             ));
-            // One read that ends: the script exits once the session closes.
+            // One read that ends: the script exits once the session closes,
+            // also when the read fails.
+            snippet.push("try {".to_string());
             if let Some(view) = view {
                 snippet.push(format!(
-                    "const row = await session.stacks.{key}.views{}.getOne({{ timeoutMs: 10_000 }});",
+                    "  const row = await session.stacks.{key}.views{}.getOne({{ timeoutMs: 10_000 }});",
                     view.access
                 ));
-                snippet.push("console.log(row);".to_string());
+                snippet.push("  console.log(row);".to_string());
                 stream = Some(format!(
                     "for await (const row of session.stacks.{key}.views{}.use()) {{ ... }}",
                     view.access
                 ));
             } else {
                 snippet.push(format!(
-                    "console.log(Object.keys(session.stacks.{key}.views));"
+                    "  console.log(Object.keys(session.stacks.{key}.views));"
                 ));
             }
-            snippet.push("session.close();".to_string());
+            snippet.push("} finally {".to_string());
+            snippet.push("  session.close();".to_string());
+            snippet.push("}".to_string());
             Some(format!("npx tsx {NODE_ENTRY}"))
         }
     };
@@ -413,35 +418,40 @@ fn extension_entry(directory: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// The most arguments a read is listed with: a larger count names no
+/// placeholder parameters.
+const MAX_READ_ARGS: usize = 8;
+
 /// The reads a stack extension declares in its `readArgCounts`, with the
-/// parameters and title of the function that implements each.
+/// parameters and title of the function that implements each. Comments and
+/// strings are not code: a `readArgCounts` or `function` in them is skipped.
 fn stack_reads(extension: &str) -> Vec<StackRead> {
-    let count_line = Regex::new(r"^\s*([A-Za-z_$][\w$]*)\s*:\s*(\d+|\[[^\]]*\])")
+    let code = code_only(extension);
+    let declaration =
+        Regex::new(r"\breadArgCounts\s*:\s*\{").expect("read counts regex should compile");
+    let entry = Regex::new(r"([A-Za-z_$][\w$]*)\s*:\s*(\d+|\[[^\]]*\])")
         .expect("read count regex should compile");
-    let mut lines = extension
-        .lines()
-        .skip_while(|line| line.trim() != "readArgCounts: {");
-    if lines.next().is_none() {
+    let Some(found) = declaration.find(&code) else {
         return Vec::new();
-    }
+    };
+    let block = &code[found.end()..];
+    let block = &block[..block.find('}').unwrap_or(block.len())];
     let mut reads = Vec::new();
-    for line in lines {
-        if line.trim_start().starts_with('}') {
-            break;
-        }
-        let Some(captures) = count_line.captures(line) else {
-            continue;
-        };
+    for captures in entry.captures_iter(block) {
         let name = captures[1].to_string();
-        // An array lists the argument counts a read accepts.
+        // An array lists the argument counts a read accepts; a count that is
+        // not a small number is not trusted.
         let count = captures[2]
             .trim_matches(|c| c == '[' || c == ']')
             .split(',')
-            .filter_map(|count| count.trim().parse::<usize>().ok())
-            .max()
-            .unwrap_or(0);
-        let (params, title) = read_function(extension, &name);
-        let params = params.unwrap_or_else(|| (1..=count).map(|n| format!("arg{n}")).collect());
+            .map(|count| count.trim().parse::<usize>().ok())
+            .try_fold(0, |max, count| count.map(|count| max.max(count)))
+            .filter(|count| *count <= MAX_READ_ARGS);
+        let (params, title) = read_function(extension, &code, &name);
+        let params = params.unwrap_or_else(|| match count {
+            Some(count) => (1..=count).map(|n| format!("arg{n}")).collect(),
+            None => vec!["...".to_string()],
+        });
         reads.push(StackRead {
             name,
             params,
@@ -451,23 +461,80 @@ fn stack_reads(extension: &str) -> Vec<StackRead> {
     reads
 }
 
-/// The parameter names of `function <name>(...)` in `extension`, and the
-/// title of the doc comment right before it.
-fn read_function(extension: &str, name: &str) -> (Option<Vec<String>>, Option<String>) {
+/// `source` with its comments and the contents of its strings replaced by
+/// spaces, newlines and byte offsets kept.
+fn code_only(source: &str) -> String {
+    let mut code = String::with_capacity(source.len());
+    let mut characters = source.chars().peekable();
+    let blank = |code: &mut String, character: char| {
+        if character == '\n' {
+            code.push('\n');
+        } else {
+            code.extend(std::iter::repeat_n(' ', character.len_utf8()));
+        }
+    };
+    while let Some(character) = characters.next() {
+        match character {
+            '/' if characters.peek() == Some(&'/') => {
+                blank(&mut code, character);
+                while let Some(&next) = characters.peek() {
+                    if next == '\n' {
+                        break;
+                    }
+                    blank(&mut code, next);
+                    characters.next();
+                }
+            }
+            '/' if characters.peek() == Some(&'*') => {
+                blank(&mut code, character);
+                let mut previous = ' ';
+                for next in characters.by_ref() {
+                    blank(&mut code, next);
+                    if previous == '*' && next == '/' {
+                        break;
+                    }
+                    previous = next;
+                }
+            }
+            '\'' | '"' | '`' => {
+                code.push(character);
+                let mut escaped = false;
+                for next in characters.by_ref() {
+                    if !escaped && next == character {
+                        code.push(next);
+                        break;
+                    }
+                    escaped = !escaped && next == '\\';
+                    blank(&mut code, next);
+                }
+            }
+            _ => code.push(character),
+        }
+    }
+    code
+}
+
+/// The parameter names of `function <name>(...)` in `extension`, found in its
+/// `code` (see [`code_only`]), and the title of the doc comment right before
+/// it.
+fn read_function(extension: &str, code: &str, name: &str) -> (Option<Vec<String>>, Option<String>) {
     let function = Regex::new(&format!(
         r"(?:async\s+)?function\s+{}\s*\(([^)]*)\)",
         regex::escape(name)
     ))
     .expect("read function regex should compile");
-    let Some(captures) = function.captures(extension) else {
+    let Some(captures) = function.captures(code) else {
         return (None, None);
     };
-    let params = split_top_level(&captures[1])
+    let (Some(found), Some(params)) = (captures.get(0), captures.get(1)) else {
+        return (None, None);
+    };
+    let params = split_top_level(&extension[params.range()])
         .into_iter()
         .enumerate()
         .map(|(index, param)| param_name(&param, index))
         .collect();
-    let before = extension[..captures.get(0).map_or(0, |found| found.start())].trim_end();
+    let before = extension[..found.start()].trim_end();
     let title = before
         .strip_suffix("*/")
         .and_then(|before| before.rfind("/**").map(|at| &before[at + 3..]))
@@ -655,9 +722,12 @@ import { VAULT_STREAM_STACK } from "./stacks/vault/vault.js";
 
 // No auth option: server-side, the SDK uses ARETE_API_KEY if set, else your a4 login.
 const session = await createSession({ stacks: { vault: VAULT_STREAM_STACK } });
-const row = await session.stacks.vault.views.Vault.list.getOne({ timeoutMs: 10_000 });
-console.log(row);
-session.close();"#
+try {
+  const row = await session.stacks.vault.views.Vault.list.getOne({ timeoutMs: 10_000 });
+  console.log(row);
+} finally {
+  session.close();
+}"#
         );
         assert_eq!(
             usage.stream.as_deref(),
@@ -668,7 +738,7 @@ session.close();"#
         // An alias that is not an identifier keys the session as `app`.
         let usage = stack_usage("vault-v2", &output, &app, AppKind::Node).unwrap();
         assert!(usage.snippet[4].contains("{ app: VAULT_STREAM_STACK }"));
-        assert!(usage.snippet[5].starts_with("const row = await session.stacks.app."));
+        assert!(usage.snippet[6].starts_with("  const row = await session.stacks.app."));
     }
 
     #[test]
@@ -843,6 +913,37 @@ function Rows() {
         assert_eq!(auth.directory.as_deref(), Some("apps/-web"));
         let node = AppKind::Node.auth(Some("apps/-web".into()));
         assert_eq!((node.command, node.directory), (None, None));
+    }
+
+    #[test]
+    fn read_counts_in_comments_strings_or_too_large_are_not_trusted() {
+        let extension = r#"// readArgCounts: { fake: 1 },
+/* function currentRound(fake: string) */
+const note = "readArgCounts: { alsoFake: 2 }";
+export default defineStackExtensions<typeof CORE>()({
+  readArgCounts: { currentRound: 0, example: 1000000000, huge: 99999999999999999999999, many: [1, 900] },
+  createRead(client) {
+    async function currentRound() {
+      return null;
+    }
+    return { currentRound };
+  },
+});
+"#;
+        let reads = stack_reads(extension)
+            .iter()
+            .map(StackRead::signature)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reads,
+            vec!["currentRound()", "example(...)", "huge(...)", "many(...)"]
+        );
+        // Offsets survive blanking, multi-byte characters included.
+        let source = "const a = 'é//'; // ü\nlet b = 1;";
+        let code = code_only(source);
+        assert_eq!(code.len(), source.len());
+        assert!(code.ends_with("\nlet b = 1;"));
+        assert!(!code.contains("//"));
     }
 
     #[test]

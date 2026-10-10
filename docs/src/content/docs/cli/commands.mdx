@@ -1304,12 +1304,15 @@ Next steps:  read stack ore once from ./index.ts:
 
              // No auth option: server-side, the SDK uses ARETE_API_KEY if set, else your a4 login.
              const session = await createSession({ stacks: { ore: ORE_STREAM_STACK } });
-             const row = await session.stacks.ore.views.OreRound.latest.getOne({ timeoutMs: 10_000 });
-             console.log(row);
-             session.close();
+             try {
+               const row = await session.stacks.ore.views.OreRound.latest.getOne({ timeoutMs: 10_000 });
+               console.log(row);
+             } finally {
+               session.close();
+             }
              Run it with: npx tsx index.ts
              To stream instead: for await (const row of session.stacks.ore.views.OreRound.latest.use()) { ... } (.watch() for raw updates)
-             Fields and units: a4 explore stack ore --views OreRound/latest
+             Fields and units, from the registry's current release: a4 explore stack ore --views OreRound/latest
 Stack reads: derived values in one call, as await session.stacks.ore.read.<name>(...):
              boardState()              Board state
              roundState(roundId)       Round state
@@ -1375,10 +1378,12 @@ advice for each.
   from the app's `package.json` directory, and a read of one of its list views
   (a `latest` view when the stack has one, else the first). A Node app (one
   that does not depend on `react`) gets a script that reads the view once with
-  `getOne({ timeoutMs })`, prints the row and closes the session, so it exits;
-  the `use()` loop that streams the view instead follows it, and, for a
-  registry stack, the `a4 explore stack` command that lists the view's fields
-  with their units. The script imports `createSession` from `@usearete/sdk`
+  `getOne({ timeoutMs })`, prints the row and closes the session in `finally`,
+  so it exits also when the read fails; the `use()` loop that streams the view
+  instead follows it, and, for a registry stack, the `a4 explore stack`
+  command that lists the view's fields with their units. That command takes
+  no version, so it describes the registry's current release, which can be
+  newer than the one installed. The script imports `createSession` from `@usearete/sdk`
   and passes no auth option:
   outside browsers the SDK uses an agent or secret key from `ARETE_API_KEY`
   when it is set, else the key of the `a4` login, so after `a4 init` or

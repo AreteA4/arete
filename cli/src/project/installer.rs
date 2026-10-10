@@ -1383,7 +1383,9 @@ impl TypeScriptGuidance {
     }
 
     /// Point each registry stack's usage at the command that lists its
-    /// view's fields with their units.
+    /// view's fields with their units. `a4 explore stack` takes no version,
+    /// so it describes the registry's current release, which can be newer
+    /// than the one installed.
     fn with_fields_commands(mut self, manifest: &ProjectManifest) -> Self {
         for usage in self
             .typescript_apps
@@ -1598,7 +1600,9 @@ impl TypeScriptAppGuidance {
                 println!("             To stream instead: {stream} (.watch() for raw updates)");
             }
             if let Some(fields) = &usage.fields {
-                println!("             Fields and units: {fields}");
+                println!(
+                    "             Fields and units, from the registry's current release: {fields}"
+                );
             }
             if let Some(reads_call) = &usage.reads_call {
                 println!("Stack reads: derived values in one call, as {reads_call}:");
