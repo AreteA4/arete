@@ -8,9 +8,10 @@ import { MY_STACK } from './generated/my-stack';
 
 const session = await createSession(
   { stacks: { app: MY_STACK } },
-  // Server or script: { secretKey } (or ARETE_API_KEY in the environment).
-  // Browser: an origin-bound { publishableKey }.
-  { wallet, auth: { secretKey: process.env.ARETE_API_KEY! } },
+  // Server or script: no auth option; the SDK uses ARETE_API_KEY if set, else your a4 CLI login
+  // (login fallback: @usearete/sdk 0.34.0+ on Node.js 20.16+/22.3+, Bun, or Deno; otherwise set ARETE_API_KEY).
+  // Browser: an origin-bound auth: { publishableKey }.
+  { wallet },
 );
 
 const program = session.stacks.app.programs.myProgram;
