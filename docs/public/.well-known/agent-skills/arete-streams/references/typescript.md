@@ -33,7 +33,7 @@ session.close();
 
 Pick the key by where the code runs:
 
-- Node.js, Bun, Deno, workers, SSR, agents, and scripts: no `auth` option. The SDK uses `ARETE_API_KEY` if set, and otherwise the agent or secret key from the active `a4` login (read in Node, Bun, and Deno). If several `a4` profiles hold a key, set `ARETE_PROFILE`. To pass a key explicitly, use `auth: { secretKey }` with an agent key (`a4_ak_...`) or secret key (`a4_sk_...`) read from the environment.
+- Node.js, Bun, Deno, workers, SSR, agents, and scripts: no `auth` option. The SDK uses `ARETE_API_KEY` if set, and otherwise the agent or secret key from the active `a4` login. The login fallback needs `@usearete/sdk` 0.34.0 or later on Node.js 20.16+ or 22.3+, Bun, or Deno; on older SDKs or Node.js versions, set `ARETE_API_KEY`. If several `a4` profiles hold a key, set `ARETE_PROFILE`. To pass a key explicitly, use `auth: { secretKey }` with an agent key (`a4_ak_...`) or secret key (`a4_sk_...`) read from the environment.
 - Browser code (Vue, Svelte, plain pages): `auth: { publishableKey }` with an origin-bound publishable key (`a4_pk_...`), for example from `import.meta.env.VITE_ARETE_PUBLISHABLE_KEY`. Create one with `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
 
 `secretKey` throws in a browser, as does a secret or agent key passed as `publishableKey`. A publishable key passed as `secretKey` is refused everywhere.

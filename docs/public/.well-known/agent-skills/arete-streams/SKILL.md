@@ -2,7 +2,7 @@
 name: arete-streams
 description: Query or subscribe to deployed Arete stack views from TypeScript, React, Rust, Python, the a4 CLI, or the Arete MCP server. Use for dashboards, bots, backends, current-state reads, live entity updates, view filtering, or stream debugging. Do not use for program accounts or transaction construction; use arete-programs for those.
 metadata:
-  version: "1.5.0"
+  version: "1.5.1"
   min-cli: ">=0.34.0"
 ---
 
@@ -51,7 +51,7 @@ a4 stream <Entity>/<view> --stack <stack-ref> --ops snapshot,upsert,patch,remove
 
 `a4 get` also takes `--where` and `--timeout`. Run `a4 stream --help` for the current filtering, selection, cursor, history, snapshot, and TUI options. Do not invent MCP tool names; inspect the configured server's exposed tools.
 
-Before reporting token amounts, check each field's `amount` in `a4 explore stack <stack-ref> --views <Entity>/<view> --json` (or MCP `explore_stack_schema`): `scale: "ui"` values are whole tokens, `scale: "raw"` values are base units (divide by `10^decimals`; for SOL these are lamports), and `counterpart` names the same amount at the other scale.
+Before reporting token amounts, check each field's `amount` in `a4 explore stack <stack-ref> --views <Entity>/<view> --json` (or MCP `explore_stack_schema`): `scale: "ui"` values are whole tokens, `scale: "raw"` values are base units (divide by `10^decimals`; for SOL these are lamports), and `counterpart` names the same amount at the other scale. When the stack does not fix the decimals, `amount` has `decimalsFrom` instead of `decimals`: read the decimals from that field (for example the mint's metadata) before converting, and if it is unavailable, report the raw amount rather than guessing.
 
 ## Install and Inspect Generated Code
 

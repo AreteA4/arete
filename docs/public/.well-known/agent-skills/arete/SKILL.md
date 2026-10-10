@@ -2,7 +2,7 @@
 name: arete
 description: Discover and install exact Arete stacks or program SDKs for a Solana application. Use for generic Arete setup, capability discovery, choosing between a stack, a standalone program SDK, or a composed stack, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for Rust stack definitions or composing stacks use arete-stack-authoring; for hosted publication or deployment use arete-deploy.
 metadata:
-  version: "1.4.0"
+  version: "1.4.1"
   min-cli: ">=0.34.0"
 ---
 
@@ -54,12 +54,13 @@ Narrow by `--kind program|stack`, `--mode read|build|subscribe`, and
 constraints.
 
 Search results and the vocabulary are brief by default, and brief JSON names
-the next step in a top-level `hint`. Add `--full` for every field or
-`--fields a,b` for specific keys, and pass a page's `nextCursor` back as
+the next step in a top-level `hint`. Add `--full` for every field or, on
+search only, `--fields a,b` for specific keys, and pass a page's `nextCursor` back as
 `--cursor` with the same filters. `a4 explore catalog --json` with no filters
 returns an overview of the first programs and stacks. The MCP `search_catalog`,
 `list_catalog_vocabulary`, `explore_stacks`, and `explore_programs` tools are
-brief the same way; pass `full: true` or `fields` for more.
+brief the same way; pass `full: true` for more, or `fields` on every tool except
+`list_catalog_vocabulary`, which only takes `full`.
 
 Read each result's coverage modes, then route by what the application needs:
 
