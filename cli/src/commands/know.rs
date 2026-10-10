@@ -7,7 +7,9 @@
 //! `~/.arete/credentials.toml`); an unauthenticated call fails with the
 //! standard "Run 'a4 auth login' first" error before any request is sent.
 //!
-//! The API returns raw JSON that `--json` prints verbatim (pretty-printed).
+//! Search results and the vocabularies are brief by default, with a `hint`
+//! naming `--full` and `--fields`; `--full` JSON is the raw response, and
+//! the other subcommands print the raw JSON (pretty-printed) under `--json`.
 //! The readable rendering parses that JSON *leniently* — every field is
 //! optional and unknown fields are ignored — because the knowledge payloads
 //! are additive over time and a new server field must never break an older
@@ -22,6 +24,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::api_client::ApiClient;
+use arete_mcp::catalog_view;
 
 /// Sections accepted by `a4 know program --section`, mirroring
 /// `GET /api/registry/knowledge/programs/{slug}?section=...`.
@@ -31,13 +34,34 @@ const SECTIONS: [&str; 4] = ["summary", "instructions", "accounts", "surface"];
 // Subcommand entry points
 // ============================================================================
 
+const SEARCH_BRIEF_HINT: &str = "Showing brief fields; use --full for every field \
+     (score, coverage_via) or --fields a,b to choose keys.";
+
+const VOCABULARY_BRIEF_HINT: &str =
+    "Showing slugs and names; use --full for descriptions, synonyms and related concepts.";
+
+/// The `hint` for a knowledge search page. There is no cursor, so a page
+/// cut at the limit says to raise it.
+fn search_hint(value: &Value, full: bool, limit: usize) -> Option<String> {
+    let mut parts = Vec::new();
+    if !full {
+        parts.push(SEARCH_BRIEF_HINT.to_string());
+    }
+    if catalog_view::may_have_more(value, limit) {
+        parts.push(format!(
+            "There may be more results: raise --limit above {limit}."
+        ));
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
 pub fn search(
     query: Option<&str>,
     concept: Option<&str>,
     category: Option<&str>,
     limit: Option<usize>,
     json: bool,
-    shape: Option<&arete_mcp::catalog_view::Shape>,
+    shape: &catalog_view::Shape,
 ) -> Result<()> {
     let query = non_empty(query);
     let concept = non_empty(concept);
@@ -55,11 +79,23 @@ pub fn search(
         validate_slug(category, "--category")?;
     }
 
-    let value = ApiClient::new()?.knowledge_search(query, concept, category, limit)?;
-    if shape.is_some() {
-        return super::explore::print_search_json(&value, shape);
+    let limit = limit.unwrap_or(catalog_view::DEFAULT_SEARCH_LIMIT);
+    let value = ApiClient::new()?.knowledge_search(query, concept, category, Some(limit))?;
+    let full = *shape == catalog_view::Shape::Full;
+    let hint = search_hint(&value, full, limit);
+    if json {
+        let mut shaped = catalog_view::shape_search(&value, shape);
+        if let Some(hint) = hint {
+            shaped = catalog_view::with_hint(shaped, hint);
+        }
+        println!("{}", serde_json::to_string_pretty(&shaped)?);
+        return Ok(());
     }
-    emit(&value, json, render_search)
+    print!("{}", render_search(&value, full));
+    if let Some(hint) = hint {
+        println!("{}", hint.dimmed());
+    }
+    Ok(())
 }
 
 pub fn protocol(slug: &str, json: bool) -> Result<()> {
@@ -86,9 +122,17 @@ pub fn recipe(slug: &str, json: bool) -> Result<()> {
     emit(&value, json, render_recipe)
 }
 
-pub fn concepts(json: bool) -> Result<()> {
+pub fn concepts(json: bool, full: bool) -> Result<()> {
     let value = ApiClient::new()?.knowledge_vocabulary()?;
-    emit(&value, json, render_vocabulary)
+    if json && !full {
+        let compact = catalog_view::with_hint(
+            catalog_view::compact_vocabulary(&value),
+            VOCABULARY_BRIEF_HINT,
+        );
+        println!("{}", serde_json::to_string_pretty(&compact)?);
+        return Ok(());
+    }
+    emit(&value, json, |value| render_vocabulary(value, full))
 }
 
 fn emit(value: &Value, json: bool, render: impl Fn(&Value) -> String) -> Result<()> {
@@ -382,7 +426,7 @@ fn parse_lenient<T: Default + for<'de> Deserialize<'de>>(value: &Value) -> T {
     serde_json::from_value(value.clone()).unwrap_or_default()
 }
 
-fn render_search(value: &Value) -> String {
+fn render_search(value: &Value, full: bool) -> String {
     let parsed: SearchResponse = parse_lenient(value);
     let mut text = String::new();
     if !parsed.matched_concepts.is_empty() {
@@ -425,7 +469,7 @@ fn render_search(value: &Value) -> String {
                 let _ = writeln!(text, "    protocol: {protocol}");
             }
         }
-        if let Some(score) = result.score {
+        if let Some(score) = result.score.filter(|_| full) {
             let _ = writeln!(text, "    score: {score:.2}");
         }
         if let Some(summary) = &result.summary {
@@ -442,7 +486,7 @@ fn render_search(value: &Value) -> String {
     text
 }
 
-fn render_vocabulary(value: &Value) -> String {
+fn render_vocabulary(value: &Value, full: bool) -> String {
     let parsed: VocabularyResponse = parse_lenient(value);
     let mut text = String::new();
     let _ = writeln!(text, "\n{}", "Concepts".bold());
@@ -452,6 +496,9 @@ fn render_vocabulary(value: &Value) -> String {
     }
     for concept in &parsed.concepts {
         let _ = writeln!(text, "  {}  {}", concept.slug.green().bold(), concept.name);
+        if !full {
+            continue;
+        }
         if let Some(description) = &concept.description {
             let _ = writeln!(text, "    {}", description.trim().dimmed());
         }
@@ -474,7 +521,7 @@ fn render_vocabulary(value: &Value) -> String {
             category.slug.green().bold(),
             category.name
         );
-        if let Some(description) = &category.description {
+        if let Some(description) = category.description.as_ref().filter(|_| full) {
             let _ = writeln!(text, "    {}", description.trim().dimmed());
         }
     }
@@ -484,6 +531,9 @@ fn render_vocabulary(value: &Value) -> String {
         "Tip: filter searches with `a4 know search --concept <slug>` or `--category <slug>`"
             .dimmed()
     );
+    if !full {
+        let _ = writeln!(text, "{}", VOCABULARY_BRIEF_HINT.dimmed());
+    }
     text
 }
 
@@ -816,7 +866,9 @@ mod tests {
 
     #[test]
     fn search_rendering_shows_concepts_results_and_coverage_flags() {
-        let text = render_search(&search_fixture());
+        let text = render_search(&search_fixture(), true);
+        assert!(text.contains("score: 4.00"), "{text}");
+        assert!(!render_search(&search_fixture(), false).contains("score:"));
         assert!(text.contains("Matched concepts"), "{text}");
         assert!(text.contains("swap"), "{text}");
         assert!(text.contains("meteora-damm"), "{text}");
@@ -828,22 +880,41 @@ mod tests {
     }
 
     #[test]
+    fn search_hint_names_full_fields_and_a_cut_page() {
+        let fixture = search_fixture();
+        let hint = search_hint(&fixture, false, 10).unwrap();
+        assert!(
+            hint.contains("--full") && !hint.contains("--limit"),
+            "{hint}"
+        );
+        let hint = search_hint(&fixture, true, 1).unwrap();
+        assert!(
+            !hint.contains("--full") && hint.contains("--limit above 1"),
+            "{hint}"
+        );
+        assert!(search_hint(&fixture, true, 10).is_none());
+    }
+
+    #[test]
     fn search_rendering_survives_missing_and_unknown_fields() {
         // A new server may add fields and omit optional ones; neither may
         // break rendering.
-        let text = render_search(&json!({
-            "results": [{ "type": "program", "slug": "bare", "brand_new_field": {"x": 1} }]
-        }));
+        let text = render_search(
+            &json!({
+                "results": [{ "type": "program", "slug": "bare", "brand_new_field": {"x": 1} }]
+            }),
+            false,
+        );
         assert!(text.contains("bare"), "{text}");
         assert!(text.contains("coverage: none"), "{text}");
 
-        let empty = render_search(&json!({ "matched_concepts": [], "results": [] }));
+        let empty = render_search(&json!({ "matched_concepts": [], "results": [] }), false);
         assert!(empty.contains("No results"), "{empty}");
     }
 
     #[test]
     fn vocabulary_rendering_lists_both_namespaces() {
-        let text = render_vocabulary(&json!({
+        let vocabulary = json!({
             "concepts": [{
                 "slug": "swap",
                 "name": "Swap",
@@ -856,7 +927,17 @@ mod tests {
                 "name": "DEX",
                 "description": "Decentralized exchange or AMM."
             }]
-        }));
+        });
+        let brief = render_vocabulary(&vocabulary, false);
+        assert!(brief.contains("swap") && brief.contains("dex"), "{brief}");
+        assert!(
+            !brief.contains("synonyms:") && !brief.contains("Decentralized"),
+            "{brief}"
+        );
+        assert!(brief.contains("--full"), "{brief}");
+        let text = render_vocabulary(&vocabulary, true);
+        assert!(!text.contains("--full"), "{text}");
+        assert!(text.contains("Decentralized exchange"), "{text}");
         assert!(text.contains("Concepts"), "{text}");
         assert!(text.contains("swap"), "{text}");
         assert!(text.contains("synonyms: trade, exchange"), "{text}");
@@ -1063,7 +1144,7 @@ mod tests {
 
     #[test]
     fn search_requires_at_least_one_filter() {
-        let err = search(None, Some("  "), None, None, false, None)
+        let err = search(None, Some("  "), None, None, false, &catalog_view::brief())
             .unwrap_err()
             .to_string();
         assert!(err.contains("at least one of"), "{err}");
@@ -1072,9 +1153,16 @@ mod tests {
 
     #[test]
     fn search_rejects_malformed_slug_filters_before_any_request() {
-        let err = search(None, Some("swap/../x"), None, None, false, None)
-            .unwrap_err()
-            .to_string();
+        let err = search(
+            None,
+            Some("swap/../x"),
+            None,
+            None,
+            false,
+            &catalog_view::brief(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("invalid character"), "{err}");
     }
 }

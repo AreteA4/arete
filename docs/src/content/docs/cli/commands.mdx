@@ -749,8 +749,9 @@ incomplete. For an owned stack diagnostic, use `a4 stack show <ref>`.
 Query the curated knowledge layer: which protocols, programs, stacks, and
 recipes serve an intent, and what the platform can do for each (`read` account
 state, `build` transactions, `subscribe` to a hosted stack). Every subcommand
-requires an API key saved by `a4 auth login` and accepts `--json`, which
-prints the API response verbatim.
+requires an API key saved by `a4 auth login` and accepts `--json`. `search`
+and `concepts` are brief by default (see below); the other subcommands print
+the API response verbatim.
 
 ```bash
 # Search by intent; results carry read / build / subscribe coverage flags
@@ -770,7 +771,8 @@ a4 know program meteora-cp-amm --section surface        # typed SDK operations w
 a4 know recipe execute-presale-purchase-via-squads
 
 # Concept and category slugs for --concept / --category
-a4 know concepts
+a4 know concepts            # slugs and names
+a4 know concepts --full     # with descriptions, synonyms and related concepts
 ```
 
 **`search` options:**
@@ -780,12 +782,17 @@ a4 know concepts
 | `--query, -q <text>` | Free-text intent; matches concept names and synonyms first   |
 | `--concept <slug>`   | Filter by concept slug (see `a4 know concepts`)              |
 | `--category <slug>`  | Filter by category slug (see `a4 know concepts`)             |
-| `--limit <n>`        | Maximum number of results                                    |
+| `--limit <n>`        | Maximum number of results (default 10)                       |
+| `--full`             | Every field per result (`score`, `coverage_via`)             |
 | `--fields <a,b.c>`   | JSON with only these keys (or dotted paths) per result       |
 | `--brief`            | JSON with only slug, type, name, protocol, summary, coverage |
 
 At least one of `--query`, `--concept`, or `--category` is required.
-`--fields` and `--brief` imply `--json`.
+Results keep `type`, `slug`, `name`, `protocol`, `summary` and `coverage` by
+default, in human and `--json` output; brief JSON adds a top-level `hint`
+naming `--full`, `--fields` and, when a page is full, a higher `--limit`.
+`--fields` and `--brief` imply `--json`. `a4 know concepts` lists slugs and
+names; `--full` adds descriptions, synonyms and related concepts.
 
 **`program` options:**
 

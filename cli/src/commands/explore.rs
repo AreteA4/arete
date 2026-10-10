@@ -2296,10 +2296,6 @@ pub fn program_list_shape(fields: &[String], full: bool) -> catalog_view::Shape 
     }
 }
 
-/// Searches pass no filter: show the first page of each kind instead of
-/// failing, with this many entries per kind unless `--limit` is given.
-const CATALOG_OVERVIEW_LIMIT: usize = 5;
-
 const CATALOG_BRIEF_HINT: &str = "Showing brief fields; use --full for every field \
      (concepts, score, identity hashes) or --json --fields a,b to choose keys. \
      `a4 explore catalog <kind> <slug>` shows one complete entry.";
@@ -2328,37 +2324,24 @@ fn catalog_search_hint(
 /// The overview printed by `a4 explore catalog` without filters: the first
 /// page of programs and of stacks, and a hint naming the filters.
 fn catalog_overview(client: &ApiClient, limit: usize) -> Result<(Value, String)> {
-    let mut results = Vec::new();
-    let mut cursors = serde_json::Map::new();
-    for kind in CATALOG_KINDS {
-        let page =
-            client.catalog_search(None, None, None, Some(kind), None, None, Some(limit), None)?;
-        results.extend(value_array(&page, "results").iter().cloned());
-        if let Some(cursor) = catalog_view::next_cursor(&page) {
-            cursors.insert(kind.to_string(), json!(cursor));
-        }
-    }
-    let mut overview = json!({ "results": results });
+    let pages = catalog_view::OVERVIEW_KINDS
+        .iter()
+        .map(|kind| {
+            client
+                .catalog_search(None, None, None, Some(kind), None, None, Some(limit), None)
+                .map(|page| (*kind, page))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let overview = catalog_view::merge_overview(&pages);
     let mut hint = format!(
         "Catalog overview: up to {limit} programs and {limit} stacks. Narrow with --query <intent>, \
          --concept <slug> or --category <slug> (slugs: `a4 explore catalog --vocabulary`), \
          or --kind program|stack."
     );
-    if !cursors.is_empty() {
+    if overview.get("nextCursors").is_some() {
         hint.push_str(" Page one kind with --kind <kind> --cursor <nextCursors.kind>.");
-        overview["nextCursors"] = Value::Object(cursors);
     }
     Ok((overview, hint))
-}
-
-/// Print a catalog or knowledge search response as JSON, shaped when asked.
-pub fn print_search_json(value: &Value, shape: Option<&catalog_view::Shape>) -> Result<()> {
-    let value = match shape {
-        Some(shape) => catalog_view::shape_search(value, shape),
-        None => value.clone(),
-    };
-    println!("{}", serde_json::to_string_pretty(&value)?);
-    Ok(())
 }
 
 pub fn catalog_search(
@@ -2394,7 +2377,7 @@ pub fn catalog_search(
             );
         }
         let (value, hint) =
-            catalog_overview(&client, args.limit.unwrap_or(CATALOG_OVERVIEW_LIMIT))?;
+            catalog_overview(&client, args.limit.unwrap_or(catalog_view::OVERVIEW_LIMIT))?;
         (value, Some(hint))
     } else {
         let value = client.catalog_search(

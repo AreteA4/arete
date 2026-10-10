@@ -557,7 +557,7 @@ enum KnowCommands {
         #[arg(long)]
         category: Option<String>,
 
-        /// Maximum number of results
+        /// Maximum number of results (default 10)
         #[arg(long)]
         limit: Option<usize>,
 
@@ -571,10 +571,14 @@ enum KnowCommands {
         )]
         fields: Vec<String>,
 
-        /// Keep only slug, type, name, protocol, summary and coverage of each result;
-        /// implies --json
+        /// JSON with only slug, type, name, protocol, summary and coverage of each result
+        /// (the default field set); implies --json
         #[arg(long)]
         brief: bool,
+
+        /// Every field of each result (score, coverage_via) instead of the brief default
+        #[arg(long, conflicts_with_all = ["brief", "fields"])]
+        full: bool,
     },
 
     /// Show curated knowledge for one protocol
@@ -599,8 +603,12 @@ enum KnowCommands {
         slug: String,
     },
 
-    /// List the concept and category vocabularies
-    Concepts,
+    /// List the concept and category vocabularies (slugs and names; --full for more)
+    Concepts {
+        /// Descriptions, synonyms and related concepts too
+        #[arg(long)]
+        full: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1322,20 +1330,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 limit,
                 fields,
                 brief,
+                full,
             } => commands::know::search(
                 query.as_deref(),
                 concept.as_deref(),
                 category.as_deref(),
                 limit,
-                cli.json,
-                commands::explore::catalog_output_shape(&fields, brief).as_ref(),
+                cli.json || brief || !fields.is_empty(),
+                &commands::explore::catalog_list_shape(&fields, full),
             ),
             KnowCommands::Protocol { slug } => commands::know::protocol(&slug, cli.json),
             KnowCommands::Program { slug, section } => {
                 commands::know::program(&slug, section.as_deref(), cli.json)
             }
             KnowCommands::Recipe { slug } => commands::know::recipe(&slug, cli.json),
-            KnowCommands::Concepts => commands::know::concepts(cli.json),
+            KnowCommands::Concepts { full } => commands::know::concepts(cli.json, full),
         },
         Commands::Install {
             target,
