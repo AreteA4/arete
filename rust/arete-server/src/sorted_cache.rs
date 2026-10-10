@@ -7,6 +7,7 @@
 use crate::shared_entity::{lookup, EntityFields, Fields, SharedEntity};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -22,6 +23,36 @@ pub struct SortKey {
     entity_key: String,
     /// Direction to apply to the sort value comparison.
     order: SortOrder,
+    /// A string sort value read as a decimal integer, once, rather than on
+    /// every comparison. Derived from `sort_value`, so it changes nothing
+    /// about equality.
+    decimal: Option<DecimalKey>,
+}
+
+impl SortKey {
+    fn new(sort_value: SortValue, entity_key: String, order: SortOrder) -> Self {
+        Self {
+            decimal: DecimalKey::of(&sort_value),
+            sort_value,
+            entity_key,
+            order,
+        }
+    }
+
+    /// Give the key another sort value.
+    fn set_sort_value(&mut self, sort_value: SortValue) {
+        self.decimal = DecimalKey::of(&sort_value);
+        self.sort_value = sort_value;
+    }
+
+    fn ranked(&self) -> Ranked<'_> {
+        Ranked {
+            sort_value: &self.sort_value,
+            decimal: self.decimal,
+            entity_key: &self.entity_key,
+            order: self.order,
+        }
+    }
 }
 
 impl PartialOrd for SortKey {
@@ -31,6 +62,34 @@ impl PartialOrd for SortKey {
 }
 
 impl Ord for SortKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.ranked().cmp(&other.ranked())
+    }
+}
+
+/// A [`SortKey`], borrowed: what ordering one reads, so a candidate can be
+/// compared without building (and allocating) a key of its own.
+struct Ranked<'a> {
+    sort_value: &'a SortValue,
+    decimal: Option<DecimalKey>,
+    entity_key: &'a str,
+    order: SortOrder,
+}
+
+impl Ranked<'_> {
+    /// [`SortValue::cmp`], using the pre-parsed decimals.
+    fn cmp_values(&self, other: &Self) -> Ordering {
+        match (self.sort_value, other.sort_value) {
+            (SortValue::String(left), SortValue::String(right)) => {
+                match (&self.decimal, &other.decimal) {
+                    (Some(a), Some(b)) => a.cmp(left, b, right),
+                    _ => left.cmp(right),
+                }
+            }
+            (left, right) => left.cmp(right),
+        }
+    }
+
     fn cmp(&self, other: &Self) -> Ordering {
         if self.order != other.order {
             return match (self.order, other.order) {
@@ -44,16 +103,16 @@ impl Ord for SortKey {
         // so it sorts after every entity that has one in *both* directions:
         // it must never take a window slot from a ranked entity. `desc`
         // reverses only the comparison between two present values.
-        let sort_order = match (&self.sort_value, &other.sort_value, self.order) {
+        let sort_order = match (self.sort_value, other.sort_value, self.order) {
             (SortValue::Null, SortValue::Null, _) => Ordering::Equal,
             (SortValue::Null, _, _) => Ordering::Greater,
             (_, SortValue::Null, _) => Ordering::Less,
-            (_, _, SortOrder::Asc) => self.sort_value.cmp(&other.sort_value),
-            (_, _, SortOrder::Desc) => self.sort_value.cmp(&other.sort_value).reverse(),
+            (_, _, SortOrder::Asc) => self.cmp_values(other),
+            (_, _, SortOrder::Desc) => self.cmp_values(other).reverse(),
         };
 
         match sort_order {
-            Ordering::Equal => self.entity_key.cmp(&other.entity_key),
+            Ordering::Equal => self.entity_key.cmp(other.entity_key),
             other => other,
         }
     }
@@ -198,6 +257,8 @@ pub struct SortedViewCache {
     keys_cache: Vec<String>,
     /// Whether keys_cache needs rebuild
     cache_dirty: bool,
+    /// Stands in for an entity while it is merged in place.
+    placeholder: SharedEntity,
 }
 
 impl SortedViewCache {
@@ -210,6 +271,7 @@ impl SortedViewCache {
             entities: HashMap::new(),
             keys_cache: Vec::new(),
             cache_dirty: true,
+            placeholder: SharedEntity::new(Value::Null),
         }
     }
 
@@ -230,64 +292,67 @@ impl SortedViewCache {
     /// An update merges into the entity held, keeping fields the update lacks.
     /// When it lacks none, which is the case for a whole entity, the cache
     /// shares the update's fields instead of copying them.
+    ///
+    /// Finding the position walks the order up to it; [`Self::put`] does the
+    /// same upsert without it.
     pub fn upsert(&mut self, entity_key: String, entity: impl Into<SharedEntity>) -> UpsertResult {
         let entity = entity.into();
         let sort_value = self.extract_sort_value(&entity);
+        let moved = self.put_with_sort_value(Cow::Borrowed(&entity_key), entity, sort_value);
+        let position = self.find_position(&entity_key);
+        match moved {
+            Placed::Unmoved => UpsertResult::Updated { position },
+            Placed::Moved => UpsertResult::Inserted { position },
+        }
+    }
 
-        // Check if entity already exists. Taken out rather than copied: every
-        // branch below puts the merged entity back.
-        if let Some((old_sort_key, old_entity)) = self.entities.remove(&entity_key) {
-            let effective_sort_value = if matches!(sort_value, SortValue::Null)
-                && !matches!(old_sort_key.sort_value, SortValue::Null)
-            {
-                old_sort_key.sort_value.clone()
-            } else {
-                sort_value
-            };
+    /// [`Self::upsert`] without reporting where the entity landed.
+    pub fn put(&mut self, entity_key: String, entity: impl Into<SharedEntity>) {
+        let entity = entity.into();
+        let sort_value = self.extract_sort_value(&entity);
+        self.put_with_sort_value(Cow::Owned(entity_key), entity, sort_value);
+    }
 
-            let new_sort_key = SortKey {
-                sort_value: effective_sort_value,
-                entity_key: entity_key.clone(),
-                order: self.order,
-            };
-
+    /// [`Self::upsert`] given the entity's sort value.
+    fn put_with_sort_value(
+        &mut self,
+        entity_key: Cow<'_, str>,
+        entity: SharedEntity,
+        sort_value: SortValue,
+    ) -> Placed {
+        if let Some((sort_key, held)) = self.entities.get_mut(entity_key.as_ref()) {
             // Merge incoming entity with existing to preserve fields not in the update
-            let merged_entity = Self::merge_entity(old_entity, entity);
+            let old_entity = std::mem::replace(held, self.placeholder.clone());
+            *held = Self::merge_entity(old_entity, entity);
 
-            if old_sort_key == new_sort_key {
-                // Sort key unchanged - just update entity data
-                self.entities
-                    .insert(entity_key.clone(), (new_sort_key, merged_entity));
-                // Position unchanged, no structural change
-                let position = self.find_position(&entity_key);
-                return UpsertResult::Updated { position };
+            // A missing sort value keeps the one held.
+            let keeps_old_value = matches!(sort_value, SortValue::Null)
+                && !matches!(sort_key.sort_value, SortValue::Null);
+            if keeps_old_value || sort_key.sort_value == sort_value {
+                // Sort key unchanged - position unchanged, no structural change
+                return Placed::Unmoved;
             }
 
-            // Sort key changed - need to reposition
-            self.sorted.remove(&old_sort_key);
-            self.sorted.insert(new_sort_key.clone(), ());
-            self.entities
-                .insert(entity_key.clone(), (new_sort_key, merged_entity));
+            // Sort key changed - need to reposition. The order's own copy of
+            // the key moves, so the entity key is not copied again.
+            let (mut ordered, ()) = self
+                .sorted
+                .remove_entry(sort_key)
+                .expect("every held entity is in the order");
+            ordered.set_sort_value(sort_value);
+            sort_key.sort_value = ordered.sort_value.clone();
+            sort_key.decimal = ordered.decimal;
+            self.sorted.insert(ordered, ());
             self.cache_dirty = true;
-
-            let position = self.find_position(&entity_key);
-            return UpsertResult::Inserted { position };
+            return Placed::Moved;
         }
 
-        let new_sort_key = SortKey {
-            sort_value,
-            entity_key: entity_key.clone(),
-            order: self.order,
-        };
-
+        let entity_key = entity_key.into_owned();
+        let new_sort_key = SortKey::new(sort_value, entity_key.clone(), self.order);
         self.sorted.insert(new_sort_key.clone(), ());
-        self.entities
-            .insert(entity_key.clone(), (new_sort_key, entity));
+        self.entities.insert(entity_key, (new_sort_key, entity));
         self.cache_dirty = true;
-
-        let position = self.find_position(&entity_key);
-
-        UpsertResult::Inserted { position }
+        Placed::Moved
     }
 
     /// Whether upserting `entity` under `entity_key` into a cache bounded at
@@ -302,18 +367,33 @@ impl SortedViewCache {
         entity: &E,
         max_entries: usize,
     ) -> bool {
+        self.keeps(entity_key, || self.extract_sort_value(entity), max_entries)
+            .0
+    }
+
+    /// [`Self::would_keep`], handing back the sort value it read, if it read
+    /// one.
+    fn keeps(
+        &self,
+        entity_key: &str,
+        sort_value: impl FnOnce() -> SortValue,
+        max_entries: usize,
+    ) -> (bool, Option<SortValue>) {
         if self.entities.contains_key(entity_key) || self.sorted.len() < max_entries {
-            return true;
+            return (true, None);
         }
         let Some((last, ())) = self.sorted.last_key_value() else {
-            return true;
+            return (true, None);
         };
-        let candidate = SortKey {
-            sort_value: self.extract_sort_value(entity),
-            entity_key: entity_key.to_string(),
+        let sort_value = sort_value();
+        let candidate = Ranked {
+            sort_value: &sort_value,
+            decimal: DecimalKey::of(&sort_value),
+            entity_key,
             order: self.order,
         };
-        candidate < *last
+        let kept = candidate.cmp(&last.ranked()).is_lt();
+        (kept, Some(sort_value))
     }
 
     /// Upsert an entity, then evict from the bottom of the sort order so the
@@ -330,6 +410,28 @@ impl SortedViewCache {
         let result = self.upsert(entity_key, entity);
         self.trim_to_max_entries(max_entries);
         result
+    }
+
+    /// [`Self::upsert_bounded`] for an entity [`Self::would_keep`] keeps,
+    /// without reporting its position: the cache ends up as it would after
+    /// `would_keep` and `upsert_bounded`, reading the entity's sort value
+    /// once and sharing (cloning) the entity only if the cache keeps it.
+    /// Returns whether it does.
+    pub fn upsert_if_kept(
+        &mut self,
+        entity_key: &str,
+        entity: &SharedEntity,
+        max_entries: usize,
+    ) -> bool {
+        let (kept, sort_value) =
+            self.keeps(entity_key, || self.extract_sort_value(entity), max_entries);
+        if !kept {
+            return false;
+        }
+        let sort_value = sort_value.unwrap_or_else(|| self.extract_sort_value(entity));
+        self.put_with_sort_value(Cow::Borrowed(entity_key), entity.clone(), sort_value);
+        self.trim_to_max_entries(max_entries);
+        true
     }
 
     /// Evict entities from the bottom of the sort order until at most
@@ -418,15 +520,24 @@ impl SortedViewCache {
         self.cache_dirty = true;
     }
 
+    ///
+    /// Finding the position walks the order up to it; [`Self::remove_key`]
+    /// removes without it.
     pub fn remove(&mut self, entity_key: &str) -> Option<usize> {
-        if let Some((sort_key, _)) = self.entities.remove(entity_key) {
-            let position = self.find_position_by_sort_key(&sort_key);
-            self.sorted.remove(&sort_key);
-            self.cache_dirty = true;
-            Some(position)
-        } else {
-            None
-        }
+        let (sort_key, _) = self.entities.get(entity_key)?;
+        let position = self.find_position_by_sort_key(sort_key);
+        self.remove_key(entity_key);
+        Some(position)
+    }
+
+    /// Remove an entity, returning whether the cache held it.
+    pub fn remove_key(&mut self, entity_key: &str) -> bool {
+        let Some((sort_key, _)) = self.entities.remove(entity_key) else {
+            return false;
+        };
+        self.sorted.remove(&sort_key);
+        self.cache_dirty = true;
+        true
     }
 
     /// Get entity by key
@@ -435,6 +546,9 @@ impl SortedViewCache {
     }
 
     /// Get ordered keys (rebuilds cache if dirty)
+    ///
+    /// The other readers walk the order itself, so only this one pays for
+    /// copying every key after a change.
     pub fn ordered_keys(&mut self) -> &[String] {
         if self.cache_dirty {
             self.rebuild_keys_cache();
@@ -444,20 +558,21 @@ impl SortedViewCache {
 
     /// Get a window of entities, as copies.
     pub fn get_window(&mut self, skip: usize, take: usize) -> Vec<(String, Value)> {
-        if self.cache_dirty {
-            self.rebuild_keys_cache();
-        }
-
-        self.keys_cache
-            .iter()
+        self.iter_ordered()
             .skip(skip)
             .take(take)
-            .filter_map(|key| {
-                self.entities
-                    .get(key)
-                    .map(|(_, v)| (key.clone(), v.to_value()))
-            })
+            .map(|(key, entity)| (key.to_string(), entity.to_value()))
             .collect()
+    }
+
+    /// Every entity in sort order, borrowed: a window read walks only as far
+    /// as it reads, `skip` included.
+    pub fn iter_ordered(&self) -> impl Iterator<Item = (&str, &SharedEntity)> + '_ {
+        self.sorted.keys().filter_map(|sort_key| {
+            self.entities
+                .get(&sort_key.entity_key)
+                .map(|(_, entity)| (sort_key.entity_key.as_str(), entity))
+        })
     }
 
     /// Copies of every entity in deterministic sort order.
@@ -471,17 +586,8 @@ impl SortedViewCache {
     /// Every entity in deterministic sort order for query-side filtering,
     /// sharing their fields with the cache rather than copying them.
     pub fn ordered_entities(&mut self) -> Vec<(String, SharedEntity)> {
-        if self.cache_dirty {
-            self.rebuild_keys_cache();
-        }
-
-        self.keys_cache
-            .iter()
-            .filter_map(|key| {
-                self.entities
-                    .get(key)
-                    .map(|(_, entity)| (key.clone(), entity.clone()))
-            })
+        self.iter_ordered()
+            .map(|(key, entity)| (key.to_string(), entity.clone()))
             .collect()
     }
 
@@ -492,11 +598,13 @@ impl SortedViewCache {
         skip: usize,
         take: usize,
     ) -> Vec<ViewDelta> {
-        if self.cache_dirty {
-            self.rebuild_keys_cache();
-        }
-
-        let new_window_keys: Vec<&String> = self.keys_cache.iter().skip(skip).take(take).collect();
+        let new_window_keys: Vec<&String> = self
+            .sorted
+            .keys()
+            .map(|sort_key| &sort_key.entity_key)
+            .skip(skip)
+            .take(take)
+            .collect();
 
         let old_set: std::collections::HashSet<&String> = old_window_keys.iter().collect();
         let new_set: std::collections::HashSet<&String> = new_window_keys.iter().cloned().collect();
@@ -548,6 +656,12 @@ impl SortedViewCache {
     }
 }
 
+/// Whether an upsert moved the entity in the order (or added it).
+enum Placed {
+    Unmoved,
+    Moved,
+}
+
 /// Result of an upsert operation
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpsertResult {
@@ -583,6 +697,71 @@ fn value_to_sort_value(v: &Value) -> SortValue {
         }
         Value::String(s) => SortValue::String(s.clone()),
         _ => SortValue::Null,
+    }
+}
+
+/// A string that is a decimal integer (`-?[0-9]+`), as [`compare_decimal_strings`]
+/// reads it: its sign, where its significant digits start, and their value
+/// when it fits in a `u128`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DecimalKey {
+    negative: bool,
+    /// Where the digits start once leading zeros are dropped ("0" keeps one).
+    start: usize,
+    /// Those digits' value, when they fit.
+    value: Option<u128>,
+}
+
+impl DecimalKey {
+    fn of(sort_value: &SortValue) -> Option<Self> {
+        match sort_value {
+            SortValue::String(text) => Self::parse(text),
+            _ => None,
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        let (negative, digits) = match text.strip_prefix('-') {
+            Some(digits) => (true, digits),
+            None => (false, text),
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let significant = digits.trim_start_matches('0');
+        let significant = if significant.is_empty() {
+            &digits[digits.len() - 1..]
+        } else {
+            significant
+        };
+        Some(Self {
+            negative: negative && significant != "0",
+            start: text.len() - significant.len(),
+            value: significant.parse().ok(),
+        })
+    }
+
+    /// [`compare_decimal_strings`] for `left` and `right`, whose keys these
+    /// are.
+    fn cmp(&self, left: &str, other: &Self, right: &str) -> Ordering {
+        match (self.negative, other.negative) {
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            _ => {
+                let magnitude = match (self.value, other.value) {
+                    (Some(a), Some(b)) => a.cmp(&b),
+                    _ => {
+                        let (a, b) = (&left[self.start..], &right[other.start..]);
+                        a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+                    }
+                };
+                if self.negative {
+                    magnitude.reverse()
+                } else {
+                    magnitude
+                }
+            }
+        }
     }
 }
 
@@ -1158,5 +1337,167 @@ mod tests {
             SharedEntity::from_parts(fields, Some(json!("e:2"))),
         );
         assert_eq!(cache.ordered_keys(), ["b", "a"]);
+    }
+
+    /// Comparing pre-parsed decimal keys orders strings exactly as comparing
+    /// the strings themselves does.
+    #[test]
+    fn pre_parsed_decimals_compare_as_the_strings_do() {
+        let huge = "9".repeat(45);
+        let huger = format!("1{}", "0".repeat(45));
+        let u128_max = u128::MAX.to_string();
+        let past_u128 = (u128::MAX - 1).to_string() + "0";
+        let texts = [
+            "0",
+            "-0",
+            "000",
+            "-000",
+            "7",
+            "007",
+            "-7",
+            "-007",
+            "10",
+            "9",
+            "-10",
+            "-9",
+            "18446744073709551616",
+            "-18446744073709551616",
+            &u128_max,
+            &past_u128,
+            &huge,
+            &huger,
+            "-",
+            "",
+            "+5",
+            "5a",
+            "a",
+            "abc",
+            " 1",
+            "1.5",
+            "-1.5",
+            "0x10",
+        ];
+        for left in texts {
+            for right in texts {
+                let expected =
+                    compare_decimal_strings(left, right).unwrap_or_else(|| left.cmp(right));
+                for order in [SortOrder::Asc, SortOrder::Desc] {
+                    let a = SortKey::new(SortValue::String(left.to_string()), "k".into(), order);
+                    let b = SortKey::new(SortValue::String(right.to_string()), "k".into(), order);
+                    let expected = match order {
+                        SortOrder::Asc => expected,
+                        SortOrder::Desc => expected.reverse(),
+                    };
+                    assert_eq!(a.cmp(&b), expected, "{left:?} vs {right:?} ({order:?})");
+                }
+            }
+        }
+    }
+
+    /// The unpositioned upserts and removals the projector uses leave the
+    /// cache exactly as the positioned ones do, in every order a window can
+    /// read it.
+    #[test]
+    fn unpositioned_writes_match_positioned_ones() {
+        struct Rng(u64);
+        impl Rng {
+            fn below(&mut self, n: u64) -> u64 {
+                self.0 = self
+                    .0
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (self.0 >> 33) % n
+            }
+        }
+        for (field, order) in [
+            ("amount", SortOrder::Desc),
+            ("amount", SortOrder::Asc),
+            ("label", SortOrder::Asc),
+        ] {
+            let cache = || SortedViewCache::new("test/top".into(), vec![field.into()], order);
+            let (mut positioned, mut unpositioned) = (cache(), cache());
+            let mut rng = Rng(7);
+            for step in 0..4_000 {
+                let key = format!("k{}", rng.below(60));
+                let max_entries = 1 + rng.below(40) as usize;
+                let value = match rng.below(6) {
+                    0 => Value::Null,
+                    1 => json!(rng.below(1_000)),
+                    2 => json!(format!("{}", rng.below(1_000))),
+                    3 => json!(format!("-{:03}", rng.below(1_000))),
+                    4 => json!(format!("{}{}", "9".repeat(40), rng.below(10))),
+                    _ => json!(format!("x{}", rng.below(100))),
+                };
+                let entity = SharedEntity::new(json!({
+                    field: value,
+                    "step": step,
+                    "_version": format!("e:{step}"),
+                }));
+                match rng.below(4) {
+                    0 => {
+                        positioned.remove(&key);
+                        unpositioned.remove_key(&key);
+                    }
+                    1 => {
+                        positioned.upsert(key.clone(), entity.clone());
+                        unpositioned.put(key, entity);
+                    }
+                    _ => {
+                        let keeps = positioned.would_keep(&key, &entity, max_entries);
+                        if keeps {
+                            positioned.upsert_bounded(key.clone(), entity.clone(), max_entries);
+                        }
+                        assert_eq!(
+                            unpositioned.upsert_if_kept(&key, &entity, max_entries),
+                            keeps
+                        );
+                    }
+                }
+                let expected: Vec<(String, Value)> = positioned
+                    .ordered_keys()
+                    .to_vec()
+                    .into_iter()
+                    .map(|key| {
+                        let entity = positioned.get(&key).unwrap().to_value();
+                        (key, entity)
+                    })
+                    .collect();
+                assert_eq!(unpositioned.get_all_ordered(), expected, "step {step}");
+                let skip = rng.below(8) as usize;
+                assert_eq!(
+                    unpositioned.get_window(skip, 5),
+                    expected
+                        .iter()
+                        .skip(skip)
+                        .take(5)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(unpositioned.ordered_keys(), positioned.ordered_keys());
+
+                // The order itself, from `SortValue`'s own comparison: unranked
+                // entities last either way, ties broken by key.
+                let mut reference: Vec<(SortValue, String)> = expected
+                    .iter()
+                    .map(|(key, _)| {
+                        let (sort_key, _) = &unpositioned.entities[key];
+                        (sort_key.sort_value.clone(), key.clone())
+                    })
+                    .collect();
+                reference.sort_by(|(a, a_key), (b, b_key)| {
+                    let by_value = match (a, b) {
+                        (SortValue::Null, SortValue::Null) => Ordering::Equal,
+                        (SortValue::Null, _) => Ordering::Greater,
+                        (_, SortValue::Null) => Ordering::Less,
+                        _ if order == SortOrder::Desc => a.cmp(b).reverse(),
+                        _ => a.cmp(b),
+                    };
+                    by_value.then_with(|| a_key.cmp(b_key))
+                });
+                let reference: Vec<&String> = reference.iter().map(|(_, key)| key).collect();
+                let held: Vec<&String> = expected.iter().map(|(key, _)| key).collect();
+                assert_eq!(held, reference, "step {step}");
+            }
+        }
     }
 }

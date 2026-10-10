@@ -2149,7 +2149,7 @@ async fn apply_collection_source_event(
         let caches = context.view_index.sorted_caches();
         let mut guard = caches.write().await;
         if let Some(cache) = guard.get_mut(&query.view) {
-            cache.remove(&envelope.key);
+            cache.remove_key(&envelope.key);
         }
     }
 }
