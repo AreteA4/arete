@@ -1248,7 +1248,7 @@ fn set_up_typescript_project<'a>(
 ) -> Option<SetupReport> {
     let outputs = outputs
         .into_iter()
-        .filter(|output| output.starts_with(root))
+        .filter(|output| inside(output, root))
         .filter(|output| runtime::nearest_package_json(output).is_none())
         .map(Path::to_path_buf)
         .collect::<Vec<_>>();
@@ -1257,8 +1257,7 @@ fn set_up_typescript_project<'a>(
     }
     // The configured output directory first, so the tsconfig.json also
     // covers stacks installed there later.
-    let covered = output_dir
-        .starts_with(root)
+    let covered = inside(output_dir, root)
         .then(|| output_dir.to_path_buf())
         .into_iter()
         .chain(outputs)
@@ -1270,6 +1269,15 @@ fn set_up_typescript_project<'a>(
         &runtime,
         json_output(),
     ))
+}
+
+/// Whether `path` is `root` or beneath it, read lexically: a `..` anywhere
+/// in `path` (as in `root/../generated`) can leave `root`, so it is not.
+fn inside(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+        && !path
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
 }
 
 /// What else a TypeScript project needs before it can type-check and run the
@@ -4373,6 +4381,16 @@ mod tests {
             server_app["usage"][0]["importPath"],
             "./src/generated/vault/vault.js"
         );
+    }
+
+    #[test]
+    fn inside_the_root_is_lexical() {
+        let root = Path::new("/app");
+        assert!(inside(Path::new("/app/generated/typescript"), root));
+        assert!(inside(&root.join("./generated"), root));
+        assert!(!inside(&root.join("../generated"), root));
+        assert!(!inside(&root.join("generated/../../x"), root));
+        assert!(!inside(Path::new("/other"), root));
     }
 
     #[test]
