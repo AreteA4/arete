@@ -1248,7 +1248,7 @@ fn set_up_typescript_project<'a>(
 ) -> Option<SetupReport> {
     let outputs = outputs
         .into_iter()
-        .filter(|output| inside(output, root))
+        .filter(|output| inside(output, root).is_some())
         .filter(|output| runtime::nearest_package_json(output).is_none())
         .map(Path::to_path_buf)
         .collect::<Vec<_>>();
@@ -1258,7 +1258,6 @@ fn set_up_typescript_project<'a>(
     // The configured output directory first, so the tsconfig.json also
     // covers stacks installed there later.
     let covered = inside(output_dir, root)
-        .then(|| output_dir.to_path_buf())
         .into_iter()
         .chain(outputs)
         .collect::<Vec<_>>();
@@ -1271,13 +1270,13 @@ fn set_up_typescript_project<'a>(
     ))
 }
 
-/// Whether `path` is `root` or beneath it, read lexically: a `..` anywhere
-/// in `path` (as in `root/../generated`) can leave `root`, so it is not.
-fn inside(path: &Path, root: &Path) -> bool {
-    path.starts_with(root)
-        && !path
-            .components()
-            .any(|component| component == std::path::Component::ParentDir)
+/// `path` with `.` and `..` resolved lexically, when it is `root` or
+/// beneath it once resolved (`root/sub/../generated` is `root/generated`;
+/// `root/../generated` is outside). `None` otherwise.
+fn inside(path: &Path, root: &Path) -> Option<PathBuf> {
+    let path = super::paths::normalize_absolute(path).ok()?;
+    let root = super::paths::normalize_absolute(root).ok()?;
+    path.starts_with(&root).then_some(path)
 }
 
 /// What else a TypeScript project needs before it can type-check and run the
@@ -4384,13 +4383,17 @@ mod tests {
     }
 
     #[test]
-    fn inside_the_root_is_lexical() {
-        let root = Path::new("/app");
-        assert!(inside(Path::new("/app/generated/typescript"), root));
-        assert!(inside(&root.join("./generated"), root));
-        assert!(!inside(&root.join("../generated"), root));
-        assert!(!inside(&root.join("generated/../../x"), root));
-        assert!(!inside(Path::new("/other"), root));
+    fn inside_the_root_resolves_dot_dot_first() {
+        // An absolute root on every platform.
+        let base = std::env::temp_dir();
+        let root = base.join("app");
+        let generated = Some(root.join("generated"));
+        assert_eq!(inside(&root.join("generated"), &root), generated);
+        assert_eq!(inside(&root.join("./generated"), &root), generated);
+        assert_eq!(inside(&root.join("sub/../generated"), &root), generated);
+        assert_eq!(inside(&root.join("../generated"), &root), None);
+        assert_eq!(inside(&root.join("generated/../../x"), &root), None);
+        assert_eq!(inside(&base.join("other"), &root), None);
     }
 
     #[test]
