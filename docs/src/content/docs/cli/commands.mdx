@@ -1191,12 +1191,15 @@ Next steps:  use stack ore from ./index.ts:
 
 `--setup` (on `a4 install` or a package add such as
 `a4 install stack ore --ts --setup`) does those steps itself when a TypeScript
-output has no `package.json` at or above it and the project root has none
-either. In the project root it writes a private `package.json` with
+output inside the project root has no `package.json` at or above it and the
+root has none either. Outputs outside the root are not set up. In the project
+root it writes a private `package.json` with
 `"type": "module"` and `start` (`tsx index.ts`) and `typecheck`
 (`tsc --noEmit`) scripts, writes a `tsconfig.json` for Node ES modules
 (`module`/`moduleResolution` `NodeNext`, `target` `ES2022`, `strict`,
-`types: ["node"]`) unless one is at or above the root, then runs
+`types: ["node"]`; `include` covers the root's own `.ts` files and the
+generated outputs, so other apps beneath the root are not checked as Node
+code) unless one is at or above the root, then runs
 `npm install` for the runtime set and `npm install -D` for the development
 tools. It never replaces an existing file, never prompts, and does nothing
 for an app that already has a `package.json`. The summary reports what it did:
@@ -1222,7 +1225,8 @@ advice for each.
   `a4 install --setup` and the same steps by hand. The generated code is ES
   modules, so the new package is set to `"type": "module"`. The separate
   `Runtime`, `Dev tools` and `Tsconfig` lines are then left out, as the block
-  covers them.
+  covers them, except the `Tsconfig` line for an existing `tsconfig.json` that
+  hides Node's types.
 - `Dev tools` lists the development packages the app's `package.json` does
   not declare yet: `typescript`, plus `tsx` and `@types/node` for a Node app
   (one that does not depend on `react`).
@@ -1243,7 +1247,9 @@ advice for each.
   Vite, `NEXT_PUBLIC_ARETE_PUBLISHABLE_KEY` in a `"use client"` component for
   Next.js, otherwise `ARETE_PUBLISHABLE_KEY`), with the
   `a4 auth keys create-publishable --origin <origin> --env-file .env.local`
-  command that creates it.
+  command that creates it, prefixed with `cd <app>` when the app is not the
+  current directory (the command picks the variable name from, and writes the
+  env file in, the directory it runs in).
 
 In `--json` output these are `typescriptApps[]`, one entry per app with
 `directory`, `kind` (`node` or `browser`), `devRuntime[]` (package names),

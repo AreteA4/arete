@@ -16,11 +16,11 @@ use super::runtime::{self, RuntimePackage};
 /// The command that performs the setup from the project root.
 pub const SETUP_COMMAND: &str = "a4 install --setup";
 
-/// A `tsconfig.json` for Node ES modules that loads Node's types. The
-/// generated SDK is ES module source with `.js` import specifiers, which
-/// `NodeNext` resolution follows; `tsx` runs it as is.
-pub const NODE_TSCONFIG: &str = r#"{
-  "compilerOptions": {
+/// The `compilerOptions` of the `tsconfig.json` setup writes: Node ES
+/// modules with Node's types. The generated SDK is ES module source with
+/// `.js` import specifiers, which `NodeNext` resolution follows; `tsx` runs it
+/// as is.
+const NODE_COMPILER_OPTIONS: &str = r#"  "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
     "module": "NodeNext",
@@ -30,9 +30,44 @@ pub const NODE_TSCONFIG: &str = r#"{
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true
-  }
+  }"#;
+
+/// A `tsconfig.json` for the Node app in `directory` that covers only its
+/// top-level `.ts` files (the `index.ts` entry) and the generated TypeScript
+/// `outputs`, so other apps beneath it, such as a React app with its own
+/// config, are not type-checked as Node code.
+fn node_tsconfig(directory: &Path, outputs: &[PathBuf]) -> String {
+    let mut include = vec!["*.ts".to_string()];
+    for output in outputs {
+        let dir = if output.extension().and_then(|ext| ext.to_str()) == Some("ts") {
+            output.parent().unwrap_or(output)
+        } else {
+            output.as_path()
+        };
+        let Ok(relative) = dir.strip_prefix(directory) else {
+            continue;
+        };
+        let relative = relative
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        let pattern = if relative.is_empty() {
+            "**/*.ts".to_string()
+        } else {
+            format!("{relative}/**/*.ts")
+        };
+        if !include.contains(&pattern) {
+            include.push(pattern);
+        }
+    }
+    let include = include
+        .iter()
+        .map(|pattern| serde_json::Value::String(pattern.clone()).to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{\n{NODE_COMPILER_OPTIONS},\n  \"include\": [{include}]\n}}\n")
 }
-"#;
 
 /// What `--setup` did in one directory.
 #[derive(Debug, Serialize)]
@@ -78,26 +113,31 @@ impl SetupReport {
     }
 }
 
-/// Set up `directory`, which has no `package.json`: write the project files,
-/// then install `runtime` and the Node development tools.
-pub fn set_up(directory: &Path, runtime: &[RuntimePackage], json: bool) -> SetupReport {
+/// Set up `directory`, which has no `package.json`, for the generated
+/// TypeScript `outputs` beneath it: write the project files, then install
+/// `runtime` and the Node development tools.
+pub fn set_up(
+    directory: &Path,
+    outputs: &[PathBuf],
+    runtime: &[RuntimePackage],
+    json: bool,
+) -> SetupReport {
     let mut report = SetupReport {
         directory: directory.display().to_string(),
         created: Vec::new(),
         ran: Vec::new(),
         failed: None,
     };
-    match write_project_files(directory) {
-        Ok(created) => {
-            report.created = created
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect();
-        }
-        Err(error) => {
-            report.failed = Some(format!("{error:#}"));
-            return report;
-        }
+    let mut created = Vec::new();
+    let written = write_project_files(directory, outputs, &mut created);
+    // Files written before a failure are still reported.
+    report.created = created
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    if let Err(error) = written {
+        report.failed = Some(format!("{error:#}"));
+        return report;
     }
     let dev_tools = runtime::typescript_dev_tools(&Default::default());
     for args in npm_install_args(runtime, &dev_tools) {
@@ -114,21 +154,25 @@ pub fn set_up(directory: &Path, runtime: &[RuntimePackage], json: bool) -> Setup
 }
 
 /// Write `package.json` and, when no `tsconfig.json` is at or above
-/// `directory`, `tsconfig.json`. Existing files are left alone. Returns the
-/// files written.
-pub fn write_project_files(directory: &Path) -> Result<Vec<PathBuf>> {
-    let mut created = Vec::new();
+/// `directory`, a `tsconfig.json` covering `outputs`. Existing files are left
+/// alone. Each file written is pushed to `created`, also when a later write
+/// fails.
+pub fn write_project_files(
+    directory: &Path,
+    outputs: &[PathBuf],
+    created: &mut Vec<PathBuf>,
+) -> Result<()> {
     let package_json = directory.join("package.json");
     if write_new(&package_json, &package_json_contents(directory))? {
         created.push(package_json);
     }
     if runtime::nearest_tsconfig(directory).is_none() {
         let tsconfig = directory.join("tsconfig.json");
-        if write_new(&tsconfig, NODE_TSCONFIG)? {
+        if write_new(&tsconfig, &node_tsconfig(directory, outputs))? {
             created.push(tsconfig);
         }
     }
-    Ok(created)
+    Ok(())
 }
 
 /// Create `path` with `contents` unless it exists. `true` when written.
@@ -139,7 +183,10 @@ fn write_new(path: &Path, contents: &str) -> Result<bool> {
         .open(path)
     {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        // An existing file is kept; anything else in its place is an error.
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && path.is_file() => {
+            return Ok(false)
+        }
         Err(error) => {
             return Err(error).with_context(|| format!("Failed to create {}", path.display()))
         }
@@ -238,12 +285,22 @@ fn run_npm(directory: &Path, args: &[String], json: bool) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn write(directory: &Path, outputs: &[PathBuf]) -> Vec<PathBuf> {
+        let mut created = Vec::new();
+        write_project_files(directory, outputs, &mut created).unwrap();
+        created
+    }
+
     #[test]
     fn writes_an_es_module_package_and_a_node_tsconfig() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("My Ore_App!");
         fs::create_dir(&root).unwrap();
-        let created = write_project_files(&root).unwrap();
+        let outputs = [
+            root.join("generated/typescript/stacks/ore"),
+            root.join("src/ore-sdk.ts"),
+        ];
+        let created = write(&root, &outputs);
         assert_eq!(
             created,
             vec![root.join("package.json"), root.join("tsconfig.json")]
@@ -262,6 +319,15 @@ mod tests {
             tsconfig["compilerOptions"]["types"],
             serde_json::json!(["node"])
         );
+        // Only the entry and the generated outputs: not other apps beneath.
+        assert_eq!(
+            tsconfig["include"],
+            serde_json::json!([
+                "*.ts",
+                "generated/typescript/stacks/ore/**/*.ts",
+                "src/**/*.ts"
+            ])
+        );
         // The written tsconfig is one the install guidance accepts.
         assert_eq!(runtime::tsconfig_hiding_node_types(&root), None);
         assert_eq!(
@@ -276,7 +342,7 @@ mod tests {
         let root = temp.path();
         fs::write(root.join("package.json"), "{}").unwrap();
         fs::write(root.join("tsconfig.json"), "{}").unwrap();
-        assert!(write_project_files(root).unwrap().is_empty());
+        assert!(write(root, &[]).is_empty());
         assert_eq!(fs::read_to_string(root.join("package.json")).unwrap(), "{}");
         assert_eq!(
             fs::read_to_string(root.join("tsconfig.json")).unwrap(),
@@ -290,10 +356,7 @@ mod tests {
         fs::write(temp.path().join("tsconfig.json"), "{}").unwrap();
         let app = temp.path().join("app");
         fs::create_dir(&app).unwrap();
-        assert_eq!(
-            write_project_files(&app).unwrap(),
-            vec![app.join("package.json")]
-        );
+        assert_eq!(write(&app, &[]), vec![app.join("package.json")]);
     }
 
     #[test]
@@ -313,5 +376,21 @@ mod tests {
     fn package_names_fall_back_for_unusable_directory_names() {
         assert_eq!(package_name(Path::new("/x/__")), "arete-app");
         assert_eq!(package_name(Path::new("/x/ore-bot")), "ore-bot");
+    }
+
+    #[test]
+    fn files_written_before_a_failure_are_reported() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        // A directory where tsconfig.json would go makes that write fail
+        // after package.json is written.
+        fs::create_dir(root.join("tsconfig.json")).unwrap();
+        let report = set_up(root, &[], &[], true);
+        assert_eq!(
+            report.created,
+            vec![root.join("package.json").display().to_string()]
+        );
+        assert!(report.ran.is_empty());
+        assert!(report.failed.is_some());
     }
 }

@@ -1233,21 +1233,31 @@ impl ModuleTypeRequirement {
     }
 }
 
-/// Run `--setup` for the project at `root` when TypeScript `outputs` land
-/// where no `package.json` declares their packages and `root` has none
-/// either. `None` when there is nothing to set up.
+/// Run `--setup` for the project at `root` when TypeScript `outputs`
+/// beneath it land where no `package.json` declares their packages, and
+/// `root` has none either. Outputs outside `root` are left to the guidance:
+/// a package set up at `root` would not serve them. `None` when there is
+/// nothing to set up.
 fn set_up_typescript_project<'a>(
     root: &Path,
     outputs: impl IntoIterator<Item = &'a Path>,
 ) -> Option<SetupReport> {
-    let needs_package = outputs
+    let outputs = outputs
         .into_iter()
-        .any(|output| runtime::nearest_package_json(output).is_none());
-    if !needs_package || runtime::nearest_package_json(root).is_some() {
+        .filter(|output| output.starts_with(root))
+        .filter(|output| runtime::nearest_package_json(output).is_none())
+        .map(Path::to_path_buf)
+        .collect::<Vec<_>>();
+    if outputs.is_empty() || runtime::nearest_package_json(root).is_some() {
         return None;
     }
     let runtime = runtime::typescript_runtime_set(&BTreeSet::new());
-    Some(typescript_setup::set_up(root, &runtime, json_output()))
+    Some(typescript_setup::set_up(
+        root,
+        &outputs,
+        &runtime,
+        json_output(),
+    ))
 }
 
 /// What else a TypeScript project needs before it can type-check and run the
@@ -1466,34 +1476,35 @@ impl TypeScriptAppGuidance {
     }
 
     fn emit_tools(&self) {
-        // The setup block already lists the dev tools and tsconfig.json.
-        if self.project_setup.is_none() {
-            if !self.dev_runtime.is_empty() {
-                println!(
-                    "Dev tools:   to type-check and run it, also install in {}:",
-                    display_path(&self.directory)
-                );
-                println!(
-                    "             {}",
-                    runtime::npm_install_dev_command(&self.dev_runtime)
-                );
-            }
-            if let Some(tsconfig) = &self.tsconfig {
-                match &tsconfig.tsconfig {
-                    Some(path) => println!(
-                        "Tsconfig:    {} sets compilerOptions.types without \"node\", so tsc does not load @types/node (TS2591 on process, Buffer). Add \"node\" to that list.",
-                        display_path(path)
-                    ),
-                    None => {
-                        println!(
-                            "Tsconfig:    no tsconfig.json found. Create one that loads Node's types, in {}:",
-                            display_path(&tsconfig.directory)
-                        );
-                        for command in &tsconfig.commands {
-                            println!("             {command}");
-                        }
+        // The setup block already lists the dev tools, and the commands that
+        // create a tsconfig.json; an existing one that hides Node's types
+        // still needs its own line.
+        if self.project_setup.is_none() && !self.dev_runtime.is_empty() {
+            println!(
+                "Dev tools:   to type-check and run it, also install in {}:",
+                display_path(&self.directory)
+            );
+            println!(
+                "             {}",
+                runtime::npm_install_dev_command(&self.dev_runtime)
+            );
+        }
+        if let Some(tsconfig) = &self.tsconfig {
+            match &tsconfig.tsconfig {
+                Some(path) => println!(
+                    "Tsconfig:    {} sets compilerOptions.types without \"node\", so tsc does not load @types/node (TS2591 on process, Buffer). Add \"node\" to that list.",
+                    display_path(path)
+                ),
+                None if self.project_setup.is_none() => {
+                    println!(
+                        "Tsconfig:    no tsconfig.json found. Create one that loads Node's types, in {}:",
+                        display_path(&tsconfig.directory)
+                    );
+                    for command in &tsconfig.commands {
+                        println!("             {command}");
                     }
                 }
+                None => {}
             }
         }
         for usage in &self.usage {
@@ -4349,6 +4360,17 @@ mod tests {
             server_app["usage"][0]["importPath"],
             "./src/generated/vault/vault.js"
         );
+    }
+
+    #[test]
+    fn setup_skips_outputs_outside_the_project_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("project");
+        fs::create_dir(&root).unwrap();
+        // A sibling output: a package set up in the root would not serve it.
+        let sibling = temp.path().join("generated/ore");
+        assert!(set_up_typescript_project(&root, [sibling.as_path()]).is_none());
+        assert!(!root.join("package.json").exists());
     }
 
     #[test]
