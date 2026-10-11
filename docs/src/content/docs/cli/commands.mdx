@@ -249,8 +249,12 @@ Read-only check of everything `init` writes plus the environment.
 ```bash
 a4 doctor
 a4 doctor --json
+a4 doctor --summary  # only the overall status and the checks that are not ok
 a4 doctor --fix      # re-run the init writers for every agents.* warning, then re-check
 ```
+
+With `--summary`, JSON output keeps `status`, adds `okCount` (the checks left
+out) and lists only the checks that are not ok, with their fixes.
 
 | Check id                | What it verifies                                                                      | On failure                                                                                    |
 | ----------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |

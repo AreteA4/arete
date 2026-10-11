@@ -35,6 +35,11 @@ pub struct DoctorArgs {
     /// Re-run the init writers for every failing agents.* check
     #[arg(long)]
     pub fix: bool,
+
+    /// Print only the overall status and the checks that are not ok (with
+    /// their fixes) and count the rest
+    #[arg(long)]
+    pub summary: bool,
 }
 
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(2);
@@ -102,7 +107,19 @@ impl Check {
 struct DoctorJson<'a> {
     schema_version: u32,
     status: &'static str,
+    /// With `--summary`: how many checks were ok and left out of `checks`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ok_count: Option<usize>,
     checks: &'a [Check],
+}
+
+/// The checks `--summary` keeps: every one that is not ok.
+fn not_ok(checks: &[Check]) -> Vec<Check> {
+    checks
+        .iter()
+        .filter(|check| check.status != Status::Ok)
+        .cloned()
+        .collect()
 }
 
 /// Aggregate: `fail` if any check fails, else `warn` if any warns, else `ok`.
@@ -171,15 +188,22 @@ pub fn run(args: DoctorArgs, config_path: &str, json: bool) -> Result<()> {
     }
 
     let status = aggregate(&checks);
+    let shown = if args.summary {
+        not_ok(&checks)
+    } else {
+        checks.clone()
+    };
+    let ok_count = args.summary.then(|| checks.len() - shown.len());
     if json {
         let output = DoctorJson {
             schema_version: 1,
             status: status.as_str(),
-            checks: &checks,
+            ok_count,
+            checks: &shown,
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        print!("{}", render(&checks, status));
+        print!("{}", render(&shown, status, ok_count));
     }
     if status == Status::Fail {
         return Err(ui::ExitCode(1).into());
@@ -187,8 +211,11 @@ pub fn run(args: DoctorArgs, config_path: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn render(checks: &[Check], status: Status) -> String {
+fn render(checks: &[Check], status: Status, ok_count: Option<usize>) -> String {
     let mut out = String::new();
+    if let Some(ok_count) = ok_count {
+        out.push_str(&format!("{ok_count} check(s) ok\n"));
+    }
     let width = checks.iter().map(|check| check.id.len()).max().unwrap_or(0);
     for check in checks {
         let (symbol, label) = match check.status {
@@ -1224,6 +1251,52 @@ mod tests {
     }
 
     #[test]
+    fn summary_keeps_status_and_every_check_that_is_not_ok() {
+        let checks = vec![
+            Check::ok("cli.version", "a4 0.37.0"),
+            Check::info(
+                "agents.codex-trust",
+                "trust the project",
+                Some("run codex".into()),
+            ),
+            Check::warn("net.api", "slow", None),
+            Check::ok("auth.whoami", "agent"),
+        ];
+        let shown = not_ok(&checks);
+        let ids: Vec<&str> = shown.iter().map(|check| check.id.as_str()).collect();
+        assert_eq!(ids, ["agents.codex-trust", "net.api"]);
+        let json = serde_json::to_value(DoctorJson {
+            schema_version: 1,
+            status: aggregate(&checks).as_str(),
+            ok_count: Some(checks.len() - shown.len()),
+            checks: &shown,
+        })
+        .unwrap();
+        assert_eq!(json["status"], "warn");
+        assert_eq!(json["okCount"], 2);
+        assert_eq!(json["checks"].as_array().unwrap().len(), 2);
+
+        colored::control::set_override(false);
+        let text = render(&shown, aggregate(&checks), Some(2));
+        assert!(text.starts_with("2 check(s) ok\n"), "{text}");
+        assert!(text.contains("agents.codex-trust: run codex"), "{text}");
+        assert!(!text.contains("cli.version"), "{text}");
+        assert!(text.ends_with("Status: warn\n"), "{text}");
+    }
+
+    #[test]
+    fn full_output_has_no_ok_count() {
+        let json = serde_json::to_value(DoctorJson {
+            schema_version: 1,
+            status: "ok",
+            ok_count: None,
+            checks: &[],
+        })
+        .unwrap();
+        assert!(json.get("okCount").is_none());
+    }
+
+    #[test]
     fn aggregate_status_prefers_fail_then_warn() {
         let checks = vec![Check::ok("a", ""), Check::info("b", "", None)];
         assert_eq!(aggregate(&checks), Status::Ok);
@@ -1498,6 +1571,7 @@ mod tests {
         let output = DoctorJson {
             schema_version: 1,
             status: aggregate(&checks).as_str(),
+            ok_count: None,
             checks: &checks,
         };
         let json = serde_json::to_value(output).unwrap();

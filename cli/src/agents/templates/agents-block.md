@@ -6,12 +6,18 @@ This project uses Arete for typed Solana views and program operations. The
 `arete-programs`, `arete-stack-authoring`, and `arete-deploy` skills hold the
 detailed workflows.
 
-- Health check first: `a4 doctor --json` (ready when top-level `status` is
-  `"ok"`; exit 0 can include warnings). If `a4` is
-  missing: `curl -fsSL https://arete.run/install.sh | sh`
+- Health check first: `a4 doctor --summary --json` (ready when top-level
+  `status` is `"ok"`; exit 0 can include warnings; `checks` lists only the
+  checks that are not ok). If `a4` is missing:
+  `curl -fsSL https://arete.run/install.sh | sh`
 - Start from intent with `a4 know search --query "..." --json`, then inspect
   exact descriptors with `a4 explore stack <ref> --json` or
   `a4 explore program <ref> --json`.
+- One-off live read, no code: `a4 explore stack <ref> --json` lists the
+  views, then `a4 get <Entity>/<view> --stack <ref> --limit 1 --select
+  <paths>` (or the MCP `read_view` tool). `<Entity>/latest` is the current
+  state. One healthy `a4 doctor` is enough, and a single read needs no skill
+  reading.
 - Never guess schemas or SDK methods. Generate clients from the explored
   descriptor with `a4 install stack <ref> --ts` or
   `a4 install program <ref> --ts`; use `--rust` or `--python` only when the

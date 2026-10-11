@@ -2115,7 +2115,20 @@ mod tests {
         assert!(cli.non_interactive);
         assert!(matches!(
             cli.command,
-            Some(Commands::Doctor(commands::doctor::DoctorArgs { fix: true }))
+            Some(Commands::Doctor(commands::doctor::DoctorArgs {
+                fix: true,
+                summary: false
+            }))
+        ));
+
+        let cli = Cli::try_parse_from(["a4", "doctor", "--summary", "--json"])
+            .expect("doctor --summary should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Doctor(commands::doctor::DoctorArgs {
+                fix: false,
+                summary: true
+            }))
         ));
 
         let cli = Cli::try_parse_from(["a4", "program", "archive", "upr_x", "--yes"])
