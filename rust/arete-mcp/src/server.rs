@@ -889,7 +889,11 @@ impl AreteMcp {
             }
         };
         if full {
-            return self.registry_result(Ok(body)).await;
+            return full_descriptor_result(
+                body,
+                "Drop `full` for the summary (entities, views, endpoints and auth), or pass \
+                 `views` for view fields.",
+            );
         }
         let stack = parse_descriptor(Ok(body))?;
         // Guidance is pinned to the StackManifest this descriptor serves; a
@@ -1056,7 +1060,10 @@ impl AreteMcp {
             .registry_body(self.registry.program_install(&args.program).await)
             .await?;
         if full {
-            return self.registry_result(Ok(body)).await;
+            return full_descriptor_result(
+                body,
+                "Drop `full` for the summary, or pass `operationId` or `sections` for detail.",
+            );
         }
         let program = parse_descriptor(Ok(body))?;
         let needs_surface = sections.is_empty() || sections.iter().any(|s| s == "operations");
@@ -1944,6 +1951,27 @@ fn parse_descriptor(body: anyhow::Result<String>) -> Result<serde_json::Value, M
         .map_err(|error| McpError::internal_error(format!("invalid registry JSON: {error}"), None))
 }
 
+/// A whole install descriptor (`full: true`), passed through unchanged.
+///
+/// Descriptors are read under the larger
+/// [`MAX_DESCRIPTOR_BYTES`](crate::registry::MAX_DESCRIPTOR_BYTES) cap so they
+/// can be shaped, so the tool-result cap is applied here, to the bytes that
+/// would be returned. Exceeding it is the caller's to fix: `narrower` names the
+/// arguments that return less.
+fn full_descriptor_result(body: String, narrower: &str) -> Result<CallToolResult, McpError> {
+    if body.len() > MAX_RESPONSE_BYTES {
+        return Err(McpError::invalid_params(
+            format!(
+                "the full descriptor is {} bytes, over the {MAX_RESPONSE_BYTES} byte limit for a \
+                 single tool result. {narrower}",
+                body.len()
+            ),
+            None,
+        ));
+    }
+    Ok(CallToolResult::success(vec![Content::text(body)]))
+}
+
 /// A shaped (summary, sections, views or operation) result. It is cut from a
 /// descriptor that was already bounded, but the 512 KiB cap is re-checked on
 /// the bytes actually returned so the advertised bound holds for every tool.
@@ -2621,6 +2649,102 @@ mod explore_args_tests {
             .await
             .unwrap_err();
         assert!(error.message.contains("not found"), "{}", error.message);
+    }
+
+    /// A stack install descriptor padded past the tool-result cap by an
+    /// embedded program artifact, as a stack with large IDLs is.
+    fn oversized_stack_descriptor(padding: usize) -> String {
+        serde_json::json!({
+            "name": "big",
+            "stack": "big-abc",
+            "websocketUrl": "wss://big.test",
+            "liveSpecs": [{
+                "alias": "live",
+                "artifact": {"payload": {"entities": [{
+                    "state_name": "Round",
+                    "identity": {"primary_keys": ["id.round_id"]},
+                    "sections": [{"name": "id", "fields": [
+                        {"field_name": "round_id", "rust_type_name": "u64", "is_optional": false}
+                    ]}],
+                    "views": [{"id": "Round/latest", "output": "Collection"}]
+                }]}},
+                "binding": {"websocketEndpoint": "wss://big.test"}
+            }],
+            "stackManifest": {"payload": {"selectedViews": [
+                {"liveAlias": "live", "viewId": "Round/latest"}
+            ]}},
+            "programs": [{"installName": "big-program", "idl": {"docs": "x".repeat(padding)}}]
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn descriptors_over_the_tool_result_cap_are_still_shaped() {
+        let descriptor = oversized_stack_descriptor(MAX_RESPONSE_BYTES + 100 * 1024);
+        assert!(descriptor.len() > MAX_RESPONSE_BYTES);
+        let server = canned_registry(vec![("/api/registry/stacks/big/install", 200, descriptor)]);
+
+        let summary = server
+            .explore_stack(Parameters(ExploreStackArgs {
+                stack: "big".into(),
+                summary: None,
+                views: None,
+                full: None,
+            }))
+            .await
+            .unwrap();
+        let text = result_text(&summary);
+        assert!(text.len() < 64 * 1024, "summary is {} bytes", text.len());
+        assert!(text.contains("Round"), "{text}");
+
+        let views = server
+            .explore_stack(Parameters(ExploreStackArgs {
+                stack: "big".into(),
+                summary: None,
+                views: Some(StringList::Many(vec!["Round/latest".into()])),
+                full: None,
+            }))
+            .await
+            .unwrap();
+        assert!(result_text(&views).contains("Round/latest"));
+
+        // read_view resolves the WebSocket URL from the same descriptor.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        assert_eq!(
+            server.stack_websocket_url("big", deadline).await.unwrap(),
+            "wss://big.test"
+        );
+
+        // The whole descriptor cannot be one tool result: the caller is told
+        // which arguments return less.
+        let error = server
+            .explore_stack(Parameters(ExploreStackArgs {
+                stack: "big".into(),
+                summary: None,
+                views: None,
+                full: Some(true),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS, "{}", error.message);
+        assert!(error.message.contains("`views`"), "{}", error.message);
+    }
+
+    #[tokio::test]
+    async fn descriptors_over_the_read_cap_point_at_in_session_alternatives() {
+        let descriptor = oversized_stack_descriptor(crate::registry::MAX_DESCRIPTOR_BYTES + 1024);
+        let server = canned_registry(vec![("/api/registry/stacks/big/install", 200, descriptor)]);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let error = server
+            .stack_websocket_url("big", deadline)
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("`url`"), "{}", error.message);
+        assert!(
+            error.message.contains("explore_stack_schema"),
+            "{}",
+            error.message
+        );
     }
 
     fn result_text(result: &CallToolResult) -> String {
