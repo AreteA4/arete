@@ -1,5 +1,5 @@
 import type { TaskDefinition } from '../src/types.js';
-import { check, doctorOk, freshAccountChecks, liveDataCalls, noSecretsInWorkspace, oreGroundTruth } from './lib.js';
+import { answerNumbers, check, doctorOk, freshAccountChecks, liveDataCalls, noSecretsInWorkspace, oreGroundTruth } from './lib.js';
 
 /** The exact prompt arete.run tells users to paste into their agent. */
 export const ARETE_RUN_PROMPT =
@@ -57,7 +57,7 @@ export const task: TaskDefinition = {
     const mentioned = CAPABILITY_WORDS.filter((w) => setupAnswer.includes(w));
     const answer = transcript.turns[1]?.text ?? '';
     const truth = await oreGroundTruth(shell);
-    const numbers = [...answer.matchAll(/\b\d{4,}\b/g)].map((m) => Number(m[0]));
+    const numbers = answerNumbers(answer);
     const matched = truth ? numbers.find((n) => Math.abs(n - truth.roundId) <= 5) : undefined;
     const live = liveDataCalls(transcript, 1);
 
@@ -74,7 +74,7 @@ export const task: TaskDefinition = {
         matched !== undefined,
         truth ? `live ${truth.roundId}; answer numbers ${numbers.slice(0, 5).join(', ') || 'none'}` : 'could not read live ground truth',
       ),
-      check('used-live-data', live.length > 0, live.length ? live.join(', ') : 'no MCP or a4 stream call in turn 2', false),
+      check('used-live-data', live.length > 0, live.length ? live.join(', ') : 'no MCP, a4 get or a4 stream call in turn 2', false),
       await noSecretsInWorkspace(shell),
       ...fresh,
     ];
