@@ -90,7 +90,10 @@ pub fn resolve_source_idl<'a>(
             input: type_str.to_string(),
             section: "the stack's programs".to_string(),
             suggestions: Vec::new(),
-            available: idls.iter().map(|(sdk_name, _)| sdk_name.clone()).collect(),
+            available: idls
+                .iter()
+                .map(|(sdk_name, _)| sdk_name.clone())
+                .collect(),
         });
     }
     idls.first()

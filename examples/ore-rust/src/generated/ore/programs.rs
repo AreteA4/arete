@@ -11,10 +11,7 @@
 
 /// Program SDK for `ore` (program ID `oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv`).
 pub mod ore {
-    use arete_sdk::instruction::{
-        AccountMeta, AccountResolution, ArgSchema, ArgType, BuiltInstruction, ErrorMetadata,
-        InstructionError, InstructionHandler, PdaConfig, PdaSeed,
-    };
+    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgSchema, ArgType, BuiltInstruction, ErrorMetadata, InstructionError, InstructionHandler, PdaConfig, PdaSeed};
     use serde::Serialize;
 
     pub const PROGRAM_ID: &str = "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv";
@@ -63,11 +60,10 @@ pub mod ore {
     /// - account `automation` degraded to user-provided (PDA 'automation': seed references account 'authority' not present in this instruction)
     /// - account `miner` degraded to user-provided (PDA 'miner': seed references account 'authority' not present in this instruction)
     pub fn automate(params: AutomateParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         automate_handler().build(params)
     }
 
@@ -111,54 +107,22 @@ pub mod ore {
                     name: "systemProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "11111111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("11111111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
             ],
             args: vec![
-                ArgSchema {
-                    name: "amount".to_string(),
-                    ty: ArgType::U64,
-                },
-                ArgSchema {
-                    name: "deposit".to_string(),
-                    ty: ArgType::U64,
-                },
-                ArgSchema {
-                    name: "fee".to_string(),
-                    ty: ArgType::U64,
-                },
-                ArgSchema {
-                    name: "mask".to_string(),
-                    ty: ArgType::U64,
-                },
-                ArgSchema {
-                    name: "strategy".to_string(),
-                    ty: ArgType::U8,
-                },
-                ArgSchema {
-                    name: "reload".to_string(),
-                    ty: ArgType::U64,
-                },
+                ArgSchema { name: "amount".to_string(), ty: ArgType::U64 },
+                ArgSchema { name: "deposit".to_string(), ty: ArgType::U64 },
+                ArgSchema { name: "fee".to_string(), ty: ArgType::U64 },
+                ArgSchema { name: "mask".to_string(), ty: ArgType::U64 },
+                ArgSchema { name: "strategy".to_string(), ty: ArgType::U8 },
+                ArgSchema { name: "reload".to_string(), ty: ArgType::U64 },
             ],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "AmountTooSmall".to_string(),
-                    msg: "Amount too small".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "NotAuthorized".to_string(),
-                    msg: "Not authorized".to_string(),
-                },
-                ErrorMetadata {
-                    code: 2,
-                    name: "InvalidExecutor".to_string(),
-                    msg: "Invalid executor".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
     }
@@ -178,11 +142,10 @@ pub mod ore {
     /// Settles miner rewards for a completed round.
     /// Treasury PDA seeds: ["treasury"].
     pub fn checkpoint(params: CheckpointParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         checkpoint_handler().build(params)
     }
 
@@ -210,36 +173,21 @@ pub mod ore {
                     name: "automation".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![
-                            PdaSeed::Literal("automation".to_string()),
-                            PdaSeed::AccountRef("authority".to_string()),
-                        ],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("automation".to_string()), PdaSeed::AccountRef("authority".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "board".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("board".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("board".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "miner".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![
-                            PdaSeed::Literal("miner".to_string()),
-                            PdaSeed::AccountRef("authority".to_string()),
-                        ],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("miner".to_string()), PdaSeed::AccountRef("authority".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -253,39 +201,22 @@ pub mod ore {
                     name: "treasury".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("treasury".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("treasury".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "systemProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "11111111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("11111111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
             ],
             args: vec![],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "AmountTooSmall".to_string(),
-                    msg: "Amount too small".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "NotAuthorized".to_string(),
-                    msg: "Not authorized".to_string(),
-                },
-                ErrorMetadata {
-                    code: 2,
-                    name: "InvalidExecutor".to_string(),
-                    msg: "Invalid executor".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
     }
@@ -305,11 +236,10 @@ pub mod ore {
     /// Codegen notes:
     /// - account `miner` degraded to user-provided (PDA 'miner': seed references account 'authority' not present in this instruction)
     pub fn claim_sol(params: ClaimSolParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         claim_sol_handler().build(params)
     }
 
@@ -330,10 +260,7 @@ pub mod ore {
                     name: "board".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("board".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("board".to_string())] }),
                     is_optional: false,
                 },
                 // [arete codegen] account `miner` degraded to user-provided (PDA 'miner': seed references account 'authority' not present in this instruction)
@@ -348,38 +275,22 @@ pub mod ore {
                     name: "systemProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "11111111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("11111111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "oreProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string()),
                     is_optional: false,
                 },
             ],
             args: vec![],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "AmountTooSmall".to_string(),
-                    msg: "Amount too small".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "NotAuthorized".to_string(),
-                    msg: "Not authorized".to_string(),
-                },
-                ErrorMetadata {
-                    code: 2,
-                    name: "InvalidExecutor".to_string(),
-                    msg: "Invalid executor".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
     }
@@ -404,11 +315,10 @@ pub mod ore {
     /// Codegen notes:
     /// - account `miner` degraded to user-provided (PDA 'miner': seed references account 'authority' not present in this instruction)
     pub fn claim_ore(params: ClaimOreParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         claim_ore_handler().build(params)
     }
 
@@ -429,10 +339,7 @@ pub mod ore {
                     name: "board".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("board".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("board".to_string())] }),
                     is_optional: false,
                 },
                 // [arete codegen] account `miner` degraded to user-provided (PDA 'miner': seed references account 'authority' not present in this instruction)
@@ -447,9 +354,7 @@ pub mod ore {
                     name: "mint".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Known(
-                        "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -463,10 +368,7 @@ pub mod ore {
                     name: "treasury".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("treasury".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("treasury".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -480,56 +382,36 @@ pub mod ore {
                     name: "systemProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "11111111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("11111111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "tokenProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "associatedTokenProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "oreProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string()),
                     is_optional: false,
                 },
             ],
             args: vec![],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "AmountTooSmall".to_string(),
-                    msg: "Amount too small".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "NotAuthorized".to_string(),
-                    msg: "Not authorized".to_string(),
-                },
-                ErrorMetadata {
-                    code: 2,
-                    name: "InvalidExecutor".to_string(),
-                    msg: "Invalid executor".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
     }
@@ -551,11 +433,10 @@ pub mod ore {
     /// Round PDA seeds: ["round", round_id].
     /// Treasury PDA seeds: ["treasury"].
     pub fn close(params: CloseParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         close_handler().build(params)
     }
 
@@ -576,10 +457,7 @@ pub mod ore {
                     name: "board".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("board".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("board".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -600,39 +478,22 @@ pub mod ore {
                     name: "treasury".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("treasury".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("treasury".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "systemProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "11111111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("11111111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
             ],
             args: vec![],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "AmountTooSmall".to_string(),
-                    msg: "Amount too small".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "NotAuthorized".to_string(),
-                    msg: "Not authorized".to_string(),
-                },
-                ErrorMetadata {
-                    code: 2,
-                    name: "InvalidExecutor".to_string(),
-                    msg: "Invalid executor".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
     }
@@ -665,11 +526,10 @@ pub mod ore {
     /// Miner PDA seeds: ["miner", authority].
     /// Round PDA seeds: ["round", board.round_id].
     pub fn deploy(params: DeployParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         deploy_handler().build(params)
     }
 
@@ -697,46 +557,28 @@ pub mod ore {
                     name: "automation".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![
-                            PdaSeed::Literal("automation".to_string()),
-                            PdaSeed::AccountRef("authority".to_string()),
-                        ],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("automation".to_string()), PdaSeed::AccountRef("authority".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "board".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("board".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("board".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "config".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("config".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("config".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "miner".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![
-                            PdaSeed::Literal("miner".to_string()),
-                            PdaSeed::AccountRef("authority".to_string()),
-                        ],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("miner".to_string()), PdaSeed::AccountRef("authority".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -750,28 +592,21 @@ pub mod ore {
                     name: "treasury".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("treasury".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("treasury".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "systemProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "11111111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("11111111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "oreProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -790,31 +625,13 @@ pub mod ore {
                 },
             ],
             args: vec![
-                ArgSchema {
-                    name: "amount".to_string(),
-                    ty: ArgType::U64,
-                },
-                ArgSchema {
-                    name: "squares".to_string(),
-                    ty: ArgType::U32,
-                },
+                ArgSchema { name: "amount".to_string(), ty: ArgType::U64 },
+                ArgSchema { name: "squares".to_string(), ty: ArgType::U32 },
             ],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "AmountTooSmall".to_string(),
-                    msg: "Amount too small".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "NotAuthorized".to_string(),
-                    msg: "Not authorized".to_string(),
-                },
-                ErrorMetadata {
-                    code: 2,
-                    name: "InvalidExecutor".to_string(),
-                    msg: "Invalid executor".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
     }
@@ -830,11 +647,10 @@ pub mod ore {
     /// Emits an arbitrary log message from the board PDA.
     /// Bytes following the discriminator are logged verbatim.
     pub fn log(params: LogParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         log_handler().build(params)
     }
 
@@ -843,30 +659,20 @@ pub mod ore {
         InstructionHandler {
             program_id: PROGRAM_ID.to_string(),
             discriminator: vec![8],
-            accounts: vec![AccountMeta {
-                name: "signer".to_string(),
-                is_signer: true,
-                is_writable: true,
-                resolution: AccountResolution::Signer,
-                is_optional: false,
-            }],
+            accounts: vec![
+                AccountMeta {
+                    name: "signer".to_string(),
+                    is_signer: true,
+                    is_writable: true,
+                    resolution: AccountResolution::Signer,
+                    is_optional: false,
+                },
+            ],
             args: vec![],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "AmountTooSmall".to_string(),
-                    msg: "Amount too small".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "NotAuthorized".to_string(),
-                    msg: "Not authorized".to_string(),
-                },
-                ErrorMetadata {
-                    code: 2,
-                    name: "InvalidExecutor".to_string(),
-                    msg: "Invalid executor".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
     }
@@ -904,11 +710,10 @@ pub mod ore {
     /// Treasury PDA seeds: ["treasury"].
     /// Round PDA seeds: ["round", board.round_id] and ["round", board.round_id + 1].
     pub fn reset(params: ResetParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         reset_handler().build(params)
     }
 
@@ -929,20 +734,14 @@ pub mod ore {
                     name: "board".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("board".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("board".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "config".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("config".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("config".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -956,9 +755,7 @@ pub mod ore {
                     name: "mint".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Known(
-                        "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -986,10 +783,7 @@ pub mod ore {
                     name: "treasury".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("treasury".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("treasury".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -1003,36 +797,28 @@ pub mod ore {
                     name: "systemProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "11111111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("11111111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "tokenProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "oreProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "slotHashesSysvar".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "SysvarS1otHashes111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("SysvarS1otHashes111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -1046,9 +832,7 @@ pub mod ore {
                     name: "entropyProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -1062,29 +846,15 @@ pub mod ore {
                     name: "mintProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "mintzxW6Kckmeyh1h6Zfdj9QcYgCzhPSGiC8ChZ6fCx".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("mintzxW6Kckmeyh1h6Zfdj9QcYgCzhPSGiC8ChZ6fCx".to_string()),
                     is_optional: false,
                 },
             ],
             args: vec![],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "AmountTooSmall".to_string(),
-                    msg: "Amount too small".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "NotAuthorized".to_string(),
-                    msg: "Not authorized".to_string(),
-                },
-                ErrorMetadata {
-                    code: 2,
-                    name: "InvalidExecutor".to_string(),
-                    msg: "Invalid executor".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
     }
@@ -1118,11 +888,10 @@ pub mod ore {
     /// Burns ORE and distributes yield to stakers.
     /// Treasury PDA seeds: ["treasury"].
     pub fn bury(params: BuryParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         bury_handler().build(params)
     }
 
@@ -1150,29 +919,21 @@ pub mod ore {
                     name: "board".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("board".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("board".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "mint".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Known(
-                        "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "treasury".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("treasury".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("treasury".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -1207,18 +968,14 @@ pub mod ore {
                     name: "tokenProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "oreProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -1229,26 +986,13 @@ pub mod ore {
                     is_optional: false,
                 },
             ],
-            args: vec![ArgSchema {
-                name: "amount".to_string(),
-                ty: ArgType::U64,
-            }],
+            args: vec![
+                ArgSchema { name: "amount".to_string(), ty: ArgType::U64 },
+            ],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "AmountTooSmall".to_string(),
-                    msg: "Amount too small".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "NotAuthorized".to_string(),
-                    msg: "Not authorized".to_string(),
-                },
-                ErrorMetadata {
-                    code: 2,
-                    name: "InvalidExecutor".to_string(),
-                    msg: "Invalid executor".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
     }
@@ -1279,11 +1023,10 @@ pub mod ore {
     /// Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.
     /// The 13 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator.
     pub fn buyback(params: BuybackParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         buyback_handler().build(params)
     }
 
@@ -1297,48 +1040,35 @@ pub mod ore {
                     name: "signer".to_string(),
                     is_signer: true,
                     is_writable: true,
-                    resolution: AccountResolution::Known(
-                        "HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "board".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("board".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("board".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "config".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("config".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("config".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "mint".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Known(
-                        "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "treasury".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("treasury".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("treasury".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -1380,18 +1110,14 @@ pub mod ore {
                     name: "tokenProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "oreProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -1404,21 +1130,9 @@ pub mod ore {
             ],
             args: vec![],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "AmountTooSmall".to_string(),
-                    msg: "Amount too small".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "NotAuthorized".to_string(),
-                    msg: "Not authorized".to_string(),
-                },
-                ErrorMetadata {
-                    code: 2,
-                    name: "InvalidExecutor".to_string(),
-                    msg: "Invalid executor".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
     }
@@ -1435,11 +1149,10 @@ pub mod ore {
     /// Wraps SOL held by the treasury into WSOL for swapping.
     /// Treasury PDA seeds: ["treasury"].
     pub fn wrap(params: WrapParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         wrap_handler().build(params)
     }
 
@@ -1453,29 +1166,21 @@ pub mod ore {
                     name: "signer".to_string(),
                     is_signer: true,
                     is_writable: true,
-                    resolution: AccountResolution::Known(
-                        "HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "config".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("config".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("config".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "treasury".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("treasury".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("treasury".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -1489,32 +1194,17 @@ pub mod ore {
                     name: "systemProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "11111111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("11111111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
             ],
-            args: vec![ArgSchema {
-                name: "amount".to_string(),
-                ty: ArgType::U64,
-            }],
+            args: vec![
+                ArgSchema { name: "amount".to_string(), ty: ArgType::U64 },
+            ],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "AmountTooSmall".to_string(),
-                    msg: "Amount too small".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "NotAuthorized".to_string(),
-                    msg: "Not authorized".to_string(),
-                },
-                ErrorMetadata {
-                    code: 2,
-                    name: "InvalidExecutor".to_string(),
-                    msg: "Invalid executor".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
     }
@@ -1530,11 +1220,10 @@ pub mod ore {
 
     /// Updates the program admin address.
     pub fn set_admin(params: SetAdminParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         set_admin_handler().build(params)
     }
 
@@ -1555,42 +1244,24 @@ pub mod ore {
                     name: "config".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("config".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("config".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "systemProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "11111111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("11111111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
             ],
-            args: vec![ArgSchema {
-                name: "admin".to_string(),
-                ty: ArgType::Pubkey,
-            }],
+            args: vec![
+                ArgSchema { name: "admin".to_string(), ty: ArgType::Pubkey },
+            ],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "AmountTooSmall".to_string(),
-                    msg: "Amount too small".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "NotAuthorized".to_string(),
-                    msg: "Not authorized".to_string(),
-                },
-                ErrorMetadata {
-                    code: 2,
-                    name: "InvalidExecutor".to_string(),
-                    msg: "Invalid executor".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
     }
@@ -1612,11 +1283,10 @@ pub mod ore {
 
     /// Creates a new entropy var account through the entropy program.
     pub fn new_var(params: NewVarParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         new_var_handler().build(params)
     }
 
@@ -1637,20 +1307,14 @@ pub mod ore {
                     name: "board".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("board".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("board".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "config".to_string(),
                     is_signer: false,
                     is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig {
-                        program_id: None,
-                        seeds: vec![PdaSeed::Literal("config".to_string())],
-                    }),
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("config".to_string())] }),
                     is_optional: false,
                 },
                 AccountMeta {
@@ -1671,60 +1335,33 @@ pub mod ore {
                     name: "systemProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "11111111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("11111111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
                 AccountMeta {
                     name: "entropyProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X".to_string()),
                     is_optional: false,
                 },
             ],
             args: vec![
-                ArgSchema {
-                    name: "id".to_string(),
-                    ty: ArgType::U64,
-                },
-                ArgSchema {
-                    name: "commit".to_string(),
-                    ty: ArgType::Array(Box::new(ArgType::U8), 32),
-                },
-                ArgSchema {
-                    name: "samples".to_string(),
-                    ty: ArgType::U64,
-                },
+                ArgSchema { name: "id".to_string(), ty: ArgType::U64 },
+                ArgSchema { name: "commit".to_string(), ty: ArgType::Array(Box::new(ArgType::U8), 32) },
+                ArgSchema { name: "samples".to_string(), ty: ArgType::U64 },
             ],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "AmountTooSmall".to_string(),
-                    msg: "Amount too small".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "NotAuthorized".to_string(),
-                    msg: "Not authorized".to_string(),
-                },
-                ErrorMetadata {
-                    code: 2,
-                    name: "InvalidExecutor".to_string(),
-                    msg: "Invalid executor".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
     }
 
     /// PDA derivation helpers for this program.
     pub mod pdas {
-        use arete_sdk::instruction::{
-            derive_program_address, serialize_seed_value, InstructionError, Pubkey,
-        };
+        use arete_sdk::instruction::{InstructionError, Pubkey, derive_program_address, serialize_seed_value};
 
         use super::PROGRAM_ID;
 
@@ -1739,13 +1376,17 @@ pub mod ore {
 
         /// Derive the `board` PDA (returns the address and bump).
         pub fn board() -> Result<(Pubkey, u8), InstructionError> {
-            let seeds: Vec<Vec<u8>> = vec!["board".as_bytes().to_vec()];
+            let seeds: Vec<Vec<u8>> = vec![
+                "board".as_bytes().to_vec(),
+            ];
             derive_program_address(&seeds, PROGRAM_ID)
         }
 
         /// Derive the `config` PDA (returns the address and bump).
         pub fn config() -> Result<(Pubkey, u8), InstructionError> {
-            let seeds: Vec<Vec<u8>> = vec!["config".as_bytes().to_vec()];
+            let seeds: Vec<Vec<u8>> = vec![
+                "config".as_bytes().to_vec(),
+            ];
             derive_program_address(&seeds, PROGRAM_ID)
         }
 
@@ -1760,7 +1401,9 @@ pub mod ore {
 
         /// Derive the `treasury` PDA (returns the address and bump).
         pub fn treasury() -> Result<(Pubkey, u8), InstructionError> {
-            let seeds: Vec<Vec<u8>> = vec!["treasury".as_bytes().to_vec()];
+            let seeds: Vec<Vec<u8>> = vec![
+                "treasury".as_bytes().to_vec(),
+            ];
             derive_program_address(&seeds, PROGRAM_ID)
         }
     }
@@ -1783,31 +1426,19 @@ pub mod ore {
             arete_sdk::ProgramContext::new(self)
         }
 
-        pub fn automate(
-            &self,
-            params: AutomateParams,
-        ) -> Result<BuiltInstruction, InstructionError> {
+        pub fn automate(&self, params: AutomateParams) -> Result<BuiltInstruction, InstructionError> {
             automate(params)
         }
 
-        pub fn checkpoint(
-            &self,
-            params: CheckpointParams,
-        ) -> Result<BuiltInstruction, InstructionError> {
+        pub fn checkpoint(&self, params: CheckpointParams) -> Result<BuiltInstruction, InstructionError> {
             checkpoint(params)
         }
 
-        pub fn claim_sol(
-            &self,
-            params: ClaimSolParams,
-        ) -> Result<BuiltInstruction, InstructionError> {
+        pub fn claim_sol(&self, params: ClaimSolParams) -> Result<BuiltInstruction, InstructionError> {
             claim_sol(params)
         }
 
-        pub fn claim_ore(
-            &self,
-            params: ClaimOreParams,
-        ) -> Result<BuiltInstruction, InstructionError> {
+        pub fn claim_ore(&self, params: ClaimOreParams) -> Result<BuiltInstruction, InstructionError> {
             claim_ore(params)
         }
 
@@ -1839,10 +1470,7 @@ pub mod ore {
             wrap(params)
         }
 
-        pub fn set_admin(
-            &self,
-            params: SetAdminParams,
-        ) -> Result<BuiltInstruction, InstructionError> {
+        pub fn set_admin(&self, params: SetAdminParams) -> Result<BuiltInstruction, InstructionError> {
             set_admin(params)
         }
 
@@ -1851,12 +1479,7 @@ pub mod ore {
         }
 
         /// Typed reader for `Automation` accounts (release-addressed HTTP reads).
-        pub fn automation_accounts(
-            &self,
-        ) -> Result<
-            arete_sdk::AccountReader<super::super::types::OreAutomation>,
-            arete_sdk::AreteError,
-        > {
+        pub fn automation_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::OreAutomation>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Automation",
                 std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
@@ -1864,10 +1487,7 @@ pub mod ore {
         }
 
         /// Typed reader for `Board` accounts (release-addressed HTTP reads).
-        pub fn board_accounts(
-            &self,
-        ) -> Result<arete_sdk::AccountReader<super::super::types::Board>, arete_sdk::AreteError>
-        {
+        pub fn board_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Board>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Board",
                 std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
@@ -1875,10 +1495,7 @@ pub mod ore {
         }
 
         /// Typed reader for `Config` accounts (release-addressed HTTP reads).
-        pub fn config_accounts(
-            &self,
-        ) -> Result<arete_sdk::AccountReader<super::super::types::Config>, arete_sdk::AreteError>
-        {
+        pub fn config_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Config>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Config",
                 std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
@@ -1886,12 +1503,7 @@ pub mod ore {
         }
 
         /// Typed reader for `Miner` accounts (release-addressed HTTP reads).
-        pub fn miner_accounts(
-            &self,
-        ) -> Result<
-            arete_sdk::AccountReader<super::super::types::OreMinerAccount>,
-            arete_sdk::AreteError,
-        > {
+        pub fn miner_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::OreMinerAccount>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Miner",
                 std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
@@ -1899,10 +1511,7 @@ pub mod ore {
         }
 
         /// Typed reader for `Round` accounts (release-addressed HTTP reads).
-        pub fn round_accounts(
-            &self,
-        ) -> Result<arete_sdk::AccountReader<super::super::types::Round>, arete_sdk::AreteError>
-        {
+        pub fn round_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Round>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Round",
                 std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
@@ -1910,12 +1519,7 @@ pub mod ore {
         }
 
         /// Typed reader for `Treasury` accounts (release-addressed HTTP reads).
-        pub fn treasury_accounts(
-            &self,
-        ) -> Result<
-            arete_sdk::AccountReader<super::super::types::OreTreasuryAccount>,
-            arete_sdk::AreteError,
-        > {
+        pub fn treasury_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::OreTreasuryAccount>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Treasury",
                 std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
@@ -1932,10 +1536,7 @@ pub mod ore {
 
 /// Program SDK for `entropy` (program ID `3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X`).
 pub mod entropy {
-    use arete_sdk::instruction::{
-        AccountMeta, AccountResolution, ArgSchema, ArgType, BuiltInstruction, ErrorMetadata,
-        InstructionError, InstructionHandler,
-    };
+    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgSchema, ArgType, BuiltInstruction, ErrorMetadata, InstructionError, InstructionHandler};
     use serde::Serialize;
 
     pub const PROGRAM_ID: &str = "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X";
@@ -1981,11 +1582,10 @@ pub mod entropy {
     /// Creates a new entropy var account.
     /// Var PDA seeds: ["var", authority, id].
     pub fn open(params: OpenParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         open_handler().build(params)
     }
 
@@ -2027,45 +1627,20 @@ pub mod entropy {
                     name: "systemProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "11111111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("11111111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
             ],
             args: vec![
-                ArgSchema {
-                    name: "id".to_string(),
-                    ty: ArgType::U64,
-                },
-                ArgSchema {
-                    name: "commit".to_string(),
-                    ty: ArgType::Array(Box::new(ArgType::U8), 32),
-                },
-                ArgSchema {
-                    name: "isAuto".to_string(),
-                    ty: ArgType::U64,
-                },
-                ArgSchema {
-                    name: "samples".to_string(),
-                    ty: ArgType::U64,
-                },
-                ArgSchema {
-                    name: "endAt".to_string(),
-                    ty: ArgType::U64,
-                },
+                ArgSchema { name: "id".to_string(), ty: ArgType::U64 },
+                ArgSchema { name: "commit".to_string(), ty: ArgType::Array(Box::new(ArgType::U8), 32) },
+                ArgSchema { name: "isAuto".to_string(), ty: ArgType::U64 },
+                ArgSchema { name: "samples".to_string(), ty: ArgType::U64 },
+                ArgSchema { name: "endAt".to_string(), ty: ArgType::U64 },
             ],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "IncompleteDigest".to_string(),
-                    msg: "Incomplete digest".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "InvalidSeed".to_string(),
-                    msg: "Invalid seed".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "IncompleteDigest".to_string(), msg: "Incomplete digest".to_string() },
+                ErrorMetadata { code: 1, name: "InvalidSeed".to_string(), msg: "Invalid seed".to_string() },
             ],
         }
     }
@@ -2082,11 +1657,10 @@ pub mod entropy {
 
     /// Closes an entropy var account and returns rent to the authority.
     pub fn close(params: CloseParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         close_handler().build(params)
     }
 
@@ -2114,24 +1688,14 @@ pub mod entropy {
                     name: "systemProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "11111111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("11111111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
             ],
             args: vec![],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "IncompleteDigest".to_string(),
-                    msg: "Incomplete digest".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "InvalidSeed".to_string(),
-                    msg: "Invalid seed".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "IncompleteDigest".to_string(), msg: "Incomplete digest".to_string() },
+                ErrorMetadata { code: 1, name: "InvalidSeed".to_string(), msg: "Invalid seed".to_string() },
             ],
         }
     }
@@ -2151,11 +1715,10 @@ pub mod entropy {
     /// Updates the var for the next random value sample.
     /// Resets the commit to the previous seed and clears slot_hash, seed, and value.
     pub fn next(params: NextParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         next_handler().build(params)
     }
 
@@ -2180,21 +1743,12 @@ pub mod entropy {
                     is_optional: false,
                 },
             ],
-            args: vec![ArgSchema {
-                name: "endAt".to_string(),
-                ty: ArgType::U64,
-            }],
+            args: vec![
+                ArgSchema { name: "endAt".to_string(), ty: ArgType::U64 },
+            ],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "IncompleteDigest".to_string(),
-                    msg: "Incomplete digest".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "InvalidSeed".to_string(),
-                    msg: "Invalid seed".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "IncompleteDigest".to_string(), msg: "Incomplete digest".to_string() },
+                ErrorMetadata { code: 1, name: "InvalidSeed".to_string(), msg: "Invalid seed".to_string() },
             ],
         }
     }
@@ -2213,11 +1767,10 @@ pub mod entropy {
     /// Reveals the seed and finalizes the random value.
     /// The seed must hash to the commit stored in the var account.
     pub fn reveal(params: RevealParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         reveal_handler().build(params)
     }
 
@@ -2242,21 +1795,12 @@ pub mod entropy {
                     is_optional: false,
                 },
             ],
-            args: vec![ArgSchema {
-                name: "seed".to_string(),
-                ty: ArgType::Array(Box::new(ArgType::U8), 32),
-            }],
+            args: vec![
+                ArgSchema { name: "seed".to_string(), ty: ArgType::Array(Box::new(ArgType::U8), 32) },
+            ],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "IncompleteDigest".to_string(),
-                    msg: "Incomplete digest".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "InvalidSeed".to_string(),
-                    msg: "Invalid seed".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "IncompleteDigest".to_string(), msg: "Incomplete digest".to_string() },
+                ErrorMetadata { code: 1, name: "InvalidSeed".to_string(), msg: "Invalid seed".to_string() },
             ],
         }
     }
@@ -2274,11 +1818,10 @@ pub mod entropy {
     /// Samples the slot hash at the end_at slot.
     /// Must be called after the end_at slot has passed.
     pub fn sample(params: SampleParams) -> Result<BuiltInstruction, InstructionError> {
-        let params =
-            serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-                context: "params".to_string(),
-                message: error.to_string(),
-            })?;
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
         sample_handler().build(params)
     }
 
@@ -2306,24 +1849,14 @@ pub mod entropy {
                     name: "slotHashesSysvar".to_string(),
                     is_signer: false,
                     is_writable: false,
-                    resolution: AccountResolution::Known(
-                        "SysvarS1otHashes111111111111111111111111111".to_string(),
-                    ),
+                    resolution: AccountResolution::Known("SysvarS1otHashes111111111111111111111111111".to_string()),
                     is_optional: false,
                 },
             ],
             args: vec![],
             errors: vec![
-                ErrorMetadata {
-                    code: 0,
-                    name: "IncompleteDigest".to_string(),
-                    msg: "Incomplete digest".to_string(),
-                },
-                ErrorMetadata {
-                    code: 1,
-                    name: "InvalidSeed".to_string(),
-                    msg: "Invalid seed".to_string(),
-                },
+                ErrorMetadata { code: 0, name: "IncompleteDigest".to_string(), msg: "Incomplete digest".to_string() },
+                ErrorMetadata { code: 1, name: "InvalidSeed".to_string(), msg: "Invalid seed".to_string() },
             ],
         }
     }
@@ -2367,16 +1900,10 @@ pub mod entropy {
         }
 
         /// Typed reader for `Var` accounts (release-addressed HTTP reads).
-        pub fn var_accounts(
-            &self,
-        ) -> Result<arete_sdk::AccountReader<super::super::types::Var>, arete_sdk::AreteError>
-        {
+        pub fn var_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Var>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Var",
-                std::sync::Arc::new(
-                    self.builder
-                        .account_transport("entropy", &read_descriptor())?,
-                ),
+                std::sync::Arc::new(self.builder.account_transport("entropy", &read_descriptor())?),
             ))
         }
     }

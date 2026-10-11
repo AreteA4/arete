@@ -434,7 +434,8 @@ fn main() {{
         load_live_spec_v2(&fs::read(temp.path().join(".arete/Stream.live-spec.json")).unwrap())
             .unwrap()
             .artifact;
-    live.payload
+    live
+        .payload
         .entities
         .iter()
         .find(|entity| entity.state_name == "EntropyVar")

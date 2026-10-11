@@ -139,9 +139,7 @@ pub mod runtime {
             }
 
             /// Deserialize a sequence into a fixed-size array.
-            pub fn deserialize<'de, D, T, const N: usize>(
-                deserializer: D,
-            ) -> Result<[T; N], D::Error>
+            pub fn deserialize<'de, D, T, const N: usize>(deserializer: D) -> Result<[T; N], D::Error>
             where
                 D: Deserializer<'de>,
                 T: Deserialize<'de>,

@@ -362,6 +362,7 @@ impl IdlAccount {
 
         crate::discriminator::anchor_discriminator(&format!("account:{}", self.name))
     }
+
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
