@@ -373,8 +373,8 @@ pub struct SearchCatalogArgs {
     #[serde(default, deserialize_with = "lenient::opt_usize")]
     pub limit: Option<usize>,
     /// `nextCursor` from a previous `search_catalog` page. Repeat the same
-    /// filters to fetch the next page; the server rejects a cursor once the
-    /// active catalog changes.
+    /// filters to fetch the next page. A page marked `catalogChanged` was
+    /// served after the catalog changed and may skip or repeat entries.
     #[serde(default)]
     pub cursor: Option<String>,
     /// Keep only these fields of each result: top-level keys or dotted paths
@@ -387,8 +387,8 @@ pub struct SearchCatalogArgs {
     /// `score`, identity hashes (`packageReleaseHash`, `bundleHash`,
     /// `setHash`), `programIds` and release notes, but without the derived
     /// `live` and `related`. By default each result keeps only kind, slug,
-    /// name, version, protocol, summary, modes, live (stacks), related,
-    /// sdkTargets and delivery status/health.
+    /// name, version, protocol, summary, modes, live (stacks), installName,
+    /// programs, stacks, related, sdkTargets and delivery status/health.
     #[serde(default)]
     pub full: Option<bool>,
 }
@@ -520,6 +520,9 @@ fn search_value(
     }
     if catalog_view::next_cursor(value).is_some() {
         parts.push("More results: pass `nextCursor` as `cursor` with the same filters.");
+    }
+    if catalog_view::catalog_changed(value) {
+        parts.push(catalog_view::CATALOG_CHANGED_HINT);
     }
     let shaped = catalog_view::shape_search(value, shape);
     if parts.is_empty() {
@@ -1237,13 +1240,21 @@ impl AreteMcp {
                           same filters to continue. Drill in with `get_catalog_entry`.\n\n\
                           Results are brief by default: each keeps only `kind`, `slug`, \
                           `name`, `version`, `protocol`, `summary`, `modes`, `sdkTargets` \
-                          and `delivery.status`/`delivery.health`, plus two derived keys: \
-                          `live` on stacks (`true`: a hosted stream to subscribe to now, \
-                          i.e. `modes` include `subscribe`; `false`: definition-only, \
-                          install its SDK or deploy it yourself; `mode: \"subscribe\"` \
-                          returns only live stacks) and `related`, the other results on \
-                          the page with the same `protocol` as `kind:slug` (program, \
-                          stack and protocol slugs often differ). The response carries a \
+                          and `delivery.status`/`delivery.health`, and the links between \
+                          stacks and programs (program, stack and protocol slugs often \
+                          differ): `programs` on a stack (`[{slug, programId}]`, the \
+                          programs it composes), `stacks` on a program (`[{slug, live}]`, \
+                          the stacks composing it), `installName` on a program whose \
+                          install name differs from its slug, and a page-level \
+                          `protocols` listing every stack and program of each result's \
+                          protocol. `live` on stacks is derived: `true` is a hosted \
+                          stream to subscribe to now (`modes` include `subscribe`), \
+                          `false` is definition-only (install its SDK or deploy it \
+                          yourself); `mode: \"subscribe\"` returns only live stacks. A \
+                          result without `programs`/`stacks` gets `related`, the other \
+                          results on the page with the same `protocol` as `kind:slug`. A \
+                          page carrying `catalogChanged: true` may skip or repeat \
+                          entries; search again without `cursor`. The response carries a \
                           top-level `hint`. Pass `fields` (e.g. \
                           `\"slug,kind,name,version,modes,delivery.health\"`, dotted paths \
                           allowed) to keep only those keys, or `full: true` for every \

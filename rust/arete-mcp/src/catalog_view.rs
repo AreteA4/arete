@@ -14,16 +14,22 @@
 //! out with `full` / `--full` or choose keys with `fields` / `--fields`, and a
 //! top-level `hint` string says how.
 //!
+//! Program, stack and protocol slugs often differ for the same protocol. The
+//! server links them: a stack carries `programs` (`[{slug, programId}]`, the
+//! programs it composes), a program carries `stacks` (`[{slug, live}]`, the
+//! stacks composing it) and, when its install name differs from its slug,
+//! `installName`, and a search page carries `protocols` (every stack and
+//! program of each result's protocol, including ones on other pages).
+//!
 //! Shaped (non-`full`) output also gains two derived keys, computed only from
 //! fields the server already sends:
 //!
 //! - `live` on stack entries: whether the stack has a hosted stream to
 //!   subscribe to now (see [`is_live_stack`]). A stack with `live: false` is
 //!   definition-only.
-//! - `related` on search results: the other results of the same page that
-//!   share the entry's `protocol`, as `kind:slug` (e.g. the program a stack
-//!   streams). Program, stack and protocol slugs often differ for the same
-//!   protocol, so this saves a lookup per result.
+//! - `related` on search results the server sent no links for: the other
+//!   results of the same page that share the entry's `protocol`, as
+//!   `kind:slug`.
 
 use serde_json::{Map, Value};
 
@@ -40,6 +46,9 @@ pub const BRIEF_FIELDS: &[&str] = &[
     "summary",
     "modes",
     "live",
+    "installName",
+    "programs",
+    "stacks",
     "related",
     "sdkTargets",
     "coverage",
@@ -53,10 +62,21 @@ const SUBSCRIBE_MODE: &str = "subscribe";
 /// The delivery kind of a stack whose stream is hosted.
 const DEPLOYED_STACK_DELIVERY: &str = "deployed-stack";
 
-/// What `live` and `related` mean, for hints and help text.
-pub const LIVE_HINT: &str = "`live`: true = a hosted stream to subscribe to now; false = \
-     definition-only (install its SDK to build and read, or deploy it to stream). `related`: \
-     other results for the same protocol, as `kind:slug`.";
+/// What `live` and the link keys mean, for hints and help text.
+pub const LIVE_HINT: &str = "`live` (a stack property): true = a hosted stream to subscribe to \
+     now; false = definition-only (install its SDK to build and read, or deploy it to stream). \
+     `programs` on a stack / `stacks` on a program link the two by `slug`; `protocols` lists \
+     every stack and program of each result's protocol.";
+
+/// Said when a page continued from a cursor was served after the catalog
+/// changed.
+pub const CATALOG_CHANGED_HINT: &str = "The catalog changed since the first page, so results \
+     may be skipped or repeated; search again without a cursor for an exact listing.";
+
+/// Whether the server marked a page as continued across a catalog change.
+pub fn catalog_changed(value: &Value) -> bool {
+    value.get("catalogChanged").and_then(Value::as_bool) == Some(true)
+}
 
 /// Page size used for catalog searches when the caller passes no limit. The
 /// server's own default is larger; a smaller first page keeps discovery
@@ -71,14 +91,23 @@ pub const OVERVIEW_LIMIT: usize = 5;
 pub const OVERVIEW_KINDS: [&str; 2] = ["program", "stack"];
 
 /// Merge one search page per kind into an overview: the pages' results in
-/// order, and `nextCursors` keyed by kind for the kinds that have another
-/// page (omitted when none do).
+/// order, their `protocols` rollups (first per protocol), and `nextCursors`
+/// keyed by kind for the kinds that have another page (omitted when none do).
 pub fn merge_overview(pages: &[(&str, Value)]) -> Value {
     let mut results = Vec::new();
+    let mut protocols: Vec<Value> = Vec::new();
     let mut cursors = Map::new();
     for (kind, page) in pages {
         if let Some(Value::Array(items)) = page.get("results") {
             results.extend(items.iter().cloned());
+        }
+        if let Some(Value::Array(rollups)) = page.get("protocols") {
+            for rollup in rollups {
+                let name = rollup.get("protocol");
+                if !protocols.iter().any(|seen| seen.get("protocol") == name) {
+                    protocols.push(rollup.clone());
+                }
+            }
         }
         if let Some(cursor) = next_cursor(page) {
             cursors.insert(kind.to_string(), Value::String(cursor.to_string()));
@@ -86,6 +115,9 @@ pub fn merge_overview(pages: &[(&str, Value)]) -> Value {
     }
     let mut out = Map::new();
     out.insert("results".to_string(), Value::Array(results));
+    if !protocols.is_empty() {
+        out.insert("protocols".to_string(), Value::Array(protocols));
+    }
     if !cursors.is_empty() {
         out.insert("nextCursors".to_string(), Value::Object(cursors));
     }
@@ -152,10 +184,16 @@ fn result_ref(entry: &Value) -> Option<String> {
     Some(format!("{kind}:{slug}"))
 }
 
-/// Annotate every result of a page with `live` and, where other results of
-/// the page share its `protocol`, `related` (their `kind:slug`, in page
-/// order). Linking uses only the page: a related package outside it is not
-/// looked up.
+/// Whether the server linked this entry to its stacks or programs.
+fn has_server_links(entry: &Value) -> bool {
+    entry.get("programs").is_some_and(Value::is_array)
+        || entry.get("stacks").is_some_and(Value::is_array)
+}
+
+/// Annotate every result of a page with `live` and, where the server sent no
+/// `programs`/`stacks` links and other results of the page share its
+/// `protocol`, `related` (their `kind:slug`, in page order). That fallback
+/// uses only the page: a related package outside it is not looked up.
 pub fn annotate_results(results: &[Value]) -> Vec<Value> {
     let refs: Vec<(Option<&str>, Option<String>)> = results
         .iter()
@@ -175,13 +213,13 @@ pub fn annotate_results(results: &[Value]) -> Vec<Value> {
         .map(|(index, entry)| {
             let mut out = annotate_entry(entry);
             let (protocol, own) = &refs[index];
-            let Some(protocol) = protocol else {
+            let Some(protocol) = protocol.filter(|_| !has_server_links(entry)) else {
                 return out;
             };
             let mut related: Vec<Value> = Vec::new();
             for (other_index, (other_protocol, other_ref)) in refs.iter().enumerate() {
                 let Some(other_ref) = other_ref else { continue };
-                if other_index == index || other_protocol != &Some(*protocol) {
+                if other_index == index || *other_protocol != Some(protocol) {
                     continue;
                 }
                 if own.as_ref() == Some(other_ref)
@@ -728,6 +766,40 @@ mod tests {
             shape_search(&launchpad_page(), &Shape::Full),
             launchpad_page()
         );
+    }
+
+    #[test]
+    fn server_links_replace_page_local_related_and_survive_brief() {
+        let page = json!({
+            "results": [
+                {"kind": "program", "slug": "jurassic-fi-token-sale", "protocol": "jurassic",
+                 "installName": "jurassic-launchpad", "modes": ["build", "read"],
+                 "stacks": [{"slug": "jurassic-launchpad", "live": true}]},
+                {"kind": "stack", "slug": "jurassic-launchpad", "protocol": "jurassic",
+                 "modes": ["build", "read", "subscribe"], "programIds": ["Jur1"],
+                 "programs": [{"slug": "jurassic-fi-token-sale", "programId": "Jur1"}]}
+            ],
+            "protocols": [{"protocol": "jurassic",
+                "stacks": [{"slug": "jurassic-launchpad", "live": true}],
+                "programs": [{"slug": "jurassic-fi-token-sale"}]}],
+            "catalogChanged": true
+        });
+        let out = shape_search(&page, &brief());
+        let results = out["results"].as_array().unwrap();
+        assert!(results.iter().all(|result| result.get("related").is_none()));
+        assert_eq!(results[0]["installName"], "jurassic-launchpad");
+        assert_eq!(results[0]["stacks"][0]["live"], true);
+        assert_eq!(results[1]["programs"][0]["slug"], "jurassic-fi-token-sale");
+        assert!(results[1].get("programIds").is_none());
+        assert_eq!(out["protocols"], page["protocols"]);
+        assert!(catalog_changed(&out));
+        assert!(!catalog_changed(&launchpad_page()));
+
+        let overview = merge_overview(&[("program", page.clone()), ("stack", page.clone())]);
+        assert_eq!(overview["protocols"], page["protocols"]);
+        assert!(merge_overview(&[("stack", launchpad_page())])
+            .get("protocols")
+            .is_none());
     }
 
     #[test]

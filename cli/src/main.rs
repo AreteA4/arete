@@ -213,8 +213,8 @@ enum Commands {
         fields: Vec<String>,
 
         /// Catalog search or entry JSON with only slug, kind, name, version, protocol,
-        /// summary, modes, live (stacks), related, sdkTargets and delivery status (the search
-        /// default); implies --json. `--summary` is accepted as an alias on `explore catalog`
+        /// summary, modes, live (stacks), installName, programs, stacks, related, sdkTargets and
+        /// delivery status (the search default); implies --json. `--summary` is accepted as an alias on `explore catalog`
         #[arg(long)]
         brief: bool,
 
