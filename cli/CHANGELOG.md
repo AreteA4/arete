@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## [0.38.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.37.0...a4-cli-v0.38.0) (2026-10-11)
+
+
+### Features
+
+* **cli:** add doctor --summary and a one-off read path to AGENTS.md ([412f189](https://github.com/AreteA4/arete/commit/412f1891f58df0f8f74a9f4734b853c7e27a4762))
+* **cli:** add doctor --summary and a one-off read path to AGENTS.md ([2dee7e9](https://github.com/AreteA4/arete/commit/2dee7e93983e56cd985b410472a7a083ffb1f4e5))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.37.0 to 0.38.0
+    * arete-mcp bumped from 0.37.0 to 0.38.0
+
 ## [0.37.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.36.0...a4-cli-v0.37.0) (2026-10-11)
 
 
