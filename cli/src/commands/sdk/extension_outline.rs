@@ -69,8 +69,18 @@ enum LeafValue {
     /// A function expression written in place, after the key starting at
     /// `key`: `{ deposit: instructionOperation(async (input) => ...) }`.
     Inline { key: usize, value: usize },
+    /// A shorthand method whose key starts at `key` and whose parameter
+    /// list opens at `open`: `{ limits(): T { ... } }`.
+    Method { key: usize, open: usize },
     /// Anything else.
     Unknown,
+}
+
+/// A shorthand method in an object literal.
+struct ShorthandMethod {
+    name: String,
+    /// Where its parameter list opens.
+    open: usize,
 }
 
 /// A source and its code: the same bytes with every string, template
@@ -155,6 +165,24 @@ impl<'a> Outline<'a> {
         helpers
     }
 
+    /// The shorthand method the object entry `code[start..end]` is: an
+    /// optional `async`, `get`, `set` or `*`, a name (quoted or not),
+    /// optional type parameters, then its parameter list and a body.
+    fn shorthand_method(&self, start: usize, end: usize) -> Option<ShorthandMethod> {
+        let method = Regex::new(
+            r#"^(?:async\s+)?(?:(?:get|set)\s+)?\*?\s*([A-Za-z_$][\w$]*|'[^']*'|"[^"]*")\s*(?:<[^()]*>)?\s*\("#,
+        )
+        .expect("method regex should compile");
+        let found = method.captures(&self.code[start..end])?;
+        let open = start + found.get(0)?.end() - 1;
+        // A method has a body; `key: value` never matches the regex.
+        self.block_body(open)?;
+        let name = self.source[start + found.get(1)?.start()..start + found.get(1)?.end()]
+            .trim_matches(['\'', '"'])
+            .to_string();
+        Some(ShorthandMethod { name, open })
+    }
+
     /// The object literal an expression starting at `start` is, through
     /// grouping parentheses: `({ ... })`.
     fn object_expression(&self, start: usize) -> Option<usize> {
@@ -202,6 +230,24 @@ impl<'a> Outline<'a> {
                 continue;
             }
             let offset = start + (code.len() - code.trim_start().len());
+            // A shorthand method, `limits(): T { ... }` or `async read() {}`:
+            // its name, never its body.
+            if let Some(method) = self.shorthand_method(offset, end) {
+                let path = if prefix.is_empty() {
+                    method.name.clone()
+                } else {
+                    format!("{prefix}.{}", method.name)
+                };
+                leaves.push(Leaf {
+                    path,
+                    value: LeafValue::Method {
+                        key: offset,
+                        open: method.open,
+                    },
+                    scope: None,
+                });
+                continue;
+            }
             let colon = top_level_colon(&self.code, offset, end);
             let (key, value) = match colon {
                 Some(colon) => (self.source[offset..colon].trim(), Some((colon + 1, end))),
@@ -255,6 +301,11 @@ impl<'a> Outline<'a> {
         };
         let declaration = match &leaf.value {
             LeafValue::Named(ident) => self.declaration(ident, leaf.scope),
+            LeafValue::Method { key, open } => Some(Declaration {
+                start: *key,
+                params: self.params(*open).unwrap_or_default(),
+                body: self.block_body(*open),
+            }),
             LeafValue::Inline { key, value } => {
                 self.function_expression(*value)
                     .map(|(params, body)| Declaration {
@@ -1115,6 +1166,46 @@ export default defineProgramExtensions<typeof ORE>()({
                 "constants.program"
             ]
         );
+    }
+
+    #[test]
+    fn shorthand_methods_are_listed_by_name_with_their_signature() {
+        let source = r#"
+export default defineStackExtensions<typeof CORE>()({
+  defaults: {
+    limits(): VaultLimits {
+      return { maxDeposit: 1_000_000n };
+    },
+    fee() { return { bps: 30 }; },
+    async latest<T>(id: T) { return null; },
+    'odd-key'(x: number) { return x; },
+    plain: 1,
+  },
+  createRead(client) {
+    return {
+      /** @title Vault */
+      vault(address: string) {
+        return client.views.Vault.state.get({ address });
+      },
+    };
+  },
+});
+"#;
+        assert_eq!(
+            helpers(source),
+            [
+                "defaults.limits",
+                "defaults.fee",
+                "defaults.latest",
+                "defaults.odd-key",
+                "defaults.plain"
+            ]
+        );
+        let reads = reads(source);
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].signature(), "read.vault(address: string)");
+        assert_eq!(reads[0].title.as_deref(), Some("Vault"));
+        assert_eq!(reads[0].returns.as_deref(), Some("Vault | null"));
     }
 
     #[test]

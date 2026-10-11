@@ -31,7 +31,7 @@ balance.amount  bigint | null
 id.address      string
 ```
 
-Helpers on `session.stacks.vault`: `defaults.limits()`.
+Helpers on `session.stacks.vault`: `defaults.limits`.
 
 ## Programs
 
