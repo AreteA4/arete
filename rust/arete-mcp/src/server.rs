@@ -104,11 +104,13 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::connections::ConnectionRegistry;
 use crate::filter::{Filter, StructuredPredicate};
 use crate::recovery::{RecoveryApiError, RecoveryClient};
 use crate::registry::{RegistryClient, MAX_RESPONSE_BYTES};
+use crate::sdk_reference::{DescribeRequest, SdkKind, SdkReferenceSource, Selection};
 use crate::stack_knowledge::{self, StackKnowledge, LOOKUP_TIMEOUT};
 use crate::subscriptions::SubscriptionRegistry;
 use crate::{catalog_view, credentials, descriptor, filter};
@@ -120,6 +122,8 @@ pub struct AreteMcp {
     subscriptions: SubscriptionRegistry,
     registry: RegistryClient,
     recovery: RecoveryClient,
+    /// The project's installed SDK references, for `describe_sdk`.
+    sdk_references: Option<Arc<dyn SdkReferenceSource>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -134,6 +138,75 @@ pub struct ConnectArgs {
     /// the model context or chat transcript.
     #[serde(default)]
     pub api_key: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct DescribeSdkArgs {
+    /// Dependency alias from arete.toml (e.g. `ore`). Omit to list the
+    /// installed SDKs.
+    #[serde(default)]
+    pub alias: Option<String>,
+    /// `stack` or `program`, when the alias names both.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Only one entity (`OreRound`) or view (`OreRound/latest`), with its
+    /// fields.
+    #[serde(default)]
+    pub view: Option<String>,
+    /// Only one read or program operation, by name (`currentRound`) or path.
+    #[serde(default)]
+    pub read: Option<String>,
+    /// Only one program, by key (`ore`).
+    #[serde(default)]
+    pub program: Option<String>,
+    /// `markdown` (default) or `json`.
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+impl DescribeSdkArgs {
+    fn into_request(self) -> Result<DescribeRequest, McpError> {
+        let kind = match self.kind.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some("stack") => Some(SdkKind::Stack),
+            Some("program") => Some(SdkKind::Program),
+            Some(other) => {
+                return Err(McpError::invalid_params(
+                    format!("kind must be `stack` or `program`, not `{other}`"),
+                    None,
+                ))
+            }
+        };
+        let json = match self.format.as_deref().map(str::trim) {
+            None | Some("") | Some("markdown") => false,
+            Some("json") => true,
+            Some(other) => {
+                return Err(McpError::invalid_params(
+                    format!("format must be `markdown` or `json`, not `{other}`"),
+                    None,
+                ))
+            }
+        };
+        let filled = |value: Option<String>| value.filter(|value| !value.trim().is_empty());
+        let alias = filled(self.alias);
+        let selection = Selection {
+            view: filled(self.view),
+            read: filled(self.read),
+            program: filled(self.program),
+        };
+        if alias.is_none() && !selection.is_empty() {
+            return Err(McpError::invalid_params(
+                "view, read and program need an alias; call describe_sdk without arguments to list the installed SDKs",
+                None,
+            ));
+        }
+        Ok(DescribeRequest {
+            alias,
+            kind,
+            selection,
+            json,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -788,12 +861,54 @@ impl AreteMcp {
             subscriptions: SubscriptionRegistry::new(),
             registry: RegistryClient::new(),
             recovery: RecoveryClient::new(),
+            sdk_references: None,
         }
+    }
+
+    /// Serve `describe_sdk` from `source`.
+    pub fn with_sdk_references(mut self, source: Arc<dyn SdkReferenceSource>) -> Self {
+        self.sdk_references = Some(source);
+        self
     }
 
     #[tool(description = "Health check. Returns \"pong\" if the server is alive.")]
     async fn ping(&self) -> Result<CallToolResult, McpError> {
         Ok(CallToolResult::success(vec![Content::text("pong")]))
+    }
+
+    #[tool(
+        description = "Describe an SDK installed in this project by `a4 install`, from the \
+                          local install (not the registry): the import line and export, each \
+                          entity's views and row fields with the SDK path next to the wire name \
+                          (TypeScript rows are camelCase, e.g. `id.roundId`; read_view, \
+                          get_recent and `a4 get` return wire names, e.g. `id.round_id`, which \
+                          read as undefined in TypeScript), types (64-bit integers are \
+                          `bigint`), token amount units, the stack's `read.*` helpers and its \
+                          programs' reads and operations. Same content as the SDK folder's \
+                          README.md and `a4 sdk describe`.\n\n\
+                          Without `alias`, lists the installed SDKs. Narrow with `view` \
+                          (`OreRound` or `OreRound/latest`), `read` (`currentRound`) or \
+                          `program` (`ore`). Generic SDK usage (sessions, auth, \
+                          get/getOne/use/watch) is in the docs and agent skills, not here."
+    )]
+    async fn describe_sdk(
+        &self,
+        Parameters(args): Parameters<DescribeSdkArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(source) = self.sdk_references.clone() else {
+            return Err(McpError::invalid_params(
+                "describe_sdk needs the project's SDKs; run the server with `a4 mcp` in an Arete project",
+                None,
+            ));
+        };
+        let request = args.into_request()?;
+        let result = tokio::task::spawn_blocking(move || source.describe(&request))
+            .await
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        match result {
+            Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
+            Err(error) => Err(McpError::invalid_params(format!("{error:#}"), None)),
+        }
     }
 
     #[tool(description = "List stacks available in the Arete registry. \
@@ -3220,5 +3335,108 @@ mod ergonomics_tests {
             serde_json::json!([{"installName": "spl-token", "programId": "Tok", "sdkTargets": ["rust"]}])
         );
         assert_eq!(list_body(body.clone(), &catalog_view::Shape::Full), body);
+    }
+}
+
+#[cfg(test)]
+mod describe_sdk_tests {
+    use std::sync::{Arc, Mutex};
+
+    use rmcp::handler::server::wrapper::Parameters;
+    use rmcp::model::ErrorCode;
+
+    use super::{AreteMcp, DescribeSdkArgs};
+    use crate::sdk_reference::{DescribeRequest, SdkKind, SdkReferenceSource, Selection};
+
+    /// Records each request, answers with a canned reference or error.
+    struct Recorded {
+        requests: Mutex<Vec<DescribeRequest>>,
+        answer: Result<String, String>,
+    }
+
+    impl SdkReferenceSource for Recorded {
+        fn describe(&self, request: &DescribeRequest) -> anyhow::Result<String> {
+            self.requests.lock().unwrap().push(request.clone());
+            self.answer.clone().map_err(anyhow::Error::msg)
+        }
+    }
+
+    fn server(answer: Result<&str, &str>) -> (AreteMcp, Arc<Recorded>) {
+        let source = Arc::new(Recorded {
+            requests: Mutex::new(Vec::new()),
+            answer: answer.map(str::to_string).map_err(str::to_string),
+        });
+        (AreteMcp::new().with_sdk_references(source.clone()), source)
+    }
+
+    #[tokio::test]
+    async fn passes_the_alias_kind_selection_and_format_to_the_project() {
+        let (server, source) = server(Ok("# `ore` TypeScript SDK reference"));
+        let result = server
+            .describe_sdk(Parameters(DescribeSdkArgs {
+                alias: Some("ore".into()),
+                kind: Some("stack".into()),
+                view: Some("OreRound/latest".into()),
+                read: Some(" ".into()),
+                program: None,
+                format: Some("json".into()),
+            }))
+            .await
+            .unwrap();
+        let text = serde_json::to_value(&result.content).unwrap();
+        assert!(text.to_string().contains("SDK reference"), "{text}");
+        assert_eq!(
+            source.requests.lock().unwrap()[0],
+            DescribeRequest {
+                alias: Some("ore".into()),
+                kind: Some(SdkKind::Stack),
+                selection: Selection {
+                    view: Some("OreRound/latest".into()),
+                    read: None,
+                    program: None,
+                },
+                json: true,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn project_errors_and_bad_arguments_are_invalid_params() {
+        let (server, _) = server(Err("No dependency 'raydium'; installed: stack ore"));
+        let error = server
+            .describe_sdk(Parameters(DescribeSdkArgs {
+                alias: Some("raydium".into()),
+                ..DescribeSdkArgs::default()
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        assert!(error.message.contains("installed: stack ore"));
+
+        for args in [
+            DescribeSdkArgs {
+                alias: Some("ore".into()),
+                kind: Some("crate".into()),
+                ..DescribeSdkArgs::default()
+            },
+            DescribeSdkArgs {
+                alias: Some("ore".into()),
+                format: Some("yaml".into()),
+                ..DescribeSdkArgs::default()
+            },
+            DescribeSdkArgs {
+                view: Some("OreRound".into()),
+                ..DescribeSdkArgs::default()
+            },
+        ] {
+            let error = server.describe_sdk(Parameters(args)).await.unwrap_err();
+            assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        }
+
+        let error = AreteMcp::new()
+            .describe_sdk(Parameters(DescribeSdkArgs::default()))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("a4 mcp"));
     }
 }
