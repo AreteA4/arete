@@ -78,7 +78,7 @@ const session = await createSession({ stacks: { app: MY_STACK } });
 try {
   const row = await session.stacks.app.views.Position.latest.getOne({ timeoutMs: 10_000 });
   if (!row) throw new Error('no Position rows yet');
-  console.log(JSON.stringify({ id: String(row.id.positionId), size: row.state.size }));
+  console.log(JSON.stringify({ id: String(row.id.positionId), size: String(row.state.size) }));
 } finally {
   session.close();
 }
