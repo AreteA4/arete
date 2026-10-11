@@ -25,6 +25,8 @@ export const task: TaskDefinition = {
   description: 'Follow the arete.run setup prompt from scratch, then answer a live-data question after a host restart',
   track: 'onboarding',
   setup: 'bare',
+  // 2: answers may group digits (`435,570`), and `a4 get` counts as a live read.
+  grading: 2,
   // Measured cost profile, used by preflight to estimate a sweep.
   estimate: {
     noCacheTokens: 30,
