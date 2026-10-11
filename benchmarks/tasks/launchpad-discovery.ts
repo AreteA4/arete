@@ -79,7 +79,10 @@ export const task: TaskDefinition = {
   setup: 'initialized',
   // 2: scored against the answer key, live list exact (was F1 >= 0.5
   // against the catalog's token-launch concept).
-  grading: 2,
+  // 3: the prompt says one slug per protocol, of any kind, counts. Agents
+  // spent turns choosing between a protocol's stack and program slugs,
+  // which the answer key already treats alike.
+  grading: 3,
   // Measured cost profile, used by preflight to estimate a sweep.
   estimate: {
     noCacheTokens: 10,
@@ -93,7 +96,8 @@ export const task: TaskDefinition = {
     {
       prompt:
         'Which Solana token launchpad protocols can Arete stream live data for right now, and which can it build transactions for? ' +
-        'Explain briefly, then put a JSON object on the final line of your answer using Arete catalog slugs: ' +
+        'Explain briefly, then put a JSON object on the final line of your answer with one Arete catalog slug per protocol ' +
+        '(its stack, program or protocol slug all count): ' +
         '{"live": ["<slug>", ...], "build": ["<slug>", ...]}',
     },
   ],
