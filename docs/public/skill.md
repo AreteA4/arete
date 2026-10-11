@@ -139,10 +139,14 @@ install updates:
 - `arete.lock`, which pins exact resolution; and
 - generated SDK output, which should be regenerated rather than edited.
 
-Inspect generated exports and types before writing application code. They are
-the authority for names, parameters, and return shapes. The TypeScript install
-summary ends with a script that reads a view once and exits, and lists the
-stack's reads (such as ORE's `read.currentRound()`): start from those.
+Read the SDK reference before writing application code: the `README.md` in the
+generated folder (the install summary prints its path), `a4 sdk describe
+<alias> [--view <Entity/view>] [--read <name>]`, or the `describe_sdk` MCP
+tool. It lists the import and export, each view, the row fields with their
+TypeScript paths next to their wire names, types (`bigint`) and units, and the
+stack's reads (such as ORE's `read.currentRound()`). Rows use camelCase paths
+(`id.roundId`); `a4 get` and the MCP tools print wire names (`id.round_id`),
+which read as `undefined` in TypeScript. Type-check with `npx tsc --noEmit`.
 
 In a directory with no `package.json`, the summary says what the generated
 TypeScript is missing. Set the project up the way the user prefers, or run

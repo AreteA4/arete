@@ -143,6 +143,10 @@ Do not construct endpoints.
 Use another target only when the descriptor lists it. Do not edit generated
 output. `arete.toml` records intent; `arete.lock` records exact resolution.
 
+Each generated SDK folder has a `README.md` reference: import, views, row fields
+(TypeScript paths next to wire names, types, units) and reads. Read it, or run
+`a4 sdk describe <alias>` (MCP: `describe_sdk`), before writing SDK code.
+
 A stack includes the program SDKs for the programs its views index, at
 `arete.programs.<name>`. Install a stack when the app needs live views, with or
 without transactions; install a program on its own only when no stack you use
