@@ -1305,13 +1305,31 @@ struct SdkReferencePointer {
     usage_docs: &'static str,
 }
 
+/// The `a4 sdk describe` command for `output`, with `--kind` when a
+/// dependency of the other kind has the same alias: describe refuses to
+/// guess then.
+fn describe_command(plan: &InstallPlan, output: &super::graph::PlannedOutput) -> String {
+    let ambiguous = plan
+        .outputs
+        .iter()
+        .any(|other| other.alias == output.alias && other.kind != output.kind);
+    let command = format!(
+        "{} {}",
+        arete_mcp::sdk_reference::DESCRIBE_COMMAND,
+        shell_quoted(&output.alias)
+    );
+    if ambiguous {
+        format!("{command} --kind {}", output.kind)
+    } else {
+        command
+    }
+}
+
 impl SdkReferencePointer {
     /// The reference of each output that has one: of the `requested`
     /// dependencies, or of every dependency when none was requested.
     fn for_outputs(plan: &InstallPlan, requested: &[(DependencyKind, String)]) -> Vec<Self> {
-        use arete_mcp::sdk_reference::{
-            DESCRIBE_COMMAND, DESCRIBE_TOOL, README_FILE, REFERENCE_FILE,
-        };
+        use arete_mcp::sdk_reference::{DESCRIBE_TOOL, README_FILE, REFERENCE_FILE};
         plan.outputs
             .iter()
             .filter(|output| {
@@ -1337,7 +1355,7 @@ impl SdkReferencePointer {
                     alias: output.alias.clone(),
                     target: output.target,
                     readme: display_path(&output.path.join(README_FILE).display().to_string()),
-                    command: format!("{DESCRIBE_COMMAND} {}", shell_quoted(&output.alias)),
+                    command: describe_command(plan, output),
                     mcp_tool: DESCRIBE_TOOL,
                     usage_skills,
                     usage_docs,
@@ -4451,6 +4469,27 @@ mod tests {
         assert_eq!(
             value[0]["usageDocs"],
             "https://docs.arete.run/sdks/typescript/"
+        );
+
+        // A program with the stack's alias: each command names its kind.
+        let program = super::super::graph::PlannedOutput {
+            kind: DependencyKind::Program,
+            ..output.clone()
+        };
+        let both = InstallPlan {
+            outputs: vec![output.clone(), program.clone()],
+        };
+        assert_eq!(
+            describe_command(&both, &output),
+            "a4 sdk describe vault --kind stack"
+        );
+        assert_eq!(
+            describe_command(&both, &program),
+            "a4 sdk describe vault --kind program"
+        );
+        assert_eq!(
+            SdkReferencePointer::for_outputs(&both, &[])[0].command,
+            "a4 sdk describe vault --kind stack"
         );
 
         // Only the requested dependencies, and only outputs with a reference.
