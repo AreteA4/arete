@@ -4,32 +4,52 @@ import { pda, literal, arg, programAccountRead, createInstructionHandler, type E
 export interface SubscriptionPlanId {
   address: string | null;
   owner: string | null;
+  /** Wire name `id.planPda_address` (CLI and MCP output). */
   planPdaAddress: string | null;
 }
 
 export interface SubscriptionPlanMetrics {
+  /** Wire name `metrics.cancel_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   cancelCount: bigint | null;
+  /** Wire name `metrics.deleted_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   deletedAt: bigint | null;
+  /** Wire name `metrics.last_activity_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastActivityAt: bigint | null;
+  /** Wire name `metrics.last_cancelled_subscription_expires_at_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastCancelledSubscriptionExpiresAtTs: bigint | null;
+  /** Wire name `metrics.last_created_subscriber` (CLI and MCP output). */
   lastCreatedSubscriber: string | null;
+  /** Wire name `metrics.last_subscription_created_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastSubscriptionCreatedAt: bigint | null;
+  /** Wire name `metrics.last_subscription_resumed_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastSubscriptionResumedAt: bigint | null;
+  /** Wire name `metrics.last_transfer_amount_raw` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastTransferAmountRaw: bigint | null;
+  /** Wire name `metrics.last_transfer_period_end_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastTransferPeriodEndTs: bigint | null;
+  /** Wire name `metrics.last_transfer_period_start_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastTransferPeriodStartTs: bigint | null;
+  /** Wire name `metrics.last_transfer_receiver` (CLI and MCP output). */
   lastTransferReceiver: string | null;
+  /** Wire name `metrics.last_transfer_subscription` (CLI and MCP output). */
   lastTransferSubscription: string | null;
+  /** Wire name `metrics.pull_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   pullCount: bigint | null;
+  /** Wire name `metrics.resume_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   resumeCount: bigint | null;
+  /** Wire name `metrics.subscription_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   subscriptionCount: bigint | null;
+  /** Wire name `metrics.transfer_volume_raw` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   transferVolumeRaw: bigint | null;
+  /** Wire name `metrics.update_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   updateCount: bigint | null;
 }
 
 export interface SubscriptionPlanState {
   data: PlanData | null;
+  /** Wire name `state.is_active` (CLI and MCP output). */
   isActive: boolean | null;
+  /** Wire name `state.is_sunset` (CLI and MCP output). */
   isSunset: boolean | null;
   mint: string | null;
   snapshot: Plan | null;
@@ -40,6 +60,7 @@ export interface SubscriptionPlan {
   id: SubscriptionPlanId;
   metrics: SubscriptionPlanMetrics;
   state: SubscriptionPlanState;
+  /** Wire name `token_metadata` (CLI and MCP output). */
   tokenMetadata: TokenMetadata | null;
 }
 
@@ -335,23 +356,33 @@ export const SubscriptionPlanCompletedSchema = z.object({
 
 export interface SubscriptionAuthorityId {
   address: string | null;
+  /** Wire name `id.subscriptionAuthority_address` (CLI and MCP output). */
   subscriptionAuthorityAddress: string | null;
+  /** Wire name `id.token_mint` (CLI and MCP output). */
   tokenMint: string | null;
   user: string | null;
 }
 
 export interface SubscriptionAuthorityMetrics {
+  /** Wire name `metrics.closed_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   closedAt: bigint | null;
+  /** Wire name `metrics.fixed_delegation_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   fixedDelegationCount: bigint | null;
+  /** Wire name `metrics.fixed_pull_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   fixedPullCount: bigint | null;
+  /** Wire name `metrics.last_activity_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastActivityAt: bigint | null;
+  /** Wire name `metrics.recurring_delegation_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   recurringDelegationCount: bigint | null;
+  /** Wire name `metrics.recurring_pull_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   recurringPullCount: bigint | null;
+  /** Wire name `metrics.subscription_pull_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   subscriptionPullCount: bigint | null;
 }
 
 export interface SubscriptionAuthorityState {
   bump: number | null;
+  /** Wire name `state.init_id` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   initId: bigint | null;
   payer: string | null;
   snapshot: SubscriptionAuthorityAccount | null;
@@ -361,6 +392,7 @@ export interface SubscriptionAuthority {
   id: SubscriptionAuthorityId;
   metrics: SubscriptionAuthorityMetrics;
   state: SubscriptionAuthorityState;
+  /** Wire name `token_metadata` (CLI and MCP output). */
   tokenMetadata: TokenMetadata | null;
 }
 
@@ -526,16 +558,27 @@ export const SubscriptionAuthorityCompletedSchema = z.object({
 }));
 
 export interface SubscriptionInstanceActivity {
+  /** Wire name `activity.cancel_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   cancelCount: bigint | null;
+  /** Wire name `activity.last_amount_pulled_in_period_raw` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastAmountPulledInPeriodRaw: bigint | null;
+  /** Wire name `activity.last_state_change_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastStateChangeAt: bigint | null;
+  /** Wire name `activity.last_transfer_amount_raw` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastTransferAmountRaw: bigint | null;
+  /** Wire name `activity.last_transfer_period_end_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastTransferPeriodEndTs: bigint | null;
+  /** Wire name `activity.last_transfer_period_start_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastTransferPeriodStartTs: bigint | null;
+  /** Wire name `activity.last_transfer_receiver` (CLI and MCP output). */
   lastTransferReceiver: string | null;
+  /** Wire name `activity.pull_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   pullCount: bigint | null;
+  /** Wire name `activity.resume_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   resumeCount: bigint | null;
+  /** Wire name `activity.subscribe_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   subscribeCount: bigint | null;
+  /** Wire name `activity.total_transferred_raw` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   totalTransferredRaw: bigint | null;
 }
 
@@ -545,12 +588,16 @@ export interface SubscriptionInstanceId {
   planPda: string | null;
   subscriber: string | null;
   subscriptionAuthority: string | null;
+  /** Wire name `id.subscriptionPda_address` (CLI and MCP output). */
   subscriptionPdaAddress: string | null;
 }
 
 export interface SubscriptionInstanceState {
+  /** Wire name `state.amount_pulled_in_period` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   amountPulledInPeriod: bigint | null;
+  /** Wire name `state.current_period_start_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   currentPeriodStartTs: bigint | null;
+  /** Wire name `state.expires_at_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   expiresAtTs: bigint | null;
   header: Header | null;
   snapshot: SubscriptionDelegation | null;
@@ -818,31 +865,45 @@ export const SubscriptionInstanceCompletedSchema = z.object({
 }));
 
 export interface FixedDelegationActivity {
+  /** Wire name `activity.created_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   createdAt: bigint | null;
+  /** Wire name `activity.last_remaining_amount_raw` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastRemainingAmountRaw: bigint | null;
+  /** Wire name `activity.last_transfer_amount_raw` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastTransferAmountRaw: bigint | null;
+  /** Wire name `activity.last_transfer_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastTransferAt: bigint | null;
+  /** Wire name `activity.last_transfer_receiver` (CLI and MCP output). */
   lastTransferReceiver: string | null;
+  /** Wire name `activity.revoked_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   revokedAt: bigint | null;
+  /** Wire name `activity.total_transferred_raw` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   totalTransferredRaw: bigint | null;
+  /** Wire name `activity.transfer_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   transferCount: bigint | null;
 }
 
 export interface FixedDelegationId {
   address: string | null;
   delegatee: string | null;
+  /** Wire name `id.delegationAccount_address` (CLI and MCP output). */
   delegationAccountAddress: string | null;
+  /** Wire name `id.delegationPda_address` (CLI and MCP output). */
   delegationPdaAddress: string | null;
   delegator: string | null;
 }
 
 export interface FixedDelegationState {
+  /** `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   amount: bigint | null;
+  /** Wire name `state.amount_ui` (CLI and MCP output). Token amount in whole units (raw / 10^token_metadata.decimals). */
   amountUi: number | null;
+  /** Wire name `state.expiry_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   expiryTs: bigint | null;
   header: Header | null;
   mint: string | null;
   snapshot: FixedDelegationAccount | null;
+  /** Wire name `state.subscription_authority` (CLI and MCP output). */
   subscriptionAuthority: string | null;
 }
 
@@ -850,6 +911,7 @@ export interface FixedDelegation {
   activity: FixedDelegationActivity;
   id: FixedDelegationId;
   state: FixedDelegationState;
+  /** Wire name `token_metadata` (CLI and MCP output). */
   tokenMetadata: TokenMetadata | null;
 }
 
@@ -1030,37 +1092,57 @@ export const FixedDelegationCompletedSchema = z.object({
 }));
 
 export interface RecurringDelegationActivity {
+  /** Wire name `activity.created_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   createdAt: bigint | null;
+  /** Wire name `activity.last_amount_pulled_in_period_raw` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastAmountPulledInPeriodRaw: bigint | null;
+  /** Wire name `activity.last_transfer_amount_raw` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastTransferAmountRaw: bigint | null;
+  /** Wire name `activity.last_transfer_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastTransferAt: bigint | null;
+  /** Wire name `activity.last_transfer_period_end_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastTransferPeriodEndTs: bigint | null;
+  /** Wire name `activity.last_transfer_period_start_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastTransferPeriodStartTs: bigint | null;
+  /** Wire name `activity.last_transfer_receiver` (CLI and MCP output). */
   lastTransferReceiver: string | null;
+  /** Wire name `activity.revoked_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   revokedAt: bigint | null;
+  /** Wire name `activity.total_transferred_raw` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   totalTransferredRaw: bigint | null;
+  /** Wire name `activity.transfer_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   transferCount: bigint | null;
 }
 
 export interface RecurringDelegationId {
   address: string | null;
   delegatee: string | null;
+  /** Wire name `id.delegationAccount_address` (CLI and MCP output). */
   delegationAccountAddress: string | null;
+  /** Wire name `id.delegationPda_address` (CLI and MCP output). */
   delegationPdaAddress: string | null;
   delegator: string | null;
 }
 
 export interface RecurringDelegationState {
+  /** Wire name `state.amount_per_period` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   amountPerPeriod: bigint | null;
+  /** Wire name `state.amount_per_period_ui` (CLI and MCP output). Token amount in whole units (raw / 10^token_metadata.decimals). */
   amountPerPeriodUi: number | null;
+  /** Wire name `state.amount_pulled_in_period` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   amountPulledInPeriod: bigint | null;
+  /** Wire name `state.amount_pulled_in_period_ui` (CLI and MCP output). Token amount in whole units (raw / 10^token_metadata.decimals). */
   amountPulledInPeriodUi: number | null;
+  /** Wire name `state.current_period_start_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   currentPeriodStartTs: bigint | null;
+  /** Wire name `state.expiry_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   expiryTs: bigint | null;
   header: Header | null;
   mint: string | null;
+  /** Wire name `state.period_length_s` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   periodLengthS: bigint | null;
   snapshot: RecurringDelegationAccount | null;
+  /** Wire name `state.subscription_authority` (CLI and MCP output). */
   subscriptionAuthority: string | null;
 }
 
@@ -1068,6 +1150,7 @@ export interface RecurringDelegation {
   activity: RecurringDelegationActivity;
   id: RecurringDelegationId;
   state: RecurringDelegationState;
+  /** Wire name `token_metadata` (CLI and MCP output). */
   tokenMetadata: TokenMetadata | null;
 }
 
@@ -2325,7 +2408,7 @@ export const SUBSCRIPTIONS_STREAM_STACK_CORE = {
     subscriptions: {
       name: 'subscriptions',
       programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:e6ec5a8aa5b6e300143af55295f28ab56076f97ce722fac0f1d7df980eea7958',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:5058c578ae66d09a8464ca791c5ebaa27c9538e6a2c66dafd5c4f1e77f8694b5',
       programSpecHash: 'arete:h1:program-spec:sha256:a10a30f17be97429474e990fdc24b87edf51e4c5fe0021b0651d434d11f3e698',
       idlContentHash: 'arete:h1:idl-content:sha256:6b1a0054e474098d8e646ca0238f197ea5d31fa93ca79c4dd466c6edf4fef554',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:c12d4e2b8c21cd79a97e3e9dd698cc60dd1a511c1ef4e31dbc502a8fd89485c4',

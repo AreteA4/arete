@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "kind": "stack",
+  "alias": "vault",
+  "language": "typescript",
+  "package": "vault",
+  "version": "1.0.0",
+  "import": {
+    "module": "vault.ts",
+    "specifier": "./generated/typescript/stacks/vault/vault.js",
+    "export": "VAULT_STREAM_STACK",
+    "typesModule": "vault-core.ts"
+  },
+  "entities": [
+    {
+      "name": "Vault",
+      "typeName": "Vault",
+      "views": [
+        {
+          "id": "Vault/state",
+          "kind": "state",
+          "access": "views.Vault.state",
+          "key": "{ address: string }"
+        },
+        {
+          "id": "Vault/list",
+          "kind": "list",
+          "access": "views.Vault.list"
+        }
+      ],
+      "fields": [
+        {
+          "path": "balance.amount",
+          "wire": "balance.amount",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "id.address",
+          "wire": "id.address",
+          "type": "string",
+          "nullable": false
+        }
+      ]
+    }
+  ],
+  "helpers": [
+    "defaults.limits()"
+  ],
+  "programs": [
+    {
+      "key": "vault",
+      "name": "vault",
+      "programId": "2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM",
+      "directory": "programs/vault",
+      "operations": [
+        {
+          "path": "instructions.treasury.deposit",
+          "params": [
+            "input: DepositToTreasuryInput"
+          ]
+        }
+      ],
+      "accounts": [
+        "Vault"
+      ],
+      "instructions": [
+        "deposit",
+        "withdraw",
+        "payFee"
+      ],
+      "helpers": [
+        "addresses.treasury",
+        "defaults.treasuryDeposit"
+      ]
+    }
+  ]
+}

@@ -2,55 +2,89 @@ import { z } from 'zod';
 import { pda, literal, account, programAccountRead, createInstructionHandler, type ErrorMetadata, buildInstruction, PROGRAM_OPERATION_EXTENSIONS, instructionOperation, createPreparedInstruction } from '@usearete/sdk';
 
 export interface OreRoundEntropy {
+  /** Wire name `entropy.entropy_end_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   entropyEndAt: bigint | null;
+  /** Wire name `entropy.entropy_samples` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   entropySamples: bigint | null;
+  /** Wire name `entropy.entropy_seed` (CLI and MCP output). */
   entropySeed: string | null;
+  /** Wire name `entropy.entropy_slot_hash` (CLI and MCP output). */
   entropySlotHash: string | null;
+  /** Wire name `entropy.entropy_start_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   entropyStartAt: bigint | null;
+  /** Wire name `entropy.entropy_value` (CLI and MCP output). */
   entropyValue: string | null;
+  /** Wire name `entropy.entropy_var_address` (CLI and MCP output). */
   entropyVarAddress: string | null;
+  /** Wire name `entropy.resolved_seed` (CLI and MCP output). */
   resolvedSeed: number[] | null;
 }
 
 export interface OreRoundId {
+  /** Wire name `id.round_address` (CLI and MCP output). */
   roundAddress: string | null;
+  /** Wire name `id.round_id` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   roundId: bigint | null;
 }
 
 export interface OreRoundMetrics {
+  /** Wire name `metrics.checkpoint_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   checkpointCount: bigint | null;
+  /** Wire name `metrics.deploy_count` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   deployCount: bigint | null;
 }
 
 export interface OreRoundResults {
+  /** Wire name `results.did_hit_motherlode` (CLI and MCP output). */
   didHitMotherlode: boolean | null;
+  /** Wire name `results.expires_at_slot_hash` (CLI and MCP output). */
   expiresAtSlotHash: SlotHashBytes | null;
+  /** Wire name `results.pre_reveal_rng` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   preRevealRng: bigint | null;
+  /** Wire name `results.pre_reveal_rng_candidate` (CLI and MCP output). */
   preRevealRngCandidate: KeccakRngValue | null;
+  /** Wire name `results.pre_reveal_winning_square` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   preRevealWinningSquare: bigint | null;
+  /** Wire name `results.rent_payer` (CLI and MCP output). */
   rentPayer: string | null;
   rng: KeccakRngValue | null;
+  /** Wire name `results.slot_hash` (CLI and MCP output). */
   slotHash: string | null;
+  /** Wire name `results.top_miner` (CLI and MCP output). */
   topMiner: string | null;
+  /** Wire name `results.top_miner_reward` (CLI and MCP output). Token amount in whole units (raw / 10^11). */
   topMinerReward: number | null;
+  /** Wire name `results.winning_square` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   winningSquare: bigint | null;
 }
 
 export interface OreRoundState {
+  /** Wire name `state.closes_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   closesAt: bigint | null;
+  /** Wire name `state.count_per_square` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   countPerSquare: bigint[] | null;
+  /** Wire name `state.deployed_per_square` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. Token amount in raw base units (divide by 10^9 for whole units); whole units: state.deployedPerSquareUi. */
   deployedPerSquare: bigint[] | null;
+  /** Wire name `state.deployed_per_square_ui` (CLI and MCP output). Token amount in whole units (raw / 10^9); raw: state.deployedPerSquare. */
   deployedPerSquareUi: number[] | null;
+  /** Wire name `state.estimated_expires_at_unix` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   estimatedExpiresAtUnix: bigint | null;
+  /** Wire name `state.expires_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   expiresAt: bigint | null;
+  /** Token amount in whole units (raw / 10^11). */
   motherlode: number | null;
+  /** Wire name `state.total_deployed` (CLI and MCP output). Token amount in whole units (raw / 10^9). */
   totalDeployed: number | null;
+  /** Wire name `state.total_miners` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   totalMiners: bigint | null;
+  /** Wire name `state.total_vaulted` (CLI and MCP output). Token amount in whole units (raw / 10^9). */
   totalVaulted: number | null;
+  /** Wire name `state.total_winnings` (CLI and MCP output). Token amount in whole units (raw / 10^9). */
   totalWinnings: number | null;
 }
 
 export interface OreRoundTreasury {
+  /** Token amount in whole units (raw / 10^11). */
   motherlode: number | null;
 }
 
@@ -61,6 +95,7 @@ export interface OreRound {
   results: OreRoundResults;
   state: OreRoundState;
   treasury: OreRoundTreasury;
+  /** Wire name `ore_metadata` (CLI and MCP output). */
   oreMetadata: TokenMetadata | null;
 }
 
@@ -360,15 +395,20 @@ export interface OreBoardId {
 }
 
 export interface OreBoardState {
+  /** Wire name `state.end_slot` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   endSlot: bigint | null;
+  /** Wire name `state.production_cost_ema` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   productionCostEma: bigint | null;
+  /** Wire name `state.round_id` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   roundId: bigint | null;
+  /** Wire name `state.start_slot` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   startSlot: bigint | null;
 }
 
 export interface OreBoard {
   id: OreBoardId;
   state: OreBoardState;
+  /** Wire name `board_snapshot` (CLI and MCP output). */
   boardSnapshot: CaptureWrapper<Board> | null;
 }
 
@@ -504,14 +544,18 @@ export interface OreTreasuryId {
 }
 
 export interface OreTreasuryState {
+  /** Token amount in whole units (raw / 10^11). */
   motherlode: number | null;
+  /** Wire name `state.total_refined` (CLI and MCP output). Token amount in whole units (raw / 10^11). */
   totalRefined: number | null;
+  /** Wire name `state.total_unclaimed` (CLI and MCP output). Token amount in whole units (raw / 10^11). */
   totalUnclaimed: number | null;
 }
 
 export interface OreTreasury {
   id: OreTreasuryId;
   state: OreTreasuryState;
+  /** Wire name `treasury_snapshot` (CLI and MCP output). */
   treasurySnapshot: CaptureWrapper<Treasury> | null;
 }
 
@@ -609,38 +653,60 @@ export const OreTreasuryCompletedSchema = z.object({
 }));
 
 export interface OreMinerAutomation {
+  /** `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   amount: bigint | null;
+  /** `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   balance: bigint | null;
   executor: string | null;
+  /** `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   fee: bigint | null;
+  /** `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   mask: bigint | null;
+  /** `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   reload: bigint | null;
+  /** `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   strategy: bigint | null;
 }
 
 export interface OreMinerId {
   authority: string | null;
+  /** Wire name `id.automation_address` (CLI and MCP output). */
   automationAddress: string | null;
+  /** Wire name `id.miner_address` (CLI and MCP output). */
   minerAddress: string | null;
 }
 
 export interface OreMinerRewards {
+  /** Wire name `rewards.lifetime_deployed` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lifetimeDeployed: bigint | null;
+  /** Wire name `rewards.lifetime_rewards_ore` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lifetimeRewardsOre: bigint | null;
+  /** Wire name `rewards.lifetime_rewards_sol` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lifetimeRewardsSol: bigint | null;
+  /** Wire name `rewards.refined_ore` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   refinedOre: bigint | null;
+  /** Wire name `rewards.rewards_ore` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   rewardsOre: bigint | null;
+  /** Wire name `rewards.rewards_sol` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   rewardsSol: bigint | null;
 }
 
 export interface OreMinerState {
+  /** Wire name `state.checkpoint_fee` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   checkpointFee: bigint | null;
+  /** Wire name `state.checkpoint_id` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   checkpointId: bigint | null;
+  /** Wire name `state.deployed_per_square` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. Token amount in raw base units (divide by 10^9 for whole units); whole units: state.deployedPerSquareUi. */
   deployedPerSquare: bigint[] | null;
+  /** Wire name `state.deployed_per_square_ui` (CLI and MCP output). Token amount in whole units (raw / 10^9); raw: state.deployedPerSquare. */
   deployedPerSquareUi: number[] | null;
+  /** Wire name `state.last_claim_ore_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastClaimOreAt: bigint | null;
+  /** Wire name `state.last_claim_sol_at` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   lastClaimSolAt: bigint | null;
+  /** Wire name `state.round_id` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   roundId: bigint | null;
+  /** Wire name `state.total_deployed` (CLI and MCP output). Token amount in whole units (raw / 10^9). */
   totalDeployed: number | null;
 }
 
@@ -649,7 +715,9 @@ export interface OreMiner {
   id: OreMinerId;
   rewards: OreMinerRewards;
   state: OreMinerState;
+  /** Wire name `miner_snapshot` (CLI and MCP output). */
   minerSnapshot: CaptureWrapper<Miner> | null;
+  /** Wire name `automation_snapshot` (CLI and MCP output). */
   automationSnapshot: CaptureWrapper<Automation> | null;
 }
 
@@ -2042,7 +2110,7 @@ export const ORE_STREAM_STACK_CORE = {
     ore: {
       name: 'ore',
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:a41415a1364fda8fcd9906b4264e346f452c713344b3aeedbb09d2b3d32c35cc',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:1b85559be3202673c43bc74c10dc39e4bce0d7b841fe2fa6065bfa62e0ff5088',
       programSpecHash: 'arete:h1:program-spec:sha256:41a3e99a926050fd86b09761b829570a0a2086c10766e1b6e328b901dd856f72',
       idlContentHash: 'arete:h1:idl-content:sha256:7a14fb6c2c406d74ac61bf93ff14949da4677a5f6a3d53058e550f1fe86f7bf3',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:b16f15a8d4ed1ce44127170eaf2050349573759961c33bd010a4cf59df787157',
@@ -2212,7 +2280,7 @@ export const ORE_STREAM_STACK_CORE = {
     entropy: {
       name: 'entropy',
       programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:8526b0e4d44d6bd9d4dab159fbe7b5cc818a766a30fcd53f579c772581f49c8a',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:62bcf9e6ea9f2a75c7f21d75522cc6d9708cba5c0925ed25b23f54eb534ef979',
       programSpecHash: 'arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b',
       idlContentHash: 'arete:h1:idl-content:sha256:2b5b3ed4de83cd3803bd6b82b33cfbea0e8b7c6a7ada7b138fcb57bb2fe1a01f',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:adc67e46a2ffc5e26fcff489fa7e21d5aa0d6338243dc23330ab0e85c3e150fc',

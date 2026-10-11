@@ -531,6 +531,7 @@ fn generate(dependency: &Value, target: InstallTarget, output: &Path) {
             rust_module: false,
             python_module: false,
             stack_endpoints: None,
+            reference: None,
         },
     )
     .unwrap_or_else(|error| panic!("generate {}: {error:#}", output.display()));
@@ -1175,6 +1176,7 @@ fn a_refused_bundle_leaves_the_output_untouched() {
                             rust_module: false,
                             python_module: false,
                             stack_endpoints: None,
+                            reference: None,
                         },
                     )
                 }

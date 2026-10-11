@@ -1108,6 +1108,7 @@ fn create_local_program_sdk(
         rust_module: module,
         python_module: module,
         stack_endpoints: None,
+        reference: None,
     };
     let local = LocalProgramSdk {
         extensions: extensions.as_deref().map(Path::new),
@@ -1361,6 +1362,9 @@ pub(crate) struct ProjectGenerationOptions<'a> {
     /// The dependency's arete.toml `endpoints`: the user's own deployment of a
     /// registry stack.
     pub stack_endpoints: Option<&'a BTreeMap<String, crate::project::manifest::StackEndpointsV1>>,
+    /// Write the SDK reference (`sdk-reference.json` and `README.md`) into a
+    /// TypeScript output, with what this context adds.
+    pub reference: Option<&'a reference::ReferenceContext>,
 }
 
 pub(crate) fn generate_project_local_stack(
@@ -1925,7 +1929,17 @@ fn generate_project_stack_source(
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 false,
-            )
+            )?;
+            if let Some(context) = options.reference {
+                let reference = reference::typescript_stack_reference(
+                    &source.load_stack_spec(true)?,
+                    options.output,
+                    options.alias,
+                    context,
+                )?;
+                reference::write_reference(options.output, &reference)?;
+            }
+            Ok(())
         }
         InstallTarget::Rust => {
             if let Some(composition) = source.composition_artifacts() {
@@ -2076,7 +2090,7 @@ fn generate_project_program(
                     options.typescript_package,
                     None,
                     hosted_artifact.as_ref(),
-                )
+                )?;
             } else {
                 generate_typescript_program_sdk_from_artifact(
                     program_spec,
@@ -2084,8 +2098,18 @@ fn generate_project_program(
                     options.output,
                     options.typescript_package,
                     None,
-                )
+                )?;
             }
+            if let Some(context) = options.reference {
+                let reference = reference::typescript_program_reference(
+                    program_spec,
+                    options.output,
+                    options.alias,
+                    context,
+                )?;
+                reference::write_reference(options.output, &reference)?;
+            }
+            Ok(())
         }
         InstallTarget::Rust => {
             generate_rust_program_sdk(program_spec, install, options, &LocalProgramSdk::default())
@@ -3853,6 +3877,24 @@ fn write_sdk_provenance_manifest_file(
         })
 }
 
+/// Add `names`, already written under `output_dir`, to the payload of the
+/// SDK generated there: its provenance and `sdk-manifest.json` then list
+/// them, and its `sdkOutputTreeHash` covers them.
+fn add_sdk_payload_files(output_dir: &Path, names: &[String]) -> Result<()> {
+    let path = output_dir.join(SDK_PROVENANCE_FILE);
+    let contents =
+        fs::read_to_string(&path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let SdkProvenanceManifest::V2(mut manifest) = parse_sdk_provenance_manifest(&contents)? else {
+        anyhow::bail!("{} records no content hash", path.display());
+    };
+    manifest
+        .artifacts
+        .retain(|name| name != SDK_MANIFEST_FILE && !names.contains(name));
+    manifest.artifacts.extend(names.iter().cloned());
+    manifest.artifacts.sort();
+    write_sdk_provenance_manifest_file(output_dir, &manifest)
+}
+
 /// The `sdkOutputTreeHash` of the payload files `artifacts` under `output`,
 /// and the `sdk-manifest.json` content that describes them.
 fn sdk_payload_identity(
@@ -4694,6 +4736,7 @@ fn stage_hosted_program_modules(
                 programs: Some(vec![program.program_config.clone()]),
                 gateway: None,
                 release: None,
+                field_notes: BTreeMap::new(),
             }),
         )
         .map_err(|error| anyhow::anyhow!("Failed to compile hosted program SDK: {error}"))?;
@@ -5609,6 +5652,7 @@ fn write_typescript_program_sdk(
             programs: extensions.programs,
             gateway: extensions.gateway,
             release: None,
+            field_notes: BTreeMap::new(),
         }),
     )
     .map_err(|e| anyhow::anyhow!("Failed to compile TypeScript: {}", e))?;
@@ -5765,6 +5809,7 @@ fn generate_typescript_sdk_from_source(
             programs: source.typescript_programs(&stack_spec)?,
             gateway: source.hosted_gateway()?,
             release: None,
+            field_notes: BTreeMap::new(),
         };
 
         let output = arete_interpreter::typescript::compile_program_modules(
@@ -5862,6 +5907,7 @@ fn generate_typescript_sdk_from_source(
             programs: source.typescript_programs(&stack_spec)?,
             gateway: source.hosted_gateway()?,
             release,
+            field_notes: reference::typescript_field_notes(&stack_spec),
         };
 
         let output = match source {
@@ -6031,6 +6077,7 @@ fn generate_typescript_composition_sdk(
             programs: source.typescript_programs(&program_stack)?,
             gateway: source.hosted_gateway()?,
             release: None,
+            field_notes: BTreeMap::new(),
         },
         live_endpoints: source.composition_live_endpoints(),
         live_releases: source.composition_live_releases(),
@@ -11601,6 +11648,7 @@ mod tests {
                 rust_module: false,
                 python_module: false,
                 stack_endpoints: None,
+                reference: None,
             },
         )
         .expect("local program generation should succeed");
@@ -11618,6 +11666,7 @@ mod tests {
                 rust_module: false,
                 python_module: false,
                 stack_endpoints: None,
+                reference: None,
             },
         )
         .expect("local stack generation should succeed");
@@ -11634,6 +11683,7 @@ mod tests {
                 rust_module: false,
                 python_module: false,
                 stack_endpoints: None,
+                reference: None,
             },
         )
         .expect("local python generation should succeed");
@@ -11648,6 +11698,9 @@ mod tests {
         assert!(!pyproject.contains(">=0.4\""), "{pyproject}");
     }
 }
+
+mod extension_outline;
+pub(crate) mod reference;
 
 #[cfg(test)]
 mod stack_name_golden;

@@ -20,5 +20,7 @@ pub fn run(args: McpArgs) -> Result<()> {
         .enable_all()
         .build()
         .context("Failed to start the async runtime for a4 mcp")?;
-    runtime.block_on(arete_mcp::serve_stdio())
+    runtime.block_on(arete_mcp::serve_stdio_with(Some(std::sync::Arc::new(
+        crate::project::sdk_references::ProjectSdkReferences,
+    ))))
 }
