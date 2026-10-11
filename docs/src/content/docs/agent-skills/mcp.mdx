@@ -345,14 +345,14 @@ export, each entity's views and row fields (TypeScript path next to the wire
 name, type, unit), the stack's `read.*` helpers and its programs' reads and
 operations.
 
-| Argument  | Description                                                              |
-| --------- | ------------------------------------------------------------------------ |
-| `alias`   | Dependency alias from `arete.toml`; omit to list the installed SDKs      |
-| `kind`    | `stack` or `program`, when the alias names both                          |
+| Argument  | Description                                                               |
+| --------- | ------------------------------------------------------------------------- |
+| `alias`   | Dependency alias from `arete.toml`; omit to list the installed SDKs       |
+| `kind`    | `stack` or `program`, when the alias names both                           |
 | `view`    | Only one entity (`OreRound`) or view (`OreRound/latest`), with its fields |
-| `read`    | Only one read or program operation (`currentRound`, `deploy`)            |
-| `program` | Only one program (`ore`)                                                 |
-| `format`  | `markdown` (default) or `json`                                           |
+| `read`    | Only one read or program operation (`currentRound`, `deploy`)             |
+| `program` | Only one program (`ore`)                                                  |
+| `format`  | `markdown` (default) or `json`                                            |
 
 An unknown alias, view or read is an invalid-params error that lists what is
 installed.
