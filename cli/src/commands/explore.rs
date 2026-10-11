@@ -2872,6 +2872,9 @@ fn render_catalog_search(value: &Value, full: bool) -> String {
     }
     if results.is_empty() {
         text.push_str("\nNo catalog entries match. Broaden the query or run `a4 explore catalog --vocabulary`.\n");
+        if catalog_view::catalog_changed(value) {
+            text.push_str(&format!("{}\n", catalog_view::CATALOG_CHANGED_HINT));
+        }
         return text;
     }
     text.push_str("\nCatalog entries\n");
@@ -3704,6 +3707,11 @@ mod tests {
             assert!(rendered.contains(expected), "{expected:?} in {rendered}");
         }
         assert!(!rendered.contains("related:"), "{rendered}");
+        let empty = render_catalog_search(&json!({"results": [], "catalogChanged": true}), false);
+        assert!(
+            empty.contains(catalog_view::CATALOG_CHANGED_HINT),
+            "{empty}"
+        );
         let hint = catalog_search_hint(&page, &catalog_view::brief(), None).unwrap();
         assert!(hint.contains(catalog_view::CATALOG_CHANGED_HINT), "{hint}");
     }

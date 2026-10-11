@@ -387,8 +387,8 @@ pub struct SearchCatalogArgs {
     /// `score`, identity hashes (`packageReleaseHash`, `bundleHash`,
     /// `setHash`), `programIds` and release notes, but without the derived
     /// `live` and `related`. By default each result keeps only kind, slug,
-    /// name, version, protocol, summary, modes, live (stacks), related,
-    /// sdkTargets and delivery status/health.
+    /// name, version, protocol, summary, modes, live (stacks), installName,
+    /// programs, stacks, related, sdkTargets and delivery status/health.
     #[serde(default)]
     pub full: Option<bool>,
 }
@@ -1240,13 +1240,21 @@ impl AreteMcp {
                           same filters to continue. Drill in with `get_catalog_entry`.\n\n\
                           Results are brief by default: each keeps only `kind`, `slug`, \
                           `name`, `version`, `protocol`, `summary`, `modes`, `sdkTargets` \
-                          and `delivery.status`/`delivery.health`, plus two derived keys: \
-                          `live` on stacks (`true`: a hosted stream to subscribe to now, \
-                          i.e. `modes` include `subscribe`; `false`: definition-only, \
-                          install its SDK or deploy it yourself; `mode: \"subscribe\"` \
-                          returns only live stacks) and `related`, the other results on \
-                          the page with the same `protocol` as `kind:slug` (program, \
-                          stack and protocol slugs often differ). The response carries a \
+                          and `delivery.status`/`delivery.health`, and the links between \
+                          stacks and programs (program, stack and protocol slugs often \
+                          differ): `programs` on a stack (`[{slug, programId}]`, the \
+                          programs it composes), `stacks` on a program (`[{slug, live}]`, \
+                          the stacks composing it), `installName` on a program whose \
+                          install name differs from its slug, and a page-level \
+                          `protocols` listing every stack and program of each result's \
+                          protocol. `live` on stacks is derived: `true` is a hosted \
+                          stream to subscribe to now (`modes` include `subscribe`), \
+                          `false` is definition-only (install its SDK or deploy it \
+                          yourself); `mode: \"subscribe\"` returns only live stacks. A \
+                          result without `programs`/`stacks` gets `related`, the other \
+                          results on the page with the same `protocol` as `kind:slug`. A \
+                          page carrying `catalogChanged: true` may skip or repeat \
+                          entries; search again without `cursor`. The response carries a \
                           top-level `hint`. Pass `fields` (e.g. \
                           `\"slug,kind,name,version,modes,delivery.health\"`, dotted paths \
                           allowed) to keep only those keys, or `full: true` for every \
