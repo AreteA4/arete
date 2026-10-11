@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## [0.36.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.35.0...a4-cli-v0.36.0) (2026-10-11)
+
+
+### Features
+
+* **cli,mcp:** per-SDK reference, a4 sdk describe, and a neutral install summary ([472dd43](https://github.com/AreteA4/arete/commit/472dd43e3d1bca22bb824ce8505961703e421fff))
+* **cli:** SDK reference for installed SDKs and a4 sdk describe ([5efe6be](https://github.com/AreteA4/arete/commit/5efe6be09fdaccfa72009052d1076fb3875e1c6f))
+* **interpreter:** document entity fields in generated TypeScript ([068851b](https://github.com/AreteA4/arete/commit/068851b2b73a4c1b301400215b88ed1033935ada))
+
+
+### Bug Fixes
+
+* **cli:** add --kind to the describe command when an alias is ambiguous ([8dcadcd](https://github.com/AreteA4/arete/commit/8dcadcd893135804944cb417096992c5cefd6a19))
+* **cli:** add a start script only for an existing index.ts ([4c8e486](https://github.com/AreteA4/arete/commit/4c8e486845d156c2eca1b6fbabbeb44f6848b37a))
+* **cli:** name amount decimals by their TypeScript path in renamed objects ([5640b21](https://github.com/AreteA4/arete/commit/5640b214f5dbdd8d3d336a01392a15531f78433f))
+* **cli:** read shorthand methods in SDK extensions by name ([f6766ac](https://github.com/AreteA4/arete/commit/f6766ac226183dd7c8af747c51c59fa81c2cf502))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.35.0 to 0.36.0
+    * arete-mcp bumped from 0.35.0 to 0.36.0
+
 ## [0.35.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.34.0...a4-cli-v0.35.0) (2026-10-10)
 
 
