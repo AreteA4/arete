@@ -221,13 +221,25 @@ export async function oreGroundTruth(shell: SandboxShell): Promise<OreRound | un
   return undefined;
 }
 
-/** Tool calls of one turn that touched live Arete data (MCP or `a4 stream`). */
+const LIVE_A4_PATHS = new Set(['get', 'stream']);
+
+/** Tool calls of one turn that touched live Arete data (MCP, `a4 get` or `a4 stream`). */
 export function liveDataCalls(transcript: Transcript, turn: number): string[] {
   return transcript.toolCalls
     .filter((t) => t.turn === turn)
     .map(classify)
-    .filter((c) => (c.mcp && c.mcp.server === 'arete') || c.a4.some((a) => a.path === 'stream'))
-    .map((c) => (c.mcp ? `${c.mcp.server}/${c.mcp.tool}` : 'a4 stream'));
+    .flatMap((c) => {
+      if (c.mcp && c.mcp.server === 'arete') return [`${c.mcp.server}/${c.mcp.tool}`];
+      const live = c.a4.find((a) => LIVE_A4_PATHS.has(a.path));
+      return live ? [`a4 ${live.path}`] : [];
+    });
+}
+
+/** Integers of four or more digits in free text, allowing thousands separators (`435,570`, `435_570`, `435 570`). */
+export function answerNumbers(text: string): number[] {
+  return [...text.matchAll(/\b\d{1,3}(?:[,_ \u00a0\u202f]\d{3})+\b|\b\d{4,}\b/g)]
+    .map((m) => Number(m[0].replace(/[,_ \u00a0\u202f]/g, '')))
+    .filter((n) => n >= 1000);
 }
 
 /** F1 of a predicted slug set against the expected set. */
