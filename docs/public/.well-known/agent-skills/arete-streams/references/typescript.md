@@ -68,6 +68,26 @@ Use server query options exposed by the generated method instead of downloading 
 
 `get()` opens (or reuses) the equivalent subscription, waits for its initial snapshot, and releases it. List views also have `getOne()`, a `take: 1` read that resolves `null` for an empty list. Both reject with `InitialDataTimeoutError` after `timeoutMs` (5000 by default; `null` waits forever). `getSync()` never subscribes: it reads an already active subscription and returns `undefined` when there is none.
 
+A complete script that reads once and exits (take the import, export, view, and field names from the SDK reference):
+
+```ts
+import { createSession } from '@usearete/sdk';
+import { MY_STACK } from '../generated/typescript/stacks/my-stack/my-stack.js'; // relative to this file
+
+const session = await createSession({ stacks: { app: MY_STACK } });
+try {
+  const row = await session.stacks.app.views.Position.latest.getOne({ timeoutMs: 10_000 });
+  if (!row) throw new Error('no Position rows yet');
+  console.log(JSON.stringify({ id: String(row.id.positionId), size: row.state.size }));
+} finally {
+  session.close();
+}
+```
+
+- `getOne` and `get` already enforce `timeoutMs`. Do not wrap them in your own `setTimeout` race: an uncleared timer keeps Node running after the data prints.
+- Close the session in `finally`, so the script exits on errors too. If output prints quickly but the process lingers, look for an open timer, interval, or subscription.
+- When the task names the output keys, use them exactly; map SDK fields onto them rather than printing the SDK's names.
+
 With `@usearete/sdk` 0.25.0 or earlier, `get()` only reads an already active subscription, so a cold read resolves empty, and `getOne()` does not exist. On those versions, await the first value from `.use()` instead, or upgrade.
 
 ## Errors

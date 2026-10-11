@@ -2,7 +2,7 @@
 name: arete
 description: Discover and install exact Arete stacks or program SDKs for a Solana application. Use for generic Arete setup, capability discovery, choosing between a stack, a standalone program SDK, or a composed stack, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for Rust stack definitions or composing stacks use arete-stack-authoring; for hosted publication or deployment use arete-deploy.
 metadata:
-  version: "1.6.1"
+  version: "1.7.0"
   min-cli: ">=0.36.0"
 ---
 
@@ -70,6 +70,8 @@ Read each result's coverage modes, then route by what the application needs:
 - A stack result without `subscribe` coverage (`live: false`) is definition-only. It installs as a typed SDK and a pinned StackManifest, but nothing is hosted. The user can deploy their own copy after installing it (see `arete-deploy`); do not present it as a live stream until then.
 - No suitable hosted capability and the user wants a custom feed: specify the missing read model, then use `arete-stack-authoring`.
 - Publication or hosted lifecycle work: use `arete-deploy`.
+
+Program, stack and protocol slugs often differ for the same protocol, so results link them. `live` is a stack property: whether it streams now. Building transactions and reading accounts is a program property. A stack's `programs` lists the programs it composes as `{slug, programId}`; a program's `stacks` lists the stacks composing it as `{slug, live}`; a program whose install name differs from its slug carries `installName`, and either name installs it. The page-level `protocols` lists every stack and program of each result's protocol, including ones on other pages or excluded by `--kind`. To stream, install a `stacks[].slug` with `live: true`; to build, install a `programs[].slug`. Do not guess one kind's slug from another's. A page continued with `--cursor` that carries `catalogChanged: true` may skip or repeat entries; search again without `--cursor` when you need the full list.
 
 Inspect the selected catalog result as an exact install descriptor:
 
