@@ -2,8 +2,8 @@
 name: arete-programs
 description: Use generated Arete program SDKs, standalone or included in a stack, to read accounts, derive PDAs, build instructions, prepare semantic operations, inspect transactions, or execute them through a wallet. Use for Solana protocol integrations and transaction workflows. Do not use for stack views or subscriptions; use arete-streams. Do not publish a program or deploy a stack; use arete-deploy.
 metadata:
-  version: "1.4.0"
-  min-cli: ">=0.35.0"
+  version: "1.5.0"
+  min-cli: ">=0.36.0"
 ---
 
 # Build with Arete Program SDKs
@@ -73,7 +73,7 @@ a4 install program <program-ref> --ts
 a4 install stack <stack-ref> --ts
 ```
 
-Inspect the generated module before coding. Program clients normally expose these layers:
+Before coding, read the installed SDK's reference: `README.md` in the generated program folder (for a stack's programs, the stack README's Programs section and `programs/<key>/README.md`), `a4 sdk describe <alias> [--program <key>] [--read <name>]`, or the MCP tool `describe_sdk`. It lists that program's reads, operations, accounts, raw instructions, and PDAs. Program clients normally expose these layers:
 
 | Layer | Purpose |
 | --- | --- |

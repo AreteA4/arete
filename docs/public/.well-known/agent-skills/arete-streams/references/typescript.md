@@ -53,8 +53,8 @@ Take the read names, arguments, and result shapes from the generated stack. Each
 
 ## Type Rules
 
-- Generated field and argument names are camelCase.
-- `u64`, `u128`, `i64`, and `i128` values are `bigint`.
+- Generated field and argument names are camelCase (`id.roundId`). `a4 get`, `a4 stream`, MCP `read_view`, and raw frames show wire names (`id.round_id`); a wire path in TypeScript reads `undefined`. The SDK reference lists both for every field.
+- `u64`, `u128`, `i64`, and `i128` values are `bigint`. `JSON.stringify` throws on a `bigint`: convert with `String()` (exact) or `Number()` (when the value fits) before printing or serialising, and compare with `n` literals.
 - State keys use the generated object shape, even for a single key field.
 - Prefer generated entity, key, and schema exports over parallel hand-written interfaces.
 
