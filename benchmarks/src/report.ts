@@ -60,7 +60,8 @@ export class RunDir {
    * by masking each secret with the same number of bytes. A SQLite database
    * is checkpointed first, so its write-ahead log is folded into the main
    * file: masking bytes inside a WAL would break its frame checksums and lose
-   * committed records. A WAL that still holds a secret afterwards is deleted.
+   * committed records. A SQLite WAL (recognised by its header) that still
+   * holds a secret afterwards is deleted; other files are masked in place.
    * Links are never followed: the sandbox wrote them, and a link resolving
    * outside the download (`../../.env`) would otherwise rewrite host files.
    */
@@ -83,11 +84,11 @@ export class RunDir {
     for (const file of files) {
       if (!existsSync(file)) continue;
       const buf = readFileSync(file);
-      if (buf.includes(0) || file.endsWith('-wal')) {
+      if (buf.includes(0)) {
         const bytes = buf.toString('latin1');
         const clean = maskSameLength(bytes);
         if (clean === bytes) continue;
-        if (file.endsWith('-wal')) rmSync(file);
+        if (isSqliteWal(buf)) rmSync(file);
         else writeFileSync(file, Buffer.from(clean, 'latin1'));
         continue;
       }
@@ -102,6 +103,11 @@ const SQLITE_HEADER = Buffer.from('SQLite format 3\0', 'latin1');
 
 function isSqlite(file: string): boolean {
   return readFileSync(file).subarray(0, SQLITE_HEADER.length).equals(SQLITE_HEADER);
+}
+
+/** A SQLite write-ahead log, by its header's magic number. */
+function isSqliteWal(buf: Buffer): boolean {
+  return buf.length >= 32 && (buf.readUInt32BE(0) === 0x377f0682 || buf.readUInt32BE(0) === 0x377f0683);
 }
 
 /** Fold a copied database's write-ahead log into the main file. */

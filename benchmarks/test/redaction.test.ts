@@ -142,6 +142,16 @@ describe('downloaded sandbox trees', () => {
     assert.ok(!rows[7]!.data.includes(FRAGMENT));
   });
 
+  test('redactTree redacts files named like a WAL in place instead of deleting them', () => {
+    const run = join(scratch, 'run-wal-name');
+    mkdirSync(join(run, 'workspace'), { recursive: true });
+    writeFileSync(join(run, 'workspace', 'report-wal'), `key ${KEY}\n`);
+
+    new RunDir(run).redactTree('workspace');
+
+    assert.equal(readFileSync(join(run, 'workspace', 'report-wal'), 'utf8'), 'key [REDACTED]\n');
+  });
+
   test('Codex rollouts behind links are not read', () => {
     const outside = join(scratch, 'outside');
     const native = join(scratch, 'native');
