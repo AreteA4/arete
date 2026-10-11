@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.39.0](https://github.com/AreteA4/arete/compare/arete-react-v0.38.0...arete-react-v0.39.0) (2026-10-11)
+
+
+### Miscellaneous Chores
+
+* **arete-react:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.38.0 to ^0.39.0
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.38.0 to ^0.39.0
+
 ## [0.38.0](https://github.com/AreteA4/arete/compare/arete-react-v0.37.0...arete-react-v0.38.0) (2026-10-11)
 
 

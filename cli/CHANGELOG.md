@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## [0.39.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.38.0...a4-cli-v0.39.0) (2026-10-11)
+
+
+### Features
+
+* **cli:** lead doctor --summary with the status and hide info checks with nothing to do ([131bc6c](https://github.com/AreteA4/arete/commit/131bc6c4b6005e9b01f94fb1db53bb2973c0ff82))
+* **cli:** quieter doctor --summary, and keep a4 on PATH in agent.md ([b5395fd](https://github.com/AreteA4/arete/commit/b5395fdc05bf453698751ec603082f1c504ed10c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.38.0 to 0.39.0
+    * arete-mcp bumped from 0.38.0 to 0.39.0
+
 ## [0.38.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.37.0...a4-cli-v0.38.0) (2026-10-11)
 
 
