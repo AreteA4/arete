@@ -216,8 +216,13 @@ before converting or labelling a value.
 ```
 
 A summary, one operation or a few views is usually a few KB. Full bodies are
-the registry's JSON, passed through unchanged. Any response over 512 KB is
-refused rather than truncated; use `a4 explore` for payloads that large.
+the registry's JSON, passed through unchanged. Any tool result over 512 KB is
+refused rather than truncated. Install descriptors are read up to 8 MB, so the
+summary, views and WebSocket URL of a stack with large programs still come
+back; only `full: true` is refused for such a stack, naming the arguments that
+return less. Past 8 MB, `explore_stack_schema` still lists the view ids and
+`read_view` accepts the stack's WebSocket URL as `url` (`websocket_url` in
+`explore_stacks`).
 
 :::caution[Key casing is not uniform across these tools]
 Read the keys you actually receive rather than assuming one convention:

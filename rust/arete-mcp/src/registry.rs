@@ -47,6 +47,63 @@ const ENV_VAR_API_URL: &str = "ARETE_API_URL";
 /// is a better outcome than silently truncating JSON into something unparseable.
 pub(crate) const MAX_RESPONSE_BYTES: usize = 512 * 1024;
 
+/// Ceiling on an install descriptor read for client-side shaping.
+///
+/// [`MAX_RESPONSE_BYTES`] bounds what reaches the agent, not what this server
+/// may read. A stack or program descriptor embeds IDLs, ProgramSpecs and SDK
+/// sources, so a stack with several large programs is legitimately bigger
+/// than one tool result, yet the summary, views and WebSocket URL cut from it
+/// are a few KB. Those reads get this higher, still bounded, cap; the shaped
+/// output is checked against [`MAX_RESPONSE_BYTES`] before it is returned, and
+/// `full: true` re-checks the raw body against it too.
+pub(crate) const MAX_DESCRIPTOR_BYTES: usize = 8 * 1024 * 1024;
+
+/// How large a body [`RegistryClient::send`] accepts, and what an agent can do
+/// instead when one is larger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BodyCap {
+    /// A body returned to the agent as is: [`MAX_RESPONSE_BYTES`].
+    ToolResult,
+    /// A stack install descriptor read for shaping: [`MAX_DESCRIPTOR_BYTES`].
+    StackDescriptor,
+    /// A program install descriptor read for shaping: [`MAX_DESCRIPTOR_BYTES`].
+    ProgramDescriptor,
+}
+
+impl BodyCap {
+    fn bytes(self) -> usize {
+        match self {
+            Self::ToolResult => MAX_RESPONSE_BYTES,
+            Self::StackDescriptor | Self::ProgramDescriptor => MAX_DESCRIPTOR_BYTES,
+        }
+    }
+
+    fn refusal(self, path: &str, bytes: u64) -> String {
+        let limit = self.bytes();
+        match self {
+            Self::ToolResult => format!(
+                "registry response for {path} is at least {bytes} bytes, over the {limit} byte \
+                 limit for a single tool result. Use `a4 explore` or `a4 install` on the \
+                 command line for payloads this large."
+            ),
+            Self::StackDescriptor => format!(
+                "the stack install descriptor at {path} is at least {bytes} bytes, over the \
+                 {limit} byte limit this server reads. explore_stack_schema still lists its \
+                 entities and `<EntityName>/<view>` ids. read_view and connect accept the \
+                 stack's WebSocket URL as `url` (explore_stacks lists it as `websocket_url`). \
+                 To subscribe, call connect first, then pass its `connection_id` and a `view` \
+                 to subscribe."
+            ),
+            Self::ProgramDescriptor => format!(
+                "the program install descriptor at {path} is at least {bytes} bytes, over the \
+                 {limit} byte limit this server reads. get_program_knowledge describes its \
+                 instructions and accounts by `section`, and `a4 install program` reads the \
+                 full descriptor on the command line."
+            ),
+        }
+    }
+}
+
 /// Install descriptors are requested with the managed gateway capability, as
 /// `a4 install` requests them, so a program descriptor carries the chain and
 /// transaction bindings its operations use.
@@ -136,7 +193,8 @@ impl RegistryClient {
     ) -> Result<String> {
         let stack = path_segment(stack, "stack")?;
         let path = format!("/api/registry/stacks/{stack}/install?{INSTALL_CAPABILITIES}");
-        self.send(&path, self.public_key(), timeout).await
+        self.send(&path, self.public_key(), timeout, BodyCap::StackDescriptor)
+            .await
     }
 
     /// Entity and view schema for one stack. This is where an agent gets the
@@ -154,10 +212,9 @@ impl RegistryClient {
     /// The pinned install descriptor for one standalone program.
     pub async fn program_install(&self, program: &str) -> Result<String> {
         let program = path_segment(program, "program")?;
-        self.get(&format!(
-            "/api/registry/programs/{program}/install?{INSTALL_CAPABILITIES}"
-        ))
-        .await
+        let path = format!("/api/registry/programs/{program}/install?{INSTALL_CAPABILITIES}");
+        self.send(&path, self.public_key(), None, BodyCap::ProgramDescriptor)
+            .await
     }
 
     /// Fetch a content-addressed artifact by kind and hash.
@@ -221,7 +278,8 @@ impl RegistryClient {
         let kind = catalog_kind(kind)?;
         let slug = path_segment(slug, "slug")?;
         let path = format!("/api/registry/v1/catalog/entries/{kind}/{slug}/knowledge");
-        self.send(&path, self.public_key(), Some(timeout)).await
+        self.send(&path, self.public_key(), Some(timeout), BodyCap::ToolResult)
+            .await
     }
 
     /// Concept and category vocabularies of the active catalog snapshot.
@@ -291,7 +349,8 @@ impl RegistryClient {
     /// usefully, and agents comparing a hash-relevant artifact against the CLI
     /// would see a body the platform never sent.
     async fn get(&self, path: &str) -> Result<String> {
-        self.send(path, self.public_key(), None).await
+        self.send(path, self.public_key(), None, BodyCap::ToolResult)
+            .await
     }
 
     /// The key [`RegistryClient::get`] attaches: see there.
@@ -330,14 +389,16 @@ impl RegistryClient {
             .ok()
             .and_then(|resolved| resolved.key);
         let key = knowledge_key(&self.base_url, resolved)?;
-        self.send(path, Some(key), None).await
+        self.send(path, Some(key), None, BodyCap::ToolResult).await
     }
 
+    /// GET `path`, refusing a body larger than `cap` allows.
     async fn send(
         &self,
         path: &str,
         key: Option<String>,
         timeout: Option<Duration>,
+        cap: BodyCap,
     ) -> Result<String> {
         let url = format!("{}{path}", self.base_url);
         let mut request = self.http.get(&url);
@@ -354,7 +415,7 @@ impl RegistryClient {
             .map_err(|e| anyhow!("registry request to {url} failed: {e}"))?;
 
         let status = response.status();
-        let body = read_capped_body(response, path).await?;
+        let body = read_capped_body(response, path, cap).await?;
 
         if !status.is_success() {
             let problem =
@@ -413,16 +474,20 @@ fn starter_stacks_response(body: &str) -> Result<String> {
     Ok(response)
 }
 
-/// Read a response body, aborting as soon as it exceeds [`MAX_RESPONSE_BYTES`].
+/// Read a response body, aborting as soon as it exceeds what `cap` allows.
 ///
 /// Buffering first and measuring afterwards would defeat the point of the cap:
 /// a multi-gigabyte artifact would be fully downloaded and allocated before we
 /// declined it, which is the exact failure the limit exists to prevent. So we
 /// check the declared `Content-Length` when the server offers one, then stream
 /// chunk by chunk and stop at the first chunk that crosses the line.
-async fn read_capped_body(mut response: reqwest::Response, path: &str) -> Result<String> {
+async fn read_capped_body(
+    mut response: reqwest::Response,
+    path: &str,
+    cap: BodyCap,
+) -> Result<String> {
     // Fail before transferring anything when the server declares an oversized body.
-    check_size(response.content_length(), path)?;
+    check_size(response.content_length(), path, cap)?;
 
     let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = response
@@ -430,7 +495,7 @@ async fn read_capped_body(mut response: reqwest::Response, path: &str) -> Result
         .await
         .map_err(|e| anyhow!("could not read registry response for {path}: {e}"))?
     {
-        check_size(Some((buf.len() + chunk.len()) as u64), path)?;
+        check_size(Some((buf.len() + chunk.len()) as u64), path, cap)?;
         buf.extend_from_slice(&chunk);
     }
 
@@ -440,13 +505,9 @@ async fn read_capped_body(mut response: reqwest::Response, path: &str) -> Result
 /// Shared size guard for both the declared-length and streaming paths, so the
 /// two cannot drift apart. `None` means the server declared nothing, which is
 /// not itself a failure — the streaming path still bounds it.
-fn check_size(bytes: Option<u64>, path: &str) -> Result<()> {
+fn check_size(bytes: Option<u64>, path: &str, cap: BodyCap) -> Result<()> {
     match bytes {
-        Some(n) if n > MAX_RESPONSE_BYTES as u64 => Err(anyhow!(
-            "registry response for {path} is at least {n} bytes, over the \
-             {MAX_RESPONSE_BYTES} byte limit for a single tool result. Use `a4 explore` \
-             or `a4 install` on the command line for payloads this large."
-        )),
+        Some(n) if n > cap.bytes() as u64 => Err(anyhow!(cap.refusal(path, n))),
         _ => Ok(()),
     }
 }
@@ -1118,22 +1179,26 @@ mod tests {
     fn declared_length_over_cap_is_refused() {
         // Guards the pre-transfer path: a server-declared Content-Length above
         // the cap must fail before any body is read.
-        let err = check_size(Some(MAX_RESPONSE_BYTES as u64 + 1), "/x")
-            .unwrap_err()
-            .to_string();
+        let err = check_size(
+            Some(MAX_RESPONSE_BYTES as u64 + 1),
+            "/x",
+            BodyCap::ToolResult,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("over the"), "unexpected error: {err}");
     }
 
     #[test]
     fn declared_length_at_or_under_cap_is_allowed() {
-        assert!(check_size(Some(MAX_RESPONSE_BYTES as u64), "/x").is_ok());
-        assert!(check_size(Some(0), "/x").is_ok());
+        assert!(check_size(Some(MAX_RESPONSE_BYTES as u64), "/x", BodyCap::ToolResult).is_ok());
+        assert!(check_size(Some(0), "/x", BodyCap::ToolResult).is_ok());
     }
 
     #[test]
     fn absent_declared_length_is_not_a_failure() {
         // Chunked responses declare nothing; the streaming path bounds those.
-        assert!(check_size(None, "/x").is_ok());
+        assert!(check_size(None, "/x", BodyCap::ToolResult).is_ok());
     }
 
     /// A server that accepts every connection and never answers.
@@ -1158,6 +1223,7 @@ mod tests {
                 "/api/registry/v1/catalog/entries/stack/ore/knowledge",
                 None,
                 Some(Duration::from_millis(300)),
+                BodyCap::ToolResult,
             )
             .await
             .unwrap_err()
@@ -1175,7 +1241,7 @@ mod tests {
         // No Content-Length: the cap has to hold on the streaming path too.
         let body = "x".repeat(MAX_RESPONSE_BYTES + 1024);
         let response = http::Response::builder().status(200).body(body).unwrap();
-        let err = read_capped_body(reqwest::Response::from(response), "/x")
+        let err = read_capped_body(reqwest::Response::from(response), "/x", BodyCap::ToolResult)
             .await
             .unwrap_err()
             .to_string();
@@ -1183,10 +1249,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn descriptors_over_the_tool_result_cap_are_read_for_shaping() {
+        // A descriptor is shaped before it is returned, so it may be larger
+        // than one tool result.
+        let body = "x".repeat(MAX_RESPONSE_BYTES * 2);
+        let response = http::Response::builder().status(200).body(body).unwrap();
+        let out = read_capped_body(
+            reqwest::Response::from(response),
+            "/x",
+            BodyCap::StackDescriptor,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.len(), MAX_RESPONSE_BYTES * 2);
+    }
+
+    #[tokio::test]
+    async fn descriptors_over_the_read_cap_are_refused_with_in_session_alternatives() {
+        let body = "x".repeat(MAX_DESCRIPTOR_BYTES + 1);
+        let response = http::Response::builder().status(200).body(body).unwrap();
+        let err = read_capped_body(
+            reqwest::Response::from(response),
+            "/x",
+            BodyCap::StackDescriptor,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("over the"), "{err}");
+        assert!(err.contains("explore_stack_schema"), "{err}");
+        assert!(err.contains("`url`"), "{err}");
+        assert!(err.contains("websocket_url"), "{err}");
+
+        let err = check_size(
+            Some(MAX_DESCRIPTOR_BYTES as u64 + 1),
+            "/x",
+            BodyCap::ProgramDescriptor,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("get_program_knowledge"), "{err}");
+        assert!(check_size(
+            Some(MAX_DESCRIPTOR_BYTES as u64),
+            "/x",
+            BodyCap::ProgramDescriptor
+        )
+        .is_ok());
+    }
+
+    #[tokio::test]
     async fn body_at_the_limit_is_accepted() {
         let body = "x".repeat(MAX_RESPONSE_BYTES);
         let response = http::Response::builder().status(200).body(body).unwrap();
-        let out = read_capped_body(reqwest::Response::from(response), "/x")
+        let out = read_capped_body(reqwest::Response::from(response), "/x", BodyCap::ToolResult)
             .await
             .unwrap();
         assert_eq!(out.len(), MAX_RESPONSE_BYTES);

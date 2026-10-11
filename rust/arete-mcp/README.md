@@ -190,9 +190,13 @@ error here.
 
 Summaries, sections, views and operations are cut from the full descriptor on
 the client (`arete_mcp::descriptor`, shared with `a4 explore`). `full: true`
-bodies are the registry's JSON, passed through unchanged. Any response over
-512 KB is refused rather than truncated — use `a4 explore` or `a4 install` on
-the command line for payloads that large.
+bodies are the registry's JSON, passed through unchanged. Any tool result over
+512 KB is refused rather than truncated. Install descriptors are read up to
+8 MB so the summary, views and WebSocket URL of a stack with large programs
+still come back; only `full: true` on such a descriptor is refused, with the
+arguments that return less. Past 8 MB, `explore_stack_schema` still lists the
+view ids and `read_view` accepts the stack's `url` (`websocket_url` from
+`explore_stacks`).
 
 **Key casing is not uniform.** `explore_stacks` and `explore_stack_schema` return
 snake_case (`websocket_url`, `stack_name`, `primary_keys`, `rust_type`).
