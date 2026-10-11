@@ -2,8 +2,8 @@
 name: arete-programs
 description: Use generated Arete program SDKs, standalone or included in a stack, to read accounts, derive PDAs, build instructions, prepare semantic operations, inspect transactions, or execute them through a wallet. Use for Solana protocol integrations and transaction workflows. Do not use for stack views or subscriptions; use arete-streams. Do not publish a program or deploy a stack; use arete-deploy.
 metadata:
-  version: "1.3.1"
-  min-cli: ">=0.25.0"
+  version: "1.4.0"
+  min-cli: ">=0.35.0"
 ---
 
 # Build with Arete Program SDKs
@@ -41,11 +41,11 @@ a4 explore stack <stack-ref> --operation <operation> --json
 `<operation>` is a semantic path such as `transactions.<group>.<name>`, an operation id, or a raw instruction name. On a stack, the command searches the stack's program SDKs.
 
 If the project already pins a direct program or stack reference, inspect it
-through the compatibility descriptor form:
+through the descriptor (`--full`; without it you get a compact summary):
 
 ```bash
-a4 explore program <program-ref> --json
-a4 explore stack <stack-ref> --json
+a4 explore program <program-ref> --full --json
+a4 explore stack <stack-ref> --full --json
 ```
 
 Use `surface` for semantic operation names and generated bindings. Use the

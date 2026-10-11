@@ -2,8 +2,8 @@
 name: arete-streams
 description: Query or subscribe to deployed Arete stack views from TypeScript, React, Rust, Python, the a4 CLI, or the Arete MCP server. Use for dashboards, bots, backends, current-state reads, live entity updates, view filtering, or stream debugging. Do not use for program accounts or transaction construction; use arete-programs for those.
 metadata:
-  version: "1.5.1"
-  min-cli: ">=0.34.0"
+  version: "1.6.0"
+  min-cli: ">=0.35.0"
 ---
 
 # Query and Subscribe to Arete Views
@@ -27,9 +27,10 @@ reference supplied by the user or project can use the compatibility form:
 ```bash
 a4 explore stack <stack-ref> --json
 a4 explore stack <stack-ref> <Entity> --json
+a4 explore stack <stack-ref> --full --json
 ```
 
-Use the descriptor's exact `installRef`, identities, authentication policies, selected views, SDK targets, and `installCommand`. A failed descriptor is not permission to fall back to an unpinned deployment.
+The first prints a compact summary (views, amount units, `read.*` helpers, install command); `--full` prints the descriptor. Use the descriptor's exact `installRef`, identities, authentication policies, selected views, SDK targets, and `installCommand`. A failed descriptor is not permission to fall back to an unpinned deployment.
 
 ## Choose the Consumer Surface
 

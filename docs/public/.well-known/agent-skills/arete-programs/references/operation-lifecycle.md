@@ -62,7 +62,7 @@ When execution returns a confirmed slot, `waitForProcessedSlot` / `wait_for_proc
 No tool infers this. Work it out while writing the code:
 
 1. List the programs, instructions, and accounts the operation uses. In TypeScript, `describePreparedOperation(prepared)` from `@usearete/sdk` returns each transaction's instructions with their program ids and account keys. `a4 explore program <program-ref> --operation <operation> --json` lists the operation's required and derived accounts without preparing it.
-2. List each installed stack's entities and views with `a4 explore stack <stack-ref> --json` (`--summary` for the short form). `a4 explore stack <stack-ref> <Entity> --json` shows one entity's program, primary keys, and fields.
+2. List each installed stack's entities and views with `a4 explore stack <stack-ref> --json` (a compact summary; `--full` for the descriptor). `a4 explore stack <stack-ref> <Entity> --json` shows one entity's program, primary keys, and fields.
 3. Match them. A view is likely affected when its entity is indexed from a program the operation calls and represents an account the operation writes, or is keyed by one of its accounts or signers. For example, an operation that writes a board, a round, and a miner account affects the board, round, and miner entities' views.
 4. Refresh exactly those views, plus any one-shot reads or quotes that depend on the same accounts. In React, pass them to `submit(input, { reconcile: { refresh: [...] } })`. Elsewhere, wait for the processed slot, then read them again with `get`.
 

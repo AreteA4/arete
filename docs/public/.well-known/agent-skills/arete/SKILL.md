@@ -2,8 +2,8 @@
 name: arete
 description: Discover and install exact Arete stacks or program SDKs for a Solana application. Use for generic Arete setup, capability discovery, choosing between a stack, a standalone program SDK, or a composed stack, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for Rust stack definitions or composing stacks use arete-stack-authoring; for hosted publication or deployment use arete-deploy.
 metadata:
-  version: "1.4.1"
-  min-cli: ">=0.34.0"
+  version: "1.5.0"
+  min-cli: ">=0.35.0"
 ---
 
 # Discover and Install Arete Capabilities
@@ -67,7 +67,7 @@ Read each result's coverage modes, then route by what the application needs:
 - **Live views, with or without operations**: a stack. Its program SDKs come with it (see [Stacks include their program SDKs](#stacks-include-their-program-sdks)). Use `arete-streams` for view code and `arete-programs` for the stack's operations.
 - **Reads and operations only**: a program SDK. Use `arete-programs`.
 - **Views and program SDKs that no stack groups**: compose a stack from them (see [Compose a stack](#compose-a-stack)), or install each one and hold them in one session.
-- A stack result without `subscribe` coverage is definition-only. It installs as a typed SDK and a pinned StackManifest, but nothing is hosted. The user can deploy their own copy after installing it (see `arete-deploy`); do not present it as a live stream until then.
+- A stack result without `subscribe` coverage (`live: false`) is definition-only. It installs as a typed SDK and a pinned StackManifest, but nothing is hosted. The user can deploy their own copy after installing it (see `arete-deploy`); do not present it as a live stream until then.
 - No suitable hosted capability and the user wants a custom feed: specify the missing read model, then use `arete-stack-authoring`.
 - Publication or hosted lifecycle work: use `arete-deploy`.
 
@@ -78,8 +78,9 @@ a4 explore catalog stack <stack-slug> --json
 a4 explore catalog program <program-slug> --json
 ```
 
-If the user or project already supplies a direct reference, these compatibility
-forms resolve the same descriptor contract:
+If the user or project already supplies a direct reference, inspect it directly.
+These print a compact summary; add `--full` for the complete descriptor
+contract:
 
 ```bash
 a4 explore stack <stack-ref> --json
@@ -92,14 +93,13 @@ standalone programs.
 Keep exploration output small when you only need part of a descriptor:
 
 ```bash
-a4 explore stack <stack-ref> --summary --json
 a4 explore stack <stack-ref> --views <Entity>/<view> --json
 a4 explore stack <stack-ref> --operation <operation> --json
 a4 explore program <program-ref> --operation <operation> --json
 a4 explore program <program-ref> --section instructions --json
 ```
 
-`--summary` lists a stack's entities with their view ids, its program SDKs, endpoints, and auth requirements. `--operation` takes a semantic path such as `transactions.<group>.<name>`, an operation id, or a raw instruction name. On a stack it searches the stack's program SDKs. Semantic paths need an API key; without one, only raw instruction names resolve.
+The default stack summary gives `live`, entities with their view ids, token-amount fields with units, the stack's `read.*` helpers, program SDKs, stream endpoints, brief auth, and the install command; `--full` adds identities, hashes, per-surface auth and every endpoint. The default program summary lists instructions, accounts and PDAs; `--full` prints the IDL-level descriptor. `--views` takes several views, comma-separated. `--operation` takes a semantic path such as `transactions.<group>.<name>`, an operation id, or a raw instruction name. On a stack it searches the stack's program SDKs. Semantic paths need an API key; without one, only raw instruction names resolve.
 
 Catalog contents and capability delivery can change. Do not maintain a static
 list of public programs or stacks, infer an endpoint, or treat a search result
@@ -153,7 +153,7 @@ A default stack includes the program SDKs for the programs its views index. Inst
 
 To confirm that a stack provides an operation before adding another package for it, run `a4 explore stack <stack-ref> --operation <operation> --json`.
 
-Report the requirements before writing code that sends transactions. The install output lists the stack's auth requirements, and `auth` in `a4 explore stack <stack-ref> --summary --json` gives the same. Browser apps need a publishable key bound to the app's origin. When transactions need an account entitlement, `a4 doctor --json` reports the account's `account.transactions` readiness.
+Report the requirements before writing code that sends transactions. The install output lists the stack's auth requirements, and `authRequirements` in `a4 explore stack <stack-ref> --full --json` gives the same. Browser apps need a publishable key bound to the app's origin. When transactions need an account entitlement, `a4 doctor --json` reports the account's `account.transactions` readiness.
 
 ### Compose a stack
 
