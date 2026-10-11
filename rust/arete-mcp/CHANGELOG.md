@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.37.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.36.0...arete-mcp-v0.37.0) (2026-10-11)
+
+
+### Features
+
+* **cli,mcp:** surface the catalog's stack and program links ([e32547c](https://github.com/AreteA4/arete/commit/e32547cc81dc5d35d79959eb7f34ed8d70c9d6aa))
+* **cli,mcp:** surface the catalog's stack and program links ([728d373](https://github.com/AreteA4/arete/commit/728d373ec598b0ad1388206fe041bcef7537f739))
+
+
+### Bug Fixes
+
+* **cli,mcp:** describe catalog links in tool help and warn on empty changed pages ([dc013ae](https://github.com/AreteA4/arete/commit/dc013aed1c16f97a71a7affc39e01641e4cae25a))
+* **mcp:** show the SDK import from src/ in the reference ([8b72119](https://github.com/AreteA4/arete/commit/8b72119c1ad189686f4a9abf4a427b9d73c3bdf4))
+* **mcp:** show the SDK import from src/ in the reference ([3a37c0f](https://github.com/AreteA4/arete/commit/3a37c0f937d97cbf45d1caf2d3c46dfd9bcdfcfe))
+
 ## [0.36.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.35.0...arete-mcp-v0.36.0) (2026-10-11)
 
 

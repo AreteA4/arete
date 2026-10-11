@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.37.0](https://github.com/AreteA4/arete/compare/arete-mcp-npm-v0.36.0...arete-mcp-npm-v0.37.0) (2026-10-11)
+
+
+### Miscellaneous Chores
+
+* **arete-mcp-npm:** Synchronize arete versions
+
 ## [0.36.0](https://github.com/AreteA4/arete/compare/arete-mcp-npm-v0.35.0...arete-mcp-npm-v0.36.0) (2026-10-11)
 
 
