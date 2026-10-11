@@ -10,6 +10,8 @@ Look parts up with `a4 sdk describe vault [--view <Entity/view>] [--read <name>]
 import { VAULT_STREAM_STACK } from './generated/typescript/stacks/vault/vault.js'; // from the project root
 ```
 
+The path is relative to the importing file: from `src/`, import `'../generated/typescript/stacks/vault/vault.js'`.
+
 Register it as `vault`: `createSession({ stacks: { vault: VAULT_STREAM_STACK } })` gives `session.stacks.vault`; in React, `useArete(VAULT_STREAM_STACK)`. Paths below start there. Row types (`Vault`) are exported from the same module (declared in `vault-core.ts`).
 
 ## Field names and types
