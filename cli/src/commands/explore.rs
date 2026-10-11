@@ -2930,12 +2930,22 @@ fn render_catalog_search(value: &Value, full: bool) -> String {
     if !protocols.is_empty() {
         text.push_str("\nBy protocol\n");
         for rollup in protocols {
+            let (matched, unmatched) = split_matched(rollup);
             text.push_str(&format!(
                 "  {}  stacks: {}  programs: {}\n",
                 rollup["protocol"].as_str().unwrap_or("-"),
-                linked_stacks(rollup),
-                linked_slugs(rollup, "programs")
+                linked_stacks(&matched),
+                linked_slugs(&matched, "programs")
             ));
+            if !value_array(&unmatched, "stacks").is_empty()
+                || !value_array(&unmatched, "programs").is_empty()
+            {
+                text.push_str(&format!(
+                    "    not matched: stacks: {}  programs: {}\n",
+                    linked_stacks(&unmatched),
+                    linked_slugs(&unmatched, "programs")
+                ));
+            }
         }
     }
     if let Some(cursor) = catalog_view::next_cursor(value) {
@@ -2947,6 +2957,23 @@ fn render_catalog_search(value: &Value, full: bool) -> String {
         text.push_str(&format!("{}\n", catalog_view::CATALOG_CHANGED_HINT));
     }
     text
+}
+
+/// A protocol rollup's `stacks` and `programs`, split into those the
+/// search matched (or every one, when the search was not narrowed and the
+/// server sent no `matched`) and those it did not (`matched: false`).
+fn split_matched(rollup: &Value) -> (Value, Value) {
+    let mut matched = serde_json::Map::new();
+    let mut unmatched = serde_json::Map::new();
+    for key in ["stacks", "programs"] {
+        let (no, yes): (Vec<Value>, Vec<Value>) = value_array(rollup, key)
+            .iter()
+            .cloned()
+            .partition(|link| link["matched"].as_bool() == Some(false));
+        matched.insert(key.to_string(), Value::Array(yes));
+        unmatched.insert(key.to_string(), Value::Array(no));
+    }
+    (Value::Object(matched), Value::Object(unmatched))
 }
 
 /// The `slug`s of a server link list (`programs` or `stacks`), or `none`.
@@ -3714,6 +3741,30 @@ mod tests {
         );
         let hint = catalog_search_hint(&page, &catalog_view::brief(), None).unwrap();
         assert!(hint.contains(catalog_view::CATALOG_CHANGED_HINT), "{hint}");
+    }
+
+    #[test]
+    fn a_narrowed_rollup_lists_what_the_search_did_not_match_apart() {
+        let page = json!({
+            "results": [{"kind": "stack", "slug": "raydium-launchpad", "version": "1.0.0",
+                         "protocol": "raydium", "modes": ["build", "read"]}],
+            "protocols": [{"protocol": "raydium",
+                "stacks": [
+                    {"slug": "raydium-amm", "live": true, "matched": false},
+                    {"slug": "raydium-launchpad", "live": false, "matched": true}
+                ],
+                "programs": [
+                    {"slug": "raydium-amm-v4", "matched": false},
+                    {"slug": "raydium-launchpad", "matched": true}
+                ]}]
+        });
+        let rendered = render_catalog_search(&annotated_page(&page), false);
+        for expected in [
+            "  raydium  stacks: raydium-launchpad [definition-only]  programs: raydium-launchpad\n",
+            "    not matched: stacks: raydium-amm [live]  programs: raydium-amm-v4\n",
+        ] {
+            assert!(rendered.contains(expected), "{expected:?} in {rendered}");
+        }
     }
 
     #[test]

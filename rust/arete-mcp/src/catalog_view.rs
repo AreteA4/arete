@@ -19,7 +19,8 @@
 //! programs it composes), a program carries `stacks` (`[{slug, live}]`, the
 //! stacks composing it) and, when its install name differs from its slug,
 //! `installName`, and a search page carries `protocols` (every stack and
-//! program of each result's protocol, including ones on other pages).
+//! program of each result's protocol, including ones on other pages; on a
+//! narrowed search each says whether the search `matched` it).
 //!
 //! Shaped (non-`full`) output also gains two derived keys, computed only from
 //! fields the server already sends:
@@ -66,7 +67,8 @@ const DEPLOYED_STACK_DELIVERY: &str = "deployed-stack";
 pub const LIVE_HINT: &str = "`live` (a stack property): true = a hosted stream to subscribe to \
      now; false = definition-only (install its SDK to build and read, or deploy it to stream). \
      `programs` on a stack / `stacks` on a program link the two by `slug`; `protocols` lists \
-     every stack and program of each result's protocol.";
+     every stack and program of each result's protocol, with `matched: false` on those this \
+     search did not match: judge a protocol live for the query by its matched stacks only.";
 
 /// Said when a page continued from a cursor was served after the catalog
 /// changed.

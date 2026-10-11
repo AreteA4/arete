@@ -120,7 +120,9 @@ to choose your own:
   links, `related`, the other results on the page with the same `protocol`
   as `kind:slug`. A stack's `programs` (`[{slug, programId}]`) and a
   program's `stacks` (`[{slug, live}]`) link the two, and the page-level
-  `protocols` lists every stack and program of each result's protocol. A
+  `protocols` lists every stack and program of each result's protocol, with
+  `matched` on a narrowed search (`false` on those the search did not match:
+  judge a protocol live for the query by its matched stacks only). A
   page continued with `cursor` after the catalog changed carries
   `catalogChanged: true` and may skip or repeat entries. `mode: "subscribe"`
   returns only live stacks. `full: true` returns the server's results without them. Without any filter it returns an overview: up to 5 programs
