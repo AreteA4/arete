@@ -10,6 +10,15 @@
   `catalog-bundle`, `catalog-publication-set`) with shared Rust/TypeScript
   vectors; no existing identity changes
 
+## [0.5.3](https://github.com/AreteA4/arete/compare/arete-hash-v0.5.2...arete-hash-v0.5.3) (2026-10-11)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-idl bumped from 0.7.0 to 0.8.0
+
 ## [0.5.2](https://github.com/AreteA4/arete/compare/arete-hash-v0.5.1...arete-hash-v0.5.2) (2026-10-06)
 
 

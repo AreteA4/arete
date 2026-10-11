@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/AreteA4/arete/compare/arete-idl-v0.7.0...arete-idl-v0.8.0) (2026-10-11)
+
+
+### Features
+
+* **cli,mcp:** surface the catalog's stack and program links ([728d373](https://github.com/AreteA4/arete/commit/728d373ec598b0ad1388206fe041bcef7537f739))
+
 ## [0.7.0](https://github.com/AreteA4/arete/compare/arete-idl-v0.6.0...arete-idl-v0.7.0) (2026-10-05)
 
 

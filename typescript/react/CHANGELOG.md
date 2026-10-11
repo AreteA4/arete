@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.37.0](https://github.com/AreteA4/arete/compare/arete-react-v0.36.0...arete-react-v0.37.0) (2026-10-11)
+
+
+### Miscellaneous Chores
+
+* **arete-react:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.36.0 to ^0.37.0
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.36.0 to ^0.37.0
+
 ## [0.36.0](https://github.com/AreteA4/arete/compare/arete-react-v0.35.0...arete-react-v0.36.0) (2026-10-11)
 
 
