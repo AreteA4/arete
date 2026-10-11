@@ -13,7 +13,7 @@ const SETUP_COMMANDS = [
   "curl -fsSL https://arete.run/install.sh | sh",
   "a4 init -y",
   "a4 --profile agent auth signup --if-missing --json",
-  "a4 doctor --json",
+  "a4 doctor --summary --json",
   "a4 explore catalog --vocabulary --json",
 ];
 
