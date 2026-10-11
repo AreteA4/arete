@@ -303,6 +303,7 @@ impl SourceUpdate {
                 key: Value::String(self.key.clone()),
                 patch: self.patch.clone(),
                 append: vec![],
+                occurrence: None,
             })
             .collect(),
             self.slot,

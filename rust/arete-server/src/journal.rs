@@ -39,9 +39,10 @@ const DEFAULT_MAX_BYTES_PER_VIEW: u64 = 32 * 1024 * 1024;
 const DEFAULT_MAX_AGE: Duration = Duration::from_secs(15 * 60);
 
 /// Per-record bookkeeping charged against the byte bound alongside the frame:
-/// the key `String`, the `Arc` control block, `Bytes` header and `VecDeque`
-/// slot. Approximate by design — the bound exists to be budgetable, not exact.
-const RECORD_OVERHEAD_BYTES: u64 = 120;
+/// the key `String`, the `Arc` control block, `Bytes` header, `VecDeque` slot,
+/// and the record's `EventOrigin` including a short occurrence string.
+/// Approximate by design — the bound exists to be budgetable, not exact.
+const RECORD_OVERHEAD_BYTES: u64 = 176;
 
 /// Retention bounds for the event journal. Whichever bound bites first wins.
 #[derive(Clone, Debug)]
@@ -178,6 +179,69 @@ pub struct JournalRecord {
     pub payload: Arc<Bytes>,
     /// Unix seconds, for the age bound.
     pub appended_at: i64,
+    /// Where this event came from in the stream, for recognising it again if
+    /// a resume re-delivers the slot it was decoded from. `None` for records
+    /// with no decode site, which a resume cannot duplicate.
+    pub origin: Option<EventOrigin>,
+}
+
+/// What the tape did with an event.
+#[derive(Clone, Debug)]
+pub enum Append {
+    /// Retained; the frame carries this offset.
+    Retained { offset: u64, payload: Arc<Bytes> },
+    /// Not retained, but still this event's first delivery: publish it
+    /// without a position. The tape has been sealed for a final snapshot.
+    Untracked,
+    /// Already retained before a resume re-delivered it. Publishing it again
+    /// would hand a live subscriber the same event twice.
+    Duplicate,
+}
+
+impl Append {
+    /// The offset and frame of a retained append.
+    pub fn retained(self) -> Option<(u64, Arc<Bytes>)> {
+        match self {
+            Self::Retained { offset, payload } => Some((offset, payload)),
+            Self::Untracked | Self::Duplicate => None,
+        }
+    }
+}
+
+/// Where a retained event sat in the stream.
+///
+/// `slot` and `index` are its position — `index` being the transaction within
+/// the slot, or the write version for an account update. `occurrence` is the
+/// decode site within that transaction, absent for account-driven records,
+/// which have none.
+///
+/// A replay of the same slot reproduces all three for the same event, which is
+/// the only identity that survives: the payload carries a wall-clock
+/// timestamp, so re-decoded bytes never match.
+///
+/// The position is recorded even without an occurrence, because the dedup scan
+/// needs to know which records belong to the resumed slot — an account record
+/// between two instruction events must not be read as the end of it.
+///
+/// Not every source has a reproducible identity.
+///
+/// Account-driven mutations have no decode site. A re-delivered account write
+/// is normally suppressed upstream by version dominance, before it ever
+/// reaches the tape — but that gate only covers the `ReadOrInitState` path and
+/// only while the entry survives a capacity-bounded tracker, so it is narrower
+/// than "account writes cannot duplicate".
+///
+/// Resolver-derived mutations are worse: they are built outside
+/// `process_event`, so they carry no occurrence, and on the scheduler path
+/// their index comes from a process-local counter rather than the stream.
+/// Neither half survives a restart, so those events can still be retained
+/// twice across a resume.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventOrigin {
+    pub slot: u64,
+    pub index: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence: Option<String>,
 }
 
 impl JournalRecord {
@@ -262,6 +326,10 @@ pub struct PersistedRecord {
     #[serde(with = "frame_text")]
     pub payload: Arc<Bytes>,
     pub appended_at: i64,
+    /// Absent in snapshots written before resume deduplication, whose records
+    /// simply cannot participate in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<EventOrigin>,
 }
 
 /// Serialize retained frames as JSON text, straight out of the shared buffer.
@@ -324,9 +392,87 @@ struct ViewJournal {
     retained_bytes: u64,
     /// Set when records after this offset were lost; see [`ReplayWindow`].
     gap_after: Option<u64>,
+    /// How many re-deliveries of each identity the current resume window has
+    /// already matched, so the Nth re-delivery matches the Nth retained
+    /// record rather than all of them matching the first.
+    resume_matched: HashMap<(u64, String, String), usize>,
+    /// The window `resume_matched` was counted in. A new window — including a
+    /// second reconnect to the same slot — starts from zero.
+    resume_generation: u64,
 }
 
 impl ViewJournal {
+    /// Whether this exact event is already retained from before a resume.
+    ///
+    /// Only the resumed slot can repeat, and its records sit at the tail in
+    /// arrival order, so the scan walks back until it leaves that slot. A
+    /// record from an earlier slot means the overlap is behind us and nothing
+    /// before it can be re-delivered.
+    fn duplicates_resume_overlap(
+        &mut self,
+        overlap_slot: Option<u64>,
+        generation: u64,
+        key: &str,
+        origin: &EventOrigin,
+    ) -> bool {
+        if overlap_slot != Some(origin.slot) {
+            return false;
+        }
+        if self.resume_generation != generation {
+            // Counts from an earlier window describe re-deliveries this one
+            // has not seen. A reconnect that drops before the stream leaves
+            // the slot re-arms the same slot, and inheriting its counts would
+            // treat every re-delivery as surplus and retain it again.
+            self.resume_matched.clear();
+            self.resume_generation = generation;
+        }
+        // An occurrence names a decode site within one transaction, so it
+        // repeats across the transactions of a slot. Without the transaction
+        // index, a later transaction touching the same key from the same
+        // decode path would be mistaken for the earlier one and dropped.
+        let Some(occurrence) = origin.occurrence.as_deref() else {
+            return false;
+        };
+        let mut retained_matches = 0usize;
+        for record in self.records.iter().rev() {
+            let Some(retained) = record.origin.as_ref() else {
+                // No position at all: nothing to compare and nothing to say
+                // about where the overlap ends.
+                break;
+            };
+            if retained.slot != origin.slot {
+                // Left the resumed slot; nothing before it can repeat.
+                break;
+            }
+            // Account-driven records have no decode site. They are suppressed
+            // upstream by version dominance, and they sit between instruction
+            // events, so the scan passes over them rather than stopping.
+            if retained.index == origin.index
+                && retained.occurrence.as_deref() == Some(occurrence)
+                && record.key == key
+            {
+                retained_matches += 1;
+            }
+        }
+        if retained_matches == 0 {
+            return false;
+        }
+
+        // Match multiplicity, not just identity. Two events can share an
+        // identity and only one of them be on the tape — a seal landing
+        // between them leaves the second untracked — and suppressing both
+        // re-deliveries would drop the one that was never retained.
+        let matched = self
+            .resume_matched
+            .entry((origin.index, occurrence.to_string(), key.to_string()))
+            .or_insert(0);
+        if *matched < retained_matches {
+            *matched += 1;
+            return true;
+        }
+        false
+    }
+
     fn window(&self, epoch: &JournalEpoch) -> ReplayWindow {
         ReplayWindow {
             epoch: epoch.clone(),
@@ -390,6 +536,13 @@ pub struct EventJournal {
     /// Set once the tape has been captured for the last time, after which it
     /// stops issuing offsets; see [`seal`](EventJournal::seal).
     sealed: std::sync::atomic::AtomicBool,
+    /// The slot the stream was resumed from, while its events can still
+    /// arrive a second time; see [`arm_resume_overlap`](EventJournal::arm_resume_overlap).
+    /// `u64::MAX` means no resume is in progress.
+    resume_overlap: std::sync::atomic::AtomicU64,
+    /// Bumped every time a window is armed, so per-view match counts from a
+    /// previous window are recognised as stale even when the slot repeats.
+    resume_generation: std::sync::atomic::AtomicU64,
     /// A gap was recorded while some views had no tape entry yet.
     ///
     /// `mark_gap` can only mark views it can see, and a view that has never
@@ -405,6 +558,8 @@ impl EventJournal {
             epoch: RwLock::new(JournalEpoch::new()),
             views: RwLock::new(HashMap::new()),
             sealed: std::sync::atomic::AtomicBool::new(false),
+            resume_overlap: std::sync::atomic::AtomicU64::new(u64::MAX),
+            resume_generation: std::sync::atomic::AtomicU64::new(0),
             pending_gap: std::sync::atomic::AtomicBool::new(false),
             config,
         }
@@ -433,9 +588,10 @@ impl EventJournal {
         &self,
         view_id: &str,
         key: &str,
+        origin: Option<EventOrigin>,
         build_frame: impl FnOnce(u64) -> Result<Arc<Bytes>, E>,
-    ) -> Result<Option<(u64, Arc<Bytes>)>, E> {
-        self.append_with_at(view_id, key, unix_now(), build_frame)
+    ) -> Result<Append, E> {
+        self.append_with_at(view_id, key, origin, unix_now(), build_frame)
             .await
     }
 
@@ -443,14 +599,15 @@ impl EventJournal {
         &self,
         view_id: &str,
         key: &str,
+        origin: Option<EventOrigin>,
         now: i64,
         build_frame: impl FnOnce(u64) -> Result<Arc<Bytes>, E>,
-    ) -> Result<Option<(u64, Arc<Bytes>)>, E> {
+    ) -> Result<Append, E> {
         let mut views = self.views.write().await;
         // Checked under the same lock the append takes, so a record either
         // gets an offset the final snapshot knows about or gets none at all.
         if self.sealed.load(std::sync::atomic::Ordering::Relaxed) {
-            return Ok(None);
+            return Ok(Append::Untracked);
         }
         let fresh = !views.contains_key(view_id);
         let journal = views.entry(view_id.to_string()).or_default();
@@ -465,6 +622,34 @@ impl EventJournal {
             journal.next_offset = 1;
             journal.gap_after = Some(0);
         }
+        // A resume re-delivers the slot it restarted at, so the events this
+        // tape already holds for that slot arrive a second time. They are the
+        // same events, not new ones: retaining them again would hand a
+        // consumer the same event twice under two offsets, with no way to tell
+        // them apart.
+        if let Some(origin) = origin.as_ref() {
+            match self.resume_overlap_slot() {
+                Some(overlap) if origin.slot > overlap => {
+                    // Past the re-delivered slot, so nothing further can
+                    // repeat until the next resume arms a new window.
+                    self.resume_overlap
+                        .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+                }
+                Some(overlap)
+                    if journal.duplicates_resume_overlap(
+                        Some(overlap),
+                        self.resume_generation
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                        key,
+                        origin,
+                    ) =>
+                {
+                    return Ok(Append::Duplicate);
+                }
+                _ => {}
+            }
+        }
+
         let offset = journal.next_offset;
         let payload = build_frame(offset)?;
 
@@ -474,13 +659,14 @@ impl EventJournal {
             key: key.to_string(),
             payload: payload.clone(),
             appended_at: now,
+            origin,
         };
         journal.retained_bytes = journal
             .retained_bytes
             .saturating_add(record.charged_bytes());
         journal.records.push_back(record);
         journal.prune(&self.config, now);
-        Ok(Some((offset, payload)))
+        Ok(Append::Retained { offset, payload })
     }
 
     /// Record that events were lost before the tape resumed.
@@ -490,6 +676,42 @@ impl EventJournal {
     /// on its checkpoint. The retained records stay valid, but everything
     /// between them and the first live append is missing, and dense offsets
     /// would otherwise present that hole as continuous.
+    /// Expect the events of `slot` to arrive again.
+    ///
+    /// A resumed stream restarts at the highest slot already applied, and that
+    /// slot is re-delivered in full — so every event this tape already holds
+    /// for it is decoded a second time. Retaining those again would give a
+    /// consumer the same event at two offsets, which the tape's own ordering
+    /// says are two events.
+    ///
+    /// Both paths that resume arm this: a snapshot restore, and a reconnect
+    /// within one process. Only the one slot can overlap, because an append
+    /// always precedes the watermark advance that recorded its slot, so
+    /// nothing retained sits above it.
+    ///
+    /// The window disarms itself once a later slot appends, which is the
+    /// point the re-delivery is demonstrably behind us.
+    pub fn arm_resume_overlap(&self, slot: u64) {
+        // Generation first: an append that sees the new slot must also see
+        // that its counts are from a previous window.
+        self.resume_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Release pairs with the acquire in `resume_overlap_slot`, so a reader
+        // that sees this slot also sees the generation bump above.
+        self.resume_overlap
+            .store(slot, std::sync::atomic::Ordering::Release);
+    }
+
+    fn resume_overlap_slot(&self) -> Option<u64> {
+        match self
+            .resume_overlap
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            u64::MAX => None,
+            slot => Some(slot),
+        }
+    }
+
     /// Stop issuing offsets, permanently.
     ///
     /// The final snapshot is taken while the parser is still running — it has
@@ -503,6 +725,11 @@ impl EventJournal {
     /// rather than assumed. Events after it still publish and still reach
     /// subscribers; they simply carry no cursor, so a consumer's last position
     /// stays at the cut and the resume after restart replays them.
+    ///
+    /// The seal is observed per append, so it can land between two events of
+    /// one batch and leave the second untracked. Resume deduplication counts
+    /// how many records it has matched per identity rather than matching on
+    /// identity alone, so the untracked event is still recognised as new.
     pub fn seal(&self) {
         self.sealed
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -625,6 +852,7 @@ impl EventJournal {
                                     key: record.key.clone(),
                                     payload: record.payload.clone(),
                                     appended_at: record.appended_at,
+                                    origin: record.origin.clone(),
                                 })
                                 .collect(),
                         },
@@ -676,6 +904,7 @@ impl EventJournal {
                     key: record.key,
                     payload: record.payload,
                     appended_at: record.appended_at,
+                    origin: record.origin,
                 })
                 .collect();
             let retained_bytes = records.iter().map(JournalRecord::charged_bytes).sum();
@@ -684,6 +913,8 @@ impl EventJournal {
                 records,
                 retained_bytes,
                 gap_after: persisted.gap_after,
+                resume_matched: HashMap::new(),
+                resume_generation: 0,
             };
             journal.prune(&self.config, now);
             views.insert(view_id, journal);
@@ -740,6 +971,19 @@ pub async fn mark_stream_gap() {
     journal.mark_gap().await;
 }
 
+/// Called by the generated runtime when it resumes the stream at `slot`, so
+/// the events that slot already contributed to the tape are recognised when
+/// the provider re-delivers them.
+///
+/// A restore arms this through `SnapshotService`; this is the other path, a
+/// reconnect inside one process, which resumes at the processed checkpoint and
+/// re-delivers that slot just the same.
+pub fn expect_resume_overlap(slot: u64) {
+    if let Ok(journal) = ACTIVE_JOURNAL.try_with(Arc::clone) {
+        journal.arm_resume_overlap(slot);
+    }
+}
+
 pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -766,11 +1010,12 @@ mod tests {
 
     async fn append(journal: &EventJournal, view: &str, key: &str, body: &str) -> u64 {
         journal
-            .append_with(view, key, |_offset| {
+            .append_with(view, key, None, |_offset| {
                 Ok::<_, std::convert::Infallible>(frame(body))
             })
             .await
             .unwrap()
+            .retained()
             .expect("an open tape issues an offset")
             .0
     }
@@ -818,13 +1063,14 @@ mod tests {
         // it, so the two can never disagree.
         for expected in 0..3u64 {
             let (offset, payload) = journal
-                .append_with("Trade/append", "pool", |offset| {
+                .append_with("Trade/append", "pool", None, |offset| {
                     Ok::<_, std::convert::Infallible>(Arc::new(Bytes::from(format!(
                         r#"{{"offset":{offset}}}"#
                     ))))
                 })
                 .await
                 .unwrap()
+                .retained()
                 .expect("an open tape issues an offset");
             assert_eq!(offset, expected);
             assert_eq!(
@@ -982,13 +1228,13 @@ mod tests {
         let now = unix_now();
 
         journal
-            .append_with_at("Trade/append", "old", now - 600, |_| {
+            .append_with_at("Trade/append", "old", None, now - 600, |_| {
                 Ok::<_, std::convert::Infallible>(frame("x"))
             })
             .await
             .unwrap();
         journal
-            .append_with_at("Trade/append", "fresh", now, |_| {
+            .append_with_at("Trade/append", "fresh", None, now, |_| {
                 Ok::<_, std::convert::Infallible>(frame("x"))
             })
             .await
@@ -1034,6 +1280,7 @@ mod tests {
             key: "pool".to_string(),
             payload: Arc::new(Bytes::from_static(br#"{"data":{"amount":5}}"#)),
             appended_at: 100,
+            origin: None,
         };
         let json = serde_json::to_string(&record).unwrap();
         assert!(
@@ -1145,13 +1392,13 @@ mod tests {
         journal.seal();
 
         let after = journal
-            .append_with("Trade/append", "pool1", |_offset| {
+            .append_with("Trade/append", "pool1", None, |_offset| {
                 Ok::<_, std::convert::Infallible>(frame("after"))
             })
             .await
             .unwrap();
         assert!(
-            after.is_none(),
+            !matches!(after, Append::Retained { .. }),
             "a sealed tape must not hand out a position the snapshot cannot know"
         );
         assert_eq!(
@@ -1185,6 +1432,195 @@ mod tests {
             "a delivered record must land after the hole, not inside it: \
              offset {offset}, gap_after {:?}",
             window.gap_after
+        );
+    }
+
+    /// A reconnect resumes at the processed checkpoint and re-delivers that
+    /// slot, exactly as a restore does, so the generated runtime arms the same
+    /// window through the tape in its scope.
+    #[tokio::test]
+    async fn a_reconnect_arms_the_overlap_through_the_scope() {
+        let journal = Arc::new(EventJournal::new(config(100, 3_600)));
+        let origin = EventOrigin {
+            slot: 7,
+            index: 0,
+            occurrence: Some("ix:0".to_string()),
+        };
+        journal
+            .append_with("Trade/append", "pool1", Some(origin.clone()), |_offset| {
+                Ok::<_, std::convert::Infallible>(frame("first"))
+            })
+            .await
+            .unwrap();
+
+        journal.scope(async { expect_resume_overlap(7) }).await;
+
+        let again = journal
+            .append_with("Trade/append", "pool1", Some(origin), |_offset| {
+                Ok::<_, std::convert::Infallible>(frame("first"))
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(again, Append::Duplicate),
+            "the re-delivered event must not be retained again"
+        );
+    }
+
+    /// The window is a claim about one slot, so it has to stop applying once
+    /// the stream is past it — otherwise the contract and the code disagree
+    /// for whoever reads it next.
+    #[tokio::test]
+    async fn the_overlap_window_disarms_once_the_stream_moves_on() {
+        let journal = EventJournal::new(config(100, 3_600));
+        journal.arm_resume_overlap(7);
+
+        let later = EventOrigin {
+            slot: 8,
+            index: 0,
+            occurrence: Some("ix:0".to_string()),
+        };
+        journal
+            .append_with("Trade/append", "pool1", Some(later), |_offset| {
+                Ok::<_, std::convert::Infallible>(frame("later"))
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            journal.resume_overlap_slot(),
+            None,
+            "a record from a later slot ends the window"
+        );
+    }
+
+    /// Two events can share an identity with only one of them on the tape: a
+    /// seal landing between them retains the first and leaves the second
+    /// untracked. Matching on identity alone would suppress both
+    /// re-deliveries, dropping the one that was never retained.
+    #[tokio::test]
+    async fn a_second_event_sharing_an_identity_still_lands() {
+        let journal = EventJournal::new(config(100, 3_600));
+        let origin = EventOrigin {
+            slot: 7,
+            index: 0,
+            occurrence: Some("ix:0".to_string()),
+        };
+
+        // Only the first of the pair was retained before the tape sealed.
+        journal
+            .append_with("Trade/append", "pool1", Some(origin.clone()), |_offset| {
+                Ok::<_, std::convert::Infallible>(frame("first"))
+            })
+            .await
+            .unwrap();
+
+        journal.arm_resume_overlap(7);
+
+        let first = journal
+            .append_with("Trade/append", "pool1", Some(origin.clone()), |_offset| {
+                Ok::<_, std::convert::Infallible>(frame("first"))
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(first, Append::Duplicate),
+            "the re-delivery of the retained event is a duplicate"
+        );
+
+        let second = journal
+            .append_with("Trade/append", "pool1", Some(origin), |_offset| {
+                Ok::<_, std::convert::Infallible>(frame("second"))
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(second, Append::Retained { .. }),
+            "the event that was never retained is not a duplicate of the one \
+             that was: {second:?}"
+        );
+    }
+
+    /// The match counts are keyed by decode site, not by slot, so carrying
+    /// them past a window would make the next resume think it had already
+    /// matched an event it has not seen — and retain the duplicate.
+    #[tokio::test]
+    async fn resume_matches_do_not_outlive_their_window() {
+        let journal = EventJournal::new(config(100, 3_600));
+        let site = |slot: u64| EventOrigin {
+            slot,
+            index: 0,
+            occurrence: Some("ix:0".to_string()),
+        };
+        let append = |origin: EventOrigin| {
+            let journal = &journal;
+            async move {
+                journal
+                    .append_with("Trade/append", "pool1", Some(origin), |_offset| {
+                        Ok::<_, std::convert::Infallible>(frame("body"))
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+
+        append(site(7)).await;
+        journal.arm_resume_overlap(7);
+        assert!(matches!(append(site(7)).await, Append::Duplicate));
+
+        // Slot 8 carries the same decode site, and appending it disarms the
+        // window.
+        append(site(8)).await;
+        assert_eq!(journal.resume_overlap_slot(), None);
+
+        // A reconnect now resumes at 8. Its re-delivery must be recognised,
+        // which it cannot be if the count from slot 7's window survived.
+        journal.arm_resume_overlap(8);
+        assert!(
+            matches!(append(site(8)).await, Append::Duplicate),
+            "the new window starts its counting from zero"
+        );
+    }
+
+    /// A reconnect can drop after replaying slot N but before anything from
+    /// N+1 arrives, and the next one resumes at N again. That is a new window:
+    /// inheriting the first one's counts would treat every re-delivery as
+    /// surplus and retain it a second time.
+    #[tokio::test]
+    async fn a_second_reconnect_to_the_same_slot_counts_afresh() {
+        let journal = EventJournal::new(config(100, 3_600));
+        let origin = EventOrigin {
+            slot: 7,
+            index: 0,
+            occurrence: Some("ix:0".to_string()),
+        };
+        let append = |origin: EventOrigin| {
+            let journal = &journal;
+            async move {
+                journal
+                    .append_with("Trade/append", "pool1", Some(origin), |_offset| {
+                        Ok::<_, std::convert::Infallible>(frame("body"))
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+
+        append(origin.clone()).await;
+
+        journal.arm_resume_overlap(7);
+        assert!(matches!(append(origin.clone()).await, Append::Duplicate));
+
+        // Dropped before slot 8; the next reconnect resumes at 7 again.
+        journal.arm_resume_overlap(7);
+        assert!(
+            matches!(append(origin).await, Append::Duplicate),
+            "the same re-delivery in a new window is still a duplicate"
+        );
+        assert_eq!(
+            journal.window("Trade/append").await.next,
+            1,
+            "and the tape did not grow"
         );
     }
 

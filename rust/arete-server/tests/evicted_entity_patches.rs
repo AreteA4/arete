@@ -85,6 +85,7 @@ fn round_mutation(key: u64, patch: Value) -> Mutation {
         key: json!(key),
         patch,
         append: vec![],
+        occurrence: None,
     }
 }
 

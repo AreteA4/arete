@@ -44,6 +44,7 @@ fn trade_batch(index: u64) -> MutationBatch {
         key: json!(format!("pool{}", index % 7)),
         patch: json!({"trade": index, "amount": index * 10}),
         append: vec![],
+        occurrence: None,
     };
     MutationBatch::with_slot_context(
         vec![mutation].into_iter().collect(),
