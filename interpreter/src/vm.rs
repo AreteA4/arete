@@ -3786,6 +3786,22 @@ impl VmContext {
                     self.registers[*dest] = value;
                     pc += 1;
                 }
+                OpCode::EvaluateEventExpr { expr, dest } => {
+                    let value = match self.evaluate_computed_expr(expr, event_value) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            tracing::warn!(
+                                entity = entity_name,
+                                event_type,
+                                %error,
+                                "event expression failed; using null"
+                            );
+                            Value::Null
+                        }
+                    };
+                    self.registers[*dest] = value;
+                    pc += 1;
+                }
                 OpCode::LoadConstant { value, dest } => {
                     self.registers[*dest] = value.clone();
                     pc += 1;
@@ -7135,6 +7151,23 @@ impl VmContext {
                 }
             }
             "to_string" => Ok(json!(value.to_string())),
+            // Join scalars into one string, as for a key made of a pool and a
+            // time bucket. Strings join unquoted; a null part makes it null.
+            "concat" => {
+                let mut joined = String::new();
+                for part in std::iter::once(value).chain(args.iter()) {
+                    match part {
+                        Value::Null => return Ok(Value::Null),
+                        Value::String(text) => joined.push_str(text),
+                        Value::Number(number) => joined.push_str(&number.to_string()),
+                        Value::Bool(flag) => joined.push_str(&flag.to_string()),
+                        other => {
+                            return Err(format!("Cannot concat {:?}", other).into());
+                        }
+                    }
+                }
+                Ok(Value::String(joined))
+            }
             "min" => {
                 if args.is_empty() {
                     return Err("min() requires an argument".into());

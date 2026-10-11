@@ -340,6 +340,9 @@ pub enum PortableMappingSource {
     FromContext {
         field: String,
     },
+    FromExpr {
+        expr: PortableComputedExpr,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -959,6 +959,13 @@ pub enum MappingSource {
     FromContext {
         field: String,
     },
+    /// An expression evaluated against the incoming event when the handler
+    /// runs. Field references read the event; `ContextSlot` and
+    /// `ContextTimestamp` read the update context. Feeds any population
+    /// strategy, and supplies the key when it maps the primary key.
+    FromExpr {
+        expr: ComputedExpr,
+    },
 }
 
 impl MappingSource {

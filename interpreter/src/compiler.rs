@@ -103,6 +103,12 @@ pub enum OpCode {
         key: Register,
         is_account_event: bool,
     },
+    /// Evaluate an expression against the event into `dest`; null when the
+    /// expression fails.
+    EvaluateEventExpr {
+        expr: ComputedExpr,
+        dest: Register,
+    },
     LoadEventField {
         path: FieldPath,
         dest: Register,
@@ -1452,6 +1458,12 @@ impl<S> TypedCompiler<S> {
                     default: Some(serde_json::json!(null)),
                 }]
             }
+            MappingSource::FromExpr { expr } => {
+                vec![OpCode::EvaluateEventExpr {
+                    expr: expr.clone(),
+                    dest,
+                }]
+            }
             MappingSource::Computed { .. } => {
                 vec![]
             }
@@ -1480,6 +1492,24 @@ impl<S> TypedCompiler<S> {
 
         // Now do the normal key resolution
         match resolution {
+            KeyResolutionStrategy::Embedded { primary_field }
+                if primary_field.segments.is_empty()
+                    && self.find_primary_key_expr(mappings).is_some() =>
+            {
+                // The primary key mapping is an expression over the event,
+                // such as a pool and a time bucket.
+                let expr = self
+                    .find_primary_key_expr(mappings)
+                    .expect("checked by the guard");
+                ops.push(OpCode::EvaluateEventExpr {
+                    expr,
+                    dest: key_reg,
+                });
+                ops.push(OpCode::CopyRegisterIfNull {
+                    source: resolved_key_reg,
+                    dest: key_reg,
+                });
+            }
             KeyResolutionStrategy::Embedded { primary_field } => {
                 // Enhanced key resolution: check for auto-inheritance when primary_field is empty
                 let effective_primary_field = if primary_field.segments.is_empty() {
@@ -1661,6 +1691,18 @@ impl<S> TypedCompiler<S> {
         }
 
         ops
+    }
+
+    /// The expression of a mapping in `mappings` that sets the primary key,
+    /// if one does.
+    fn find_primary_key_expr(&self, mappings: &[TypedFieldMapping<S>]) -> Option<ComputedExpr> {
+        let primary_key = self.spec.identity.primary_keys.first()?;
+        mappings.iter().find_map(|mapping| match &mapping.source {
+            MappingSource::FromExpr { expr } if mapping.target_path == *primary_key => {
+                Some(expr.clone())
+            }
+            _ => None,
+        })
     }
 
     fn find_primary_key_transformation(
