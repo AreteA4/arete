@@ -431,6 +431,9 @@ impl SdkReference {
             .transpose()?;
         match (&selection.read, program) {
             (Some(read), Some(program)) => {
+                let read = read
+                    .strip_prefix(&format!("programs.{}.", program.key))
+                    .unwrap_or(read);
                 selected
                     .programs
                     .push(select_program_function(program, read)?);
@@ -499,6 +502,19 @@ impl SdkReference {
     /// The stack read `read`, else the program read or operation of that
     /// name.
     fn select_read(&self, read: &str, selected: &mut SdkReference) -> Result<()> {
+        // A program function's full path, as the error below lists them:
+        // `programs.ore.instructions.mining.deploy`.
+        if let Some((key, path)) = read
+            .strip_prefix("programs.")
+            .and_then(|rest| rest.split_once('.'))
+        {
+            if let Some(program) = self.program(key) {
+                selected
+                    .programs
+                    .push(select_program_function(program, path)?);
+                return Ok(());
+            }
+        }
         if let Some(found) = find_function(&self.reads, read) {
             selected.reads.push(found.clone());
             return Ok(());
@@ -1420,6 +1436,33 @@ mod tests {
         assert!(render_selection(&ore(), &selection)
             .unwrap()
             .contains("together. Returns null when the Board is missing."));
+
+        // The full path the error lists selects the same operation, with or
+        // without `--program`.
+        for (read, program) in [
+            ("programs.ore.instructions.mining.deploy", None),
+            ("programs.ore.instructions.mining.deploy", Some("ore")),
+            ("instructions.mining.deploy", Some("ore")),
+        ] {
+            let selected = ore()
+                .select(&Selection {
+                    read: Some(read.into()),
+                    program: program.map(str::to_string),
+                    ..Selection::default()
+                })
+                .unwrap();
+            assert_eq!(
+                selected.programs[0].operations[0].path, "instructions.mining.deploy",
+                "{read}"
+            );
+        }
+        let program_read = ore()
+            .select(&Selection {
+                read: Some("programs.ore.read.board".into()),
+                ..Selection::default()
+            })
+            .unwrap();
+        assert_eq!(program_read.programs[0].reads[0].path, "read.board");
 
         let operation = ore()
             .select(&Selection {
