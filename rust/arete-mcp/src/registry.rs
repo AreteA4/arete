@@ -89,9 +89,10 @@ impl BodyCap {
             Self::StackDescriptor => format!(
                 "the stack install descriptor at {path} is at least {bytes} bytes, over the \
                  {limit} byte limit this server reads. explore_stack_schema still lists its \
-                 entities and `<EntityName>/<view>` ids, and read_view, connect and subscribe \
-                 accept the stack's WebSocket URL as `url` (explore_stacks lists it as \
-                 `websocket_url`)."
+                 entities and `<EntityName>/<view>` ids. read_view and connect accept the \
+                 stack's WebSocket URL as `url` (explore_stacks lists it as `websocket_url`). \
+                 To subscribe, call connect first, then pass its `connection_id` and a `view` \
+                 to subscribe."
             ),
             Self::ProgramDescriptor => format!(
                 "the program install descriptor at {path} is at least {bytes} bytes, over the \
