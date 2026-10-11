@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -108,6 +109,37 @@ describe('downloaded sandbox trees', () => {
     assert.ok(!masked.includes(other));
     assert.deepEqual(masked.subarray(0, 5), original.subarray(0, 5));
     assert.deepEqual(masked.subarray(-3), original.subarray(-3));
+  });
+
+  test('redactTree keeps a SQLite session readable when its records are still in the WAL', () => {
+    const live = join(scratch, 'live-db');
+    mkdirSync(live, { recursive: true });
+    const source = new DatabaseSync(join(live, 'opencode.db'));
+    source.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;');
+    source.exec('CREATE TABLE part (id INTEGER PRIMARY KEY, data TEXT)');
+    const insert = source.prepare('INSERT INTO part (data) VALUES (?)');
+    for (let i = 0; i < 50; i++) insert.run(`{"output":"step ${i} ${i === 7 ? KEY : 'ok'}"}`);
+    // Copy while the connection is open, as a sandbox download does: the
+    // records are still only in the WAL.
+    const run = join(scratch, 'run-wal');
+    const dir = join(run, 'native', 'opencode');
+    mkdirSync(dir, { recursive: true });
+    for (const suffix of ['', '-wal', '-shm']) copyFileSync(join(live, `opencode.db${suffix}`), join(dir, `opencode.db${suffix}`));
+    source.close();
+    assert.ok(readFileSync(join(dir, 'opencode.db-wal')).includes(KEY));
+
+    new RunDir(run).redactTree('native');
+
+    for (const suffix of ['', '-wal']) {
+      const file = join(dir, `opencode.db${suffix}`);
+      if (existsSync(file)) assert.ok(!readFileSync(file).includes(FRAGMENT), `${suffix || 'db'} still holds the key`);
+    }
+    const reopened = new DatabaseSync(join(dir, 'opencode.db'));
+    const rows = reopened.prepare('SELECT data FROM part ORDER BY id').all() as Array<{ data: string }>;
+    reopened.close();
+    assert.equal(rows.length, 50);
+    assert.equal(rows[0]!.data, '{"output":"step 0 ok"}');
+    assert.ok(!rows[7]!.data.includes(FRAGMENT));
   });
 
   test('Codex rollouts behind links are not read', () => {

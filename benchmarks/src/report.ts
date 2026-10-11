@@ -1,4 +1,5 @@
-import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { knownSecrets } from './env.js';
 import type { RunReport } from './types.js';
@@ -56,35 +57,64 @@ export class RunDir {
   /**
    * Redact every file under a downloaded subdirectory in place: text files
    * like written artifacts, and binary files (agents' SQLite session stores)
-   * by masking each secret with the same number of bytes. Links are never
-   * followed: the sandbox wrote them, and a link resolving outside the
-   * download (`../../.env`) would otherwise rewrite host files.
+   * by masking each secret with the same number of bytes. A SQLite database
+   * is checkpointed first, so its write-ahead log is folded into the main
+   * file: masking bytes inside a WAL would break its frame checksums and lose
+   * committed records. A WAL that still holds a secret afterwards is deleted.
+   * Links are never followed: the sandbox wrote them, and a link resolving
+   * outside the download (`../../.env`) would otherwise rewrite host files.
    */
   redactTree(subdir: string): void {
+    const files: string[] = [];
     const walk = (dir: string) => {
       for (const name of readdirSync(dir)) {
         const file = join(dir, name);
         const stat = lstatSync(file);
         if (stat.isDirectory()) walk(file);
-        else if (stat.isFile() && stat.size < 50 * 1024 * 1024) {
-          const buf = readFileSync(file);
-          if (buf.includes(0)) {
-            const bytes = buf.toString('latin1');
-            const clean = maskSameLength(bytes);
-            if (clean !== bytes) writeFileSync(file, Buffer.from(clean, 'latin1'));
-            continue;
-          }
-          const text = buf.toString('utf8');
-          const clean = redact(text);
-          if (clean !== text) writeFileSync(file, clean);
-        }
+        else if (stat.isFile() && stat.size < 50 * 1024 * 1024) files.push(file);
       }
     };
     try {
       walk(join(this.path, subdir));
     } catch {
-      // nothing downloaded
+      return; // nothing downloaded
     }
+    for (const file of files) if (existsSync(`${file}-wal`) && isSqlite(file)) checkpoint(file);
+    for (const file of files) {
+      if (!existsSync(file)) continue;
+      const buf = readFileSync(file);
+      if (buf.includes(0) || file.endsWith('-wal')) {
+        const bytes = buf.toString('latin1');
+        const clean = maskSameLength(bytes);
+        if (clean === bytes) continue;
+        if (file.endsWith('-wal')) rmSync(file);
+        else writeFileSync(file, Buffer.from(clean, 'latin1'));
+        continue;
+      }
+      const text = buf.toString('utf8');
+      const clean = redact(text);
+      if (clean !== text) writeFileSync(file, clean);
+    }
+  }
+}
+
+const SQLITE_HEADER = Buffer.from('SQLite format 3\0', 'latin1');
+
+function isSqlite(file: string): boolean {
+  return readFileSync(file).subarray(0, SQLITE_HEADER.length).equals(SQLITE_HEADER);
+}
+
+/** Fold a copied database's write-ahead log into the main file. */
+function checkpoint(file: string): void {
+  try {
+    const db = new DatabaseSync(file);
+    try {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Unreadable: the WAL is masked or deleted below like any other file.
   }
 }
 
