@@ -1247,7 +1247,9 @@ impl AreteMcp {
                           the stacks composing it), `installName` on a program whose \
                           install name differs from its slug, and a page-level \
                           `protocols` listing every stack and program of each result's \
-                          protocol. `live` on stacks is derived: `true` is a hosted \
+                          protocol; on a narrowed search each has `matched` (whether this \
+                          search returns it), so judge whether a protocol is live for the \
+                          query by its matched stacks only. `live` on stacks is derived: `true` is a hosted \
                           stream to subscribe to now (`modes` include `subscribe`), \
                           `false` is definition-only (install its SDK or deploy it \
                           yourself); `mode: \"subscribe\"` returns only live stacks. A \

@@ -60,7 +60,12 @@ results link them:
   when it differs from the slug. Both install the same package.
 - **`protocols`** (the page): one entry per result protocol,
   `{protocol, stacks, programs}`, listing every stack and program of that
-  protocol, including ones on other pages or excluded by `--kind`.
+  protocol, including ones on other pages or excluded by `--kind`. On a
+  search narrowed by a query, concept, category, mode or target, each has
+  `matched`: whether the search returns it. A protocol's other entries are
+  listed with `matched: false` (a launchpad search lists a protocol's AMM
+  stacks unmatched), so whether a protocol is live for the question comes
+  from its matched stacks only. Text output lists them under `not matched`.
 
 Cite the slug of the kind you use: the stack to stream, the program to build.
 Two more keys are derived:
