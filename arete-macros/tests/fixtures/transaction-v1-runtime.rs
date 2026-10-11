@@ -1,4 +1,4 @@
-use arete::interpreter::{self as vm, SolanaTransactionMetadata, UpdateContext};
+use arete::interpreter::{self as vm, SolanaTransactionMetadata};
 use arete::runtime::yellowstone_grpc_proto::{
     geyser::*,
     prelude::{
@@ -45,9 +45,10 @@ impl vm::RuntimeResolver for Observations {
         state: &'a Mutex<vm::vm::VmContext>,
         bytecode: &'a vm::compiler::MultiEntityBytecode,
         requests: Vec<vm::ResolverRequest>,
-        context: Option<UpdateContext>,
+        context: vm::ApplyContextFn<'a>,
     ) -> vm::ResolverApplyFuture<'a> {
         Box::pin(async move {
+            let context = context();
             self.continuations
                 .lock()
                 .unwrap()

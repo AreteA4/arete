@@ -92,6 +92,7 @@ pub(crate) fn generate_slot_scheduler_task() -> TokenStream {
             let bytecode = bytecode_arc.clone();
             let runtime_resolver = runtime_resolver.clone();
             let slot_tracker = slot_tracker.clone();
+            let processed_slot_tracker = processed_slot_tracker.clone();
             let mutations_tx = mutations_tx.clone();
             let async_resolver_order = async_resolver_order.clone();
             let snapshot_barrier = snapshot_barrier.clone();
@@ -271,15 +272,27 @@ pub(crate) fn generate_slot_scheduler_task() -> TokenStream {
                                 vm_guard.take_resolver_requests()
                             };
 
+                            // Callbacks fire on the live tip, but what they
+                            // write carries the parser's position, never the
+                            // tip. The position is read once, after the fetch
+                            // and as the results are applied, so the computed
+                            // fields and the published stamp use the same
+                            // slot, and neither falls behind parser writes the
+                            // projector has already queued.
+                            let applied_slot = std::sync::OnceLock::new();
                             let url_mutations = runtime_resolver
                                 .resolve_and_apply(
                                     &vm,
                                     bytecode.as_ref(),
                                     requests,
-                                    Some(arete::runtime::arete_interpreter::UpdateContext {
-                                        slot: Some(current_slot),
-                                        timestamp: Some(current_time_seconds()),
-                                        ..arete::runtime::arete_interpreter::UpdateContext::default()
+                                    Box::new(|| {
+                                        let slot = processed_slot_tracker.get();
+                                        let _ = applied_slot.set(slot);
+                                        Some(arete::runtime::arete_interpreter::UpdateContext {
+                                            slot: Some(slot),
+                                            timestamp: Some(current_time_seconds()),
+                                            ..arete::runtime::arete_interpreter::UpdateContext::default()
+                                        })
                                     }),
                                 )
                                 .await;
@@ -297,11 +310,26 @@ pub(crate) fn generate_slot_scheduler_task() -> TokenStream {
                                     );
                                 }
                             } else {
-                                // Stamped with the live tip, which can be ahead
-                                // of the parser, so it must not advance the
-                                // resume watermark.
+                                // The stamp becomes the entity's `_seq`, which
+                                // clients stale-check against and read their
+                                // processed slot from, so it must follow the
+                                // projector's apply order. It was read after
+                                // the fetch, and nothing awaits between the
+                                // apply and the send: a parser handler queues
+                                // its batch before it records the slot, so
+                                // every parser batch at or below this stamp is
+                                // already ahead of ours. Not parsed input, so
+                                // it must not advance the resume watermark even
+                                // at the parser's slot.
+                                // A resolver may apply without asking for the
+                                // context; then nothing was derived from it and
+                                // the position now, still after the fetch, is
+                                // the stamp.
                                 let slot_context = arete::runtime::arete_server::SlotContext::new(
-                                    current_slot,
+                                    applied_slot
+                                        .get()
+                                        .copied()
+                                        .unwrap_or_else(|| processed_slot_tracker.get()),
                                     next_async_resolver_slot_index(async_resolver_order.as_ref()),
                                 );
                                 let mut batch = arete::runtime::arete_server::MutationBatch::scheduled(
@@ -1170,7 +1198,12 @@ pub fn generate_vm_handler(
                 };
 
                 self.runtime_resolver
-                    .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests, apply_context)
+                    .resolve_and_apply(
+                        &self.vm,
+                        self.bytecode.as_ref(),
+                        requests,
+                        Box::new(move || apply_context),
+                    )
                     .await
             }
 
@@ -2226,7 +2259,12 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                 };
 
                 self.runtime_resolver
-                    .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests, apply_context)
+                    .resolve_and_apply(
+                        &self.vm,
+                        self.bytecode.as_ref(),
+                        requests,
+                        Box::new(move || apply_context),
+                    )
                     .await
             }
 

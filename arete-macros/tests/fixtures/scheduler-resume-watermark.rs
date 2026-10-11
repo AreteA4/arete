@@ -3,10 +3,10 @@
 // the slot tip the scheduler stamped its batch with.
 use arete::interpreter::{
     self as vm,
-    ast::{ResolveStrategy, ResolverType},
+    ast::{ResolveStrategy, ResolverExtractSpec, ResolverType},
     compiler::MultiEntityBytecode,
     scheduler::SlotScheduler,
-    Mutation, ScheduledCallback, UpdateContext,
+    Mutation, ScheduledCallback,
 };
 use arete::runtime::{
     arete_server::{
@@ -24,12 +24,41 @@ use std::time::Duration;
 __runtime_helpers!();
 
 const PARSER_SLOT: u64 = 100;
+/// Parsed, but its batch not yet applied by the projector: the parser marks a
+/// slot processed when it handles it, ahead of the resume watermark.
+const PROCESSED_SLOT: u64 = 120;
+/// Where the parser has got to by the time the fetch returns.
+const PROCESSED_AFTER_FETCH: u64 = 130;
 const TIP_SLOT: u64 = 500;
 
-/// Stands in for the URL/token resolver: the scheduled callback resolves to a
-/// new price for the entity the parser already wrote.
-struct Resolver;
+/// Stands in for the token metadata backend: the scheduled callback resolves
+/// to a new price for the entity the parser already wrote. Only the fetch is
+/// stubbed, so the real apply path runs. The parser keeps going while the
+/// fetch is in flight.
+struct Resolver {
+    processed: SlotTracker,
+}
 impl vm::RuntimeResolver for Resolver {
+    fn resolve_batch<'a>(
+        &'a self,
+        requests: &'a [vm::RuntimeResolverRequest],
+    ) -> vm::ResolverBatchFuture<'a> {
+        Box::pin(async move {
+            self.processed.record(PROCESSED_AFTER_FETCH);
+            Ok(requests
+                .iter()
+                .map(|request| (request.key().to_string(), json!({"price": 99})))
+                .collect())
+        })
+    }
+}
+
+/// A resolver that applies on its own and never asks for the update context,
+/// which the trait allows.
+struct IgnoresContext {
+    processed: SlotTracker,
+}
+impl vm::RuntimeResolver for IgnoresContext {
     fn resolve_batch<'a>(
         &'a self,
         _: &'a [vm::RuntimeResolverRequest],
@@ -41,9 +70,12 @@ impl vm::RuntimeResolver for Resolver {
         _: &'a Mutex<vm::vm::VmContext>,
         _: &'a MultiEntityBytecode,
         _: Vec<vm::ResolverRequest>,
-        _: Option<UpdateContext>,
+        _: vm::ApplyContextFn<'a>,
     ) -> vm::ResolverApplyFuture<'a> {
-        Box::pin(async { vec![token("mint1", 99)] })
+        Box::pin(async move {
+            self.processed.record(PROCESSED_AFTER_FETCH);
+            vec![token("mint1", 99)]
+        })
     }
 }
 
@@ -108,9 +140,11 @@ async fn service(
     .unwrap()
 }
 
-async fn run() {
-    let dir =
-        std::env::temp_dir().join(format!("arete-scheduler-watermark-{}", std::process::id()));
+async fn run(ignores_context: bool) {
+    let dir = std::env::temp_dir().join(format!(
+        "arete-scheduler-watermark-{}-{ignores_context}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     let config = SnapshotConfig {
         enabled: true,
@@ -141,9 +175,37 @@ async fn run() {
         .get_state_table_mut(0)
         .unwrap()
         .insert_with_eviction(json!("mint1"), json!({"id": "mint1", "price": 10}));
-    let bytecode_arc = Arc::new(MultiEntityBytecode::new().build());
-    let runtime_resolver: vm::SharedRuntimeResolver = Arc::new(Resolver);
+    // A computed field that records the slot it was evaluated at, so the test
+    // can see which slot the resolver result was applied under.
+    let mut bytecode = MultiEntityBytecode::new()
+        .add_entity_with_evaluator(
+            "Token".to_string(),
+            vm::ast::TypedStreamSpec::<Value>::new(
+                "Token".to_string(),
+                vm::ast::IdentitySpec {
+                    primary_keys: vec!["id".to_string()],
+                    lookup_indexes: Vec::new(),
+                },
+                Vec::new(),
+            ),
+            0,
+            Some(|state: &mut Value, slot: Option<u64>, _: i64| {
+                state["computed_slot"] = json!(slot);
+                Ok(())
+            }),
+        )
+        .build();
+    bytecode.entities.get_mut("Token").unwrap().computed_paths = vec!["computed_slot".to_string()];
+    let bytecode_arc = Arc::new(bytecode);
     let slot_tracker = SlotTracker::new();
+    let processed_slot_tracker = SlotTracker::new();
+    processed_slot_tracker.record(PROCESSED_SLOT);
+    let processed = processed_slot_tracker.clone();
+    let runtime_resolver: vm::SharedRuntimeResolver = if ignores_context {
+        Arc::new(IgnoresContext { processed })
+    } else {
+        Arc::new(Resolver { processed })
+    };
     let async_resolver_order = Arc::new(AtomicU64::new(0));
     let snapshot_barrier: Option<arete::runtime::arete_server::snapshot::SnapshotBarrier> = None;
     let slot_scheduler = Arc::new(Mutex::new(SlotScheduler::new()));
@@ -159,7 +221,11 @@ async fn run() {
             input_path: None,
             condition: None,
             strategy: ResolveStrategy::LastWrite,
-            extracts: Vec::new(),
+            extracts: vec![ResolverExtractSpec {
+                target_path: "price".to_string(),
+                source_path: Some("price".to_string()),
+                transform: None,
+            }],
             retry_count: 0,
         },
     );
@@ -190,12 +256,34 @@ async fn run() {
         .await
         .expect("scheduler fired")
         .unwrap();
-    assert_eq!(batch.slot_context.map(|ctx| ctx.slot), Some(TIP_SLOT));
     tx.send(batch).await.unwrap();
 
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
     tx.send(MutationBatch::flush_marker(ack_tx)).await.unwrap();
     ack_rx.await.unwrap();
+
+    // Clients order and stale-check by `_seq`, and read the processed slot from
+    // it: the scheduler's write must claim the parser's position, not the tip,
+    // and the position when it is sent, not a stale one from before the fetch.
+    // Parser batches up to that position are already ahead of it in the queue,
+    // so an older stamp would make clients drop this write as stale.
+    let live = cache.get_all("Token/list").await;
+    let seq = live[0].1["_seq"].as_str().expect("_seq").to_string();
+    assert_eq!(
+        seq.split(':').next(),
+        Some(PROCESSED_AFTER_FETCH.to_string().as_str()),
+        "scheduler write stamped {seq}"
+    );
+    assert_eq!(live[0].1["price"], 99);
+    // ...and the state it publishes was derived at that same slot. A resolver
+    // that never asks for the context derives nothing from it.
+    if !ignores_context {
+        assert_eq!(
+            live[0].1["computed_slot"],
+            json!(PROCESSED_AFTER_FETCH),
+            "resolver result applied under a different slot than its stamp {seq}"
+        );
+    }
     assert!(snapshots
         .snapshot_now(SnapshotTrigger::Shutdown)
         .await
@@ -220,11 +308,19 @@ async fn run() {
     assert_eq!(entities[0].1["price"], 99);
     // ...but the stream resumes where the parser stopped, not at the tip.
     let resume = restored.runtime().take_restored().unwrap().resume_watermark;
-    assert_eq!(resume, Some(PARSER_SLOT), "resumed at the scheduler's tip");
+    assert_eq!(
+        resume,
+        Some(PARSER_SLOT),
+        "resumed past the slot the projector applied"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn main() {
-    tokio::runtime::Runtime::new().unwrap().block_on(run());
+    for ignores_context in [false, true] {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(run(ignores_context));
+    }
 }
