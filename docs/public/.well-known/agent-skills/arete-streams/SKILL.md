@@ -2,8 +2,8 @@
 name: arete-streams
 description: Query or subscribe to deployed Arete stack views from TypeScript, React, Rust, Python, the a4 CLI, or the Arete MCP server. Use for dashboards, bots, backends, current-state reads, live entity updates, view filtering, or stream debugging. Do not use for program accounts or transaction construction; use arete-programs for those.
 metadata:
-  version: "1.6.0"
-  min-cli: ">=0.35.0"
+  version: "1.7.0"
+  min-cli: ">=0.36.0"
 ---
 
 # Query and Subscribe to Arete Views
@@ -66,7 +66,7 @@ a4 install stack <stack-ref> --python
 
 For TypeScript in a directory with no `package.json`, add `--setup` (`a4 install stack <stack-ref> --ts --setup`, or `a4 install --setup`): it creates an ES module `package.json` and `tsconfig.json` and installs the runtime and dev dependencies. It never replaces existing files.
 
-Inspect the generated exports and types before coding. Generated names are the application API; raw descriptor field paths remain useful for CLI filters and diagnostics.
+Before writing code, read the installed SDK's reference instead of searching the generated files. In TypeScript, every installed stack and program SDK folder has a `README.md` that lists its import, views, row fields (TypeScript paths with their wire names, types, and units), reads, and programs. `a4 sdk describe <alias> [--view <Entity>/<view>] [--read <name>] [--program <key>]` prints the same reference or one part of it, and the MCP tool `describe_sdk` returns it too. The reference covers only that SDK; this skill covers how to use any SDK. Generated names are the application API; raw descriptor field paths remain useful for CLI filters and diagnostics.
 
 If the generated stack definition has empty endpoints, the stack is definition-only and has no deployment yet. Nothing can stream from it until one exists. Deploying it is an external mutation handled by `arete-deploy`; once deployed, the project records the endpoints and the SDK is regenerated. Never invent an endpoint to fill the gap.
 
@@ -121,7 +121,8 @@ Validate more than compilation:
 1. Confirm the generated dependency identity matches the explored descriptor.
 2. Exercise a bounded first read or first update with an explicit timeout.
 3. Check state keys, numeric types such as `bigint`, `u64`, or Python `int`, and each amount field's `amount` scale.
-4. Exercise empty and error states; an absent subscription is not the same as an empty result.
-5. Close or release streams, sessions, and clients in scripts and tests.
+4. Type-check TypeScript with `npx tsc --noEmit` (`npm run typecheck` after `--setup`); `tsx` runs code without checking types. Treat a null field you expected to be set as a failure instead of defaulting it with `?? 0`, so a wrong field path does not pass silently.
+5. Exercise empty and error states; an absent subscription is not the same as an empty result.
+6. Close or release streams, sessions, and clients in scripts and tests.
 
 Do not keep an unbounded live command running merely to prove connectivity.

@@ -2,8 +2,8 @@
 name: arete
 description: Discover and install exact Arete stacks or program SDKs for a Solana application. Use for generic Arete setup, capability discovery, choosing between a stack, a standalone program SDK, or a composed stack, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for Rust stack definitions or composing stacks use arete-stack-authoring; for hosted publication or deployment use arete-deploy.
 metadata:
-  version: "1.5.0"
-  min-cli: ">=0.35.0"
+  version: "1.6.0"
+  min-cli: ">=0.36.0"
 ---
 
 # Discover and Install Arete Capabilities
@@ -134,7 +134,7 @@ a4 install program <program-ref> --ts
 
 Choose `--ts`, `--rust`, or `--python` from the existing project language and the descriptor's `sdkTargets`. Standalone program packaging may support fewer targets than a program bundled in a stack; trust the descriptor and command output.
 
-For TypeScript in a directory with no `package.json`, add `--setup` (for example `a4 install stack <stack-ref> --ts --setup`): it creates an ES module `package.json` and `tsconfig.json` and installs the runtime and dev dependencies. The printed Node snippet uses `@usearete/sdk` with no auth option, because server-side SDKs pick up `ARETE_API_KEY` or the active `a4` login.
+For TypeScript in a directory with no `package.json`, add `--setup` (for example `a4 install stack <stack-ref> --ts --setup`): it creates an ES module `package.json` and `tsconfig.json` and installs the runtime and dev dependencies. Without it, `a4` changes no project files and lists what is missing; follow the user's preferred setup if they have one. The install summary points to each SDK's reference (`README.md` in its generated folder, `a4 sdk describe <alias>`, or MCP `describe_sdk`). Server-side SDKs need no auth option: they pick up `ARETE_API_KEY` or the active `a4` login.
 
 Use `--no-save` only for a genuinely disposable, one-package generation. Do not hand-edit generated SDKs.
 

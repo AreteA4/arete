@@ -6,21 +6,21 @@
       "type": "archive",
       "description": "Discover and install exact Arete stacks or program SDKs for a Solana application. Use for generic Arete setup, capability discovery, choosing between a stack, a standalone program SDK, or a composed stack, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for Rust stack definitions or composing stacks use arete-stack-authoring; for hosted publication or deployment use arete-deploy.",
       "url": "/.well-known/agent-skills/arete.tar.gz",
-      "digest": "sha256:d73dcc8f899acbaab98aebb4f48aef5ce1461c83b07db228e7d6596ea5d7a12f"
+      "digest": "sha256:a042d0944e400a8c1c44f635a77a919c4c7d49b9b543ee1607d7294592e9220f"
     },
     {
       "name": "arete-streams",
       "type": "archive",
       "description": "Query or subscribe to deployed Arete stack views from TypeScript, React, Rust, Python, the a4 CLI, or the Arete MCP server. Use for dashboards, bots, backends, current-state reads, live entity updates, view filtering, or stream debugging. Do not use for program accounts or transaction construction; use arete-programs for those.",
       "url": "/.well-known/agent-skills/arete-streams.tar.gz",
-      "digest": "sha256:803e927b56175a634d1584c64332dd008531b3b615d5e0fc9e02b259734dbfd8"
+      "digest": "sha256:2b492d4953eac2e8b22b1b5118ed6b7b4893023c537cde3d382661bcc9e45ffd"
     },
     {
       "name": "arete-programs",
       "type": "archive",
       "description": "Use generated Arete program SDKs, standalone or included in a stack, to read accounts, derive PDAs, build instructions, prepare semantic operations, inspect transactions, or execute them through a wallet. Use for Solana protocol integrations and transaction workflows. Do not use for stack views or subscriptions; use arete-streams. Do not publish a program or deploy a stack; use arete-deploy.",
       "url": "/.well-known/agent-skills/arete-programs.tar.gz",
-      "digest": "sha256:6eb28c4ab4a61de249a6ee0a425056b1ef01aeeb3d04590a29e0031ecdd2d027"
+      "digest": "sha256:17d38189803330a68ed884c89562381c4021c538337977f36f4a3ea7a1a1c8cb"
     },
     {
       "name": "arete-stack-authoring",
