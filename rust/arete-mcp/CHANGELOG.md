@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.36.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.35.0...arete-mcp-v0.36.0) (2026-10-11)
+
+
+### Features
+
+* **cli,mcp:** per-SDK reference, a4 sdk describe, and a neutral install summary ([472dd43](https://github.com/AreteA4/arete/commit/472dd43e3d1bca22bb824ce8505961703e421fff))
+* **mcp:** SDK reference model, renderer and describe_sdk tool ([3970a13](https://github.com/AreteA4/arete/commit/3970a1302eda491967ecf7ce504032ca85920d45))
+
+
+### Bug Fixes
+
+* **mcp:** accept full program paths in SDK reference read selections ([bbcd2f6](https://github.com/AreteA4/arete/commit/bbcd2f6044d33d62aa95738de56c6c211caa9a33))
+* **mcp:** read large install descriptors and return only the summary ([4869b78](https://github.com/AreteA4/arete/commit/4869b78c742bfad42b5c1ffba84ab8d6972a5d56))
+* **mcp:** say subscribe needs a connection from connect ([c9c8bdd](https://github.com/AreteA4/arete/commit/c9c8bdd00ea1b4590320572c69cebdd3f1dd2599))
+* **mcp:** shape install descriptors larger than one tool result ([0e1fd2b](https://github.com/AreteA4/arete/commit/0e1fd2bf0c067cdb00355b1406f68bf5986187c2))
+
 ## [0.35.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.34.0...arete-mcp-v0.35.0) (2026-10-10)
 
 

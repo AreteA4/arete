@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.36.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.35.0...arete-interpreter-v0.36.0) (2026-10-11)
+
+
+### Features
+
+* **cli,mcp:** per-SDK reference, a4 sdk describe, and a neutral install summary ([472dd43](https://github.com/AreteA4/arete/commit/472dd43e3d1bca22bb824ce8505961703e421fff))
+* **interpreter:** document entity fields in generated TypeScript ([068851b](https://github.com/AreteA4/arete/commit/068851b2b73a4c1b301400215b88ed1033935ada))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.35.0 to 0.36.0
+
 ## [0.35.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.34.0...arete-interpreter-v0.35.0) (2026-10-10)
 
 
