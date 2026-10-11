@@ -1369,13 +1369,17 @@ impl SdkReferencePointer {
             DependencyKind::Stack => "views, row fields (TypeScript paths with their wire names, types and units), reads and programs",
             DependencyKind::Program => "reads, operations and accounts",
         };
+        let part = match self.kind {
+            DependencyKind::Stack => "--read <name>` or `--view <Entity/view>",
+            DependencyKind::Program => "--read <name>",
+        };
         println!(
-            "SDK reference: {} {} -> {}: its import, {what}.",
-            self.kind, self.alias, self.readme
+            "SDK reference: {} {}: `{} {part}` prints one part with the row fields it uses (or the MCP tool {}).",
+            self.kind, self.alias, self.command, self.mcp_tool
         );
         println!(
-            "             The same as `{}` (--view, --read, --program, --json) or the MCP tool {}.",
-            self.command, self.mcp_tool
+            "             {} lists everything: its import, {what}.",
+            self.readme
         );
     }
 }

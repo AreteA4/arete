@@ -4,6 +4,13 @@ Generated from stack package `vault` 1.0.0, installed as `vault`. `a4 install` r
 This file lists only what is specific to this SDK. For how to use any Arete SDK (`createSession`, auth, `get`/`getOne`/`use`/`watch`, preparing and executing operations), see the `arete-streams` and `arete-programs` agent skills or https://docs.arete.run/sdks/typescript/.
 Look parts up with `a4 sdk describe vault [--view <Entity/view>] [--read <name>] [--program <key>] [--json]` or the MCP tool `describe_sdk`.
 
+## Contents
+
+- Views: `Vault/state`, `Vault/list`
+- Programs: `programs.vault`
+
+To print one part with the row fields it uses, run `a4 sdk describe vault --read <name>` or `--view <Entity/view>`. The sections below list everything.
+
 ## Import
 
 ```ts

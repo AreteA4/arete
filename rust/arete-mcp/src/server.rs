@@ -153,7 +153,8 @@ pub struct DescribeSdkArgs {
     /// fields.
     #[serde(default)]
     pub view: Option<String>,
-    /// Only one read or program operation, by name (`currentRound`) or path.
+    /// Only one read or program operation, by name (`currentRound`) or path;
+    /// a stack read comes with the fields of the rows it reads.
     #[serde(default)]
     pub read: Option<String>,
     /// Only one program, by key (`ore`).
@@ -891,7 +892,8 @@ impl AreteMcp {
                           README.md and `a4 sdk describe`.\n\n\
                           Without `alias`, lists the installed SDKs. Narrow with `view` \
                           (`OreRound` or `OreRound/latest`), `read` (`currentRound`) or \
-                          `program` (`ore`). Generic SDK usage (sessions, auth, \
+                          `program` (`ore`); a stack read also carries the fields of the rows \
+                          it reads. Generic SDK usage (sessions, auth, \
                           get/getOne/use/watch) is in the docs and agent skills, not here."
     )]
     async fn describe_sdk(

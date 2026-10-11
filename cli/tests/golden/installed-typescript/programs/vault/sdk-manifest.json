@@ -4,7 +4,7 @@
     "kind": "program-spec",
     "hash": "arete:h1:program-spec:sha256:7f8377cbaeffdc6a33986144c5abb640d00d000519185ff85ac1ccfe1917b976"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:c3de7dc77b7cd6a0b936922c884a2dec4dc4a80930530f90ff21bbc9b35532b1",
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:57edaa9a1f10618fe92b93116ff7cae4e1e15de08240d9464e08290b04973538",
   "extensions": {
     "contentSha256": "1e7feb21470993fa5841d88266cecdf106abc81126e765db6ea7a2bcd3f0c1be"
   },

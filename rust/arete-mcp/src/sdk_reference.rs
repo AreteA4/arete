@@ -271,6 +271,10 @@ pub struct FunctionReference {
     /// `{ board, round, roundAddress, clock, phase } | null`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub returns: Option<String>,
+    /// The entities whose view rows a read reads, itself or through the
+    /// reads it calls: `OreBoard`, `OreRound`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -517,6 +521,19 @@ impl SdkReference {
         }
         if let Some(found) = find_function(&self.reads, read) {
             selected.reads.push(found.clone());
+            // The rows it reads, so the selection carries their fields.
+            for name in &found.rows {
+                let Some(entity) = self.entities.iter().find(|entity| entity.name == *name) else {
+                    continue;
+                };
+                if !selected
+                    .entities
+                    .iter()
+                    .any(|selected| selected.name == entity.name)
+                {
+                    selected.entities.push(entity.clone());
+                }
+            }
             return Ok(());
         }
         for program in &self.programs {
@@ -633,8 +650,81 @@ pub fn render_markdown(reference: &SdkReference) -> String {
          [--program <key>] [--json]` or the MCP tool `{DESCRIBE_TOOL}`.\n",
         reference.alias
     );
+    render_contents(reference, &mut out);
     render_body(reference, &mut out, true);
     out
+}
+
+/// The README's index: the reads, views, operations and programs by name,
+/// so a reader can print the one part it needs instead of reading on.
+fn render_contents(reference: &SdkReference, out: &mut String) {
+    // A program SDK lists its program's functions at the top level.
+    let program_sdk = reference.kind == SdkKind::Program;
+    let mut reads = reference.reads.iter().collect::<Vec<_>>();
+    let mut operations = Vec::new();
+    if program_sdk {
+        for program in &reference.programs {
+            reads.extend(&program.reads);
+            operations.extend(
+                program
+                    .operations
+                    .iter()
+                    .map(|operation| operation.path.clone()),
+            );
+        }
+    }
+    let views = reference
+        .entities
+        .iter()
+        .flat_map(|entity| entity.views.iter().map(|view| view.id.clone()))
+        .collect::<Vec<_>>();
+    let programs = if program_sdk {
+        Vec::new()
+    } else {
+        reference
+            .programs
+            .iter()
+            .map(|program| format!("programs.{}", program.key))
+            .collect::<Vec<_>>()
+    };
+    if reads.is_empty() && views.is_empty() && operations.is_empty() && programs.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "## Contents\n");
+    if !reads.is_empty() {
+        let _ = writeln!(out, "- Reads:");
+        for read in reads {
+            let _ = write!(out, "  - `{}`", read.signature());
+            if let Some(returns) = &read.returns {
+                let _ = write!(out, " → `{returns}`");
+            }
+            out.push('\n');
+        }
+    }
+    if !views.is_empty() {
+        let _ = writeln!(out, "- Views: {}", code_list(&views));
+    }
+    if !operations.is_empty() {
+        let _ = writeln!(out, "- Operations: {}", code_list(&operations));
+    }
+    if !programs.is_empty() {
+        let _ = writeln!(out, "- Programs: {}", code_list(&programs));
+    }
+    if views.is_empty() {
+        let _ = writeln!(
+            out,
+            "\nTo print one part, run `{DESCRIBE_COMMAND} {} --read <name>`. The sections below \
+             list everything.\n",
+            reference.alias
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "\nTo print one part with the row fields it uses, run `{DESCRIBE_COMMAND} {} --read \
+             <name>` or `--view <Entity/view>`. The sections below list everything.\n",
+            reference.alias
+        );
+    }
 }
 
 /// What `a4 sdk describe` and `describe_sdk` print: the whole README, or
@@ -770,6 +860,10 @@ fn session_key(alias: &str) -> &str {
 
 fn render_body(reference: &SdkReference, out: &mut String, full: bool) {
     render_import(reference, out, full);
+    // A selection leads with its reads, then the rows they read.
+    if !full {
+        render_reads(reference, out, Detail::Full);
+    }
     if !reference.entities.is_empty() {
         render_naming(reference, out);
         let _ = writeln!(out, "## Entities and views\n");
@@ -777,18 +871,8 @@ fn render_body(reference: &SdkReference, out: &mut String, full: bool) {
             render_entity(reference, entity, out);
         }
     }
-    if !reference.reads.is_empty() {
-        let _ = writeln!(out, "## Reads\n");
-        let _ = writeln!(
-            out,
-            "Derived values in one call, as `await {}.read.<name>(...)`.\n",
-            root_access(reference)
-        );
-        let detail = if full { Detail::Summary } else { Detail::Full };
-        for read in &reference.reads {
-            render_function(read, out, detail);
-        }
-        out.push('\n');
+    if full {
+        render_reads(reference, out, Detail::Summary);
     }
     if !reference.helpers.is_empty() {
         let _ = writeln!(
@@ -814,6 +898,22 @@ fn render_body(reference: &SdkReference, out: &mut String, full: bool) {
             render_program(reference, program, out, !full, 3);
         }
     }
+}
+
+fn render_reads(reference: &SdkReference, out: &mut String, detail: Detail) {
+    if reference.reads.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "## Reads\n");
+    let _ = writeln!(
+        out,
+        "Derived values in one call, as `await {}.read.<name>(...)`.\n",
+        root_access(reference)
+    );
+    for read in &reference.reads {
+        render_function(read, out, detail);
+    }
+    out.push('\n');
 }
 
 fn render_import(reference: &SdkReference, out: &mut String, full: bool) {
@@ -1063,6 +1163,9 @@ fn render_function(function: &FunctionReference, out: &mut String, detail: Detai
     if let Some(returns) = &function.returns {
         let _ = write!(out, " Returns `{returns}`.");
     }
+    if !function.rows.is_empty() {
+        let _ = write!(out, " Reads rows of {}.", code_list(&function.rows));
+    }
     if let Some(description) = &function.description {
         match detail {
             Detail::Title => {}
@@ -1216,6 +1319,7 @@ mod tests {
             path: path.into(),
             params: params.iter().map(|param| param.to_string()).collect(),
             returns: None,
+            rows: Vec::new(),
             title: Some(title.into()),
             description: None,
         }
@@ -1243,6 +1347,7 @@ mod tests {
         });
         let mut current_round = read("read.currentRound", &[], "Current round");
         current_round.returns = Some("{ board, round, roundAddress, clock, phase } | null".into());
+        current_round.rows = vec!["OreBoard".into(), "OreRound".into()];
         current_round.description = Some(
             "Reads the Board entity and the chain clock together. Returns null when the Board \
              is missing."
@@ -1351,6 +1456,19 @@ mod tests {
         assert!(readme.contains("`arete-streams` and `arete-programs` agent skills"));
         assert!(readme.contains("a4 sdk describe ore"));
         assert!(readme.contains("`describe_sdk`"));
+        // The index comes before the field tables and names every part.
+        let contents = readme.find("## Contents").unwrap();
+        assert!(contents < readme.find("## Entities and views").unwrap());
+        assert!(readme.contains(
+            "  - `read.currentRound()` → `{ board, round, roundAddress, clock, phase } | null`\n"
+        ));
+        assert!(readme.contains(
+            "- Views: `OreRound/state`, `OreRound/list`, `OreRound/latest`, `OreBoard/state`\n"
+        ));
+        assert!(readme.contains("- Programs: `programs.ore`\n"));
+        assert!(
+            readme.contains("run `a4 sdk describe ore --read <name>` or `--view <Entity/view>`")
+        );
         // The naming rule, with this SDK's own state key as the example.
         assert!(readme.contains("Rows use the paths below (`id.roundId`)"));
         assert!(readme.contains("marked `←` (`id.round_id`)"));
@@ -1373,7 +1491,7 @@ mod tests {
         ));
         // The README summarises a read's description in its first sentence.
         assert!(readme.contains(
-            "- `read.currentRound()` — Current round. Returns `{ board, round, roundAddress, clock, phase } | null`. Reads the Board entity and the chain clock together.\n"
+            "- `read.currentRound()` — Current round. Returns `{ board, round, roundAddress, clock, phase } | null`. Reads rows of `OreBoard`, `OreRound`. Reads the Board entity and the chain clock together.\n"
         ));
         assert!(readme.contains("- `read.roundState(roundId: bigint)` — Round state.\n"));
         assert!(readme.contains(
@@ -1445,11 +1563,27 @@ mod tests {
         };
         let read = ore().select(&selection).unwrap();
         assert_eq!(read.reads.len(), 1);
-        assert!(read.entities.is_empty() && read.programs.is_empty());
+        assert!(read.programs.is_empty());
+        // It carries the rows it reads, with their fields.
+        let rows = read
+            .entities
+            .iter()
+            .map(|entity| (entity.name.as_str(), entity.fields.len()))
+            .collect::<Vec<_>>();
+        assert_eq!(rows, [("OreBoard", 1), ("OreRound", 5)]);
         // A selected read is described in full.
-        assert!(render_selection(&ore(), &selection)
-            .unwrap()
-            .contains("together. Returns null when the Board is missing."));
+        let text = render_selection(&ore(), &selection).unwrap();
+        assert!(text.contains("together. Returns null when the Board is missing."));
+        assert!(text.contains("← round_id"));
+        assert!(text.find("## Reads").unwrap() < text.find("## Entities and views").unwrap());
+        // A read without rows selects no entity.
+        let plain = ore()
+            .select(&Selection {
+                read: Some("roundState".into()),
+                ..Selection::default()
+            })
+            .unwrap();
+        assert!(plain.entities.is_empty());
 
         // The full path the error lists selects the same operation, with or
         // without `--program`.
