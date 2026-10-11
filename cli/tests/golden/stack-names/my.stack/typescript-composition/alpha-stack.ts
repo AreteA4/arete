@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { programAccountRead, createInstructionHandler, type ErrorMetadata, buildInstruction, PROGRAM_OPERATION_EXTENSIONS, instructionOperation, createPreparedInstruction } from '@usearete/sdk';
 
 export interface VaultBalance {
+  /** `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   amount: bigint | null;
 }
 
@@ -172,7 +173,7 @@ export const MY_STACK_ALPHA_STACK_CORE = {
     vault: {
       name: 'vault',
       programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:bb50bdc614fb25a5e6ec623d7896e0c2e8e3e4ba7d645d1f5a0afff39aba04a6',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:2c8b8b287b645c58ff7d3ee0e9c8d0d2b5770c88d0d0f420f808d61a97d616ad',
       programSpecHash: 'arete:h1:program-spec:sha256:82d33b756cb10907d6585bdc2e1e02170b1286819e317bbe5311de01901b22ba',
       idlContentHash: 'arete:h1:idl-content:sha256:85aefcaba918c8b89b2b25ef683a17be27b36c86eaf5be939303f62af74ea044',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:3de7188f6a21b4dfc7ca7e7db7b0730d692e33c56ec4985495382e73e0fd3140',

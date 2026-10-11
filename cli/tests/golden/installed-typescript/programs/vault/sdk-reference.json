@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "program",
+  "alias": "vault",
+  "language": "typescript",
+  "package": "vault",
+  "version": "1.0.0",
+  "import": {
+    "module": "vault.ts",
+    "specifier": "./generated/typescript/programs/vault/vault.js",
+    "export": "VAULT_PROGRAM"
+  },
+  "programs": [
+    {
+      "key": "vault",
+      "name": "vault",
+      "programId": "2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM",
+      "operations": [
+        {
+          "path": "instructions.treasury.deposit",
+          "params": [
+            "input: DepositToTreasuryInput"
+          ]
+        }
+      ],
+      "accounts": [
+        "Vault"
+      ],
+      "instructions": [
+        "deposit",
+        "withdraw",
+        "payFee"
+      ],
+      "helpers": [
+        "addresses.treasury",
+        "defaults.treasuryDeposit"
+      ]
+    }
+  ]
+}

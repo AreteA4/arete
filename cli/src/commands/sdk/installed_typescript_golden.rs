@@ -352,9 +352,16 @@ fn program_dependency(program: &ProgramSpecArtifact) -> Value {
     })
 }
 
-fn generate(dependency: Value, output: &Path) {
+/// Generate `dependency` into `output`, with the SDK reference an install
+/// into `generated/typescript/<project_dir>` writes.
+fn generate(dependency: Value, output: &Path, project_dir: &str) {
     let dependency: ResolvedRegistryDependency =
         serde_json::from_value(dependency).expect("resolved registry dependency");
+    let reference = reference::ReferenceContext {
+        package: Some("vault".into()),
+        version: Some("1.0.0".into()),
+        project_dir: Some(format!("generated/typescript/{project_dir}")),
+    };
     generate_project_registry_dependency(
         &dependency,
         ProjectGenerationOptions {
@@ -365,6 +372,7 @@ fn generate(dependency: Value, output: &Path) {
             rust_module: false,
             python_module: false,
             stack_endpoints: None,
+            reference: Some(&reference),
         },
     )
     .unwrap_or_else(|error| panic!("generate {}: {error:#}", output.display()));
@@ -377,10 +385,12 @@ fn installed_typescript_golden() {
     generate(
         stack_dependency(&program),
         &temp.path().join("stacks/vault"),
+        "stacks/vault",
     );
     generate(
         program_dependency(&program),
         &temp.path().join("programs/vault"),
+        "programs/vault",
     );
 
     let generated = collect_files(temp.path());

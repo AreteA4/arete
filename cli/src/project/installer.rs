@@ -28,8 +28,8 @@ use super::resolver::{
 };
 use super::runtime;
 use super::typescript_setup::{self, SetupReport};
-use super::typescript_usage::{self, AppKind, StackUsage};
 use super::{InstallPlan, ProjectLock, ProjectManifest, GENERATOR_CONTRACT, RESOLVER_CONTRACT};
+use crate::commands::auth::Framework;
 
 const INSTALL_JOURNAL: &str = ".arete/install-journal.json";
 
@@ -1107,8 +1107,8 @@ fn install_loaded_project(
             plan.outputs
                 .iter()
                 .filter(|output| output.target == InstallTarget::TypeScript),
-        )
-        .with_fields_commands(&manifest),
+        ),
+        sdk_references: SdkReferencePointer::for_outputs(&plan, &requested),
         notes: redeploy_notes(&manifest, previous_lock.as_ref(), &prospective_lock)
             .into_iter()
             .chain(composition_notes(&resolved))
@@ -1182,6 +1182,11 @@ struct InstallReport {
     setup: Option<SetupReport>,
     #[serde(flatten)]
     typescript: TypeScriptGuidance,
+    /// Where to read what each generated SDK exposes: the reference `a4
+    /// install` wrote into its folder. How to use SDKs in general is in the
+    /// docs and agent skills `sdk_usage` names.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sdk_references: Vec<SdkReferencePointer>,
     notes: Vec<String>,
     /// Hosted stack versions being retired or no longer served, with the
     /// command that installs the served version.
@@ -1280,10 +1285,105 @@ fn inside(path: &Path, root: &Path) -> Option<PathBuf> {
     path.starts_with(&root).then_some(path)
 }
 
+/// Where an installed SDK's reference is: its README, the command and the
+/// MCP tool that print it, and where generic SDK usage is documented.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SdkReferencePointer {
+    kind: DependencyKind,
+    alias: String,
+    target: InstallTarget,
+    /// The SDK folder's `README.md`, relative to the current directory when
+    /// it is inside it.
+    readme: String,
+    /// The command that prints the reference, or a part of it.
+    command: String,
+    /// The MCP tool that returns the same.
+    mcp_tool: &'static str,
+    /// The agent skills and docs page on using SDKs of this kind.
+    usage_skills: Vec<&'static str>,
+    usage_docs: &'static str,
+}
+
+/// The `a4 sdk describe` command for `output`, with `--kind` when a
+/// dependency of the other kind has the same alias: describe refuses to
+/// guess then.
+fn describe_command(plan: &InstallPlan, output: &super::graph::PlannedOutput) -> String {
+    let ambiguous = plan
+        .outputs
+        .iter()
+        .any(|other| other.alias == output.alias && other.kind != output.kind);
+    let command = format!(
+        "{} {}",
+        arete_mcp::sdk_reference::DESCRIBE_COMMAND,
+        shell_quoted(&output.alias)
+    );
+    if ambiguous {
+        format!("{command} --kind {}", output.kind)
+    } else {
+        command
+    }
+}
+
+impl SdkReferencePointer {
+    /// The reference of each output that has one: of the `requested`
+    /// dependencies, or of every dependency when none was requested.
+    fn for_outputs(plan: &InstallPlan, requested: &[(DependencyKind, String)]) -> Vec<Self> {
+        use arete_mcp::sdk_reference::{DESCRIBE_TOOL, README_FILE, REFERENCE_FILE};
+        plan.outputs
+            .iter()
+            .filter(|output| {
+                requested.is_empty()
+                    || requested
+                        .iter()
+                        .any(|(kind, alias)| *kind == output.kind && *alias == output.alias)
+            })
+            .filter(|output| output.path.join(REFERENCE_FILE).is_file())
+            .map(|output| {
+                let (usage_skills, usage_docs) = match output.kind {
+                    DependencyKind::Stack => (
+                        vec!["arete-streams"],
+                        "https://docs.arete.run/sdks/typescript/",
+                    ),
+                    DependencyKind::Program => (
+                        vec!["arete-programs"],
+                        "https://docs.arete.run/using-stacks/transactions/",
+                    ),
+                };
+                Self {
+                    kind: output.kind,
+                    alias: output.alias.clone(),
+                    target: output.target,
+                    readme: display_path(&output.path.join(README_FILE).display().to_string()),
+                    command: describe_command(plan, output),
+                    mcp_tool: DESCRIBE_TOOL,
+                    usage_skills,
+                    usage_docs,
+                }
+            })
+            .collect()
+    }
+
+    fn emit(&self) {
+        let what = match self.kind {
+            DependencyKind::Stack => "views, row fields (TypeScript paths with their wire names, types and units), reads and programs",
+            DependencyKind::Program => "reads, operations and accounts",
+        };
+        println!(
+            "SDK reference: {} {} -> {}: its import, {what}.",
+            self.kind, self.alias, self.readme
+        );
+        println!(
+            "             The same as `{}` (--view, --read, --program, --json) or the MCP tool {}.",
+            self.command, self.mcp_tool
+        );
+    }
+}
+
 /// What else a TypeScript project needs before it can type-check and run the
-/// generated SDK, and the first lines of code that use it, for each app that
-/// receives TypeScript output. Printed, never written, unless `--setup`
-/// created the missing `package.json` and `tsconfig.json` first.
+/// generated SDK, for each app that receives TypeScript output. Printed,
+/// never written, unless `--setup` created the missing `package.json` and
+/// `tsconfig.json` first.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TypeScriptGuidance {
@@ -1312,9 +1412,50 @@ struct TypeScriptAppGuidance {
     /// Node's types.
     #[serde(skip_serializing_if = "Option::is_none")]
     tsconfig: Option<TsconfigRequirement>,
-    /// How to import each generated stack and subscribe to one of its views.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    usage: Vec<StackUsage>,
+    /// For a browser app: the origin-bound publishable key it authenticates
+    /// with, and how to create it. A Node app needs none: the SDK uses
+    /// `ARETE_API_KEY`, else the `a4` login.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    publishable_key: Option<PublishableKeySetup>,
+}
+
+/// The kind of app TypeScript output is used from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppKind {
+    /// A Node service or script.
+    Node,
+    /// A React app bundled by the framework.
+    Browser(Framework),
+}
+
+/// How a browser app gets the publishable key its code passes as
+/// `auth.publishableKey`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishableKeySetup {
+    /// The variable the app's bundler exposes to browser code.
+    env_var: &'static str,
+    /// Creates a key bound to the app's development origin and writes it to
+    /// `.env.local`. Run it in `directory`: it detects the framework there.
+    command: String,
+    directory: String,
+}
+
+impl PublishableKeySetup {
+    fn for_app(directory: &Path, framework: Framework) -> Self {
+        let origin = match framework {
+            Framework::NextJs => "http://localhost:3000",
+            Framework::Vite => "http://localhost:5173",
+            Framework::Generic => "<origin>",
+        };
+        Self {
+            env_var: framework.env_var(),
+            command: format!(
+                "a4 auth keys create-publishable --origin {origin} --env-file .env.local"
+            ),
+            directory: directory.display().to_string(),
+        }
+    }
 }
 
 /// How to make `directory`, which has no `package.json`, a Node ES module
@@ -1380,34 +1521,6 @@ impl TypeScriptGuidance {
                 })
                 .collect(),
         }
-    }
-
-    /// Point each registry stack's usage at the command that lists its
-    /// view's fields with their units. `a4 explore stack` takes no version,
-    /// so it describes the registry's current release, which can be newer
-    /// than the one installed.
-    fn with_fields_commands(mut self, manifest: &ProjectManifest) -> Self {
-        for usage in self
-            .typescript_apps
-            .iter_mut()
-            .flat_map(|app| app.usage.iter_mut())
-        {
-            let registry = match manifest.document.dependencies.stacks.get(&usage.stack) {
-                Some(DependencyV1 {
-                    source: DependencySourceV1::Registry(RegistrySourceV1 { registry }),
-                    ..
-                }) => registry,
-                _ => continue,
-            };
-            if let Some(view) = &usage.view {
-                usage.fields = Some(format!(
-                    "a4 explore stack {} --views {}",
-                    shell_quoted(registry),
-                    shell_quoted(view)
-                ));
-            }
-        }
-        self
     }
 
     /// Whether every app still needs a `package.json`: its setup block then
@@ -1520,13 +1633,6 @@ impl TypeScriptAppGuidance {
                 commands: typescript_setup::manual_commands(&runtime, &dev_runtime, needs_tsconfig),
             }
         });
-        let usage = outputs
-            .iter()
-            .filter(|output| output.kind == DependencyKind::Stack)
-            .filter_map(|output| {
-                typescript_usage::stack_usage(&output.alias, &output.path, directory, app)
-            })
-            .collect();
         Self {
             directory: directory.display().to_string(),
             kind: match app {
@@ -1536,7 +1642,12 @@ impl TypeScriptAppGuidance {
             dev_runtime,
             project_setup,
             tsconfig,
-            usage,
+            publishable_key: match app {
+                AppKind::Node => None,
+                AppKind::Browser(framework) => {
+                    Some(PublishableKeySetup::for_app(directory, framework))
+                }
+            },
         }
     }
 
@@ -1572,55 +1683,13 @@ impl TypeScriptAppGuidance {
                 None => {}
             }
         }
-        for usage in &self.usage {
-            if usage.run.is_some() {
-                println!(
-                    "Next steps:  read stack {} once from {}/index.ts:",
-                    usage.stack,
-                    display_path(&usage.from_dir).trim_end_matches('/')
-                );
-            } else {
-                println!(
-                    "Next steps:  use stack {} from a component in {}:",
-                    usage.stack,
-                    display_path(&usage.from_dir)
-                );
-            }
-            for line in &usage.snippet {
-                if line.is_empty() {
-                    println!();
-                } else {
-                    println!("             {line}");
-                }
-            }
-            if let Some(run) = &usage.run {
-                println!("             Run it with: {run}");
-            }
-            if let Some(stream) = &usage.stream {
-                println!("             To stream instead: {stream} (.watch() for raw updates)");
-            }
-            if let Some(fields) = &usage.fields {
-                println!(
-                    "             Fields and units, from the registry's current release: {fields}"
-                );
-            }
-            if let Some(reads_call) = &usage.reads_call {
-                println!("Stack reads: derived values in one call, as {reads_call}:");
-                let width = usage
-                    .reads
-                    .iter()
-                    .map(|read| read.signature().len())
-                    .max()
-                    .unwrap_or(0);
-                for read in &usage.reads {
-                    match &read.title {
-                        Some(title) => {
-                            println!("             {:width$}  {title}", read.signature())
-                        }
-                        None => println!("             {}", read.signature()),
-                    }
-                }
-            }
+        if let Some(key) = &self.publishable_key {
+            println!(
+                "Browser key: the app reads an origin-bound publishable key from {}. Create it in {}:",
+                key.env_var,
+                display_path(&key.directory)
+            );
+            println!("             {}", key.command);
         }
     }
 }
@@ -1903,6 +1972,27 @@ impl InstallReport {
             println!("             {}", module_type.command);
         }
         self.typescript.emit_tools();
+        for reference in &self.sdk_references {
+            reference.emit();
+        }
+        if let Some(first) = self.sdk_references.first() {
+            let mut skills = Vec::new();
+            for skill in self
+                .sdk_references
+                .iter()
+                .flat_map(|reference| &reference.usage_skills)
+            {
+                if !skills.contains(skill) {
+                    skills.push(*skill);
+                }
+            }
+            println!(
+                "Using SDKs:  sessions, auth, reading views and running operations: the {} agent skill{}, or {}",
+                skills.join(" and "),
+                if skills.len() > 1 { "s" } else { "" },
+                first.usage_docs
+            );
+        }
         for note in &self.notes {
             println!("{note}");
         }
@@ -3709,6 +3799,7 @@ fn generate_all(
             .join("outputs")
             .join(format!("{position:04}"))
             .join("output");
+        let reference = reference_context(&manifest.root, &output.path, dependency);
         let options = ProjectGenerationOptions {
             alias: &output.alias,
             target: output.target,
@@ -3719,6 +3810,7 @@ fn generate_all(
             stack_endpoints: manifest
                 .dependency(output.kind, &output.alias)
                 .map(|dependency| &dependency.endpoints),
+            reference: Some(&reference),
         };
         match dependency {
             ResolvedProjectDependency::LocalStack {
@@ -3761,6 +3853,39 @@ fn generate_all(
         }
     }
     Ok(staged)
+}
+
+/// What an SDK's reference records about its install: the registry
+/// package, and the output's folder relative to the project root.
+fn reference_context(
+    root: &Path,
+    output: &Path,
+    dependency: &ResolvedProjectDependency,
+) -> crate::commands::sdk::reference::ReferenceContext {
+    let (package, version) = match dependency {
+        ResolvedProjectDependency::Registry { resolved, .. } => match resolved.as_ref() {
+            ResolvedRegistryDependency::Stack {
+                package, version, ..
+            }
+            | ResolvedRegistryDependency::Program {
+                package, version, ..
+            } => (Some(package.clone()), Some(version.clone())),
+        },
+        _ => (None, None),
+    };
+    let project_dir = inside(output, root)
+        .zip(super::paths::normalize_absolute(root).ok())
+        .and_then(|(output, root)| {
+            output
+                .strip_prefix(&root)
+                .ok()
+                .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        });
+    crate::commands::sdk::reference::ReferenceContext {
+        package,
+        version,
+        project_dir,
+    }
 }
 
 pub(crate) fn cache_registry_dependency(resolved: &ResolvedRegistryDependency) -> Result<()> {
@@ -4315,49 +4440,63 @@ mod tests {
             serde_json::json!([typescript_setup::TSC_INIT_COMMAND])
         );
         assert!(app["tsconfig"].get("tsconfig").is_none());
-        let usage = &app["usage"][0];
-        assert_eq!(usage["stack"], "vault");
-        assert_eq!(usage["exportName"], "VAULT_STREAM_STACK");
-        assert_eq!(
-            usage["importPath"],
-            "./generated/typescript/stacks/vault/vault.js"
-        );
-        assert_eq!(usage["view"], "Vault/list");
-        assert_eq!(usage["run"], "npx tsx index.ts");
-        // The fields command needs the registry name, which the manifest has.
-        assert!(usage.get("fields").is_none(), "{usage}");
-        // A Node script imports the SDK, whatever `[sdk.typescript].package`
-        // says, and authenticates with a server-side key, never a
-        // publishable one.
-        assert_eq!(
-            usage["snippet"][0],
-            r#"import { createSession } from "@usearete/sdk";"#
-        );
-        assert_eq!(usage["auth"]["option"], "secretKey");
-        assert_eq!(usage["auth"]["envVar"], "ARETE_API_KEY");
-        assert_eq!(usage["auth"]["fallback"], "a4-login");
-        assert!(
-            !usage["snippet"].to_string().contains("ublishable"),
-            "{usage}"
-        );
+        // No code: what the SDK exposes is in its reference, and how to
+        // use SDKs is in the docs.
+        assert!(app.get("usage").is_none(), "{app}");
     }
 
     #[test]
-    fn registry_stack_usage_names_the_command_that_lists_field_units() {
-        let (temp, output) = typescript_stack_project();
-        let root = temp.path();
-        fs::write(
-            root.join("arete.toml"),
-            "manifest_version = 1\n\n[project]\nname = \"app\"\n\n[dependencies.stacks.vault]\nsource = { registry = \"acme/vault\" }\nversion = \"^1\"\n",
-        )
-        .unwrap();
-        let manifest = ProjectManifest::load(root.join("arete.toml")).unwrap();
-        let guidance =
-            TypeScriptGuidance::for_outputs(root, [&output]).with_fields_commands(&manifest);
+    fn sdk_references_point_at_the_readme_command_and_mcp_tool() {
+        let (_temp, output) = typescript_stack_project();
+        let plan = InstallPlan {
+            outputs: vec![output.clone()],
+        };
+        let pointers = SdkReferencePointer::for_outputs(&plan, &[]);
+        let value = serde_json::to_value(&pointers).unwrap();
+        assert_eq!(value[0]["kind"], "stack");
+        assert_eq!(value[0]["alias"], "vault");
+        assert_eq!(value[0]["target"], "typescript");
+        assert!(value[0]["readme"]
+            .as_str()
+            .unwrap()
+            .ends_with("generated/typescript/stacks/vault/README.md"));
+        assert_eq!(value[0]["command"], "a4 sdk describe vault");
+        assert_eq!(value[0]["mcpTool"], "describe_sdk");
         assert_eq!(
-            guidance.typescript_apps[0].usage[0].fields.as_deref(),
-            Some("a4 explore stack acme/vault --views Vault/list")
+            value[0]["usageSkills"],
+            serde_json::json!(["arete-streams"])
         );
+        assert_eq!(
+            value[0]["usageDocs"],
+            "https://docs.arete.run/sdks/typescript/"
+        );
+
+        // A program with the stack's alias: each command names its kind.
+        let program = super::super::graph::PlannedOutput {
+            kind: DependencyKind::Program,
+            ..output.clone()
+        };
+        let both = InstallPlan {
+            outputs: vec![output.clone(), program.clone()],
+        };
+        assert_eq!(
+            describe_command(&both, &output),
+            "a4 sdk describe vault --kind stack"
+        );
+        assert_eq!(
+            describe_command(&both, &program),
+            "a4 sdk describe vault --kind program"
+        );
+        assert_eq!(
+            SdkReferencePointer::for_outputs(&both, &[])[0].command,
+            "a4 sdk describe vault --kind stack"
+        );
+
+        // Only the requested dependencies, and only outputs with a reference.
+        let other = [(DependencyKind::Stack, "ore".to_string())];
+        assert!(SdkReferencePointer::for_outputs(&plan, &other).is_empty());
+        fs::remove_file(output.path.join("sdk-reference.json")).unwrap();
+        assert!(SdkReferencePointer::for_outputs(&plan, &[]).is_empty());
     }
 
     #[test]
@@ -4400,7 +4539,7 @@ mod tests {
         );
         assert_eq!(value["tsconfig"]["commands"], serde_json::json!([]));
 
-        // A React app with everything installed: only the hook snippet.
+        // A React app with everything installed: only its key.
         fs::write(
             root.join("package.json"),
             r#"{"type":"module","dependencies":{"react":"^19"},"devDependencies":{"typescript":"^5","vite":"^7"}}"#,
@@ -4410,23 +4549,20 @@ mod tests {
             app(&serde_json::to_value(TypeScriptGuidance::for_outputs(root, [&output])).unwrap());
         assert!(value.get("devRuntime").is_none(), "{value}");
         assert!(value.get("tsconfig").is_none(), "{value}");
-        assert!(value["usage"][0].get("run").is_none(), "{value}");
         assert_eq!(value["kind"], "browser");
-        // A Vite app reads its origin-bound publishable key from
-        // import.meta.env.
+        // A Vite app reads its origin-bound publishable key from a VITE_
+        // variable, created for Vite's development origin.
         assert_eq!(
-            value["usage"][0]["auth"]["envVar"],
+            value["publishableKey"]["envVar"],
             "VITE_ARETE_PUBLISHABLE_KEY"
         );
-        assert!(value["usage"][0]["snippet"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!(
-                "const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;"
-            )));
         assert_eq!(
-            value["usage"][0]["snippet"][0],
-            r#"import { AreteProvider, useArete } from "@usearete/react";"#
+            value["publishableKey"]["command"],
+            "a4 auth keys create-publishable --origin http://localhost:5173 --env-file .env.local"
+        );
+        assert_eq!(
+            value["publishableKey"]["directory"],
+            root.display().to_string()
         );
     }
 
@@ -4468,11 +4604,10 @@ mod tests {
         assert!(web_app.get("tsconfig").is_none(), "{value}");
         assert!(web_app.get("projectSetup").is_none(), "{value}");
         assert_eq!(web_app["kind"], "browser");
-        assert_eq!(web_app["usage"][0]["auth"]["option"], "publishableKey");
-        assert_eq!(web_app["usage"][0]["stack"], "vault-web");
+        assert_eq!(web_app["publishableKey"]["envVar"], "ARETE_PUBLISHABLE_KEY");
         assert_eq!(
-            web_app["usage"][0]["snippet"][0],
-            r#"import { AreteProvider, useArete } from "@usearete/react";"#
+            web_app["publishableKey"]["directory"],
+            web.display().to_string()
         );
 
         let server_app = &apps[1];
@@ -4489,12 +4624,8 @@ mod tests {
             server_app["tsconfig"]["commands"],
             serde_json::json!([typescript_setup::TSC_INIT_COMMAND])
         );
-        assert_eq!(server_app["usage"][0]["stack"], "vault");
-        assert_eq!(server_app["usage"][0]["run"], "npx tsx index.ts");
-        assert_eq!(
-            server_app["usage"][0]["importPath"],
-            "./src/generated/vault/vault.js"
-        );
+        // A Node app authenticates with the server-side key: no publishable key.
+        assert!(server_app.get("publishableKey").is_none(), "{value}");
     }
 
     #[test]
@@ -7065,6 +7196,7 @@ version = "^1.0.0"
             module_type: None,
             setup: None,
             typescript: TypeScriptGuidance::default(),
+            sdk_references: Vec::new(),
             notes: Vec::new(),
             warnings: Vec::new(),
         }
@@ -7108,6 +7240,7 @@ version = "^1.0.0"
             module_type: None,
             setup: None,
             typescript: TypeScriptGuidance::default(),
+            sdk_references: Vec::new(),
             notes: Vec::new(),
             warnings: Vec::new(),
         }

@@ -415,6 +415,35 @@ enum SdkCommands {
 
     /// List all available stacks from arete.toml
     List,
+
+    /// Print the reference of an installed SDK: its import, the views and
+    /// row fields of each entity (TypeScript path, wire name, type, unit),
+    /// its reads and programs. Without an alias, list the installed SDKs.
+    /// Reads the reference `a4 install` wrote into the SDK folder, never the
+    /// registry
+    Describe(SdkDescribeArgs),
+}
+
+#[derive(Args)]
+struct SdkDescribeArgs {
+    /// Dependency alias from arete.toml (e.g. `ore`)
+    alias: Option<String>,
+
+    /// `stack` or `program`, when the alias names both
+    #[arg(long, requires = "alias")]
+    kind: Option<String>,
+
+    /// Only one entity (`OreRound`) or view (`OreRound/latest`), with its fields
+    #[arg(long, requires = "alias")]
+    view: Option<String>,
+
+    /// Only one read or program operation, by name (`currentRound`) or path
+    #[arg(long, requires = "alias")]
+    read: Option<String>,
+
+    /// Only one program, with its reads, operations and accounts
+    #[arg(long, requires = "alias")]
+    program: Option<String>,
 }
 
 // The one SDK target a saved dependency generates, recorded as its
@@ -1568,6 +1597,38 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 sync_args.stacks,
             ),
             SdkCommands::List => commands::sdk::list(&cli.config),
+            SdkCommands::Describe(args) => {
+                let kind = args
+                    .kind
+                    .as_deref()
+                    .map(|kind| {
+                        parse_dependency_kind(kind).map(|kind| match kind {
+                            project::manifest::DependencyKind::Stack => {
+                                arete_mcp::sdk_reference::SdkKind::Stack
+                            }
+                            project::manifest::DependencyKind::Program => {
+                                arete_mcp::sdk_reference::SdkKind::Program
+                            }
+                        })
+                    })
+                    .transpose()?;
+                let request = arete_mcp::sdk_reference::DescribeRequest {
+                    alias: args.alias,
+                    kind,
+                    selection: arete_mcp::sdk_reference::Selection {
+                        view: args.view,
+                        read: args.read,
+                        program: args.program,
+                    },
+                    json: cli.json,
+                };
+                let output = project::sdk_references::describe(std::path::Path::new(&cli.config), &request)?;
+                print!("{output}");
+                if !output.ends_with('\n') {
+                    println!();
+                }
+                Ok(())
+            }
         },
         Commands::Config(config_cmd) => match config_cmd {
             ConfigCommands::Validate => commands::config::validate(&cli.config),

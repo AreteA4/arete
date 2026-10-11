@@ -14,6 +14,7 @@ mod filter;
 pub mod oneshot;
 mod recovery;
 mod registry;
+pub mod sdk_reference;
 pub mod server;
 pub mod stack_knowledge;
 mod subscriptions;
@@ -28,6 +29,13 @@ use rmcp::{transport::stdio, ServiceExt};
 /// MCP frames only), then serves [`AreteMcp`] on the process's stdin/stdout.
 /// Must be called inside a Tokio runtime.
 pub async fn serve_stdio() -> anyhow::Result<()> {
+    serve_stdio_with(None).await
+}
+
+/// [`serve_stdio`], answering `describe_sdk` from `sdk_references`.
+pub async fn serve_stdio_with(
+    sdk_references: Option<std::sync::Arc<dyn sdk_reference::SdkReferenceSource>>,
+) -> anyhow::Result<()> {
     // Logs go to stderr so they don't pollute the stdio MCP transport on stdout.
     let _ = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -38,7 +46,11 @@ pub async fn serve_stdio() -> anyhow::Result<()> {
         .try_init();
 
     tracing::info!("starting arete mcp stdio server");
-    let service = AreteMcp::new().serve(stdio()).await?;
+    let server = match sdk_references {
+        Some(source) => AreteMcp::new().with_sdk_references(source),
+        None => AreteMcp::new(),
+    };
+    let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
 }

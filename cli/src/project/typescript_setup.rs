@@ -208,18 +208,27 @@ fn write_new(path: &Path, contents: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// A private ES module package named after `directory`, with scripts that
-/// run and type-check `index.ts`. npm adds the dependencies.
+/// The file a `start` script runs, when the directory has one.
+const NODE_ENTRY: &str = "index.ts";
+
+/// A private ES module package named after `directory`, with a script that
+/// type-checks the project, and one that runs `index.ts` when that file
+/// exists: a script for a file that is not there fails when it is run.
+/// npm adds the dependencies.
 fn package_json_contents(directory: &Path) -> String {
     let name = serde_json::Value::String(package_name(directory));
+    let start = if directory.join(NODE_ENTRY).is_file() {
+        format!("\n    \"start\": \"tsx {NODE_ENTRY}\",")
+    } else {
+        String::new()
+    };
     format!(
         r#"{{
   "name": {name},
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": {{
-    "start": "tsx index.ts",
+  "scripts": {{{start}
     "typecheck": "tsc --noEmit"
   }}
 }}
@@ -365,7 +374,9 @@ mod tests {
         assert_eq!(package["name"], "my-ore-app");
         assert_eq!(package["type"], "module");
         assert_eq!(package["private"], true);
-        assert_eq!(package["scripts"]["start"], "tsx index.ts");
+        // Type-checking always works; there is no `index.ts` to start.
+        assert_eq!(package["scripts"]["typecheck"], "tsc --noEmit");
+        assert!(package["scripts"].get("start").is_none(), "{package}");
         let tsconfig: serde_json::Value =
             serde_json::from_slice(&fs::read(root.join("tsconfig.json")).unwrap()).unwrap();
         assert_eq!(tsconfig["compilerOptions"]["module"], "NodeNext");
@@ -385,6 +396,20 @@ mod tests {
         assert_eq!(
             runtime::commonjs_package_json_rejecting_imports(&root),
             None
+        );
+    }
+
+    #[test]
+    fn starts_an_existing_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("index.ts"), "console.log(1);\n").unwrap();
+        write(root, &[]);
+        let package: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("package.json")).unwrap()).unwrap();
+        assert_eq!(
+            package["scripts"],
+            serde_json::json!({"start": "tsx index.ts", "typecheck": "tsc --noEmit"})
         );
     }
 

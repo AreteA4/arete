@@ -43,13 +43,20 @@ Use the target and command the descriptor gives you. The dependency you asked
 for is saved in `arete.toml`, and the exact composition and package identities
 go into `arete.lock`.
 
-The install summary ends with what the project still needs and a script that
-reads one of the stack's views once and exits, followed by the stack's reads
-(derived values such as ORE's `read.currentRound()`).
+The install summary ends with what the project still needs and where the
+stack's SDK reference is: a `README.md` in the generated folder (for example
+`generated/typescript/stacks/ore/README.md`), also printed by
+`a4 sdk describe <alias>` and the `describe_sdk` MCP tool. It lists what is
+specific to that stack: the import, each view, the row fields with their
+TypeScript names, wire names, types and units, and the stack's reads (derived
+values such as ORE's `read.currentRound()`). Rows use camelCase paths
+(`id.roundId`), while `a4 get` and the MCP tools print wire names
+(`id.round_id`); copy field paths from the reference, not from that output.
 
-In a directory with no `package.json`, the summary names what the generated
-TypeScript is missing and how to add it. Set the project up your own way
-(npm, pnpm, bun, a workspace), or let `a4` do it with npm:
+In a directory with no `package.json`, the install still succeeds, and the
+summary names what the generated TypeScript is missing and how to add it. Set
+the project up your own way (npm, pnpm, bun, a workspace), or let `a4` do it
+with npm:
 
 ```bash
 a4 install stack <slug> --ts --setup
@@ -72,7 +79,8 @@ npm install @usearete/react @usearete/sdk zod
 
 ## TypeScript session
 
-Use the generated import and names printed by `a4 install`:
+Use the import and names from the SDK reference (`README.md` in the generated
+folder, or `a4 sdk describe <alias>`):
 
 ```ts
 import { createSession } from "@usearete/sdk";

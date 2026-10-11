@@ -91,6 +91,7 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 auth signup`                                                              | Register an agent account                                        |
 | `a4 program build <idl>`                                                      | Build a portable ProgramSpec                                     |
 | `a4 stack compose`                                                            | Compose live views and program SDKs                              |
+| `a4 sdk describe <alias>`                                                     | Print an installed SDK's reference (views, fields, reads)        |
 | `a4 sdk create --manifest ... --ts`                                           | Generate a TypeScript SDK from a StackManifest                   |
 | `a4 sdk create --manifest ... --rust`                                         | Generate a Rust SDK from a StackManifest                         |
 | `a4 sdk create --program-spec ... --rust`                                     | Generate a Rust (or `--python`) program SDK from a ProgramSpec   |
@@ -1299,8 +1300,9 @@ dependency with a reason such as `inputs unchanged`, `newly locked`, or
 hosted stack's install descriptor: after a stack add it covers that stack, and
 after a plain `a4 install` every hosted stack. With the global `--json` flag,
 stdout carries one JSON document with `requested`, `regenerated[]` (`kind`,
-`alias`, `version`, `reason`), `shared[]`, `auth[]`, `runtime[]`, `notes[]`,
-and `warnings[]` (see [When a hosted stack version is retired](#when-a-hosted-stack-version-is-retired)),
+`alias`, `version`, `reason`), `shared[]`, `auth[]`, `runtime[]`,
+`sdkReferences[]` (see [SDK reference](#sdk-reference)), `notes[]`, and
+`warnings[]` (see [When a hosted stack version is retired](#when-a-hosted-stack-version-is-retired)),
 and progress moves to stderr.
 
 When the project generates TypeScript, `Runtime` lists the packages the
@@ -1316,8 +1318,13 @@ or runs a package manager; run the line with the package manager you use. In
 `{ "package", "version" }` pair.
 
 The summary also lists what the project still needs to type-check and run the
-generated code, and how to start using it, after the auth requirements so it
-ends the output. Without `--setup`, `a4` prints these steps; it never creates
+generated code, and where each generated SDK's reference is, after the auth
+requirements so it ends the output. It prints no code: what an SDK exposes is
+in its [reference](#sdk-reference), and how to use SDKs in general is in the
+[TypeScript SDK](/sdks/typescript/) docs and the `arete-streams` and
+`arete-programs` agent skills. A missing `package.json` is not an error: the
+install succeeds (exit code `0`) and reports what is missing. Without
+`--setup`, `a4` prints these steps; it never creates
 `package.json` or `tsconfig.json`, so you can set the project up your own way
 (another package manager, a workspace, your own `tsconfig.json`). In a
 directory with no `package.json`, they come as one block: what is missing,
@@ -1334,26 +1341,9 @@ Setup:       . has no package.json. The generated TypeScript (ES modules) needs:
                3. npm install @usearete/sdk@0.34.0 "zod@^3.24.1"
                4. npm install -D typescript tsx @types/node
                5. npx tsc --init --module nodenext --target es2022 --types node
-Next steps:  read stack ore once from ./index.ts:
-             import { createSession } from "@usearete/sdk";
-             import { ORE_STREAM_STACK } from "./generated/typescript/stacks/ore/ore.js";
-
-             // No auth option: server-side, the SDK uses ARETE_API_KEY if set, else your a4 login.
-             const session = await createSession({ stacks: { ore: ORE_STREAM_STACK } });
-             try {
-               const row = await session.stacks.ore.views.OreRound.latest.getOne({ timeoutMs: 10_000 });
-               console.log(row);
-             } finally {
-               session.close();
-             }
-             Run it with: npx tsx index.ts
-             To stream instead: for await (const row of session.stacks.ore.views.OreRound.latest.use()) { ... } (.watch() for raw updates)
-             Fields and units, from the registry's current release: a4 explore stack ore --views OreRound/latest
-Stack reads: derived values in one call, as await session.stacks.ore.read.<name>(...):
-             boardState()              Board state
-             roundState(roundId)       Round state
-             currentRound()            Current round
-             miningContext(authority)  Mining context
+SDK reference: stack ore -> generated/typescript/stacks/ore/README.md: its import, views, row fields (TypeScript paths with their wire names, types and units), reads and programs.
+             The same as `a4 sdk describe ore` (--view, --read, --program, --json) or the MCP tool describe_sdk.
+Using SDKs:  sessions, auth, reading views and running operations: the arete-streams agent skill, or https://docs.arete.run/sdks/typescript/
 ```
 
 `a4 install --setup` re-runs the install from `arete.toml`, so it keeps the
@@ -1364,8 +1354,8 @@ options the stack was added with.
 output inside the project root has no `package.json` at or above it and the
 root has none either. Outputs outside the root are not set up. In the project
 root it writes a private `package.json` with
-`"type": "module"` and `start` (`tsx index.ts`) and `typecheck`
-(`tsc --noEmit`) scripts, writes a `tsconfig.json` for Node ES modules
+`"type": "module"`, a `typecheck` script (`tsc --noEmit`), and a `start`
+script (`tsx index.ts`) only when `index.ts` exists, writes a `tsconfig.json` for Node ES modules
 (`module`/`moduleResolution` `NodeNext`, `target` `ES2022`, `strict`,
 `types: ["node"]`; `include` covers the root's own `.ts` files, `src/`, the
 `[sdk.typescript]` output directory (so stacks installed later are checked
@@ -1410,49 +1400,29 @@ advice for each.
   `compilerOptions.types` omits `"node"`.
   `tsc --init` writes `"types": []`, which hides `@types/node` and makes `tsc`
   report `process` and `Buffer` as unknown (TS2591).
-- `Next steps` shows, for each stack, the generated export, its import path
-  from the app's `package.json` directory, and a read of one of its list views
-  (a `latest` view when the stack has one, else the first). A Node app (one
-  that does not depend on `react`) gets a script that reads the view once with
-  `getOne({ timeoutMs })`, prints the row and closes the session in `finally`,
-  so it exits also when the read fails; the `use()` loop that streams the view
-  instead follows it, and, for a registry stack, the `a4 explore stack`
-  command that lists the view's fields with their units. That command takes
-  no version, so it describes the registry's current release, which can be
-  newer than the one installed. The script imports `createSession` from `@usearete/sdk`
-  and passes no auth option:
-  outside browsers the SDK uses an agent or secret key from `ARETE_API_KEY`
-  when it is set, else the key of the `a4` login, so after `a4 init` or
-  `a4 auth signup` the script needs no key setup.
-  A React app gets an `AreteProvider` and `useArete` component from
-  `@usearete/react` that passes an origin-bound publishable key as
-  `auth={{ publishableKey }}`, read from the variable its bundler exposes to
-  browser code (`VITE_ARETE_PUBLISHABLE_KEY` through `import.meta.env` for
-  Vite, `NEXT_PUBLIC_ARETE_PUBLISHABLE_KEY` in a `"use client"` component for
-  Next.js, otherwise `ARETE_PUBLISHABLE_KEY`), with the
+- `Browser key` appears for a React app: the variable its bundler exposes to
+  browser code (`VITE_ARETE_PUBLISHABLE_KEY` for Vite,
+  `NEXT_PUBLIC_ARETE_PUBLISHABLE_KEY` for Next.js, otherwise
+  `ARETE_PUBLISHABLE_KEY`) and the
   `a4 auth keys create-publishable --origin <origin> --env-file .env.local`
-  command that creates it. That command picks the variable name from, and
-  writes the env file in, the directory it runs in, so when the app is not the
-  current directory the snippet says which directory to run it in.
-- `Stack reads` lists the reads a stack's extension adds (ORE's
-  `currentRound()`, for example), with their parameters and titles: derived
-  values that combine views, program accounts and chain state in one call.
-  A Node script awaits `session.stacks.<alias>.read.<name>(...)`; a React
-  component calls `arete.read.<name>.use(...)`.
+  command that creates an origin-bound publishable key, with the directory to
+  run it in (it picks the variable name from, and writes the env file in, the
+  directory it runs in). A Node app needs no key setup: outside browsers the
+  SDK uses `ARETE_API_KEY` when it is set, else the `a4` login.
+- `SDK reference` names, for each SDK the command installed (every SDK after a
+  plain `a4 install`), the `README.md` in its folder, the
+  `a4 sdk describe <alias>` command and the `describe_sdk` MCP tool. `Using
+SDKs` names the agent skills and docs that cover generic usage.
 
 In `--json` output these are `typescriptApps[]`, one entry per app with
 `directory`, `kind` (`node` or `browser`), `devRuntime[]` (package names),
 `projectSetup` (`directory`, `missing[]`, `note`, `command`
 (`a4 install --setup`), `commands[]`),
 `tsconfig` (`tsconfig` when one exists, `directory`, `types[]`, `commands[]`)
-and `usage[]` (`stack`, `exportName`, `importPath`, `fromDir`, `view`, `auth`
-(`option`: `secretKey` or `publishableKey`, `envVar`, `fallback` (`a4-login`
-for a server-side key: the SDK uses the `a4` login when `envVar` is unset, so
-the variable is optional), and for a publishable key
-`command` plus `directory` when it must run in another directory),
-`snippet[]` lines, `run`, `stream`, `fields`, `readsCall`, and `reads[]`
-with `name`, `params[]` and `title`). Each field is absent when there is
-nothing to report, and `typescriptApps` is absent without TypeScript output.
+and `publishableKey` (`envVar`, `command`, `directory`), and
+`sdkReferences[]` (`kind`, `alias`, `target`, `readme`, `command`, `mcpTool`,
+`usageSkills[]`, `usageDocs`). Each field is absent when there is nothing to
+report, and `typescriptApps` is absent without TypeScript output.
 
 Generated TypeScript is ES module source (`import`/`export` with `.js`
 specifiers). A project whose nearest `package.json` is not `"type": "module"`
@@ -1470,6 +1440,73 @@ Module type: package.json is CommonJS and tsconfig.json sets verbatimModuleSynta
 
 In `--json` output it is `moduleType`, with `packageJson`, `required`
 (`"module"`) and `command`; it is absent when the project compiles ES modules.
+
+### SDK reference
+
+Every TypeScript SDK `a4 install` generates carries its own reference: a
+`README.md` in its folder (for a stack with program SDKs, one in each
+`programs/<key>/` folder too) and the `sdk-reference.json` it is rendered
+from. It lists only what is specific to that SDK:
+
+- the module to import and the exported definition, and the key a session
+  registers it under (`session.stacks.ore`);
+- for each entity, its views (`state` with its key, or `list`) and the fields
+  of its rows: the TypeScript path (`id.roundId`), the wire name that `a4 get`,
+  `a4 stream` and the MCP `read_view` tool print (`round_id`), the type
+  (64-bit integers are `bigint`), nullability, and for token amounts their
+  scale (whole units or raw base units, and the power of ten between them);
+- the stack extension's `read.*` helpers, with parameters, what they return,
+  title and description;
+- each program: its reads, operations (`instructions.*`, `transactions.*`),
+  accounts, raw instructions, PDAs and helpers.
+
+How to use SDKs in general (sessions, auth, `get`/`getOne`/`use`/`watch`,
+preparing and executing operations) is not repeated there; the reference
+points to the docs and agent skills.
+
+The generated row types carry the same facts as JSDoc, so editors and `grep`
+show them:
+
+```ts
+export interface OreRoundId {
+  /** Wire name `id.round_id` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
+  roundId: bigint | null;
+}
+```
+
+`a4 install` writes the reference from the same metadata it generates the
+SDK from, so it works for every published stack and program without
+republishing them. The files are part of the SDK's payload: its provenance
+lists them and its `sdkOutputTreeHash` covers them, like every other
+generated file, so ownership and drift checks treat them the same way.
+Installs by an older `a4` have no reference; run `a4 install` to add one.
+
+### a4 sdk describe
+
+```bash
+a4 sdk describe
+a4 sdk describe ore
+a4 sdk describe ore --view OreRound/latest
+a4 sdk describe ore --read currentRound
+a4 sdk describe ore --program ore
+a4 --json sdk describe ore --view OreRound
+```
+
+Print the reference of an installed SDK, read from its folder, never from the
+registry: it describes exactly the version installed. Without an alias it
+lists the project's SDKs and where their references are. `--view` keeps one
+entity (`OreRound`) or one of its views (`OreRound/latest`) with its fields,
+`--read` one read or program operation (by name or path), and `--program`
+one program with its reads, operations and accounts; the filters combine.
+`--kind stack|program` picks the dependency when an alias names both. With
+`--json`, stdout is `{ alias, kind, target, directory, readme, reference }`,
+where `reference` is the selected part of `sdk-reference.json`. The MCP tool
+`describe_sdk` takes the same `alias`, `kind`, `view`, `read` and `program`
+arguments, plus `format` (`markdown` or `json`), and answers for the project
+the MCP server runs in.
+
+References are generated for TypeScript SDKs. Rust and Python SDKs use the
+wire names as field names; see their generated sources.
 
 ### SDK extension compatibility
 

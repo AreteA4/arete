@@ -16,6 +16,10 @@ detailed workflows.
   descriptor with `a4 install stack <ref> --ts` or
   `a4 install program <ref> --ts`; use `--rust` or `--python` only when the
   descriptor advertises that target.
+- Before writing SDK code, read the installed SDK's reference: the
+  `README.md` in its generated folder, `a4 sdk describe <alias>`, or the
+  `describe_sdk` MCP tool. SDK rows use camelCase paths (`id.roundId`); `a4
+  get` and the MCP tools print wire names (`id.round_id`).
 - A stack includes the program SDKs for the programs its views index, at
   `arete.programs.<name>`; install a program separately only when no stack
   you use covers it.

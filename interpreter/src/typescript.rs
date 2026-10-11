@@ -76,6 +76,9 @@ pub struct TypeScriptCompiler<S> {
     stack_types: StackResolvedTypes,
     /// The program the entity's data comes from, when known.
     program_name: Option<String>,
+    /// Extra JSDoc for entity fields by wire path (`state.total_deployed`),
+    /// such as the unit of a token amount.
+    field_notes: BTreeMap<String, String>,
 }
 
 /// Emitted names of an entity's resolved types.
@@ -129,6 +132,7 @@ impl<S> TypeScriptCompiler<S> {
             already_emitted_types: HashSet::new(),
             stack_types: StackResolvedTypes::default(),
             program_name: None,
+            field_notes: BTreeMap::new(),
         }
     }
 
@@ -154,6 +158,13 @@ impl<S> TypeScriptCompiler<S> {
 
     pub fn with_already_emitted_types(mut self, types: HashSet<String>) -> Self {
         self.already_emitted_types = types;
+        self
+    }
+
+    /// Extra JSDoc for entity fields, keyed by wire path
+    /// (`state.total_deployed`, or `ore_metadata` for a root field).
+    pub fn with_field_notes(mut self, notes: BTreeMap<String, String>) -> Self {
+        self.field_notes = notes;
         self
     }
 
@@ -409,7 +420,46 @@ impl<S> TypeScriptCompiler<S> {
 
     fn generate_interface_from_fields(&self, name: &str, fields: &[TypeScriptField]) -> String {
         let interface_name = self.section_interface_name(name);
-        render_interface_from_ts_fields(&interface_name, fields, true)
+        let fields = self.documented_entity_fields(Some(name), fields);
+        render_interface_from_ts_fields(&interface_name, &fields, true)
+    }
+
+    /// `fields` of the entity's `section` (`None`: its root), each with the
+    /// JSDoc [`Self::entity_field_doc`] gives it.
+    fn documented_entity_fields(
+        &self,
+        section: Option<&str>,
+        fields: &[TypeScriptField],
+    ) -> Vec<TypeScriptField> {
+        fields
+            .iter()
+            .map(|field| TypeScriptField {
+                description: self.entity_field_doc(section, field),
+                ..field.clone()
+            })
+            .collect()
+    }
+
+    /// The JSDoc of an entity field: its wire name (what raw frames and CLI
+    /// and MCP output call it) when that is not its TypeScript name, why it
+    /// is a `bigint`, and any note the generator was given for it, such as
+    /// the unit of a token amount.
+    fn entity_field_doc(&self, section: Option<&str>, field: &TypeScriptField) -> Option<String> {
+        let wire = match section {
+            Some(section) if !is_root_section(section) => format!("{section}.{}", field.raw_name),
+            _ => field.raw_name.clone(),
+        };
+        let mut parts = Vec::new();
+        if field.raw_name != field.name {
+            parts.push(format!("Wire name `{wire}` (CLI and MCP output)."));
+        }
+        if field.ts_type.contains("bigint") {
+            parts.push(BIGINT_FIELD_DOC.to_string());
+        }
+        if let Some(note) = self.field_notes.get(&wire) {
+            parts.push(note.clone());
+        }
+        (!parts.is_empty()).then(|| parts.join(" "))
     }
 
     fn section_interface_name(&self, name: &str) -> String {
@@ -427,6 +477,7 @@ impl<S> TypeScriptCompiler<S> {
             );
         }
 
+        let main_fields = self.documented_entity_fields(None, &main_fields);
         render_interface_from_ts_fields(&entity_name, &main_fields, true)
     }
 
@@ -734,6 +785,14 @@ impl<S> TypeScriptCompiler<S> {
             }
         }
 
+        fields.extend(self.root_entity_fields());
+        fields
+    }
+
+    /// The fields of the entity's root section, which the main entity
+    /// interface declares beside its section objects.
+    fn root_entity_fields(&self) -> Vec<TypeScriptField> {
+        let mut fields = Vec::new();
         for section in &self.spec.sections {
             if is_root_section(&section.name) {
                 for field in &section.fields {
@@ -750,8 +809,39 @@ impl<S> TypeScriptCompiler<S> {
                 }
             }
         }
-
         fields
+    }
+
+    /// Every field of the entity's row as its TypeScript interfaces declare
+    /// it: section fields as `section.field`, then root fields.
+    fn entity_field_references(&self) -> Vec<TypeScriptFieldReference> {
+        let mut references = Vec::new();
+        let sections = self.collect_interface_sections();
+        for field in self.collect_main_entity_fields() {
+            let Some(section_fields) = sections
+                .get(&field.raw_name)
+                .filter(|_| !is_root_section(&field.raw_name))
+            else {
+                continue;
+            };
+            for member in self.deduplicate_fields(section_fields.clone()) {
+                references.push(TypeScriptFieldReference {
+                    path: format!("{}.{}", field.name, member.name),
+                    wire: format!("{}.{}", field.raw_name, member.raw_name),
+                    ts_type: member.ts_type.clone(),
+                    nullable: member.nullable,
+                });
+            }
+        }
+        for field in self.root_entity_fields() {
+            references.push(TypeScriptFieldReference {
+                path: field.name.clone(),
+                wire: field.raw_name.clone(),
+                ts_type: field.ts_type.clone(),
+                nullable: field.nullable,
+            });
+        }
+        references
     }
 
     fn generate_schema_for_fields(
@@ -2035,6 +2125,10 @@ fn localize_section_field_names(
     (raw_name.to_string(), field_info.canonical_field_name())
 }
 
+/// JSDoc of a `bigint` entity field.
+const BIGINT_FIELD_DOC: &str =
+    "`bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`.";
+
 /// Represents a TypeScript field in an interface
 #[derive(Debug, Clone)]
 struct TypeScriptField {
@@ -2044,7 +2138,7 @@ struct TypeScriptField {
     nullable: bool,
     presence: FieldPresence,
     zod_schema: Option<String>,
-    #[allow(dead_code)]
+    /// JSDoc rendered above the field in its interface.
     description: Option<String>,
 }
 
@@ -3079,8 +3173,13 @@ fn render_interface_from_ts_fields(
             } else {
                 "?"
             };
+            let doc = field
+                .description
+                .as_deref()
+                .map(|doc| format!("  /** {} */\n", doc.replace("*/", "*\\/")))
+                .unwrap_or_default();
             format!(
-                "  {}{}: {};",
+                "{doc}  {}{}: {};",
                 field.name,
                 optional,
                 field.rendered_ts_type()
@@ -3548,6 +3647,9 @@ pub struct TypeScriptStackConfig {
     /// StackManifest generation for a hosted endpoint sets it; without it the
     /// generated definition is unchanged.
     pub release: Option<crate::public_artifacts::StackRelease>,
+    /// Extra JSDoc for entity fields: entity name, then wire path
+    /// (`state.total_deployed`) to the note, such as a token amount's unit.
+    pub field_notes: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl Default for TypeScriptStackConfig {
@@ -3562,6 +3664,7 @@ impl Default for TypeScriptStackConfig {
             programs: None,
             gateway: None,
             release: None,
+            field_notes: BTreeMap::new(),
         }
     }
 }
@@ -3900,13 +4003,19 @@ fn compile_stack_spec_with_view_selection(
         // Clone IDL before spec is moved so we can check which enums were emitted
         let idl_for_check = spec.idl.clone();
 
+        let field_notes = config
+            .field_notes
+            .get(&entity_name)
+            .cloned()
+            .unwrap_or_default();
         let compiler = entity_compiler(
             spec,
             entity_name,
             Some(per_entity_config),
             emitted_types.clone(),
         )
-        .with_stack_resolved_types(stack_types.clone(), program_name);
+        .with_stack_resolved_types(stack_types.clone(), program_name)
+        .with_field_notes(field_notes);
         let output = compiler.try_compile()?;
         for (name, resolved) in compiler.declared_resolved_types() {
             stack_types.declare(&name, &resolved);
@@ -4040,6 +4149,71 @@ fn compile_stack_spec_with_view_selection(
         &format!("The TypeScript SDK for stack '{stack_name}'"),
     )?;
     Ok(output)
+}
+
+/// One field of an entity row as the generated TypeScript declares it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeScriptFieldReference {
+    /// The field's path on the row: `id.roundId`.
+    pub path: String,
+    /// Its path in raw frames and in CLI and MCP output: `id.round_id`.
+    pub wire: String,
+    /// Its TypeScript type, without `| null`.
+    pub ts_type: String,
+    /// Whether the type is `ts_type | null`.
+    pub nullable: bool,
+}
+
+/// An entity of a stack as its generated TypeScript declares it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeScriptEntityReference {
+    /// The entity name: its view ids' prefix and its key under `views`.
+    pub entity: String,
+    /// The row interface.
+    pub type_name: String,
+    /// The `state` view's key field and its TypeScript type, when the
+    /// entity has a single-field key.
+    pub state_key: Option<(String, String)>,
+    pub fields: Vec<TypeScriptFieldReference>,
+}
+
+/// The row of every entity of `stack_spec` as [`compile_stack_spec`]
+/// declares it: field paths in TypeScript and on the wire, with their types.
+pub fn typescript_entity_references(
+    stack_spec: &SerializableStackSpec,
+) -> Result<Vec<TypeScriptEntityReference>, String> {
+    validate_entity_identifiers(&stack_spec.entities)?;
+    let mut stack_types = StackResolvedTypes::default();
+    stack_types.reserve(stack_entity_type_names(&stack_spec.entities));
+    let mut references = Vec::new();
+    for entity_spec in &stack_spec.entities {
+        let mut spec = entity_spec.clone();
+        let program_name = entity_program_name(entity_spec, &stack_spec.idls).map(str::to_string);
+        if spec.idl.is_none() {
+            spec.idl = entity_idl(entity_spec, &stack_spec.idls).cloned();
+        }
+        let entity_name = spec.state_name.clone();
+        let state_key = state_view_key_definition(
+            &entity_name,
+            &spec.identity,
+            &spec.field_mappings,
+            &spec.sections,
+        )
+        .ok()
+        .map(|key| (key.field_name, key.typescript_type));
+        let compiler = entity_compiler(spec, entity_name.clone(), None, HashSet::new())
+            .with_stack_resolved_types(stack_types.clone(), program_name);
+        references.push(TypeScriptEntityReference {
+            type_name: to_pascal_case(&entity_name),
+            entity: entity_name,
+            state_key,
+            fields: compiler.entity_field_references(),
+        });
+        for (name, resolved) in compiler.declared_resolved_types() {
+            stack_types.declare(&name, &resolved);
+        }
+    }
+    Ok(references)
 }
 
 /// Entity names are the stems of every entity type (`TokenAccount`,
@@ -7471,6 +7645,64 @@ mod tests {
             .count(),
             1
         );
+    }
+
+    #[test]
+    fn golden_ore_entity_fields_document_wire_names_bigints_and_notes() {
+        let spec = crate::public_artifacts::ore_stack_spec_from_exact_artifacts();
+
+        let references = typescript_entity_references(&spec).expect("ore entities");
+        let round = references
+            .iter()
+            .find(|entity| entity.entity == "OreRound")
+            .expect("OreRound");
+        assert_eq!(round.type_name, "OreRound");
+        assert_eq!(
+            round.state_key,
+            Some(("roundId".to_string(), "bigint".to_string()))
+        );
+        let round_id = round
+            .fields
+            .iter()
+            .find(|field| field.path == "id.roundId")
+            .expect("id.roundId");
+        assert_eq!(round_id.wire, "id.round_id");
+        assert_eq!(round_id.ts_type, "bigint");
+        assert!(round_id.nullable);
+        assert!(round
+            .fields
+            .iter()
+            .any(|field| field.path == "oreMetadata" && field.wire == "ore_metadata"));
+
+        let notes = BTreeMap::from([(
+            "OreRound".to_string(),
+            BTreeMap::from([(
+                "state.total_deployed".to_string(),
+                "Token amount in whole units (raw / 10^9).".to_string(),
+            )]),
+        )]);
+        let output = compile_stack_spec(
+            spec,
+            Some(TypeScriptStackConfig {
+                field_notes: notes,
+                ..TypeScriptStackConfig::default()
+            }),
+        )
+        .expect("ore stack should compile");
+        let interfaces = output.interfaces;
+        // Every field of the generated rows says what the wire calls it and
+        // why it is a bigint; a note the generator was given follows.
+        assert!(interfaces.contains(&format!(
+            "  /** Wire name `id.round_id` (CLI and MCP output). {BIGINT_FIELD_DOC} */\n  roundId: bigint | null;"
+        )));
+        assert!(interfaces.contains(
+            "  /** Wire name `state.total_deployed` (CLI and MCP output). Token amount in whole units (raw / 10^9). */\n  totalDeployed: number | null;"
+        ));
+        assert!(interfaces.contains(
+            "  /** Wire name `ore_metadata` (CLI and MCP output). */\n  oreMetadata: TokenMetadata | null;"
+        ));
+        // Same name on the wire, no bigint, no note: no comment.
+        assert!(interfaces.contains("  id: OreRoundId;\n"));
     }
 
     #[test]
