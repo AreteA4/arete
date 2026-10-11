@@ -36,8 +36,9 @@ pub struct DoctorArgs {
     #[arg(long)]
     pub fix: bool,
 
-    /// Print only the overall status and the checks that are not ok (with
-    /// their fixes) and count the rest
+    /// Print the overall status first, then only the checks that need
+    /// attention (warn, fail, unknown, or info with a fix) with their fixes;
+    /// count the ok and purely informational ones
     #[arg(long)]
     pub summary: bool,
 }
@@ -110,16 +111,48 @@ struct DoctorJson<'a> {
     /// With `--summary`: how many checks were ok and left out of `checks`.
     #[serde(skip_serializing_if = "Option::is_none")]
     ok_count: Option<usize>,
+    /// With `--summary`: how many `info` checks with nothing to do were left
+    /// out of `checks`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    info_count: Option<usize>,
     checks: &'a [Check],
 }
 
-/// The checks `--summary` keeps: every one that is not ok.
-fn not_ok(checks: &[Check]) -> Vec<Check> {
-    checks
+/// What `--summary` left out of the listed checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Omitted {
+    ok: usize,
+    info: usize,
+}
+
+/// Whether `--summary` lists a check: everything that is not ok, except an
+/// `info` check with no fix, which needs nothing from the reader.
+fn needs_attention(check: &Check) -> bool {
+    match check.status {
+        Status::Ok => false,
+        Status::Info => check.fix.is_some(),
+        Status::Warn | Status::Fail | Status::Unknown => true,
+    }
+}
+
+/// The checks `--summary` lists, and what it left out.
+fn summarize(checks: &[Check]) -> (Vec<Check>, Omitted) {
+    let shown = checks
         .iter()
-        .filter(|check| check.status != Status::Ok)
+        .filter(|check| needs_attention(check))
         .cloned()
-        .collect()
+        .collect();
+    let count = |status| {
+        checks
+            .iter()
+            .filter(|check| check.status == status && !needs_attention(check))
+            .count()
+    };
+    let omitted = Omitted {
+        ok: count(Status::Ok),
+        info: count(Status::Info),
+    };
+    (shown, omitted)
 }
 
 /// Aggregate: `fail` if any check fails, else `warn` if any warns, else `ok`.
@@ -188,22 +221,23 @@ pub fn run(args: DoctorArgs, config_path: &str, json: bool) -> Result<()> {
     }
 
     let status = aggregate(&checks);
-    let shown = if args.summary {
-        not_ok(&checks)
+    let (shown, omitted) = if args.summary {
+        let (shown, omitted) = summarize(&checks);
+        (shown, Some(omitted))
     } else {
-        checks.clone()
+        (checks.clone(), None)
     };
-    let ok_count = args.summary.then(|| checks.len() - shown.len());
     if json {
         let output = DoctorJson {
             schema_version: 1,
             status: status.as_str(),
-            ok_count,
+            ok_count: omitted.map(|omitted| omitted.ok),
+            info_count: omitted.map(|omitted| omitted.info),
             checks: &shown,
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        print!("{}", render(&shown, status, ok_count));
+        print!("{}", render(&shown, status, omitted));
     }
     if status == Status::Fail {
         return Err(ui::ExitCode(1).into());
@@ -211,10 +245,20 @@ pub fn run(args: DoctorArgs, config_path: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn render(checks: &[Check], status: Status, ok_count: Option<usize>) -> String {
+/// The checks as text. A summary (`omitted` set) leads with the status and
+/// what it left out; the full report ends with the status.
+fn render(checks: &[Check], status: Status, omitted: Option<Omitted>) -> String {
     let mut out = String::new();
-    if let Some(ok_count) = ok_count {
-        out.push_str(&format!("{ok_count} check(s) ok\n"));
+    if let Some(omitted) = omitted {
+        out.push_str(&format!(
+            "Status: {}  ({} ok, {} informational hidden; run without --summary for every check)\n",
+            status_label(status),
+            omitted.ok,
+            omitted.info
+        ));
+        if !checks.is_empty() {
+            out.push('\n');
+        }
     }
     let width = checks.iter().map(|check| check.id.len()).max().unwrap_or(0);
     for check in checks {
@@ -247,14 +291,20 @@ fn render(checks: &[Check], status: Status, ok_count: Option<usize>) -> String {
             ));
         }
     }
-    let summary = match status {
+    if omitted.is_none() {
+        out.push_str(&format!("\nStatus: {}\n", status_label(status)));
+    }
+    out
+}
+
+/// The aggregate status, coloured.
+fn status_label(status: Status) -> String {
+    match status {
         Status::Ok => "ok".green().bold().to_string(),
         Status::Warn => "warn".yellow().bold().to_string(),
         Status::Fail => "fail".red().bold().to_string(),
         Status::Info | Status::Unknown => "ok".green().bold().to_string(),
-    };
-    out.push_str(&format!("\nStatus: {summary}\n"));
-    out
+    }
 }
 
 /// Loaded manifest facts the checks need.
@@ -1251,37 +1301,52 @@ mod tests {
     }
 
     #[test]
-    fn summary_keeps_status_and_every_check_that_is_not_ok() {
+    fn summary_lists_what_needs_attention_and_counts_the_rest() {
         let checks = vec![
-            Check::ok("cli.version", "a4 0.37.0"),
+            Check::ok("cli.version", "a4 0.38.0"),
             Check::info(
                 "agents.codex-trust",
                 "trust the project",
                 Some("run codex".into()),
             ),
+            Check::info("toolchain.cargo", "cargo not found", None),
             Check::warn("net.api", "slow", None),
+            Check::unknown("account.deploy", "not reported"),
             Check::ok("auth.whoami", "agent"),
         ];
-        let shown = not_ok(&checks);
+        let (shown, omitted) = summarize(&checks);
         let ids: Vec<&str> = shown.iter().map(|check| check.id.as_str()).collect();
-        assert_eq!(ids, ["agents.codex-trust", "net.api"]);
+        assert_eq!(ids, ["agents.codex-trust", "net.api", "account.deploy"]);
+        assert_eq!(omitted, Omitted { ok: 2, info: 1 });
         let json = serde_json::to_value(DoctorJson {
             schema_version: 1,
             status: aggregate(&checks).as_str(),
-            ok_count: Some(checks.len() - shown.len()),
+            ok_count: Some(omitted.ok),
+            info_count: Some(omitted.info),
             checks: &shown,
         })
         .unwrap();
         assert_eq!(json["status"], "warn");
         assert_eq!(json["okCount"], 2);
-        assert_eq!(json["checks"].as_array().unwrap().len(), 2);
+        assert_eq!(json["infoCount"], 1);
+        assert_eq!(json["checks"].as_array().unwrap().len(), 3);
 
         colored::control::set_override(false);
-        let text = render(&shown, aggregate(&checks), Some(2));
-        assert!(text.starts_with("2 check(s) ok\n"), "{text}");
+        let text = render(&shown, aggregate(&checks), Some(omitted));
+        assert!(
+            text.starts_with("Status: warn  (2 ok, 1 informational hidden;"),
+            "{text}"
+        );
         assert!(text.contains("agents.codex-trust: run codex"), "{text}");
-        assert!(!text.contains("cli.version"), "{text}");
-        assert!(text.ends_with("Status: warn\n"), "{text}");
+        assert!(
+            !text.contains("cli.version") && !text.contains("toolchain.cargo"),
+            "{text}"
+        );
+        assert_eq!(text.matches("Status:").count(), 1, "{text}");
+
+        let full = render(&checks, aggregate(&checks), None);
+        assert!(full.ends_with("\nStatus: warn\n"), "{full}");
+        assert!(full.contains("toolchain.cargo"), "{full}");
     }
 
     #[test]
@@ -1290,10 +1355,11 @@ mod tests {
             schema_version: 1,
             status: "ok",
             ok_count: None,
+            info_count: None,
             checks: &[],
         })
         .unwrap();
-        assert!(json.get("okCount").is_none());
+        assert!(json.get("okCount").is_none() && json.get("infoCount").is_none());
     }
 
     #[test]
@@ -1572,6 +1638,7 @@ mod tests {
             schema_version: 1,
             status: aggregate(&checks).as_str(),
             ok_count: None,
+            info_count: None,
             checks: &checks,
         };
         let json = serde_json::to_value(output).unwrap();
