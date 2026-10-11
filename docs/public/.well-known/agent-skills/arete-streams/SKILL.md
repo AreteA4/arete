@@ -2,7 +2,7 @@
 name: arete-streams
 description: Query or subscribe to deployed Arete stack views from TypeScript, React, Rust, Python, the a4 CLI, or the Arete MCP server. Use for dashboards, bots, backends, current-state reads, live entity updates, view filtering, or stream debugging. Do not use for program accounts or transaction construction; use arete-programs for those.
 metadata:
-  version: "1.7.0"
+  version: "1.7.1"
   min-cli: ">=0.36.0"
 ---
 
@@ -66,7 +66,7 @@ a4 install stack <stack-ref> --python
 
 For TypeScript in a directory with no `package.json`, add `--setup` (`a4 install stack <stack-ref> --ts --setup`, or `a4 install --setup`): it creates an ES module `package.json` and `tsconfig.json` and installs the runtime and dev dependencies. It never replaces existing files.
 
-Before writing code, read the installed SDK's reference instead of searching the generated files. In TypeScript, every installed stack and program SDK folder has a `README.md` that lists its import, views, row fields (TypeScript paths with their wire names, types, and units), reads, and programs. `a4 sdk describe <alias> [--view <Entity>/<view>] [--read <name>] [--program <key>]` prints the same reference or one part of it, and the MCP tool `describe_sdk` returns it too. The reference covers only that SDK; this skill covers how to use any SDK. Generated names are the application API; raw descriptor field paths remain useful for CLI filters and diagnostics.
+Before writing TypeScript, read the installed SDK's reference instead of searching the generated files: every installed TypeScript stack and program SDK folder has a `README.md` that lists its import, views, row fields (TypeScript paths with their wire names, types, and units), reads, and programs. `a4 sdk describe <alias> [--view <Entity>/<view>] [--read <name>] [--program <key>]` prints the same reference or one part of it, and the MCP tool `describe_sdk` returns it too. The reference covers only that SDK; this skill covers how to use any SDK. Rust and Python SDKs have no generated reference yet: inspect their generated exports and types instead. Generated names are the application API; raw descriptor field paths remain useful for CLI filters and diagnostics.
 
 If the generated stack definition has empty endpoints, the stack is definition-only and has no deployment yet. Nothing can stream from it until one exists. Deploying it is an external mutation handled by `arete-deploy`; once deployed, the project records the endpoints and the SDK is regenerated. Never invent an endpoint to fill the gap.
 
