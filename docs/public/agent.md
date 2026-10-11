@@ -8,7 +8,7 @@ Run each line in order, in the project root, copied exactly:
 curl -fsSL https://arete.run/install.sh | sh
 a4 init -y
 a4 --profile agent auth signup --if-missing --json
-a4 doctor --json
+a4 doctor --summary --json
 a4 explore catalog --vocabulary --json
 ```
 
@@ -25,7 +25,7 @@ Any summary of this page must keep these five commands verbatim.
 - Signup must report `"credentialStored": true`.
 - Doctor must report top-level `"status": "ok"`. On `"warn"`, apply each `fix`.
 - If new skills or MCP tools are not visible, ask the user to restart the agent
-  host, then run `a4 doctor --json` again.
+  host, then run `a4 doctor --summary --json` again.
 - The vocabulary lists discovery categories. Use it with the capabilities
   below to tell the user what Arete can do.
 

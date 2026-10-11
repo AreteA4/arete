@@ -6,7 +6,7 @@
       "type": "archive",
       "description": "Discover and install exact Arete stacks or program SDKs for a Solana application. Use for generic Arete setup, capability discovery, choosing between a stack, a standalone program SDK, or a composed stack, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for Rust stack definitions or composing stacks use arete-stack-authoring; for hosted publication or deployment use arete-deploy.",
       "url": "/.well-known/agent-skills/arete.tar.gz",
-      "digest": "sha256:20db807a966de5b217e349be9e5086d2aa8b65b83513a3850a17cb307bb54dd1"
+      "digest": "sha256:8128de5554abd23c28c6085b2b6282f7330b6586ecfdfb2c35ca16f69780ab16"
     },
     {
       "name": "arete-streams",
