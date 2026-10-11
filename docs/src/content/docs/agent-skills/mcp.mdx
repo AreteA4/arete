@@ -110,15 +110,20 @@ for every field the server sent, or `fields` (top-level keys or dotted paths)
 to choose your own:
 
 - **`search_catalog`** keeps `kind`, `slug`, `name`, `version`, `protocol`,
-  `summary`, `modes`, `sdkTargets` and `delivery.status`/`delivery.health` for
-  each result, returns 10 results per page unless you pass `limit`, and adds a
+  `summary`, `modes`, `installName`, `programs`, `stacks`, `sdkTargets` and
+  `delivery.status`/`delivery.health` for each result, returns 10 results per page unless you pass `limit`, and adds a
   top-level `hint` string naming `full`, `fields` and, when there is another
   page, `cursor`. Two keys are derived from those fields: `live` on stacks
   (`true`: a hosted stream to subscribe to now, i.e. `modes` include
   `subscribe`; `false`: definition-only, which installs as an SDK and streams
-  once you deploy it) and `related`, the other results on the page with the
-  same `protocol` as `kind:slug`. `mode: "subscribe"` returns only live
-  stacks. `full: true` returns the server's results without them. Without any filter it returns an overview: up to 5 programs
+  once you deploy it) and, only when the server sent no `programs`/`stacks`
+  links, `related`, the other results on the page with the same `protocol`
+  as `kind:slug`. A stack's `programs` (`[{slug, programId}]`) and a
+  program's `stacks` (`[{slug, live}]`) link the two, and the page-level
+  `protocols` lists every stack and program of each result's protocol. A
+  page continued with `cursor` after the catalog changed carries
+  `catalogChanged: true` and may skip or repeat entries. `mode: "subscribe"`
+  returns only live stacks. `full: true` returns the server's results without them. Without any filter it returns an overview: up to 5 programs
   and 5 stacks (or `limit` of each), with `nextCursors.program` and
   `nextCursors.stack` to page one kind with `kind` and `cursor`.
 - **`search_knowledge`** keeps `type`, `slug`, `name`, `protocol`, `summary`

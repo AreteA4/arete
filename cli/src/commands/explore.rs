@@ -2622,6 +2622,9 @@ fn catalog_search_hint(
     if catalog_view::next_cursor(value).is_some() {
         parts.push("More results: repeat the same search with --cursor <nextCursor>.".to_string());
     }
+    if catalog_view::catalog_changed(value) {
+        parts.push(catalog_view::CATALOG_CHANGED_HINT.to_string());
+    }
     (!parts.is_empty()).then(|| parts.join(" "))
 }
 
@@ -2636,7 +2639,8 @@ fn annotated_page(value: &Value) -> Value {
 }
 
 /// The `--fields` list suggested when `--full` output is large.
-const CATALOG_NARROW_FIELDS: &str = "slug,kind,version,protocol,modes,live,related,delivery.health";
+const CATALOG_NARROW_FIELDS: &str =
+    "slug,kind,version,protocol,modes,live,programs,stacks,related,delivery.health";
 
 /// The overview printed by `a4 explore catalog` without filters: the first
 /// page of programs and of stacks, and a hint naming the filters.
@@ -2905,6 +2909,7 @@ fn render_catalog_search(value: &Value, full: bool) -> String {
                 text.push_str(&format!("    protocol: {protocol}  related: {related}\n"));
             }
         }
+        text.push_str(&render_links(result, "    "));
         if full {
             text.push_str(&format!(
                 "    install: {}  ({})\n",
@@ -2918,10 +2923,78 @@ fn render_catalog_search(value: &Value, full: bool) -> String {
             ));
         }
     }
+    let protocols = value_array(value, "protocols");
+    if !protocols.is_empty() {
+        text.push_str("\nBy protocol\n");
+        for rollup in protocols {
+            text.push_str(&format!(
+                "  {}  stacks: {}  programs: {}\n",
+                rollup["protocol"].as_str().unwrap_or("-"),
+                linked_stacks(rollup),
+                linked_slugs(rollup, "programs")
+            ));
+        }
+    }
     if let Some(cursor) = catalog_view::next_cursor(value) {
         text.push_str(&format!(
             "\nMore results: repeat the same search with --cursor {cursor}\n"
         ));
+    }
+    if catalog_view::catalog_changed(value) {
+        text.push_str(&format!("{}\n", catalog_view::CATALOG_CHANGED_HINT));
+    }
+    text
+}
+
+/// The `slug`s of a server link list (`programs` or `stacks`), or `none`.
+fn linked_slugs(value: &Value, key: &str) -> String {
+    let slugs: Vec<&str> = value_array(value, key)
+        .iter()
+        .filter_map(|link| link["slug"].as_str())
+        .collect();
+    if slugs.is_empty() {
+        "none".to_string()
+    } else {
+        slugs.join(", ")
+    }
+}
+
+/// The `stacks` of a program or protocol rollup, each marked live or
+/// definition-only, or `none`.
+fn linked_stacks(value: &Value) -> String {
+    let stacks: Vec<String> = value_array(value, "stacks")
+        .iter()
+        .filter_map(|link| {
+            let slug = link["slug"].as_str()?;
+            Some(match link["live"].as_bool() {
+                Some(true) => format!("{slug} [live]"),
+                Some(false) => format!("{slug} [definition-only]"),
+                None => slug.to_string(),
+            })
+        })
+        .collect();
+    if stacks.is_empty() {
+        "none".to_string()
+    } else {
+        stacks.join(", ")
+    }
+}
+
+/// The server's cross-links of one entry: the programs a stack composes,
+/// the stacks composing a program, and a differing install name.
+fn render_links(value: &Value, indent: &str) -> String {
+    let mut text = String::new();
+    if value.get("programs").is_some_and(Value::is_array) {
+        text.push_str(&format!(
+            "{indent}programs: {}\n",
+            linked_slugs(value, "programs")
+        ));
+    }
+    if value.get("stacks").is_some_and(Value::is_array) {
+        text.push_str(&format!("{indent}stacks: {}\n", linked_stacks(value)));
+    }
+    if let Some(install_name) = value["installName"].as_str() {
+        text.push_str(&format!("{indent}also installs as: {install_name}\n"));
     }
     text
 }
@@ -2952,6 +3025,7 @@ fn render_catalog_entry(value: &Value) -> String {
         "  SDK targets: {}\n",
         string_list(value, "sdkTargets")
     ));
+    text.push_str(&render_links(value, "  "));
     if let Some(knowledge) = value
         .get("knowledge")
         .filter(|knowledge| knowledge.is_object())
@@ -3599,6 +3673,39 @@ mod tests {
         assert!(definition_only_answer(&client, "pumpfun", &not_found_error()).is_none());
         let other = anyhow::anyhow!("connection refused");
         assert!(definition_only_answer(&client, "pumpfun", &other).is_none());
+    }
+
+    #[test]
+    fn catalog_search_renders_server_links_and_protocol_rollups() {
+        let page = json!({
+            "results": [
+                {"kind": "program", "slug": "jurassic-fi-token-sale", "version": "1.0.9",
+                 "protocol": "jurassic", "installName": "jurassic-launchpad",
+                 "stacks": [{"slug": "jurassic-launchpad", "live": true}]},
+                {"kind": "stack", "slug": "jurassic-launchpad", "version": "2.0.9",
+                 "protocol": "jurassic", "modes": ["build", "read", "subscribe"],
+                 "programs": [{"slug": "jurassic-fi-token-sale", "programId": "Jur1"}]}
+            ],
+            "protocols": [{"protocol": "jurassic",
+                "stacks": [{"slug": "jurassic-launchpad", "live": true}],
+                "programs": [{"slug": "jurassic-fi-token-sale"}]}],
+            "nextCursor": "c2",
+            "catalogChanged": true
+        });
+        let rendered = render_catalog_search(&annotated_page(&page), false);
+        for expected in [
+            "    stacks: jurassic-launchpad [live]\n",
+            "    also installs as: jurassic-launchpad\n",
+            "    programs: jurassic-fi-token-sale\n",
+            "    protocol: jurassic\n",
+            "  jurassic  stacks: jurassic-launchpad [live]  programs: jurassic-fi-token-sale\n",
+            catalog_view::CATALOG_CHANGED_HINT,
+        ] {
+            assert!(rendered.contains(expected), "{expected:?} in {rendered}");
+        }
+        assert!(!rendered.contains("related:"), "{rendered}");
+        let hint = catalog_search_hint(&page, &catalog_view::brief(), None).unwrap();
+        assert!(hint.contains(catalog_view::CATALOG_CHANGED_HINT), "{hint}");
     }
 
     #[test]

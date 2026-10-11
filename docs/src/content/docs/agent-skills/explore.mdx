@@ -48,7 +48,22 @@ including identity hashes and release notes), `--fields`, and the next
 `--cursor` when there is one. Without filters, `a4 explore catalog` prints an
 overview of the first programs and stacks.
 
-Two derived keys answer the questions agents otherwise spend extra calls on:
+Program, stack and protocol slugs often differ for the same thing (protocol
+`jurassic`, stack `jurassic-launchpad`, program `jurassic-fi-token-sale`), so
+results link them:
+
+- **`programs`** (stacks): the programs the stack composes, as
+  `[{slug, programId}]`. Install a `slug` to build transactions for it.
+- **`stacks`** (programs): the stacks composing the program, as
+  `[{slug, live}]`. Install a live `slug` to stream it.
+- **`installName`** (programs): a second name the program installs under,
+  when it differs from the slug. Both install the same package.
+- **`protocols`** (the page): one entry per result protocol,
+  `{protocol, stacks, programs}`, listing every stack and program of that
+  protocol, including ones on other pages or excluded by `--kind`.
+
+Cite the slug of the kind you use: the stack to stream, the program to build.
+Two more keys are derived:
 
 - **`live`** (stacks only): `true` when the stack has a hosted stream you can
   subscribe to now, which is when its `modes` include `subscribe`; `false`
@@ -56,11 +71,13 @@ Two derived keys answer the questions agents otherwise spend extra calls on:
   typed SDK with its Program SDKs (build transactions, read accounts); it
   streams once you deploy it yourself. `--mode subscribe` returns only live
   stacks. Programs have no stream, so they carry no `live`.
-- **`related`**: the other results on the same page that share the entry's
-  `protocol`, as `kind:slug`. Program, stack and protocol slugs often differ
-  for the same thing (protocol `jurassic`, stack `jurassic-launchpad`,
-  program `jurassic-fi-token-sale`), so cite the slug of the kind you use:
-  the stack to stream, the program to build.
+- **`related`**: only on results the server sent no `programs`/`stacks` for
+  (older catalog versions): the other results on the same page that share
+  the entry's `protocol`, as `kind:slug`.
+
+A page continued with `--cursor` after the catalog changed carries
+`catalogChanged: true`: entries may be skipped or repeated, so search again
+without `--cursor` when you need an exact listing.
 
 ```bash
 a4 explore catalog --query "monitor swaps" --json

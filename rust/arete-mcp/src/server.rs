@@ -373,8 +373,8 @@ pub struct SearchCatalogArgs {
     #[serde(default, deserialize_with = "lenient::opt_usize")]
     pub limit: Option<usize>,
     /// `nextCursor` from a previous `search_catalog` page. Repeat the same
-    /// filters to fetch the next page; the server rejects a cursor once the
-    /// active catalog changes.
+    /// filters to fetch the next page. A page marked `catalogChanged` was
+    /// served after the catalog changed and may skip or repeat entries.
     #[serde(default)]
     pub cursor: Option<String>,
     /// Keep only these fields of each result: top-level keys or dotted paths
@@ -520,6 +520,9 @@ fn search_value(
     }
     if catalog_view::next_cursor(value).is_some() {
         parts.push("More results: pass `nextCursor` as `cursor` with the same filters.");
+    }
+    if catalog_view::catalog_changed(value) {
+        parts.push(catalog_view::CATALOG_CHANGED_HINT);
     }
     let shaped = catalog_view::shape_search(value, shape);
     if parts.is_empty() {
