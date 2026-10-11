@@ -896,7 +896,7 @@ export interface FixedDelegationId {
 export interface FixedDelegationState {
   /** `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   amount: bigint | null;
-  /** Wire name `state.amount_ui` (CLI and MCP output). Token amount in whole units (raw / 10^token_metadata.decimals). */
+  /** Wire name `state.amount_ui` (CLI and MCP output). Token amount in whole units (raw / 10^tokenMetadata.decimals). */
   amountUi: number | null;
   /** Wire name `state.expiry_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   expiryTs: bigint | null;
@@ -1127,11 +1127,11 @@ export interface RecurringDelegationId {
 export interface RecurringDelegationState {
   /** Wire name `state.amount_per_period` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   amountPerPeriod: bigint | null;
-  /** Wire name `state.amount_per_period_ui` (CLI and MCP output). Token amount in whole units (raw / 10^token_metadata.decimals). */
+  /** Wire name `state.amount_per_period_ui` (CLI and MCP output). Token amount in whole units (raw / 10^tokenMetadata.decimals). */
   amountPerPeriodUi: number | null;
   /** Wire name `state.amount_pulled_in_period` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   amountPulledInPeriod: bigint | null;
-  /** Wire name `state.amount_pulled_in_period_ui` (CLI and MCP output). Token amount in whole units (raw / 10^token_metadata.decimals). */
+  /** Wire name `state.amount_pulled_in_period_ui` (CLI and MCP output). Token amount in whole units (raw / 10^tokenMetadata.decimals). */
   amountPulledInPeriodUi: number | null;
   /** Wire name `state.current_period_start_ts` (CLI and MCP output). `bigint` (64-bit or wider): convert with `Number()`/`String()` before `JSON.stringify`. */
   currentPeriodStartTs: bigint | null;
@@ -2408,7 +2408,7 @@ export const SUBSCRIPTIONS_STREAM_STACK_CORE = {
     subscriptions: {
       name: 'subscriptions',
       programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:5058c578ae66d09a8464ca791c5ebaa27c9538e6a2c66dafd5c4f1e77f8694b5',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:b333f0d40d885e34a3f042b2da339bc7aa70f2891aef37987e84513bc564d36a',
       programSpecHash: 'arete:h1:program-spec:sha256:a10a30f17be97429474e990fdc24b87edf51e4c5fe0021b0651d434d11f3e698',
       idlContentHash: 'arete:h1:idl-content:sha256:6b1a0054e474098d8e646ca0238f197ea5d31fa93ca79c4dd466c6edf4fef554',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:c12d4e2b8c21cd79a97e3e9dd698cc60dd1a511c1ef4e31dbc502a8fd89485c4',

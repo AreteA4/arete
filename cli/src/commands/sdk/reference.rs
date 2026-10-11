@@ -91,12 +91,7 @@ fn entity_amounts(
         .iter()
         .map(|field| field.wire.clone())
         .collect::<BTreeSet<_>>();
-    let path_of = |wire: &str| {
-        fields
-            .iter()
-            .find(|field| field.wire == wire)
-            .map_or_else(|| wire.to_string(), |field| field.path.clone())
-    };
+    let path_of = |wire: &str| typescript_path(fields, wire);
     field_amounts::entity_field_amounts(&entity, &visible)
         .into_iter()
         .filter(|(wire, _)| visible.contains(wire))
@@ -110,6 +105,58 @@ fn entity_amounts(
             (wire, reference)
         })
         .collect()
+}
+
+/// The TypeScript path of `wire` in a row with `fields`: the field's own
+/// path, else the path of its longest declared parent with the rest in
+/// camelCase (`token_metadata.decimals` -> `tokenMetadata.decimals`, as the
+/// generated nested types name their members), else `wire` as it is.
+fn typescript_path(fields: &[TypeScriptFieldReference], wire: &str) -> String {
+    if let Some(field) = fields.iter().find(|field| field.wire == wire) {
+        return field.path.clone();
+    }
+    let parent = fields
+        .iter()
+        .filter_map(|field| {
+            wire.strip_prefix(&field.wire)
+                .and_then(|rest| rest.strip_prefix('.'))
+                .map(|rest| (field.wire.len(), field.path.clone(), rest))
+        })
+        .max_by_key(|(length, _, _)| *length)
+        .map(|(_, path, rest)| (path, rest));
+    // A section is no field of its own, but its fields name it.
+    let section = || {
+        let (section, rest) = wire.split_once('.')?;
+        fields.iter().find_map(|field| {
+            let (wire_section, _) = field.wire.split_once('.')?;
+            let (path_section, _) = field.path.split_once('.')?;
+            (wire_section == section).then(|| (path_section.to_string(), rest))
+        })
+    };
+    match parent.or_else(section) {
+        Some((path, rest)) => {
+            let rest = rest.split('.').map(camel_case).collect::<Vec<_>>();
+            format!("{path}.{}", rest.join("."))
+        }
+        None => wire.to_string(),
+    }
+}
+
+/// `snake_case` -> `snakeCase`.
+fn camel_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut upper = false;
+    for character in name.chars() {
+        if character == '_' {
+            upper = !out.is_empty();
+        } else if upper {
+            out.extend(character.to_uppercase());
+            upper = false;
+        } else {
+            out.push(character);
+        }
+    }
+    out
 }
 
 /// The reference of the TypeScript stack SDK generated into `output` from
@@ -500,6 +547,52 @@ export const ORE_STREAM_STACK_CORE = {
             Some("./generated/typescript/stacks/ore/ore.js")
         );
         assert_eq!(specifier(&ReferenceContext::default(), "ore.ts"), None);
+    }
+
+    #[test]
+    fn amount_paths_inside_renamed_objects_use_typescript_names() {
+        let field = |path: &str, wire: &str| TypeScriptFieldReference {
+            path: path.into(),
+            wire: wire.into(),
+            ts_type: "number".into(),
+            nullable: true,
+        };
+        let fields = [
+            field("state.totalDeployed", "state.total_deployed"),
+            field("tokenMetadata", "token_metadata"),
+            field("poolInfo.baseMint", "pool_info.base_mint"),
+        ];
+        assert_eq!(
+            typescript_path(&fields, "state.total_deployed"),
+            "state.totalDeployed"
+        );
+        // A member of a renamed root object.
+        assert_eq!(
+            typescript_path(&fields, "token_metadata.decimals"),
+            "tokenMetadata.decimals"
+        );
+        assert_eq!(
+            typescript_path(&fields, "token_metadata.mint_info.decimals"),
+            "tokenMetadata.mintInfo.decimals"
+        );
+        // A hidden field of a renamed section.
+        assert_eq!(
+            typescript_path(&fields, "pool_info.quote_decimals"),
+            "poolInfo.quoteDecimals"
+        );
+        assert_eq!(typescript_path(&fields, "other.x_y"), "other.x_y");
+
+        // The JSDoc note is built from the same translation.
+        let amount = AmountReference {
+            scale: arete_mcp::field_amounts::AmountScale::Ui,
+            decimals: None,
+            decimals_from: Some(typescript_path(&fields, "token_metadata.decimals")),
+            counterpart: None,
+        };
+        assert_eq!(
+            sentence(&amount.describe()),
+            "Token amount in whole units (raw / 10^tokenMetadata.decimals)."
+        );
     }
 
     #[test]
