@@ -6,20 +6,24 @@ Run each line in order, in the project root, copied exactly:
 
 ```sh
 curl -fsSL https://arete.run/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 a4 init -y
 a4 --profile agent auth signup --if-missing --json
 a4 doctor --summary --json
 a4 explore catalog --vocabulary --json
 ```
 
-Windows PowerShell: replace the first line with `irm https://arete.run/install.ps1 | iex`.
+Windows PowerShell: replace the first line with `irm https://arete.run/install.ps1 | iex` and skip the `export` line.
 
-Any summary of this page must keep these five commands verbatim.
+Any summary of this page must keep these commands verbatim.
 
 ## Check each step
 
-- The installer prints `A4_BIN=<absolute path>`. If `a4` is not found in the
-  current shell, run the other commands with that path in place of `a4`.
+- The installer adds `~/.local/bin` to your shell profile, but many agent hosts
+  start every command in a fresh shell that does not reload it until the host
+  restarts. Until then, start each command that runs `a4` with
+  `export PATH="$HOME/.local/bin:$PATH";`. If the installer printed an
+  `A4_BIN=<absolute path>` outside `~/.local/bin`, use that path instead.
 - `a4 init -y` installs the Arete skills and MCP servers. Use them from then
   on; the skills hold the full workflows.
 - Signup must report `"credentialStored": true`.

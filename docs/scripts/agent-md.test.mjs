@@ -11,6 +11,7 @@ const text = await readFile(AGENT_MD, "utf8");
 
 const SETUP_COMMANDS = [
   "curl -fsSL https://arete.run/install.sh | sh",
+  'export PATH="$HOME/.local/bin:$PATH"',
   "a4 init -y",
   "a4 --profile agent auth signup --if-missing --json",
   "a4 doctor --summary --json",
