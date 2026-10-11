@@ -837,6 +837,17 @@ fn render_import(reference: &SdkReference, out: &mut String, full: bool) {
                 }
             );
             let _ = writeln!(out, "```\n");
+            if let Some(from_src) = import
+                .specifier
+                .as_deref()
+                .and_then(|specifier| specifier.strip_prefix("./"))
+            {
+                let _ = writeln!(
+                    out,
+                    "The path is relative to the importing file: from `src/`, import \
+                     `'../{from_src}'`.\n"
+                );
+            }
             let key = session_key(&reference.alias);
             let registration = match reference.kind {
                 SdkKind::Stack => format!(
@@ -1331,6 +1342,9 @@ mod tests {
         assert!(readme.contains(
             "import { ORE_STREAM_STACK } from './generated/typescript/stacks/ore/ore.js'; // from the project root"
         ));
+        assert!(
+            readme.contains("from `src/`, import `'../generated/typescript/stacks/ore/ore.js'`")
+        );
         assert!(readme.contains(
             "`createSession({ stacks: { ore: ORE_STREAM_STACK } })` gives `session.stacks.ore`"
         ));

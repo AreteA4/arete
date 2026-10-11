@@ -10,6 +10,8 @@ Look parts up with `a4 sdk describe vault [--view <Entity/view>] [--read <name>]
 import { VAULT_PROGRAM } from './generated/typescript/programs/vault/vault.js'; // from the project root
 ```
 
+The path is relative to the importing file: from `src/`, import `'../generated/typescript/programs/vault/vault.js'`.
+
 Register it as `vault`: `createSession({ programs: { vault: VAULT_PROGRAM } })` gives `session.programs.vault`. Paths below start there.
 
 Program `2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM`.
