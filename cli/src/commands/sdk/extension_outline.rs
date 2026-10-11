@@ -340,7 +340,10 @@ impl<'a> Outline<'a> {
     /// functions it calls by name, in the order they are reached.
     fn viewed_entities(&self, body: usize, scope: Option<(usize, usize)>) -> Vec<String> {
         let view = Regex::new(r"\bviews\.([A-Za-z_$][\w$]*)\.").expect("view regex should compile");
-        let call = Regex::new(r"\b([A-Za-z_$][\w$]*)\s*\(").expect("call regex should compile");
+        // A call, with optional type arguments: `loadBoard<OreBoard>(client)`.
+        let call =
+            Regex::new(r"\b([A-Za-z_$][\w$]*)\s*(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\s*\(")
+                .expect("call regex should compile");
         let mut entities = Vec::new();
         let mut seen = vec![body];
         let mut queue = std::collections::VecDeque::from([body]);
@@ -1086,6 +1089,23 @@ export const oreProgramExtensions = defineProgramExtensions<typeof ORE>()({
         assert_eq!(reads[0].rows, ["OreBoard"]);
         assert_eq!(reads[1].rows, ["OreRound"]);
         assert_eq!(reads[2].rows, ["OreBoard", "OreRound"]);
+        // A call with type arguments is followed too.
+        let generic = super::reads(
+            r#"
+export default defineStackExtensions<typeof CORE>()({
+  createRead(client) {
+    function loadBoard<T>(source: Client) {
+      return source.views.OreBoard.state.get(addresses.board());
+    }
+    async function currentBoard() {
+      return loadBoard<Map<string, OreBoard>>(client);
+    }
+    return { currentBoard };
+  },
+});
+"#,
+        );
+        assert_eq!(generic[0].rows, ["OreBoard"]);
         // A program read fetches accounts, not view rows.
         assert!(super::reads(PROGRAM_EXTENSION)[0].rows.is_empty());
     }
