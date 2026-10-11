@@ -6,6 +6,20 @@ import type { RunReport } from './types.js';
 const KEY_PATTERN = /\ba4_(?:ak|sk|pk)_[A-Za-z0-9]{16,}\b/g;
 const BEARER_PATTERN = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]{20,}/g;
 
+/**
+ * Redaction for binary files such as SQLite session stores: each secret is
+ * overwritten with the same number of bytes, so offsets and page layouts stay
+ * valid. Works on latin1 strings, where one character is one byte.
+ */
+export function maskSameLength(bytes: string, secrets: string[] = knownSecrets()): string {
+  const mask = (match: string) => 'X'.repeat(match.length);
+  let out = bytes;
+  for (const secret of secrets) out = out.split(secret).join(mask(secret));
+  return out
+    .replace(KEY_PATTERN, mask)
+    .replace(BEARER_PATTERN, (match, prefix: string) => prefix + mask(match.slice(prefix.length)));
+}
+
 export function redact(text: string, secrets: string[] = knownSecrets()): string {
   let out = text;
   for (const secret of secrets) out = out.split(secret).join('[REDACTED]');
@@ -40,9 +54,11 @@ export class RunDir {
   }
 
   /**
-   * Redact every text file under a downloaded subdirectory in place. Links
-   * are never followed: the sandbox wrote them, and a link resolving outside
-   * the download (`../../.env`) would otherwise rewrite host files.
+   * Redact every file under a downloaded subdirectory in place: text files
+   * like written artifacts, and binary files (agents' SQLite session stores)
+   * by masking each secret with the same number of bytes. Links are never
+   * followed: the sandbox wrote them, and a link resolving outside the
+   * download (`../../.env`) would otherwise rewrite host files.
    */
   redactTree(subdir: string): void {
     const walk = (dir: string) => {
@@ -52,7 +68,12 @@ export class RunDir {
         if (stat.isDirectory()) walk(file);
         else if (stat.isFile() && stat.size < 50 * 1024 * 1024) {
           const buf = readFileSync(file);
-          if (buf.includes(0)) continue; // binary
+          if (buf.includes(0)) {
+            const bytes = buf.toString('latin1');
+            const clean = maskSameLength(bytes);
+            if (clean !== bytes) writeFileSync(file, Buffer.from(clean, 'latin1'));
+            continue;
+          }
           const text = buf.toString('utf8');
           const clean = redact(text);
           if (clean !== text) writeFileSync(file, clean);

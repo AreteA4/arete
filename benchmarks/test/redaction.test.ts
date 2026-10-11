@@ -87,6 +87,29 @@ describe('downloaded sandbox trees', () => {
     assert.equal(readFileSync(join(run, 'workspace', 'src', 'main.ts'), 'utf8'), "const key = '[REDACTED]';\n");
   });
 
+  test('redactTree masks secrets in binary files without changing their size', () => {
+    const run = join(scratch, 'run-binary');
+    const db = join(run, 'native', '.local', 'share', 'opencode', 'opencode.db');
+    mkdirSync(join(db, '..'), { recursive: true });
+    const other = `a4_ak_${'Q'.repeat(32)}`;
+    const original = Buffer.concat([
+      Buffer.from([0x53, 0x51, 0x4c, 0x00, 0xff]),
+      Buffer.from(`{"output":"${KEY} and ${other}"}`, 'latin1'),
+      Buffer.from([0x00, 0x01, 0xfe]),
+    ]);
+    writeFileSync(db, original);
+
+    new RunDir(run).redactTree('native');
+
+    const masked = readFileSync(db);
+    assert.equal(masked.length, original.length);
+    assert.ok(!masked.includes(KEY));
+    assert.ok(!masked.includes(FRAGMENT));
+    assert.ok(!masked.includes(other));
+    assert.deepEqual(masked.subarray(0, 5), original.subarray(0, 5));
+    assert.deepEqual(masked.subarray(-3), original.subarray(-3));
+  });
+
   test('Codex rollouts behind links are not read', () => {
     const outside = join(scratch, 'outside');
     const native = join(scratch, 'native');
