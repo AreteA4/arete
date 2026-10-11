@@ -7,8 +7,9 @@ This project uses Arete for typed Solana views and program operations. The
 detailed workflows.
 
 - Health check first: `a4 doctor --summary --json` (ready when top-level
-  `status` is `"ok"`; exit 0 can include warnings; `checks` lists only the
-  checks that are not ok). If `a4` is missing:
+  `status` is `"ok"`; exit 0 can include warnings; `checks` lists only what
+  needs attention, and an `info` check there is optional unless you need
+  that capability). If `a4` is missing:
   `curl -fsSL https://arete.run/install.sh | sh`
 - Start from intent with `a4 know search --query "..." --json`, then inspect
   exact descriptors with `a4 explore stack <ref> --json` or
