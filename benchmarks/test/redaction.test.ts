@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -85,6 +86,70 @@ describe('downloaded sandbox trees', () => {
 
     assert.equal(readFileSync(join(host, '.env'), 'utf8'), `KEY=${KEY}\n`);
     assert.equal(readFileSync(join(run, 'workspace', 'src', 'main.ts'), 'utf8'), "const key = '[REDACTED]';\n");
+  });
+
+  test('redactTree masks secrets in binary files without changing their size', () => {
+    const run = join(scratch, 'run-binary');
+    const db = join(run, 'native', '.local', 'share', 'opencode', 'opencode.db');
+    mkdirSync(join(db, '..'), { recursive: true });
+    const other = `a4_ak_${'Q'.repeat(32)}`;
+    const original = Buffer.concat([
+      Buffer.from([0x53, 0x51, 0x4c, 0x00, 0xff]),
+      Buffer.from(`{"output":"${KEY} and ${other}"}`, 'latin1'),
+      Buffer.from([0x00, 0x01, 0xfe]),
+    ]);
+    writeFileSync(db, original);
+
+    new RunDir(run).redactTree('native');
+
+    const masked = readFileSync(db);
+    assert.equal(masked.length, original.length);
+    assert.ok(!masked.includes(KEY));
+    assert.ok(!masked.includes(FRAGMENT));
+    assert.ok(!masked.includes(other));
+    assert.deepEqual(masked.subarray(0, 5), original.subarray(0, 5));
+    assert.deepEqual(masked.subarray(-3), original.subarray(-3));
+  });
+
+  test('redactTree keeps a SQLite session readable when its records are still in the WAL', () => {
+    const live = join(scratch, 'live-db');
+    mkdirSync(live, { recursive: true });
+    const source = new DatabaseSync(join(live, 'opencode.db'));
+    source.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;');
+    source.exec('CREATE TABLE part (id INTEGER PRIMARY KEY, data TEXT)');
+    const insert = source.prepare('INSERT INTO part (data) VALUES (?)');
+    for (let i = 0; i < 50; i++) insert.run(`{"output":"step ${i} ${i === 7 ? KEY : 'ok'}"}`);
+    // Copy while the connection is open, as a sandbox download does: the
+    // records are still only in the WAL.
+    const run = join(scratch, 'run-wal');
+    const dir = join(run, 'native', 'opencode');
+    mkdirSync(dir, { recursive: true });
+    for (const suffix of ['', '-wal', '-shm']) copyFileSync(join(live, `opencode.db${suffix}`), join(dir, `opencode.db${suffix}`));
+    source.close();
+    assert.ok(readFileSync(join(dir, 'opencode.db-wal')).includes(KEY));
+
+    new RunDir(run).redactTree('native');
+
+    for (const suffix of ['', '-wal']) {
+      const file = join(dir, `opencode.db${suffix}`);
+      if (existsSync(file)) assert.ok(!readFileSync(file).includes(FRAGMENT), `${suffix || 'db'} still holds the key`);
+    }
+    const reopened = new DatabaseSync(join(dir, 'opencode.db'));
+    const rows = reopened.prepare('SELECT data FROM part ORDER BY id').all() as Array<{ data: string }>;
+    reopened.close();
+    assert.equal(rows.length, 50);
+    assert.equal(rows[0]!.data, '{"output":"step 0 ok"}');
+    assert.ok(!rows[7]!.data.includes(FRAGMENT));
+  });
+
+  test('redactTree redacts files named like a WAL in place instead of deleting them', () => {
+    const run = join(scratch, 'run-wal-name');
+    mkdirSync(join(run, 'workspace'), { recursive: true });
+    writeFileSync(join(run, 'workspace', 'report-wal'), `key ${KEY}\n`);
+
+    new RunDir(run).redactTree('workspace');
+
+    assert.equal(readFileSync(join(run, 'workspace', 'report-wal'), 'utf8'), 'key [REDACTED]\n');
   });
 
   test('Codex rollouts behind links are not read', () => {

@@ -1,10 +1,25 @@
-import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { knownSecrets } from './env.js';
 import type { RunReport } from './types.js';
 
 const KEY_PATTERN = /\ba4_(?:ak|sk|pk)_[A-Za-z0-9]{16,}\b/g;
 const BEARER_PATTERN = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]{20,}/g;
+
+/**
+ * Redaction for binary files such as SQLite session stores: each secret is
+ * overwritten with the same number of bytes, so offsets and page layouts stay
+ * valid. Works on latin1 strings, where one character is one byte.
+ */
+export function maskSameLength(bytes: string, secrets: string[] = knownSecrets()): string {
+  const mask = (match: string) => 'X'.repeat(match.length);
+  let out = bytes;
+  for (const secret of secrets) out = out.split(secret).join(mask(secret));
+  return out
+    .replace(KEY_PATTERN, mask)
+    .replace(BEARER_PATTERN, (match, prefix: string) => prefix + mask(match.slice(prefix.length)));
+}
 
 export function redact(text: string, secrets: string[] = knownSecrets()): string {
   let out = text;
@@ -40,30 +55,72 @@ export class RunDir {
   }
 
   /**
-   * Redact every text file under a downloaded subdirectory in place. Links
-   * are never followed: the sandbox wrote them, and a link resolving outside
-   * the download (`../../.env`) would otherwise rewrite host files.
+   * Redact every file under a downloaded subdirectory in place: text files
+   * like written artifacts, and binary files (agents' SQLite session stores)
+   * by masking each secret with the same number of bytes. A SQLite database
+   * is checkpointed first, so its write-ahead log is folded into the main
+   * file: masking bytes inside a WAL would break its frame checksums and lose
+   * committed records. A SQLite WAL (recognised by its header) that still
+   * holds a secret afterwards is deleted; other files are masked in place.
+   * Links are never followed: the sandbox wrote them, and a link resolving
+   * outside the download (`../../.env`) would otherwise rewrite host files.
    */
   redactTree(subdir: string): void {
+    const files: string[] = [];
     const walk = (dir: string) => {
       for (const name of readdirSync(dir)) {
         const file = join(dir, name);
         const stat = lstatSync(file);
         if (stat.isDirectory()) walk(file);
-        else if (stat.isFile() && stat.size < 50 * 1024 * 1024) {
-          const buf = readFileSync(file);
-          if (buf.includes(0)) continue; // binary
-          const text = buf.toString('utf8');
-          const clean = redact(text);
-          if (clean !== text) writeFileSync(file, clean);
-        }
+        else if (stat.isFile() && stat.size < 50 * 1024 * 1024) files.push(file);
       }
     };
     try {
       walk(join(this.path, subdir));
     } catch {
-      // nothing downloaded
+      return; // nothing downloaded
     }
+    for (const file of files) if (existsSync(`${file}-wal`) && isSqlite(file)) checkpoint(file);
+    for (const file of files) {
+      if (!existsSync(file)) continue;
+      const buf = readFileSync(file);
+      if (buf.includes(0)) {
+        const bytes = buf.toString('latin1');
+        const clean = maskSameLength(bytes);
+        if (clean === bytes) continue;
+        if (isSqliteWal(buf)) rmSync(file);
+        else writeFileSync(file, Buffer.from(clean, 'latin1'));
+        continue;
+      }
+      const text = buf.toString('utf8');
+      const clean = redact(text);
+      if (clean !== text) writeFileSync(file, clean);
+    }
+  }
+}
+
+const SQLITE_HEADER = Buffer.from('SQLite format 3\0', 'latin1');
+
+function isSqlite(file: string): boolean {
+  return readFileSync(file).subarray(0, SQLITE_HEADER.length).equals(SQLITE_HEADER);
+}
+
+/** A SQLite write-ahead log, by its header's magic number. */
+function isSqliteWal(buf: Buffer): boolean {
+  return buf.length >= 32 && (buf.readUInt32BE(0) === 0x377f0682 || buf.readUInt32BE(0) === 0x377f0683);
+}
+
+/** Fold a copied database's write-ahead log into the main file. */
+function checkpoint(file: string): void {
+  try {
+    const db = new DatabaseSync(file);
+    try {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Unreadable: the WAL is masked or deleted below like any other file.
   }
 }
 
