@@ -4,6 +4,12 @@ Generated from program package `vault` 1.0.0, installed as `vault`. `a4 install`
 This file lists only what is specific to this SDK. For how to use any Arete SDK (`createSession`, wallets, preparing and executing operations), see the `arete-programs` agent skill or https://docs.arete.run/using-stacks/transactions/.
 Look parts up with `a4 sdk describe vault [--view <Entity/view>] [--read <name>] [--program <key>] [--json]` or the MCP tool `describe_sdk`.
 
+## Contents
+
+- Operations: `instructions.treasury.deposit`
+
+To print one part, run `a4 sdk describe vault --read <name>`. The sections below list everything.
+
 ## Import
 
 ```ts

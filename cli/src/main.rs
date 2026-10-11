@@ -437,7 +437,8 @@ struct SdkDescribeArgs {
     #[arg(long, requires = "alias")]
     view: Option<String>,
 
-    /// Only one read or program operation, by name (`currentRound`) or path
+    /// Only one read or program operation, by name (`currentRound`) or path,
+    /// with the fields of the rows a stack read reads
     #[arg(long, requires = "alias")]
     read: Option<String>,
 

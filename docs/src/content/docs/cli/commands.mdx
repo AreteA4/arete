@@ -1347,8 +1347,8 @@ Setup:       . has no package.json. The generated TypeScript (ES modules) needs:
                3. npm install @usearete/sdk@0.34.0 "zod@^3.24.1"
                4. npm install -D typescript tsx @types/node
                5. npx tsc --init --module nodenext --target es2022 --types node
-SDK reference: stack ore -> generated/typescript/stacks/ore/README.md: its import, views, row fields (TypeScript paths with their wire names, types and units), reads and programs.
-             The same as `a4 sdk describe ore` (--view, --read, --program, --json) or the MCP tool describe_sdk.
+SDK reference: stack ore: `a4 sdk describe ore --read <name>` or `--view <Entity/view>` prints one part with the row fields it uses (or the MCP tool describe_sdk).
+             generated/typescript/stacks/ore/README.md lists everything: its import, views, row fields (TypeScript paths with their wire names, types and units), reads and programs.
 Using SDKs:  sessions, auth, reading views and running operations: the arete-streams agent skill, or https://docs.arete.run/sdks/typescript/
 ```
 
@@ -1416,9 +1416,10 @@ advice for each.
   directory it runs in). A Node app needs no key setup: outside browsers the
   SDK uses `ARETE_API_KEY` when it is set, else the `a4` login.
 - `SDK reference` names, for each SDK the command installed (every SDK after a
-  plain `a4 install`), the `README.md` in its folder, the
-  `a4 sdk describe <alias>` command and the `describe_sdk` MCP tool. `Using
-SDKs` names the agent skills and docs that cover generic usage.
+  plain `a4 install`), the `a4 sdk describe <alias>` command and the
+  `describe_sdk` MCP tool, which print one part, and the `README.md` in its
+  folder, which lists everything. `Using SDKs` names the agent skills and docs
+  that cover generic usage.
 
 In `--json` output these are `typescriptApps[]`, one entry per app with
 `directory`, `kind` (`node` or `browser`), `devRuntime[]` (package names),
@@ -1502,8 +1503,11 @@ Print the reference of an installed SDK, read from its folder, never from the
 registry: it describes exactly the version installed. Without an alias it
 lists the project's SDKs and where their references are. `--view` keeps one
 entity (`OreRound`) or one of its views (`OreRound/latest`) with its fields,
-`--read` one read or program operation (by name or path), and `--program`
-one program with its reads, operations and accounts; the filters combine.
+`--read` one read or program operation (by name or path), with the fields of
+the entities whose rows a stack read reads (`rows` in the JSON), and
+`--program` one program with its reads, operations and accounts; the filters
+combine. The README opens with a `Contents` index of the reads, views and
+programs, so the part to print can be picked from its first lines.
 `--kind stack|program` picks the dependency when an alias names both. With
 `--json`, stdout is `{ alias, kind, target, directory, readme, reference }`,
 where `reference` is the selected part of `sdk-reference.json`. The MCP tool

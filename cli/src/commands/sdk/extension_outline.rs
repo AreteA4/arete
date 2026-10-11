@@ -296,6 +296,7 @@ impl<'a> Outline<'a> {
             path: path.to_string(),
             params: Vec::new(),
             returns: None,
+            rows: Vec::new(),
             title: None,
             description: None,
         };
@@ -326,8 +327,57 @@ impl<'a> Outline<'a> {
         }
         if read {
             function.returns = declaration.body.and_then(|body| self.returned_shape(body));
+            function.rows = declaration
+                .body
+                .map(|body| self.viewed_entities(body, leaf.scope))
+                .unwrap_or_default();
         }
         function
+    }
+
+    /// The entities whose views the function with the body opening at
+    /// `body` reads (`views.OreRound.state.get(...)`), itself or through the
+    /// functions it calls by name, in the order they are reached.
+    fn viewed_entities(&self, body: usize, scope: Option<(usize, usize)>) -> Vec<String> {
+        let view = Regex::new(r"\bviews\.([A-Za-z_$][\w$]*)\.").expect("view regex should compile");
+        let call = Regex::new(r"\b([A-Za-z_$][\w$]*)\s*\(").expect("call regex should compile");
+        let mut entities = Vec::new();
+        let mut seen = vec![body];
+        let mut queue = std::collections::VecDeque::from([body]);
+        while let Some(open) = queue.pop_front() {
+            let Some(close) = matching(&self.code, open) else {
+                continue;
+            };
+            let code = &self.code[open..close];
+            for found in view.captures_iter(code) {
+                let entity = found[1].to_string();
+                if !entities.contains(&entity) {
+                    entities.push(entity);
+                }
+            }
+            for found in call.captures_iter(code) {
+                let name = found.get(1).expect("the call regex captures a name");
+                // A method (`program.accounts.Board.fetch(`) is not one of
+                // the extension's own functions.
+                if code[..name.start()].trim_end().ends_with(['.', '?']) {
+                    continue;
+                }
+                if seen.len() >= MAX_FUNCTIONS {
+                    break;
+                }
+                let Some(callee) = self
+                    .declaration(name.as_str(), scope)
+                    .and_then(|declaration| declaration.body)
+                else {
+                    continue;
+                };
+                if !seen.contains(&callee) {
+                    seen.push(callee);
+                    queue.push_back(callee);
+                }
+            }
+        }
+        entities
     }
 
     /// Where `ident` is declared as a function or as a constant holding
@@ -1031,6 +1081,13 @@ export const oreProgramExtensions = defineProgramExtensions<typeof ORE>()({
                 "Reads the Board entity and the chain clock together. Returns null when the Board entity is missing (\"{\" in a string is not code)."
             )
         );
+        // The rows each read reads, through the reads it calls; a method
+        // call (`client.chain.clock()`) is not followed.
+        assert_eq!(reads[0].rows, ["OreBoard"]);
+        assert_eq!(reads[1].rows, ["OreRound"]);
+        assert_eq!(reads[2].rows, ["OreBoard", "OreRound"]);
+        // A program read fetches accounts, not view rows.
+        assert!(super::reads(PROGRAM_EXTENSION)[0].rows.is_empty());
     }
 
     #[test]
