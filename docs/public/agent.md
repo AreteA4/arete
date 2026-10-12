@@ -15,7 +15,7 @@ a4 explore catalog --vocabulary --json
 
 Windows PowerShell: replace the first line with `irm https://arete.run/install.ps1 | iex` and skip the `export` line.
 
-Any summary of this page must keep these commands verbatim.
+Any summary of this page must keep these commands verbatim, and the Capabilities list below.
 
 ## Check each step
 
@@ -30,8 +30,10 @@ Any summary of this page must keep these commands verbatim.
 - Doctor must report top-level `"status": "ok"`. On `"warn"`, apply each `fix`.
 - If new skills or MCP tools are not visible, ask the user to restart the agent
   host, then run `a4 doctor --summary --json` again.
-- The vocabulary lists discovery categories. Use it with the capabilities
-  below to tell the user what Arete can do.
+- To tell the user what Arete can do, use the Capabilities list below: Arete
+  is for Solana programs and data. The vocabulary adds the catalog's
+  categories as examples. The `AGENTS.md` or `CLAUDE.md` that `a4 init`
+  writes has the same summary.
 
 Never read, print, or copy credential files or keys. Never put a key in source.
 
