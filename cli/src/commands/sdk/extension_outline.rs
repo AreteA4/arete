@@ -671,7 +671,7 @@ impl<'a> Outline<'a> {
                 "null".to_string()
             } else {
                 let end = self.code[start..]
-                    .find([';', '\n'])
+                    .find(';')
                     .map_or(self.code.len(), |end| start + end);
                 self.expression_type(&self.code[start..end], body, scope, depth)?
             };
@@ -708,7 +708,10 @@ impl<'a> Outline<'a> {
             .map_or(expression, str::trim_start);
         let view = Regex::new(r"^[\w.]*\bviews\.(\w+)\.(\w+)\.(get|getOne)\(")
             .expect("view regex should compile");
-        if let Some(found) = view.captures(expression) {
+        if let Some(found) = view
+            .captures(expression)
+            .filter(|found| whole_call(expression, found.get(0).map_or(0, |m| m.end())))
+        {
             // A state view and `getOne` resolve to one row or null; a list
             // view's `get` to its rows.
             return Some(if &found[2] == "state" || &found[3] == "getOne" {
@@ -719,7 +722,10 @@ impl<'a> Outline<'a> {
         }
         let account =
             Regex::new(r"^[\w.]*\baccounts\.(\w+)\.fetch\(").expect("account regex should compile");
-        if let Some(found) = account.captures(expression) {
+        if let Some(found) = account
+            .captures(expression)
+            .filter(|found| whole_call(expression, found.get(0).map_or(0, |m| m.end())))
+        {
             return Some(format!("{} | null", &found[1]));
         }
         if is_identifier(expression) {
@@ -729,7 +735,11 @@ impl<'a> Outline<'a> {
         // unless that is an object, which would not fit on one line.
         let call = Regex::new(r"^([A-Za-z_$][\w$]*)\s*(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\s*\(")
             .expect("call regex should compile");
-        let name = call.captures(expression)?.get(1)?.as_str().to_string();
+        let found = call.captures(expression)?;
+        if !whole_call(expression, found.get(0)?.end()) {
+            return None;
+        }
+        let name = found.get(1)?.as_str().to_string();
         let callee = self.declaration(&name, scope)?.body?;
         if callee == body {
             return None;
@@ -740,7 +750,9 @@ impl<'a> Outline<'a> {
 
     /// The type of the local `name` of the function whose body opens at
     /// `body`: as declared (`const clock: Clock = ...`), else from its
-    /// value, or its element of a destructured `Promise.all([...])`.
+    /// value, or its element of a destructured `Promise.all([...])`. `None`
+    /// when the body declares `name` more than once, since which one a
+    /// `return` sees depends on its block.
     fn local_type(
         &self,
         name: &str,
@@ -751,6 +763,13 @@ impl<'a> Outline<'a> {
         let close = matching(&self.code, body)?;
         let code = &self.code[body..close];
         let escaped = regex::escape(name);
+        let declared = Regex::new(&format!(
+            r"\b(?:const|let|var)\s+(?:{escaped}\b|\[[^\]]*\b{escaped}\b[^\]]*\]|\{{[^}}]*\b{escaped}\b[^}}]*\}})"
+        ))
+        .expect("declaration regex should compile");
+        if declared.find_iter(code).count() != 1 {
+            return None;
+        }
         let single = Regex::new(&format!(
             r"\b(?:const|let)\s+{escaped}\s*(:[^=;]*)?=([^=>][^;]*)"
         ))
@@ -805,6 +824,19 @@ struct Declaration {
     start: usize,
     params: Vec<String>,
     body: Option<usize>,
+}
+
+/// Whether the call whose argument list opens just before `after` is all of
+/// `expression`, so its result is not transformed (`.then(...)`, `.length`).
+fn whole_call(expression: &str, after: usize) -> bool {
+    let Some(close) = after
+        .checked_sub(1)
+        .and_then(|open| matching(expression, open))
+    else {
+        return false;
+    };
+    let rest = expression[close + 1..].trim_start();
+    rest.is_empty() || rest.starts_with([';', '}'])
 }
 
 /// `A | null` → `["A", "null"]`, keeping objects whole.
@@ -1242,7 +1274,18 @@ export default defineStackExtensions<typeof CORE>()({
       const vault = await client.views.Vault.list.getOne();
       return vault;
     }
-    return { overview, topVault, latestVault };
+    async function changed() {
+      const count = await client.views.Vault.list.get().then((rows) => rows.length);
+      const first = client.views.Vault.list
+        .get()
+        .then((rows) => rows[0]);
+      if (client.ready) {
+        const row: number = 1;
+      }
+      const row = await client.views.Vault.list.getOne();
+      return { count, first, row, miner: client.accounts.Miner.fetch(owner).catch(() => null) };
+    }
+    return { overview, topVault, latestVault, changed };
   },
 });
 "#,
@@ -1256,6 +1299,11 @@ export default defineStackExtensions<typeof CORE>()({
         // A return it cannot type leaves the shape unknown.
         assert_eq!(reads[1].returns, None);
         assert_eq!(reads[2].returns.as_deref(), Some("Vault | null"));
+        // A transformed result, or a name declared twice, stays untyped.
+        assert_eq!(
+            reads[3].returns.as_deref(),
+            Some("{ count, first, row, miner }")
+        );
     }
 
     #[test]

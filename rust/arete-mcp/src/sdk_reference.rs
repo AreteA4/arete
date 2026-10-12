@@ -1014,11 +1014,10 @@ fn render_example(reference: &SdkReference, out: &mut String) {
         let args = read
             .params
             .iter()
-            .filter_map(|param| {
-                let (name, ty) = param.split_once(':').unwrap_or((param, ""));
-                // An optional parameter is left out.
-                (!name.trim().ends_with('?')).then(|| placeholder(name.trim(), ty.trim()))
-            })
+            .map(|param| param.split_once(':').unwrap_or((param, "")))
+            // Optional parameters, which come last, are left out.
+            .take_while(|(name, _)| !name.trim().ends_with('?'))
+            .map(|(name, ty)| placeholder(name.trim(), ty.trim()))
             .collect::<Vec<_>>();
         format!("{root}.{}({})", read.path, args.join(", "))
     } else if let Some(view) = views().find(|view| view.kind == ViewKind::List) {
@@ -1048,10 +1047,15 @@ fn render_example(reference: &SdkReference, out: &mut String) {
     };
     let key = session_key(&reference.alias);
     let export = &reference.import.export;
+    // Arguments and keys are placeholders, marked with a comment.
+    let run = if call.contains("/*") {
+        "replace the arguments marked `/* ... */`, then run it with `npx tsx`"
+    } else {
+        "run it with `npx tsx`"
+    };
     let _ = writeln!(
         out,
-        "## Example\n\nA script in `src/` that reads once, prints the result and exits (run it \
-         with `npx tsx`):\n"
+        "## Example\n\nA script in `src/` that reads once, prints the result and exits ({run}):\n"
     );
     let _ = writeln!(out, "```ts");
     let _ = writeln!(out, "import {{ createSession }} from '@usearete/sdk';");
@@ -1069,16 +1073,17 @@ fn render_example(reference: &SdkReference, out: &mut String) {
     let _ = writeln!(out, "```\n");
 }
 
-/// A literal standing in for an argument of type `ty`: one of that type
-/// when it is a primitive, else a comment naming what to pass.
+/// A value standing in for an argument of type `ty`, with a comment naming
+/// it: one of that type when it is a primitive, else `undefined as never`,
+/// which compiles but has to be replaced.
 fn placeholder(name: &str, ty: &str) -> String {
     match ty {
         "bigint" => format!("0n /* {name} */"),
         "number" => format!("0 /* {name} */"),
         "string" => format!("'' /* {name} */"),
         "boolean" => format!("false /* {name} */"),
-        "" => format!("/* {name} */"),
-        _ => format!("/* {name}: {ty} */"),
+        "" => format!("undefined as never /* {name} */"),
+        _ => format!("undefined as never /* {name}: {ty} */"),
     }
 }
 
@@ -1743,12 +1748,12 @@ mod tests {
             assert!(import < start && !text[import + 3..start].contains("## "));
             text[start..].split("```").nth(1).unwrap().to_string()
         };
-        let read = script(Selection {
+        let current = script(Selection {
             read: Some("currentRound".into()),
             ..Selection::default()
         });
         assert_eq!(
-            read,
+            current,
             "ts\n\
              import { createSession } from '@usearete/sdk';\n\
              import { ORE_STREAM_STACK } from '../generated/typescript/stacks/ore/ore.js';\n\n\
@@ -1760,12 +1765,43 @@ mod tests {
              \x20 session.close();\n\
              }\n"
         );
-        // Arguments get a placeholder of their type.
+        // Arguments get a placeholder of their type, and the intro says to
+        // replace them.
         assert!(script(Selection {
             read: Some("roundState".into()),
             ..Selection::default()
         })
         .contains("read.roundState(0n /* roundId */);"));
+        let text = render_selection(
+            &ore(),
+            &Selection {
+                read: Some("roundState".into()),
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert!(text.contains("(replace the arguments marked `/* ... */`, then run it"));
+        let mut preview = ore();
+        preview.reads = vec![read(
+            "read.claimPreview",
+            &[
+                "authority: Address",
+                "slot: number",
+                "options?: { bps: number }",
+            ],
+            "Claim preview",
+        )];
+        let text = render_selection(
+            &preview,
+            &Selection {
+                read: Some("claimPreview".into()),
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert!(text.contains(
+            "read.claimPreview(undefined as never /* authority: Address */, 0 /* slot */);"
+        ));
         // A list view reads its first row; a state view, one key.
         assert!(script(Selection {
             view: Some("OreRound/latest".into()),
