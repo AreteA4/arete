@@ -1507,7 +1507,11 @@ entity (`OreRound`) or one of its views (`OreRound/latest`) with its fields,
 the entities whose rows a stack read reads (`rows` in the JSON), and
 `--program` one program with its reads, operations and accounts; the filters
 combine. The README opens with a `Contents` index of the reads, views and
-programs, so the part to print can be picked from its first lines.
+programs, so the part to print can be picked from its first lines. For a
+TypeScript stack SDK, the README and each selection show an `Example`: a
+script that reads the selected read (or the first view) once, prints the
+result and exits. A read's return shape types each field that holds a view
+row or a program account (`{ round: OreRound | null, ... }`).
 `--kind stack|program` picks the dependency when an alias names both. With
 `--json`, stdout is `{ alias, kind, target, directory, readme, reference }`,
 where `reference` is the selected part of `sdk-reference.json`. The MCP tool

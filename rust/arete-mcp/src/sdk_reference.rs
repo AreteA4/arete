@@ -860,6 +860,7 @@ fn session_key(alias: &str) -> &str {
 
 fn render_body(reference: &SdkReference, out: &mut String, full: bool) {
     render_import(reference, out, full);
+    render_example(reference, out);
     // A selection leads with its reads, then the rows they read.
     if !full {
         render_reads(reference, out, Detail::Full);
@@ -945,7 +946,8 @@ fn render_import(reference: &SdkReference, out: &mut String, full: bool) {
                 let _ = writeln!(
                     out,
                     "The path is relative to the importing file: from `src/`, import \
-                     `'../{from_src}'`.\n"
+                     `'../{from_src}'`. TypeScript resolves the `.js` to `{}`.\n",
+                    import.module
                 );
             }
             let key = session_key(&reference.alias);
@@ -989,6 +991,94 @@ fn render_import(reference: &SdkReference, out: &mut String, full: bool) {
                 import.module, import.export
             );
         }
+    }
+}
+
+/// A script that reads the first read, else the first view, once and
+/// exits: for a TypeScript stack SDK imported from the project root.
+fn render_example(reference: &SdkReference, out: &mut String) {
+    if reference.language != SdkLanguage::Typescript || reference.kind != SdkKind::Stack {
+        return;
+    }
+    let Some(specifier) = reference
+        .import
+        .specifier
+        .as_deref()
+        .and_then(|specifier| specifier.strip_prefix("./"))
+    else {
+        return;
+    };
+    let root = root_access(reference);
+    let views = || reference.entities.iter().flat_map(|entity| &entity.views);
+    let call = if let Some(read) = reference.reads.first() {
+        let args = read
+            .params
+            .iter()
+            .filter_map(|param| {
+                let (name, ty) = param.split_once(':').unwrap_or((param, ""));
+                // An optional parameter is left out.
+                (!name.trim().ends_with('?')).then(|| placeholder(name.trim(), ty.trim()))
+            })
+            .collect::<Vec<_>>();
+        format!("{root}.{}({})", read.path, args.join(", "))
+    } else if let Some(view) = views().find(|view| view.kind == ViewKind::List) {
+        format!("{root}.{}.getOne()", view.access)
+    } else if let Some(view) = views().next() {
+        let key = view
+            .key
+            .as_deref()
+            .map(|key| {
+                let fields = key
+                    .trim()
+                    .trim_start_matches('{')
+                    .trim_end_matches('}')
+                    .split([',', ';'])
+                    .filter_map(|field| {
+                        let (name, ty) = field.split_once(':')?;
+                        let name = name.trim().trim_end_matches('?');
+                        Some(format!("{name}: {}", placeholder(name, ty.trim())))
+                    })
+                    .collect::<Vec<_>>();
+                format!("{{ {} }}", fields.join(", "))
+            })
+            .unwrap_or_default();
+        format!("{root}.{}.get({key})", view.access)
+    } else {
+        return;
+    };
+    let key = session_key(&reference.alias);
+    let export = &reference.import.export;
+    let _ = writeln!(
+        out,
+        "## Example\n\nA script in `src/` that reads once, prints the result and exits (run it \
+         with `npx tsx`):\n"
+    );
+    let _ = writeln!(out, "```ts");
+    let _ = writeln!(out, "import {{ createSession }} from '@usearete/sdk';");
+    let _ = writeln!(out, "import {{ {export} }} from '../{specifier}';\n");
+    let _ = writeln!(
+        out,
+        "const session = await createSession({{ stacks: {{ {key}: {export} }} }});"
+    );
+    let _ = writeln!(out, "try {{");
+    let _ = writeln!(out, "  const result = await {call};");
+    let _ = writeln!(out, "  console.log(result);");
+    let _ = writeln!(out, "}} finally {{");
+    let _ = writeln!(out, "  session.close();");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out, "```\n");
+}
+
+/// A literal standing in for an argument of type `ty`: one of that type
+/// when it is a primitive, else a comment naming what to pass.
+fn placeholder(name: &str, ty: &str) -> String {
+    match ty {
+        "bigint" => format!("0n /* {name} */"),
+        "number" => format!("0 /* {name} */"),
+        "string" => format!("'' /* {name} */"),
+        "boolean" => format!("false /* {name} */"),
+        "" => format!("/* {name} */"),
+        _ => format!("/* {name}: {ty} */"),
     }
 }
 
@@ -1641,6 +1731,62 @@ mod tests {
         .unwrap();
         assert_eq!(program.programs[0].accounts.len(), 2);
         assert!(text.contains("Deploys SOL to the selected squares."));
+    }
+
+    #[test]
+    fn a_typescript_stack_selection_shows_a_script_that_reads_it_once() {
+        let script = |selection: Selection| {
+            let text = render_selection(&ore(), &selection).unwrap();
+            // Right after the import.
+            let start = text.find("## Example").expect("an example");
+            let import = text.find("## Import").unwrap();
+            assert!(import < start && !text[import + 3..start].contains("## "));
+            text[start..].split("```").nth(1).unwrap().to_string()
+        };
+        let read = script(Selection {
+            read: Some("currentRound".into()),
+            ..Selection::default()
+        });
+        assert_eq!(
+            read,
+            "ts\n\
+             import { createSession } from '@usearete/sdk';\n\
+             import { ORE_STREAM_STACK } from '../generated/typescript/stacks/ore/ore.js';\n\n\
+             const session = await createSession({ stacks: { ore: ORE_STREAM_STACK } });\n\
+             try {\n\
+             \x20 const result = await session.stacks.ore.read.currentRound();\n\
+             \x20 console.log(result);\n\
+             } finally {\n\
+             \x20 session.close();\n\
+             }\n"
+        );
+        // Arguments get a placeholder of their type.
+        assert!(script(Selection {
+            read: Some("roundState".into()),
+            ..Selection::default()
+        })
+        .contains("read.roundState(0n /* roundId */);"));
+        // A list view reads its first row; a state view, one key.
+        assert!(script(Selection {
+            view: Some("OreRound/latest".into()),
+            ..Selection::default()
+        })
+        .contains("views.OreRound.latest.getOne();"));
+        assert!(script(Selection {
+            view: Some("OreBoard/state".into()),
+            ..Selection::default()
+        })
+        .contains("views.OreBoard.state.get({ address: '' /* address */ });"));
+        // Program operations need a wallet: no example.
+        let operation = render_selection(
+            &ore(),
+            &Selection {
+                read: Some("instructions.mining.deploy".into()),
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert!(!operation.contains("## Example"));
     }
 
     #[test]

@@ -16,7 +16,7 @@ To print one part, run `a4 sdk describe vault --read <name>`. The sections below
 import { VAULT_PROGRAM } from './generated/typescript/programs/vault/vault.js'; // from the project root
 ```
 
-The path is relative to the importing file: from `src/`, import `'../generated/typescript/programs/vault/vault.js'`.
+The path is relative to the importing file: from `src/`, import `'../generated/typescript/programs/vault/vault.js'`. TypeScript resolves the `.js` to `vault.ts`.
 
 Register it as `vault`: `createSession({ programs: { vault: VAULT_PROGRAM } })` gives `session.programs.vault`. Paths below start there.
 
