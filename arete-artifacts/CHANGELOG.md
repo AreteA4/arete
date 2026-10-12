@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/AreteA4/arete/compare/arete-artifacts-v0.3.6...arete-artifacts-v0.4.0) (2026-10-12)
+
+
+### Features
+
+* **interpreter:** expression keys and mappings over the event; exact max/min/sum on numeric strings ([af7a6e5](https://github.com/AreteA4/arete/commit/af7a6e5160bbc05420b29367a67cb5a4e12f71dc))
+* **interpreter:** map fields and keys from expressions over the event ([ced5eff](https://github.com/AreteA4/arete/commit/ced5effbd0f24a9cf87252987499f9e446192916))
+
 ## [0.3.6](https://github.com/AreteA4/arete/compare/arete-artifacts-v0.3.5...arete-artifacts-v0.3.6) (2026-10-11)
 
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.40.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.39.0...arete-mcp-v0.40.0) (2026-10-12)
+
+
+### Features
+
+* **cli:** index SDK references and describe reads with the rows they read ([956f26d](https://github.com/AreteA4/arete/commit/956f26d3c25bc31cd5c388d1ffa32b33dba6f8ac))
+* **cli:** index SDK references and describe reads with the rows they read ([fecff18](https://github.com/AreteA4/arete/commit/fecff1897269ee13ddb50f2d89ae893aec888753))
+* **cli:** show which protocol rollup entries a narrowed search matched ([d309080](https://github.com/AreteA4/arete/commit/d30908083035b49b1fe14d663aef8789cf385880))
+* **cli:** show which protocol rollup entries a narrowed search matched ([6b546aa](https://github.com/AreteA4/arete/commit/6b546aa6ad032c3c719f7af14762654413d19a83))
+
 ## [0.39.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.38.0...arete-mcp-v0.39.0) (2026-10-11)
 
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.40.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.39.0...arete-macros-v0.40.0) (2026-10-12)
+
+
+### Miscellaneous Chores
+
+* **arete-macros:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-artifacts bumped from 0.3.6 to 0.4.0
+
 ## [0.39.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.38.0...arete-macros-v0.39.0) (2026-10-11)
 
 

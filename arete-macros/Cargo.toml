@@ -1,6 +1,6 @@
 [package]
 name = "arete-macros"
-version = "0.39.0"
+version = "0.40.0"
 edition.workspace = true
 license-file = "LICENSE"
 repository.workspace = true
@@ -25,7 +25,7 @@ hex = "0.4"
 bs58 = "0.5"
 arete-idl = { path = "../arete-idl", version = "0.8.0" }
 arete-hash = { path = "../arete-hash", version = "0.5.3" }
-arete-artifacts = { path = "../arete-artifacts", version = "0.3.6" }
+arete-artifacts = { path = "../arete-artifacts", version = "0.4.0" }
 
 [dev-dependencies]
 tempfile = "3"
