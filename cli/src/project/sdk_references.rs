@@ -147,7 +147,10 @@ pub fn describe(manifest_path: &Path, request: &DescribeRequest) -> Result<Strin
     let mut text = render_selection(&reference, &request.selection)?;
     if !request.selection.is_empty() {
         if let Some(readme) = &installed.readme {
-            text.push_str(&format!("Everything else: {readme}\n"));
+            text.push_str(&format!(
+                "These are the generated SDK's own names and types, so its source has nothing \
+                 more on these parts. Everything else: {readme}\n"
+            ));
         }
     }
     Ok(text)

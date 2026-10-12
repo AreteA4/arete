@@ -17,9 +17,26 @@ To print one part with the row fields it uses, run `a4 sdk describe vault --read
 import { VAULT_STREAM_STACK } from './generated/typescript/stacks/vault/vault.js'; // from the project root
 ```
 
-The path is relative to the importing file: from `src/`, import `'../generated/typescript/stacks/vault/vault.js'`.
+The path is relative to the importing file: from `src/`, import `'../generated/typescript/stacks/vault/vault.js'`. TypeScript resolves the `.js` to `vault.ts`.
 
 Register it as `vault`: `createSession({ stacks: { vault: VAULT_STREAM_STACK } })` gives `session.stacks.vault`; in React, `useArete(VAULT_STREAM_STACK)`. Paths below start there. Row types (`Vault`) are exported from the same module (declared in `vault-core.ts`).
+
+## Example
+
+A script in `src/` that reads once, prints the result and exits (run it with `npx tsx`):
+
+```ts
+import { createSession } from '@usearete/sdk';
+import { VAULT_STREAM_STACK } from '../generated/typescript/stacks/vault/vault.js';
+
+const session = await createSession({ stacks: { vault: VAULT_STREAM_STACK } });
+try {
+  const result = await session.stacks.vault.views.Vault.list.getOne();
+  console.log(result);
+} finally {
+  session.close();
+}
+```
 
 ## Field names and types
 

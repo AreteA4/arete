@@ -326,7 +326,9 @@ impl<'a> Outline<'a> {
             function.description = description;
         }
         if read {
-            function.returns = declaration.body.and_then(|body| self.returned_shape(body));
+            function.returns = declaration
+                .body
+                .and_then(|body| self.returned_shape(body, leaf.scope, 0));
             function.rows = declaration
                 .body
                 .map(|body| self.viewed_entities(body, leaf.scope))
@@ -625,13 +627,15 @@ impl<'a> Outline<'a> {
     }
 
     /// What a read resolves to, from the `return`s of its body: object
-    /// keys, `null`, a state view's row or a program account. `None` when a
-    /// `return` is anything else.
-    fn returned_shape(&self, body: usize) -> Option<String> {
-        let row =
-            Regex::new(r"^[\w.]*\bviews\.(\w+)\.state\.get\(").expect("view regex should compile");
-        let account =
-            Regex::new(r"^[\w.]*\baccounts\.(\w+)\.fetch\(").expect("account regex should compile");
+    /// keys, typed where the value is a row, an account or a typed local,
+    /// `null`, a view's rows or a program account. `None` when a `return` is
+    /// anything else.
+    fn returned_shape(
+        &self,
+        body: usize,
+        scope: Option<(usize, usize)>,
+        depth: usize,
+    ) -> Option<String> {
         let mut shapes: Vec<String> = Vec::new();
         let returns = self.body_returns(body);
         if returns.is_empty() {
@@ -645,21 +649,31 @@ impl<'a> Outline<'a> {
                     .into_iter()
                     .filter_map(|(key_start, key_end)| {
                         let entry = self.source[key_start..key_end].trim();
-                        let key = match top_level_colon(&self.code, key_start, key_end) {
-                            Some(colon) => self.source[key_start..colon].trim(),
-                            None => entry,
+                        let (key, value) = match top_level_colon(&self.code, key_start, key_end) {
+                            Some(colon) => (
+                                self.source[key_start..colon].trim(),
+                                self.code[colon + 1..key_end].trim(),
+                            ),
+                            // `{ clock }` holds the local `clock`.
+                            None => (entry, self.code[key_start..key_end].trim()),
                         };
-                        (!key.is_empty()).then(|| key.to_string())
+                        if key.is_empty() {
+                            return None;
+                        }
+                        Some(match self.expression_type(value, body, scope, depth) {
+                            Some(ty) => format!("{key}: {ty}"),
+                            None => key.to_string(),
+                        })
                     })
                     .collect::<Vec<_>>();
                 format!("{{ {} }}", keys.join(", "))
             } else if rest.starts_with("null") {
                 "null".to_string()
             } else {
-                // A state view and an account fetch both resolve to null
-                // when there is nothing at the key.
-                let captures = row.captures(rest).or_else(|| account.captures(rest))?;
-                format!("{} | null", &captures[1])
+                let end = self.code[start..]
+                    .find(';')
+                    .map_or(self.code.len(), |end| start + end);
+                self.expression_type(&self.code[start..end], body, scope, depth)?
             };
             for part in shape_parts(&shape) {
                 if !shapes.contains(&part) {
@@ -670,6 +684,120 @@ impl<'a> Outline<'a> {
         // `null` last, as TypeScript writes it.
         shapes.sort_by_key(|shape| shape == "null");
         Some(shapes.join(" | "))
+    }
+
+    /// The type of `expression` in the function whose body opens at `body`,
+    /// when it says: a view's rows (`views.OreRound.state.get(...)`), a
+    /// program account (`accounts.Miner.fetch(...)`), a call to another of
+    /// the extension's reads, or a local holding one of these or declared
+    /// with a type, also from `Promise.all`.
+    fn expression_type(
+        &self,
+        expression: &str,
+        body: usize,
+        scope: Option<(usize, usize)>,
+        depth: usize,
+    ) -> Option<String> {
+        if depth > 3 {
+            return None;
+        }
+        let expression = expression.trim();
+        let expression = expression
+            .strip_prefix("await")
+            .filter(|rest| rest.starts_with(char::is_whitespace))
+            .map_or(expression, str::trim_start);
+        let view = Regex::new(r"^[\w.]*\bviews\.(\w+)\.(\w+)\.(get|getOne)\(")
+            .expect("view regex should compile");
+        if let Some(found) = view
+            .captures(expression)
+            .filter(|found| whole_call(expression, found.get(0).map_or(0, |m| m.end())))
+        {
+            // A state view and `getOne` resolve to one row or null; a list
+            // view's `get` to its rows.
+            return Some(if &found[2] == "state" || &found[3] == "getOne" {
+                format!("{} | null", &found[1])
+            } else {
+                format!("{}[]", &found[1])
+            });
+        }
+        let account =
+            Regex::new(r"^[\w.]*\baccounts\.(\w+)\.fetch\(").expect("account regex should compile");
+        if let Some(found) = account
+            .captures(expression)
+            .filter(|found| whole_call(expression, found.get(0).map_or(0, |m| m.end())))
+        {
+            return Some(format!("{} | null", &found[1]));
+        }
+        if is_identifier(expression) {
+            return self.local_type(expression, body, scope, depth);
+        }
+        // A call to another of the extension's functions: what it returns,
+        // unless that is an object, which would not fit on one line.
+        let call = Regex::new(r"^([A-Za-z_$][\w$]*)\s*(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\s*\(")
+            .expect("call regex should compile");
+        let found = call.captures(expression)?;
+        if !whole_call(expression, found.get(0)?.end()) {
+            return None;
+        }
+        let name = found.get(1)?.as_str().to_string();
+        let callee = self.declaration(&name, scope)?.body?;
+        if callee == body {
+            return None;
+        }
+        self.returned_shape(callee, scope, depth + 1)
+            .filter(|shape| !shape.contains('{'))
+    }
+
+    /// The type of the local `name` of the function whose body opens at
+    /// `body`: as declared (`const clock: Clock = ...`), else from its
+    /// value, or its element of a destructured `Promise.all([...])`. `None`
+    /// when the body declares `name` more than once, since which one a
+    /// `return` sees depends on its block.
+    fn local_type(
+        &self,
+        name: &str,
+        body: usize,
+        scope: Option<(usize, usize)>,
+        depth: usize,
+    ) -> Option<String> {
+        let close = matching(&self.code, body)?;
+        let code = &self.code[body..close];
+        let escaped = regex::escape(name);
+        let declared = Regex::new(&format!(
+            r"\b(?:const|let|var)\s+(?:{escaped}\b|\[[^\]]*\b{escaped}\b[^\]]*\]|\{{[^}}]*\b{escaped}\b[^}}]*\}})"
+        ))
+        .expect("declaration regex should compile");
+        if declared.find_iter(code).count() != 1 {
+            return None;
+        }
+        let single = Regex::new(&format!(
+            r"\b(?:const|let)\s+{escaped}\s*(:[^=;]*)?=([^=>][^;]*)"
+        ))
+        .expect("local regex should compile");
+        if let Some(found) = single.captures(code) {
+            if let Some(annotation) = found.get(1) {
+                let at = body + annotation.start() + 1;
+                return Some(collapse_whitespace(
+                    self.source[at..body + annotation.end()].trim(),
+                ));
+            }
+            let value = found.get(2)?;
+            return self.expression_type(value.as_str(), body, scope, depth + 1);
+        }
+        let destructured =
+            Regex::new(r"\b(?:const|let)\s*\[([^\]]*)\]\s*=\s*(?:await\s+)?Promise\.all\(\s*\[")
+                .expect("destructuring regex should compile");
+        for found in destructured.captures_iter(code) {
+            let names = found[1].split(',').map(str::trim).collect::<Vec<_>>();
+            let Some(index) = names.iter().position(|candidate| *candidate == name) else {
+                continue;
+            };
+            let open = body + found.get(0)?.end() - 1;
+            let end = matching(&self.code, open)?;
+            let (start, end) = *split_top_level(&self.code, open + 1, end).get(index)?;
+            return self.expression_type(&self.code[start..end], body, scope, depth + 1);
+        }
+        None
     }
 
     /// The `@title` and description of the JSDoc block right before
@@ -696,6 +824,19 @@ struct Declaration {
     start: usize,
     params: Vec<String>,
     body: Option<usize>,
+}
+
+/// Whether the call whose argument list opens just before `after` is all of
+/// `expression`, so its result is not transformed (`.then(...)`, `.length`).
+fn whole_call(expression: &str, after: usize) -> bool {
+    let Some(close) = after
+        .checked_sub(1)
+        .and_then(|open| matching(expression, open))
+    else {
+        return false;
+    };
+    let rest = expression[close + 1..].trim_start();
+    rest.is_empty() || rest.starts_with([';', '}'])
 }
 
 /// `A | null` → `["A", "null"]`, keeping objects whole.
@@ -1076,7 +1217,9 @@ export const oreProgramExtensions = defineProgramExtensions<typeof ORE>()({
         assert_eq!(reads[1].returns.as_deref(), Some("OreRound | null"));
         assert_eq!(
             reads[2].returns.as_deref(),
-            Some("{ board, round, roundAddress, clock, phase } | null")
+            Some(
+                "{ board: OreBoard | null, round: OreRound | null, roundAddress, clock, phase } | null"
+            )
         );
         assert_eq!(
             reads[2].description.as_deref(),
@@ -1108,6 +1251,59 @@ export default defineStackExtensions<typeof CORE>()({
         assert_eq!(generic[0].rows, ["OreBoard"]);
         // A program read fetches accounts, not view rows.
         assert!(super::reads(PROGRAM_EXTENSION)[0].rows.is_empty());
+    }
+
+    #[test]
+    fn returned_fields_are_typed_from_rows_accounts_and_annotated_locals() {
+        let reads = super::reads(
+            r#"
+export default defineStackExtensions<typeof CORE>()({
+  createRead(client) {
+    async function overview(owner: Address) {
+      const vaults = await client.views.Vault.list.get();
+      const top = await client.views.Vault.list.getOne();
+      const miner = await client.programs.ore.accounts.Miner.fetch(owner);
+      const total: bigint = vaults.reduce((sum, vault) => sum + vault.state.amount, 0n);
+      const label = `${owner}`;
+      return { vaults, top, miner, total, label, count: vaults.length };
+    }
+    async function topVault() {
+      return overview(client.owner).then((result) => result.top);
+    }
+    async function latestVault() {
+      const vault = await client.views.Vault.list.getOne();
+      return vault;
+    }
+    async function changed() {
+      const count = await client.views.Vault.list.get().then((rows) => rows.length);
+      const first = client.views.Vault.list
+        .get()
+        .then((rows) => rows[0]);
+      if (client.ready) {
+        const row: number = 1;
+      }
+      const row = await client.views.Vault.list.getOne();
+      return { count, first, row, miner: client.accounts.Miner.fetch(owner).catch(() => null) };
+    }
+    return { overview, topVault, latestVault, changed };
+  },
+});
+"#,
+        );
+        assert_eq!(
+            reads[0].returns.as_deref(),
+            Some(
+                "{ vaults: Vault[], top: Vault | null, miner: Miner | null, total: bigint, label, count }"
+            )
+        );
+        // A return it cannot type leaves the shape unknown.
+        assert_eq!(reads[1].returns, None);
+        assert_eq!(reads[2].returns.as_deref(), Some("Vault | null"));
+        // A transformed result, or a name declared twice, stays untyped.
+        assert_eq!(
+            reads[3].returns.as_deref(),
+            Some("{ count, first, row, miner }")
+        );
     }
 
     #[test]
