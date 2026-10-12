@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.40.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.39.0...arete-sdk-v0.40.0) (2026-10-12)
+
+
+### Miscellaneous Chores
+
+* **arete-sdk:** Synchronize arete versions
+
 ## [0.39.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.38.0...arete-sdk-v0.39.0) (2026-10-11)
 
 

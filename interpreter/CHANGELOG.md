@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.40.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.39.0...arete-interpreter-v0.40.0) (2026-10-12)
+
+
+### Features
+
+* **interpreter:** expression keys and mappings over the event; exact max/min/sum on numeric strings ([af7a6e5](https://github.com/AreteA4/arete/commit/af7a6e5160bbc05420b29367a67cb5a4e12f71dc))
+* **interpreter:** map fields and keys from expressions over the event ([ced5eff](https://github.com/AreteA4/arete/commit/ced5effbd0f24a9cf87252987499f9e446192916))
+
+
+### Bug Fixes
+
+* **interpreter:** exact folds above i128 and transformed expression keys ([def83f7](https://github.com/AreteA4/arete/commit/def83f7ce577e2e8950e4f78adab893918a795ac))
+* **interpreter:** fold numeric strings and wide integers in max, min and sum ([1076793](https://github.com/AreteA4/arete/commit/1076793d54d5522ee91c904483fdb759082ca800))
+* **interpreter:** keep a null expression key null through the key transform ([ebfe56a](https://github.com/AreteA4/arete/commit/ebfe56a69372169276e1976d483977feaf19c1a1))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.39.0 to 0.40.0
+    * arete-artifacts bumped from 0.3.6 to 0.4.0
+
 ## [0.39.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.38.0...arete-interpreter-v0.39.0) (2026-10-11)
 
 
