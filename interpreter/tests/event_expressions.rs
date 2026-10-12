@@ -348,3 +348,32 @@ fn an_expression_key_takes_the_key_mapping_transform() {
     assert_eq!(candle["id"]["key"], json!("120"));
     assert!(vm.get_entity_state(0, &json!(120)).is_none());
 }
+
+#[test]
+fn a_null_expression_key_stays_null_through_the_key_transform() {
+    let mut key = mapping(
+        "id.key",
+        MappingSource::FromExpr {
+            expr: field("whirlpool"),
+        },
+        PopulationStrategy::SetOnce,
+    );
+    key.transform = Some(Transformation::ToString);
+    let bytecode = bytecode_for(candle_spec_keyed(key));
+    let mut vm = VmContext::new();
+    let context = UpdateContext::with_timestamp(400_000_000, "sig".to_string(), 60);
+
+    // No `whirlpool`: the key is null, not the string "null".
+    let mutations = vm
+        .process_event(
+            &bytecode,
+            json!({ "post_sqrt_price": "1", "input_amount": 1, "output_amount": 1 }),
+            TRADED,
+            Some(&context),
+            None,
+        )
+        .unwrap();
+
+    assert!(mutations.is_empty());
+    assert!(vm.get_entity_state(0, &json!("null")).is_none());
+}

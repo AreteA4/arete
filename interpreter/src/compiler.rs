@@ -104,9 +104,11 @@ pub enum OpCode {
         is_account_event: bool,
     },
     /// Evaluate an expression against the event into `dest`; null when the
-    /// expression fails.
+    /// expression fails. `transform` applies to a non-null result only, so a
+    /// null key stays null.
     EvaluateEventExpr {
         expr: ComputedExpr,
+        transform: Option<Transformation>,
         dest: Register,
     },
     LoadEventField {
@@ -1461,6 +1463,7 @@ impl<S> TypedCompiler<S> {
             MappingSource::FromExpr { expr } => {
                 vec![OpCode::EvaluateEventExpr {
                     expr: expr.clone(),
+                    transform: None,
                     dest,
                 }]
             }
@@ -1502,25 +1505,13 @@ impl<S> TypedCompiler<S> {
                     .find_primary_key_expr(mappings)
                     .expect("checked by the guard");
                 // The key is the value the mapping writes to the primary key
-                // field, transform included.
-                match self.find_primary_key_transformation(mappings) {
-                    Some(transformation) => {
-                        let temp_reg = 18;
-                        ops.push(OpCode::EvaluateEventExpr {
-                            expr,
-                            dest: temp_reg,
-                        });
-                        ops.push(OpCode::Transform {
-                            source: temp_reg,
-                            dest: key_reg,
-                            transformation,
-                        });
-                    }
-                    None => ops.push(OpCode::EvaluateEventExpr {
-                        expr,
-                        dest: key_reg,
-                    }),
-                }
+                // field, transform included; a null key stays null, so the
+                // event writes no row.
+                ops.push(OpCode::EvaluateEventExpr {
+                    expr,
+                    transform: self.find_primary_key_transformation(mappings),
+                    dest: key_reg,
+                });
                 ops.push(OpCode::CopyRegisterIfNull {
                     source: resolved_key_reg,
                     dest: key_reg,

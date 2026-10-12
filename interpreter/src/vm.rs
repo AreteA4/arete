@@ -3812,7 +3812,11 @@ impl VmContext {
                     self.registers[*dest] = value;
                     pc += 1;
                 }
-                OpCode::EvaluateEventExpr { expr, dest } => {
+                OpCode::EvaluateEventExpr {
+                    expr,
+                    transform,
+                    dest,
+                } => {
                     let value = match self.evaluate_computed_expr(expr, event_value) {
                         Ok(value) => value,
                         Err(error) => {
@@ -3824,6 +3828,12 @@ impl VmContext {
                             );
                             Value::Null
                         }
+                    };
+                    let value = match transform {
+                        Some(transformation) if !value.is_null() => {
+                            Self::apply_transformation(&value, transformation)?
+                        }
+                        _ => value,
                     };
                     self.registers[*dest] = value;
                     pc += 1;
