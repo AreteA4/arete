@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use arete_interpreter::ast::{
     BinaryOp, ComputedExpr, FieldPath, IdentitySpec, KeyResolutionStrategy, MappingSource,
     PopulationStrategy, SerializableFieldMapping, SerializableHandlerSpec, SerializableStreamSpec,
-    SourceSpec, TypedStreamSpec, CURRENT_AST_VERSION,
+    SourceSpec, Transformation, TypedStreamSpec, CURRENT_AST_VERSION,
 };
 use arete_interpreter::compiler::MultiEntityBytecode;
 use arete_interpreter::vm::{UpdateContext, VmContext};
@@ -97,6 +97,15 @@ fn trade_price() -> ComputedExpr {
 }
 
 fn candle_spec() -> TypedStreamSpec<Value> {
+    candle_spec_keyed(mapping(
+        "id.key",
+        MappingSource::FromExpr { expr: candle_key() },
+        PopulationStrategy::SetOnce,
+    ))
+}
+
+/// The candle spec with `key` as its primary key mapping.
+fn candle_spec_keyed(key: SerializableFieldMapping) -> TypedStreamSpec<Value> {
     use PopulationStrategy::{Count, LastWrite, Max, Min, SetOnce, Sum};
     let expr = |expr| MappingSource::FromExpr { expr };
     let traded = SerializableHandlerSpec {
@@ -112,7 +121,7 @@ fn candle_spec() -> TypedStreamSpec<Value> {
             primary_field: FieldPath::new(&[]),
         },
         mappings: vec![
-            mapping("id.key", expr(candle_key()), SetOnce),
+            key,
             mapping("id.pool", from("whirlpool"), SetOnce),
             mapping("id.bucket", expr(minute()), SetOnce),
             mapping("ohlc.open", from("post_sqrt_price"), SetOnce),
@@ -150,8 +159,12 @@ fn candle_spec() -> TypedStreamSpec<Value> {
 }
 
 fn bytecode() -> MultiEntityBytecode {
+    bytecode_for(candle_spec())
+}
+
+fn bytecode_for(spec: TypedStreamSpec<Value>) -> MultiEntityBytecode {
     MultiEntityBytecode::new()
-        .add_entity(ENTITY.to_string(), candle_spec(), 0)
+        .add_entity(ENTITY.to_string(), spec, 0)
         .build()
 }
 
@@ -293,4 +306,45 @@ fn an_event_whose_key_expression_is_null_creates_no_row() {
 
     assert!(mutations.is_empty());
     assert!(vm.get_entity_state(0, &json!(":60")).is_none());
+}
+
+#[test]
+fn integers_above_i128_stay_exact() {
+    let bytecode = bytecode();
+    let mut vm = VmContext::new();
+    // 2^127 and 2^127 + 1: equal once rounded to f64.
+    let low = "170141183460469231731687303715884105728";
+    let high = "170141183460469231731687303715884105729";
+
+    swap(&mut vm, &bytecode, "PoolA", 60, high, json!(low), json!(1));
+    swap(&mut vm, &bytecode, "PoolA", 61, low, json!(1), json!(1));
+    swap(&mut vm, &bytecode, "PoolA", 62, high, json!(-2), json!(1));
+
+    let candle = candle(&vm, "PoolA:60");
+    assert_eq!(candle["ohlc"]["high"], json!(high));
+    assert_eq!(candle["ohlc"]["low"], json!(low));
+    // 2^127 + 1 - 2, past i128 and back below it.
+    assert_eq!(
+        candle["volume"]["input"],
+        json!("170141183460469231731687303715884105727")
+    );
+}
+
+#[test]
+fn an_expression_key_takes_the_key_mapping_transform() {
+    let mut key = mapping(
+        "id.key",
+        MappingSource::FromExpr { expr: minute() },
+        PopulationStrategy::SetOnce,
+    );
+    key.transform = Some(Transformation::ToString);
+    let bytecode = bytecode_for(candle_spec_keyed(key));
+    let mut vm = VmContext::new();
+
+    swap(&mut vm, &bytecode, "PoolA", 125, "1", json!(1), json!(1));
+
+    // The row is keyed by the value written to its key field.
+    let candle = candle(&vm, "120");
+    assert_eq!(candle["id"]["key"], json!("120"));
+    assert!(vm.get_entity_state(0, &json!(120)).is_none());
 }

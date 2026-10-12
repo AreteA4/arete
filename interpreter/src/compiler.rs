@@ -1501,10 +1501,26 @@ impl<S> TypedCompiler<S> {
                 let expr = self
                     .find_primary_key_expr(mappings)
                     .expect("checked by the guard");
-                ops.push(OpCode::EvaluateEventExpr {
-                    expr,
-                    dest: key_reg,
-                });
+                // The key is the value the mapping writes to the primary key
+                // field, transform included.
+                match self.find_primary_key_transformation(mappings) {
+                    Some(transformation) => {
+                        let temp_reg = 18;
+                        ops.push(OpCode::EvaluateEventExpr {
+                            expr,
+                            dest: temp_reg,
+                        });
+                        ops.push(OpCode::Transform {
+                            source: temp_reg,
+                            dest: key_reg,
+                            transformation,
+                        });
+                    }
+                    None => ops.push(OpCode::EvaluateEventExpr {
+                        expr,
+                        dest: key_reg,
+                    }),
+                }
                 ops.push(OpCode::CopyRegisterIfNull {
                     source: resolved_key_reg,
                     dest: key_reg,

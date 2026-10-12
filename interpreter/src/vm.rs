@@ -801,10 +801,13 @@ enum NumericFold {
 
 /// A number read for a max, min or sum fold. Decoders emit u128 and i128
 /// values, and u64 values above 2^53, as decimal strings, so a string that
-/// parses as a number counts as one.
+/// parses as a number counts as one. Integers stay exact across the whole
+/// i128 and u128 range.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum NumericValue {
     Int(i128),
+    /// An integer above `i128::MAX`.
+    Wide(u128),
     Float(f64),
 }
 
@@ -820,8 +823,7 @@ impl NumericValue {
                 .parse::<i128>()
                 .ok()
                 .map(Self::Int)
-                // u128 values above i128::MAX compare approximately.
-                .or_else(|| text.parse::<u128>().ok().map(|v| Self::Float(v as f64)))
+                .or_else(|| text.parse::<u128>().ok().map(Self::unsigned))
                 .or_else(|| {
                     text.parse::<f64>()
                         .ok()
@@ -832,23 +834,46 @@ impl NumericValue {
         }
     }
 
+    /// `value` as `Int` when it fits, otherwise `Wide`.
+    fn unsigned(value: u128) -> Self {
+        i128::try_from(value).map_or(Self::Wide(value), Self::Int)
+    }
+
     fn as_f64(self) -> f64 {
         match self {
             Self::Int(v) => v as f64,
+            Self::Wide(v) => v as f64,
             Self::Float(v) => v,
         }
     }
 
     fn cmp(self, other: Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
         match (self, other) {
             (Self::Int(a), Self::Int(b)) => a.cmp(&b),
+            (Self::Wide(a), Self::Wide(b)) => a.cmp(&b),
+            // A wide integer is above every i128.
+            (Self::Wide(_), Self::Int(_)) => Ordering::Greater,
+            (Self::Int(_), Self::Wide(_)) => Ordering::Less,
             (a, b) => a.as_f64().total_cmp(&b.as_f64()),
         }
     }
 
     fn checked_add(self, other: Self) -> Option<Self> {
         match (self, other) {
-            (Self::Int(a), Self::Int(b)) => a.checked_add(b).map(Self::Int),
+            (Self::Int(a), Self::Int(b)) => a.checked_add(b).map(Self::Int).or_else(|| {
+                // Two positive i128 values always fit in a u128.
+                (a > 0 && b > 0).then(|| Self::unsigned(a as u128 + b as u128))
+            }),
+            (Self::Wide(a), Self::Wide(b)) => a.checked_add(b).map(Self::Wide),
+            (Self::Wide(wide), Self::Int(int)) | (Self::Int(int), Self::Wide(wide)) => {
+                if int >= 0 {
+                    wide.checked_add(int as u128).map(Self::unsigned)
+                } else {
+                    // |int| <= 2^127 <= wide, so this cannot underflow.
+                    Some(Self::unsigned(wide - int.unsigned_abs()))
+                }
+            }
             (a, b) => Some(Self::Float(a.as_f64() + b.as_f64())).filter(|v| v.as_f64().is_finite()),
         }
     }
@@ -861,6 +886,7 @@ impl NumericValue {
                 .map(|v| json!(v))
                 .or_else(|_| u64::try_from(v).map(|v| json!(v)))
                 .unwrap_or_else(|_| Value::String(v.to_string())),
+            Self::Wide(v) => Value::String(v.to_string()),
             Self::Float(v) => serde_json::Number::from_f64(v)
                 .map(Value::Number)
                 .unwrap_or(Value::Null),
