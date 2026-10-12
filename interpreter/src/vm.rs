@@ -791,6 +791,109 @@ fn set_entry(map: &mut serde_json::Map<String, Value>, key: &str, value: Value) 
     }
 }
 
+/// The fold a max, min or sum strategy applies to a field.
+#[derive(Debug, Clone, Copy)]
+enum NumericFold {
+    Max,
+    Min,
+    Sum,
+}
+
+/// A number read for a max, min or sum fold. Decoders emit u128 and i128
+/// values, and u64 values above 2^53, as decimal strings, so a string that
+/// parses as a number counts as one. Integers stay exact across the whole
+/// i128 and u128 range.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum NumericValue {
+    Int(i128),
+    /// An integer above `i128::MAX`.
+    Wide(u128),
+    Float(f64),
+}
+
+impl NumericValue {
+    fn parse(value: &Value) -> Option<Self> {
+        match value {
+            Value::Number(number) => number
+                .as_i64()
+                .map(|v| Self::Int(v.into()))
+                .or_else(|| number.as_u64().map(|v| Self::Int(v.into())))
+                .or_else(|| number.as_f64().map(Self::Float)),
+            Value::String(text) => text
+                .parse::<i128>()
+                .ok()
+                .map(Self::Int)
+                .or_else(|| text.parse::<u128>().ok().map(Self::unsigned))
+                .or_else(|| {
+                    text.parse::<f64>()
+                        .ok()
+                        .filter(|v| v.is_finite())
+                        .map(Self::Float)
+                }),
+            _ => None,
+        }
+    }
+
+    /// `value` as `Int` when it fits, otherwise `Wide`.
+    fn unsigned(value: u128) -> Self {
+        i128::try_from(value).map_or(Self::Wide(value), Self::Int)
+    }
+
+    fn as_f64(self) -> f64 {
+        match self {
+            Self::Int(v) => v as f64,
+            Self::Wide(v) => v as f64,
+            Self::Float(v) => v,
+        }
+    }
+
+    fn cmp(self, other: Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => a.cmp(&b),
+            (Self::Wide(a), Self::Wide(b)) => a.cmp(&b),
+            // A wide integer is above every i128.
+            (Self::Wide(_), Self::Int(_)) => Ordering::Greater,
+            (Self::Int(_), Self::Wide(_)) => Ordering::Less,
+            (a, b) => a.as_f64().total_cmp(&b.as_f64()),
+        }
+    }
+
+    fn checked_add(self, other: Self) -> Option<Self> {
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => a.checked_add(b).map(Self::Int).or_else(|| {
+                // Two positive i128 values always fit in a u128.
+                (a > 0 && b > 0).then(|| Self::unsigned(a as u128 + b as u128))
+            }),
+            (Self::Wide(a), Self::Wide(b)) => a.checked_add(b).map(Self::Wide),
+            (Self::Wide(wide), Self::Int(int)) | (Self::Int(int), Self::Wide(wide)) => {
+                if int >= 0 {
+                    wide.checked_add(int as u128).map(Self::unsigned)
+                } else {
+                    // |int| <= 2^127 <= wide, so this cannot underflow.
+                    Some(Self::unsigned(wide - int.unsigned_abs()))
+                }
+            }
+            (a, b) => Some(Self::Float(a.as_f64() + b.as_f64())).filter(|v| v.as_f64().is_finite()),
+        }
+    }
+
+    /// JSON for a sum: a number when it fits in an i64 or u64, otherwise a
+    /// decimal string, as decoders emit wide integers.
+    fn to_json(self) -> Value {
+        match self {
+            Self::Int(v) => i64::try_from(v)
+                .map(|v| json!(v))
+                .or_else(|_| u64::try_from(v).map(|v| json!(v)))
+                .unwrap_or_else(|_| Value::String(v.to_string())),
+            Self::Wide(v) => Value::String(v.to_string()),
+            Self::Float(v) => serde_json::Number::from_f64(v)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+        }
+    }
+}
+
 /// Event field that restricts a replayed event to one handler segment.
 const HANDLER_SEGMENT_FIELD: &str = "__handler_segment";
 
@@ -3709,6 +3812,32 @@ impl VmContext {
                     self.registers[*dest] = value;
                     pc += 1;
                 }
+                OpCode::EvaluateEventExpr {
+                    expr,
+                    transform,
+                    dest,
+                } => {
+                    let value = match self.evaluate_computed_expr(expr, event_value) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            tracing::warn!(
+                                entity = entity_name,
+                                event_type,
+                                %error,
+                                "event expression failed; using null"
+                            );
+                            Value::Null
+                        }
+                    };
+                    let value = match transform {
+                        Some(transformation) if !value.is_null() => {
+                            Self::apply_transformation(&value, transformation)?
+                        }
+                        _ => value,
+                    };
+                    self.registers[*dest] = value;
+                    pc += 1;
+                }
                 OpCode::LoadConstant { value, dest } => {
                     self.registers[*dest] = value.clone();
                     pc += 1;
@@ -5116,15 +5245,27 @@ impl VmContext {
         Ok(false)
     }
 
-    fn set_field_max(
+    /// Apply a max, min or sum fold of the value in `value_reg` to the field
+    /// at `path`. Returns whether the field changed.
+    fn fold_numeric_field(
         &mut self,
         object_reg: Register,
         path: &str,
         value_reg: Register,
+        fold: NumericFold,
     ) -> Result<bool> {
         let compiled = self.get_compiled_path(path);
         let segments = compiled.segments();
         let new_value = self.registers[value_reg].clone();
+        let Some(new_number) = NumericValue::parse(&new_value) else {
+            if new_value.is_null() {
+                return Ok(false);
+            }
+            return match fold {
+                NumericFold::Sum => Err("Sum requires numeric value".into()),
+                NumericFold::Max | NumericFold::Min => Ok(false),
+            };
+        };
 
         if !self.registers[object_reg].is_object() {
             self.registers[object_reg] = json!({});
@@ -5137,37 +5278,38 @@ impl VmContext {
         let mut current = obj;
         for (i, segment) in segments.iter().enumerate() {
             if i == segments.len() - 1 {
-                let should_update = if let Some(current_value) = current.get(segment) {
-                    if current_value.is_null() {
-                        true
-                    } else {
-                        match (current_value.as_i64(), new_value.as_i64()) {
-                            (Some(current_val), Some(new_val)) => new_val > current_val,
-                            (Some(current_val), None) if new_value.as_u64().is_some() => {
-                                new_value.as_u64().unwrap() as i64 > current_val
-                            }
-                            (None, Some(new_val)) if current_value.as_u64().is_some() => {
-                                new_val > current_value.as_u64().unwrap() as i64
-                            }
-                            (None, None) => match (current_value.as_u64(), new_value.as_u64()) {
-                                (Some(current_val), Some(new_val)) => new_val > current_val,
-                                _ => match (current_value.as_f64(), new_value.as_f64()) {
-                                    (Some(current_val), Some(new_val)) => new_val > current_val,
-                                    _ => false,
-                                },
-                            },
-                            _ => false,
+                let current_number = current
+                    .get(segment)
+                    .filter(|value| !value.is_null())
+                    .map(NumericValue::parse);
+                let next = match (fold, current_number) {
+                    (_, None) => match fold {
+                        NumericFold::Sum => new_number.to_json(),
+                        NumericFold::Max | NumericFold::Min => new_value,
+                    },
+                    // A stored value that is not a number is never replaced
+                    // by max or min, and sums from zero.
+                    (NumericFold::Max | NumericFold::Min, Some(None)) => return Ok(false),
+                    (NumericFold::Sum, Some(None)) => new_number.to_json(),
+                    (NumericFold::Max, Some(Some(current_number))) => {
+                        if new_number.cmp(current_number) != std::cmp::Ordering::Greater {
+                            return Ok(false);
                         }
+                        new_value
                     }
-                } else {
-                    true
+                    (NumericFold::Min, Some(Some(current_number))) => {
+                        if new_number.cmp(current_number) != std::cmp::Ordering::Less {
+                            return Ok(false);
+                        }
+                        new_value
+                    }
+                    (NumericFold::Sum, Some(Some(current_number))) => current_number
+                        .checked_add(new_number)
+                        .ok_or("Sum overflowed")?
+                        .to_json(),
                 };
-
-                if should_update {
-                    set_entry(current, segment, new_value);
-                    return Ok(true);
-                }
-                return Ok(false);
+                set_entry(current, segment, next);
+                return Ok(true);
             } else {
                 current =
                     child_object(current, segment).ok_or("Path collision: expected object")?;
@@ -5177,67 +5319,22 @@ impl VmContext {
         Ok(false)
     }
 
+    fn set_field_max(
+        &mut self,
+        object_reg: Register,
+        path: &str,
+        value_reg: Register,
+    ) -> Result<bool> {
+        self.fold_numeric_field(object_reg, path, value_reg, NumericFold::Max)
+    }
+
     fn set_field_sum(
         &mut self,
         object_reg: Register,
         path: &str,
         value_reg: Register,
     ) -> Result<bool> {
-        let compiled = self.get_compiled_path(path);
-        let segments = compiled.segments();
-        let new_value = &self.registers[value_reg];
-
-        // Extract numeric value before borrowing object_reg mutably
-        tracing::trace!(
-            "set_field_sum: path={:?}, value={:?}, value_type={}",
-            path,
-            new_value,
-            match new_value {
-                serde_json::Value::Null => "null",
-                serde_json::Value::Bool(_) => "bool",
-                serde_json::Value::Number(_) => "number",
-                serde_json::Value::String(_) => "string",
-                serde_json::Value::Array(_) => "array",
-                serde_json::Value::Object(_) => "object",
-            }
-        );
-        let new_val_num = new_value
-            .as_i64()
-            .or_else(|| new_value.as_u64().map(|n| n as i64))
-            .ok_or("Sum requires numeric value")?;
-
-        if !self.registers[object_reg].is_object() {
-            self.registers[object_reg] = json!({});
-        }
-
-        let obj = self.registers[object_reg]
-            .as_object_mut()
-            .ok_or("Not an object")?;
-
-        let mut current = obj;
-        for (i, segment) in segments.iter().enumerate() {
-            if i == segments.len() - 1 {
-                let current_val = current
-                    .get(segment)
-                    .and_then(|v| {
-                        if v.is_null() {
-                            None
-                        } else {
-                            v.as_i64().or_else(|| v.as_u64().map(|n| n as i64))
-                        }
-                    })
-                    .unwrap_or(0);
-
-                let sum = current_val + new_val_num;
-                set_entry(current, segment, json!(sum));
-                return Ok(true);
-            } else {
-                current =
-                    child_object(current, segment).ok_or("Path collision: expected object")?;
-            }
-        }
-
-        Ok(false)
+        self.fold_numeric_field(object_reg, path, value_reg, NumericFold::Sum)
     }
 
     fn set_field_increment(&mut self, object_reg: Register, path: &str) -> Result<bool> {
@@ -5285,59 +5382,7 @@ impl VmContext {
         path: &str,
         value_reg: Register,
     ) -> Result<bool> {
-        let compiled = self.get_compiled_path(path);
-        let segments = compiled.segments();
-        let new_value = self.registers[value_reg].clone();
-
-        if !self.registers[object_reg].is_object() {
-            self.registers[object_reg] = json!({});
-        }
-
-        let obj = self.registers[object_reg]
-            .as_object_mut()
-            .ok_or("Not an object")?;
-
-        let mut current = obj;
-        for (i, segment) in segments.iter().enumerate() {
-            if i == segments.len() - 1 {
-                let should_update = if let Some(current_value) = current.get(segment) {
-                    if current_value.is_null() {
-                        true
-                    } else {
-                        match (current_value.as_i64(), new_value.as_i64()) {
-                            (Some(current_val), Some(new_val)) => new_val < current_val,
-                            (Some(current_val), None) if new_value.as_u64().is_some() => {
-                                (new_value.as_u64().unwrap() as i64) < current_val
-                            }
-                            (None, Some(new_val)) if current_value.as_u64().is_some() => {
-                                new_val < current_value.as_u64().unwrap() as i64
-                            }
-                            (None, None) => match (current_value.as_u64(), new_value.as_u64()) {
-                                (Some(current_val), Some(new_val)) => new_val < current_val,
-                                _ => match (current_value.as_f64(), new_value.as_f64()) {
-                                    (Some(current_val), Some(new_val)) => new_val < current_val,
-                                    _ => false,
-                                },
-                            },
-                            _ => false,
-                        }
-                    }
-                } else {
-                    true
-                };
-
-                if should_update {
-                    set_entry(current, segment, new_value);
-                    return Ok(true);
-                }
-                return Ok(false);
-            } else {
-                current =
-                    child_object(current, segment).ok_or("Path collision: expected object")?;
-            }
-        }
-
-        Ok(false)
+        self.fold_numeric_field(object_reg, path, value_reg, NumericFold::Min)
     }
 
     fn get_field(&mut self, object_reg: Register, path: &str) -> Result<Value> {
@@ -7142,6 +7187,23 @@ impl VmContext {
                 }
             }
             "to_string" => Ok(json!(value.to_string())),
+            // Join scalars into one string, as for a key made of a pool and a
+            // time bucket. Strings join unquoted; a null part makes it null.
+            "concat" => {
+                let mut joined = String::new();
+                for part in std::iter::once(value).chain(args.iter()) {
+                    match part {
+                        Value::Null => return Ok(Value::Null),
+                        Value::String(text) => joined.push_str(text),
+                        Value::Number(number) => joined.push_str(&number.to_string()),
+                        Value::Bool(flag) => joined.push_str(&flag.to_string()),
+                        other => {
+                            return Err(format!("Cannot concat {:?}", other).into());
+                        }
+                    }
+                }
+                Ok(Value::String(joined))
+            }
             "min" => {
                 if args.is_empty() {
                     return Err("min() requires an argument".into());
