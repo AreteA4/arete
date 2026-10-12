@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.41.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.40.0...arete-mcp-v0.41.0) (2026-10-12)
+
+
+### Features
+
+* **sdk:** show a runnable example and typed read results in SDK references ([983071b](https://github.com/AreteA4/arete/commit/983071b8a5199b99f849d99a798452f0304fe560))
+* **sdk:** show a runnable example and typed read results in SDK references ([ff4694b](https://github.com/AreteA4/arete/commit/ff4694b84416d389915d13f449e6f2e3041f04b1))
+
+
+### Bug Fixes
+
+* **sdk:** type only untransformed results and unambiguous locals; mark example placeholders ([1dc8a97](https://github.com/AreteA4/arete/commit/1dc8a976f921e0eb118e943664d9b17e04d9f008))
+
 ## [0.40.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.39.0...arete-mcp-v0.40.0) (2026-10-12)
 
 
