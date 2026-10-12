@@ -6,6 +6,13 @@ This project uses Arete for typed Solana views and program operations. The
 `arete-programs`, `arete-stack-authoring`, and `arete-deploy` skills hold the
 detailed workflows.
 
+What Arete can do, for Solana programs and data: find programs and live-data
+stacks from intent in a public catalog; read live views once (`a4 get`, MCP
+`read_view`) or stream them; generate typed TypeScript/React, Rust and Python
+SDKs; read program accounts and chain state; derive PDAs and build
+instructions, transactions and multi-step flows, signed and submitted through
+application wallets; and author and deploy custom live read models (stacks).
+
 - Health check first: `a4 doctor --summary --json` (ready when top-level
   `status` is `"ok"`; exit 0 can include warnings; `checks` lists only what
   needs attention, and an `info` check there is optional unless you need
