@@ -2471,6 +2471,8 @@ impl VmContext {
         }
     }
 
+    /// Requeue requests for the next dispatch. Their backend call, if any,
+    /// succeeded, so a later failure starts the backoff from the beginning.
     pub fn restore_resolver_requests(&mut self, requests: Vec<ResolverRequest>) {
         if requests.is_empty() {
             return;
@@ -2478,6 +2480,7 @@ impl VmContext {
 
         for request in &requests {
             if let Some(entry) = self.resolver_pending.get_mut(&request.cache_key) {
+                entry.backend_failures = 0;
                 entry.in_flight = false;
                 entry.queued = true;
                 entry.next_retry_at = Instant::now();
@@ -8284,10 +8287,13 @@ mod tests {
     #[test]
     fn resolver_failure_backoff_doubles_up_to_a_minute() {
         let base = resolver_retry_backoff();
-        assert_eq!(resolver_failure_backoff(1), base);
+        assert_eq!(
+            resolver_failure_backoff(1),
+            base.min(MAX_RESOLVER_FAILURE_BACKOFF)
+        );
         assert_eq!(
             resolver_failure_backoff(2),
-            (base * 2).min(MAX_RESOLVER_FAILURE_BACKOFF)
+            base.saturating_mul(2).min(MAX_RESOLVER_FAILURE_BACKOFF)
         );
         assert_eq!(
             resolver_failure_backoff(u32::MAX),
@@ -8350,6 +8356,33 @@ mod tests {
         let entry = &vm.resolver_pending[&cache_key];
         assert_eq!(entry.backend_failures, 2);
         assert!(entry.next_retry_at >= before + resolver_failure_backoff(2));
+    }
+
+    #[test]
+    fn a_successful_call_resets_the_failure_backoff() {
+        let mut vm = VmContext::new();
+        vm.enqueue_resolver_request(
+            "ignored".to_string(),
+            ResolverType::Token,
+            json!("mint_123"),
+            ResolverTarget {
+                state_id: 0,
+                entity_name: "TestEntity".to_string(),
+                primary_key: json!("entity_1"),
+                extracts: vec![],
+            },
+        );
+        let batch = vm.take_resolver_requests();
+        let cache_key = batch[0].cache_key.clone();
+        vm.defer_resolver_requests(batch.clone());
+        vm.defer_resolver_requests(batch.clone());
+        assert_eq!(vm.resolver_pending[&cache_key].backend_failures, 2);
+
+        // The next call reaches the backend but leaves this key out.
+        vm.restore_resolver_requests(batch.clone());
+        let batch = vm.take_resolver_requests();
+        vm.defer_resolver_requests(batch);
+        assert_eq!(vm.resolver_pending[&cache_key].backend_failures, 1);
     }
 
     #[test]
