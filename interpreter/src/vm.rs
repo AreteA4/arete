@@ -403,6 +403,23 @@ fn resolver_max_retries() -> u32 {
 
 /// Delay before resending a request whose backend call failed `failures`
 /// times in a row: the retry backoff, doubled per failure, capped at a minute.
+fn is_numeric_cast(to_type: &str) -> bool {
+    matches!(
+        to_type,
+        "i8" | "i16"
+            | "i32"
+            | "i64"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "usize"
+            | "f32"
+            | "f64"
+    )
+}
+
 fn resolver_failure_backoff(failures: u32) -> Duration {
     let doublings = failures.saturating_sub(1).min(16);
     resolver_retry_backoff()
@@ -7089,6 +7106,12 @@ impl VmContext {
 
     /// Apply a type cast to a value
     fn apply_cast(&self, value: &Value, to_type: &str) -> Result<Value> {
+        // A missing value stays missing, as it does in arithmetic, so a
+        // computed field over a field that has not arrived yet is null rather
+        // than an error.
+        if value.is_null() && is_numeric_cast(to_type) {
+            return Ok(Value::Null);
+        }
         match to_type {
             "i8" | "i16" | "i32" | "i64" | "isize" => {
                 if let Some(n) = value.as_i64() {
@@ -8409,6 +8432,48 @@ mod tests {
         vm.resolver_deferred.push(Reverse((past, cache_key)));
         assert!(vm.take_resolver_requests().is_empty());
         assert!(vm.resolver_deferred.is_empty());
+    }
+
+    #[test]
+    fn numeric_cast_of_null_is_null() {
+        let vm = VmContext::new();
+        for to_type in ["i64", "u64", "f32", "f64"] {
+            assert_eq!(vm.apply_cast(&Value::Null, to_type).unwrap(), Value::Null);
+        }
+        assert_eq!(vm.apply_cast(&json!("2.5"), "f64").unwrap(), json!(2.5));
+        assert!(vm.apply_cast(&json!([1]), "f64").is_err());
+        assert_eq!(vm.apply_cast(&Value::Null, "bool").unwrap(), json!(false));
+    }
+
+    #[test]
+    fn computed_field_over_a_missing_value_is_null() {
+        let vm = VmContext::new();
+        let mut state = json!({ "pool": {} });
+        let spec = ComputedFieldSpec {
+            target_path: "pool.price".to_string(),
+            result_type: "f64".to_string(),
+            expression: ComputedExpr::Binary {
+                op: BinaryOp::Mul,
+                left: Box::new(ComputedExpr::Cast {
+                    expr: Box::new(ComputedExpr::FieldRef {
+                        path: "pool.sqrt_price".to_string(),
+                    }),
+                    to_type: "f64".to_string(),
+                }),
+                right: Box::new(ComputedExpr::Literal { value: json!(2.0) }),
+            },
+        };
+
+        let updated = vm
+            .evaluate_computed_fields_from_ast(&mut state, std::slice::from_ref(&spec))
+            .unwrap();
+        assert_eq!(updated, vec!["pool.price".to_string()]);
+        assert_eq!(state["pool"]["price"], Value::Null);
+
+        state["pool"]["sqrt_price"] = json!("3");
+        vm.evaluate_computed_fields_from_ast(&mut state, std::slice::from_ref(&spec))
+            .unwrap();
+        assert_eq!(state["pool"]["price"], json!(6.0));
     }
 
     #[test]
