@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.41.2](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.41.1...arete-interpreter-v0.41.2) (2026-10-13)
+
+
+### Bug Fixes
+
+* **interpreter:** let numeric casts of a missing value stay missing ([7af53cc](https://github.com/AreteA4/arete/commit/7af53ccd0297e58455d85c34a9dede24d428e2d6))
+* **interpreter:** let numeric casts of a missing value stay missing ([793188f](https://github.com/AreteA4/arete/commit/793188f2c6044131a56159603c323689ee2bf29b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.41.1 to 0.41.2
+
 ## [0.41.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.41.0...arete-interpreter-v0.41.1) (2026-10-13)
 
 
