@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.41.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.41.0...arete-interpreter-v0.41.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **interpreter:** back off URL resolver requests after a backend failure ([25e5bf4](https://github.com/AreteA4/arete/commit/25e5bf47da580394f966f0f355a61294ef7f4c6d))
+* **interpreter:** back off URL resolver requests after a backend failure ([e3ffc63](https://github.com/AreteA4/arete/commit/e3ffc634d49661dddd5b20708ac2e355ed1fcb10))
+* **interpreter:** restart the resolver backoff after a successful call ([fb4ce5a](https://github.com/AreteA4/arete/commit/fb4ce5a2dd2bf76292a1320a90a7984bf70505fd))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.41.0 to 0.41.1
+
 ## [0.41.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.40.0...arete-interpreter-v0.41.0) (2026-10-12)
 
 
