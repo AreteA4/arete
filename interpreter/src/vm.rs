@@ -11,7 +11,8 @@ use lru::LruCache;
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::borrow::{Borrow, Cow};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -294,6 +295,7 @@ const DEFAULT_RESOLVER_CACHE_TTL_SECS: u64 = 3600; // 1 hour
 const DEFAULT_NEGATIVE_RESOLVER_CACHE_TTL_SECS: u64 = 30;
 const DEFAULT_RESOLVER_RETRY_BACKOFF_SECS: u64 = 2;
 const DEFAULT_RESOLVER_MAX_RETRIES: u32 = 1;
+const MAX_RESOLVER_FAILURE_BACKOFF: Duration = Duration::from_secs(60);
 
 static RESOLVER_CACHE_CAPACITY: Lazy<NonZeroUsize> = Lazy::new(|| {
     NonZeroUsize::new(
@@ -397,6 +399,15 @@ fn resolver_retry_backoff() -> Duration {
 
 fn resolver_max_retries() -> u32 {
     *RESOLVER_MAX_RETRIES
+}
+
+/// Delay before resending a request whose backend call failed `failures`
+/// times in a row: the retry backoff, doubled per failure, capped at a minute.
+fn resolver_failure_backoff(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    resolver_retry_backoff()
+        .saturating_mul(1 << doublings)
+        .min(MAX_RESOLVER_FAILURE_BACKOFF)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -663,6 +674,9 @@ pub struct VmContext {
     pub pending_queue_size: u64,
     resolver_requests: VecDeque<ResolverRequest>,
     resolver_pending: HashMap<String, PendingResolverEntry>,
+    // Requests waiting out a backend failure, earliest first. Stale keys are
+    // skipped when they come due.
+    resolver_deferred: BinaryHeap<Reverse<(Instant, String)>>,
     // Distinguish requests scheduled after a deletion from in-flight old results.
     resolver_epoch: u64,
     // The earliest resolver epoch a recreated entity may join. Entries only
@@ -1293,6 +1307,8 @@ pub struct PendingResolverEntry {
     pub queued_at: i64,
     pub next_retry_at: Instant,
     pub retry_count: u32,
+    // Consecutive backend failures; drives the backoff in `defer_resolver_requests`.
+    backend_failures: u32,
     pub queued: bool,
     pub in_flight: bool,
 }
@@ -1934,6 +1950,7 @@ impl VmContext {
             pending_queue_size: 0,
             resolver_requests: VecDeque::new(),
             resolver_pending: HashMap::new(),
+            resolver_deferred: BinaryHeap::new(),
             resolver_epoch: 0,
             resolver_target_epochs: HashMap::new(),
             resolver_cache: LruCache::new(resolver_cache_capacity()),
@@ -2144,6 +2161,7 @@ impl VmContext {
             pending_queue_size: 0,
             resolver_requests: VecDeque::new(),
             resolver_pending: HashMap::new(),
+            resolver_deferred: BinaryHeap::new(),
             resolver_epoch: 0,
             resolver_target_epochs: HashMap::new(),
             resolver_cache: LruCache::new(resolver_cache_capacity()),
@@ -2179,6 +2197,7 @@ impl VmContext {
             pending_queue_size: 0,
             resolver_requests: VecDeque::new(),
             resolver_pending: HashMap::new(),
+            resolver_deferred: BinaryHeap::new(),
             resolver_epoch: 0,
             resolver_target_epochs: HashMap::new(),
             resolver_cache: LruCache::new(resolver_cache_capacity()),
@@ -2227,6 +2246,7 @@ impl VmContext {
     }
 
     pub fn take_resolver_requests(&mut self) -> Vec<ResolverRequest> {
+        self.release_deferred_resolver_requests();
         let requests: Vec<ResolverRequest> = self.resolver_requests.drain(..).collect();
         for request in &requests {
             if let Some(entry) = self.resolver_pending.get_mut(&request.cache_key) {
@@ -2451,6 +2471,8 @@ impl VmContext {
         }
     }
 
+    /// Requeue requests for the next dispatch. Their backend call, if any,
+    /// succeeded, so a later failure starts the backoff from the beginning.
     pub fn restore_resolver_requests(&mut self, requests: Vec<ResolverRequest>) {
         if requests.is_empty() {
             return;
@@ -2458,6 +2480,7 @@ impl VmContext {
 
         for request in &requests {
             if let Some(entry) = self.resolver_pending.get_mut(&request.cache_key) {
+                entry.backend_failures = 0;
                 entry.in_flight = false;
                 entry.queued = true;
                 entry.next_retry_at = Instant::now();
@@ -2465,6 +2488,48 @@ impl VmContext {
         }
 
         self.resolver_requests.extend(requests);
+    }
+
+    /// Requeue requests whose backend call failed, after a backoff that grows
+    /// with each consecutive failure. Unlike `restore_resolver_requests`, a
+    /// backend that keeps failing is not called again on every dispatch.
+    pub fn defer_resolver_requests(&mut self, requests: Vec<ResolverRequest>) {
+        let now = Instant::now();
+        for request in requests {
+            if let Some(entry) = self.resolver_pending.get_mut(&request.cache_key) {
+                entry.backend_failures = entry.backend_failures.saturating_add(1);
+                entry.next_retry_at = now + resolver_failure_backoff(entry.backend_failures);
+                entry.in_flight = false;
+                entry.queued = false;
+                self.resolver_deferred
+                    .push(Reverse((entry.next_retry_at, request.cache_key)));
+            }
+        }
+    }
+
+    fn release_deferred_resolver_requests(&mut self) {
+        let now = Instant::now();
+        while let Some(Reverse((due_at, _))) = self.resolver_deferred.peek() {
+            if *due_at > now {
+                break;
+            }
+            let Some(Reverse((_, cache_key))) = self.resolver_deferred.pop() else {
+                break;
+            };
+            // Skip keys that resolved, were dropped or were deferred again.
+            let Some(entry) = self.resolver_pending.get_mut(&cache_key) else {
+                continue;
+            };
+            if !entry.ready_to_queue() {
+                continue;
+            }
+            entry.queued = true;
+            self.resolver_requests.push_back(ResolverRequest {
+                cache_key,
+                resolver: entry.resolver.clone(),
+                input: entry.input.clone(),
+            });
+        }
     }
 
     pub(crate) fn get_cached_resolver_value(
@@ -2769,6 +2834,7 @@ impl VmContext {
                 queued_at,
                 next_retry_at: Instant::now(),
                 retry_count: 0,
+                backend_failures: 0,
                 queued: true,
                 in_flight: false,
             },
@@ -8216,6 +8282,133 @@ mod tests {
         let pending = vm.resolver_pending.get(&cache_key).unwrap();
         assert!(pending.in_flight);
         assert_eq!(pending.targets.len(), 2);
+    }
+
+    #[test]
+    fn resolver_failure_backoff_doubles_up_to_a_minute() {
+        let base = resolver_retry_backoff();
+        assert_eq!(
+            resolver_failure_backoff(1),
+            base.min(MAX_RESOLVER_FAILURE_BACKOFF)
+        );
+        assert_eq!(
+            resolver_failure_backoff(2),
+            base.saturating_mul(2).min(MAX_RESOLVER_FAILURE_BACKOFF)
+        );
+        assert_eq!(
+            resolver_failure_backoff(u32::MAX),
+            MAX_RESOLVER_FAILURE_BACKOFF
+        );
+    }
+
+    #[test]
+    fn deferred_resolver_request_waits_out_its_backoff() {
+        let mut vm = VmContext::new();
+        let resolver = ResolverType::Token;
+        let input = json!("mint_123");
+        let target = |key: &str| ResolverTarget {
+            state_id: 0,
+            entity_name: "TestEntity".to_string(),
+            primary_key: json!(key),
+            extracts: vec![],
+        };
+
+        vm.enqueue_resolver_request(
+            "ignored".to_string(),
+            resolver.clone(),
+            input.clone(),
+            target("entity_1"),
+        );
+        let batch = vm.take_resolver_requests();
+        assert_eq!(batch.len(), 1);
+        let cache_key = batch[0].cache_key.clone();
+
+        vm.defer_resolver_requests(batch);
+        assert!(vm.take_resolver_requests().is_empty());
+
+        // A new target joins the waiting request without sending it early.
+        vm.enqueue_resolver_request(
+            "ignored".to_string(),
+            resolver.clone(),
+            input.clone(),
+            target("entity_2"),
+        );
+        assert!(vm.take_resolver_requests().is_empty());
+        assert_eq!(vm.resolver_pending[&cache_key].targets.len(), 2);
+
+        // Once the backoff has passed, the request is sent again by itself.
+        let past = Instant::now() - Duration::from_secs(1);
+        vm.resolver_pending
+            .get_mut(&cache_key)
+            .unwrap()
+            .next_retry_at = past;
+        vm.resolver_deferred.clear();
+        vm.resolver_deferred
+            .push(Reverse((past, cache_key.clone())));
+        let retried = vm.take_resolver_requests();
+        assert_eq!(retried.len(), 1);
+        assert_eq!(retried[0].cache_key, cache_key);
+        assert!(vm.resolver_pending[&cache_key].in_flight);
+
+        // A second failure waits longer than the first.
+        let before = Instant::now();
+        vm.defer_resolver_requests(retried);
+        let entry = &vm.resolver_pending[&cache_key];
+        assert_eq!(entry.backend_failures, 2);
+        assert!(entry.next_retry_at >= before + resolver_failure_backoff(2));
+    }
+
+    #[test]
+    fn a_successful_call_resets_the_failure_backoff() {
+        let mut vm = VmContext::new();
+        vm.enqueue_resolver_request(
+            "ignored".to_string(),
+            ResolverType::Token,
+            json!("mint_123"),
+            ResolverTarget {
+                state_id: 0,
+                entity_name: "TestEntity".to_string(),
+                primary_key: json!("entity_1"),
+                extracts: vec![],
+            },
+        );
+        let batch = vm.take_resolver_requests();
+        let cache_key = batch[0].cache_key.clone();
+        vm.defer_resolver_requests(batch.clone());
+        vm.defer_resolver_requests(batch.clone());
+        assert_eq!(vm.resolver_pending[&cache_key].backend_failures, 2);
+
+        // The next call reaches the backend but leaves this key out.
+        vm.restore_resolver_requests(batch.clone());
+        let batch = vm.take_resolver_requests();
+        vm.defer_resolver_requests(batch);
+        assert_eq!(vm.resolver_pending[&cache_key].backend_failures, 1);
+    }
+
+    #[test]
+    fn deferred_key_that_resolved_meanwhile_is_not_resent() {
+        let mut vm = VmContext::new();
+        vm.enqueue_resolver_request(
+            "ignored".to_string(),
+            ResolverType::Token,
+            json!("mint_123"),
+            ResolverTarget {
+                state_id: 0,
+                entity_name: "TestEntity".to_string(),
+                primary_key: json!("entity_1"),
+                extracts: vec![],
+            },
+        );
+        let batch = vm.take_resolver_requests();
+        let cache_key = batch[0].cache_key.clone();
+        vm.defer_resolver_requests(batch);
+
+        vm.drop_pending_resolver_entry(&cache_key);
+        let past = Instant::now() - Duration::from_secs(1);
+        vm.resolver_deferred.clear();
+        vm.resolver_deferred.push(Reverse((past, cache_key)));
+        assert!(vm.take_resolver_requests().is_empty());
+        assert!(vm.resolver_deferred.is_empty());
     }
 
     #[test]

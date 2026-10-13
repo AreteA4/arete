@@ -212,6 +212,7 @@ pub trait RuntimeResolver: Send + Sync {
 
             let mut mutations = Vec::new();
             let mut failed = Vec::new();
+            let mut deferred = Vec::new();
             let mut retry_scheduled_count = 0usize;
             let mut negative_cached_miss_count = 0usize;
 
@@ -297,7 +298,7 @@ pub trait RuntimeResolver: Send + Sync {
                                     TokenResolverMissAction::Dropped => {}
                                 }
                             }
-                            RuntimeResolverRequest::UrlJson { .. } => failed.push(entry.request),
+                            RuntimeResolverRequest::UrlJson { .. } => deferred.push(entry.request),
                         }
                     }
                 }
@@ -305,9 +306,13 @@ pub trait RuntimeResolver: Send + Sync {
             let apply_pending_ms = elapsed_ms(apply_pending_started_at);
 
             let failed_count = failed.len();
+            let deferred_count = deferred.len();
             let restore_failed_started_at = Instant::now();
             if !failed.is_empty() {
                 vm_guard.restore_resolver_requests(failed);
+            }
+            if !deferred.is_empty() {
+                vm_guard.defer_resolver_requests(deferred);
             }
             let restore_failed_ms = elapsed_ms(restore_failed_started_at);
             if apply_context.is_some() {
@@ -325,6 +330,7 @@ pub trait RuntimeResolver: Send + Sync {
                     negative_cached_count,
                     unique_request_count,
                     failed_count,
+                    deferred_count,
                     retry_scheduled_count,
                     negative_cached_miss_count,
                     mutation_count = mutations.len(),
@@ -535,6 +541,59 @@ mod tests {
                 mint: "abc".to_string(),
             }
         );
+    }
+
+    struct FailingResolver;
+
+    impl RuntimeResolver for FailingResolver {
+        fn resolve_batch<'a>(
+            &'a self,
+            _requests: &'a [RuntimeResolverRequest],
+        ) -> ResolverBatchFuture<'a> {
+            Box::pin(async { Err("backend unavailable".into()) })
+        }
+    }
+
+    #[test]
+    fn url_requests_back_off_after_a_backend_failure() {
+        let resolver = ResolverType::Url(crate::ast::UrlResolverConfig {
+            url_source: crate::ast::UrlSource::FieldPath("metadata_url".to_string()),
+            method: HttpMethod::Get,
+            extract_path: None,
+        });
+        let vm = std::sync::Mutex::new(VmContext::new());
+        let requests = {
+            let mut vm = vm.lock().unwrap();
+            vm.enqueue_resolver_request(
+                "ignored".to_string(),
+                resolver,
+                serde_json::json!("https://example.com/metadata.json"),
+                crate::vm::ResolverTarget {
+                    state_id: 0,
+                    entity_name: "TestEntity".to_string(),
+                    primary_key: serde_json::json!("entity_1"),
+                    extracts: vec![],
+                },
+            );
+            vm.take_resolver_requests()
+        };
+        assert_eq!(requests.len(), 1);
+
+        let bytecode = MultiEntityBytecode {
+            entities: HashMap::new(),
+            event_routing: HashMap::new(),
+            when_events: Default::default(),
+            proto_router: crate::proto_router::ProtoRouter::new(),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mutations =
+            runtime.block_on(FailingResolver.resolve_and_apply(&vm, &bytecode, requests, None));
+        assert!(mutations.is_empty());
+
+        // The request stays pending but is not sent straight back to the backend.
+        assert!(vm.lock().unwrap().take_resolver_requests().is_empty());
     }
 
     #[test]
