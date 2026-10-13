@@ -403,6 +403,13 @@ fn resolver_max_retries() -> u32 {
 
 /// Delay before resending a request whose backend call failed `failures`
 /// times in a row: the retry backoff, doubled per failure, capped at a minute.
+fn resolver_failure_backoff(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    resolver_retry_backoff()
+        .saturating_mul(1 << doublings)
+        .min(MAX_RESOLVER_FAILURE_BACKOFF)
+}
+
 fn is_numeric_cast(to_type: &str) -> bool {
     matches!(
         to_type,
@@ -418,13 +425,6 @@ fn is_numeric_cast(to_type: &str) -> bool {
             | "f32"
             | "f64"
     )
-}
-
-fn resolver_failure_backoff(failures: u32) -> Duration {
-    let doublings = failures.saturating_sub(1).min(16);
-    resolver_retry_backoff()
-        .saturating_mul(1 << doublings)
-        .min(MAX_RESOLVER_FAILURE_BACKOFF)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
