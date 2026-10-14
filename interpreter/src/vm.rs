@@ -410,6 +410,17 @@ fn resolver_failure_backoff(failures: u32) -> Duration {
         .min(MAX_RESOLVER_FAILURE_BACKOFF)
 }
 
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 fn is_numeric_cast(to_type: &str) -> bool {
     matches!(
         to_type,
@@ -5341,13 +5352,17 @@ impl VmContext {
         let segments = compiled.segments();
         let new_value = self.registers[value_reg].clone();
         let Some(new_number) = NumericValue::parse(&new_value) else {
-            if new_value.is_null() {
-                return Ok(false);
+            // A value that is not a number leaves the field as it is, for sums
+            // as for max and min. Failing would drop every other field the
+            // same update writes.
+            if !new_value.is_null() && matches!(fold, NumericFold::Sum) {
+                tracing::warn!(
+                    target_path = path,
+                    value_type = json_type_name(&new_value),
+                    "Sum skipped a value that is not a number"
+                );
             }
-            return match fold {
-                NumericFold::Sum => Err("Sum requires numeric value".into()),
-                NumericFold::Max | NumericFold::Min => Ok(false),
-            };
+            return Ok(false);
         };
 
         if !self.registers[object_reg].is_object() {
@@ -8714,6 +8729,27 @@ mod tests {
             "Sell volume should not have decimal: {}",
             sell_serialized
         );
+    }
+
+    #[test]
+    fn sum_of_a_value_that_is_not_a_number_leaves_the_field_alone() {
+        let mut vm = VmContext::new();
+        vm.registers[0] = json!({ "activity": { "volume": 5 } });
+        for (reg, value) in [
+            (1, json!("not a number")),
+            (2, json!({ "amount": 1 })),
+            (3, json!([1])),
+            (4, json!(true)),
+            (5, Value::Null),
+        ] {
+            vm.registers[reg] = value;
+            assert!(!vm.set_field_sum(0, "activity.volume", reg).unwrap());
+        }
+        assert_eq!(vm.registers[0]["activity"]["volume"], json!(5));
+
+        vm.registers[6] = json!("7");
+        assert!(vm.set_field_sum(0, "activity.volume", 6).unwrap());
+        assert_eq!(vm.registers[0]["activity"]["volume"], json!(12));
     }
 
     #[test]
