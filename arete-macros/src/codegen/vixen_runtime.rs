@@ -445,8 +445,9 @@ pub(crate) fn generate_slot_subscription_task() -> TokenStream {
                             blocks: std::collections::HashMap::new(),
                             blocks_meta: std::collections::HashMap::new(),
                             entry: std::collections::HashMap::new(),
-                            // Same commitment as the data stream, so the scheduler
-                            // never runs ahead of the data it schedules against.
+                            // Same commitment as the data stream. At processed the
+                            // scheduler would run a whole confirmation ahead of the
+                            // data; the two connections still race within a slot.
                             commitment: Some(
                                 arete::runtime::yellowstone_grpc_proto::geyser::CommitmentLevel::Confirmed as i32
                             ),
