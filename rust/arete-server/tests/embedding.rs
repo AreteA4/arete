@@ -179,6 +179,7 @@ async fn spawn_with_one_token() -> RuntimeHandle {
                 key: serde_json::json!("token-1"),
                 patch: serde_json::json!({"id": "token-1", "price": 1}),
                 append: vec![],
+                occurrence: None,
             };
             mutations
                 .send(MutationBatch::with_slot_context(
