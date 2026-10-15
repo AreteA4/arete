@@ -167,6 +167,11 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                     "[SCHEDULER] Re-evaluating condition at callback fire time"
                                 );
                                 if !condition_met {
+                                    // Slot notifications arrive on their own connection, so the
+                                    // due slot's data may not be applied yet. Look again for a
+                                    // few slots before treating the condition as settled.
+                                    let mut sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
+                                    sched.retry_unmet_condition(callback, current_slot);
                                     continue;
                                 }
                             }
@@ -3320,7 +3325,10 @@ pub fn generate_runtime(
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_instruction_handler_impl, generate_spec_function, RuntimeGenConfig};
+    use super::{
+        generate_instruction_handler_impl, generate_slot_scheduler_task, generate_spec_function,
+        RuntimeGenConfig,
+    };
 
     #[test]
     fn snapshot_reconnect_uses_parser_progress_without_consuming_restore_cut() {
@@ -3341,6 +3349,20 @@ mod tests {
         assert!(compact.contains("letsnapshot_barrier="));
         assert!(compact.contains("barrier.enter_processing().await"));
         assert!(compact.contains("batch.with_snapshot_guard(snapshot_guard)"));
+    }
+
+    #[test]
+    fn scheduler_retries_a_false_condition_before_dropping_it() {
+        let code = generate_slot_scheduler_task().to_string();
+        let compact: String = code.split_whitespace().collect();
+
+        let start = compact
+            .find("if!condition_met{")
+            .expect("scheduler checks the callback condition");
+        let branch = &compact[start..];
+        let branch = &branch[..branch.find("continue;").expect("false branch ends")];
+
+        assert!(branch.contains("sched.retry_unmet_condition(callback,current_slot)"));
     }
 
     #[test]
