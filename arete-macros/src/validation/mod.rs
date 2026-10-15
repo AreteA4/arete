@@ -535,7 +535,9 @@ fn resolve_mapping_source_once<'a>(
         return Ok(ResolvedMappingSource::Other);
     }
 
-    if is_instruction {
+    // `#[map]` marks only `::instructions::` paths as instructions; an `::events::` path resolves
+    // the same way so its payload fields and `accounts::` selectors are checked too.
+    if is_instruction || source_type.contains("::events::") {
         let path =
             syn::parse_str::<syn::Path>(source_type).map_err(|_| IdlSearchError::InvalidPath {
                 path: source_type.to_string(),
@@ -1034,10 +1036,11 @@ fn validate_mapping_references(
                     if !mapping.source_field_name.is_empty()
                         && !mapping.source_field_name.starts_with("__")
                     {
-                        if let Some(temp_field) = try_field_spec_from_leaf(
+                        if let Some(mut temp_field) = try_field_spec_from_leaf(
                             &mapping.source_field_name,
                             mapping.source_field_span,
                         ) {
+                            temp_field.explicit_location = mapping.source_field_location.clone();
                             if let Err(error) =
                                 validate_event_field_spec(idl, event_name, &temp_field)
                             {
@@ -1128,7 +1131,7 @@ fn validate_mapping_references(
                             idl,
                             instruction_name,
                         } => {
-                            for leaf in &field_leaves {
+                            for (leaf, _) in &field_leaves {
                                 if leaf.starts_with("__") {
                                     continue;
                                 }
@@ -1149,13 +1152,17 @@ fn validate_mapping_references(
                             }
                         }
                         ResolvedMappingSource::Event { idl, event_name } => {
-                            for leaf in &field_leaves {
+                            for (leaf, reads_account) in &field_leaves {
                                 if leaf.starts_with("__") {
                                     continue;
                                 }
-                                if let Some(temp_field) =
+                                if let Some(mut temp_field) =
                                     try_field_spec_from_leaf(leaf, mapping.attr_span)
                                 {
+                                    if *reads_account {
+                                        temp_field.explicit_location =
+                                            Some(parse::FieldLocation::Account);
+                                    }
                                     if let Err(error) =
                                         validate_event_field_spec(idl, event_name, &temp_field)
                                     {
@@ -1168,7 +1175,7 @@ fn validate_mapping_references(
                             }
                         }
                         ResolvedMappingSource::Account { idl, account_name } => {
-                            for leaf in &field_leaves {
+                            for (leaf, _) in &field_leaves {
                                 if leaf.starts_with("__") {
                                     continue;
                                 }
@@ -1196,7 +1203,7 @@ fn validate_aggregate_conditions(
     idls: IdlLookup,
     errors: &mut ErrorCollector,
 ) {
-    let mut field_paths: Vec<(&String, Vec<String>)> = Vec::new();
+    let mut field_paths: Vec<(&String, Vec<(String, bool)>)> = Vec::new();
 
     for (target_field, condition) in aggregate_conditions {
         if let Some(parsed) = &condition.parsed {
@@ -1238,7 +1245,7 @@ fn validate_aggregate_conditions(
                     idl,
                     instruction_name,
                 }) => {
-                    for leaf in leaves {
+                    for (leaf, _) in leaves {
                         if leaf.starts_with("__") {
                             continue;
                         }
@@ -1255,12 +1262,16 @@ fn validate_aggregate_conditions(
                     }
                 }
                 Ok(ResolvedMappingSource::Event { idl, event_name }) => {
-                    for leaf in leaves {
+                    for (leaf, reads_account) in leaves {
                         if leaf.starts_with("__") {
                             continue;
                         }
-                        if let Some(temp_field) = try_field_spec_from_leaf(leaf, mapping.attr_span)
+                        if let Some(mut temp_field) =
+                            try_field_spec_from_leaf(leaf, mapping.attr_span)
                         {
+                            if *reads_account {
+                                temp_field.explicit_location = Some(parse::FieldLocation::Account);
+                            }
                             if let Err(error) =
                                 validate_event_field_spec(idl, &event_name, &temp_field)
                             {
@@ -1290,7 +1301,7 @@ fn validate_aggregate_conditions(
             if let Ok(ResolvedMappingSource::Account { idl, account_name }) =
                 resolve_mapping_source_once(&source_type, std::slice::from_ref(mapping), idls)
             {
-                for leaf in leaves {
+                for (leaf, _) in leaves {
                     if leaf.starts_with("__") {
                         continue;
                     }
@@ -1335,8 +1346,10 @@ fn try_field_spec_from_leaf(leaf: &str, span: proc_macro2::Span) -> Option<parse
 /// Recursively collect the leaf (last) segment of every field path referenced
 /// in a parsed condition tree. Only leaf segments are collected because IDL
 /// instruction fields are flat identifiers — dotted paths like `data.amount`
-/// use the final segment `amount` for validation.
-fn collect_condition_field_leaves(condition: &crate::ast::ParsedCondition) -> Vec<String> {
+/// use the final segment `amount` for validation. The flag marks an
+/// `accounts.<leaf>` path, which on an event reads the emitting instruction's
+/// account rather than a payload field.
+fn collect_condition_field_leaves(condition: &crate::ast::ParsedCondition) -> Vec<(String, bool)> {
     let mut leaves = Vec::new();
     collect_condition_field_leaves_recursive(condition, &mut leaves);
     leaves.sort();
@@ -1346,13 +1359,15 @@ fn collect_condition_field_leaves(condition: &crate::ast::ParsedCondition) -> Ve
 
 fn collect_condition_field_leaves_recursive(
     condition: &crate::ast::ParsedCondition,
-    leaves: &mut Vec<String>,
+    leaves: &mut Vec<(String, bool)>,
 ) {
     match condition {
         crate::ast::ParsedCondition::Comparison { field, .. } => {
             if let Some(leaf) = field.segments.last() {
                 if !leaf.is_empty() {
-                    leaves.push(leaf.clone());
+                    let reads_account =
+                        field.segments.len() == 2 && field.segments[0] == "accounts";
+                    leaves.push((leaf.clone(), reads_account));
                 }
             }
         }
@@ -1451,6 +1466,21 @@ fn validate_event_references(
             } else {
                 first_source.clone()
             };
+
+            // A captured record holds one value per name, and an event's payload and its emitting
+            // instruction's accounts can share one (`pool` and `accounts::pool`).
+            let mut captured_names = HashSet::new();
+            for field_spec in &event_attr.capture_fields {
+                let field_name = field_spec.ident.to_string();
+                if !captured_names.insert(field_name.clone()) {
+                    errors.push(syn::Error::new(
+                        field_spec.ident.span(),
+                        format!(
+                            "`{field_name}` is captured twice; a captured record holds one value per name"
+                        ),
+                    ));
+                }
+            }
 
             for field_spec in &event_attr.capture_fields {
                 let field_name = field_spec.ident.to_string();

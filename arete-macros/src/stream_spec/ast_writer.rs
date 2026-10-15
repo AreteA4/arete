@@ -564,7 +564,8 @@ fn build_source_handler(
     let idl = find_idl_for_type(source_type, idls);
     let is_instruction = mappings.iter().any(|m| m.is_instruction);
     // CPI events are sourced from `::events::` submodule paths (e.g. generated_sdk::events::Swap).
-    // All event fields are stored under "data.*" (no "accounts.*" section).
+    // A bare field is the event payload under "data.*"; `accounts::name` is the emitting
+    // instruction's account under "accounts.*".
     let is_cpi_event = source_type.contains("::events::");
 
     // Skip event-derived mappings
@@ -627,11 +628,13 @@ fn build_source_handler(
             }
         } else {
             let field_path = if is_cpi_event {
-                // CPI events: all fields (including identifiers like lb_pair, from) are under "data"
                 if mapping.source_field_name.is_empty() {
                     FieldPath::new(&["data"])
                 } else {
-                    FieldPath::new(&["data", &mapping.source_field_name])
+                    FieldPath::new(&[
+                        event_field_prefix(mapping.source_field_location.as_ref()),
+                        &mapping.source_field_name,
+                    ])
                 }
             } else if is_instruction {
                 if mapping.source_field_name.is_empty() {
@@ -709,8 +712,11 @@ fn build_source_handler(
             if let Some(field) = context_field {
                 primary_field = Some(format!("__update_context.{field}"));
             } else if is_cpi_event {
-                // CPI event fields are always in "data"
-                primary_field = Some(format!("data.{}", mapping.source_field_name));
+                primary_field = Some(format!(
+                    "{}.{}",
+                    event_field_prefix(mapping.source_field_location.as_ref()),
+                    mapping.source_field_name
+                ));
             } else if is_instruction {
                 let prefix = if let Some(idl) = idl {
                     match lookup_instruction_field(idl, account_type, &mapping.source_field_name)
@@ -742,20 +748,11 @@ fn build_source_handler(
     });
 
     let lookup_by_path = |fs: &parse::FieldSpec| {
-        // FieldSpec has explicit_location which tells us if it's accounts:: or data::
-        // For CPI events, all fields (including identifiers) are under "data".
-        let prefix = match &fs.explicit_location {
-            Some(parse::FieldLocation::Account) => "accounts",
-            Some(parse::FieldLocation::InstructionArg) => "data",
-            None => {
-                if is_cpi_event {
-                    "data" // CPI event fields are always in "data"
-                } else {
-                    "accounts" // Default to accounts for instruction compatibility
-                }
-            }
-        };
-        format!("{}.{}", prefix, fs.ident)
+        format!(
+            "{}.{}",
+            lookup_by_prefix(fs.explicit_location.as_ref(), is_cpi_event),
+            fs.ident
+        )
     };
 
     // Try to find lookup_by from the first mapping that has it
@@ -952,6 +949,26 @@ fn build_source_handler(
         conditions: Vec::new(),
         emit: true,
     }])
+}
+
+/// Where an event field lives in the decoded event value: the payload under `data`, unless
+/// `accounts::` selects the emitting instruction's account.
+fn event_field_prefix(location: Option<&parse::FieldLocation>) -> &'static str {
+    match location {
+        Some(parse::FieldLocation::Account) => "accounts",
+        Some(parse::FieldLocation::InstructionArg) | None => "data",
+    }
+}
+
+/// Where a `lookup_by`-style key lives. An explicit `accounts::` / `data::` wins; a bare name is
+/// the payload for a CPI event and an account for an instruction.
+fn lookup_by_prefix(location: Option<&parse::FieldLocation>, is_cpi_event: bool) -> &'static str {
+    match location {
+        Some(parse::FieldLocation::Account) => "accounts",
+        Some(parse::FieldLocation::InstructionArg) => "data",
+        None if is_cpi_event => "data",
+        None => "accounts",
+    }
 }
 
 /// Scoped event type name of a `#[map]` source, e.g. `cp_amm::SplitPositionIxState`.
@@ -1746,23 +1763,16 @@ fn build_instruction_hooks_ast(
 
         for derive_attr in derive_attrs {
             let source = if derive_attr.field.ident.to_string().starts_with("__") {
-                match crate::ast::writer::context_field_name(
-                    &derive_attr.field.ident.to_string(),
-                ) {
+                match crate::ast::writer::context_field_name(&derive_attr.field.ident.to_string()) {
                     Some(field) => MappingSource::FromContext {
                         field: field.to_string(),
                     },
                     None => continue,
                 }
             } else {
-                let path_prefix = if is_cpi_event {
-                    // CPI event fields are always under "data" (no "accounts" section)
-                    "data"
-                } else {
-                    match &derive_attr.field.explicit_location {
-                        Some(parse::FieldLocation::Account) => "accounts",
-                        Some(parse::FieldLocation::InstructionArg) | None => "data",
-                    }
+                let path_prefix = match &derive_attr.field.explicit_location {
+                    Some(parse::FieldLocation::Account) => "accounts",
+                    Some(parse::FieldLocation::InstructionArg) | None => "data",
                 };
 
                 MappingSource::FromSource {
@@ -1783,10 +1793,11 @@ fn build_instruction_hooks_ast(
                 condition,
             };
 
-            // CPI events: lookup_by fields are under "data"; instructions: under "accounts"
-            let lookup_by_prefix = if is_cpi_event { "data" } else { "accounts" };
             let lookup_by = derive_attr.lookup_by.as_ref().map(|field_spec| {
-                FieldPath::new(&[lookup_by_prefix, &field_spec.ident.to_string()])
+                FieldPath::new(&[
+                    lookup_by_prefix(field_spec.explicit_location.as_ref(), is_cpi_event),
+                    &field_spec.ident.to_string(),
+                ])
             });
 
             hook_for_lookup(&mut instruction_hooks_map, &instr_type_state, lookup_by)
@@ -1815,17 +1826,12 @@ fn build_instruction_hooks_ast(
             let lookup_by = mapping
                 .stop_lookup_by
                 .as_ref()
+                .or(mapping.lookup_by.as_ref())
                 .map(|field_spec| {
-                    let prefix = match &field_spec.explicit_location {
-                        Some(parse::FieldLocation::InstructionArg) => "data",
-                        _ => "accounts",
-                    };
-                    FieldPath::new(&[prefix, &field_spec.ident.to_string()])
-                })
-                .or_else(|| {
-                    mapping.lookup_by.as_ref().map(|field_spec| {
-                        FieldPath::new(&["accounts", &field_spec.ident.to_string()])
-                    })
+                    FieldPath::new(&[
+                        lookup_by_prefix(field_spec.explicit_location.as_ref(), stop_is_cpi_event),
+                        &field_spec.ident.to_string(),
+                    ])
                 })
                 .or_else(|| {
                     mapping
