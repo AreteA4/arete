@@ -445,8 +445,11 @@ pub(crate) fn generate_slot_subscription_task() -> TokenStream {
                             blocks: std::collections::HashMap::new(),
                             blocks_meta: std::collections::HashMap::new(),
                             entry: std::collections::HashMap::new(),
+                            // Same commitment as the data stream. At processed the
+                            // scheduler would run a whole confirmation ahead of the
+                            // data; the two connections still race within a slot.
                             commitment: Some(
-                                arete::runtime::yellowstone_grpc_proto::geyser::CommitmentLevel::Processed as i32
+                                arete::runtime::yellowstone_grpc_proto::geyser::CommitmentLevel::Confirmed as i32
                             ),
                             accounts_data_slice: vec![],
                             ping: None,
@@ -1804,7 +1807,12 @@ pub fn generate_spec_function(
                         endpoint: endpoint.clone(),
                         x_token: x_token.clone(),
                         timeout: 60,
-                        commitment_level: None,
+                        // Entity state has no rollback, so only apply updates
+                        // from blocks the cluster has voted on. Processed can
+                        // carry blocks that are later dropped.
+                        commitment_level: Some(
+                            arete::runtime::shipstern_core::CommitmentLevel::Confirmed,
+                        ),
                         from_slot,
                         accept_compression: None,
                         max_decoding_message_size: None,
@@ -3180,7 +3188,12 @@ pub fn generate_multi_pipeline_spec_function(
                         endpoint: endpoint.clone(),
                         x_token: x_token.clone(),
                         timeout: 60,
-                        commitment_level: None,
+                        // Entity state has no rollback, so only apply updates
+                        // from blocks the cluster has voted on. Processed can
+                        // carry blocks that are later dropped.
+                        commitment_level: Some(
+                            arete::runtime::shipstern_core::CommitmentLevel::Confirmed,
+                        ),
                         from_slot,
                         accept_compression: None,
                         max_decoding_message_size: None,
