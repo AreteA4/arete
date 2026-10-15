@@ -6,6 +6,14 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const MAX_RETRIES: u32 = 100;
 
+/// Slots a callback whose condition reads false is looked at again before
+/// it is dropped. The scheduler learns of slots on a different connection
+/// from the data, so the due slot's updates can still be in flight; a
+/// condition that stays false this long is taken as genuinely false. Shares
+/// `retry_count` with the other retries, so a callback that already waited
+/// for its state gets no extra condition retries.
+pub const CONDITION_RETRIES: u32 = 3;
+
 type DedupKey = (String, String, String);
 
 pub struct SlotScheduler {
