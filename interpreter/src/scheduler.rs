@@ -76,6 +76,22 @@ impl SlotScheduler {
         self.register(next_slot, callback);
     }
 
+    /// Look at a due callback whose condition read false again next slot,
+    /// while it has [`CONDITION_RETRIES`] left. Returns whether it was kept;
+    /// a callback out of retries is dropped.
+    pub fn retry_unmet_condition(
+        &mut self,
+        mut callback: ScheduledCallback,
+        current_slot: u64,
+    ) -> bool {
+        if callback.retry_count >= CONDITION_RETRIES {
+            return false;
+        }
+        callback.retry_count += 1;
+        self.re_register(callback, current_slot + 1);
+        true
+    }
+
     pub fn pending_count(&self) -> usize {
         self.callbacks.values().map(|v| v.len()).sum()
     }
@@ -195,5 +211,84 @@ fn compare_numeric(
                 _ => false,
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{ResolveStrategy, ResolverType};
+    use serde_json::json;
+
+    fn callback() -> ScheduledCallback {
+        ScheduledCallback {
+            state_id: 0,
+            entity_name: "Round".into(),
+            primary_key: json!(1),
+            resolver: ResolverType::Token,
+            url_template: None,
+            input_value: None,
+            input_path: None,
+            condition: Some(ResolverCondition {
+                field_path: "ended".into(),
+                op: ComparisonOp::Equal,
+                value: json!(true),
+            }),
+            strategy: ResolveStrategy::SetOnce,
+            extracts: Vec::new(),
+            retry_count: 0,
+        }
+    }
+
+    /// The data that makes the condition true lands a slot after the
+    /// callback fell due: the retried callback is due again and now passes.
+    #[test]
+    fn an_unmet_condition_is_due_again_next_slot() {
+        let mut scheduler = SlotScheduler::new();
+        assert!(scheduler.retry_unmet_condition(callback(), 100));
+
+        assert!(scheduler.take_due(100).is_empty());
+        let due = scheduler.take_due(101);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].retry_count, 1);
+
+        let condition = due[0].condition.as_ref().unwrap();
+        assert!(evaluate_condition(condition, &json!({ "ended": true })));
+    }
+
+    #[test]
+    fn a_condition_that_stays_false_is_dropped_at_the_limit() {
+        let mut scheduler = SlotScheduler::new();
+        let mut slot = 100;
+        let mut cb = callback();
+
+        for _ in 0..CONDITION_RETRIES {
+            assert!(scheduler.retry_unmet_condition(cb, slot));
+            slot += 1;
+            cb = scheduler
+                .take_due(slot)
+                .pop()
+                .expect("retried callback is due");
+        }
+
+        assert_eq!(cb.retry_count, CONDITION_RETRIES);
+        assert!(!scheduler.retry_unmet_condition(cb, slot));
+        assert_eq!(scheduler.pending_count(), 0);
+    }
+
+    /// Retries spent waiting for state count against the condition limit.
+    #[test]
+    fn earlier_retries_use_up_the_condition_limit() {
+        let mut scheduler = SlotScheduler::new();
+        let mut cb = callback();
+        cb.retry_count = CONDITION_RETRIES;
+
+        assert!(!scheduler.retry_unmet_condition(cb, 100));
+        assert_eq!(scheduler.pending_count(), 0);
+
+        let mut cb = callback();
+        cb.retry_count = CONDITION_RETRIES - 1;
+        assert!(scheduler.retry_unmet_condition(cb, 100));
+        assert_eq!(scheduler.pending_count(), 1);
     }
 }

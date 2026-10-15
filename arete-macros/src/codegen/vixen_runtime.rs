@@ -170,11 +170,8 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                     // Slot notifications arrive on their own connection, so the
                                     // due slot's data may not be applied yet. Look again for a
                                     // few slots before treating the condition as settled.
-                                    if callback.retry_count < arete::runtime::arete_interpreter::scheduler::CONDITION_RETRIES {
-                                        callback.retry_count += 1;
-                                        let mut sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
-                                        sched.re_register(callback, current_slot + 1);
-                                    }
+                                    let mut sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
+                                    sched.retry_unmet_condition(callback, current_slot);
                                     continue;
                                 }
                             }
@@ -3352,10 +3349,7 @@ mod tests {
         let branch = &compact[start..];
         let branch = &branch[..branch.find("continue;").expect("false branch ends")];
 
-        assert!(branch.contains(
-            "callback.retry_count<arete::runtime::arete_interpreter::scheduler::CONDITION_RETRIES"
-        ));
-        assert!(branch.contains("sched.re_register(callback,current_slot+1)"));
+        assert!(branch.contains("sched.retry_unmet_condition(callback,current_slot)"));
     }
 
     #[test]
