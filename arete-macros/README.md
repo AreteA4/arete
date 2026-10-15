@@ -64,6 +64,25 @@ pub mod my_stream {
 | `#[computed(...)]` | Computed fields from other fields |
 | `#[derive_from(...)]` | Derive values from instructions or IDL events |
 
+## Cross-program entities
+
+An entity is owned by the program it reads, whatever order the stack lists its
+IDLs in. An entity that reads several programs must name its owner, or it fails
+to compile:
+
+```rust
+#[arete(idl = ["idl/ore.json", "idl/entropy.json"])]
+pub mod ore_stream {
+    #[entity(name = "OreRound", program = "ore")]
+    pub struct OreRound {
+        // Ore sections, plus a section reading entropy_sdk::accounts::Var
+    }
+}
+```
+
+`program` is the IDL program name, the prefix of its `<program>_sdk` module. It
+must be a program the entity reads. A single-program entity needs no `program`.
+
 ## Event-backed authoring
 
 IDL events are valid mapping sources anywhere you can reference a generated SDK path. Use `..._sdk::events::EventName` as the `from =` source and `..._sdk::events::EventName::field_name` for field paths.
@@ -111,6 +130,7 @@ Most diagnostics include either a `Did you mean: ...?` suggestion or a short lis
 - `unknown ... in instructions/accounts/events/...`: the IDL lookup failed; verify the SDK path or source spelling
 - `invalid strategy ...`: use one of the listed strategy values exactly as shown in the error
 - `unknown resolver ...` or `unknown resolver-backed type ...`: use a supported resolver name or change the target field type to a supported resolver-backed type
+- `entity ... reads from several programs ...`: add `program = "..."` to the entity's `#[entity(...)]`, naming the program that owns it
 - `computed fields contain a dependency cycle ...`: break the cycle by making one field depend only on stored state, not another computed field in the loop
 
 ## Testing

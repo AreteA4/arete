@@ -80,9 +80,12 @@ struct Tracker {
 
 **Arguments:**
 
-| Argument | Type     | Required | Description                                              |
-| -------- | -------- | -------- | -------------------------------------------------------- |
-| `name`   | `string` | No       | Custom name for the entity. Defaults to the struct name. |
+| Argument  | Type     | Required | Description                                                                                                        |
+| --------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------ |
+| `name`    | `string` | No       | Custom name for the entity. Defaults to the struct name.                                                           |
+| `program` | `string` | No\*     | The program that owns the entity, by IDL program name (`"ore"` for `ore_sdk`). Must be a program the entity reads. |
+
+_\* Required when the entity reads from more than one program, for example `#[entity(name = "OreRound", program = "ore")]`. Without it the stack fails to compile, because the owning program would be ambiguous. A single-program entity is owned by the program it reads._
 
 ---
 
