@@ -147,6 +147,7 @@ dependencies = [
  "base64 0.22.1",
  "bs58",
  "dirs",
+ "ed25519-dalek",
  "flate2",
  "futures-util",
  "pin-project-lite",
@@ -165,6 +166,7 @@ dependencies = [
  "unicode-normalization",
  "unicode-properties",
  "url",
+ "uuid",
 ]
 
 [[package]]
