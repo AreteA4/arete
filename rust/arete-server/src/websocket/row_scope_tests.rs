@@ -85,7 +85,11 @@ struct Options {
 
 impl Harness {
     async fn start(options: Options) -> Self {
-        let view_index = Arc::new(scoped_index());
+        Self::start_with_index(options, scoped_index()).await
+    }
+
+    async fn start_with_index(options: Options, index: ViewIndex) -> Self {
+        let view_index = Arc::new(index);
         let entity_cache = match options.max_rows {
             Some(max_entities_per_view) => EntityCache::with_config(EntityCacheConfig {
                 max_entities_per_view,
@@ -844,4 +848,67 @@ async fn an_evicted_rows_explicit_scope_still_governs_live_append_delivery() {
         4,
         "private or unknown-scope frame leaked"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replacing_a_scope_parent_publishes_the_public_transition_live_and_in_replay() {
+    let mut index = scoped_index();
+    index.set_entity_scope("Trade", ScopeField::new("meta.access.scope"));
+    let harness = Harness::start_with_index(
+        Options {
+            journal: true,
+            ..Default::default()
+        },
+        index,
+    )
+    .await;
+    harness
+        .mutate(vec![(
+            "Trade",
+            "row",
+            json!({"meta":{"access":{"scope":"B"}},"trade":0}),
+        )])
+        .await;
+    let window = harness
+        .journal
+        .as_ref()
+        .unwrap()
+        .window("Trade/append")
+        .await;
+    let query = json!({"view":"Trade/append","after":format!("{}:{}",window.epoch,window.next-1)});
+    let mut live = harness.connect(None).await;
+    subscribe(&mut live, "live", query.clone()).await;
+    // A partial object preserves the private scope. Neither this patch nor
+    // the private ancestor values it merges with may reach the public reader.
+    harness
+        .mutate(vec![(
+            "Trade",
+            "row",
+            json!({"meta":{"other":true},"trade":1}),
+        )])
+        .await;
+    harness
+        .mutate(vec![(
+            "Trade",
+            "row",
+            json!({"meta":{"access":null},"trade":2}),
+        )])
+        .await;
+    assert_eq!(next_frame(&mut live).await["data"]["trade"], 2);
+    let mut replay = harness.connect(None).await;
+    subscribe(&mut replay, "replay", query).await;
+    assert_eq!(next_frame(&mut replay).await["data"]["trade"], 2);
+    // Clearing the outer parent has the same effect.
+    harness
+        .mutate(vec![(
+            "Trade",
+            "row",
+            json!({"meta":{"access":{"scope":"B"}},"trade":3}),
+        )])
+        .await;
+    harness
+        .mutate(vec![("Trade", "row", json!({"meta":null,"trade":4}))])
+        .await;
+    assert_eq!(next_frame(&mut live).await["data"]["trade"], 4);
+    assert_eq!(next_frame(&mut replay).await["data"]["trade"], 4);
 }

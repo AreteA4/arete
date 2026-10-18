@@ -59,10 +59,22 @@ impl ScopeField {
         }
     }
 
-    /// The scope a frame's data sets, or `None` when the data does not carry
-    /// the field (a patch that leaves the scope as it was).
+    /// The scope a patch sets. Replacing an ancestor with a non-object
+    /// clears its nested scope; omitting a field from a partial object leaves
+    /// its old value untouched, so only that case returns `None`.
     pub fn scope_in<E: EntityFields + ?Sized>(&self, data: &E) -> Option<RowScope> {
-        lookup(data, self.path.iter()).map(|value| RowScope::of_value(&value))
+        let mut path = self.path.iter();
+        let first = path.next()?;
+        let Some(mut current) = data.field(first) else {
+            return (!data.whole().is_object()).then_some(RowScope::Public);
+        };
+        for segment in path {
+            if !current.is_object() {
+                return Some(RowScope::Public);
+            }
+            current = current.get(segment)?;
+        }
+        Some(RowScope::of_value(current))
     }
 }
 
@@ -249,6 +261,42 @@ mod tests {
         assert!(!scoped_to_a.denies_frame_data(&json!({"count": 2})));
         assert!(!scoped_to_a.denies_frame_data(&json!({"meta": {"scope": "a"}})));
         assert!(scoped_to_a.denies_frame_data(&json!({"meta": {"scope": "b"}})));
+    }
+
+    #[test]
+    fn parent_replacements_clear_scope_but_partial_objects_keep_it() {
+        let field = ScopeField::new("meta.access.scope");
+        for patch in [
+            json!({"meta":null}),
+            json!({"meta":false}),
+            json!({"meta":[]}),
+            json!({"meta":"replaced"}),
+            json!({"meta":{"access":null}}),
+            json!({"meta":{"access":7}}),
+            Value::Null,
+        ] {
+            assert_eq!(field.scope_in(&patch), Some(RowScope::Public), "{patch}");
+            assert_eq!(
+                field.scope_in(&crate::shared_entity::SharedEntity::new(patch)),
+                Some(RowScope::Public)
+            );
+        }
+        for patch in [
+            json!({"value":1}),
+            json!({"meta":{}}),
+            json!({"meta":{"access":{}}}),
+            json!({"meta":{"other":true}}),
+        ] {
+            assert_eq!(field.scope_in(&patch), None, "{patch}");
+        }
+        assert_eq!(
+            field.scope_in(&json!({"meta":{"access":{"scope":false}}})),
+            Some(RowScope::Invalid)
+        );
+        assert_eq!(
+            field.scope_in(&json!({"meta":{"access":{"scope":"B"}}})),
+            Some(RowScope::Scoped("B".into()))
+        );
     }
 
     #[test]
