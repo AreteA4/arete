@@ -256,7 +256,9 @@ snake or camel case; 128-bit values are decimal strings.
 ### The session file
 
 While `a4 dev up` runs, `.arete/dev/session.json` (mode 0600) is what apps,
-tests and agents read. It holds no key and no token:
+tests and agents read. It holds no API key or environment token, but it does
+contain a stack session token in `stackSession.token` and in the
+`stackSession.streamUrl` query string. Keep the file and those URLs private:
 
 ```json
 {

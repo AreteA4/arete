@@ -2334,22 +2334,22 @@ a4 telemetry disable
 
 ## Environment Variables
 
-| Variable                              | Description                                                                             |
-| ------------------------------------- | --------------------------------------------------------------------------------------- |
-| `ARETE_API_URL`                       | Override API endpoint                                                                   |
-| `ARETE_PROFILE`                       | Named credential profile outside initialized repos; `.arete/auth.toml` wins inside them |
-| `ARETE_API_KEY`                       | Legacy direct key override, used only when no profile is selected                       |
-| `ARETE_CREDENTIALS_PATH`              | Override the credentials file                                                           |
-| `ARETE_DEV_ENV`                       | The dev environment `a4 dev` commands and the MCP dev tools act on (a name or an id)    |
-| `ARETE_REQUIRE_REGISTRY_SIGNATURES=1` | Refuse registry releases without a valid signature (a warning otherwise)                |
-| `A4_INSTALL_DIR`                      | Install directory for `a4 self install` and the bootstrappers                           |
-| `A4_NO_MODIFY_PATH=1`                 | Do not edit shell profiles or the Windows PATH on install                               |
-| `A4_NO_UPDATE_CHECK=1`                | Disable the once-per-day "update available" notice                                      |
-| `A4_NON_INTERACTIVE=1`                | Never prompt (same as `--non-interactive`)                                              |
-| `A4_VERSION`                          | Version for `install.sh` / `install.ps1` to install                                     |
-| `CI`                                  | When set: never prompt, no PATH edits, no update notice, no telemetry banner            |
-| `DO_NOT_TRACK=1`                      | Disable telemetry (standard)                                                            |
-| `ARETE_TELEMETRY_DISABLED=1`          | Disable telemetry (Arete-specific)                                                      |
+| Variable                              | Description                                                                                                               |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `ARETE_API_URL`                       | Override API endpoint                                                                                                     |
+| `ARETE_PROFILE`                       | Named credential profile outside initialized repos; `.arete/auth.toml` wins inside them                                   |
+| `ARETE_API_KEY`                       | Legacy direct key override, used only when no profile is selected                                                         |
+| `ARETE_CREDENTIALS_PATH`              | Override the credentials file                                                                                             |
+| `ARETE_DEV_ENV`                       | The dev environment `a4 dev` commands and the MCP dev tools act on (a name or an id)                                      |
+| `ARETE_REQUIRE_REGISTRY_SIGNATURES=1` | Require valid registry signatures even in bootstrap builds without trust anchors; official builds enforce them by default |
+| `A4_INSTALL_DIR`                      | Install directory for `a4 self install` and the bootstrappers                                                             |
+| `A4_NO_MODIFY_PATH=1`                 | Do not edit shell profiles or the Windows PATH on install                                                                 |
+| `A4_NO_UPDATE_CHECK=1`                | Disable the once-per-day "update available" notice                                                                        |
+| `A4_NON_INTERACTIVE=1`                | Never prompt (same as `--non-interactive`)                                                                                |
+| `A4_VERSION`                          | Version for `install.sh` / `install.ps1` to install                                                                       |
+| `CI`                                  | When set: never prompt, no PATH edits, no update notice, no telemetry banner                                              |
+| `DO_NOT_TRACK=1`                      | Disable telemetry (standard)                                                                                              |
+| `ARETE_TELEMETRY_DISABLED=1`          | Disable telemetry (Arete-specific)                                                                                        |
 
 ---
 
