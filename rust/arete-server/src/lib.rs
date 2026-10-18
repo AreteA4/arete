@@ -587,6 +587,7 @@ impl ServerBuilder {
         let (view_index, materialized_registry) =
             Self::build_view_index_and_registry(self.views, self.materialized_views, &self.spec);
 
+        view_index.validate_scope_projections()?;
         #[cfg(feature = "otel")]
         let mut runtime = Runtime::new(self.config, view_index, self.metrics);
         #[cfg(not(feature = "otel"))]
@@ -998,6 +999,20 @@ mod tests {
             );
         }
         assert!(index.scope_field_for_view("Board/list").is_none());
+        // A custom projection cannot strip the scope, including when its
+        // field is nested. Reject it at build time, before serving any data.
+        let mut custom = index.get_view("Round/list").unwrap().clone();
+        custom.id = "Round/custom".into();
+        custom.projection.fields = Some(vec!["amount".into()]);
+        let mut invalid = ViewIndex::new();
+        invalid.set_entity_scope("Round", row_scope::ScopeField::new("meta.scope"));
+        invalid.add_spec(custom.clone());
+        assert!(ServerBuilder::new().views(invalid).build().is_err());
+        custom.projection.fields = Some(vec!["amount".into(), "meta".into()]);
+        let mut valid = ViewIndex::new();
+        valid.set_entity_scope("Round", row_scope::ScopeField::new("meta.scope"));
+        valid.add_spec(custom);
+        assert!(ServerBuilder::new().views(valid).build().is_ok());
         let caches = index.sorted_caches();
         let caches = caches.try_read().unwrap();
         assert!(caches.get("Leaders/top").unwrap().is_scope_partitioned());

@@ -79,6 +79,32 @@ impl ViewIndex {
         None
     }
 
+    /// Reject projections that would erase the field enforcing row access.
+    pub(crate) fn validate_scope_projection(&self, spec: &ViewSpec) -> anyhow::Result<()> {
+        if let (Some(scope), Some(fields)) =
+            (self.scope_field_for_view(&spec.id), &spec.projection.fields)
+        {
+            if !scope
+                .path()
+                .first()
+                .is_some_and(|root| fields.contains(root))
+            {
+                anyhow::bail!(
+                    "View {} projection must retain its row scope field",
+                    spec.id
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_scope_projections(&self) -> anyhow::Result<()> {
+        for spec in self.by_id.values() {
+            self.validate_scope_projection(spec)?;
+        }
+        Ok(())
+    }
+
     /// Whether any entity is row-scoped.
     pub fn has_scoped_entities(&self) -> bool {
         !self.entity_scopes.is_empty()

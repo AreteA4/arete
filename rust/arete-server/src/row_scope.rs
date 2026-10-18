@@ -67,7 +67,7 @@ impl ScopeField {
 }
 
 /// A row's scope.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum RowScope {
     /// No scope: every session receives the row.
     Public,

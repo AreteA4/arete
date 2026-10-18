@@ -459,6 +459,9 @@ impl Projector {
         json_buffer: &mut Vec<u8>,
     ) -> anyhow::Result<u32> {
         let specs = self.view_index.by_export(&mutation.export);
+        for spec in specs {
+            self.view_index.validate_scope_projection(spec)?;
+        }
 
         if specs.is_empty() {
             return Ok(0);
@@ -528,6 +531,7 @@ impl Projector {
                 self.publish_frame(
                     spec,
                     Arc::new(BusMessage {
+                        row_scope: None,
                         key: key.clone(),
                         entity: spec.id.clone(),
                         payload: Arc::new(Bytes::copy_from_slice(json_buffer)),
@@ -712,12 +716,25 @@ impl Projector {
             let retained = match journal {
                 Some(journal) => {
                     journal
-                        .append_with(&spec.id, &key, |offset| {
-                            frame.offset = Some(offset);
-                            json_buffer.clear();
-                            serde_json::to_writer(&mut *json_buffer, &frame)?;
-                            Ok::<_, anyhow::Error>(Arc::new(Bytes::copy_from_slice(json_buffer)))
-                        })
+                        .append_scoped_with(
+                            &spec.id,
+                            &key,
+                            self.scope_at_publication(
+                                &spec.id,
+                                &key,
+                                fields,
+                                origin == PatchOrigin::Creation,
+                            )
+                            .await,
+                            |offset| {
+                                frame.offset = Some(offset);
+                                json_buffer.clear();
+                                serde_json::to_writer(&mut *json_buffer, &frame)?;
+                                Ok::<_, anyhow::Error>(Arc::new(Bytes::copy_from_slice(
+                                    json_buffer,
+                                )))
+                            },
+                        )
                         .await?
                 }
                 None => None,
@@ -818,6 +835,7 @@ impl Projector {
                 }
 
                 let message = Arc::new(BusMessage {
+                    row_scope: None,
                     key: key.clone(),
                     entity: spec.id.clone(),
                     payload,
@@ -939,6 +957,7 @@ impl Projector {
             json_buffer.clear();
             serde_json::to_writer(&mut *json_buffer, &frame)?;
             let message = Arc::new(BusMessage {
+                row_scope: None,
                 key: key.to_string(),
                 entity: spec.id.clone(),
                 payload: Arc::new(Bytes::copy_from_slice(json_buffer)),
@@ -1103,13 +1122,47 @@ impl Projector {
         }
     }
 
+    async fn scope_at_publication(
+        &self,
+        view: &str,
+        key: &str,
+        data: &Value,
+        creation: bool,
+    ) -> Option<crate::row_scope::RowScope> {
+        let field = self.view_index.scope_field_for_view(view)?;
+        if let Some(scope) = field.scope_in(data) {
+            return Some(scope);
+        }
+        if !creation {
+            if let Some(row) = self.entity_cache.get_shared(view, key).await {
+                return Some(field.scope_of(&row));
+            }
+        }
+        Some(if creation {
+            crate::row_scope::RowScope::Public
+        } else {
+            crate::row_scope::RowScope::Invalid
+        })
+    }
+
     #[instrument(
         name = "projector.publish",
         level = "debug",
         skip(self, spec, message),
         fields(view_id = %spec.id, mode = ?spec.mode)
     )]
-    async fn publish_frame(&self, spec: &ViewSpec, message: Arc<BusMessage>) {
+    async fn publish_frame(&self, spec: &ViewSpec, mut message: Arc<BusMessage>) {
+        if let Some(field) = self.view_index.scope_field_for_view(&spec.id) {
+            // Cache writes precede publication. Freeze membership before the
+            // broadcast queue can be read after another mutation.
+            let scope = self
+                .entity_cache
+                .get_shared(&spec.id, &message.key)
+                .await
+                .map(|row| field.scope_of(&row))
+                .unwrap_or(crate::row_scope::RowScope::Invalid);
+            Arc::make_mut(&mut message).row_scope = Some(scope);
+        }
         match spec.mode {
             Mode::State => {
                 self.bus_manager
@@ -1230,5 +1283,91 @@ mod tests {
             true,
         );
         assert_eq!(resync.take_last_change("Round", "1"), None);
+    }
+}
+
+#[cfg(test)]
+mod scope_publication_tests {
+    use super::*;
+    use crate::journal::{EventJournal, JournalConfig};
+    use crate::row_scope::{RowScope, ScopeField};
+    use crate::view::{Delivery, Filters};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn sparse_patches_keep_their_original_scope_on_tape_and_bus() {
+        let mut index = ViewIndex::new();
+        index.set_entity_scope("Row", ScopeField::new("meta.scope"));
+        index.add_spec(ViewSpec {
+            id: "Row/append".into(),
+            export: "Row".into(),
+            mode: Mode::Append,
+            wire_format: Default::default(),
+            projection: Projection::all(),
+            filters: Filters::all(),
+            delivery: Delivery::default(),
+            pipeline: None,
+            source_view: None,
+        });
+        let bus = BusManager::new();
+        let mut receiver = bus.get_or_create_list_bus("Row/append").await;
+        let cache = EntityCache::new();
+        let (_, rx) = tokio::sync::mpsc::channel(1);
+        let journal = Arc::new(EventJournal::new(JournalConfig {
+            enabled: true,
+            ..Default::default()
+        }));
+        let projector = Projector::new(
+            Arc::new(index),
+            bus,
+            cache.clone(),
+            rx,
+            #[cfg(feature = "otel")]
+            None,
+        )
+        .with_journal(journal.clone());
+        for (i, patch) in [
+            json!({"meta":{"scope":"B"}}),
+            json!({"secret":"private-at-the-time"}),
+            json!({"meta":{"scope":null}}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            projector
+                .process_mutation(
+                    arete_interpreter::Mutation {
+                        export: "Row".into(),
+                        key: json!("row"),
+                        patch,
+                        append: vec![],
+                    },
+                    Some(SlotContext::new(i as u64 + 1, 0)),
+                    &HashSet::new(),
+                    &mut Vec::new(),
+                )
+                .await
+                .unwrap();
+        }
+        assert!(cache
+            .get_shared("Row/append", "row")
+            .await
+            .unwrap()
+            .to_value()["meta"]["scope"]
+            .is_null());
+        let expected = [
+            RowScope::Scoped("B".into()),
+            RowScope::Scoped("B".into()),
+            RowScope::Public,
+        ];
+        let records = journal.replay_after("Row/append", None).await.unwrap();
+        assert_eq!(records.len(), 3);
+        for (record, scope) in records.iter().zip(expected) {
+            assert_eq!(record.row_scope.as_ref(), Some(&scope));
+            assert_eq!(
+                receiver.recv().await.unwrap().row_scope.as_ref(),
+                Some(&scope)
+            );
+        }
     }
 }

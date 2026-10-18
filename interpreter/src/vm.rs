@@ -5456,9 +5456,13 @@ impl VmContext {
                                     entry.event_type == captured.event_type
                                         && entry.ix_path == captured.ix_path
                                 });
-                                if !known
-                                    && entries.len() < MAX_SIBLING_INSTRUCTIONS_PER_TRANSACTION
-                                {
+                                if known {
+                                    // A replay must not reapply registrations that
+                                    // a newer transaction may have superseded.
+                                    pc += 1;
+                                    continue;
+                                }
+                                if entries.len() < MAX_SIBLING_INSTRUCTIONS_PER_TRANSACTION {
                                     entries.push(captured.clone());
                                 }
                             }

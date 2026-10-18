@@ -341,18 +341,33 @@ pub(crate) async fn execute(
                 .map(|call| valid_id(call.get("id").unwrap_or(&Value::Null)))
                 .collect::<Vec<_>>();
             let answers = join_all(calls.into_iter().map(|call| handle_call(call, services))).await;
-            // One shared byte budget: answers that would push the body past it are replaced, in
-            // order, by a size error, so the body as a whole stays within the cap.
-            let mut budget = services.max_response_bytes.saturating_sub(2);
+            // Reserve every error answer (including echoed ids) before
+            // accepting results. A later replacement can never exceed the cap.
+            let errors = ids
+                .into_iter()
+                .map(|id| error_object(id, ForkError::too_large()))
+                .collect::<Vec<_>>();
+            let error_lengths = errors
+                .iter()
+                .map(|e| e.to_string().len())
+                .collect::<Vec<_>>();
+            let reserved = 2 + errors.len().saturating_sub(1) + error_lengths.iter().sum::<usize>();
+            if reserved > services.max_response_bytes {
+                return json_rpc_response(
+                    StatusCode::OK,
+                    &error_object(Value::Null, ForkError::too_large()),
+                );
+            }
+            let mut budget = services.max_response_bytes - reserved;
             let mut bounded = Vec::with_capacity(answers.len());
-            for (answer, id) in answers.into_iter().zip(ids) {
-                let length = answer.to_string().len() + 1;
-                if length <= budget {
-                    budget -= length;
+            for ((answer, error), error_length) in
+                answers.into_iter().zip(errors).zip(error_lengths)
+            {
+                let length = answer.to_string().len();
+                if length <= budget + error_length {
+                    budget = budget + error_length - length;
                     bounded.push(answer);
                 } else {
-                    let error = error_object(id, ForkError::too_large());
-                    budget = budget.saturating_sub(error.to_string().len() + 1);
                     bounded.push(error);
                 }
             }
@@ -1136,11 +1151,22 @@ pub(crate) mod tests {
                 .collect(),
         );
         let answer = run(batch, &rpc, None, 1024).await;
+        assert!(answer.to_string().len() <= 1024);
         let answers = answer.as_array().unwrap();
         assert!(answers[0].get("result").is_some());
         assert!(answers[1].get("result").is_some());
         assert_eq!(answers[3]["error"]["code"], FORK_RESULT_TOO_LARGE);
         assert_eq!(answers[3]["id"], 3);
+    }
+
+    #[tokio::test]
+    async fn batch_error_ids_cannot_exhaust_the_shared_budget() {
+        let rpc = mock_rpc(result_responder(json!("ok"))).await;
+        let batch = Value::Array((0..2).map(|_| json!({"jsonrpc":"2.0", "id":"x".repeat(800), "method":"getGenesisHash", "params":[]})).collect());
+        let answer = run(batch, &rpc, None, 1024).await;
+        assert!(answer.to_string().len() <= 1024);
+        assert_eq!(answer["error"]["code"], FORK_RESULT_TOO_LARGE);
+        assert_eq!(answer["id"], Value::Null);
     }
 
     #[tokio::test]

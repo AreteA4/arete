@@ -1163,7 +1163,8 @@ impl<S> TypedCompiler<S> {
             key: key_reg,
             default: serde_json::json!({}),
             dest: state_reg,
-            dedup_route: declared_index(&spec.key_resolution).map(str::to_string),
+            dedup_route: declared_index(&spec.key_resolution)
+                .map(|index| format!("{index}:{:?}", spec.key_resolution)),
         });
 
         // Index updates must come AFTER ReadOrInitState so the state table exists.
@@ -2207,9 +2208,9 @@ impl<S> TypedCompiler<S> {
                 .next_back()
                 .unwrap_or(&lookup_index.field_name);
 
+            let start = ops.len();
             match resolution {
                 KeyResolutionStrategy::Embedded { primary_field: _ } => {
-                    let start = ops.len();
                     // For Embedded handlers, find the mapping that targets this lookup index field
                     // and use its source path to load the lookup value
                     let source_path_opt =
@@ -2222,27 +2223,28 @@ impl<S> TypedCompiler<S> {
                         FieldPath::new(&[source_field])
                     };
 
-                    // An index field mapped from an expression over the
-                    // source is indexed by that expression's value.
-                    let index_expr = mappings.iter().find_map(|mapping| match &mapping.source {
-                        MappingSource::FromExpr { expr }
-                            if mapping.target_path == lookup_index.field_name =>
-                        {
-                            Some(expr)
+                    if let Some(mapping) = mappings
+                        .iter()
+                        .find(|m| m.target_path == lookup_index.field_name)
+                    {
+                        let value_ops = self.compile_mapping_source(&mapping.source, lookup_reg);
+                        if value_ops.is_empty() {
+                            continue;
                         }
-                        _ => None,
-                    });
-                    match (&source_path_opt, index_expr) {
-                        (None, Some(expr)) => ops.push(OpCode::EvaluateEventExpr {
-                            expr: expr.clone(),
-                            transform: None,
-                            dest: lookup_reg,
-                        }),
-                        _ => ops.push(OpCode::LoadEventField {
+                        ops.extend(value_ops);
+                        if let Some(transform) = &mapping.transform {
+                            ops.push(OpCode::Transform {
+                                source: lookup_reg,
+                                dest: lookup_reg,
+                                transformation: transform.clone(),
+                            });
+                        }
+                    } else {
+                        ops.push(OpCode::LoadEventField {
                             path: load_path,
                             dest: lookup_reg,
                             default: None,
-                        }),
+                        });
                     }
 
                     if let Some(temporal_field_name) = &lookup_index.temporal_field {
@@ -2291,56 +2293,27 @@ impl<S> TypedCompiler<S> {
                             primary_key: key_reg,
                         });
                     }
-
-                    // An index a handler declares holds what its field
-                    // holds: a guarded write to the field updates the index
-                    // only when the guard passes, so a declared lookup never
-                    // finds a row through a value the row's field rejected.
-                    // Indexes no handler declares are updated unconditionally,
-                    // as before.
-                    let index_name = format!("{}_lookup_index", source_field);
-                    if self.declares_index(&index_name) {
-                        if let Some(guard) = index_guard(mappings, &lookup_index.field_name) {
-                            let count = ops.len() - start;
-                            ops.splice(
-                                start..start,
-                                [
-                                    OpCode::EvaluateEventExpr {
-                                        expr: guard,
-                                        transform: None,
-                                        dest: GUARD_REG,
-                                    },
-                                    OpCode::SkipUnless {
-                                        predicate: GUARD_REG,
-                                        count,
-                                    },
-                                ],
-                            );
-                        }
-                    }
                 }
-                KeyResolutionStrategy::Lookup { primary_field, .. } => {
-                    // For Lookup handlers, check if there's a mapping that targets this lookup index field
-                    // If so, the lookup value is the same as the primary_field used for key resolution
-                    let has_mapping_to_lookup_field = mappings
+                KeyResolutionStrategy::Lookup { .. } => {
+                    if let Some(mapping) = mappings
                         .iter()
-                        .any(|m| m.target_path == lookup_index.field_name);
-
-                    if has_mapping_to_lookup_field {
-                        // Load the lookup value from the event using the primary_field path
-                        // (this is the same value used for key resolution)
-                        let path_segments: Vec<&str> =
-                            primary_field.segments.iter().map(|s| s.as_str()).collect();
-                        ops.push(OpCode::LoadEventField {
-                            path: FieldPath::new(&path_segments),
-                            dest: lookup_reg,
-                            default: None,
-                        });
-
-                        let index_name = format!("{}_lookup_index", source_field);
+                        .find(|m| m.target_path == lookup_index.field_name)
+                    {
+                        let value_ops = self.compile_mapping_source(&mapping.source, lookup_reg);
+                        if value_ops.is_empty() {
+                            continue;
+                        }
+                        ops.extend(value_ops);
+                        if let Some(transform) = &mapping.transform {
+                            ops.push(OpCode::Transform {
+                                source: lookup_reg,
+                                dest: lookup_reg,
+                                transformation: transform.clone(),
+                            });
+                        }
                         ops.push(OpCode::UpdateLookupIndex {
                             state_id: self.state_id,
-                            index_name,
+                            index_name: format!("{}_lookup_index", source_field),
                             lookup_value: lookup_reg,
                             primary_key: key_reg,
                         });
@@ -2349,6 +2322,28 @@ impl<S> TypedCompiler<S> {
                 KeyResolutionStrategy::Computed { .. }
                 | KeyResolutionStrategy::TemporalLookup { .. } => {
                     // Computed and TemporalLookup handlers don't populate lookup indexes
+                }
+            }
+            // Every declared index follows its field's write guard, regardless
+            // of how this handler resolved the row.
+            let index_name = format!("{}_lookup_index", source_field);
+            if self.declares_index(&index_name) {
+                if let Some(guard) = index_guard(mappings, &lookup_index.field_name) {
+                    let count = ops.len() - start;
+                    ops.splice(
+                        start..start,
+                        [
+                            OpCode::EvaluateEventExpr {
+                                expr: guard,
+                                transform: None,
+                                dest: GUARD_REG,
+                            },
+                            OpCode::SkipUnless {
+                                predicate: GUARD_REG,
+                                count,
+                            },
+                        ],
+                    );
                 }
             }
         }

@@ -752,3 +752,47 @@ async fn a_refreshed_replay_stops_with_a_rescoped_issue() {
         "the stopped tape sends nothing more"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_public_transition_does_not_expose_earlier_private_patches_in_replay() {
+    let harness = Harness::start(Options {
+        journal: true,
+        ..Default::default()
+    })
+    .await;
+    harness
+        .mutate(vec![(
+            "Trade",
+            "pool",
+            json!({"scope":"B","trade":"private-start"}),
+        )])
+        .await;
+    harness
+        .mutate(vec![("Trade", "pool", json!({"trade":"private-patch"}))])
+        .await;
+    harness
+        .mutate(vec![(
+            "Trade",
+            "pool",
+            json!({"scope":null,"trade":"public-transition"}),
+        )])
+        .await;
+    let mut socket = harness.connect(Some(&["A"])).await;
+    let window = harness
+        .journal
+        .as_ref()
+        .unwrap()
+        .window("Trade/append")
+        .await;
+    subscribe(
+        &mut socket,
+        "trades",
+        json!({"view":"Trade/append","after":format!("{}:0",window.epoch)}),
+    )
+    .await;
+    let frame = next_frame(&mut socket).await;
+    assert_eq!(
+        frame["data"]["trade"], "public-transition",
+        "private history leaked: {frame}"
+    );
+}

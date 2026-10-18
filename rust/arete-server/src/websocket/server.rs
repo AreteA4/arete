@@ -2507,8 +2507,11 @@ async fn attach_journal_subscription(
                 }
                 drain_available(&mut receiver, &mut pending, &mut lagged);
                 if journal_record_matches(&task_query, &record)
-                    && frame_in_row_scopes(&task_context, &span_view, &record.key, &record.payload)
-                        .await
+                    && frame_in_row_scopes(
+                        task_context.row_filter.as_ref(),
+                        record.row_scope.as_ref(),
+                        &record.payload,
+                    )
                     && send_scoped_source_payload_async(
                         &task_context,
                         &task_subscription_id,
@@ -2687,39 +2690,33 @@ async fn forward_live_frame(
     if !live_frame_matches(query, &envelope.key, &envelope.payload) {
         return true;
     }
-    if !frame_in_row_scopes(context, view_id, &envelope.key, &envelope.payload).await {
+    if !frame_in_row_scopes(
+        context.row_filter.as_ref(),
+        envelope.row_scope.as_ref(),
+        &envelope.payload,
+    ) {
         return true;
     }
     send_scoped_source_payload(context, subscription_id, view_id, envelope.payload.clone()).is_ok()
 }
 
-/// Whether a tape frame's row is in the subscription's row scopes (always,
-/// for a view that is not row-scoped).
-///
-/// A tape forwards frames as published rather than recomputing membership
-/// from whole cached rows, and a frame may be a patch that does not carry the
-/// scope field. Its scope is then the cached row's; with no cached row there
-/// is nothing to prove the row is in scope, so the frame is withheld.
-async fn frame_in_row_scopes(
-    context: &SubscriptionContext,
-    view_id: &str,
-    key: &str,
+/// Check the scope frozen with a retained or queued frame. Legacy records
+/// may prove scope from an explicit field, but never from today's row state.
+fn frame_in_row_scopes(
+    filter: Option<&RowFilter>,
+    scope: Option<&crate::row_scope::RowScope>,
     payload: &[u8],
 ) -> bool {
-    let Some(filter) = context.row_filter.as_ref() else {
+    let Some(filter) = filter else {
         return true;
     };
-    if let Some(scope) = source_frame_data(payload)
+    if let Some(scope) = scope {
+        return filter.allows_scope(scope);
+    }
+    source_frame_data(payload)
         .as_ref()
         .and_then(|data| filter.field().scope_in(data))
-    {
-        return filter.allows_scope(&scope);
-    }
-    context
-        .entity_cache
-        .get_shared(view_id, key)
-        .await
-        .is_some_and(|row| filter.allows(&row))
+        .is_some_and(|scope| filter.allows_scope(&scope))
 }
 
 fn report_replay_gap(
@@ -3951,6 +3948,7 @@ mod tests {
 
     fn list_message(key: &str, op: &str, seq: &str) -> Arc<BusMessage> {
         Arc::new(BusMessage {
+            row_scope: None,
             key: key.to_string(),
             entity: "Thing/list".to_string(),
             payload: Arc::new(Bytes::from(
@@ -4332,6 +4330,7 @@ mod tests {
         bus.publish_list(
             view,
             Arc::new(BusMessage {
+                row_scope: None,
                 key: "one".to_string(),
                 entity: view.to_string(),
                 payload: Arc::new(Bytes::from_static(br#"{"op":"patch"}"#)),
@@ -4681,6 +4680,7 @@ mod tests {
 
     fn bus_message(key: &str) -> Arc<BusMessage> {
         Arc::new(BusMessage {
+            row_scope: None,
             key: key.to_string(),
             entity: "Trade/append".to_string(),
             payload: Arc::new(Bytes::from_static(b"{}")),
@@ -6649,5 +6649,49 @@ mod tests {
             assert_eq!(active.get("account:1"), Some(&0));
             assert_eq!(active.get("account:2"), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod retained_scope_regressions {
+    use super::*;
+    use crate::row_scope::{RowScope, ScopeField};
+
+    #[test]
+    fn sparse_private_frames_never_inherit_a_later_public_scope() {
+        let public = RowFilter::new(
+            ScopeField::new("meta.scope"),
+            Default::default(),
+            Arc::new(tokio::sync::RwLock::new(0)),
+            0,
+        );
+        let entitled = RowFilter::new(
+            ScopeField::new("meta.scope"),
+            ["B".to_string()].into_iter().collect(),
+            Arc::new(tokio::sync::RwLock::new(0)),
+            0,
+        );
+        let patch = br#"{"data":{"secret":"private-at-the-time"}}"#;
+        let original_scope = RowScope::Scoped("B".into());
+        assert!(!frame_in_row_scopes(
+            Some(&public),
+            Some(&original_scope),
+            patch
+        ));
+        assert!(frame_in_row_scopes(
+            Some(&entitled),
+            Some(&original_scope),
+            patch
+        ));
+        // The public transition itself is delivered, without relabeling old frames.
+        assert!(frame_in_row_scopes(
+            Some(&public),
+            Some(&RowScope::Public),
+            br#"{"data":{"meta":{"scope":null}}}"#
+        ));
+        // Legacy sparse records have no proof of membership: fail closed.
+        assert!(!frame_in_row_scopes(Some(&public), None, patch));
+        assert!(!frame_in_row_scopes(Some(&entitled), None, patch));
+        assert!(frame_in_row_scopes(None, None, patch));
     }
 }

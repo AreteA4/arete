@@ -565,3 +565,18 @@ fn string_and_byte_functions() {
     );
     assert_eq!(eval(utf8(), json!({"bytes": "text"})), json!("text"));
 }
+
+#[test]
+fn a_replayed_sibling_cannot_restore_a_superseded_registration() {
+    let bytecode = bytecode();
+    let mut vm = VmContext::new();
+    memo(&mut vm, &bytecode, "sig-1", "arete:p2:old:-:a", ATTESTATION);
+    contribute(&mut vm, &bytecode, "sig-1", "SharedPosition", 40);
+    memo(&mut vm, &bytecode, "sig-2", "arete:p2:new:-:a", ATTESTATION);
+    contribute(&mut vm, &bytecode, "sig-2", "SharedPosition", 50);
+    contribute(&mut vm, &bytecode, "sig-1", "SharedPosition", 40);
+    let before = instance(&vm, "new")["raised"].as_u64().unwrap();
+    contribute(&mut vm, &bytecode, "sig-3", "SharedPosition", 2);
+    assert_eq!(instance(&vm, "new")["raised"], json!(before + 2));
+    assert_eq!(instance(&vm, "old")["raised"], 40);
+}

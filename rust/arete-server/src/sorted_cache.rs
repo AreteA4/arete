@@ -674,7 +674,7 @@ impl SortedViewCache {
     /// Remove an entity, returning whether the cache held it.
     pub fn remove_key(&mut self, entity_key: &str) -> bool {
         if let Some(partitions) = self.partitions.as_deref_mut() {
-            return partitions.remove(entity_key).is_some();
+            return partitions.remove_key(entity_key);
         }
         let Some((sort_key, _)) = self.entities.remove(entity_key) else {
             return false;
@@ -1044,6 +1044,20 @@ impl ScopePartitions {
             self.key_partition.remove(key);
         }
         evicted.len()
+    }
+
+    fn remove_key(&mut self, entity_key: &str) -> bool {
+        let Some(partition) = self.key_partition.remove(entity_key) else {
+            return false;
+        };
+        let Some(held) = self.parts.get_mut(&partition) else {
+            return false;
+        };
+        let removed = held.cache.remove_key(entity_key);
+        if held.cache.is_empty() {
+            self.parts.remove(&partition);
+        }
+        removed
     }
 
     fn remove(&mut self, entity_key: &str) -> Option<usize> {

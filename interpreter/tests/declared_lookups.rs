@@ -470,3 +470,237 @@ fn an_undeclared_lookup_serializes_without_an_index_name() {
         }
     ));
 }
+
+#[test]
+fn separately_keyed_handlers_using_one_declared_index_both_apply_once() {
+    let spec = stream_spec(
+        "Row",
+        IdentitySpec {
+            primary_keys: vec!["id".into()],
+            lookup_indexes: vec![index("address")],
+        },
+        vec![
+            handler(
+                source("Seed", false),
+                KeyResolutionStrategy::Embedded {
+                    primary_field: FieldPath::new(&["data", "id"]),
+                },
+                vec![mapping(
+                    "address",
+                    from(&["data", "address"]),
+                    PopulationStrategy::LastWrite,
+                )],
+            ),
+            handler(
+                source("Update", false),
+                lookup(&["data", "left"], Some("address_lookup_index")),
+                vec![mapping(
+                    "left_count",
+                    from(&["data", "amount"]),
+                    PopulationStrategy::Count,
+                )],
+            ),
+            handler(
+                source("Update", false),
+                lookup(&["data", "right"], Some("address_lookup_index")),
+                vec![mapping(
+                    "right_count",
+                    from(&["data", "amount"]),
+                    PopulationStrategy::Count,
+                )],
+            ),
+        ],
+        vec![],
+    );
+    let code = MultiEntityBytecode::new()
+        .add_entity("Row".into(), spec, 0)
+        .build();
+    let mut vm = VmContext::new();
+    vm.process_event(
+        &code,
+        json!({"data":{"id":"row", "address":"A"}}),
+        "Seed",
+        Some(&instruction(1, "seed", "0")),
+        None,
+    )
+    .unwrap();
+    for _ in 0..2 {
+        vm.process_event(
+            &code,
+            json!({"data":{"left":"A","right":"A","amount":1}}),
+            "Update",
+            Some(&instruction(2, "update", "0")),
+            None,
+        )
+        .unwrap();
+    }
+    let row = vm.get_entity_state(0, &json!("row")).unwrap();
+    assert_eq!(row["left_count"], 1);
+    assert_eq!(row["right_count"], 1);
+}
+
+#[test]
+fn a_lookup_handler_indexes_only_the_value_its_guard_accepts() {
+    let mut guarded = mapping(
+        "second",
+        from(&["data", "new_address"]),
+        PopulationStrategy::LastWrite,
+    );
+    guarded.condition = Some(ConditionExpr {
+        expression: "allowed".into(),
+        parsed: Some(ParsedCondition::Guard {
+            expr: field("data.allowed"),
+        }),
+    });
+    let spec = stream_spec(
+        "Row",
+        IdentitySpec {
+            primary_keys: vec!["id".into()],
+            lookup_indexes: vec![index("first"), index("second")],
+        },
+        vec![
+            handler(
+                source("Seed", false),
+                KeyResolutionStrategy::Embedded {
+                    primary_field: FieldPath::new(&["data", "id"]),
+                },
+                vec![mapping(
+                    "first",
+                    from(&["data", "address"]),
+                    PopulationStrategy::LastWrite,
+                )],
+            ),
+            handler(
+                source("Update", false),
+                lookup(&["data", "address"], Some("first_lookup_index")),
+                vec![guarded],
+            ),
+            handler(
+                source("Read", false),
+                lookup(&["data", "address"], Some("second_lookup_index")),
+                vec![mapping(
+                    "hits",
+                    from(&["data", "address"]),
+                    PopulationStrategy::Count,
+                )],
+            ),
+        ],
+        vec![],
+    );
+    let code = MultiEntityBytecode::new()
+        .add_entity("Row".into(), spec, 0)
+        .build();
+    let mut vm = VmContext::new();
+    vm.process_event(
+        &code,
+        json!({"data":{"id":"row","address":"A"}}),
+        "Seed",
+        Some(&instruction(1, "seed", "0")),
+        None,
+    )
+    .unwrap();
+    vm.process_event(
+        &code,
+        json!({"data":{"address":"A","new_address":"rejected","allowed":false}}),
+        "Update",
+        Some(&instruction(2, "bad", "0")),
+        None,
+    )
+    .unwrap();
+    // Neither the rejected field value nor the route's key becomes an index entry.
+    for address in ["A", "rejected"] {
+        vm.process_event(
+            &code,
+            json!({"data":{"address":address}}),
+            "Read",
+            Some(&instruction(3, address, "0")),
+            None,
+        )
+        .unwrap();
+    }
+    assert!(vm
+        .get_entity_state(0, &json!("row"))
+        .unwrap()
+        .get("hits")
+        .is_none());
+    vm.process_event(
+        &code,
+        json!({"data":{"address":"A","new_address":"accepted","allowed":true}}),
+        "Update",
+        Some(&instruction(4, "good", "0")),
+        None,
+    )
+    .unwrap();
+    vm.process_event(
+        &code,
+        json!({"data":{"address":"accepted"}}),
+        "Read",
+        Some(&instruction(5, "read", "0")),
+        None,
+    )
+    .unwrap();
+    let row = vm.get_entity_state(0, &json!("row")).unwrap();
+    assert_eq!(row["second"], "accepted");
+    assert_eq!(row["hits"], 1);
+}
+
+#[test]
+fn an_expression_index_uses_the_transformed_field_value() {
+    let mut encoded = mapping(
+        "address",
+        MappingSource::FromExpr {
+            expr: field("data.bytes"),
+        },
+        PopulationStrategy::LastWrite,
+    );
+    encoded.transform = Some(arete_interpreter::ast::Transformation::HexEncode);
+    let spec = stream_spec(
+        "Row",
+        IdentitySpec {
+            primary_keys: vec!["id".into()],
+            lookup_indexes: vec![index("address")],
+        },
+        vec![
+            handler(
+                source("Seed", false),
+                KeyResolutionStrategy::Embedded {
+                    primary_field: FieldPath::new(&["data", "id"]),
+                },
+                vec![encoded],
+            ),
+            handler(
+                source("Read", false),
+                lookup(&["data", "address"], Some("address_lookup_index")),
+                vec![mapping(
+                    "hits",
+                    from(&["data", "address"]),
+                    PopulationStrategy::Count,
+                )],
+            ),
+        ],
+        vec![],
+    );
+    let code = MultiEntityBytecode::new()
+        .add_entity("Row".into(), spec, 0)
+        .build();
+    let mut vm = VmContext::new();
+    vm.process_event(
+        &code,
+        json!({"data":{"id":"row","bytes":[10,11]}}),
+        "Seed",
+        Some(&instruction(1, "seed", "0")),
+        None,
+    )
+    .unwrap();
+    let address = vm.get_entity_state(0, &json!("row")).unwrap()["address"].clone();
+    assert!(address.is_string());
+    vm.process_event(
+        &code,
+        json!({"data":{"address":address}}),
+        "Read",
+        Some(&instruction(2, "read", "0")),
+        None,
+    )
+    .unwrap();
+    assert_eq!(vm.get_entity_state(0, &json!("row")).unwrap()["hits"], 1);
+}
