@@ -1269,7 +1269,7 @@ impl Generator {
             "idlContentHash": baseline.idl_content_hash,
             "normalizedIdlHash": baseline.normalized_idl_hash,
             "decoderAbiVersion": "1",
-            "decoderEngineId": "arete-hosted-decoder-engine/v1",
+            "decoderEngineId": "example-decoder-engine/v1",
             "decoderBindingId": "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
         });
         self.add_release_vector(
@@ -1303,7 +1303,7 @@ impl Generator {
                 idl_content_hash: baseline.idl_content_hash,
                 normalized_idl_hash: baseline.normalized_idl_hash,
                 decoder_abi_version: "1".to_string(),
-                decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+                decoder_engine_id: "example-decoder-engine/v1".to_string(),
                 decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
                 executable_identity: upgradeable_identity,
             })
@@ -1335,7 +1335,7 @@ impl Generator {
                 idl_content_hash: baseline.idl_content_hash,
                 normalized_idl_hash: baseline.normalized_idl_hash,
                 decoder_abi_version: "1".to_string(),
-                decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+                decoder_engine_id: "example-decoder-engine/v1".to_string(),
                 decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
                 executable_identity: no_authority_identity,
             })
@@ -1365,7 +1365,7 @@ impl Generator {
                 idl_content_hash: baseline.idl_content_hash,
                 normalized_idl_hash: baseline.normalized_idl_hash,
                 decoder_abi_version: "1".to_string(),
-                decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+                decoder_engine_id: "example-decoder-engine/v1".to_string(),
                 decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
                 executable_identity: legacy_identity,
             })
@@ -1386,7 +1386,7 @@ impl Generator {
                 idl_content_hash: baseline.idl_content_hash,
                 normalized_idl_hash: baseline.normalized_idl_hash,
                 decoder_abi_version: "1".to_string(),
-                decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+                decoder_engine_id: "example-decoder-engine/v1".to_string(),
                 decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
             })
             .expect("hosted private release");
@@ -1441,7 +1441,7 @@ impl Generator {
                     idl_content_hash: hosted_private.idl_content_hash,
                     normalized_idl_hash: hosted_private.normalized_idl_hash,
                     decoder_abi_version: hosted_private.decoder_abi_version.clone(),
-                    decoder_engine_id: "arete-hosted-decoder-engine/v2".to_string(),
+                    decoder_engine_id: "example-decoder-engine/v2".to_string(),
                     decoder_binding_id: hosted_private.decoder_binding_id.clone(),
                 })
                 .expect("engine variant"),
@@ -1726,7 +1726,7 @@ impl Generator {
             schema: DECODER_FIXTURE_SCHEMA_V2.to_string(),
             program_id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
             normalized_idl_hash,
-            decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+            decoder_engine_id: "example-decoder-engine/v1".to_string(),
             decoder_abi_version: "1".to_string(),
             cases: vec![
                 DecoderFixtureCaseV2 {
