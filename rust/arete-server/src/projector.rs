@@ -263,6 +263,8 @@ struct PendingFrame<'a> {
     projection: usize,
     /// The `_version` stamped for this view.
     version: Option<Value>,
+    /// Membership established before a cache write can evict or refuse a row.
+    row_scope: Option<crate::row_scope::RowScope>,
     output: FrameOutput,
 }
 
@@ -672,6 +674,14 @@ impl Projector {
                 .position(|(projection, _)| projection.fields == spec.projection.fields)
                 .unwrap_or_default();
             let fields = &projections[projection].1;
+            let row_scope = self
+                .scope_at_publication(
+                    &spec.id,
+                    &key,
+                    fields,
+                    whole || origin == PatchOrigin::Creation,
+                )
+                .await;
             // Stamped after projection, which a field list could otherwise
             // strip it from, and before the cache write and the frame, so
             // both carry it.
@@ -684,6 +694,7 @@ impl Projector {
                     spec,
                     projection,
                     version,
+                    row_scope,
                     output: FrameOutput::Whole(wire_data),
                 });
                 continue;
@@ -716,25 +727,12 @@ impl Projector {
             let retained = match journal {
                 Some(journal) => {
                     journal
-                        .append_scoped_with(
-                            &spec.id,
-                            &key,
-                            self.scope_at_publication(
-                                &spec.id,
-                                &key,
-                                fields,
-                                origin == PatchOrigin::Creation,
-                            )
-                            .await,
-                            |offset| {
-                                frame.offset = Some(offset);
-                                json_buffer.clear();
-                                serde_json::to_writer(&mut *json_buffer, &frame)?;
-                                Ok::<_, anyhow::Error>(Arc::new(Bytes::copy_from_slice(
-                                    json_buffer,
-                                )))
-                            },
-                        )
+                        .append_scoped_with(&spec.id, &key, row_scope.clone(), |offset| {
+                            frame.offset = Some(offset);
+                            json_buffer.clear();
+                            serde_json::to_writer(&mut *json_buffer, &frame)?;
+                            Ok::<_, anyhow::Error>(Arc::new(Bytes::copy_from_slice(json_buffer)))
+                        })
                         .await?
                 }
                 None => None,
@@ -754,6 +752,7 @@ impl Projector {
                 spec,
                 projection,
                 version,
+                row_scope,
                 output: FrameOutput::Change(payload),
             });
         }
@@ -835,7 +834,7 @@ impl Projector {
                 }
 
                 let message = Arc::new(BusMessage {
-                    row_scope: None,
+                    row_scope: frame.row_scope,
                     key: key.clone(),
                     entity: spec.id.clone(),
                     payload,
@@ -1152,7 +1151,11 @@ impl Projector {
         fields(view_id = %spec.id, mode = ?spec.mode)
     )]
     async fn publish_frame(&self, spec: &ViewSpec, mut message: Arc<BusMessage>) {
-        if let Some(field) = self.view_index.scope_field_for_view(&spec.id) {
+        if let Some(field) = self
+            .view_index
+            .scope_field_for_view(&spec.id)
+            .filter(|_| message.row_scope.is_none())
+        {
             // Cache writes precede publication. Freeze membership before the
             // broadcast queue can be read after another mutation.
             let scope = self

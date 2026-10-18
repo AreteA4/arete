@@ -5451,10 +5451,16 @@ impl VmContext {
                             {
                                 let mut cache = state.sibling_instructions.lock().unwrap();
                                 let entries = cache.get_or_insert_mut(signature.clone(), Vec::new);
-                                // A replayed instruction is already captured.
+                                // A concrete path identifies an occurrence.
+                                // Without one, only identical captured values
+                                // prove a repeat; distinct PDAs must still pair.
                                 let known = entries.iter().any(|entry| {
                                     entry.event_type == captured.event_type
-                                        && entry.ix_path == captured.ix_path
+                                        && match (&entry.ix_path, &captured.ix_path) {
+                                            (Some(left), Some(right)) => left == right,
+                                            (None, None) => entry.values == captured.values,
+                                            _ => false,
+                                        }
                                 });
                                 if known {
                                     // A replay must not reapply registrations that

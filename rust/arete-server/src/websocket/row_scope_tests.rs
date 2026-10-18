@@ -796,3 +796,52 @@ async fn a_public_transition_does_not_expose_earlier_private_patches_in_replay()
         "private history leaked: {frame}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_evicted_rows_explicit_scope_still_governs_live_append_delivery() {
+    let harness = Harness::start(Options {
+        journal: true,
+        max_rows: Some(1),
+        ..Default::default()
+    })
+    .await;
+    harness
+        .mutate(vec![("Trade", "evicted", json!({"scope":"B","trade":0}))])
+        .await;
+    harness
+        .mutate(vec![("Trade", "other", json!({"scope":"B","trade":1}))])
+        .await;
+    let mut entitled = harness.connect(Some(&["B"])).await;
+    let mut other = harness.connect(Some(&["A"])).await;
+    let window = harness
+        .journal
+        .as_ref()
+        .unwrap()
+        .window("Trade/append")
+        .await;
+    let query =
+        json!({"view":"Trade/append", "after": format!("{}:{}", window.epoch, window.next - 1)});
+    subscribe(&mut entitled, "trades", query.clone()).await;
+    subscribe(&mut other, "trades", query).await;
+    harness
+        .mutate(vec![("Trade", "evicted", json!({"scope":"B","trade":2}))])
+        .await;
+    assert_eq!(
+        next_frame(&mut entitled).await["data"]["trade"],
+        2,
+        "an explicitly scoped event must survive cache eviction"
+    );
+    // With neither a scope in the patch nor a cached row, fail closed.
+    harness
+        .mutate(vec![("Trade", "evicted", json!({"trade":3}))])
+        .await;
+    harness
+        .mutate(vec![("Trade", "evicted", json!({"scope":null,"trade":4}))])
+        .await;
+    assert_eq!(next_frame(&mut entitled).await["data"]["trade"], 4);
+    assert_eq!(
+        next_frame(&mut other).await["data"]["trade"],
+        4,
+        "private or unknown-scope frame leaked"
+    );
+}

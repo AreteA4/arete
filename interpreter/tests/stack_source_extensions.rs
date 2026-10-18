@@ -269,6 +269,28 @@ fn contribute(
     .unwrap();
 }
 
+fn contribute_without_path(
+    vm: &mut VmContext,
+    bytecode: &MultiEntityBytecode,
+    signature: &str,
+    position: &str,
+    amount: u64,
+) {
+    let context = UpdateContext::new_instruction(
+        300_000_000,
+        signature.into(),
+        signature.bytes().map(u64::from).sum(),
+    );
+    vm.process_event(
+        bytecode,
+        json!({"data":{"amount":amount},"accounts":{"position":position}}),
+        CONTRIBUTE,
+        Some(&context),
+        None,
+    )
+    .unwrap();
+}
+
 fn instance(vm: &VmContext, id: &str) -> Value {
     vm.get_entity_state(0, &json!(id))
         .unwrap_or_else(|| panic!("no instance {id}"))
@@ -575,6 +597,41 @@ fn a_replayed_sibling_cannot_restore_a_superseded_registration() {
     memo(&mut vm, &bytecode, "sig-2", "arete:p2:new:-:a", ATTESTATION);
     contribute(&mut vm, &bytecode, "sig-2", "SharedPosition", 50);
     contribute(&mut vm, &bytecode, "sig-1", "SharedPosition", 40);
+    let before = instance(&vm, "new")["raised"].as_u64().unwrap();
+    contribute(&mut vm, &bytecode, "sig-3", "SharedPosition", 2);
+    assert_eq!(instance(&vm, "new")["raised"], json!(before + 2));
+    assert_eq!(instance(&vm, "old")["raised"], 40);
+}
+
+#[test]
+fn distinct_siblings_without_instruction_paths_each_register_their_pda() {
+    let bytecode = bytecode();
+    let mut vm = VmContext::new();
+    memo(
+        &mut vm,
+        &bytecode,
+        "sig-1",
+        "arete:p2:inst-1:-:a",
+        ATTESTATION,
+    );
+    for position in ["Position1", "Position2"] {
+        contribute_without_path(&mut vm, &bytecode, "sig-1", position, 1);
+    }
+    let before = instance(&vm, "inst-1")["raised"].as_u64().unwrap();
+    contribute(&mut vm, &bytecode, "sig-2", "Position1", 10);
+    contribute(&mut vm, &bytecode, "sig-3", "Position2", 20);
+    assert_eq!(instance(&vm, "inst-1")["raised"], json!(before + 30));
+}
+
+#[test]
+fn identical_pathless_sibling_redelivery_keeps_a_newer_mapping() {
+    let bytecode = bytecode();
+    let mut vm = VmContext::new();
+    memo(&mut vm, &bytecode, "sig-1", "arete:p2:old:-:a", ATTESTATION);
+    contribute_without_path(&mut vm, &bytecode, "sig-1", "SharedPosition", 40);
+    memo(&mut vm, &bytecode, "sig-2", "arete:p2:new:-:a", ATTESTATION);
+    contribute_without_path(&mut vm, &bytecode, "sig-2", "SharedPosition", 50);
+    contribute_without_path(&mut vm, &bytecode, "sig-1", "SharedPosition", 40);
     let before = instance(&vm, "new")["raised"].as_u64().unwrap();
     contribute(&mut vm, &bytecode, "sig-3", "SharedPosition", 2);
     assert_eq!(instance(&vm, "new")["raised"], json!(before + 2));
