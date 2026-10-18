@@ -20,6 +20,7 @@
     "skipLibCheck": true,
     "paths": {
       "@usearete/sdk": ["../../../typescript/core/dist/index.d.ts"],
+      "@usearete/sdk/program": ["../../../typescript/core/dist/program.d.ts"],
       "zod": ["../../../typescript/core/node_modules/zod/index.d.ts"]
     }
   },

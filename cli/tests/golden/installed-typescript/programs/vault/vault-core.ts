@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { programAccountRead, createInstructionHandler, type ErrorMetadata, buildInstruction, type BuildOptions, PROGRAM_OPERATION_EXTENSIONS, instructionOperation, createPreparedInstruction, type ProgramOperationContext, type AmountInput, resolveAmountToRaw, toRawAmount } from '@usearete/sdk';
+import { programAccountRead, createInstructionHandler, type ErrorMetadata, buildInstruction, type BuildOptions, PROGRAM_OPERATION_EXTENSIONS, instructionOperation, createPreparedInstruction, type ProgramOperationContext, type AmountInput, resolveAmountToRaw, toRawAmount } from '@usearete/sdk/program';
 
 export interface Vault {
   authority: string;
@@ -132,7 +132,7 @@ export const payFeeInstruction = createInstructionHandler<PayFeeParams, PayFeeEr
 export const VAULT = {
   name: 'vault',
   programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
-  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:9f2fe4d06c7aff15f062a1a816d47a45d11478edbd4f78617c4ce019ecad9bca',
+  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:e6dc1615f0fb4deab202e02c8b5acd15969b8240e0f86daefd0cf53aa5a82e73',
   programSpecHash: 'arete:h1:program-spec:sha256:7f8377cbaeffdc6a33986144c5abb640d00d000519185ff85ac1ccfe1917b976',
   idlContentHash: 'arete:h1:idl-content:sha256:e9f168d8b448ac603f8ed6c99f9bb9ba82a0908a723610a5f89877120dfc194c',
   normalizedIdlHash: 'arete:h1:idl-normalized:sha256:c79563495cb02035c1def338b7349e986cfc64349f306e79d601ad33207f9799',
@@ -195,6 +195,31 @@ export const VAULT = {
           }),
         },
       };
+    },
+  },
+} as const;
+
+/** Instruction shapes for 'vault', by IDL instruction name: argument and account names, and which accounts may be left out */
+export const VAULT_INSTRUCTION_SHAPES = {
+  deposit: {
+    args: ['amount'],
+    accounts: {
+      authority: { optional: false, derive: null },
+      vault: { optional: false, derive: null },
+      mint: { optional: false, derive: null },
+    },
+  },
+  withdraw: {
+    args: ['amount', 'mint'],
+    accounts: {
+      authority: { optional: false, derive: null },
+      vault: { optional: false, derive: null },
+    },
+  },
+  payFee: {
+    args: ['fee', 'tip', 'tipDecimals'],
+    accounts: {
+      authority: { optional: false, derive: null },
     },
   },
 } as const;
