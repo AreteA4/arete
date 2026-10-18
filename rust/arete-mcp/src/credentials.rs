@@ -196,6 +196,38 @@ pub fn resolve_with<E: Env>(env: &E, explicit: Option<String>, url: &str) -> Res
     }
 }
 
+/// The API key for `api_url` (an API origin): the selected profile's login
+/// for that URL, else `ARETE_API_KEY` (only without a selected profile),
+/// else the login for that URL. `None` when there is none.
+pub fn resolve_key_for_api(api_url: &str) -> Result<Option<String>> {
+    resolve_key_for_api_with(&SystemEnv, api_url)
+}
+
+pub fn resolve_key_for_api_with<E: Env>(env: &E, api_url: &str) -> Result<Option<String>> {
+    let selected_profile = env
+        .var(ENV_VAR_PROFILE)
+        .map(|profile| validate_profile_name(&profile).map(str::to_string))
+        .transpose()?;
+    let api_url = normalize_api_url(api_url);
+    if let Some(profile) = selected_profile.as_deref() {
+        return match env.credentials_file() {
+            Some(content) => Ok(lookup_credentials(&content, &api_url, Some(profile))?.key),
+            None => Ok(None),
+        };
+    }
+    if let Some(key) = env
+        .var(ENV_VAR_API_KEY)
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+    {
+        return Ok(Some(key));
+    }
+    match env.credentials_file() {
+        Some(content) => Ok(lookup_credentials(&content, &api_url, None)?.key),
+        None => Ok(None),
+    }
+}
+
 fn selected_api_url<E: Env>(env: &E) -> String {
     env.var(ENV_VAR_API_URL)
         .map(|u| normalize_api_url(&u))
