@@ -176,3 +176,83 @@ fn main() {{
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// bincode strings (`{"string": "utf8", "lengthPrefix": "u64"}`, the System Program's
+/// seeds) take the hand-rolled Borsh path: an eight-byte byte length on the wire, and the
+/// generated struct must read back what it wrote.
+#[test]
+fn u64_prefixed_string_args_round_trip_with_an_eight_byte_length() {
+    let idl = r#"{
+  "version": "0.0.0",
+  "name": "seed_fixture",
+  "address": "11111111111111111111111111111111",
+  "metadata": { "name": "seed_fixture", "address": "11111111111111111111111111111111" },
+  "instructions": [{
+    "name": "assignWithSeed",
+    "discriminant": { "type": "u32", "value": 10 },
+    "accounts": [{ "name": "account", "isMut": true, "isSigner": false }],
+    "args": [
+      { "name": "base", "type": "publicKey" },
+      { "name": "seed", "type": { "string": "utf8", "lengthPrefix": "u64" } },
+      { "name": "owner", "type": "publicKey" }
+    ]
+  }],
+  "accounts": [{
+    "name": "Marker",
+    "discriminator": [1, 2, 3, 4, 5, 6, 7, 8],
+    "type": { "kind": "struct", "fields": [{ "name": "flag", "type": "u8" }] }
+  }],
+  "types": [],
+  "events": [],
+  "errors": []
+}
+"#;
+    let source = r#"
+use arete_macros::arete;
+#[arete(idl = "seed.idl.json")]
+mod seeded {}
+fn main() {
+    use seeded::seed_fixture_sdk::instructions::AssignWithSeed;
+    let ix = AssignWithSeed {
+        base: solana_pubkey::Pubkey::new_from_array([1; 32]),
+        seed: "vault".to_string(),
+        owner: solana_pubkey::Pubkey::new_from_array([2; 32]),
+    };
+    let bytes = borsh::to_vec(&ix).unwrap();
+    assert_eq!(bytes.len(), 32 + 8 + 5 + 32);
+    assert_eq!(&bytes[32..40], &5u64.to_le_bytes());
+    assert_eq!(&bytes[40..45], b"vault");
+    let back: AssignWithSeed = borsh::BorshDeserialize::try_from_slice(&bytes).unwrap();
+    assert_eq!(back.seed, "vault");
+    assert_eq!(back.owner, ix.owner);
+    // A u32-prefixed reading of the same bytes must not succeed silently.
+    let mut short = bytes.clone();
+    short.truncate(44);
+    assert!(<AssignWithSeed as borsh::BorshDeserialize>::try_from_slice(&short).is_err());
+}
+"#;
+    let dependencies = vec![
+        format!(
+            "arete = {{ path = {:?}, features = [\"full\"] }}",
+            arete_dir()
+        ),
+        format!("arete-macros = {{ path = {:?} }}", macro_manifest_dir()),
+        "serde = { version = \"1\", features = [\"derive\"] }".into(),
+        "serde_json = \"1\"".into(),
+        "borsh = { version = \"1.5\", features = [\"derive\"] }".into(),
+        "solana-pubkey = { version = \"2.3\", features = [\"serde\", \"borsh\"] }".into(),
+    ];
+    let temp = TempCrate::new(
+        "managed-solana",
+        "seed-strings",
+        cargo_toml("seed-strings", &dependencies),
+        source,
+        &[("seed.idl.json", idl)],
+    );
+    let output = temp.cargo_run();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

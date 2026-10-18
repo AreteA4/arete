@@ -14,7 +14,9 @@
 //! `pending_instruction_events`, in-flight resolver requests, and scheduled
 //! slot callbacks (documented as non-durable).
 
-use crate::vm::{DeferredWhenOperation, PendingAccountUpdate};
+use crate::vm::{
+    DeferredWhenOperation, PendingAccountUpdate, PendingSiblingRegistration, SiblingInstruction,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -79,6 +81,14 @@ pub struct StateTableSnapshot {
     pub recent_tx_instructions: Vec<(String, Vec<String>)>,
     #[serde(default)]
     pub deferred_when_ops: Vec<((String, String), Vec<DeferredWhenOperation>)>,
+    /// `(signature, captured sibling instructions)` entries, MRU first.
+    /// Omitted when empty, so stacks without sibling registrations snapshot
+    /// exactly as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sibling_instructions: Vec<(String, Vec<SiblingInstruction>)>,
+    /// `(signature, waiting sibling registrations)` entries, MRU first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_sibling_registrations: Vec<(String, Vec<PendingSiblingRegistration>)>,
 }
 
 impl VmSnapshot {

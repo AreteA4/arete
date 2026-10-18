@@ -3706,6 +3706,12 @@ pub struct TypeScriptCompositionConfig {
     /// live stack that bundles it, so the session exposes one program SDK
     /// surface whichever member it is reached through.
     pub program_entry_imports: BTreeMap<String, String>,
+    /// Protocol clients the session carries, keyed by session protocol key
+    /// (relative imports of generated protocol modules such as
+    /// `./protocols/token-raise/token-raise.js`, whose default export is the
+    /// protocol definition). Empty for every composition without protocols,
+    /// whose session definition is then unchanged.
+    pub protocol_module_imports: BTreeMap<String, String>,
     /// A stack-level extension applied to the composition.
     pub extensions: Option<TypeScriptCompositionExtensions>,
 }
@@ -4107,8 +4113,10 @@ fn compile_stack_spec_with_view_selection(
         collect_emitted_pda_imports(&stack_spec.idls, &stack_spec.pdas),
         !idl_account_artifacts.account_type_names.is_empty(),
         &instructions_codegen,
+        TypeScriptProgramRuntime::Root,
     );
     let program_configs = program_content_identities(
+        TypeScriptProgramRuntime::Root,
         &ProgramGenerationContext {
             pdas: &stack_spec.pdas,
             program_ids: &stack_spec.program_ids,
@@ -4479,6 +4487,7 @@ pub fn compile_composed_public_artifacts_v2(
         gateway: config.stack.gateway.as_ref(),
         program_entries: &program_entries,
         stack_program_overrides: &stack_program_overrides,
+        protocols: &config.protocol_module_imports,
         extensions: config.extensions.as_ref(),
     });
     ts_ident::check_module_declarations(
@@ -4622,11 +4631,17 @@ struct SessionDefinitionInput<'a> {
     /// Live alias -> `(bundled program key, ProgramSpec hash)` replaced by
     /// the program's entry module.
     stack_program_overrides: &'a BTreeMap<String, Vec<(String, String)>>,
+    /// Session protocol key -> generated protocol module import.
+    protocols: &'a BTreeMap<String, String>,
     extensions: Option<&'a TypeScriptCompositionExtensions>,
 }
 
 fn program_entry_binding(key: &str) -> String {
     format!("{}ProgramSdk", safe_pascal_identifier(key))
+}
+
+fn protocol_binding(key: &str) -> String {
+    format!("{}Protocol", safe_pascal_identifier(key))
 }
 
 fn generate_session_definition(input: SessionDefinitionInput<'_>) -> String {
@@ -4640,6 +4655,7 @@ fn generate_session_definition(input: SessionDefinitionInput<'_>) -> String {
         gateway,
         program_entries,
         stack_program_overrides,
+        protocols,
         extensions,
     } = input;
     let manifest_pascal = safe_pascal_identifier(manifest_name);
@@ -4689,6 +4705,11 @@ fn generate_session_definition(input: SessionDefinitionInput<'_>) -> String {
             .chain(program_entries.iter().map(|(key, import)| {
                 format!("import {} from '{import}';", program_entry_binding(key))
             }))
+            .chain(
+                protocols.iter().map(|(key, import)| {
+                    format!("import {} from '{import}';", protocol_binding(key))
+                }),
+            )
             .chain(extensions.map(|extensions| {
                 let names = extensions
                     .stack_bindings
@@ -4776,8 +4797,25 @@ fn generate_session_definition(input: SessionDefinitionInput<'_>) -> String {
         .filter(|members| !members.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    let program_members =
-        format!("  programs: {{\n{definitions}\n  }},\n  programReads: {{\n{reads}\n  }},");
+    let protocol_members = if protocols.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n  protocols: {{\n{}\n  }},",
+            protocols
+                .keys()
+                .map(|key| format!(
+                    "    {}: {},",
+                    typescript_property_key(key),
+                    protocol_binding(key)
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    let program_members = format!(
+        "  programs: {{\n{definitions}\n  }},\n  programReads: {{\n{reads}\n  }},{protocol_members}"
+    );
     let members = live_stacks
         .iter()
         .map(|live| {
@@ -4924,12 +4962,45 @@ fn composition_program_key(
     }
 }
 
-/// Assemble the `zod` + `@usearete/sdk` import lines based on which runtime
+/// The SDK entry generated TypeScript imports its runtime from, and the
+/// runtime contract its program definitions are hashed under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeScriptProgramRuntime {
+    /// `@usearete/sdk`: stack modules, whose definitions embed programs.
+    Root,
+    /// `@usearete/sdk/program`: program modules, which must bundle without
+    /// the client, the network or Node built-ins.
+    ProgramEntry,
+}
+
+impl TypeScriptProgramRuntime {
+    /// The module specifier the generated code imports from.
+    pub fn module(self) -> &'static str {
+        match self {
+            Self::Root => "@usearete/sdk",
+            Self::ProgramEntry => "@usearete/sdk/program",
+        }
+    }
+
+    /// The runtime contract in each program's `sdkDefinitionHash`. The hash
+    /// covers the emitted imports, so each import specifier has its own
+    /// contract version: v1 is a definition importing `@usearete/sdk`, v2
+    /// one importing `@usearete/sdk/program`.
+    fn contract(self) -> &'static str {
+        match self {
+            Self::Root => "@usearete/sdk/program-definition-v1",
+            Self::ProgramEntry => "@usearete/sdk/program-definition-v2",
+        }
+    }
+}
+
+/// Assemble the `zod` + SDK runtime import lines based on which runtime
 /// helpers the emitted code references.
 fn assemble_sdk_imports(
     pda_imports: PdaImportUsage,
     has_account_reads: bool,
     instructions_codegen: &crate::typescript_instructions::InstructionsCodegen,
+    runtime: TypeScriptProgramRuntime,
 ) -> String {
     let mut sdk_named: Vec<String> = Vec::new();
     for (needed, helper) in [
@@ -4977,8 +5048,9 @@ fn assemble_sdk_imports(
         "import { z } from 'zod';".to_string()
     } else {
         format!(
-            "import {{ z }} from 'zod';\nimport {{ {} }} from '@usearete/sdk';",
-            sdk_named.join(", ")
+            "import {{ z }} from 'zod';\nimport {{ {} }} from '{}';",
+            sdk_named.join(", "),
+            runtime.module()
         )
     }
 }
@@ -5073,6 +5145,7 @@ pub fn compile_program_modules(
         collect_emitted_pda_imports(&stack_spec.idls, &stack_spec.pdas),
         !idl_account_artifacts.account_type_names.is_empty(),
         &instructions_codegen,
+        TypeScriptProgramRuntime::ProgramEntry,
     );
 
     let program_context = ProgramGenerationContext {
@@ -5083,14 +5156,23 @@ pub fn compile_program_modules(
         account_type_names: &idl_account_artifacts.account_type_names,
         programs: &program_configs,
     };
-    let program_configs =
-        program_content_identities(&program_context, &stack_spec.idls, &imports, &interfaces)?;
+    let program_configs = program_content_identities(
+        TypeScriptProgramRuntime::ProgramEntry,
+        &program_context,
+        &stack_spec.idls,
+        &imports,
+        &interfaces,
+    )?;
     let program_context = ProgramGenerationContext {
         programs: &program_configs,
         ..program_context
     };
-    let stack_definition =
-        generate_program_definitions(stack_name, &stack_spec.idls, &program_context);
+    let stack_definition = generate_program_definitions(
+        stack_name,
+        &stack_spec.idls,
+        &stack_spec.instructions,
+        &program_context,
+    );
 
     let output = TypeScriptStackOutput {
         imports,
@@ -5409,9 +5491,9 @@ struct ProgramGenerationContext<'a> {
 /// implementations), and this program's literal body with sdkDefinitionHash
 /// absent. Release/read bindings and stack wrappers are separate identities.
 /// Shared declarations deliberately make this conservative within one module.
-const TYPESCRIPT_PROGRAM_RUNTIME_CONTRACT: &str = "@usearete/sdk/program-definition-v1";
-
+/// The runtime contract versions are on [`TypeScriptProgramRuntime`].
 fn program_content_identities(
+    runtime: TypeScriptProgramRuntime,
     context: &ProgramGenerationContext<'_>,
     idls: &[IdlSnapshot],
     imports: &str,
@@ -5447,7 +5529,7 @@ fn program_content_identities(
             SdkDefinitionV2::new(
                 input_hash,
                 "typescript",
-                TYPESCRIPT_PROGRAM_RUNTIME_CONTRACT,
+                runtime.contract(),
                 output_tree_hash,
             )
             .hash()
@@ -5695,6 +5777,7 @@ fn dedent_lines(text: &str, spaces: usize) -> String {
 fn generate_program_definitions(
     stack_name: &str,
     idls: &[IdlSnapshot],
+    instructions: &[InstructionDef],
     context: &ProgramGenerationContext<'_>,
 ) -> String {
     let mut program_consts = Vec::new();
@@ -5712,6 +5795,16 @@ fn generate_program_definitions(
             name = ts_ident::comment_text(&idl.name),
             const_name = const_name,
             body = body,
+        ));
+        // After the program literal, so `sdkDefinitionHash` (which hashes
+        // that literal) is unchanged by it.
+        program_consts.push(generate_instruction_shapes(
+            idl,
+            index,
+            idls.len(),
+            instructions,
+            &const_name,
+            context,
         ));
         map_entries.push(format!("  {}: {},", program_key, const_name));
         let read_const_name = format!("{}_READ", const_name);
@@ -5765,6 +5858,145 @@ export default {map_name};"#,
         read_map_entries = read_map_entries.join("\n"),
         type_name = type_name,
     )
+}
+
+/// `<PROGRAM>_INSTRUCTION_SHAPES`: each instruction's IDL name, argument
+/// names and account names, as runtime metadata whose `typeof` is the type.
+/// Protocol templates are checked against it.
+///
+/// Each account records `optional` (the IDL marks it optional) and `derive`:
+/// `null` when the account must be supplied (a signer, a user-provided
+/// account, or a PDA whose program is chosen at runtime or whose seeds use a
+/// value that is not an argument), otherwise the accounts its address is
+/// derived from (`[]` for a fixed address or a PDA of literal and argument
+/// seeds). A derivable account may be left out of a template when each
+/// account it names is supplied or derivable in turn.
+fn generate_instruction_shapes(
+    idl: &IdlSnapshot,
+    index: usize,
+    program_count: usize,
+    instructions: &[InstructionDef],
+    const_name: &str,
+    context: &ProgramGenerationContext<'_>,
+) -> String {
+    let program_id = context
+        .program_ids
+        .get(index)
+        .cloned()
+        .or_else(|| idl.program_id.clone());
+    let pdas = context
+        .pdas
+        .get(&idl.name)
+        .or_else(|| context.pdas.get(&to_camel_case(&idl.name)));
+    let entries = instructions
+        .iter()
+        .filter(|instruction| {
+            program_count <= 1
+                || instruction.program_id.is_none()
+                || instruction.program_id == program_id
+        })
+        .filter(|instruction| {
+            program_count <= 1
+                || idl
+                    .instructions
+                    .iter()
+                    .any(|candidate| candidate.name == instruction.name)
+        })
+        .map(|instruction| {
+            let args = instruction
+                .args
+                .iter()
+                .map(|arg| ts_ident::single_quoted(&arg.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let accounts = instruction
+                .accounts
+                .iter()
+                .map(|account| {
+                    let derive = match account_derivation(instruction, account, pdas) {
+                        Some(names) => format!(
+                            "[{}]",
+                            names
+                                .iter()
+                                .map(|name| ts_ident::single_quoted(name))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        None => "null".to_string(),
+                    };
+                    format!(
+                        "      {}: {{ optional: {}, derive: {} }},",
+                        typescript_property_key(&account.name),
+                        account.is_optional,
+                        derive
+                    )
+                })
+                .collect::<Vec<_>>();
+            let accounts = if accounts.is_empty() {
+                "    accounts: {},".to_string()
+            } else {
+                format!("    accounts: {{\n{}\n    }},", accounts.join("\n"))
+            };
+            format!(
+                "  {}: {{\n    args: [{}],\n{}\n  }},",
+                typescript_property_key(&instruction.name),
+                args,
+                accounts
+            )
+        })
+        .collect::<Vec<_>>();
+    let body = if entries.is_empty() {
+        "{}".to_string()
+    } else {
+        format!("{{\n{}\n}}", entries.join("\n"))
+    };
+    format!(
+        "/** Instruction shapes for '{name}', by IDL instruction name: argument and account names, and which accounts may be left out */\nexport const {const_name}_INSTRUCTION_SHAPES = {body} as const;",
+        name = ts_ident::comment_text(&idl.name),
+    )
+}
+
+/// The accounts an instruction account's address is derived from, or `None`
+/// when it must be supplied. See [`generate_instruction_shapes`].
+fn account_derivation(
+    instruction: &InstructionDef,
+    account: &InstructionAccountDef,
+    pdas: Option<&BTreeMap<String, PdaDefinition>>,
+) -> Option<Vec<String>> {
+    let seeds = match &account.resolution {
+        AccountResolution::Known { .. } => return Some(Vec::new()),
+        AccountResolution::Signer | AccountResolution::UserProvided => return None,
+        AccountResolution::PdaRef { pda_name } => {
+            let pda = pdas?.get(pda_name)?;
+            if pda.program.is_some() {
+                return None;
+            }
+            &pda.seeds
+        }
+        AccountResolution::PdaInline { seeds, program, .. } => {
+            if program.is_some() {
+                return None;
+            }
+            seeds
+        }
+    };
+    let mut accounts = Vec::new();
+    for seed in seeds {
+        match seed {
+            PdaSeedDef::Literal { .. } | PdaSeedDef::Bytes { .. } => {}
+            PdaSeedDef::ArgRef { arg_name, .. } => {
+                if !instruction.args.iter().any(|arg| arg.name == *arg_name) {
+                    return None;
+                }
+            }
+            PdaSeedDef::AccountRef { account_name } => {
+                if !accounts.contains(account_name) {
+                    accounts.push(account_name.clone());
+                }
+            }
+        }
+    }
+    Some(accounts)
 }
 
 fn generate_program_pda_entries(
@@ -6181,6 +6413,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         }
     }
 
@@ -6399,7 +6632,7 @@ mod tests {
             .expect("empty-seed PDA generation should succeed");
         assert_eq!(
             output.imports,
-            "import { z } from 'zod';\nimport { pda } from '@usearete/sdk';"
+            "import { z } from 'zod';\nimport { pda } from '@usearete/sdk/program';"
         );
         assert!(output
             .stack_definition
@@ -6430,7 +6663,7 @@ mod tests {
                 .expect("literal/account PDA generation should succeed");
         assert_eq!(
             output.imports,
-            "import { z } from 'zod';\nimport { pda, literal, account } from '@usearete/sdk';"
+            "import { z } from 'zod';\nimport { pda, literal, account } from '@usearete/sdk/program';"
         );
 
         let arg_bytes_pdas = BTreeMap::from([(
@@ -6457,7 +6690,7 @@ mod tests {
             .expect("arg/bytes PDA generation should succeed");
         assert_eq!(
             output.imports,
-            "import { z } from 'zod';\nimport { pda, arg, bytes } from '@usearete/sdk';"
+            "import { z } from 'zod';\nimport { pda, arg, bytes } from '@usearete/sdk/program';"
         );
     }
 
@@ -6901,6 +7134,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         };
 
         let output = compile_serializable_spec(spec, "TokenPosition".to_string(), None)
@@ -7113,6 +7347,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         };
 
         let output = compile_serializable_spec(spec, "OreMiner".to_string(), None)
@@ -7170,6 +7405,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         };
 
         let output = compile_serializable_spec(spec, "TokenHolder".to_string(), None)
@@ -7252,6 +7488,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         };
 
         let output =
@@ -7318,6 +7555,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         };
 
         let output =
@@ -7368,6 +7606,7 @@ mod tests {
                     output: ViewOutput::Collection,
                 },
             ],
+            scope_field: None,
         };
 
         let output =
@@ -7462,6 +7701,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         };
 
         let output = compile_serializable_spec(spec, "Plan".to_string(), None)
@@ -7535,6 +7775,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         };
 
         let stack_spec = SerializableStackSpec {

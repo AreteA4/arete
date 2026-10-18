@@ -220,9 +220,9 @@ fn primitive(name: &str) -> Option<(BaseType, Option<IntegerKind>)> {
         match name {
             "f32" | "f64" => BaseType::Float,
             "bool" => BaseType::Boolean,
-            "string" | "String" => BaseType::String,
+            "string" | "String" | "rest_utf8" => BaseType::String,
             "publicKey" | "pubkey" | "Pubkey" => BaseType::Pubkey,
-            "bytes" => BaseType::Binary,
+            "bytes" | "rest_bytes" => BaseType::Binary,
             _ => return None,
         },
         None,

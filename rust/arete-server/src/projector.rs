@@ -1014,6 +1014,27 @@ impl Projector {
                     spec.id, entity_key
                 );
             }
+            self.report_scope_partition_evictions(&spec.id, cache);
+        }
+    }
+
+    /// Count the scope partitions a row-scoped sorted view evicted at its cap.
+    fn report_scope_partition_evictions(
+        &self,
+        view_id: &str,
+        cache: &mut crate::sorted_cache::SortedViewCache,
+    ) {
+        let evictions = cache.take_scope_partition_evictions();
+        if evictions == 0 {
+            return;
+        }
+        debug!(
+            view_id,
+            evictions, "Row-scoped view evicted scope partitions"
+        );
+        #[cfg(feature = "otel")]
+        if let Some(ref metrics) = self.metrics {
+            metrics.record_view_scope_partition_evictions(view_id, evictions);
         }
     }
 
@@ -1075,6 +1096,7 @@ impl Projector {
                 // append paths.
                 cache.remove_key(entity_key);
                 cache.upsert_if_kept(entity_key, &entity, max_entries);
+                self.report_scope_partition_evictions(&spec.id, cache);
             } else {
                 cache.remove_key(entity_key);
             }

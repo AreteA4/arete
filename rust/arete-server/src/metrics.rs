@@ -52,6 +52,8 @@ pub struct Metrics {
     pub ws_collection_coalesced_updates: Counter<u64>,
     pub ws_collection_coalesced_flushes: Counter<u64>,
     pub ws_delivery_stopped: Counter<u64>,
+    /// Scope partitions a row-scoped sorted view evicted at its cap.
+    pub view_scope_partition_evictions: Counter<u64>,
 
     // Transaction HTTP metrics. Labels are restricted to fixed operations/outcomes.
     pub transaction_requests_total: Counter<u64>,
@@ -192,6 +194,13 @@ impl Metrics {
         let ws_collection_coalesced_flushes = meter
             .u64_counter("arete.ws.collection.coalesced_flushes")
             .with_description("Timed collection delivery flushes")
+            .init();
+
+        let view_scope_partition_evictions = meter
+            .u64_counter("arete.view.scope_partition.evictions")
+            .with_description(
+                "Scope partitions a row-scoped sorted view evicted because it held its cap of scopes",
+            )
             .init();
 
         let ws_delivery_stopped = meter
@@ -436,6 +445,7 @@ impl Metrics {
             ws_collection_coalesced_updates,
             ws_collection_coalesced_flushes,
             ws_delivery_stopped,
+            view_scope_partition_evictions,
             transaction_requests_total,
             transaction_request_latency,
             transaction_request_bytes,
@@ -630,6 +640,11 @@ impl Metrics {
         let attrs = self.attributes([KeyValue::new("view_id", view_id.to_string())]);
         self.ws_collection_coalesced_updates.add(updates, &attrs);
         self.ws_collection_coalesced_flushes.add(1, &attrs);
+    }
+
+    pub fn record_view_scope_partition_evictions(&self, view_id: &str, evictions: u64) {
+        let attrs = self.attributes([KeyValue::new("view_id", view_id.to_string())]);
+        self.view_scope_partition_evictions.add(evictions, &attrs);
     }
 
     pub fn record_ws_delivery_stopped(&self, view_id: &str, reason: &'static str) {

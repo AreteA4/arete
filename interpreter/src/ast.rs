@@ -445,6 +445,12 @@ pub struct SerializableStreamSpec {
     /// View definitions for derived/projected views
     #[serde(default)]
     pub views: Vec<ViewDef>,
+    /// Row scoping: the dotted path of the string field that holds each
+    /// row's scope id. A server delivers a row only to sessions whose row
+    /// scopes cover its scope; rows with no scope are public. Omitted when
+    /// the entity is not scoped, so existing ASTs keep their bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_field: Option<String>,
 }
 
 impl SerializableStreamSpec {
@@ -558,6 +564,7 @@ impl<S> TypedStreamSpec<S> {
             computed_field_specs: Vec::new(),
             content_hash: None,
             views: Vec::new(),
+            scope_field: None,
         };
         spec.content_hash = Some(spec.compute_content_hash());
         spec
@@ -644,6 +651,20 @@ pub enum HookAction {
         pda_field: FieldPath,
         seed_field: FieldPath,
         lookup_name: String,
+        /// Read `pda_field` and/or `seed_field` from another instruction of
+        /// the same transaction rather than from the instruction this hook
+        /// runs on. Absent for same-instruction registration.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sibling: Option<SiblingSelector>,
+        /// The seed as an expression over the hook's instruction (as in
+        /// `MappingSource::FromExpr`), replacing `seed_field`, e.g. a part of
+        /// a memo string.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seed_expr: Option<ComputedExpr>,
+        /// Register only when this boolean expression over the hook's
+        /// instruction is `true` (see `ParsedCondition::Guard`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guard: Option<ComputedExpr>,
     },
 
     /// Set a field value (for #[track_from])
@@ -659,6 +680,27 @@ pub enum HookAction {
         increment_by: i64,
         condition: Option<ConditionExpr>,
     },
+}
+
+/// A sibling instruction a [`HookAction::RegisterPdaMapping`] reads from: every
+/// instruction of `instruction_type` in the same transaction (other than the
+/// hook's own instruction), whether it arrived before or after the hook's.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SiblingSelector {
+    /// The sibling's event type, e.g. `raise::ContributeIxState`.
+    pub instruction_type: String,
+    /// `pda_field` is a path in the sibling rather than in the hook's
+    /// instruction.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pda_from_sibling: bool,
+    /// `seed_field` is a path in the sibling rather than in the hook's
+    /// instruction.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub seed_from_sibling: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Simple condition expression (Level 1 - basic comparisons only)
@@ -685,6 +727,14 @@ pub enum ParsedCondition {
         op: LogicalOp,
         conditions: Vec<ParsedCondition>,
     },
+
+    /// A boolean expression over the incoming update that gates the write
+    /// (write-gating conditions, v2). Field references read the source event,
+    /// as in `MappingSource::FromExpr`. The mapping applies only when it
+    /// evaluates to `true`, for every population strategy, and `&&`, `||`
+    /// and `!` are honoured; `null`, `false` or a failing expression skip it.
+    /// The other variants keep their original semantics.
+    Guard { expr: ComputedExpr },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -789,8 +839,24 @@ pub enum KeyResolutionStrategy {
     Embedded {
         primary_field: FieldPath,
     },
+    /// The event field holds a value a lookup index maps to the primary key.
     Lookup {
         primary_field: FieldPath,
+        /// The lookup index this handler declares it resolves through (a
+        /// compiled index name, `<field>_lookup_index`). A declared lookup is
+        /// strict: it consults only this index, reached directly or after PDA
+        /// reverse lookups; a guarded write to the index's field updates the
+        /// index only when the guard passes; and the handler is deduplicated
+        /// per route, so a second route of the same instruction to the same
+        /// row still applies. Without it the runtime infers the index and
+        /// falls back to every other lookup index of the entity.
+        ///
+        /// Omitted when absent, so ASTs that do not declare one keep their
+        /// bytes and hashes. Runtimes that predate it ignore the field (the
+        /// strategy does not deny unknown fields) and resolve the lookup the
+        /// undeclared way.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index_name: Option<String>,
     },
     Computed {
         primary_field: FieldPath,
@@ -1672,6 +1738,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         }
     }
 

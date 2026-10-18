@@ -330,6 +330,7 @@ impl WebSocketAuthPlugin for AllowAllAuthPlugin {
             consumer_key: None,
             policy_version: None,
             account_limits: Default::default(),
+            row_scopes: None,
         };
         AuthDecision::Allow(context)
     }
@@ -400,6 +401,7 @@ impl WebSocketAuthPlugin for StaticTokenAuthPlugin {
                 consumer_key: None,
                 policy_version: None,
                 account_limits: Default::default(),
+                row_scopes: None,
             };
             AuthDecision::Allow(context)
         } else {

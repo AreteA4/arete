@@ -394,6 +394,7 @@ fn mapping_handler(entity: &str, mut body: Vec<OpCode>) -> Vec<OpCode> {
             key: 0,
             default: json!({}),
             dest: 2,
+            dedup_route: None,
         },
     ];
     handler.append(&mut body);

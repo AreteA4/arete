@@ -1092,6 +1092,7 @@ pub fn generate_vm_handler(
         }
 
         impl VmHandler {
+            #[allow(clippy::too_many_arguments)]
             pub fn new(
                 vm: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::vm::VmContext>>,
                 bytecode: std::sync::Arc<arete::runtime::arete_interpreter::compiler::MultiEntityBytecode>,
@@ -1117,6 +1118,7 @@ pub fn generate_vm_handler(
             }
 
             #[inline]
+            #[allow(clippy::too_many_arguments)]
             async fn send_mutations_with_context(
                 &self,
                 mutations: Vec<arete::runtime::arete_interpreter::Mutation>,
@@ -2200,6 +2202,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
         }
 
         impl VmHandler {
+            #[allow(clippy::too_many_arguments)]
             pub fn new(
                 vm: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::vm::VmContext>>,
                 bytecode: std::sync::Arc<arete::runtime::arete_interpreter::compiler::MultiEntityBytecode>,
@@ -2225,6 +2228,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
             }
 
             #[inline]
+            #[allow(clippy::too_many_arguments)]
             async fn send_mutations_with_context(
                 &self,
                 mutations: Vec<arete::runtime::arete_interpreter::Mutation>,

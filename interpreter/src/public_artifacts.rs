@@ -49,6 +49,9 @@ pub struct AliasedStackSpecV2 {
     pub alias: String,
     pub live_spec_hash: String,
     pub stack_spec: SerializableStackSpec,
+    /// The LiveSpec's runtime capacity overrides, for the host to configure
+    /// the stack's VM with. `None` keeps the runtime defaults.
+    pub limits: Option<arete_artifacts::LiveLimitsV2>,
 }
 
 #[derive(Debug, Clone)]
@@ -292,6 +295,18 @@ fn stack_spec_for_live(
     for entity in &mut stack.entities {
         entity.views.retain(|view| selected.contains(&view.id));
     }
+    // Row scoping travels on each entity spec, where the server reads it, so
+    // a scoped entity can never be served without its scope field.
+    if let Some(row_scopes) = &live.artifact.payload.row_scopes {
+        for (entity_name, path) in row_scopes {
+            let entity = stack
+                .entities
+                .iter_mut()
+                .find(|entity| &entity.state_name == entity_name)
+                .ok_or_else(|| format!("rowScopes names unknown entity '{entity_name}'"))?;
+            entity.scope_field = Some(path.clone());
+        }
+    }
 
     for adapter in &live.artifact.payload.program_adapters {
         let program = programs
@@ -337,6 +352,7 @@ fn stack_spec_for_live(
         alias: live.alias,
         live_spec_hash: live.artifact.artifact_hash.to_string(),
         stack_spec: stack,
+        limits: live.artifact.payload.limits.clone(),
     })
 }
 
@@ -417,6 +433,49 @@ mod tests {
     }
 
     #[test]
+    fn row_scopes_reach_each_scoped_entity_spec() {
+        let mut entity = arete_artifacts::PortableEntity::new("Round", "id.address");
+        entity.field_mappings.insert(
+            "meta.scope".to_string(),
+            serde_json::from_value(serde_json::json!({
+                "field_name": "scope",
+                "rust_type_name": "String",
+                "base_type": "String",
+                "is_optional": true,
+                "is_array": false
+            }))
+            .unwrap(),
+        );
+        let plain = arete_artifacts::PortableEntity::new("Board", "id.address");
+        let mut input = arete_artifacts::StackAuthoringV2::new(
+            "Scoped",
+            vec![program().payload],
+            vec![entity, plain],
+        );
+        input
+            .row_scopes
+            .insert("Round".to_string(), "meta.scope".to_string());
+        let authored = arete_artifacts::author_stack_v2(input).unwrap();
+        let live = authored.live_spec.unwrap();
+        let stack =
+            stack_spec_from_artifacts_v2(&authored.program_specs, &live, &authored.stack_manifest)
+                .unwrap();
+        let scope_of = |name: &str| {
+            stack
+                .entities
+                .iter()
+                .find(|entity| entity.state_name == name)
+                .unwrap()
+                .scope_field
+                .clone()
+        };
+        assert_eq!(scope_of("Round").as_deref(), Some("meta.scope"));
+        assert_eq!(scope_of("Board"), None);
+        let json = serde_json::to_string(&stack.entities).unwrap();
+        assert_eq!(json.matches("scope_field").count(), 1, "{json}");
+    }
+
+    #[test]
     fn a_single_live_stack_carries_its_independent_programs_after_the_live_programs() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -468,7 +527,9 @@ mod tests {
     #[test]
     fn program_artifacts_reconstruct_generator_input_without_hosted_release_state() {
         let program = program();
-        let stack = stack_spec_from_program_artifacts("SystemProgram", &[program.clone()]).unwrap();
+        let stack =
+            stack_spec_from_program_artifacts("SystemProgram", std::slice::from_ref(&program))
+                .unwrap();
         assert_eq!(stack.program_ids, vec![program.payload.program_id]);
         assert_eq!(
             stack.program_specs[0].hash().unwrap(),

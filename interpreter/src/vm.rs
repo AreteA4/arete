@@ -280,6 +280,10 @@ const DEFAULT_MAX_ARRAY_LENGTH: usize = 100;
 
 const DEFAULT_MAX_LOOKUP_INDEX_ENTRIES: usize = 2_500;
 
+/// PDA reverse lookups a declared (strict) lookup may follow before its
+/// index hit: five lookups in all, the depth an undeclared lookup chains to.
+const MAX_STRICT_LOOKUP_HOPS: usize = 4;
+
 const DEFAULT_MAX_VERSION_TRACKER_ENTRIES: usize = 2_500;
 
 // Smaller cache for instruction deduplication - provides shorter effective TTL
@@ -446,6 +450,35 @@ pub(crate) enum TokenResolverMissAction {
 }
 
 /// Estimate the size of a JSON value in bytes
+/// Text of a byte value as the decoders render it (see the `utf8` method of
+/// [`VmContext`]'s expression evaluator): an array of byte values, or the
+/// compact form when its preview is complete. `None` when the bytes are not
+/// all present or are not valid UTF-8. A string is returned unchanged.
+fn utf8_from_rendered_bytes(value: &Value) -> Option<String> {
+    let bytes = match value {
+        Value::String(text) => return Some(text.clone()),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| item.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+            .collect::<Option<Vec<u8>>>()?,
+        Value::Object(object) => {
+            if object.get("__bytes_truncated").and_then(Value::as_bool) != Some(false) {
+                return None;
+            }
+            let preview = object.get("__bytes_preview_hex")?.as_str()?;
+            let preview = preview.strip_prefix("0x").unwrap_or(preview);
+            let bytes = hex::decode(preview).ok()?;
+            let length = object.get("__bytes_len")?.as_u64()?;
+            if bytes.len() as u64 != length {
+                return None;
+            }
+            bytes
+        }
+        _ => return None,
+    };
+    String::from_utf8(bytes).ok()
+}
+
 fn estimate_json_size(value: &Value) -> usize {
     match value {
         Value::Null => 4,
@@ -724,6 +757,9 @@ pub struct VmContext {
     /// multi-segment handler run; drained by `process_event`.
     segment_misses: Vec<SegmentMiss>,
     pending_pda_reprocess_updates: Vec<PendingAccountUpdate>,
+    /// Addresses sibling registrations mapped during the last handler, whose
+    /// queued instruction events `process_event` replays.
+    sibling_registered_pdas: Vec<String>,
     scheduled_callbacks: Vec<(u64, ScheduledCallback)>,
     /// The entity a handler segment took out of its table with
     /// `ReadOrInitState` and has not written back yet: state id, key and the
@@ -1180,11 +1216,13 @@ impl PdaReverseLookup {
     }
 
     pub fn insert(&mut self, pda_address: String, seed_value: String) -> Option<String> {
-        let evicted = if self.index.len() >= self.index.cap().get() {
-            self.index.peek_lru().map(|(k, _)| k.clone())
-        } else {
-            None
-        };
+        // Re-registering an address already held replaces it in place.
+        let evicted =
+            if self.index.len() >= self.index.cap().get() && !self.index.contains(&pda_address) {
+                self.index.peek_lru().map(|(k, _)| k.clone())
+            } else {
+                None
+            };
 
         self.index.put(pda_address, seed_value);
         evicted
@@ -1309,6 +1347,88 @@ pub struct DeferredWhenOperation {
     pub emit: bool,
 }
 
+/// Transactions whose sibling-instruction captures a state table keeps.
+const MAX_SIBLING_TRANSACTIONS: usize = 1_000;
+/// Captured sibling instructions kept per transaction; later ones are dropped.
+const MAX_SIBLING_INSTRUCTIONS_PER_TRANSACTION: usize = 64;
+/// Sibling registrations waiting per transaction; later ones are dropped.
+const MAX_PENDING_SIBLING_REGISTRATIONS_PER_TRANSACTION: usize = 64;
+/// How long a sibling registration waits for siblings that have not arrived.
+const PENDING_SIBLING_REGISTRATION_TTL_SECONDS: i64 = 60;
+
+/// Fields of one instruction that sibling registrations of the same
+/// transaction read (see [`ast::SiblingSelector`]).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SiblingInstruction {
+    pub event_type: String,
+    /// The instruction's place in the transaction (`UpdateContext::ix_path`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ix_path: Option<String>,
+    /// Captured values by dotted field path.
+    pub values: std::collections::BTreeMap<String, Value>,
+}
+
+/// A sibling registration that keeps registering each sibling instruction of
+/// its transaction that arrives after it, until it expires.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PendingSiblingRegistration {
+    pub lookup_name: String,
+    pub sibling: ast::SiblingSelector,
+    pub pda_field: FieldPath,
+    pub seed_field: FieldPath,
+    /// The values read from the registering instruction; null for the ones
+    /// read from each sibling.
+    pub pda_value: Value,
+    pub seed_value: Value,
+    /// The registering instruction's place in the transaction, which is never
+    /// its own sibling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ix_path: Option<String>,
+    /// Unix seconds when it was recorded.
+    pub registered_at: i64,
+}
+
+impl PendingSiblingRegistration {
+    /// The PDA and seed this registration maps for one sibling instruction.
+    fn pair_with(&self, sibling: &SiblingInstruction) -> (Value, Value) {
+        let read = |from_sibling: bool, path: &FieldPath, own: &Value| {
+            if from_sibling {
+                sibling
+                    .values
+                    .get(&path.segments.join("."))
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            } else {
+                own.clone()
+            }
+        };
+        (
+            read(
+                self.sibling.pda_from_sibling,
+                &self.pda_field,
+                &self.pda_value,
+            ),
+            read(
+                self.sibling.seed_from_sibling,
+                &self.seed_field,
+                &self.seed_value,
+            ),
+        )
+    }
+}
+
+fn new_sibling_cache<T>() -> std::sync::Mutex<LruCache<String, Vec<T>>> {
+    std::sync::Mutex::new(LruCache::new(
+        NonZeroUsize::new(MAX_SIBLING_TRANSACTIONS).expect("non-zero sibling capacity"),
+    ))
+}
+
+fn unix_seconds_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64)
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolverRequest {
     pub cache_key: String,
@@ -1427,6 +1547,12 @@ pub struct VmCacheStats {
     /// (see [`StateTable`]). Counts the rows alone, not their keys or the
     /// table's bookkeeping.
     pub state_table_row_bytes: usize,
+    /// The state's PDA reverse lookup capacity per lookup table.
+    pub pda_reverse_lookup_capacity: usize,
+    /// PDA reverse lookup entries the state evicted at capacity.
+    pub pda_reverse_lookup_evictions: u64,
+    /// Transactions with sibling-instruction captures held for the state.
+    pub sibling_transactions: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1447,6 +1573,9 @@ pub struct CapacityWarning {
 pub struct StateTableConfig {
     pub max_entries: usize,
     pub max_array_length: usize,
+    /// Entries each PDA reverse lookup table keeps before evicting the least
+    /// recently used. A stack may raise it (`limits` in its LiveSpec).
+    pub max_pda_reverse_lookup_entries: usize,
 }
 
 impl Default for StateTableConfig {
@@ -1454,8 +1583,16 @@ impl Default for StateTableConfig {
         Self {
             max_entries: DEFAULT_MAX_STATE_TABLE_ENTRIES,
             max_array_length: DEFAULT_MAX_ARRAY_LENGTH,
+            max_pda_reverse_lookup_entries: DEFAULT_MAX_PDA_REVERSE_LOOKUP_ENTRIES,
         }
     }
+}
+
+impl StateTableConfig {
+    /// The default PDA reverse lookup capacity, which a stack's limits
+    /// override.
+    pub const DEFAULT_MAX_PDA_REVERSE_LOOKUP_ENTRIES: usize =
+        DEFAULT_MAX_PDA_REVERSE_LOOKUP_ENTRIES;
 }
 
 #[derive(Debug)]
@@ -1615,9 +1752,43 @@ pub struct StateTable {
     pub recent_tx_instructions:
         std::sync::Mutex<lru::LruCache<String, std::collections::HashSet<String>>>,
     pub deferred_when_ops: DashMap<(String, String), Vec<DeferredWhenOperation>>,
+    /// Instructions sibling registrations read, per transaction signature.
+    pub sibling_instructions: std::sync::Mutex<LruCache<String, Vec<SiblingInstruction>>>,
+    /// Sibling registrations still waiting for siblings, per signature.
+    pub pending_sibling_registrations:
+        std::sync::Mutex<LruCache<String, Vec<PendingSiblingRegistration>>>,
+    /// PDA reverse lookup entries evicted at capacity since the table was
+    /// created.
+    pda_reverse_lookup_evictions: u64,
 }
 
 impl StateTable {
+    /// The seed `pda_address` is registered to: in the shared
+    /// `default_pda_lookup` table that Rust DSL registrations write, else in
+    /// any other named table (Stack Source `register_from` lookup names), in
+    /// name order.
+    fn pda_reverse_lookup(&mut self, pda_address: &str) -> Option<String> {
+        if let Some(seed) = self
+            .pda_reverse_lookups
+            .get_mut("default_pda_lookup")
+            .and_then(|lookup| lookup.lookup(pda_address))
+        {
+            return Some(seed);
+        }
+        let mut names = self
+            .pda_reverse_lookups
+            .keys()
+            .filter(|name| name.as_str() != "default_pda_lookup")
+            .cloned()
+            .collect::<Vec<_>>();
+        names.sort();
+        names.into_iter().find_map(|name| {
+            self.pda_reverse_lookups
+                .get_mut(&name)
+                .and_then(|lookup| lookup.lookup(pda_address))
+        })
+    }
+
     /// Number of entities held.
     pub fn len(&self) -> usize {
         self.data.len()
@@ -1853,6 +2024,20 @@ impl StateTable {
                 .iter()
                 .map(|entry| (entry.key().clone(), entry.value().clone()))
                 .collect(),
+            sibling_instructions: self
+                .sibling_instructions
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(signature, instructions)| (signature.clone(), instructions.clone()))
+                .collect(),
+            pending_sibling_registrations: self
+                .pending_sibling_registrations
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(signature, pending)| (signature.clone(), pending.clone()))
+                .collect(),
         }
     }
 
@@ -1913,7 +2098,7 @@ impl StateTable {
 
         let mut pda_reverse_lookups = HashMap::new();
         for (name, entries) in &snapshot.pda_reverse_lookups {
-            let mut index = PdaReverseLookup::new(DEFAULT_MAX_PDA_REVERSE_LOOKUP_ENTRIES);
+            let mut index = PdaReverseLookup::new(config.max_pda_reverse_lookup_entries.max(1));
             index.load_entries(entries);
             pda_reverse_lookups.insert(name.clone(), index);
         }
@@ -1944,6 +2129,21 @@ impl StateTable {
             deferred_when_ops.insert(key.clone(), ops.clone());
         }
 
+        let sibling_instructions = new_sibling_cache();
+        {
+            let mut cache = sibling_instructions.lock().unwrap();
+            for (signature, instructions) in snapshot.sibling_instructions.iter().rev() {
+                cache.put(signature.clone(), instructions.clone());
+            }
+        }
+        let pending_sibling_registrations = new_sibling_cache();
+        {
+            let mut cache = pending_sibling_registrations.lock().unwrap();
+            for (signature, pending) in snapshot.pending_sibling_registrations.iter().rev() {
+                cache.put(signature.clone(), pending.clone());
+            }
+        }
+
         StateTable {
             data,
             recency: std::sync::Mutex::new(recency),
@@ -1960,6 +2160,9 @@ impl StateTable {
             entity_name: snapshot.entity_name.clone(),
             recent_tx_instructions,
             deferred_when_ops,
+            sibling_instructions,
+            pending_sibling_registrations,
+            pda_reverse_lookup_evictions: 0,
         }
     }
 }
@@ -1992,6 +2195,7 @@ impl VmContext {
             last_lookup_index_keys: Vec::new(),
             segment_misses: Vec::new(),
             pending_pda_reprocess_updates: Vec::new(),
+            sibling_registered_pdas: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
             row_register: None,
@@ -2021,6 +2225,9 @@ impl VmContext {
                     NonZeroUsize::new(1000).unwrap(),
                 )),
                 deferred_when_ops: DashMap::new(),
+                sibling_instructions: new_sibling_cache(),
+                pending_sibling_registrations: new_sibling_cache(),
+                pda_reverse_lookup_evictions: 0,
             },
         );
 
@@ -2203,6 +2410,7 @@ impl VmContext {
             last_lookup_index_keys: Vec::new(),
             segment_misses: Vec::new(),
             pending_pda_reprocess_updates: Vec::new(),
+            sibling_registered_pdas: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
             row_register: None,
@@ -2239,6 +2447,7 @@ impl VmContext {
             last_lookup_index_keys: Vec::new(),
             segment_misses: Vec::new(),
             pending_pda_reprocess_updates: Vec::new(),
+            sibling_registered_pdas: Vec::new(),
             scheduled_callbacks: Vec::new(),
             taken_entity: None,
             row_register: None,
@@ -2268,6 +2477,9 @@ impl VmContext {
                     NonZeroUsize::new(1000).unwrap(),
                 )),
                 deferred_when_ops: DashMap::new(),
+                sibling_instructions: new_sibling_cache(),
+                pending_sibling_registrations: new_sibling_cache(),
+                pda_reverse_lookup_evictions: 0,
             },
         );
         vm
@@ -3382,7 +3594,18 @@ impl VmContext {
                             }
                         }
 
+                        // The address the handler's last plain registration
+                        // mapped, then any its sibling registrations mapped.
+                        let mut registered_pdas = Vec::new();
                         if let Some(registered_pda) = self.take_last_pda_registered() {
+                            registered_pdas.push(registered_pda);
+                        }
+                        for registered_pda in std::mem::take(&mut self.sibling_registered_pdas) {
+                            if !registered_pdas.contains(&registered_pda) {
+                                registered_pdas.push(registered_pda);
+                            }
+                        }
+                        for registered_pda in registered_pdas {
                             let pending_events = self.flush_pending_instruction_events(
                                 entity_bytecode.state_id,
                                 &registered_pda,
@@ -4040,41 +4263,10 @@ impl VmContext {
                     key,
                     default,
                     dest,
+                    dedup_route,
                 } => {
                     let actual_state_id = override_state_id;
-                    if !self.states.contains_key(&actual_state_id) {
-                        // Every entity's table takes the VM's configuration,
-                        // so a configured capacity holds for all of them.
-                        let config = self
-                            .states
-                            .get(&0)
-                            .map(|table| table.config.clone())
-                            .unwrap_or_default();
-                        self.states.insert(
-                            actual_state_id,
-                            StateTable {
-                                data: DashMap::new(),
-                                recency: std::sync::Mutex::new(lru::LruCache::unbounded()),
-                                lookup_indexes: HashMap::new(),
-                                temporal_indexes: HashMap::new(),
-                                pda_reverse_lookups: HashMap::new(),
-                                pending_updates: DashMap::new(),
-                                pending_instruction_events: DashMap::new(),
-                                pending_instruction_event_count: 0,
-                                last_account_data: DashMap::new(),
-                                version_tracker: VersionTracker::new(),
-                                instruction_dedup_cache: VersionTracker::with_capacity(
-                                    DEFAULT_MAX_INSTRUCTION_DEDUP_ENTRIES,
-                                ),
-                                config,
-                                entity_name: entity_name.to_string(),
-                                recent_tx_instructions: std::sync::Mutex::new(LruCache::new(
-                                    NonZeroUsize::new(1000).unwrap(),
-                                )),
-                                deferred_when_ops: DashMap::new(),
-                            },
-                        );
-                    }
+                    self.ensure_state_table(actual_state_id, entity_name);
                     let key_value = self.registers[*key].clone();
                     // Warn if key is null for account state events (not instruction events or CPI events)
                     let warn_null_key = key_value.is_null()
@@ -4138,9 +4330,16 @@ impl VmContext {
                             else if ctx.is_instruction_update() {
                                 if let (Some(slot), Some(txn_index)) = (ctx.slot, ctx.txn_index) {
                                     let occurrence = ctx.occurrence();
+                                    // A declared route is deduplicated on its
+                                    // own: another route of this instruction
+                                    // to the same row is not a duplicate.
+                                    let dedup_event = match dedup_route {
+                                        Some(route) => Cow::Owned(format!("{event_type}@{route}")),
+                                        None => Cow::Borrowed(event_type),
+                                    };
                                     if state.is_duplicate_instruction(
                                         &key_value,
-                                        event_type,
+                                        &dedup_event,
                                         slot,
                                         txn_index,
                                         occurrence.as_deref(),
@@ -4558,6 +4757,29 @@ impl VmContext {
                     index_name,
                     lookup_value,
                     dest,
+                    strict: true,
+                } => {
+                    let lookup = self.registers[*lookup_value].clone();
+                    let (final_result, hops, miss_kind) =
+                        self.strict_lookup(override_state_id, index_name, lookup.clone());
+                    self.emit_debug(|| VmDebugEvent::LookupIndex {
+                        entity_name: entity_name.to_string(),
+                        event_type: event_type.to_string(),
+                        index_name: index_name.clone(),
+                        lookup_value: lookup,
+                        hops: hops.unwrap_or_default(),
+                        final_result: final_result.clone(),
+                        miss_kind,
+                    });
+                    self.registers[*dest] = final_result;
+                    pc += 1;
+                }
+                OpCode::LookupIndex {
+                    state_id: _,
+                    index_name,
+                    lookup_value,
+                    dest,
+                    strict: false,
                 } => {
                     let actual_state_id = override_state_id;
                     let mut current_value = self.registers[*lookup_value].clone();
@@ -4619,12 +4841,7 @@ impl VmContext {
                                     let pda_result = self
                                         .states
                                         .get_mut(&actual_state_id)
-                                        .and_then(|state_mut| {
-                                            state_mut
-                                                .pda_reverse_lookups
-                                                .get_mut("default_pda_lookup")
-                                        })
-                                        .and_then(|pda_lookup| pda_lookup.lookup(pda_str))
+                                        .and_then(|state_mut| state_mut.pda_reverse_lookup(pda_str))
                                         .map(Value::String)
                                         .unwrap_or(Value::Null);
                                     if let Some(hops) = hops.as_mut() {
@@ -5199,6 +5416,161 @@ impl VmContext {
 
                     pc += 1;
                 }
+                OpCode::SkipUnless { predicate, count } => {
+                    if self.registers[*predicate] == Value::Bool(true) {
+                        pc += 1;
+                    } else {
+                        pc += 1 + count;
+                    }
+                }
+                OpCode::CaptureSibling { state_id: _, paths } => {
+                    let actual_state_id = override_state_id;
+                    let (signature, ix_path) = match &self.current_context {
+                        Some(context) => (context.signature.clone(), context.ix_path.clone()),
+                        None => (None, None),
+                    };
+                    if let Some(signature) = signature {
+                        self.ensure_state_table(actual_state_id, entity_name);
+                        let mut values = std::collections::BTreeMap::new();
+                        for path in paths {
+                            values.insert(
+                                path.segments.join("."),
+                                self.load_field(event_value, path, None)?,
+                            );
+                        }
+                        let captured = SiblingInstruction {
+                            event_type: event_type.to_string(),
+                            ix_path: ix_path.clone(),
+                            values,
+                        };
+                        let waiting = {
+                            let state = self
+                                .states
+                                .get(&actual_state_id)
+                                .ok_or("State table not found")?;
+                            {
+                                let mut cache = state.sibling_instructions.lock().unwrap();
+                                let entries = cache.get_or_insert_mut(signature.clone(), Vec::new);
+                                // A replayed instruction is already captured.
+                                let known = entries.iter().any(|entry| {
+                                    entry.event_type == captured.event_type
+                                        && entry.ix_path == captured.ix_path
+                                });
+                                if !known
+                                    && entries.len() < MAX_SIBLING_INSTRUCTIONS_PER_TRANSACTION
+                                {
+                                    entries.push(captured.clone());
+                                }
+                            }
+                            let mut pending = state.pending_sibling_registrations.lock().unwrap();
+                            pending
+                                .get(&signature)
+                                .map(|registrations| {
+                                    registrations
+                                        .iter()
+                                        .filter(|registration| {
+                                            registration.sibling.instruction_type == event_type
+                                                && (registration.ix_path.is_none()
+                                                    || registration.ix_path != ix_path)
+                                        })
+                                        .cloned()
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default()
+                        };
+                        for registration in waiting {
+                            let (pda, seed) = registration.pair_with(&captured);
+                            self.register_sibling_pair(
+                                actual_state_id,
+                                entity_name,
+                                event_type,
+                                &registration.lookup_name,
+                                &pda,
+                                &seed,
+                            )?;
+                        }
+                    }
+                    pc += 1;
+                }
+                OpCode::RegisterPdaFromSibling {
+                    state_id: _,
+                    lookup_name,
+                    sibling,
+                    pda_field,
+                    seed_field,
+                    pda_address,
+                    primary_key,
+                } => {
+                    let actual_state_id = override_state_id;
+                    let (signature, ix_path) = match &self.current_context {
+                        Some(context) => (context.signature.clone(), context.ix_path.clone()),
+                        None => (None, None),
+                    };
+                    if let Some(signature) = signature {
+                        self.ensure_state_table(actual_state_id, entity_name);
+                        let registration = PendingSiblingRegistration {
+                            lookup_name: lookup_name.clone(),
+                            sibling: sibling.clone(),
+                            pda_field: pda_field.clone(),
+                            seed_field: seed_field.clone(),
+                            pda_value: self.registers[*pda_address].clone(),
+                            seed_value: self.registers[*primary_key].clone(),
+                            ix_path: ix_path.clone(),
+                            registered_at: unix_seconds_now(),
+                        };
+                        let arrived = {
+                            let state = self
+                                .states
+                                .get(&actual_state_id)
+                                .ok_or("State table not found")?;
+                            {
+                                let mut pending =
+                                    state.pending_sibling_registrations.lock().unwrap();
+                                let entries =
+                                    pending.get_or_insert_mut(signature.clone(), Vec::new);
+                                // A replayed registration is already waiting.
+                                let known = entries.iter().any(|entry| {
+                                    entry.lookup_name == registration.lookup_name
+                                        && entry.ix_path == registration.ix_path
+                                        && entry.sibling == registration.sibling
+                                });
+                                if !known
+                                    && entries.len()
+                                        < MAX_PENDING_SIBLING_REGISTRATIONS_PER_TRANSACTION
+                                {
+                                    entries.push(registration.clone());
+                                }
+                            }
+                            let mut cache = state.sibling_instructions.lock().unwrap();
+                            cache
+                                .get(&signature)
+                                .map(|entries| {
+                                    entries
+                                        .iter()
+                                        .filter(|entry| {
+                                            entry.event_type == sibling.instruction_type
+                                                && (entry.ix_path.is_none()
+                                                    || entry.ix_path != ix_path)
+                                        })
+                                        .cloned()
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default()
+                        };
+                        for captured in arrived {
+                            let (pda, seed) = registration.pair_with(&captured);
+                            self.register_sibling_pair(
+                                actual_state_id,
+                                entity_name,
+                                event_type,
+                                lookup_name,
+                                &pda,
+                                &seed,
+                            )?;
+                        }
+                    }
+                    pc += 1;
+                }
                 OpCode::SegmentBoundary => {
                     // `execute_handler` splits handlers at boundaries, so a
                     // segment never contains one; treat it as a no-op.
@@ -5210,6 +5582,82 @@ impl VmContext {
         }
 
         Ok(output)
+    }
+
+    /// Create the table for `state_id` on first use. Every entity's table
+    /// takes the VM's configuration, so a configured capacity holds for all
+    /// of them.
+    fn ensure_state_table(&mut self, state_id: u32, entity_name: &str) {
+        if self.states.contains_key(&state_id) {
+            return;
+        }
+        let config = self
+            .states
+            .get(&0)
+            .map(|table| table.config.clone())
+            .unwrap_or_default();
+        self.states.insert(
+            state_id,
+            StateTable {
+                data: DashMap::new(),
+                recency: std::sync::Mutex::new(lru::LruCache::unbounded()),
+                lookup_indexes: HashMap::new(),
+                temporal_indexes: HashMap::new(),
+                pda_reverse_lookups: HashMap::new(),
+                pending_updates: DashMap::new(),
+                pending_instruction_events: DashMap::new(),
+                pending_instruction_event_count: 0,
+                last_account_data: DashMap::new(),
+                version_tracker: VersionTracker::new(),
+                instruction_dedup_cache: VersionTracker::with_capacity(
+                    DEFAULT_MAX_INSTRUCTION_DEDUP_ENTRIES,
+                ),
+                config,
+                entity_name: entity_name.to_string(),
+                recent_tx_instructions: std::sync::Mutex::new(LruCache::new(
+                    NonZeroUsize::new(1000).unwrap(),
+                )),
+                deferred_when_ops: DashMap::new(),
+                sibling_instructions: new_sibling_cache(),
+                pending_sibling_registrations: new_sibling_cache(),
+                pda_reverse_lookup_evictions: 0,
+            },
+        );
+    }
+
+    /// Map `pda` to `seed` for a sibling registration, as
+    /// `UpdatePdaReverseLookup` does: a string seed, or an unsigned integer
+    /// one as its decimal text. Anything else, or a non-string address, maps
+    /// nothing.
+    fn register_sibling_pair(
+        &mut self,
+        state_id: u32,
+        entity_name: &str,
+        event_type: &str,
+        lookup_name: &str,
+        pda: &Value,
+        seed: &Value,
+    ) -> Result<()> {
+        let Some(pda) = pda.as_str() else {
+            return Ok(());
+        };
+        let seed_text = match seed {
+            Value::String(text) => text.clone(),
+            Value::Number(number) if number.is_u64() => number.to_string(),
+            _ => return Ok(()),
+        };
+        let pending =
+            self.update_pda_reverse_lookup(state_id, lookup_name, pda.to_string(), seed_text)?;
+        self.pending_pda_reprocess_updates.extend(pending);
+        self.sibling_registered_pdas.push(pda.to_string());
+        self.emit_debug(|| VmDebugEvent::PdaReverseLookupUpdate {
+            entity_name: entity_name.to_string(),
+            event_type: event_type.to_string(),
+            lookup_name: lookup_name.to_string(),
+            pda_address: pda.to_string(),
+            primary_key: seed.clone(),
+        });
+        Ok(())
     }
 
     fn load_field(
@@ -5686,6 +6134,89 @@ impl VmContext {
         }
     }
 
+    /// Resolve a declared (strict) lookup: the value is looked up in
+    /// `index_name` only. On a miss it may be a PDA: its PDA reverse lookup
+    /// seed is looked up the same way, up to `MAX_STRICT_LOOKUP_HOPS` PDA
+    /// hops. The first index hit is the key; the entity's other lookup
+    /// indexes are never consulted, and a value reached only through PDA
+    /// reverse lookups is not a key.
+    ///
+    /// A miss is recorded as an undeclared lookup records it, so the event is
+    /// queued and replayed the same way.
+    #[allow(clippy::type_complexity)]
+    fn strict_lookup(
+        &mut self,
+        state_id: u32,
+        index_name: &str,
+        lookup: Value,
+    ) -> (Value, Option<Vec<VmLookupHop>>, Option<String>) {
+        let mut hops = self.is_debug_enabled().then(Vec::<VmLookupHop>::new);
+        let Some(state) = self.states.get_mut(&state_id) else {
+            return (Value::Null, hops, Some("state_not_initialized".to_string()));
+        };
+        let mut current = lookup;
+        for hop in 0..=MAX_STRICT_LOOKUP_HOPS {
+            let found = state
+                .lookup_indexes
+                .get(index_name)
+                .and_then(|index| index.lookup(&current));
+            if let Some(hops) = hops.as_mut() {
+                hops.push(VmLookupHop {
+                    source: "lookup_index".to_string(),
+                    input: current.clone(),
+                    result: found.clone().unwrap_or(Value::Null),
+                    chained: false,
+                });
+            }
+            if let Some(found) = found {
+                return (found, hops, None);
+            }
+            let seed = match current.as_str() {
+                Some(pda) if hop < MAX_STRICT_LOOKUP_HOPS => state.pda_reverse_lookup(pda),
+                _ => None,
+            };
+            if let Some(hops) = hops.as_mut() {
+                if current.is_string() {
+                    hops.push(VmLookupHop {
+                        source: "pda_reverse_lookup".to_string(),
+                        input: current.clone(),
+                        result: seed.clone().map(Value::String).unwrap_or(Value::Null),
+                        chained: seed.is_some(),
+                    });
+                }
+            }
+            match seed {
+                Some(seed) => current = Value::String(seed),
+                None if hop == 0 => {
+                    let miss_kind = match current.as_str() {
+                        Some(pda) => {
+                            self.last_pda_lookup_miss = Some(pda.to_string());
+                            "pda_lookup_miss"
+                        }
+                        None => {
+                            self.last_lookup_index_miss = lookup_replay_key(&current);
+                            "lookup_index_miss"
+                        }
+                    };
+                    return (Value::Null, hops, Some(miss_kind.to_string()));
+                }
+                None => {
+                    self.last_lookup_index_miss = lookup_replay_key(&current);
+                    return (
+                        Value::Null,
+                        hops,
+                        Some("lookup_chain_incomplete".to_string()),
+                    );
+                }
+            }
+        }
+        (
+            Value::Null,
+            hops,
+            Some("lookup_chain_incomplete".to_string()),
+        )
+    }
+
     fn can_resolve_further(&self, value: &Value, state_id: u32, index_name: &str) -> bool {
         if let Some(state) = self.states.get(&state_id) {
             if let Some(index) = state.lookup_indexes.get(index_name) {
@@ -5704,10 +6235,12 @@ impl VmContext {
             }
 
             if let Some(pda_str) = value.as_str() {
-                if let Some(pda_lookup) = state.pda_reverse_lookups.get("default_pda_lookup") {
-                    if pda_lookup.contains(pda_str) {
-                        return true;
-                    }
+                if state
+                    .pda_reverse_lookups
+                    .values()
+                    .any(|pda_lookup| pda_lookup.contains(pda_str))
+                {
+                    return true;
                 }
             }
         }
@@ -5874,6 +6407,22 @@ impl VmContext {
             !ops.is_empty()
         });
 
+        // Sibling registrations wait as long as deferred when-ops do.
+        let mut pending = state.pending_sibling_registrations.lock().unwrap();
+        let expired = pending
+            .iter_mut()
+            .filter_map(|(signature, registrations)| {
+                registrations.retain(|registration| {
+                    now - registration.registered_at
+                        < PENDING_SIBLING_REGISTRATION_TTL_SECONDS.min(max_age_secs)
+                });
+                registrations.is_empty().then(|| signature.clone())
+            })
+            .collect::<Vec<_>>();
+        for signature in expired {
+            pending.pop(&signature);
+        }
+
         removed
     }
 
@@ -5906,10 +6455,11 @@ impl VmContext {
             .get_mut(&state_id)
             .ok_or("State table not found")?;
 
+        let capacity = state.config.max_pda_reverse_lookup_entries.max(1);
         let lookup = state
             .pda_reverse_lookups
             .entry(lookup_name.to_string())
-            .or_insert_with(|| PdaReverseLookup::new(DEFAULT_MAX_PDA_REVERSE_LOOKUP_ENTRIES));
+            .or_insert_with(|| PdaReverseLookup::new(capacity));
 
         // Detect if the PDA mapping is CHANGING (same PDA, different seed).
         // This happens at round boundaries when e.g. entropyVar is remapped
@@ -5935,6 +6485,15 @@ impl VmContext {
         }
 
         let evicted_pda = lookup.insert(pda_address.clone(), seed_value.clone());
+
+        if evicted_pda.is_some() {
+            state.pda_reverse_lookup_evictions += 1;
+            crate::vm_metrics::record_pda_reverse_lookup_eviction(
+                1,
+                &state.entity_name,
+                lookup_name,
+            );
+        }
 
         if let Some(ref evicted) = evicted_pda {
             if let Some((_, evicted_updates)) = state.pending_updates.remove(evicted) {
@@ -6371,6 +6930,20 @@ impl VmContext {
                 .get(&state_id)
                 .map_or(0, |state| state.instruction_dedup_cache.len()),
             state_table_row_bytes: self.states.get(&state_id).map_or(0, StateTable::row_bytes),
+            pda_reverse_lookup_capacity: self
+                .states
+                .get(&state_id)
+                .map_or(DEFAULT_MAX_PDA_REVERSE_LOOKUP_ENTRIES, |state| {
+                    state.config.max_pda_reverse_lookup_entries
+                }),
+            pda_reverse_lookup_evictions: self
+                .states
+                .get(&state_id)
+                .map_or(0, |state| state.pda_reverse_lookup_evictions),
+            sibling_transactions: self
+                .states
+                .get(&state_id)
+                .map_or(0, |state| state.sibling_instructions.lock().unwrap().len()),
         }
     }
 
@@ -7308,6 +7881,68 @@ impl VmContext {
                 }
                 Ok(Value::String(joined))
             }
+            // `starts_with(s, prefix)`: whether string `s` begins with
+            // `prefix`; null when either is null.
+            "starts_with" => {
+                let [prefix] = args else {
+                    return Err("starts_with() requires exactly one argument".into());
+                };
+                match (value, prefix) {
+                    (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                    (Value::String(text), Value::String(prefix)) => {
+                        Ok(Value::Bool(text.starts_with(prefix.as_str())))
+                    }
+                    _ => Err(
+                        format!("Cannot call starts_with() on {:?} with {:?}", value, prefix)
+                            .into(),
+                    ),
+                }
+            }
+            // `split_part(s, sep, n)`: the `n`th field (1-based, as in
+            // Postgres) of `s` split on `sep`; null when `s` or `sep` is null
+            // or `n` is out of range. An empty separator leaves `s` whole.
+            "split_part" => {
+                let [separator, position] = args else {
+                    return Err("split_part() requires exactly two arguments".into());
+                };
+                let position = position.as_u64().ok_or_else(|| {
+                    format!("split_part() position {:?} is not an integer", position)
+                })?;
+                match (value, separator) {
+                    (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                    (Value::String(text), Value::String(separator)) => {
+                        let Some(index) = usize::try_from(position)
+                            .ok()
+                            .and_then(|position| position.checked_sub(1))
+                        else {
+                            return Ok(Value::Null);
+                        };
+                        let part = if separator.is_empty() {
+                            (index == 0).then_some(text.as_str())
+                        } else {
+                            text.split(separator.as_str()).nth(index)
+                        };
+                        Ok(part.map_or(Value::Null, |part| Value::String(part.to_string())))
+                    }
+                    _ => Err(format!(
+                        "Cannot call split_part() on {:?} with {:?}",
+                        value, separator
+                    )
+                    .into()),
+                }
+            }
+            // `utf8(bytes)`: the bytes as UTF-8 text. Accepts the decoder's
+            // two byte renderings: an inline array of byte values, and the
+            // compact `{__bytes_len, __bytes_preview_hex, __bytes_truncated}`
+            // form used for long values, which decodes only when its preview
+            // holds every byte. Null for null, invalid UTF-8 or a truncated
+            // preview; a string passes through.
+            "utf8" => {
+                if !args.is_empty() {
+                    return Err("utf8() does not accept arguments".into());
+                }
+                Ok(utf8_from_rendered_bytes(value).map_or(Value::Null, Value::String))
+            }
             "min" => {
                 if args.is_empty() {
                     return Err("min() requires an argument".into());
@@ -7549,6 +8184,7 @@ mod tests {
                 key: 0,
                 default: json!({}),
                 dest: 2,
+                dedup_route: None,
             },
             OpCode::LoadConstant {
                 value: json!(7),
@@ -7598,6 +8234,7 @@ mod tests {
                     key: 0,
                     default: json!({}),
                     dest: 2,
+                    dedup_route: None,
                 },
             ];
             handler.extend(body);
@@ -7677,6 +8314,7 @@ mod tests {
         let config = StateTableConfig {
             max_entries: 4,
             max_array_length: 3,
+            ..StateTableConfig::default()
         };
         let mut reusing = VmContext::new_with_config(config.clone());
         let mut fresh = VmContext::new_with_config(config);
@@ -8767,7 +9405,7 @@ mod tests {
         state
             .lookup_indexes
             .entry("round_address_lookup_index".to_string())
-            .or_insert_with(LookupIndex::new)
+            .or_default()
             .insert(json!("addr_456"), json!(789));
 
         let handler = vec![
@@ -8780,6 +9418,7 @@ mod tests {
                 index_name: "round_address_lookup_index".to_string(),
                 lookup_value: 0,
                 dest: 1,
+                strict: false,
             },
         ];
 
@@ -8797,7 +9436,7 @@ mod tests {
         state
             .lookup_indexes
             .entry("test_index".to_string())
-            .or_insert_with(LookupIndex::new)
+            .or_default()
             .insert(json!("key_abc"), json!(42));
 
         let handler = vec![
@@ -8810,6 +9449,7 @@ mod tests {
                 index_name: "test_index".to_string(),
                 lookup_value: 0,
                 dest: 1,
+                strict: false,
             },
         ];
 
@@ -8817,6 +9457,89 @@ mod tests {
             .unwrap();
 
         assert_eq!(vm.registers[1], json!(42));
+    }
+
+    #[test]
+    fn test_strict_lookup_consults_only_its_index() {
+        let lookup = |strict: bool| {
+            let mut vm = VmContext::new();
+            let state = vm.states.get_mut(&0).unwrap();
+            state
+                .lookup_indexes
+                .entry("other_lookup_index".to_string())
+                .or_default()
+                .insert(json!("sig_1"), json!("row_1"));
+            let handler = vec![
+                OpCode::LoadConstant {
+                    value: json!("sig_1"),
+                    dest: 0,
+                },
+                OpCode::LookupIndex {
+                    state_id: 0,
+                    index_name: "declared_lookup_index".to_string(),
+                    lookup_value: 0,
+                    dest: 1,
+                    strict,
+                },
+            ];
+            vm.execute_handler(&handler, &json!({}), "test", 0, "TestEntity", None, None)
+                .unwrap();
+            (vm.registers[1].clone(), vm.take_last_pda_lookup_miss())
+        };
+
+        // Undeclared: falls back to the entity's other index.
+        assert_eq!(lookup(false), (json!("row_1"), None));
+        // Declared: a miss, recorded as an undeclared first-hop miss is.
+        assert_eq!(lookup(true), (Value::Null, Some("sig_1".to_string())));
+    }
+
+    #[test]
+    fn test_strict_lookup_follows_pda_hops_into_its_index_only() {
+        let mut vm = VmContext::new();
+        let state = vm.states.get_mut(&0).unwrap();
+        let pdas = state
+            .pda_reverse_lookups
+            .entry("default_pda_lookup".to_string())
+            .or_insert_with(|| PdaReverseLookup::new(1000));
+        pdas.insert("pda_1".to_string(), "pda_2".to_string());
+        pdas.insert("pda_2".to_string(), "addr_3".to_string());
+        pdas.insert("pda_9".to_string(), "addr_9".to_string());
+        state
+            .lookup_indexes
+            .entry("round_address_lookup_index".to_string())
+            .or_default()
+            .insert(json!("addr_3"), json!(42));
+        state
+            .lookup_indexes
+            .entry("other_lookup_index".to_string())
+            .or_default()
+            .insert(json!("addr_9"), json!(99));
+
+        let lookup = |vm: &mut VmContext, value: &str| {
+            let handler = vec![
+                OpCode::LoadConstant {
+                    value: json!(value),
+                    dest: 0,
+                },
+                OpCode::LookupIndex {
+                    state_id: 0,
+                    index_name: "round_address_lookup_index".to_string(),
+                    lookup_value: 0,
+                    dest: 1,
+                    strict: true,
+                },
+            ];
+            vm.execute_handler(&handler, &json!({}), "test", 0, "TestEntity", None, None)
+                .unwrap();
+            vm.registers[1].clone()
+        };
+
+        // Two PDA hops, then the declared index.
+        assert_eq!(lookup(&mut vm, "pda_1"), json!(42));
+        // A chain that ends in another index finds nothing, and waits on the
+        // value it reached.
+        assert_eq!(lookup(&mut vm, "pda_9"), Value::Null);
+        assert_eq!(vm.take_last_lookup_index_miss().as_deref(), Some("addr_9"));
     }
 
     #[test]
@@ -8833,6 +9556,7 @@ mod tests {
                 index_name: "end_at_lookup_index".to_string(),
                 lookup_value: 0,
                 dest: 1,
+                strict: false,
             },
         ];
 
@@ -8889,6 +9613,7 @@ mod tests {
                 index_name: "end_at_lookup_index".to_string(),
                 lookup_value: 0,
                 dest: 1,
+                strict: false,
             },
         ];
         vm.execute_handler(&missing, &json!({}), "test", 0, "TestEntity", None, None)
@@ -8935,6 +9660,7 @@ mod tests {
                 index_name: "end_at_lookup_index".to_string(),
                 lookup_value: 0,
                 dest: 1,
+                strict: false,
             },
         ];
         vm.execute_handler(&missing, &json!({}), "test", 0, "TestEntity", None, None)
@@ -9241,9 +9967,10 @@ mod tests {
             },
         ];
 
-        let evaluator: Box<
-            dyn Fn(&mut Value, Option<u64>, i64) -> ComputedEvaluatorResult + Send + Sync,
-        > = Box::new(VmContext::create_evaluator_from_specs(computed_specs));
+        type Evaluator =
+            dyn Fn(&mut Value, Option<u64>, i64) -> ComputedEvaluatorResult + Send + Sync;
+        let evaluator: Box<Evaluator> =
+            Box::new(VmContext::create_evaluator_from_specs(computed_specs));
 
         // Test that when we set entropy.base_value via deferred when-op,
         // both computed fields are updated
@@ -9572,6 +10299,7 @@ mod tests {
                 key: 0,
                 default: json!({}),
                 dest: 2,
+                dedup_route: None,
             },
             OpCode::LoadEventField {
                 path: FieldPath::new(&["amount"]),

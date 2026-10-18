@@ -15,6 +15,7 @@ This crate provides a builder API for creating Arete servers that:
 - Stream entity updates over WebSockets to connected clients
 - Serve stack-scoped HTTP reads for `/chain/*` and `/programs/*`
 - Optionally relay bounded transaction operations through fixed `/transactions/v1/*` routes
+- Serve a read-only, allowlisted JSON-RPC endpoint for local mainnet forks at `/rpc/v1/fork`
 - Support multiple streaming modes (State, List, Append)
 - Monitor stream health and connectivity status
 
@@ -76,8 +77,9 @@ For signed sessions, the same short-lived JWT can be used for both WebSocket
 and HTTP read requests. HTTP reads use bearer-only transport.
 
 HTTP reads require the exact `read` scope. Transaction inspection routes
-require `transaction:inspect`; submission requires `transaction:send`. These
-whitespace-delimited scopes are independent and do not imply one another.
+require `transaction:inspect`; submission requires `transaction:send`. The
+read-only fork endpoint requires `fork:read`. These whitespace-delimited scopes
+are independent and do not imply one another.
 
 ### Standalone Solana Gateway
 
@@ -111,6 +113,47 @@ Embedders that need operation accounting can attach a
 `SolanaGatewayUsageObserver` with `usage_observer`. The callback receives the
 verified auth context and neutral operation facts; persistence, delivery, and
 billing policy remain the embedder's responsibility.
+
+### Fork reads
+
+`POST /rpc/v1/fork` is a read-only Solana JSON-RPC 2.0 endpoint for local
+mainnet forks (for example Surfpool's `--rpc-url`). It is served wherever chain
+reads are (`Server::solana_gateway` and `.http()`), forwards to the same read
+RPC (`ARETE_READ_RPC_URL`), and requires the exact `fork:read` scope. Clients
+send the session as `Authorization: Bearer <token>`; a local forwarder can add
+it for tools that cannot.
+
+Single requests and batches of up to 20 calls are accepted (body at most
+256 KiB). Only these methods are forwarded:
+
+`getAccountInfo`, `getMultipleAccounts`, `getTokenAccountsByOwner`,
+`getProgramAccounts`, `getSignaturesForAddress`, `getTransaction`, `getBlock`,
+`getTokenLargestAccounts`, `getEpochInfo`, `getEpochSchedule`,
+`getGenesisHash`, `getSlot`, `getBalance`, `getVersion`, `getHealth`,
+`getMinimumBalanceForRentExemption`, `getLatestBlockhash`,
+`getFirstAvailableBlock`, `getBlockHeight`.
+
+Every other method, including every send, simulate and airdrop, is answered
+locally with `-32601` (`method not allowed on the fork endpoint`). Limits:
+
+| Check | Limit |
+| --- | --- |
+| `commitment` | `confirmed` or `finalized` only |
+| `encoding` | `base64`, `base64+zstd`, `jsonParsed` or `json` |
+| `getMultipleAccounts` | at most 100 keys |
+| `getProgramAccounts` | 1-4 filters, at least one `dataSize` or `memcmp`; at most 10,000 results |
+| `getTokenAccountsByOwner` | at most 10,000 results |
+| `getSignaturesForAddress` | `limit` 1-1000 |
+| `getBlock` | `transactionDetails` must be `none` or `signatures`; `rewards` must be `false` (sent as `false` when omitted) |
+| Response | at most 16 MiB per upstream call and per response body |
+
+Invalid parameters are `-32602`. A result over a limit is `-32080`; an
+unreachable, failing or malformed upstream is `-32081`. Upstream JSON-RPC errors
+keep only their numeric class (`-32000..=-32099`, or `-32602`) with a fixed
+message; upstream messages, error data and URLs are never returned. Each entry
+in a batch counts against the session's per-minute HTTP limit, and each
+forwarded call is reported to a `SolanaGatewayUsageObserver` as one chain read
+with operation `fork_read`.
 
 ### Transaction Relay
 

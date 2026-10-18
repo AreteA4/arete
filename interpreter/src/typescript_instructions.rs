@@ -4228,7 +4228,7 @@ mod tests {
             .expect("OreCloseParams block present");
         let end_marker = "});";
         let end = code[start..]
-            .find(&format!("export const oreCloseInstruction"))
+            .find("export const oreCloseInstruction")
             .and_then(|handler_offset| {
                 code[start + handler_offset..]
                     .find(end_marker)
@@ -4580,7 +4580,7 @@ mod tests {
             );
             assert!(raw_expression.contains("mint: params.baseMint"));
             assert!(raw_expression.contains("...entry"));
-            assert!(raw_expression.contains("memo") == false);
+            assert!(!raw_expression.contains("memo"));
         }
     }
 

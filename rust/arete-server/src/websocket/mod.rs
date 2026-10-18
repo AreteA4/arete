@@ -5,6 +5,8 @@ pub mod frame;
 #[cfg(test)]
 mod load_tests;
 pub mod rate_limiter;
+#[cfg(test)]
+mod row_scope_tests;
 pub mod server;
 pub mod subscription;
 pub mod usage;

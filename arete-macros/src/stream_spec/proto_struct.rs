@@ -398,6 +398,7 @@ pub fn process_struct_with_context(
             quote! {
                 arete::runtime::arete_interpreter::ast::KeyResolutionStrategy::Lookup {
                     primary_field: #lookup_field,
+                    index_name: None,
                 }
             }
         };

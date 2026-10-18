@@ -149,6 +149,7 @@ fn build_key_resolution_code(strategy: &KeyResolutionStrategy) -> TokenStream {
             quote! {
                 arete::runtime::arete_interpreter::ast::KeyResolutionStrategy::Lookup {
                     primary_field: #field_path_code,
+                    index_name: None,
                 }
             }
         }
