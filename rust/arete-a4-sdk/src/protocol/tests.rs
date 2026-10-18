@@ -1484,3 +1484,69 @@ async fn receipts_are_fetched_and_verify_offline_and_on_chain() {
         json!(["protocol:read"])
     );
 }
+
+#[tokio::test]
+async fn live_rows_clear_atomically_when_accounts_change_or_disappear() {
+    let (_mock, base) = mock(|request, index| match request.path.as_str() {
+        "/ws/sessions" => session(index),
+        "/api/protocol-instances/inst_1" => {
+            let mut detail: Value = serde_json::from_str(&instance_detail(
+                3 + index as u64,
+                if index < 2 { "P1" } else { "P2" },
+            ))
+            .unwrap();
+            if index >= 3 {
+                detail["accounts"] = json!({});
+            }
+            (200, vec![], detail.to_string())
+        }
+        _ => (
+            200,
+            vec![("content-type", "text/event-stream".into())],
+            "retry: 60000\n\n".into(),
+        ),
+    })
+    .await;
+    let views = Arc::new(FakeLiveViews::default());
+    let definition = ProtocolDefinition {
+        live_stack: Some(ProtocolLiveStackDescriptor {
+            stack: "raiseStack",
+            view: "TokenRaiseInstance/state",
+            key_account: "presale",
+        }),
+        ..definition()
+    };
+    let client = ProtocolClient::new(
+        &definition,
+        ProtocolClientOptions::default()
+            .with_auth(AuthConfig::default().with_token("static-token"))
+            .with_api_url(format!("{base}/api"))
+            .with_live_views(views.clone()),
+    )
+    .unwrap();
+    let handle = client.instance_handle("inst_1").await.unwrap();
+    for _ in 0..100 {
+        if !views.asked().is_empty() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    views.send("P1", json!({"total": "11"}));
+    wait_for(&handle, "first row", |s| s.snapshot.live.is_some()).await;
+    assert_eq!(
+        handle.refresh().await.unwrap().live,
+        Some(json!({"total":"11"}))
+    );
+    let changed = handle.refresh().await.unwrap();
+    assert_eq!(changed.instance.accounts["presale"], "P2");
+    assert!(changed.live.is_none());
+    views.send("P2", json!({"total": "22"}));
+    wait_for(&handle, "second row", |s| s.snapshot.live.is_some()).await;
+    assert!(handle.refresh().await.unwrap().live.is_none());
+    assert!(views
+        .rows
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|(.., sender)| sender.is_closed()));
+}

@@ -13,11 +13,12 @@ bs58 = "0.5"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 sha2 = { version = "0.10", optional = true }
 zstd = { version = "0.13", optional = true }
+tempfile = { version = "3", optional = true }
 
 [features]
 default = []
 # `arete.raw-capture/v1`: recorded raw updates for offline replay.
-raw-capture = ["dep:sha2", "dep:zstd"]
+raw-capture = ["dep:sha2", "dep:zstd", "dep:tempfile"]
 
 [dev-dependencies]
 tempfile = "3"

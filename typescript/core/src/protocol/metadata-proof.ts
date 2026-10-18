@@ -10,7 +10,8 @@ import { encodeBase58 } from '../instructions/pda';
  *
  * Throws a `TypeError` for anything that is not JSON: non-finite numbers,
  * bigints (convert them to decimal strings first), functions, symbols,
- * `undefined` outside an object member, and strings with lone surrogates.
+ * `undefined` outside an object member, strings with lone surrogates,
+ * non-plain objects, and objects or arrays with `toJSON` hooks.
  * Object members whose value is `undefined` are omitted, as
  * `JSON.stringify` omits them.
  */
@@ -52,8 +53,15 @@ function canonicalize(value: unknown, path: string): string {
     case 'bigint':
       throw new TypeError(`${path} is a bigint; convert it to a decimal string first`);
     case 'object': {
+      if (typeof (value as { toJSON?: unknown }).toJSON === 'function') {
+        throw new TypeError(`${path} has a toJSON hook and is not a plain JSON value`);
+      }
       if (Array.isArray(value)) {
         return `[${value.map((item, index) => canonicalize(item, `${path}[${index}]`)).join(',')}]`;
+      }
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new TypeError(`${path} is not a plain JSON object`);
       }
       const record = value as Record<string, unknown>;
       const members = Object.keys(record)

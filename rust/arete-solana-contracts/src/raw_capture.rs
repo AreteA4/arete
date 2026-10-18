@@ -453,8 +453,8 @@ fn invalid(message: impl Into<String>) -> CaptureError {
 /// no capture file is written.
 pub struct CaptureWriter {
     path: PathBuf,
-    body_path: PathBuf,
-    staging_path: PathBuf,
+    body_path: tempfile::TempPath,
+    staging_path: tempfile::TempPath,
     body: Option<BufWriter<File>>,
     hasher: Sha256,
     header: CaptureHeader,
@@ -465,9 +465,19 @@ impl CaptureWriter {
     /// `header` carries everything but the counts, slot range and hash.
     pub fn create(path: impl Into<PathBuf>, header: CaptureHeader) -> Result<Self, CaptureError> {
         let path = path.into();
-        let body_path = sibling(&path, ".body.tmp");
-        let staging_path = sibling(&path, ".tmp");
-        let body = BufWriter::new(File::create(&body_path)?);
+        let directory = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let (body, body_path) = tempfile::Builder::new()
+            .prefix(".arete-capture-body-")
+            .tempfile_in(directory)?
+            .into_parts();
+        let staging_path = tempfile::Builder::new()
+            .prefix(".arete-capture-")
+            .tempfile_in(directory)?
+            .into_temp_path();
+        let body = BufWriter::new(body);
         Ok(Self {
             path,
             body_path,
@@ -577,12 +587,6 @@ impl Drop for CaptureWriter {
     }
 }
 
-fn sibling(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(suffix);
-    path.with_file_name(name)
-}
-
 /// A capture read whole.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Capture {
@@ -685,13 +689,11 @@ impl<R: BufRead> LimitedLines<R> {
                 )));
             }
             if ended {
+                line.push(b'\n');
                 break;
             }
         }
         self.number += 1;
-        if line.last() == Some(&b'\r') {
-            line.pop();
-        }
         String::from_utf8(line)
             .map(Some)
             .map_err(|_| invalid(format!("line {} is not UTF-8", self.number)))
@@ -783,7 +785,6 @@ fn scan_capture(
     while let Some(line) = lines.next_line()? {
         let line_number = lines.number;
         hasher.update(line.as_bytes());
-        hasher.update(b"\n");
         if line.trim().is_empty() {
             continue;
         }
@@ -1070,6 +1071,80 @@ mod tests {
         assert!(capture.records[0].is_state());
         assert_eq!(capture.records[1].update(), &transaction(1, 101));
         assert_eq!(capture.records[2].update(), &account(2, 102, "A"));
+    }
+
+    #[test]
+    fn writers_to_one_destination_have_independent_temporary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("same.arcap");
+        let mut first =
+            CaptureWriter::create(&path, CaptureHeader::new(vec![], "devnet", producer())).unwrap();
+        first.update(account(0, 7, "A")).unwrap();
+        let mut second =
+            CaptureWriter::create(&path, CaptureHeader::new(vec![], "devnet", producer())).unwrap();
+        second.update(account(0, 8, "B")).unwrap();
+        assert_ne!(
+            first.body_path.to_path_buf(),
+            second.body_path.to_path_buf()
+        );
+        assert_ne!(
+            first.staging_path.to_path_buf(),
+            second.staging_path.to_path_buf()
+        );
+        drop(second);
+        first.finish().unwrap();
+        assert_eq!(
+            read_capture(&path).unwrap().records[0].update(),
+            &account(0, 7, "A")
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn hashes_exact_record_bytes_for_crlf_and_unterminated_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = written(dir.path(), 2);
+        let capture = read_capture(&path).unwrap();
+        for newline in ["\n", "\r\n"] {
+            for terminate in [false, true] {
+                let mut body = capture
+                    .records
+                    .iter()
+                    .map(|r| serde_json::to_string(r).unwrap())
+                    .collect::<Vec<_>>()
+                    .join(newline);
+                if terminate {
+                    body.push_str(newline);
+                }
+                let mut header = capture.header.clone();
+                header.content_hash = format!(
+                    "sha256:{}",
+                    hex_bytes::encode(&Sha256::digest(body.as_bytes()))
+                );
+                let text = format!(
+                    "{}{}{}",
+                    serde_json::to_string(&HeaderLine {
+                        kind: "header",
+                        header: &header
+                    })
+                    .unwrap(),
+                    newline,
+                    body
+                );
+                assert_eq!(
+                    parse_capture(std::io::Cursor::new(&text)).unwrap().records,
+                    capture.records
+                );
+                // Exercise compressed file verification through the same scanner.
+                std::fs::write(&path, zstd::encode_all(text.as_bytes(), 1).unwrap()).unwrap();
+                assert_eq!(
+                    verify_capture(&path, ReadLimits::default()).unwrap(),
+                    header
+                );
+                let tampered = text.replace("\"lamports\":42", "\"lamports\":43");
+                assert!(parse_capture(std::io::Cursor::new(tampered)).is_err());
+            }
+        }
     }
 
     #[test]

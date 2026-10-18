@@ -643,6 +643,16 @@ describe('protocol metadata', () => {
     expect(() => canonicalizeJson('\ud800')).toThrow(/surrogate/);
   });
 
+  it('rejects objects whose wire representation differs from their signed value', () => {
+    class Custom { value = 1; }
+    const hooked = Object.defineProperty({}, 'toJSON', { value: () => 'changed' });
+    const array = Object.assign([1], { toJSON: () => [2] });
+    for (const value of [new Date(0), new Map(), new Custom(), hooked, array]) {
+      expect(() => canonicalizeJson({ nested: value })).toThrow(TypeError);
+    }
+    expect(canonicalizeJson(Object.assign(Object.create(null), { ok: 1 }))).toBe('{"ok":1}');
+  });
+
   it('builds the wallet proof message and proof', () => {
     const message = protocolMetadataProofMessage({
       deploymentId: DEPLOYMENT_ID,
@@ -893,13 +903,16 @@ describe('protocol events', () => {
   });
 
   it('adds the live stack row keyed by the instance account when the stack is connected', async () => {
+    let detail = { ...DETAIL, accounts: { presale: "P1" } };
+    const seen: Array<ReturnType<typeof handle.get>> = [];
+    const closed: string[] = [];
     const mock = mockFetch((call) => {
       if (call.url.endsWith('/events')) return new Response(new ReadableStream(), { status: 200 });
-      if (call.url.includes('/protocol-instances/inst-1')) return json(DETAIL);
+      if (call.url.includes('/protocol-instances/inst-1')) return json(detail);
       return undefined;
     });
     const keys: string[] = [];
-    let push: ((row: unknown) => void) | undefined;
+    const pushes = new Map<string, (row: unknown) => void>();
     const connectedStack = {
       views: {
         TokenRaiseInstance: {
@@ -910,9 +923,9 @@ describe('protocol events', () => {
                 [Symbol.asyncIterator]() {
                   return {
                     next: () => new Promise<IteratorResult<unknown>>((resolve) => {
-                      push = (row) => resolve({ done: false, value: row });
+                      pushes.set(key, (row) => resolve({ done: false, value: row }));
                     }),
-                    return: async () => ({ done: true, value: undefined }),
+                    return: async () => { closed.push(key); return { done: true, value: undefined }; },
                   };
                 },
               };
@@ -927,12 +940,31 @@ describe('protocol events', () => {
       { stacks: { raiseStack: connectedStack }, programs: {} }
     );
     const handle = client.instances.use('inst-1');
-    const unsubscribe = handle.subscribe(() => undefined);
-    await waitFor(() => push !== undefined);
-    expect(keys).toEqual([DETAIL.accounts.presale]);
-    push!({ raised: '42' });
+    const unsubscribe = handle.subscribe(() => seen.push(handle.get()));
+    await waitFor(() => pushes.has("P1"));
+    expect(keys).toEqual(["P1"]);
+    pushes.get('P1')!({ raised: '42' });
     await waitFor(() => handle.get()?.live !== undefined);
     expect(handle.get()).toMatchObject({ instance: { id: 'inst-1' }, live: { raised: '42' } });
+    await handle.refresh();
+    expect(handle.get()?.live).toEqual({ raised: '42' });
+    detail = { ...detail, accounts: { presale: 'P2' } };
+    await handle.refresh();
+    expect(handle.get()?.live).toBeUndefined();
+    await waitFor(() => pushes.has('P2'));
+    pushes.get('P1')!({ raised: 'stale' });
+    await Promise.resolve();
+    expect(handle.get()?.live).toBeUndefined();
+    pushes.get('P2')!({ raised: '84' });
+    await waitFor(() => handle.get()?.live !== undefined);
+    detail = { ...detail, accounts: {} as { presale: string } };
+    await handle.refresh();
+    expect(handle.get()?.live).toBeUndefined();
+    pushes.get('P2')!({ raised: 'stale' });
+    await Promise.resolve();
+    expect(handle.get()?.live).toBeUndefined();
+    expect(closed).toEqual(['P1', 'P2']);
+    expect(seen.every((s) => !s?.live || (s.live as { raised: string }).raised === (s.instance.accounts.presale === 'P1' ? '42' : '84'))).toBe(true);
     unsubscribe();
     client.close();
   });

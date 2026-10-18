@@ -1081,10 +1081,11 @@ export function createProtocolClientWithMembers(
     const startLive = (instance: ProtocolInstanceDetail) => {
       if (!running || !liveStack) return;
       const key = instance.accounts?.[liveStack.keyAccount];
-      if (!key || key === liveKey) return;
+      if (key === liveKey) return;
+      stopLive();
+      if (!key) return;
       const view = liveView();
       if (!view) return;
-      stopLive();
       liveKey = key;
       const iterator = view.use(key)[Symbol.asyncIterator]();
       liveIterator = iterator;
@@ -1109,7 +1110,8 @@ export function createProtocolClientWithMembers(
     const load = async (): Promise<ProtocolInstanceSnapshot | undefined> => {
       try {
         const instance = await getInstance(id, { wallet: useOptions?.wallet });
-        snapshot = { instance, live: snapshot?.live };
+        const key = liveStack && instance.accounts?.[liveStack.keyAccount];
+        snapshot = { instance, live: key === liveKey ? snapshot?.live : undefined };
         error = undefined;
         emit();
         startLive(instance);

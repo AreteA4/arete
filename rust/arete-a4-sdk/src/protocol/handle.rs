@@ -354,8 +354,11 @@ impl Runner {
     async fn reload(&mut self) -> RefreshResult {
         match self.client.instance(&self.id, self.wallet.as_deref()).await {
             Ok(instance) => {
-                self.follow_live(&instance);
+                let changed = self.follow_live(&instance);
                 self.sender.send_modify(|state| {
+                    if changed {
+                        state.snapshot.live = None;
+                    }
                     state.snapshot.instance = instance;
                     state.error = None;
                 });
@@ -372,23 +375,25 @@ impl Runner {
 
     /// Follow the live row keyed by the instance's key account, switching
     /// rows when that account changes.
-    fn follow_live(&mut self, instance: &ProtocolInstanceDetail) {
+    fn follow_live(&mut self, instance: &ProtocolInstanceDetail) -> bool {
         let Some((descriptor, views)) = &self.live else {
-            return;
+            return false;
         };
-        let Some(key) = instance.accounts.get(descriptor.key_account) else {
-            return;
-        };
-        if self.live_key.as_deref() == Some(key.as_str()) {
-            return;
+        let key = instance
+            .accounts
+            .get(descriptor.key_account)
+            .filter(|key| !key.is_empty());
+        if self.live_key.as_ref() == key {
+            return false;
         }
-        self.live_key = Some(key.clone());
-        self.live_rows = views.listen(descriptor.stack, descriptor.view, key);
+        self.live_key = key.cloned();
+        self.live_rows = key.and_then(|key| views.listen(descriptor.stack, descriptor.view, key));
         if self.live_rows.is_none() {
             tracing::debug!(
                 stack = descriptor.stack,
                 "protocol live stack is not among the client's live views"
             );
         }
+        true
     }
 }

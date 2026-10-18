@@ -90,6 +90,7 @@ class ProtocolInstanceHandle:
         self._live_key: Optional[str] = None
         self._live_task: Optional["asyncio.Task[Any]"] = None
         self._live_rows: Optional[AsyncIterator[Any]] = None
+        self._starting: Optional["asyncio.Task[ProtocolInstanceHandle]"] = None
         self._started = False
         self._closed = False
 
@@ -173,13 +174,25 @@ class ProtocolInstanceHandle:
             raise AreteError("the instance handle is closed", "INVALID_STATE")
         if self._started:
             return self
-        instance = await self._client.get_instance(self.instance_id, wallet=self._wallet)
-        self._started = True
-        self._snapshot = ProtocolInstanceSnapshot(instance=instance)
-        self._client._handles.add(self)
-        self._tasks.append(asyncio.ensure_future(self._follow_events()))
-        self._follow_live(instance)
-        return self
+        if self._starting is None:
+            self._client._handles.add(self)
+            self._starting = asyncio.ensure_future(self._start())
+        return await asyncio.shield(self._starting)
+
+    async def _start(self) -> "ProtocolInstanceHandle":
+        try:
+            instance = await self._client.get_instance(self.instance_id, wallet=self._wallet)
+            if self._closed:
+                raise AreteError("the instance handle is closed", "INVALID_STATE")
+            self._started = True
+            self._snapshot = ProtocolInstanceSnapshot(instance=instance)
+            self._tasks.append(asyncio.ensure_future(self._follow_events()))
+            self._follow_live(instance)
+            return self
+        finally:
+            self._starting = None
+            if not self._started:
+                self._client._handles.discard(self)
 
     async def aclose(self) -> None:
         """Stop following the instance and its live row."""
@@ -189,6 +202,7 @@ class ProtocolInstanceHandle:
         self._client._handles.discard(self)
         tasks = [
             *self._tasks,
+            *([self._starting] if self._starting else []),
             *([self._live_task] if self._live_task else []),
             *([self._in_flight] if self._in_flight else []),
         ]
@@ -247,7 +261,9 @@ class ProtocolInstanceHandle:
             self._error = error
             self._emit()
             raise
-        live = self._snapshot.live if self._snapshot is not None else None
+        descriptor = self._client.definition.live_stack
+        key = (instance.get("accounts") or {}).get(descriptor.key_account) if descriptor else None
+        live = self._snapshot.live if self._snapshot is not None and key == self._live_key else None
         self._snapshot = ProtocolInstanceSnapshot(instance=instance, live=live)
         self._error = None
         self._emit()
@@ -278,18 +294,14 @@ class ProtocolInstanceHandle:
         if live is None or self._closed:
             return
         key = (instance.get("accounts") or {}).get(live.key_account)
-        if not key or key == self._live_key:
-            return
-        member = self._client._live_stacks.get(live.stack)
-        if member is None:
-            return
-        rows = live_view_rows(member, live.view, key)
-        if rows is None:
+        if key == self._live_key:
             return
         previous = self._live_task
         if previous is not None:
             previous.cancel()
         self._live_key = key
+        member = self._client._live_stacks.get(live.stack)
+        rows = live_view_rows(member, live.view, key) if key and member is not None else None
         self._live_task = asyncio.ensure_future(self._consume_live(rows, previous))
 
     async def _close_live_rows(self) -> None:
@@ -302,17 +314,26 @@ class ProtocolInstanceHandle:
                 pass
 
     async def _consume_live(
-        self, rows: AsyncIterator[Any], previous: Optional["asyncio.Task[Any]"]
+        self, rows: Optional[AsyncIterator[Any]], previous: Optional["asyncio.Task[Any]"]
     ) -> None:
         if previous is not None:
             try:
                 await previous
             except (asyncio.CancelledError, Exception):  # noqa: BLE001 - replaced
                 pass
+        if self._closed or self._live_task is not asyncio.current_task():
+            close = getattr(rows, "aclose", None)
+            if close is not None:
+                await close()
+            return
         await self._close_live_rows()
         self._live_rows = rows
+        if rows is None:
+            return
         try:
             async for row in rows:
+                if self._closed or self._live_task is not asyncio.current_task():
+                    return
                 if self._snapshot is not None:
                     self._snapshot = replace(self._snapshot, live=row)
                     self._emit()

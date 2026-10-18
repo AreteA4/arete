@@ -867,7 +867,23 @@ async def test_instance_handles_load_and_refresh_on_events(parked_reconnects):
         'id: 1\nevent: transition\ndata: {"from":"open","to":"succeeded"}\n\n'
         "id: 2\nevent: participant\ndata: {}\n\n"
     )
-    client, _server = make_client(route)
+    event_gate = asyncio.Event()
+
+    class GatedEvents(httpx.AsyncByteStream):
+        def __init__(self, body):
+            self.body = body
+
+        async def __aiter__(self):
+            await event_gate.wait()
+            yield self.body
+
+    def gated_route(request):
+        response = route(request)
+        if request.url.path.endswith("/events"):
+            return httpx.Response(200, headers=response.headers, stream=GatedEvents(response.content))
+        return response
+
+    client, _server = make_client(gated_route)
     async with client.instance_handle("inst_1", wallet=WALLET) as handle:
         assert isinstance(handle, ProtocolInstanceHandle)
         snapshots = handle.__aiter__()
@@ -878,6 +894,7 @@ async def test_instance_handles_load_and_refresh_on_events(parked_reconnects):
 
         changes: List[int] = []
         handle.subscribe(lambda: changes.append(handle.current.instance["revision"]))
+        event_gate.set()
         updated = await asyncio.wait_for(snapshots.__anext__(), 2)
         assert updated.instance["revision"] == 4
         assert handle.error is None
@@ -1041,3 +1058,81 @@ async def test_receipts_are_reads_and_verify():
     with pytest.raises(HttpRequestError) as raised:
         await client.get_receipt("missing")
     assert raised.value.status == 404
+
+
+@pytest.mark.asyncio
+async def test_closing_during_start_cancels_the_read_without_starting_streams(monkeypatch):
+    client, _ = make_client(lambda _request: httpx.Response(500))
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+    reads = 0
+
+    async def blocked_read(*args, **kwargs):
+        nonlocal reads
+        reads += 1
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(client, "get_instance", blocked_read)
+    handle = client.instance_handle("inst_1")
+    first = asyncio.create_task(handle.start())
+    await entered.wait()
+    second = asyncio.create_task(handle.start())
+    await asyncio.sleep(0)
+    # The client owns startup too, so closing it cancels an unfinished handle.
+    await client.aclose()
+    results = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 1)
+    assert all(isinstance(result, asyncio.CancelledError) for result in results)
+    assert reads == 1
+    assert cancelled.is_set()
+    assert handle.closed
+    assert not client._handles
+    assert not handle._tasks
+    assert handle._starting is None
+    await handle.aclose()
+
+
+@pytest.mark.asyncio
+async def test_live_rows_clear_on_key_changes_and_removal(parked_reconnects):
+    detail = instance_detail(3, "P1")
+    stack = FakeStack()
+
+    def route(request):
+        if request.url.path.endswith("/events"):
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=b"")
+        return httpx.Response(200, json=detail)
+
+    client = ProtocolClient(
+        _replace(DEFINITION, live_stack=ProtocolLiveStack(stack="raiseStack", view="TokenRaiseInstance/state", key_account="presale")),
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(Server(route))),
+        auth=AuthConfig(publishable_key="a4_pk_test"), stacks={"raiseStack": stack},
+    )
+    handle = await client.instance_handle("inst_1")
+    seen = []
+    handle.subscribe(lambda: seen.append(handle.current))
+    try:
+        await wait_until(lambda: "P1" in stack.queues, "first subscription")
+        stack.queues["P1"].put_nowait({"totalDeposit": "11"})
+        await wait_until(lambda: handle.current.live is not None, "first row")
+        await handle.refresh()
+        assert handle.current.live == {"totalDeposit": "11"}
+        detail = instance_detail(4, "P2")
+        await handle.refresh()
+        assert handle.current.live is None
+        stack.queues["P1"].put_nowait({"totalDeposit": "stale"})
+        await wait_until(lambda: "P2" in stack.queues, "second subscription")
+        assert handle.current.live is None
+        stack.queues["P2"].put_nowait({"totalDeposit": "22"})
+        await wait_until(lambda: handle.current.live is not None, "second row")
+        detail = {**detail, "accounts": {}}
+        await handle.refresh()
+        assert handle.current.live is None
+        stack.queues["P2"].put_nowait({"totalDeposit": "stale"})
+        await asyncio.sleep(0)
+        assert handle.current.live is None
+        assert all(s.live is None or s.live["totalDeposit"] == ("11" if s.instance["accounts"].get("presale") == "P1" else "22") for s in seen)
+    finally:
+        await client.aclose()
