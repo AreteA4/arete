@@ -108,8 +108,9 @@ jobs:
           fi
           lib="$(jq -r .library.file "$manifest")"
           mkdir -p assets
-          cp "$src/$lib" "assets/libyellowstone_grpc_geyser-$PLATFORM.${lib##*.}"
-          cp "$manifest" "assets/manifest-$PLATFORM.json"
+          asset="libyellowstone_grpc_geyser-$PLATFORM.${lib##*.}"
+          cp "$src/$lib" "assets/$asset"
+          jq --arg file "$asset" '.library.file = $file' "$manifest" > "assets/manifest-$PLATFORM.json"
           # The template's libpath names the platform's library; consumers
           # set it to the absolute path, so the published template has none
           # and is the same on every platform.

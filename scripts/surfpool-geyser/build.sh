@@ -31,6 +31,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 die() { echo "error: $*" >&2; exit 1; }
+# Cargo runs inside WORK; all later build and copy paths must share one root.
+mkdir -p "${OUT}"
+OUT=$(cd "${OUT}" && pwd)
 for tool in git cargo rustup jq shasum; do
   command -v "$tool" >/dev/null || die "$tool is required"
 done

@@ -34,6 +34,9 @@ Builds are published as the `surfpool-geyser-v<surfpool version>` GitHub
 release of this repository, verifiable with the release key (minisign
 signature over `checksums.txt`, trusted comment = the tag, then each file's
 sha256). The
+signature authenticates the trusted comment, but existing installers do not
+compare it with an expected tag; consumers requiring release binding must
+also compare that comment with the requested release tag. The
 `Surfpool Geyser Plugin Release` workflow
 (`.github/workflows/surfpool-geyser-release.yml`, dispatch only) runs
 `build.sh` for a pinned version on darwin-arm64, darwin-x64, linux-x64 and

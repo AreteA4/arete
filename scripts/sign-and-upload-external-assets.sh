@@ -79,7 +79,7 @@ fi
 
 if ! gh release view "$TAG" >/dev/null 2>&1; then
   gh release create "$TAG" --title "$TAG" --latest=false \
-    --notes "Release assets for \`$TAG\`. \`checksums.txt\` is signed with the Arete release key (\`checksums.txt.minisig\`, trusted comment \`$TAG\`); \`a4\` verifies both before using an asset."
+    --notes "Release assets for \`$TAG\`. \`checksums.txt\` is signed with the Arete release key (\`checksums.txt.minisig\`, trusted comment \`$TAG\`). Verify the signature and each asset's SHA-256; consumers requiring release binding must also compare the authenticated trusted comment with the expected release tag."
 fi
 
 for name in "${ASSETS[@]}" checksums.txt checksums.txt.minisig; do
