@@ -13,7 +13,7 @@
  */
 
 import type { AccountDecoder, ProtocolContextV1, TokenAccountV1 } from "../abi.js";
-import { MAX_CTX_CALLS } from "../contracts/intent.js";
+import { MAX_CTX_CALLS, shapeAccountRead } from "../contracts/intent.js";
 import type { AccountReadResultV1, CtxMethod } from "../contracts/types.js";
 import { decodeOrRaw } from "../ctx-results.js";
 import { canonicalCtxArgs } from "../testing.js";
@@ -48,13 +48,13 @@ export interface RemoteContext {
 }
 
 function isAccountResult(value: unknown): value is AccountReadResultV1 | null {
-  return (
-    value === null ||
-    (isPlainObject(value) &&
-      typeof value.address === "string" &&
-      typeof value.exists === "boolean" &&
-      typeof value.slot === "string")
-  );
+  if (value === null) return true;
+  try {
+    shapeAccountRead(value, "");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function createRemoteContext(options: RemoteContextOptions): RemoteContext {

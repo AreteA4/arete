@@ -79,15 +79,16 @@ function canonicalText(value: JsonValue): string {
 export interface ReplayContext extends ProtocolContextV1 {
   /** Calls replayed so far. */
   readonly consumed: number;
-  /** Throws unless every recorded call was replayed. */
+  /** Throws on any earlier replay failure or unconsumed recorded call. */
   assertConsumed(): void;
 }
 
 /** A `ctx` that replays `calls` in order and throws on any divergence. */
 export function createReplayContext(calls: readonly RecordedCtxCallV1[]): ReplayContext {
   let seq = 0;
+  let failure: unknown;
 
-  const next = (method: CtxMethod, args: readonly unknown[]): JsonValue => {
+  const readNext = (method: CtxMethod, args: readonly unknown[]): JsonValue => {
     const actual = canonicalCtxArgs(method, args);
     const recorded = calls[seq];
     if (recorded === undefined) {
@@ -115,11 +116,22 @@ export function createReplayContext(calls: readonly RecordedCtxCallV1[]): Replay
     return recorded.result;
   };
 
+  const next = (method: CtxMethod, args: readonly unknown[]): JsonValue => {
+    if (failure !== undefined) throw failure;
+    try {
+      return readNext(method, args);
+    } catch (error) {
+      failure = error;
+      throw error;
+    }
+  };
+
   return {
     get consumed() {
       return seq;
     },
     assertConsumed() {
+      if (failure !== undefined) throw failure;
       if (seq !== calls.length) {
         throw new ReplayDivergenceError(
           "ctx-replay-unconsumed",

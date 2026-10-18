@@ -15,7 +15,7 @@ import {
 } from "../index.js";
 import { runHandler, type RecordedCtxCallV1 } from "../testing.js";
 import { deriveServerRelease, SERVER_COMPILER_NAME } from "./artifacts.js";
-import { BUILD_FILES, ProtocolBuildError, buildProtocol, writeBuild } from "./build.js";
+import { BUILD_FILES, ProtocolBuildError, buildProtocol, checkProtocol, writeBuild } from "./build.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const entry = resolve(here, "../../fixtures/token-raise/protocol.ts");
@@ -344,6 +344,34 @@ describe("arete-protocol build", () => {
     );
     return join(directory, "protocol.ts");
   }
+
+  it.each(["handler", "definition", "default", "class", "prepare"])("bundles a valid handler export named %s", async (name) => {
+    const file = handlerProject([], "");
+    writeFileSync(file, readFileSync(file, "utf8").replace("handler: async", `export: ${JSON.stringify(name)}, handler: async`));
+    expect((await checkProtocol({entry:file})).lowered.handlerExports.open).toBe(name);
+    const result = await buildProtocol({entry:file});
+    const directory = outDir();
+    writeBuild(result,directory);
+    const module = await import(/* @vite-ignore */ pathToFileURL(join(directory,"handlers.mjs")).href);
+    expect(typeof module[name]).toBe("function");
+  });
+
+  it("records copied local IDLs in source receipts", async () => {
+    const directory = outDir();
+    cpSync(resolve(here,"../../fixtures/program-imports"),directory,{recursive:true});
+    const file = join(directory,"protocol.ts");
+    const first = await buildProtocol({entry:file});
+    const idl = join(directory,"idl/tip_jar.json");
+    writeFileSync(idl, readFileSync(idl,"utf8") + "\n");
+    const second = await buildProtocol({entry:file});
+    const json = (result: typeof first, name: string) => JSON.parse(decoder.decode(result.files.get(name)!));
+    const sources = json(second,"build-sources.json");
+    expect(second.sources).toContain("idl/tip_jar.json");
+    expect(sources.files).toContainEqual(expect.objectContaining({path:"idl/tip_jar.json"}));
+    expect(sources.sourceTreeSha256).not.toBe(json(first,"build-sources.json").sourceTreeSha256);
+    expect(json(second,"build-receipt.json").sourceTreeSha256).toBe(sources.sourceTreeSha256);
+    expect(Array.from([...second.files.entries()].find(([path])=>path.startsWith("idl/"))![1])).toEqual(Array.from(readFileSync(idl)));
+  });
 
   /**
    * Link a package from outside the project into its node_modules, as a

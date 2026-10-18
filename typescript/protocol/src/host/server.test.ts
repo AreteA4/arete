@@ -368,7 +368,7 @@ describe("handler host: prepare", () => {
         case "solana.account":
           return { body: { result: account } };
         case "solana.accounts":
-          return { body: { result: [account, { address: "x", exists: false, slot: "7" }] } };
+          return { body: { result: [account, { address: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", exists: false, slot: "7" }] } };
         case "solana.tokenAccountsByOwner":
           return { body: { result: [{ address: WALLET, mint: WALLET, owner: WALLET, amount: "5", slot: "7" }] } };
         default:
@@ -421,6 +421,26 @@ describe("handler host: prepare", () => {
 
     ctxReply = () => ({ body: { result: { not: "an account" } } });
     expect((await prepare(tokenRaise.hash, "create", createInput())).body.error.code).toBe("ctx_error");
+  });
+
+  it.each([
+    { address: WALLET, exists: true, slot: "7" },
+    { address: WALLET, exists: true, slot: "7", lamports: "1", dataBase64: "AQID" },
+    { address: WALLET, exists: true, slot: "7", owner: WALLET, dataBase64: "AQID" },
+    { address: WALLET, exists: true, slot: "7", owner: WALLET, lamports: "1", dataBase64: "!invalid!" },
+    { address: WALLET, exists: true, slot: "7", owner: WALLET, lamports: "-1", dataBase64: "" },
+    { address: WALLET, exists: true, slot: "7", owner: WALLET, lamports: "1" },
+    { address: WALLET, exists: true, slot: "7", owner: "invalid", lamports: "1", dataBase64: "" },
+    { address: WALLET, exists: true, slot: "invalid", owner: WALLET, lamports: "1", dataBase64: "" },
+  ])("rejects malformed existing account data even when caught: %j", async (account) => {
+    ctxReply = () => ({ body: { result: account } });
+    expect((await prepare(probe.hash, "open", probeInput("swallow"))).body).toMatchObject({ok:false, error:{code:"ctx_error"}});
+  });
+
+  it("rejects malformed accounts inside a batch reply", async () => {
+    const valid = {address:WALLET,exists:true,slot:"7",owner:WALLET,lamports:"1",dataBase64:"AQID"};
+    ctxReply = (request) => ({body:{result:request.body.method === "solana.account" ? valid : [valid,{address:WALLET,exists:true,slot:"7"}]}});
+    expect((await prepare(probe.hash,"open",probeInput("ctx"))).body).toMatchObject({ok:false,error:{code:"ctx_error"}});
   });
 
   it("validates the handler result", async () => {

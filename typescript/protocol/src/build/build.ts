@@ -282,8 +282,10 @@ async function bundleHandlers(
     "  return typeof h === \"function\" ? h : (input, ctx) => h.prepare(input, ctx);",
     "};",
   ];
-  for (const step of Object.keys(lowered.handlerExports).sort(compareUtf8)) {
-    lines.push(`export const ${lowered.handlerExports[step]} = handler(${JSON.stringify(step)});`);
+  for (const [index, step] of Object.keys(lowered.handlerExports).sort(compareUtf8).entries()) {
+    const local = `__protocol_handler_${index}`;
+    lines.push(`const ${local} = handler(${JSON.stringify(step)});`);
+    lines.push(`export { ${local} as ${JSON.stringify(lowered.handlerExports[step])} };`);
   }
   let result: Esbuild.BuildResult & { metafile: Esbuild.Metafile; outputFiles: Esbuild.OutputFile[] };
   try {
@@ -371,8 +373,8 @@ function lockfileDependencies(root: string, inputs: string[]): { lockfileSha256:
 }
 
 /** `[path, sha256]` of each project source, in `sources` order. */
-function sourceEntries(root: string, sources: string[]): [string, string][] {
-  return sources.map((source) => [source, sha256Hex(readFileSync(join(root, source)))]);
+function sourceEntries(root: string, sources: string[], copied: ReadonlyMap<string, Uint8Array>): [string, string][] {
+  return sources.map((source) => [source, sha256Hex(copied.get(source) ?? readFileSync(join(root, source)))]);
 }
 
 function sourceTreeSha256(entries: [string, string][]): string {
@@ -417,6 +419,8 @@ export async function buildProtocol(
 
   const stackSource = generateStackSource(spec, options.stackSource ?? { programs: lowered.programSources });
   files.set("protocol-stack-source.json", canonical(stackSource));
+  const sourcePaths = new Set(checked.sources);
+  const copiedSources = new Map<string, Uint8Array>();
   // The stack source names installed IDLs as `./idl/<file>`, beside it.
   for (const [alias, program] of Object.entries(lowered.installedPrograms).sort(([a], [b]) => compareUtf8(a, b))) {
     const source = program.programInstall.source;
@@ -427,7 +431,11 @@ export async function buildProtocol(
         `program '${alias}' was installed from ${source.idl}, which is missing; restore it or reinstall the program`,
       );
     }
-    files.set(`idl/${idlFileName(source.idl)}`, readFileSync(path));
+    const bytes = readFileSync(path);
+    const relativePath = posix(relative(root, path));
+    files.set(`idl/${idlFileName(source.idl)}`, bytes);
+    sourcePaths.add(relativePath);
+    copiedSources.set(relativePath, bytes);
   }
 
   const identity = compilerIdentity((await loadEsbuild()).version);
@@ -443,7 +451,8 @@ export async function buildProtocol(
   const releaseHash = hashJcs("protocol-release", release as never);
 
   const { lockfileSha256, dependencies } = lockfileDependencies(root, bundleInputs);
-  const sources = sourceEntries(root, checked.sources);
+  const recordedSources = [...sourcePaths].sort(compareUtf8);
+  const sources = sourceEntries(root, recordedSources, copiedSources);
   const treeSha256 = sourceTreeSha256(sources);
   const receipt = buildReceipt({
     sourceTreeSha256: treeSha256,
@@ -463,7 +472,7 @@ export async function buildProtocol(
   );
   files.set("machine-map.json", canonical(buildMachineMap(spec)));
   files.set("anatomy.json", canonical(buildAnatomy(spec)));
-  return { ...checked, files };
+  return { ...checked, sources: recordedSources, files };
 }
 
 /**
