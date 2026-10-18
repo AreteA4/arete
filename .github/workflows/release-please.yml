@@ -47,6 +47,8 @@ jobs:
       artifacts_release_created: ${{ steps.release.outputs['arete-artifacts--release_created'] }}
       auth_release_created: ${{ steps.release.outputs['rust/arete-auth--release_created'] }}
       typescript_hash_release_created: ${{ steps.release.outputs['typescript/hash--release_created'] }}
+      typescript_hash_version: ${{ steps.release.outputs['typescript/hash--version'] }}
+      typescript_protocol_release_created: ${{ steps.release.outputs['typescript/protocol--release_created'] }}
       core_version: ${{ steps.release.outputs['typescript/core--version'] }}
       core_release_created: ${{ steps.release.outputs['typescript/core--release_created'] }}
       react_release_created: ${{ steps.release.outputs['typescript/react--release_created'] }}
@@ -285,6 +287,7 @@ jobs:
       id-token: write
     if: >-
       needs.release-please.outputs.typescript_hash_release_created == 'true' ||
+      needs.release-please.outputs.typescript_protocol_release_created == 'true' ||
       needs.release-please.outputs.core_release_created == 'true' ||
       needs.release-please.outputs.react_release_created == 'true' ||
       needs.release-please.outputs.adapter_kit_release_created == 'true' ||
@@ -302,13 +305,18 @@ jobs:
       - name: Upgrade npm for trusted publishing
         run: npm install --global npm@11
 
+      # @usearete/protocol builds against this checkout's hash package.
       - name: Install hash dependencies
-        if: needs.release-please.outputs.typescript_hash_release_created == 'true'
+        if: >-
+          needs.release-please.outputs.typescript_hash_release_created == 'true' ||
+          needs.release-please.outputs.typescript_protocol_release_created == 'true'
         run: npm ci
         working-directory: typescript/hash
 
       - name: Build hash
-        if: needs.release-please.outputs.typescript_hash_release_created == 'true'
+        if: >-
+          needs.release-please.outputs.typescript_hash_release_created == 'true' ||
+          needs.release-please.outputs.typescript_protocol_release_created == 'true'
         run: npm run build
         working-directory: typescript/hash
 
@@ -316,6 +324,45 @@ jobs:
         if: needs.release-please.outputs.typescript_hash_release_created == 'true'
         run: ../../scripts/publish-npm-package.sh .
         working-directory: typescript/hash
+
+      - name: Wait for hash registry propagation
+        if: >-
+          needs.release-please.outputs.typescript_hash_release_created == 'true' &&
+          needs.release-please.outputs.typescript_protocol_release_created == 'true'
+        env:
+          HASH_VERSION: ${{ needs.release-please.outputs.typescript_hash_version }}
+        run: |
+          for attempt in {1..30}; do
+            published_version="$(npm view "@usearete/hash@${HASH_VERSION}" version 2>/dev/null || true)"
+            if [[ "$published_version" == "$HASH_VERSION" ]]; then
+              echo "@usearete/hash@${HASH_VERSION} is available"
+              exit 0
+            fi
+            echo "Waiting for @usearete/hash@${HASH_VERSION} (attempt ${attempt}/30)"
+            sleep 10
+          done
+          echo "::error::@usearete/hash@${HASH_VERSION} did not propagate within 5 minutes"
+          exit 1
+        shell: bash
+
+      # The lockfile links ../hash; the published manifest names the
+      # @usearete/hash range release-please keeps current.
+      - name: Install protocol dependencies
+        if: needs.release-please.outputs.typescript_protocol_release_created == 'true'
+        run: npm ci
+        working-directory: typescript/protocol
+
+      - name: Build protocol
+        if: needs.release-please.outputs.typescript_protocol_release_created == 'true'
+        run: npm run build
+        working-directory: typescript/protocol
+
+      - name: Publish protocol
+        if: needs.release-please.outputs.typescript_protocol_release_created == 'true'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: ../../scripts/publish-protocol-package.sh .
+        working-directory: typescript/protocol
 
       # Build @usearete/sdk first so every downstream package uses this checkout.
       - name: Install core dependencies

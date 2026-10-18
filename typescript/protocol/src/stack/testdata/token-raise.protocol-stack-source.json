@@ -1,0 +1,243 @@
+{
+  "schema": "arete.protocol-stack-source/v1",
+  "generator": {
+    "name": "@usearete/protocol",
+    "version": "0.1.0"
+  },
+  "profile": "interim",
+  "stackSource": {
+    "schema": "arete.stack-source/v1",
+    "name": "TokenRaiseProtocol",
+    "programs": {
+      "meteoraPresale": {
+        "source": {
+          "registry": "meteora-presale"
+        },
+        "version": "=1.1.0"
+      }
+    },
+    "entities": {
+      "ProtocolActivity": {
+        "primary_key": "id.occurrence",
+        "indexes": [
+          "instance",
+          "wallet"
+        ],
+        "fields": {
+          "id": {
+            "fields": {
+              "occurrence": {
+                "type": "string",
+                "from": [
+                  "meteoraPresale.instructions.deposit"
+                ],
+                "expr": "concat(__signature, \":\", __ix_path)",
+                "strategy": "set_once"
+              },
+              "signature": {
+                "from": [
+                  "meteoraPresale.instructions.deposit.__signature"
+                ],
+                "strategy": "set_once"
+              },
+              "ix_path": {
+                "from": [
+                  "meteoraPresale.instructions.deposit.__ix_path"
+                ],
+                "strategy": "set_once"
+              }
+            }
+          },
+          "step": {
+            "fields": {
+              "contribute": {
+                "type": "bool",
+                "from": [
+                  "meteoraPresale.instructions.deposit"
+                ],
+                "expr": "true",
+                "strategy": "set_once"
+              }
+            }
+          },
+          "instance": {
+            "from": [
+              "meteoraPresale.instructions.deposit.accounts.presale"
+            ],
+            "strategy": "set_once"
+          },
+          "wallet": {
+            "from": [
+              "meteoraPresale.instructions.deposit.accounts.owner"
+            ],
+            "strategy": "set_once"
+          },
+          "slot": {
+            "from": [
+              "meteoraPresale.instructions.deposit.__slot"
+            ],
+            "strategy": "set_once"
+          },
+          "timestamp": {
+            "from": [
+              "meteoraPresale.instructions.deposit.__timestamp"
+            ],
+            "strategy": "set_once"
+          },
+          "amount": {
+            "from": [
+              "meteoraPresale.instructions.deposit.args.max_amount"
+            ],
+            "strategy": "set_once"
+          }
+        },
+        "views": {
+          "byInstance": {
+            "pipeline": [
+              {
+                "sort": {
+                  "by": "slot",
+                  "order": "desc"
+                }
+              }
+            ],
+            "output": "collection"
+          }
+        }
+      },
+      "ProtocolParticipant": {
+        "primary_key": "id.key",
+        "indexes": [
+          "id.instance"
+        ],
+        "fields": {
+          "id": {
+            "fields": {
+              "key": {
+                "type": "string",
+                "from": [
+                  "meteoraPresale.instructions.deposit"
+                ],
+                "expr": "concat(accounts.presale, \":\", accounts.owner)",
+                "strategy": "set_once"
+              },
+              "instance": {
+                "from": [
+                  "meteoraPresale.instructions.deposit.accounts.presale"
+                ],
+                "strategy": "set_once"
+              },
+              "wallet": {
+                "from": [
+                  "meteoraPresale.instructions.deposit.accounts.owner"
+                ],
+                "strategy": "set_once"
+              }
+            }
+          },
+          "activity": {
+            "fields": {
+              "contribute_count": {
+                "type": "u64",
+                "from": [
+                  "meteoraPresale.instructions.deposit"
+                ],
+                "expr": "1",
+                "strategy": "sum"
+              },
+              "contribute_amount": {
+                "from": [
+                  "meteoraPresale.instructions.deposit.args.max_amount"
+                ],
+                "strategy": "sum"
+              },
+              "last_slot": {
+                "from": [
+                  "meteoraPresale.instructions.deposit.__slot"
+                ],
+                "strategy": "max"
+              }
+            }
+          }
+        },
+        "views": {
+          "byInstance": {
+            "pipeline": [
+              {
+                "sort": {
+                  "by": "id.instance",
+                  "order": "asc"
+                }
+              }
+            ],
+            "output": "collection"
+          }
+        }
+      },
+      "ProtocolInstance": {
+        "primary_key": "id.address",
+        "fields": {
+          "id": {
+            "fields": {
+              "address": {
+                "from": "meteoraPresale.accounts.Presale.__account_address",
+                "strategy": "set_once"
+              }
+            }
+          },
+          "state": {
+            "fields": {
+              "totalDeposit": "meteoraPresale.accounts.Presale.total_deposit"
+            }
+          },
+          "activity": {
+            "fields": {
+              "contribute_count": {
+                "aggregate": {
+                  "from": [
+                    "meteoraPresale.instructions.deposit"
+                  ],
+                  "op": "count",
+                  "lookup_by": "accounts.presale"
+                }
+              },
+              "contribute_last_slot": {
+                "aggregate": {
+                  "from": [
+                    "meteoraPresale.instructions.deposit"
+                  ],
+                  "op": "max",
+                  "field": "__slot",
+                  "lookup_by": "accounts.presale"
+                }
+              },
+              "contribute_amount": {
+                "aggregate": {
+                  "from": [
+                    "meteoraPresale.instructions.deposit"
+                  ],
+                  "op": "sum",
+                  "field": "args.max_amount",
+                  "lookup_by": "accounts.presale"
+                }
+              }
+            }
+          }
+        },
+        "views": {
+          "byId": {
+            "pipeline": [
+              {
+                "sort": {
+                  "by": "id.address",
+                  "order": "asc"
+                }
+              }
+            ],
+            "output": "collection"
+          }
+        }
+      }
+    }
+  }
+}

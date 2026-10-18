@@ -57,7 +57,7 @@ case "${1:-}" in
     fi
     exit 1
     ;;
-  install)
+  install|ci|run)
     ;;
   publish)
     if [[ -n "${NPM_PUBLISH_MARKER:-}" ]]; then
@@ -124,6 +124,31 @@ fi
 assert_contains "$collision_output" "refusing to reuse a version for new source"
 [[ ! -e "$PUBLISH_MARKER" ]]
 
+# Exercise authentication against release metadata, independently of the
+# development checkout's intentionally unpublished hash/protocol versions.
+VERSION_ROOT="$TEST_DIR/version-root"
+mkdir -p "$VERSION_ROOT/scripts"
+cp "$ROOT_DIR/scripts/publish-npm-version.sh" "$ROOT_DIR/scripts/check-protocol-release-dependency.mjs" "$VERSION_ROOT/scripts/"
+python3 - "$ROOT_DIR" "$VERSION_ROOT" <<'PYFIXTURE'
+import json
+from pathlib import Path
+import sys
+source, target = map(Path, sys.argv[1:])
+for directory in ['typescript/core', 'typescript/hash', 'typescript/protocol', 'typescript/react', 'typescript/adapters/kit', 'typescript/adapters/web3js', 'packages/arete', 'packages/mcp']:
+    root = target / directory
+    root.mkdir(parents=True)
+    for name in ['package.json', 'package-lock.json']:
+        original = source / directory / name
+        if original.exists():
+            (root / name).write_bytes(original.read_bytes())
+hash_file = target / 'typescript/hash/package.json'
+data = json.loads(hash_file.read_text()); data['version'] = '0.7.0'
+hash_file.write_text(json.dumps(data))
+protocol_file = target / 'typescript/protocol/package.json'
+data = json.loads(protocol_file.read_text()); data['dependencies']['@usearete/hash'] = '^0.7.0'
+protocol_file.write_text(json.dumps(data))
+PYFIXTURE
+
 version_output="$(
   env -u NPM_TOKEN \
     PATH="$FAKE_BIN:$PATH" \
@@ -132,7 +157,7 @@ version_output="$(
     NODE_AUTH_TOKEN="XXXXX-XXXXX-XXXXX-XXXXX" \
     FAKE_CURL_STATUS=200 \
     NPM_WHOAMI_MARKER="$WHOAMI_MARKER" \
-    "$ROOT_DIR/scripts/publish-npm-version.sh" 0.3.0 --dry-run
+    "$VERSION_ROOT/scripts/publish-npm-version.sh" 0.3.0 --dry-run
 )"
 
 assert_contains "$version_output" "Using npm trusted publishing"
@@ -147,11 +172,22 @@ token_output="$(
     FAKE_CURL_STATUS=404 \
     NPM_WHOAMI_MARKER="$WHOAMI_MARKER" \
     NPM_PUBLISH_MARKER="$PUBLISH_MARKER" \
-    "$ROOT_DIR/scripts/publish-npm-version.sh" 0.3.0 --dry-run
+    "$VERSION_ROOT/scripts/publish-npm-version.sh" 0.3.0 --dry-run
 )"
 
 assert_contains "$token_output" "Using npm account: test-account"
 [[ -e "$WHOAMI_MARKER" ]]
 [[ -e "$PUBLISH_MARKER" ]]
+
+# Historical release sources without the new independent package still recover.
+rm -r "$VERSION_ROOT/typescript/protocol"
+legacy_output="$(
+  env -u NPM_TOKEN PATH="$FAKE_BIN:$PATH" \
+    ACTIONS_ID_TOKEN_REQUEST_URL="https://example.invalid/oidc" \
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN="test-token" \
+    NODE_AUTH_TOKEN="XXXXX-XXXXX-XXXXX-XXXXX" FAKE_CURL_STATUS=200 \
+    "$VERSION_ROOT/scripts/publish-npm-version.sh" 0.3.0 --dry-run
+)"
+assert_contains "$legacy_output" "Using npm trusted publishing"
 
 printf 'npm publishing authentication tests passed\n'

@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@usearete/protocol": [
+        "./src/index.ts"
+      ],
+      "@programs/*": [
+        "./fixtures/program-imports/programs/*/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "fixtures/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "fixtures/installed-program-handler/**"
+  ]
+}

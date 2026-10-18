@@ -1,0 +1,375 @@
+{
+  "schema": "arete.protocol-stack-source/v1",
+  "generator": {
+    "name": "@usearete/protocol",
+    "version": "0.1.0"
+  },
+  "profile": "full",
+  "stackSource": {
+    "schema": "arete.stack-source/v1",
+    "name": "TokenRaiseProtocol",
+    "programs": {
+      "areteMemo": {
+        "source": {
+          "idl": "./idl/spl-memo.idl.json"
+        },
+        "program_id": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+      },
+      "meteoraPresale": {
+        "source": {
+          "idl": "./idl/meteora-presale.idl.json"
+        },
+        "program_id": "presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj"
+      }
+    },
+    "entities": {
+      "ProtocolActivity": {
+        "primary_key": "id.signature",
+        "scope": "scope",
+        "indexes": [
+          "id.signature",
+          "instance"
+        ],
+        "fields": {
+          "id": {
+            "fields": {
+              "signature": {
+                "type": "string",
+                "from": "areteMemo.instructions.memo",
+                "expr": "__signature",
+                "strategy": "set_once",
+                "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer"
+              }
+            }
+          },
+          "instance": {
+            "type": "string",
+            "from": "areteMemo.instructions.memo",
+            "expr": "split_part(args.memo, \":\", 5)",
+            "strategy": "set_once",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer"
+          },
+          "participant": {
+            "type": "string",
+            "from": "areteMemo.instructions.memo",
+            "expr": "split_part(args.memo, \":\", 6)",
+            "strategy": "set_once",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer"
+          },
+          "step": {
+            "type": "string",
+            "from": "areteMemo.instructions.memo",
+            "expr": "split_part(args.memo, \":\", 7)",
+            "strategy": "set_once",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer"
+          },
+          "attested": {
+            "type": "bool",
+            "from": "areteMemo.instructions.memo",
+            "expr": "true",
+            "strategy": "set_once",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer"
+          },
+          "via": {
+            "type": "string",
+            "from": "areteMemo.instructions.memo",
+            "expr": "\"protocol\"",
+            "strategy": "set_once",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer"
+          },
+          "slot": {
+            "from": "areteMemo.instructions.memo.__slot",
+            "strategy": "set_once",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer"
+          },
+          "timestamp": {
+            "from": "areteMemo.instructions.memo.__timestamp",
+            "strategy": "set_once",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer"
+          },
+          "scope": {
+            "type": "string",
+            "from": "areteMemo.instructions.memo",
+            "expr": "split_part(args.memo, \":\", 4)",
+            "strategy": "set_once",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer"
+          },
+          "wallet": {
+            "from": [
+              "meteoraPresale.instructions.deposit.accounts.owner"
+            ],
+            "strategy": "set_once",
+            "lookup_by": "__signature",
+            "via": "id.signature"
+          },
+          "amount": {
+            "from": [
+              "meteoraPresale.instructions.deposit.args.max_amount"
+            ],
+            "strategy": "sum",
+            "lookup_by": "__signature",
+            "via": "id.signature"
+          },
+          "activity_account": {
+            "from": [
+              "meteoraPresale.instructions.deposit.accounts.presale"
+            ],
+            "strategy": "set_once",
+            "lookup_by": "__signature",
+            "via": "id.signature"
+          }
+        },
+        "views": {
+          "byInstance": {
+            "pipeline": [
+              {
+                "sort": {
+                  "by": "slot",
+                  "order": "desc"
+                }
+              }
+            ],
+            "output": "collection"
+          }
+        }
+      },
+      "ProtocolInstance": {
+        "primary_key": "id.instance",
+        "scope": "id.scope",
+        "indexes": [
+          "id.instance",
+          "last_contribute_signature"
+        ],
+        "register_from": [
+          {
+            "instruction": "areteMemo.instructions.memo",
+            "sibling": "meteoraPresale.instructions.deposit",
+            "pda_field": "sibling.accounts.presale",
+            "seed_expr": "split_part(args.memo, \":\", 5)",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer",
+            "lookup_name": "instance_accounts"
+          }
+        ],
+        "fields": {
+          "id": {
+            "fields": {
+              "instance": {
+                "type": "string",
+                "from": "areteMemo.instructions.memo",
+                "expr": "split_part(args.memo, \":\", 5)",
+                "strategy": "set_once",
+                "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer"
+              },
+              "scope": {
+                "type": "string",
+                "from": "areteMemo.instructions.memo",
+                "expr": "split_part(args.memo, \":\", 4)",
+                "strategy": "set_once",
+                "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer"
+              }
+            }
+          },
+          "last_contribute_signature": {
+            "type": "string",
+            "from": "areteMemo.instructions.memo",
+            "expr": "__signature",
+            "strategy": "last_write",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer && split_part(args.memo, \":\", 7) == \"contribute\"",
+            "emit": false
+          },
+          "state": {
+            "fields": {
+              "totalDeposit": "meteoraPresale.accounts.Presale.total_deposit"
+            }
+          },
+          "activity": {
+            "fields": {
+              "contribute_count": {
+                "aggregate": {
+                  "from": [
+                    "meteoraPresale.instructions.deposit"
+                  ],
+                  "op": "count",
+                  "lookup_by": "accounts.presale",
+                  "via": "instance_accounts"
+                }
+              },
+              "contribute_protocol_count": {
+                "type": "u64",
+                "from": "areteMemo.instructions.memo",
+                "expr": "1",
+                "strategy": "sum",
+                "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer && split_part(args.memo, \":\", 7) == \"contribute\""
+              },
+              "contribute_protocol_amount": {
+                "from": [
+                  "meteoraPresale.instructions.deposit.args.max_amount"
+                ],
+                "strategy": "sum",
+                "lookup_by": "__signature",
+                "via": "last_contribute_signature"
+              },
+              "contribute_direct_count": {
+                "type": "u64",
+                "compute": "if((activity.contribute_count ?? 0) >= (activity.contribute_protocol_count ?? 0), (activity.contribute_count ?? 0) - (activity.contribute_protocol_count ?? 0), 0)"
+              },
+              "contribute_amount": {
+                "aggregate": {
+                  "from": [
+                    "meteoraPresale.instructions.deposit"
+                  ],
+                  "op": "sum",
+                  "field": "args.max_amount",
+                  "lookup_by": "accounts.presale",
+                  "via": "instance_accounts"
+                }
+              },
+              "last_signature": {
+                "from": [
+                  "meteoraPresale.instructions.deposit.__signature"
+                ],
+                "lookup_by": "accounts.presale",
+                "via": "instance_accounts"
+              },
+              "last_ix_path": {
+                "from": [
+                  "meteoraPresale.instructions.deposit.__ix_path"
+                ],
+                "lookup_by": "accounts.presale",
+                "via": "instance_accounts"
+              },
+              "last_slot": {
+                "from": [
+                  "meteoraPresale.instructions.deposit.__slot"
+                ],
+                "strategy": "max",
+                "lookup_by": "accounts.presale",
+                "via": "instance_accounts"
+              },
+              "last_timestamp": {
+                "from": [
+                  "meteoraPresale.instructions.deposit.__timestamp"
+                ],
+                "strategy": "max",
+                "lookup_by": "accounts.presale",
+                "via": "instance_accounts"
+              }
+            }
+          }
+        },
+        "views": {
+          "byId": {
+            "pipeline": [
+              {
+                "sort": {
+                  "by": "id.instance",
+                  "order": "asc"
+                }
+              }
+            ],
+            "output": "collection"
+          }
+        }
+      },
+      "ProtocolParticipant": {
+        "primary_key": "id.participant",
+        "scope": "scope",
+        "indexes": [
+          "id.participant",
+          "instance",
+          "last_signature",
+          "last_contribute_signature"
+        ],
+        "fields": {
+          "id": {
+            "fields": {
+              "participant": {
+                "type": "string",
+                "from": "areteMemo.instructions.memo",
+                "expr": "split_part(args.memo, \":\", 6)",
+                "strategy": "set_once",
+                "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer && split_part(args.memo, \":\", 6) != \"-\""
+              }
+            }
+          },
+          "instance": {
+            "type": "string",
+            "from": "areteMemo.instructions.memo",
+            "expr": "split_part(args.memo, \":\", 5)",
+            "strategy": "set_once",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer && split_part(args.memo, \":\", 6) != \"-\""
+          },
+          "last_signature": {
+            "type": "string",
+            "from": "areteMemo.instructions.memo",
+            "expr": "__signature",
+            "strategy": "last_write",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer && split_part(args.memo, \":\", 6) != \"-\"",
+            "emit": false
+          },
+          "last_contribute_signature": {
+            "type": "string",
+            "from": "areteMemo.instructions.memo",
+            "expr": "__signature",
+            "strategy": "last_write",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer && split_part(args.memo, \":\", 6) != \"-\" && split_part(args.memo, \":\", 7) == \"contribute\"",
+            "emit": false
+          },
+          "activity": {
+            "fields": {
+              "contribute_count": {
+                "type": "u64",
+                "from": "areteMemo.instructions.memo",
+                "expr": "1",
+                "strategy": "sum",
+                "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer && split_part(args.memo, \":\", 6) != \"-\" && split_part(args.memo, \":\", 7) == \"contribute\""
+              },
+              "contribute_amount": {
+                "from": [
+                  "meteoraPresale.instructions.deposit.args.max_amount"
+                ],
+                "strategy": "sum",
+                "lookup_by": "__signature",
+                "via": "last_contribute_signature"
+              },
+              "last_slot": {
+                "from": "areteMemo.instructions.memo.__slot",
+                "strategy": "max",
+                "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer && split_part(args.memo, \":\", 6) != \"-\""
+              }
+            }
+          },
+          "scope": {
+            "type": "string",
+            "from": "areteMemo.instructions.memo",
+            "expr": "split_part(args.memo, \":\", 4)",
+            "strategy": "set_once",
+            "guard": "starts_with(args.memo, \"arete:p2:raise1:\") && accounts.signer == \"Attest1111111111111111111111111111111111111\" && accounts.signer.is_signer && split_part(args.memo, \":\", 6) != \"-\""
+          },
+          "wallet": {
+            "from": [
+              "meteoraPresale.instructions.deposit.accounts.owner"
+            ],
+            "strategy": "set_once",
+            "lookup_by": "__signature",
+            "via": "last_signature"
+          }
+        },
+        "views": {
+          "byInstance": {
+            "pipeline": [
+              {
+                "sort": {
+                  "by": "instance",
+                  "order": "asc"
+                }
+              }
+            ],
+            "output": "collection"
+          }
+        }
+      }
+    },
+    "lookups": "strict"
+  }
+}

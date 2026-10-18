@@ -17,8 +17,9 @@ Examples:
 Notes:
   - Copies only the npm package directories into a temporary repo snapshot.
   - Rewrites the staged package metadata to the target version.
-  - Publishes in dependency order: hash -> sdk -> react -> adapters -> a4 -> mcp.
-  - Keeps the independently versioned hash package at its checked-in version.
+  - Publishes in dependency order: hash -> protocol -> sdk -> react -> adapters -> a4 -> mcp.
+  - Keeps the independently versioned hash and protocol packages at their
+    checked-in versions.
   - Skips packages that are already published at that exact version.
 EOF
 }
@@ -213,6 +214,9 @@ echo "Staging npm packages into $STAGING_DIR"
 
 copy_package_dir "$ROOT_DIR/typescript/core" "$STAGING_DIR/typescript/core"
 copy_package_dir "$ROOT_DIR/typescript/hash" "$STAGING_DIR/typescript/hash"
+if [[ -f "$ROOT_DIR/typescript/protocol/package.json" ]]; then
+  copy_package_dir "$ROOT_DIR/typescript/protocol" "$STAGING_DIR/typescript/protocol"
+fi
 copy_package_dir "$ROOT_DIR/typescript/react" "$STAGING_DIR/typescript/react"
 copy_package_dir "$ROOT_DIR/typescript/adapters/kit" "$STAGING_DIR/typescript/adapters/kit"
 copy_package_dir "$ROOT_DIR/typescript/adapters/web3js" "$STAGING_DIR/typescript/adapters/web3js"
@@ -250,6 +254,15 @@ publish_package "$STAGING_DIR/typescript/hash" "@usearete/hash" "npm install" "$
 
 if [[ "$DRY_RUN" != "--dry-run" ]]; then
   wait_for_package "@usearete/hash" "$hash_version"
+fi
+
+# @usearete/protocol builds against the staged hash package (its lockfile
+# links ../hash), whether or not hash was published above.
+if [[ -f "$STAGING_DIR/typescript/protocol/package.json" ]]; then
+  node "$ROOT_DIR/scripts/check-protocol-release-dependency.mjs" "$STAGING_DIR/typescript/protocol"
+  protocol_version="$(node -p "require('$STAGING_DIR/typescript/protocol/package.json').version")"
+  publish_package "$STAGING_DIR/typescript/protocol" "@usearete/protocol" \
+    "(cd ../hash && npm ci && npm run build) && npm ci" "$protocol_version"
 fi
 
 publish_package "$STAGING_DIR/typescript/core" "@usearete/sdk" "npm install"

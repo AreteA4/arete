@@ -78,6 +78,17 @@
       "component": "arete-hash-npm",
       "initial-version": "0.1.0"
     },
+    "typescript/protocol": {
+      "release-type": "node",
+      "component": "arete-protocol-npm",
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "src/version.ts"
+        }
+      ]
+    },
     "typescript/adapters/kit": {
       "release-type": "node",
       "component": "arete-adapter-kit"
