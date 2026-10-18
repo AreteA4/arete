@@ -1,0 +1,12 @@
+{
+  "schema": "arete.surfpool-geyser-pins/v1",
+  "pins": {
+    "1.6.0": {
+      "agave": "4.2.1",
+      "rustc": "1.95.0",
+      "yellowstoneTag": "v15.2.1+solana.4.2.2",
+      "yellowstoneCommit": "2531a8798164d5dd56e9c85664d08056ef7bf645",
+      "pinAgaveFrom": "4.2.2"
+    }
+  }
+}

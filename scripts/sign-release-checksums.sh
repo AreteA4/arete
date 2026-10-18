@@ -5,19 +5,38 @@
 #
 #   A4_MINISIGN_SECRET_KEY=<secret key file contents> \
 #   scripts/sign-release-checksums.sh <version> <checksums.txt>
+#   scripts/sign-release-checksums.sh --tag <release-tag> <checksums.txt>
 #
-# Writes <checksums.txt>.minisig next to the input with trusted comment
-# `a4-cli-v<version>`. Used by release-please.yml and release-recovery.yml so
-# a recovered release is installable exactly like a normal one. The secret key
-# is stored unencrypted (minisign -G -W); A4_MINISIGN_PASSWORD is piped in for
-# forward compatibility should the key ever be regenerated with one.
+# Writes <checksums.txt>.minisig next to the input. The trusted comment is the
+# release tag: `a4-cli-v<version>` for the first form, <release-tag> for the
+# second (e.g. `surfpool-geyser-v1.6.0`). The signature authenticates that
+# comment, but existing installers do not compare it with an expected tag.
+# Consumers requiring release binding must also make that comparison. Used by
+# release-please.yml and release-recovery.yml (a4), and by
+# scripts/sign-and-upload-external-assets.sh. The secret key is stored
+# unencrypted (minisign -G -W); A4_MINISIGN_PASSWORD is piped in for forward
+# compatibility should the key ever be regenerated with one.
 
 set -euo pipefail
 
-VERSION="${1:-}"
-CHECKSUMS="${2:-}"
-if [[ -z "$VERSION" || -z "$CHECKSUMS" ]]; then
+usage() {
   echo "Usage: $0 <version> <checksums.txt>" >&2
+  echo "       $0 --tag <release-tag> <checksums.txt>" >&2
+  exit 1
+}
+
+if [[ "${1:-}" == "--tag" ]]; then
+  TAG="${2:-}"
+  CHECKSUMS="${3:-}"
+  [[ -n "$TAG" && -n "$CHECKSUMS" ]] || usage
+else
+  VERSION="${1:-}"
+  CHECKSUMS="${2:-}"
+  [[ -n "$VERSION" && -n "$CHECKSUMS" ]] || usage
+  TAG="a4-cli-v${VERSION}"
+fi
+if [[ ! "$TAG" =~ ^(a4-cli|surfpool-geyser)-v[0-9][A-Za-z0-9.+-]*$ ]]; then
+  echo "invalid release tag: $TAG" >&2
   exit 1
 fi
 if [[ ! -f "$CHECKSUMS" ]]; then
@@ -38,11 +57,11 @@ chmod 600 "$KEY_FILE"
 printf '%s\n' "$A4_MINISIGN_SECRET_KEY" > "$KEY_FILE"
 
 printf '%s\n' "${A4_MINISIGN_PASSWORD:-}" | \
-  minisign -S -s "$KEY_FILE" -m "$CHECKSUMS" -t "a4-cli-v${VERSION}"
+  minisign -S -s "$KEY_FILE" -m "$CHECKSUMS" -t "$TAG"
 
-# The signature must verify with the key embedded in the CLI, or installers
-# would reject the release.
+# The signature must verify with the key embedded in the CLI so installers
+# can verify the release.
 PUBKEY="$(grep -oE 'RW[A-Za-z0-9+/]{54}' "$REPO_ROOT/cli/src/selfhost/keys.rs" | head -n1)"
 printf 'untrusted comment: a4 release key\n%s\n' "$PUBKEY" > "$PUB_FILE"
 minisign -V -p "$PUB_FILE" -m "$CHECKSUMS"
-echo "Signed $CHECKSUMS as a4-cli-v${VERSION} (key $(printf '%s' "$PUBKEY" | cut -c1-12)…)"
+echo "Signed $CHECKSUMS as $TAG (key $(printf '%s' "$PUBKEY" | cut -c1-12)…)"
