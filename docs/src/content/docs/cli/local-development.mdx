@@ -1,0 +1,679 @@
+---
+title: Develop with a4 dev and cloud dev environments
+sidebar:
+  order: 3
+---
+
+`a4 dev` develops an Arete Protocol project, or any Solana app, against an
+**Arete cloud dev environment**: a persistent fork of mainnet that Arete
+hosts for your account. You edit `protocol.ts` or a handler, and the protocol
+is rebuilt, released and deployed into the environment. Apps, tests and
+coding agents use the same protocol API they use in production, and wallets,
+the Solana CLI and web3 clients use the environment's RPC like a local
+validator's.
+
+What stays on your machine: the CLI, the MCP server, the dev UI, and every
+key. Dev wallets, the MCP local signer and browser wallets sign here; only
+signed transactions leave.
+
+## How environments work
+
+| Topic       | Behaviour                                                                                                                                                                                                                                                                                                                                                         |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The chain   | A fork of mainnet. Its SOL is worthless: fund any account with `a4 dev fund`. Its blockhashes are synthetic, so nothing signed for it can land on mainnet.                                                                                                                                                                                                        |
+| Freshness   | **Untouched accounts follow mainnet; touched accounts are yours.** An account is read from mainnet the first time the environment needs it. Accounts you wrote (funded, sent transactions to, set by a scenario) stay as you left them. `a4 dev rebase` refetches every account you never wrote, `a4 dev pin` keeps one as it is, `a4 dev follow` keeps one live. |
+| Persistence | An environment keeps its state. It sleeps when nobody has used it for a while (or on `a4 dev sleep`), and the next RPC call, `a4 dev up` or `a4 dev wake` wakes it with its state; its clock then jumps to mainnet's.                                                                                                                                             |
+| Checkpoints | A checkpoint is a saved copy of the whole state. Restore one into the environment, or branch a new environment from it.                                                                                                                                                                                                                                           |
+| Retention   | A sleeping environment is kept for your plan's retention period (`a4 dev list --json` shows it as `idleRetentionDays`), then deleted with its checkpoints.                                                                                                                                                                                                        |
+| Usage       | Environments count against your plan: how many you have, their active hours, storage (state and checkpoints), RPC requests and sends per minute, and the mainnet reads they make. `a4 dev list` shows the limits and your usage.                                                                                                                                  |
+
+## Requirements
+
+| What                                  | Notes                                                                                                                                |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| An Arete secret key (`a4 auth login`) | or `ARETE_API_KEY`. Environments belong to the key's account.                                                                        |
+| Node.js 22.13+ with `npx`             | and `@usearete/protocol` installed in the project (`npm install --save-dev @usearete/protocol`). Only for a project with a protocol. |
+
+Nothing else is installed: there is no local validator or runtime to run.
+
+## Start
+
+```sh
+cd my-protocol                       # has protocol.ts, or any project
+a4 dev up
+```
+
+To start a new protocol project, `a4 protocol init [dir]` writes a
+template-only tip jar (`protocol.ts`) that pays through the System Program,
+with `arete.toml`, `arete.lock`, `package.json`, `tsconfig.json`,
+`.gitignore` and a `README.md`:
+
+```sh
+a4 protocol init my-protocol && cd my-protocol
+npm install
+npx arete-protocol check
+a4 dev up
+```
+
+| Flag                       | Default                                         | Meaning                                                                                                                                              |
+| -------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--project <dir>`          | current directory                               | the project                                                                                                                                          |
+| `--env <name\|id>`         | `ARETE_DEV_ENV`, else the project's environment | the environment to use; one with that name is created when you have none                                                                             |
+| `--template <name>`        |                                                 | what a new environment starts from                                                                                                                   |
+| `--fee-policy <file>`      | `[protocol].fee_policy`, else a zero-fee policy | the fee policy for new deployments (see [Fee policy and resources](#fee-policy-and-resources))                                                       |
+| `--resource <name>=<file>` | `[protocol.resources]`                          | a value for a resource the spec declares; repeatable                                                                                                 |
+| `--port-base <n>`          | `48700`                                         | the first of three local ports: the RPC endpoint, its WebSocket (+1) and the dev UI (+2, which moves to a free port when busy). `0` picks free ports |
+| `--open`                   |                                                 | open the [dev UI](#the-dev-ui-and-its-event-feed) once the session is ready                                                                          |
+| `--no-ui`                  |                                                 | don't serve the dev UI or its event feed                                                                                                             |
+| `--no-watch`               |                                                 | deploy once and keep running without watching                                                                                                        |
+| `--no-deploy`              |                                                 | serve the environment and the UI only; don't build or deploy the protocol                                                                            |
+| `--no-sdk`                 |                                                 | don't generate this protocol's client from the local build (see [The app's protocol client](#the-apps-protocol-client))                              |
+| `--json`                   |                                                 | JSON event lines on stdout instead of text                                                                                                           |
+
+`a4 dev up` then:
+
+1. finds the project's environment (`.arete/dev/environment.json`), else one
+   of yours named after `[protocol].slug` or the project directory
+   (`my-protocol`), and creates it when there is none. A sleeping
+   environment is woken. The choice is written to
+   `.arete/dev/environment.json`, so later commands and the MCP tools act on
+   it;
+2. serves the environment on `127.0.0.1` (see
+   [The local RPC endpoint](#the-local-rpc-endpoint)) and starts the dev UI;
+3. in a protocol project, runs `npx arete-protocol build` (output in
+   `.arete/protocol/`) and deploys: creates the protocol (slug from
+   `[protocol].slug`, else the spec's name) on the first run, uploads the
+   release, stores the fee policy and publishes the declared resources,
+   creates a **private deployment bound to the environment**, and activates
+   it. Its chain reads, simulations and sends go to the environment, Arete
+   runs its protocol stack against the environment, and only your account
+   can use it;
+4. writes `.arete/dev/session.json`, prints the URLs and watches
+   `protocol.*`, `handlers/`, `idl/` and `arete.lock` (so `a4 install` or
+   `a4 update` of a program the protocol imports redeploys it).
+
+```text
+a4 dev is ready: dev environment my-protocol (denv_01k…)
+  RPC         http://127.0.0.1:48700   (wallets, apps, the Solana CLI: no token needed)
+  WebSocket   ws://127.0.0.1:48701
+  Env RPC     https://…/rpc/v1/devenv/denv_01k…
+  Env WS      wss://…/rpc/v1/devenv/denv_01k…
+  UI          http://127.0.0.1:48702/
+  Deployment  0b6f…
+  Session     /…/my-protocol/.arete/dev/session.json
+  Token       eyJ…
+```
+
+Each change rebuilds. An unchanged release does nothing. A **new release
+creates a new deployment** with a new id and short id, and `session.json`
+moves to it. Once the new deployment is active, the previous one is
+disabled, so at most one is active; `a4 dev status` lists them. A failed
+build or deploy is reported and the previous deployment keeps running.
+
+**Handler code is reviewed.** A release with handlers (`handlers/`) runs
+only after Arete reviews it, in a dev environment too. Until then activation
+answers `protocol-review-required`: `a4 dev up` says so and keeps the
+deployment it created, and the next `a4 dev up` (or rebuild) of the same
+release activates it once it is reviewed. Template-only protocols activate
+at once.
+
+Ctrl-C (or `a4 dev down` from another terminal) stops what runs locally:
+the RPC endpoint and the dev UI. The environment keeps its state and sleeps
+when idle; `a4 dev down --sleep` puts it to sleep at once, and
+`a4 dev delete` deletes it. Running `a4 dev up` again uses the same
+environment, with everything you left in it.
+
+### Fee policy and resources
+
+Every deployment names a fee policy. `a4 dev` uses, in order:
+`--fee-policy <file>`, `[protocol].fee_policy` in `arete.toml`, or a policy
+that charges nothing:
+
+```json
+{ "schema": "arete.protocol-fee-policy/v1", "steps": {} }
+```
+
+Arete fills in the platform fee destination. Against an API that has none
+to fill in, `a4 dev` names a key generated once per project in
+`.arete/dev/fee/` (never one of the step wallets). The policy is stored
+again only when the document changes.
+
+Resources the spec declares need a value, as for `a4 protocol deploy`:
+`--resource <name>=<file>` or `[protocol.resources]`. Each new deployment
+publishes a version of each. These are the same `[protocol]` settings
+`a4 protocol deploy` reads (`slug`, `name`, `fee_policy`, `resources`).
+
+## The local RPC endpoint
+
+The environment's own RPC endpoint (`Env RPC`) takes an environment token as
+`Authorization: Bearer <token>`. Tokens last about 15 minutes; `a4 dev token`
+mints one and prints the URLs. Wallets, the Solana CLI and most web3 clients
+can't send one, so `a4 dev up` serves the environment on loopback, the way a
+local validator would:
+
+- `http://127.0.0.1:48700`: JSON-RPC (a request or a batch). `a4` adds a
+  fresh token to each call and passes the answer back unchanged.
+- `ws://127.0.0.1:48701`: subscriptions (`accountSubscribe`,
+  `signatureSubscribe`, `slotSubscribe`, …), relayed to the environment.
+  Port + 1 is the convention web3 clients assume. A relayed socket closes
+  when its token expires; clients reconnect.
+
+```sh
+solana balance --url http://127.0.0.1:48700 <address>
+solana transfer --url http://127.0.0.1:48700 --keypair .arete/dev/wallets/default.json <to> 1
+```
+
+```ts
+const connection = new Connection("http://127.0.0.1:48700", "confirmed");
+```
+
+The environment answers account and token reads, blocks and transactions,
+simulations, sends and subscriptions. Cluster-wide sweeps
+(`getProgramAccounts` without filters, `getLargestAccounts`, `getSupply`, …)
+and `requestAirdrop` are refused: fund accounts with `a4 dev fund`. Requests
+over your plan's rate answer `429` with `Retry-After`.
+
+Only this machine can connect, and browser pages only from a page served
+from this machine (any `localhost`, `127.0.0.1` or `[::1]` origin, so a
+local app on `localhost:3000` works): requests must name the endpoint by a
+loopback host, and a browser's `Origin` must be a loopback origin, so a page
+on another site, or a rebound DNS name, can't use your environment. Local
+pages get CORS headers for their origin.
+
+## Working with the environment
+
+Every command takes `--env <name|id>` (default `ARETE_DEV_ENV`, else the
+project's environment) and `--json`. None needs `a4 dev up` to be running.
+
+| Command                                                      | What it does                                                                                                                                                                                                         |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `a4 dev status`                                              | the environment (state, tier, storage, when it slept), the running `a4 dev up` and its URLs, the deployments, the protocol stack and a stream URL with a valid token (`stack.streamUrl`), the chain's slot and clock |
+| `a4 dev list`                                                | your environments (`*` marks the project's), your plan's limits and usage                                                                                                                                            |
+| `a4 dev use <name\|id>`                                      | points the project at another of your environments                                                                                                                                                                   |
+| `a4 dev wake` / `a4 dev sleep`                               | wakes the environment, or puts it to sleep now (its state is kept)                                                                                                                                                   |
+| `a4 dev delete`                                              | deletes it with its state and checkpoints (asks first; `--yes` without a terminal)                                                                                                                                   |
+| `a4 dev checkpoint [name]`                                   | saves a checkpoint; `--list` lists them, `--delete <id\|name>` deletes one. Plans limit how many each environment keeps                                                                                              |
+| `a4 dev restore <checkpoint>`                                | restores a checkpoint (id or name): everything written since is undone                                                                                                                                               |
+| `a4 dev branch <checkpoint> <name> [--use]`                  | creates a new environment from a checkpoint; `--use` points the project at it                                                                                                                                        |
+| `a4 dev rebase [--keep <pubkey>]…`                           | refetches every account the environment never wrote (and did not pin) from mainnet and moves the clock to mainnet's. Use it when pools or oracles went stale (swaps failing on slippage)                             |
+| `a4 dev reset`                                               | a fresh fork: every account you wrote, funded or pinned is dropped (checkpoints stay; asks first). `--account <pubkey> [--include-owned]` drops one account instead, so its next read refetches it                   |
+| `a4 dev fund <account> [sol]`                                | sets an account's SOL balance (default 100; owner and data stay). `<account>` is a public key or a dev wallet name (created on first use)                                                                            |
+| `a4 dev fund <account> --mint <mint> --amount <base units>`  | sets the account's token balance of a mint (its token account is created if needed); `--token-program` for Token-2022 mints                                                                                          |
+| `a4 dev pin <pubkey> [--include-owned]` / `--unpin`          | pins an account: never refreshed from mainnet, kept by rebase                                                                                                                                                        |
+| `a4 dev follow <pubkey>` / `--stop`                          | follows an account: refetched from mainnet every block (an oracle or a pool that should stay live while everything else stays put). Plans cap how many, and follows count as mainnet reads                           |
+| `a4 dev warp <+2h \| unix-seconds \| slot:<n> \| epoch:<n>>` | moves the clock forward (`time-travel` is an alias)                                                                                                                                                                  |
+| `a4 dev pause` / `a4 dev resume`                             | pauses or resumes the clock                                                                                                                                                                                          |
+| `a4 dev events [--after <id>] [-f]`                          | the environment's lifecycle: created, woken, slept (and why), checkpointed, branched, restored, rebased, reset, deleted                                                                                              |
+| `a4 dev token`                                               | mints an environment token and prints the environment's RPC and WebSocket URLs                                                                                                                                       |
+
+### Scenarios, previews and repro exports
+
+| Command                              | What it does                                                                                                                                                                                                                              |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `a4 dev scenario <file> [--dry-run]` | runs an `arete.scenario/v1` document: steps at relative slots, each overriding fields of program accounts by path, with expectations. Exits non-zero when an expectation fails. `--dry-run` only encodes the writes                       |
+| `a4 dev preview <base64 \| @file>`   | simulates a transaction without committing it: its error and logs, compute units in total and per instruction, and every account it touches before and after (decoded where Arete knows the program)                                      |
+| `a4 dev repro <signature> [-o file]` | exports the minimal state to reproduce a transaction sent in the environment (`arete.devenv-repro/v1`: the transaction and the accounts it read as they were before it, programs included), to attach to a bug report or replay elsewhere |
+
+A scenario:
+
+```json
+{
+  "schema": "arete.scenario/v1",
+  "name": "sol-crash",
+  "steps": [
+    {
+      "slot": 0,
+      "overrides": [
+        {
+          "program": "rec2HHDDnjLfj4kE7VyEtFA1HPGQLK33259532cRyHp",
+          "account": "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE",
+          "set": { "price_message.price": "-1" }
+        }
+      ],
+      "expect": [
+        {
+          "account": "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE",
+          "field": "price_message.price",
+          "op": "lt",
+          "value": 0
+        }
+      ]
+    }
+  ]
+}
+```
+
+Arete encodes every override against the program's account layout and
+checks it by decoding the result; a value it can't encode exactly (a field
+of an unknown program, a non-scalar field, an out-of-range value) refuses
+the whole scenario before anything is written. The result lists each step's
+writes (every field before and after) and expectations, `passed`, and a
+`digest` that is equal across runs from the same state. Field names may be
+snake or camel case; 128-bit values are decimal strings.
+
+## The protocol in the environment
+
+### The session file
+
+While `a4 dev up` runs, `.arete/dev/session.json` (mode 0600) is what apps,
+tests and agents read. It holds no key and no token:
+
+```json
+{
+  "schema": "arete.dev-session/v2",
+  "environment": { "id": "denv_01k…", "name": "my-protocol" },
+  "apiUrl": "https://api.arete.run",
+  "sessionEndpoint": "https://api.arete.run/ws/sessions",
+  "rpcUrl": "http://127.0.0.1:48700",
+  "rpcWsUrl": "ws://127.0.0.1:48701",
+  "environmentRpcUrl": "https://…/rpc/v1/devenv/denv_01k…",
+  "protocolSlug": "tip-jar",
+  "deploymentId": "…",
+  "shortId": "…",
+  "stack": "tip-jar",
+  "stackWsUrl": "wss://…",
+  "stackSession": { "token": "…", "expiresAt": 1791927550, "streamUrl": "wss://…?hs_token=…" },
+  "uiUrl": "http://127.0.0.1:48702/"
+}
+```
+
+Protocol routes are under `<apiUrl>/api`, with your own key. Point a
+protocol client at the deployment as you would in production, and wallets
+and `@solana/web3.js` at `rpcUrl`. Ask for `transactionFormat: "v0"` when
+preparing.
+
+### Streaming the stack
+
+Arete runs the protocol's stack against the environment, decoded as in
+production. `a4 stream --dev` streams it: it finds the project, lists the
+stacks serving in the environment and mints its own stack session tokens
+with your key, a fresh one for every connection.
+
+```sh
+a4 stream --dev                                  # the protocols, their views and counts
+a4 stream --dev --tui                            # browse: protocols, views, rows, instances
+a4 stream --dev localTipJar                      # the protocol's views, one labelled feed
+a4 stream --dev localTipJar Activity             # one view
+a4 stream --dev localTipJar --instance <id>      # one instance's state and activity
+a4 stream --dev --all                            # every view of the stack, one feed
+```
+
+A protocol is named by its spec's `name`, its slug, its stack or its
+deployment's short id. Its stack's `ProtocolInstance`, `ProtocolActivity`
+and `ProtocolParticipant` rows are its **Instances**, **Activity** and
+**Participants**. `--instance <id>` takes the instance id `a4 dev step`
+prints. When `a4 dev` redeploys, the stream moves to the new deployment's
+stack and says so. The stack can take a moment to serve after a deploy; `a4
+dev status` shows it once it does.
+
+Other WebSocket clients need a stack session token (`?hs_token=<token>` or
+`Authorization: Bearer <token>`). `a4 dev status` prints the stack URL with
+a valid token (`stack.streamUrl` in `--json`). To mint one yourself, send
+`POST <apiUrl>/ws/sessions` with your key and:
+
+```json
+{ "websocket_url": "<stackWsUrl>", "protocolDeploymentId": "<deploymentId>" }
+```
+
+### The app's protocol client
+
+There is one client, in the place `a4 install protocol` puts it:
+`generated/<lang>/protocols/<alias>/`. After every deploy that changes the
+release, `a4 dev up` generates it from the local build
+(`.arete/protocol/protocol-spec.json`), with the same generators as `a4
+install protocol`, so the app's types follow the local spec, and it **calls
+the deployment in your dev environment**:
+
+- **Before the first publish**, `arete.toml` doesn't install the protocol,
+  so `a4 dev up` adds the dependency `a4 install protocol <slug>` would
+  write:
+
+  ```toml
+  [dependencies.protocols.tip-jar]
+  source = { registry = "tip-jar" }
+  version = "^0.1.0"
+  targets = ["typescript"]
+  ```
+
+  The targets are `[dev] sdk` (below), else TypeScript.
+
+- **Once the protocol is published**, `arete.lock` keeps the published
+  release's pins, and the generated client calls the dev deployment until
+  you restore the published one.
+
+The app runs with your own key (`ARETE_API_KEY`) against Arete's API; the
+dev deployment is private to your account. `arete.lock` marks a client
+generated this way:
+
+```toml
+[[dependency]]
+kind = "protocol"
+alias = "tip-jar"
+# … the pins of the last published release, when there is one …
+local_build = "arete:h1:protocol-release:sha256:…"
+```
+
+- `a4 install --locked` restores the published client (and drops
+  `local_build`), calling the production deployment again. It fails for a
+  protocol that was never published.
+- `a4 install --check` fails while any protocol client is a local build. Run
+  it in CI.
+- `a4 protocol deploy` deploys to mainnet and updates the client to the new
+  deployment.
+
+`a4 dev sdk [--ts] [--rust] [--python]` does the same now; the flags choose
+the targets when `arete.toml` doesn't install the protocol yet. `[dev] sdk`
+sets them for `a4 dev up`:
+
+```toml
+[dev]
+sdk = ["typescript", "rust"]
+```
+
+Targets must be in `[sdk].targets`. Pass `--no-sdk` to `a4 dev up` to skip
+all of this.
+
+### Driving the protocol
+
+These commands use the project's environment and the deployment `a4 dev up`
+recorded (`.arete/dev/deploy.json`); `a4 dev up` need not be running.
+
+| Command                                                            | What it does                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `a4 dev wallet [name]`                                             | the dev wallet's address and balance, creating and funding it if needed; use it to pass one wallet's address as another step's argument                                                                                                                                                                                                                                                                                                 |
+| `a4 dev step <step> [--instance id] [--args json] [--wallet name]` | prepares the step through the Arete API, signs it locally with the dev wallet (`.arete/dev/wallets/<name>.json`, a Solana CLI keypair created on first use and funded with 100 SOL in the environment whenever its balance is zero), submits it, and waits until the execution intent settles. Omit `--instance` for create steps. A guard rejection is reported as `rejected` with its code. Exits non-zero unless the step completed. |
+| `a4 dev instance <id> [--wallet name\|pubkey]`                     | reads an instance; with `--wallet`, its `allowedSteps` are evaluated for that wallet                                                                                                                                                                                                                                                                                                                                                    |
+| `a4 dev replay <file> [--include-failed]`                          | runs steps again in order and stops at the first that doesn't complete; see below                                                                                                                                                                                                                                                                                                                                                       |
+| `a4 dev sdk [--ts\|--rust\|--python]`                              | regenerates the protocol's installed client from the local build now                                                                                                                                                                                                                                                                                                                                                                    |
+
+Every `a4 dev step` is appended to `.arete/dev/history.jsonl`. `a4 dev
+replay` takes that file, a JSON array of steps, or:
+
+```json
+{
+  "schema": "arete.dev-replay/v1",
+  "steps": [
+    { "step": "open", "args": { "recipient": "…", "amount": "1000" }, "wallet": "creator" },
+    { "step": "close", "instance": "@0", "wallet": "recipient" }
+  ]
+}
+```
+
+`"instance": "@N"` names the instance that entry `N` (from 0) created or
+used. In a history file, the instance ids recorded by the original run are
+mapped to the ones the replay creates. A history entry whose recorded result
+is not `completed` is skipped unless `--include-failed`. Replays never add to
+`history.jsonl`; each step a replay runs goes to `.arete/dev/replays.jsonl`.
+
+`a4 protocol actions --dev --wallet <name|pubkey>` lists what a wallet can
+do now: the create steps and the instances it relates to, each step with
+whether it is allowed and why not.
+
+### Your own stacks
+
+`a4 dev up` deploys your project's stacks into its Arete cloud dev environment,
+alongside the protocol's generated stack when there is one. It finds
+`stacks/*.stack.yaml`, `stacks/*/*.stack.yaml` (`.stack.yml` too), and extra
+Stack Source paths listed in `[dev] stacks = ["path/to/extra.stack.yaml"]`.
+Stack Source files compile through your account's API. Local IDLs are bundled
+with the source; compiler errors include the file, line and column.
+
+Rust DSL stacks come from `[authoring.stacks.<name>]` entries with a
+`manifest` path. `a4 dev up` runs `cargo check --locked` in the nearest crate
+and deploys its generated artifacts. Without a crate it uses the existing
+artifacts. Rust and Cargo are needed only for Rust stacks.
+
+Sources and their IDLs are watched and redeployed into the same environment.
+A failed rebuild leaves the previous stack serving. `--no-watch` disables
+watching; `--no-deploy` serves existing deployments without deploying stacks.
+Use `a4 stream --dev --stack <name>` to select a stack when there are several,
+or open the dev UI to stream the session's selected stack. Streams use the
+stack's environment WebSocket address and renew their session tokens.
+`a4 up` remains the command for production deployments.
+
+## Agents (MCP)
+
+The MCP server (`a4 mcp`) has the same operations. Each environment tool
+takes `environment` (a name or id) and `project`, defaulting like the CLI.
+
+| Tool                                                                           | What it does                                                                                    |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `dev_status`                                                                   | the environment, whether `a4 dev up` serves it, the session, the chain and the stack stream URL |
+| `dev_environments`                                                             | your environments and your plan's quotas                                                        |
+| `dev_wake`, `dev_sleep`                                                        | wake or sleep the environment                                                                   |
+| `dev_delete`, `dev_reset`                                                      | delete or reset it; `confirm` must repeat the environment's name                                |
+| `dev_checkpoint` (`action: create\|list\|delete`), `dev_branch`, `dev_restore` | checkpoints                                                                                     |
+| `dev_rebase`, `dev_reset_account`, `dev_pin`, `dev_follow`                     | freshness                                                                                       |
+| `dev_fund`, `dev_warp`                                                         | balances (SOL or tokens) and the clock                                                          |
+| `dev_scenario`, `dev_preview`, `dev_repro`                                     | scenarios, previews and repro exports                                                           |
+| `dev_environment_events`                                                       | the environment's lifecycle events                                                              |
+| `dev_step`, `dev_instance`, `dev_actions`                                      | the protocol in the environment, signing with dev wallets                                       |
+| `dev_events`                                                                   | the dev UI's event feed (see below)                                                             |
+| `dev_capture`                                                                  | a capture from a Solana RPC node (see [Captures](#captures))                                    |
+
+The protocol tools (`protocol_actions`, `protocol_prepare`,
+`protocol_submit`, `protocol_execute`, …) take `dev: true` to use the
+project's dev deployment with a wallet of your own. With the MCP local
+signer, `protocol_execute` simulates against the environment through `a4 dev
+up`'s local RPC endpoint when the signer has no `rpcUrl` of its own or its
+policy lists `localnet`, and funds the signer in the environment when it has
+no SOL. See [Protocols for agents](/agent-skills/protocols/).
+
+## The dev UI and its event feed
+
+`a4 dev up` also serves a small HTTP server on `127.0.0.1` at the port base
+plus 2 (`http://127.0.0.1:48702/` by default) and prints it as `UI`. The
+session file has it as `uiUrl`. `--no-ui` serves neither the UI nor its
+event feed (`dev_events` then has nothing to read).
+
+| Route                                                          | What it returns                                                                                                                                                                                                                                                                                        |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /dev/v1/events`                                           | the session's event feed as Server-Sent Events, or one JSON page with `Accept: application/json`                                                                                                                                                                                                       |
+| `GET /dev/v1/protocol`                                         | the last good build (`spec`, `machineMap`, `anatomy`), the last build's outcome (`build`, with diagnostics when it failed), the active `deployment`, the `environment` (`{id, name}`), the dev `wallets` (names and public keys), the `chain` clock and the session's `urls`. It never contains a key. |
+| `GET /dev/v1/instances`                                        | the active deployment's instances                                                                                                                                                                                                                                                                      |
+| `GET /dev/v1/instances/<id>`                                   | one instance, as `a4 dev instance` reads it                                                                                                                                                                                                                                                            |
+| `GET /dev/v1/wallets`, `POST /dev/v1/wallets {name}`           | the dev wallets with their balances; create one (funded like `a4 dev wallet`)                                                                                                                                                                                                                          |
+| `POST /dev/v1/airdrop {wallet \| pubkey, sol?}`                | adds SOL (default 10, at most 1000) to a dev wallet or any address in the environment                                                                                                                                                                                                                  |
+| `POST /dev/v1/time-travel {to}`                                | moves the environment's clock forward, as `a4 dev warp`                                                                                                                                                                                                                                                |
+| `POST /dev/v1/steps/run {step, instance?, args, wallet}`       | runs a step with a dev wallet, as `a4 dev step`                                                                                                                                                                                                                                                        |
+| `POST /dev/v1/steps/prepare {step, instance?, args, wallet}`   | prepares a step for a dev wallet and returns a preview: each transaction's accounts, instructions with their anatomy role, and simulation; or the guard rejection                                                                                                                                      |
+| `POST /dev/v1/steps/submit {executionId}`                      | signs a prepared step with its dev wallet, submits it and waits until it settles                                                                                                                                                                                                                       |
+| `POST /dev/v1/wallet/prepare {step, instance?, args, pubkey}`  | prepares a step for a browser wallet's public key (v0) and returns the preview with each transaction's exact bytes to sign                                                                                                                                                                             |
+| `POST /dev/v1/wallet/submit {executionId, signedTransactions}` | checks that each signed transaction is the prepared one with only the wallet's signature added, submits the exact bytes and waits until the step settles                                                                                                                                               |
+| `/`                                                            | the dev UI                                                                                                                                                                                                                                                                                             |
+
+### The UI
+
+Open the printed `UI` URL (or pass `--open`). It shows:
+
+- **The protocol as a diagram.** Each machine is a lane: states are nodes,
+  steps are edges labelled with their authority and guard count, derivation
+  rules are dashed edges, and reactions and the events they emit sit under
+  the states that trigger them.
+- **Live counts and activity.** Each state shows how many instances of the
+  active deployment are in it. When a step confirms or an instance moves, the
+  diagram lights the edge and node it touched; a failed step lights its
+  edges red. The event list shows the feed as it arrives, with the
+  environment's own events (slept, woken, checkpointed, rebased, …).
+- **Instances.** Pick an instance to highlight the path it took and read its
+  timeline.
+- **Steps.** Click an edge or a step name for its params, guards, authority,
+  build, transaction anatomy, recent executions and the `a4 dev step`
+  command that runs it.
+- **Running steps.** The step panel's Run form is generated from the step's
+  params. **Preview** prepares the step and shows the exact transaction
+  before anything is signed; **Sign and submit** (or **Run**) signs with the
+  dev wallet on this machine and waits until the step settles. Steps run here
+  are recorded in `history.jsonl` like `a4 dev step`.
+- **A browser wallet.** The toolbar lists the wallets in your browser that
+  support the Wallet Standard and `solana:signTransaction` with v0
+  transactions. Connect one, add dev SOL to it, and pick it under **Run
+  as**: `a4 dev` prepares the step for its address, the wallet signs (it is
+  only asked to sign, never to send), and `a4 dev` submits the signed bytes.
+  The wallet doesn't know about the environment: it simulates against its
+  own cluster, so it may warn that the transaction fails or show other
+  balances; the preview's simulation is the one that counts.
+
+  Wallets only know real clusters, so `a4 dev` names `solana:mainnet` when
+  it asks one to sign. It only hands a wallet a transaction whose recent
+  blockhash is one of the environment's synthetic blockhashes (base58
+  starting with `SURFNETxSAFEHASH`), and only submits those: such a blockhash
+  never exists on mainnet, so nothing signed here can land there. It still is
+  a mainnet signature by a real key, so use a dev or burner wallet; the UI
+  says so next to the wallet controls. A transaction prepared on any other
+  blockhash is refused (`409`, `dev-ui-not-local`). Wallets that change a
+  transaction before signing it (priority fees, compute budget) are refused
+  by design: the signed message must be exactly the prepared one.
+
+- **Environment tools.** The toolbar moves the clock (`+1h`, `+7d`, …), adds
+  SOL to a dev wallet and creates dev wallets. The header names the
+  environment.
+- **Rebuilds.** After you edit `protocol.ts`, the diagram is laid out again
+  and what was added or changed is outlined. A failed build shows its
+  diagnostics over the last good diagram.
+
+The release binaries of `a4` have the UI built in. An `a4` built from source
+without it serves a placeholder page; build it first with `npm ci && npm run
+build` in `typescript/dev-ui`, then rebuild `a4`. Setting
+`A4_REQUIRE_DEV_UI=1` makes that build fail instead of falling back.
+
+### Events
+
+Each event is a JSON object:
+
+```json
+{ "seq": 12, "type": "step.confirmed", "at": "2026-10-15T01:15:37.877Z", "data": { … } }
+```
+
+`seq` counts from 1 within one `a4 dev up` run. Over SSE, the event name is
+the `type` and the id is `<boot>:<seq>`, where `boot` names the run.
+
+| Type                            | When                                                                              | `data`                                                                                                                                             |
+| ------------------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `build.started`                 | a build starts                                                                    | `changed`: the edited files (empty for the first build)                                                                                            |
+| `build.failed`                  | `arete-protocol build` failed                                                     | `error` and `diagnostics`: `{severity, message, code, file?, line?, column?, path?}`                                                               |
+| `build.succeeded`               | a build succeeded                                                                 | `protocol`, `version`, `specHash` and `diff` (`steps`, `states`, `transitions`, `reactions`, `events`, each with `added`, `removed` and `changed`) |
+| `deploy.activated`              | a new deployment is active                                                        | `deploymentId`, `releaseHash`, `shortId`, `slug`, `environment`, `stack`, `disabled`                                                               |
+| `deploy.failed`                 | the deploy after a good build failed                                              | `error`                                                                                                                                            |
+| `step.confirmed`, `step.failed` | a step run by `a4 dev step`, `dev_step` or the UI settled, or a guard rejected it | `executionId`, `step`, `state`, `instanceId`, `args`, `devWallet`, `rejected` (the code), `error`, `hint`                                          |
+| `instance.transitioned`         | an instance changed state                                                         | `instanceId`, `from` (null on creation), `to`, `inferred: true`                                                                                    |
+| `stack.row`                     | a row of the protocol stack's primary views changed                               | `view`, `entity`, `op`, `key`, `instanceId`, `fields` (the row's scalar fields, shortened)                                                         |
+| `stack.redeployed`              | the stack stream moved to a new deployment's stack                                | `from`, `to`                                                                                                                                       |
+| `chain.clock`                   | the clock leapt (a warp, or a wake)                                               | `slot`, `unixTimestamp`, `before`, `jump: true`                                                                                                    |
+| `chain.airdrop`                 | the dev UI added SOL                                                              | `pubkey`, `lamports`                                                                                                                               |
+| `env.changed`                   | the environment's lifecycle                                                       | `kind` (`woken`, `slept`, `checkpointed`, `branched`, `restored`, `rebased`, `reset`, `deleted`), `detail`, `at`                                   |
+
+Instance changes are seen by polling the deployment's instances, so they
+include steps an app runs on the deployment, without their causes. Live
+readers also receive `chain.clock` ticks every few seconds (`slot`,
+`unixTimestamp`); they have no `seq` and are not buffered.
+
+### Reading the feed
+
+The last 4096 events are kept in memory. A reader resumes after the last
+event it saw:
+
+- **SSE**: `EventSource` sends `Last-Event-ID` when it reconnects; a first
+  connection can pass `?after=<boot>:<seq>`. The server replays what the
+  reader missed, then sends `stream.live` and continues live. When the
+  missed events are no longer buffered, or the cursor names another run, it
+  sends `stream.reset` first: reload `GET /dev/v1/protocol` and the
+  instances.
+- **JSON**: `GET /dev/v1/events?after=<cursor>&limit=<n>&wait=<ms>` with
+  `Accept: application/json` returns `{ boot, cursor, truncated, more,
+events }`. Pass `cursor` back as `after`. `wait` (at most 30000) waits for
+  the first new event when there is none.
+
+```sh
+curl -s -H 'Accept: application/json' "http://127.0.0.1:48702/dev/v1/events?after=$CURSOR&wait=10000"
+```
+
+The MCP tool `dev_events` reads the same pages: `after`, `limit`, `waitMs`
+and `types` (exact types or prefixes such as `step.`).
+
+### Who may call it
+
+The server listens on `127.0.0.1` only and refuses requests that a web page
+could send on its own:
+
+- a `Host` other than `127.0.0.1:<port>`, `localhost:<port>` or
+  `[::1]:<port>` (DNS rebinding);
+- an `Origin` other than the server's own;
+- `Sec-Fetch-Site: cross-site` or `same-site` on `/dev/v1/*`;
+- writes without `Content-Type: application/json`, and CORS preflights. It
+  sends no CORS headers.
+
+Local programs that send none of these headers (curl, agents, the MCP
+server) are allowed. Dev wallets sign on this machine, and browser-wallet
+steps are prepared and submitted by the server on the browser's behalf: no
+dev wallet key, and not your API key, is ever sent to the browser.
+
+## Captures
+
+`a4 dev capture` records a window of raw updates for some programs from a
+Solana JSON-RPC node into an `arete.raw-capture/v1` file (`.arcap`), with no
+Arete account needed: a portable record of what a geyser subscription for
+the programs would have delivered, for a bug report or a test fixture.
+
+```sh
+a4 dev capture --program oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv \
+  --from -4m --to +90s -o ore.arcap
+```
+
+`--program` takes an address or an alias in `arete.lock` (a program, or a
+stack's programs). `--from` is a slot, an RFC 3339 time or `-10m`; `--to` a
+slot, a time or `+5m` after `--from` (default: now). `--rpc-url` (or
+`ARETE_CAPTURE_RPC_URL`) reads from your own node; the public mainnet RPC
+rate-limits hard, so keep windows small. JSON-RPC serves no historical
+account data: the starting state is the accounts' current state, and
+account writes inside the window are not captured.
+
+A capture is zstd-compressed JSON lines: a header (`schema`, `programs`,
+`cluster`, `slotRange`, `window`, `producer`, `startingState`, `ordering`,
+`counts`, `contentHash`, `limits`), then the starting state
+(`{"type":"state",…}`), then the window (`{"type":"update",…}`) in delivery
+order. The Rust types, writer and reader are
+`arete_solana_contracts::raw_capture` (feature `raw-capture`).
+
+## Files
+
+| Path                          | Contents                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------ |
+| `.arete/protocol/`            | the latest `arete-protocol build` output                                 |
+| `.arete/dev/environment.json` | the project's environment (`{id, name, apiUrl}`); no key                 |
+| `.arete/dev/session.json`     | the running `a4 dev up` (removed on shutdown)                            |
+| `.arete/dev/state.json`       | the running `a4 dev up`'s pid and ports                                  |
+| `.arete/dev/deploy.json`      | the protocol id, slug, fee policy and the deployments in the environment |
+| `.arete/dev/a4.log`           | what `a4 dev up` did                                                     |
+| `.arete/dev/wallets/`         | dev keypairs (Solana CLI format)                                         |
+| `.arete/dev/fee/`             | the dev platform fee destination keypair, when an API needs one          |
+| `.arete/dev/history.jsonl`    | every step run with `a4 dev step`, `dev_step` or the dev UI              |
+| `.arete/dev/replays.jsonl`    | every step run by `a4 dev replay`                                        |
+
+Add `.arete/dev/` to `.gitignore`. `a4 dev down --purge` deletes it (the
+environment itself stays: `a4 dev delete` deletes it).
+
+## Troubleshooting
+
+- **`Cloud dev environments need an Arete secret key`**: run `a4 auth
+login`, or set `ARETE_API_KEY` to a secret key.
+- **`… is not served: cloud dev environments are not enabled`**: the API
+  you point at (`ARETE_API_URL`) has no dev environments for your account.
+- **`devenv-environment-quota`**: your plan's environment limit is reached.
+  Reuse one (`a4 dev up --env <name>`, `a4 dev list`) or delete one.
+- **`devenv-checkpoint-quota`**: delete a checkpoint (`a4 dev checkpoint
+--delete <name>`).
+- **`devenv-active-hours-exhausted`**: this month's environment hours are
+  used up; environments wake again next month or on a larger plan.
+- **`Port … is in use`**: another tool, or another project's `a4 dev up`,
+  holds the port block. Pass `--port-base`.
+- **Swaps fail on slippage or stale prices**: pools and oracles you didn't
+  touch are fresh from mainnet when first read, then stay as they were. Run
+  `a4 dev rebase`, or `a4 dev follow <pool or oracle>` to keep one live.
+- **`protocol-review-required`**: the release has handler code, which runs
+  after an Arete review. `a4 dev up` activates the waiting deployment once it
+  is reviewed.
+- **`arete-protocol is not installed`**: `npm install --save-dev
+@usearete/protocol`.
+- **A `429` from the RPC endpoint**: your plan's request or send rate; wait
+  for `Retry-After`.

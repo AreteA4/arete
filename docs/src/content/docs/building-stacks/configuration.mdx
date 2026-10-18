@@ -134,6 +134,17 @@ Without dependency-specific overrides, outputs are namespaced by kind:
 This permits a stack and standalone program to share an alias. Aliases must be
 unique within their own kind.
 
+Protocol clients (`[dependencies.protocols]`, added with
+`a4 install protocol <ref> --ts`, `--rust` or `--python`) are registry-only and
+generate TypeScript, Rust or Python clients. They generate
+`<output_dir>/protocols/<alias>/` (Rust and Python: `<alias>-protocol/`), with the stacks and programs the
+protocol hoists nested under `stacks/` and `programs/`. A program the
+protocol pins only by its local IDL (no program package, so the package leaves
+it unpinned) is not generated: the client's `README.md` lists it, and you
+install it yourself with `a4 install program` if your app needs its SDK. A
+protocol records the deployment its client calls, never a credential: your
+app's own key mints a protocol session at runtime.
+
 A dependency-level output is an exact override and does not receive the
 automatic kind directory.
 

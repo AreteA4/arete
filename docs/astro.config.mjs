@@ -68,6 +68,7 @@ export default defineConfig({
             { slug: "using-stacks/quickstart" },
             { slug: "agent-skills/explore-on-chain" },
             { slug: "getting-started/from-question-to-app" },
+            { slug: "getting-started/open-source-and-hosted" },
           ],
         },
         {
@@ -101,6 +102,7 @@ export default defineConfig({
             { slug: "agent-skills/overview" },
             { slug: "agent-skills/explore" },
             { slug: "agent-skills/mcp" },
+            { slug: "agent-skills/protocols" },
             { slug: "agent-skills/prompts" },
             { slug: "agent-skills/setup" },
             { slug: "agent-skills/setup-tools" },

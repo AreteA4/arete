@@ -191,3 +191,11 @@ IDLs can explicitly declare discriminator-free account layouts with
 discriminator without that declaration retains Anchor derivation. Untagged managed
 reads select the requested account type and require an exact layout. Generic
 untagged parsing rejects ambiguous layouts.
+
+Instructions are declared untagged the same way: `arete.instruction_untagged=true`
+in instruction docs, with no `discriminator` and no `discriminant`. An untagged
+instruction matches any instruction data that no tagged instruction of the program
+claims. Its last argument may use `rest_bytes` or `rest_utf8`, which consume every
+remaining byte without a length prefix (SPL Memo's UTF-8 payload is `rest_utf8`).
+Those two types are rejected anywhere else: in other arguments, nested in another
+type, or in accounts, events and defined types.
