@@ -193,6 +193,7 @@ dependencies = [
  "bs58",
  "chrono",
  "dirs",
+ "ed25519-dalek",
  "five8_core 0.1.2",
  "flate2",
  "futures-util",
@@ -221,6 +222,7 @@ dependencies = [
  "unicode-normalization",
  "unicode-properties",
  "url",
+ "uuid",
  "wincode",
 ]
 
@@ -434,6 +436,9 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "zstd",
 ]
 
 [[package]]

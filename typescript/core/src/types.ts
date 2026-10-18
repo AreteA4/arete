@@ -224,6 +224,12 @@ export interface StackDefinition<
   readonly name: string;
   readonly endpoints: StackEndpoints;
   /**
+   * The registry package release this stack SDK was generated from, when it
+   * was installed from one. Two definitions with the same value are the same
+   * stack SDK.
+   */
+  readonly packageReleaseHash?: string;
+  /**
    * Served version this definition was generated for. Present only on
    * definitions generated from a hosted StackManifest; it is sent with the
    * WebSocket session request for `endpoints.ws` so the session endpoint can
@@ -371,9 +377,17 @@ export interface SolanaGatewayBindingAuthTarget {
   readonly programReleaseHash?: never;
 }
 
+/** A session for one hosted protocol deployment. */
+export interface ProtocolDeploymentAuthTarget {
+  readonly targetKind: 'protocol-deployment';
+  readonly targetId: string;
+  readonly programReleaseHash?: never;
+}
+
 export type AuthTokenTarget =
   | ProgramReadBindingAuthTarget
-  | SolanaGatewayBindingAuthTarget;
+  | SolanaGatewayBindingAuthTarget
+  | ProtocolDeploymentAuthTarget;
 
 export type AuthTokenRequest =
   | {
@@ -391,7 +405,8 @@ export type AuthTokenRequest =
       readonly liveAlias?: string;
     }
   | ({ readonly scopes: readonly string[] } & ProgramReadBindingAuthTarget)
-  | ({ readonly scopes: readonly string[] } & SolanaGatewayBindingAuthTarget);
+  | ({ readonly scopes: readonly string[] } & SolanaGatewayBindingAuthTarget)
+  | ({ readonly scopes: readonly string[] } & ProtocolDeploymentAuthTarget);
 
 export interface WebSocketFactoryInit {
   headers?: Record<string, string>;

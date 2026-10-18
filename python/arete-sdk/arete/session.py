@@ -36,6 +36,18 @@ Semantics:
   reads and program reads never inherit a live member's HTTP endpoint.
 - The execution host is the first connected member; ``set_wallet`` fans out
   to every member; ``close()`` disconnects all.
+- ``protocols`` (generated ``<NAME>_PROTOCOL`` definitions) hoist their
+  stacks and programs into the session, connected once: a stack the session
+  already has (the same definition, under any key) is shared, a different
+  one under a taken key raises ``STACK_KEY_CONFLICT``, and a different
+  program under a taken key raises :class:`ProgramKeyConflictError`. Each
+  protocol gets a :class:`arete.protocol.ProtocolClient` at
+  ``session.protocols.<key>`` on the session's auth, HTTP client and
+  ``protocol_key_class``, whose ``stacks`` / ``programs`` are the session's
+  connected members, so its instance handles follow the live stack view.
+  ``protocol_options.<key>`` may set ``steps``, ``api_url`` and
+  ``session_endpoint``. Generated typed clients use
+  ``<Name>Client.from_session(session)`` for the same wiring.
 """
 
 from __future__ import annotations
@@ -51,10 +63,14 @@ from typing import (
     Tuple,
 )
 
+import httpx
+
 from arete.auth import AuthConfig
 from arete.chain import ChainClient, HttpChainClient
 from arete.client import Arete
 from arete.errors import AreteError, ProgramKeyConflictError
+from arete.protocol.client import ProtocolClient
+from arete.protocol.types import ProtocolDefinition
 from arete.gateway import create_hosted_solana_gateway_transports
 from arete.http import HttpAuthClient
 from arete.instructions import BuiltInstruction, ErrorMetadata
@@ -95,6 +111,8 @@ _MEMBER_OPTION_KEYS = (
     "program_read",
     "program_reads",
 )
+
+_PROTOCOL_OPTION_KEYS = ("steps", "api_url", "session_endpoint")
 
 
 class SessionError(AreteError):
@@ -293,6 +311,9 @@ class Session:
         transactions: Optional[TransactionTransport],
         execution: Mapping[str, Any],
         program_conflicts: Optional[Mapping[str, Tuple[Tuple[str, ...], str]]] = None,
+        auth: Optional[AuthConfig] = None,
+        http_client: Any = None,
+        protocol_key_class: Optional[str] = None,
     ) -> None:
         self._stack_clients = dict(stacks)
         self._program_map = dict(programs)
@@ -304,6 +325,42 @@ class Session:
         self._execution = dict(execution)
         self.stacks = AttrNamespace("session.stacks", self._stack_clients)
         self.programs = _SessionPrograms(self._program_map, program_conflicts or {})
+        self._auth = auth
+        self._http_client = http_client
+        self._protocol_key_class = protocol_key_class
+        self._protocol_clients: Dict[str, ProtocolClient] = {}
+        self.protocols = AttrNamespace("session.protocols", self._protocol_clients)
+
+    def protocol_client_options(self, definition: ProtocolDefinition) -> Dict[str, Any]:
+        """Keyword arguments that build a client of ``definition`` sharing
+        this session: its auth, HTTP client and protocol key class, and its
+        connected stacks and programs under the definition's keys (plus the
+        live stack's). Generated clients' ``from_session`` use them."""
+        stack_keys = list(definition.stacks)
+        if definition.live_stack is not None:
+            stack_keys.append(definition.live_stack.stack)
+        stacks = {
+            key: self._stack_clients[key] for key in stack_keys if key in self._stack_clients
+        }
+        programs = {
+            key: self._program_map[key]
+            for key in definition.programs
+            if key in self._program_map
+        }
+        options: Dict[str, Any] = {"auth": self._auth, "stacks": stacks, "programs": programs}
+        if isinstance(self._http_client, httpx.AsyncClient):
+            options["http_client"] = self._http_client
+        if self._protocol_key_class is not None:
+            options["key_class"] = self._protocol_key_class
+        return options
+
+    def _add_protocol(
+        self, key: str, definition: ProtocolDefinition, options: Mapping[str, Any]
+    ) -> None:
+        self._protocol_clients[key] = ProtocolClient(
+            definition, **self.protocol_client_options(definition), **dict(options)
+        )
+        self.protocols = AttrNamespace("session.protocols", self._protocol_clients)
 
     @property
     def wallet(self) -> Optional[WalletAdapter]:
@@ -436,7 +493,9 @@ class Session:
         )
 
     async def close(self) -> None:
-        """Disconnect every member client."""
+        """Close every protocol client and disconnect every member client."""
+        for protocol in self._protocol_clients.values():
+            await protocol.aclose()
         for client in self._members:
             await client.aclose()
 
@@ -449,7 +508,8 @@ class Session:
     def __repr__(self) -> str:
         return (
             f"<Session stacks=[{', '.join(sorted(self._stack_clients))}] "
-            f"programs=[{', '.join(sorted(self._program_map))}]>"
+            f"programs=[{', '.join(sorted(self._program_map))}] "
+            f"protocols=[{', '.join(sorted(self._protocol_clients))}]>"
         )
 
 
@@ -473,6 +533,9 @@ async def create_session(
     program_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
     http_client: Any = None,
     connect_factory: Optional[Callable[..., Any]] = None,
+    protocols: Optional[Mapping[str, ProtocolDefinition]] = None,
+    protocol_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    protocol_key_class: Optional[str] = None,
 ) -> Session:
     """Compose multiple stack and standalone-program clients behind one
     wallet.
@@ -486,9 +549,31 @@ async def create_session(
     ``program_reads``); ``program_read`` / ``program_read_overrides`` are the
     session-wide layers. ``mode="composition"`` requires generated or explicit
     ``chain`` + ``transactions`` and forbids ``endpoints`` fallback.
+    ``protocols`` hoist their stacks and programs and become
+    ``session.protocols.<key>`` (see the module docs); ``protocol_key_class``
+    names their key class when ``auth`` cannot tell.
     """
     stack_entries = list((stacks or {}).items())
     program_entries = list((programs or {}).items())
+    protocol_entries = list((protocols or {}).items())
+    protocol_options = protocol_options or {}
+    for key, protocol in protocol_entries:
+        if not isinstance(protocol, ProtocolDefinition) or protocol.kind != "protocol":
+            raise SessionError(
+                f"Session protocol '{key}' is not a generated protocol definition"
+            )
+    for key, options in protocol_options.items():
+        if key not in dict(protocol_entries):
+            raise SessionError(f"protocol_options names unknown protocol '{key}'")
+        unknown = sorted(set(options) - set(_PROTOCOL_OPTION_KEYS))
+        if unknown:
+            raise SessionError(
+                f"protocol_options['{key}'] has unsupported options {unknown}; "
+                "auth, the HTTP client and the key class are the session's"
+            )
+    stack_entries, program_entries, stack_aliases = _hoist_protocol_members(
+        stack_entries, program_entries, protocol_entries
+    )
     stack_options = stack_options or {}
     program_options = program_options or {}
     session_program_reads = dict(program_read_overrides or {})
@@ -758,8 +843,11 @@ async def create_session(
         # the Session.transactions property fails lazily on first use.
         session_transactions = member_clients[0]._transactions
 
-    return Session(
-        stacks=dict(connected_stacks),
+    session_stacks = dict(connected_stacks)
+    for alias, target in stack_aliases.items():
+        session_stacks[alias] = session_stacks[target]
+    session = Session(
+        stacks=session_stacks,
         programs=promoted,
         member_clients=member_clients,
         wallet=wallet,
@@ -768,4 +856,91 @@ async def create_session(
         transactions=session_transactions,
         execution=execution or {},
         program_conflicts=program_conflicts,
+        auth=auth,
+        http_client=http_client,
+        protocol_key_class=protocol_key_class,
     )
+    try:
+        for key, protocol in protocol_entries:
+            session._add_protocol(key, protocol, protocol_options.get(key, {}))
+    except BaseException:
+        await session.close()
+        raise
+    return session
+
+
+def _hoist_protocol_members(
+    stack_entries: List[Tuple[str, StackDef]],
+    program_entries: List[Tuple[str, ProgramDef]],
+    protocol_entries: List[Tuple[str, ProtocolDefinition]],
+) -> Tuple[List[Tuple[str, StackDef]], List[Tuple[str, ProgramDef]], Dict[str, str]]:
+    """Protocols' stacks and programs, joined to the session's members.
+
+    A stack the session already has under any key (the same definition) is
+    shared, under its own key as an alias; a different stack under a taken
+    key raises ``STACK_KEY_CONFLICT``. A program under a taken key must be
+    the same program (canonical §9) or :class:`ProgramKeyConflictError`."""
+    stack_sources: Dict[str, Tuple[str, StackDef]] = {
+        key: (f"stack '{key}'", stack) for key, stack in stack_entries
+    }
+    aliases: Dict[str, str] = {}
+    hoisted_stacks: List[Tuple[str, StackDef]] = []
+    for protocol_key, protocol in protocol_entries:
+        source = f"protocol '{protocol_key}'"
+        for stack_key, stack in protocol.stacks.items():
+            existing = stack_sources.get(stack_key)
+            if existing is not None:
+                if not _same_stack(existing[1], stack):
+                    raise SessionError(
+                        f"Stack key '{stack_key}' conflicts in this session: "
+                        f"{existing[0]} and {source} provide different "
+                        f"'{stack_key}' stacks ({existing[1].name} and {stack.name}). "
+                        "Install one version of the stack, or connect the other "
+                        "under a different key.",
+                        "STACK_KEY_CONFLICT",
+                    )
+                continue
+            stack_sources[stack_key] = (source, stack)
+            shared = next(
+                (
+                    key
+                    for key, (_, other) in stack_sources.items()
+                    if key != stack_key and key not in aliases and _same_stack(other, stack)
+                ),
+                None,
+            )
+            if shared is not None:
+                aliases[stack_key] = shared
+                continue
+            hoisted_stacks.append((stack_key, stack))
+
+    program_sources: Dict[str, Tuple[str, ProgramDef]] = {
+        key: (f"program '{key}'", program) for key, program in program_entries
+    }
+    hoisted_programs: List[Tuple[str, ProgramDef]] = []
+    for protocol_key, protocol in protocol_entries:
+        source = f"protocol '{protocol_key}'"
+        for program_key, program in protocol.programs.items():
+            existing = program_sources.get(program_key)
+            if existing is not None:
+                if compare_program_identity(existing[1], program) == "different":
+                    raise ProgramKeyConflictError(
+                        f"Program key '{program_key}' conflicts in this session: "
+                        f"{existing[0]} ({program_identity_label(existing[1])}) and "
+                        f"{source} ({program_identity_label(program)}) provide "
+                        f"different '{program_key}' programs.",
+                        key=program_key,
+                        stacks=[],
+                    )
+                continue
+            program_sources[program_key] = (source, program)
+            hoisted_programs.append((program_key, program))
+    return (
+        [*stack_entries, *hoisted_stacks],
+        [*program_entries, *hoisted_programs],
+        aliases,
+    )
+
+
+def _same_stack(left: StackDef, right: StackDef) -> bool:
+    return left is right or left == right

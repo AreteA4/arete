@@ -1572,12 +1572,13 @@ mod tests {
             if let Some(events) = &self.events {
                 events.lock().unwrap().push(format!("send:{call}"));
             }
-            self.results.lock().unwrap().pop_front().unwrap_or_else(|| {
-                Ok(SendResult {
+            match self.results.lock().unwrap().pop_front() {
+                Some(result) => result,
+                None => Ok(SendResult {
                     signature: format!("sig-{call}"),
                     slot: None,
-                })
-            })
+                }),
+            }
         }
     }
 

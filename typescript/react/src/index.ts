@@ -37,6 +37,21 @@ export type {
 export { useNativeBalance, useTokenBalance } from './chain-hooks';
 export type { BalanceHookOptions } from './chain-hooks';
 export {
+  useAllowedSteps,
+  useProtocolEvents,
+  useProtocolInstance,
+  useProtocolParticipant,
+  useWalletActions,
+} from './protocol-hooks';
+export type {
+  AnyProtocolClient,
+  UseProtocolEventsOptions,
+  UseProtocolInstanceOptions,
+  UseProtocolInstanceResult,
+  UseProtocolStepsOptions,
+  UseWalletActionsInput,
+} from './protocol-hooks';
+export {
   createProcessedSlotReconciliation,
   DEFAULT_RECONCILIATION_TIMEOUT_MS,
   reconcileProcessedSlot,

@@ -653,3 +653,171 @@ class TestSessionChain:
             assert session.chain is session.stacks.ore.chain
         finally:
             await session.close()
+
+
+def make_protocol(stacks=None, programs=None, live_stack=None):
+    from arete.protocol import ProtocolDefinition, ProtocolDeployment
+
+    return ProtocolDefinition(
+        name="tokenRaise",
+        version="1.0.0",
+        package="token-raise",
+        package_release_hash="arete:h1:package-release:sha256:" + "9" * 64,
+        protocol_spec_hash="arete:h1:protocol-spec:sha256:" + "a" * 64,
+        protocol_release_hash="arete:h1:protocol-release:sha256:" + "f" * 64,
+        deployment=ProtocolDeployment(
+            deployment_id="dep_1",
+            access="public",
+            api_url="https://api.example.test/api",
+            session_endpoint="https://api.example.test/ws/sessions",
+        ),
+        instance_visibility="shared",
+        stacks=stacks or {},
+        programs=programs or {},
+        live_stack=live_stack,
+    )
+
+
+@pytest.mark.asyncio
+class TestProtocols:
+    async def test_protocols_hoist_their_stacks_and_share_the_session(self):
+        import httpx
+
+        from arete.auth import AuthConfig
+        from arete.protocol import ProtocolClient, ProtocolLiveStack
+
+        presale = make_stack(name="meteora-presale", program_key="presale")
+        protocol = make_protocol(
+            stacks={"meteoraPresale": presale},
+            live_stack=ProtocolLiveStack(
+                stack="meteoraPresale", view="Presale/state", key_account="presale"
+            ),
+        )
+        http = httpx.AsyncClient()
+        session = await create_session(
+            protocols={"token_raise": protocol},
+            protocol_options={"token_raise": {"api_url": "https://other.example.test/api"}},
+            transport="http",
+            auth=AuthConfig(secret_key="a4_sk_test"),
+            http_client=http,
+        )
+        try:
+            assert isinstance(session.stacks.meteoraPresale, Arete)
+            client = session.protocols.token_raise
+            assert isinstance(client, ProtocolClient)
+            assert client.key_class == "secret"
+            assert client._api_url == "https://other.example.test/api"
+            assert client._http is http
+            assert client.stacks == {"meteoraPresale": session.stacks.meteoraPresale}
+            assert client.programs == {}
+            # Generated clients' from_session use the same options.
+            options = session.protocol_client_options(protocol)
+            assert options["stacks"]["meteoraPresale"] is session.stacks.meteoraPresale
+            assert options["auth"].secret_key == "a4_sk_test"
+            assert "token_raise" in repr(session)
+        finally:
+            await session.close()
+            await http.aclose()
+
+    async def test_a_stack_the_session_already_has_is_shared(self):
+        stack = make_stack()
+        session = await create_session(
+            stacks={"ore": stack},
+            protocols={"p": make_protocol(stacks={"oreStream": stack})},
+            transport="http",
+            protocol_key_class="secret",
+        )
+        try:
+            assert session.stacks.oreStream is session.stacks.ore
+            assert session.protocols.p.key_class == "secret"
+            assert session.protocols.p.stacks == {"oreStream": session.stacks.ore}
+        finally:
+            await session.close()
+
+    async def test_a_different_stack_under_a_taken_key_conflicts(self):
+        with pytest.raises(AreteError) as raised:
+            await create_session(
+                stacks={"ore": make_stack()},
+                protocols={"p": make_protocol(stacks={"ore": make_stack(name="other")})},
+                transport="http",
+            )
+        assert raised.value.code == "STACK_KEY_CONFLICT"
+
+    async def test_a_different_program_under_a_taken_key_conflicts(self):
+        with pytest.raises(ProgramKeyConflictError):
+            await create_session(
+                programs={"ore": make_program()},
+                protocols={
+                    "p": make_protocol(
+                        programs={"ore": make_program(program_id=OTHER_PROGRAM_ID)}
+                    )
+                },
+                transport="http",
+            )
+
+    async def test_protocol_options_cannot_replace_the_session_auth(self):
+        with pytest.raises(SessionError, match="unsupported options"):
+            await create_session(
+                stacks={"ore": make_stack()},
+                protocols={"p": make_protocol()},
+                protocol_options={"p": {"auth": None}},
+                transport="http",
+            )
+        with pytest.raises(SessionError, match="not a generated protocol"):
+            await create_session(stacks={"ore": make_stack()}, protocols={"p": object()})
+
+
+def load_generated_protocol(name: str):
+    """A generated protocol module from the CLI's goldens."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "cli/tests/golden/installed-protocol-python/modules"
+        / name
+        / "__init__.py"
+    )
+    spec = importlib.util.spec_from_file_location(f"golden_{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    # Don't write __pycache__ into the goldens the CLI compares byte for byte.
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+    return module
+
+
+@pytest.mark.asyncio
+async def test_generated_protocol_clients_build_from_a_session():
+    from arete.auth import AuthConfig
+    from arete.protocol import ProtocolInstanceHandle
+
+    generated = load_generated_protocol("token_raise")
+    definition = generated.TOKEN_RAISE_PROTOCOL
+    assert definition.live_stack.stack == "meteoraPresale"
+    session = await create_session(
+        stacks={"meteoraPresale": make_stack(name="meteora-presale")},
+        protocols={"token_raise": definition},
+        transport="http",
+        auth=AuthConfig(secret_key="a4_sk_test"),
+    )
+    try:
+        secret = generated.TokenRaiseSecretClient.from_session(session)
+        assert secret.key_class == "secret"
+        assert secret.stacks == {"meteoraPresale": session.stacks.meteoraPresale}
+        assert hasattr(secret.steps, "create")
+        public = generated.TokenRaiseClient.from_session(session, prepare_steps=["contribute"])
+        assert public.stacks["meteoraPresale"] is session.stacks.meteoraPresale
+        handle = public.instance_handle("inst_1")
+        assert isinstance(handle, ProtocolInstanceHandle) and not handle.closed
+        await secret.aclose()
+        await public.aclose()
+    finally:
+        await session.close()
+
+    escrow = load_generated_protocol("escrow_resolution")
+    assert escrow.ESCROW_RESOLUTION_PROTOCOL.live_stack is None

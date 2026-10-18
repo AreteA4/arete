@@ -304,7 +304,6 @@ impl TransactionTransport for UnconfiguredTransactionTransport {
 pub struct Arete<S: Stack> {
     connection: ConnectionManager,
     store: SharedStore,
-    #[allow(dead_code)]
     config: AreteConfig,
     transport: Transport,
     http_base_url: Option<String>,
@@ -358,6 +357,35 @@ impl<S: Stack> Arete<S> {
 
     pub fn store(&self) -> &SharedStore {
         &self.store
+    }
+
+    /// A keyed state view by its wire path (`<Entity>/<mode>`), for views
+    /// known only at runtime, such as a protocol's live stack view.
+    pub fn state_view<T>(&self, view_path: &str) -> crate::view::StateView<T>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync + 'static,
+    {
+        crate::view::StateView::new(
+            self.connection.clone(),
+            self.store.clone(),
+            view_path.to_string(),
+            self.config.initial_data_timeout,
+        )
+    }
+
+    /// Untyped state views of this client, detached from its lifetime.
+    pub(crate) fn state_view_source(&self) -> crate::protocol::StateViewSource {
+        let connection = self.connection.clone();
+        let store = self.store.clone();
+        let timeout = self.config.initial_data_timeout;
+        Arc::new(move |view_path: &str| {
+            crate::view::StateView::new(
+                connection.clone(),
+                store.clone(),
+                view_path.to_string(),
+                timeout,
+            )
+        })
     }
 
     /// The transport mode this client was connected with.

@@ -7,7 +7,8 @@ import {
   encodeBase58,
   createSeed,
 } from './pda';
-import { serializeInstructionData, type ArgSchema } from './serializer';
+import { serializeInstructionData } from './buffer-serializer';
+import type { ArgSchema } from './serializer';
 import {
   resolveAccounts,
   validateAccountResolution,

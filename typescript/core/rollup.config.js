@@ -44,6 +44,13 @@ function sdkEntryAsPackage() {
   };
 }
 
+// The root entry and `@usearete/sdk/program`, the pure subset that generated
+// program modules import (no client, network, Buffer or Node built-ins).
+const SHARED_ENTRIES = {
+  index: 'src/index.ts',
+  program: 'src/program.ts',
+};
+
 // Define all SSR submodules
 const ssrModules = [
   'index',
@@ -54,30 +61,39 @@ const ssrModules = [
 ];
 
 export default [
-  // Main bundle
+  // Main bundle and `@usearete/sdk/program`, built together so the modules
+  // they share (handlers, operation metadata, error classes) land in one
+  // chunk: a program built through either entry is the same to the other.
   {
     ...baseConfig,
-    input: 'src/index.ts',
+    input: SHARED_ENTRIES,
     output: [
       {
-        file: 'dist/index.cjs',
+        dir: 'dist',
         format: 'cjs',
         sourcemap: true,
+        entryFileNames: '[name].cjs',
+        chunkFileNames: 'chunks/[name]-[hash].cjs',
       },
       {
-        file: 'dist/index.esm.js',
+        dir: 'dist',
         format: 'esm',
         sourcemap: true,
+        entryFileNames: '[name].esm.js',
+        chunkFileNames: 'chunks/[name]-[hash].esm.js',
       },
     ],
   },
-  // Type declarations - main
+  // Type declarations - main and program, sharing declarations the same way
+  // (one `unique symbol` per extension key, one declaration per class).
   {
     ...dtsConfig,
-    input: 'src/index.ts',
+    input: SHARED_ENTRIES,
     output: {
-      file: 'dist/index.d.ts',
+      dir: 'dist',
       format: 'es',
+      entryFileNames: '[name].d.ts',
+      chunkFileNames: 'chunks/[name]-[hash].d.ts',
     },
   },
   // Testing helpers (`@usearete/sdk/testing`)

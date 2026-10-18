@@ -1,10 +1,13 @@
 //! Generated instruction -> public adapter -> recording relay -> upstream codec.
 extern crate arete_a4_sdk as arete_sdk;
 
+// Generator output, kept byte-identical to `a4 sdk create` (CI regenerates and diffs it).
 #[allow(dead_code)]
+#[rustfmt::skip]
 #[path = "../../../examples/ore-rust/src/generated/ore/programs.rs"]
 mod programs;
 #[allow(dead_code)]
+#[rustfmt::skip]
 #[path = "../../../examples/ore-rust/src/generated/ore/types.rs"]
 mod types;
 

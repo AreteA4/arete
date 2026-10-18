@@ -14,10 +14,24 @@ import {
   ambiguousSessionProgram,
   compareProgramIdentity,
   sessionProgramKeyConflict,
+  sessionProtocolProgramKeyConflict,
   warnUnprovenSessionProgram,
   warnUnprovenStackPrograms,
 } from './program-identity';
 import { createHostedSolanaGatewayTransports } from './solana-gateway';
+import { isSameStackSdk, sessionStackKeyConflict } from './stack-identity';
+import {
+  createProtocolClientWithMembers,
+  type ProtocolClient,
+  type ProtocolClientOptions,
+} from './protocol/client';
+import type {
+  AnyProtocolDefinition,
+  ProtocolKeyClass,
+  ProtocolProgramsOf,
+  ProtocolStacksOf,
+  ProtocolTypesOf,
+} from './protocol/types';
 import {
   AreteError,
   type AuthConfig,
@@ -69,7 +83,19 @@ export interface SessionDefinition<
   readonly gateway?: HostedSolanaGatewayBindings;
   /** @deprecated Generated program cartridges carry defaults; use only for complete overrides. */
   readonly programReads?: ProgramReadDescriptors<TPrograms>;
+  /**
+   * Generated protocol definitions, available at `session.protocols.<key>`.
+   * Each protocol's hoisted stacks join `session.stacks` and its programs join
+   * `session.programs`, connected once: a stack or program the session already
+   * has (the same object or the same `packageReleaseHash`) is shared, and a
+   * different one under the same key throws `STACK_KEY_CONFLICT` or
+   * `PROGRAM_KEY_CONFLICT`.
+   */
+  readonly protocols?: Record<string, AnyProtocolDefinition>;
 }
+
+/** Per-protocol client options inside a session; auth and fetch are the session's. */
+export type SessionProtocolOptions = Omit<ProtocolClientOptions, 'auth' | 'fetch' | 'keyClass'>;
 
 type SessionStackPrograms<TDef extends SessionDefinition> = Partial<{
   [K in keyof NonNullable<TDef['stacks']>]: Record<string, ProgramSdkDefinition> | undefined;
@@ -116,6 +142,8 @@ export interface SessionMemberOptions<
 export interface SessionOptions<
   TDef extends SessionDefinition = SessionDefinition,
   TStackPrograms extends SessionStackPrograms<TDef> = {},
+  TAuth extends AuthConfig = AuthConfig,
+  TProtocolKeyClass extends ProtocolKeyClass | undefined = undefined,
 > {
   /** One wallet governs execution across every member. */
   wallet?: WalletAdapter;
@@ -123,7 +151,16 @@ export interface SessionOptions<
   chain?: ChainClient;
   /** Transaction transport override; defaults to the execution host's authenticated client. */
   transactions?: TransactionTransport;
-  auth?: AuthConfig;
+  auth?: TAuth;
+  /**
+   * The key class `session.protocols` are typed as when it cannot be read
+   * from `auth` (secret when `auth.secretKey` is given, else publishable).
+   */
+  protocolKeyClass?: TProtocolKeyClass;
+  /** Per-protocol client options, keyed by the protocol's key in the definition. */
+  protocols?: {
+    [K in keyof NonNullable<TDef['protocols']>]?: SessionProtocolOptions;
+  };
   fetch?: typeof fetch;
   /** Default transport for all members ('ws' unless overridden). */
   transport?: 'ws' | 'http';
@@ -149,7 +186,12 @@ export interface SessionOptions<
 export type CompositionSessionOptions<
   TDef extends SessionDefinition = SessionDefinition,
   TStackPrograms extends SessionStackPrograms<TDef> = {},
-> = Omit<SessionOptions<TDef, TStackPrograms>, 'chain' | 'transactions' | 'endpoints'>
+  TAuth extends AuthConfig = AuthConfig,
+  TProtocolKeyClass extends ProtocolKeyClass | undefined = undefined,
+> = Omit<
+  SessionOptions<TDef, TStackPrograms, TAuth, TProtocolKeyClass>,
+  'chain' | 'transactions' | 'endpoints'
+>
   & (TDef extends { readonly gateway: HostedSolanaGatewayBindings }
     ? {
         /** Explicit override for the generated hosted chain transport. */
@@ -224,12 +266,126 @@ type SessionPrograms<
   : Omit<PromotedSessionPrograms<TDef, TStackPrograms>, keyof NonNullable<TDef['programs']>>
     & ExplicitSessionPrograms<TDef>;
 
+type SessionProtocolDefinitions<TDef extends SessionDefinition> = TDef extends {
+  readonly protocols: infer TProtocols extends Record<string, AnyProtocolDefinition>;
+}
+  ? TProtocols
+  : {};
+
+type HasSessionProtocols<TDef extends SessionDefinition> = TDef extends {
+  readonly protocols: Record<string, AnyProtocolDefinition>;
+}
+  ? true
+  : false;
+
+type ProtocolHoistedStackKeys<TDef extends SessionDefinition> = {
+  [P in keyof SessionProtocolDefinitions<TDef>]: keyof ProtocolStacksOf<SessionProtocolDefinitions<TDef>[P]>;
+}[keyof SessionProtocolDefinitions<TDef>];
+
+type ProtocolHoistedStack<TDef extends SessionDefinition, K extends PropertyKey> = {
+  [P in keyof SessionProtocolDefinitions<TDef>]: K extends keyof ProtocolStacksOf<SessionProtocolDefinitions<TDef>[P]>
+    ? ProtocolStacksOf<SessionProtocolDefinitions<TDef>[P]>[K]
+    : never;
+}[keyof SessionProtocolDefinitions<TDef>];
+
+/** Stacks hoisted from protocols that the definition does not list itself. */
+type PromotedSessionStacks<TDef extends SessionDefinition> = {
+  readonly [K in Exclude<ProtocolHoistedStackKeys<TDef>, keyof NonNullable<TDef['stacks']>>]:
+    ProtocolHoistedStack<TDef, K> extends infer TStack extends StackDefinition
+      ? ConnectedArete<TStack, TStack>
+      : never;
+};
+
+type AllSessionStacks<
+  TDef extends SessionDefinition,
+  TStackPrograms extends SessionStackPrograms<TDef>,
+> = HasSessionProtocols<TDef> extends true
+  ? SessionStacks<TDef, TStackPrograms> & PromotedSessionStacks<TDef>
+  : SessionStacks<TDef, TStackPrograms>;
+
+type ProtocolHoistedProgramKeys<TDef extends SessionDefinition> = {
+  [P in keyof SessionProtocolDefinitions<TDef>]: keyof ProtocolProgramsOf<SessionProtocolDefinitions<TDef>[P]>;
+}[keyof SessionProtocolDefinitions<TDef>];
+
+type ProtocolHoistedProgram<TDef extends SessionDefinition, K extends PropertyKey> = {
+  [P in keyof SessionProtocolDefinitions<TDef>]: K extends keyof ProtocolProgramsOf<SessionProtocolDefinitions<TDef>[P]>
+    ? ProtocolProgramsOf<SessionProtocolDefinitions<TDef>[P]>[K]
+    : never;
+}[keyof SessionProtocolDefinitions<TDef>];
+
+type PromotedStackProgramKeys<TDef extends SessionDefinition> = {
+  [K in keyof PromotedSessionStacks<TDef>]: keyof PromotedSessionStacks<TDef>[K]['programs'];
+}[keyof PromotedSessionStacks<TDef>];
+
+type PromotedStackProgram<TDef extends SessionDefinition, P extends PropertyKey> = {
+  [K in keyof PromotedSessionStacks<TDef>]: P extends keyof PromotedSessionStacks<TDef>[K]['programs']
+    ? PromotedSessionStacks<TDef>[K]['programs'][P]
+    : never;
+}[keyof PromotedSessionStacks<TDef>];
+
+/** Programs hoisted from protocols (and their stacks) the session does not already type. */
+type PromotedProtocolPrograms<
+  TDef extends SessionDefinition,
+  TStackPrograms extends SessionStackPrograms<TDef>,
+> = {
+  readonly [P in Exclude<
+    ProtocolHoistedProgramKeys<TDef> | PromotedStackProgramKeys<TDef>,
+    keyof SessionPrograms<TDef, TStackPrograms>
+  >]: P extends PromotedStackProgramKeys<TDef>
+    ? PromotedStackProgram<TDef, P>
+    : ProtocolHoistedProgram<TDef, P> extends infer TProgram extends ProgramSdkDefinition
+      ? ProgramInterface<TProgram>
+      : never;
+};
+
+type AllSessionPrograms<
+  TDef extends SessionDefinition,
+  TStackPrograms extends SessionStackPrograms<TDef>,
+> = HasSessionProtocols<TDef> extends true
+  ? SessionPrograms<TDef, TStackPrograms> & PromotedProtocolPrograms<TDef, TStackPrograms>
+  : SessionPrograms<TDef, TStackPrograms>;
+
+/** The key class `session.protocols` are typed as for the given session options. */
+export type SessionProtocolKeyClass<TAuth, TProtocolKeyClass> =
+  TProtocolKeyClass extends ProtocolKeyClass
+    ? TProtocolKeyClass
+    : TAuth extends { readonly secretKey: unknown }
+      ? 'secret'
+      : 'publishable';
+
+/** `session.protocols`: one client per protocol, wired to the session's connected members. */
+export type SessionProtocols<
+  TDef extends SessionDefinition,
+  TStackPrograms extends SessionStackPrograms<TDef> = {},
+  TKeyClass extends ProtocolKeyClass = 'publishable',
+> = {
+  readonly [P in keyof SessionProtocolDefinitions<TDef>]: ProtocolClient<
+    ProtocolTypesOf<SessionProtocolDefinitions<TDef>[P]>,
+    TKeyClass,
+    {
+      readonly [K in keyof ProtocolStacksOf<SessionProtocolDefinitions<TDef>[P]>]:
+        K extends keyof AllSessionStacks<TDef, TStackPrograms>
+          ? AllSessionStacks<TDef, TStackPrograms>[K]
+          : never;
+    },
+    {
+      readonly [K in keyof ProtocolProgramsOf<SessionProtocolDefinitions<TDef>[P]>]:
+        K extends keyof AllSessionPrograms<TDef, TStackPrograms>
+          ? AllSessionPrograms<TDef, TStackPrograms>[K]
+          : never;
+    }
+  >;
+};
+
 export interface Session<
   TDef extends SessionDefinition = SessionDefinition,
   TStackPrograms extends SessionStackPrograms<TDef> = {},
+  TProtocolKeyClass extends ProtocolKeyClass = 'publishable',
 > {
-  readonly stacks: SessionStacks<TDef, TStackPrograms>;
-  readonly programs: SessionPrograms<TDef, TStackPrograms>;
+  readonly stacks: AllSessionStacks<TDef, TStackPrograms>;
+  readonly programs: AllSessionPrograms<TDef, TStackPrograms>;
+  /** Protocol clients, keyed like `definition.protocols`; empty without protocols. */
+  readonly protocols: SessionProtocols<TDef, TStackPrograms, TProtocolKeyClass>;
   readonly wallet: WalletAdapter | undefined;
   readonly signerRegistry: SignerRegistry<any>;
   readonly chain: ChainClient;
@@ -412,21 +568,107 @@ function programAsStack(
   };
 }
 
+function unavailableInSession<T extends object>(what: string): T {
+  return new Proxy({} as T, {
+    get(_target, property) {
+      if (property === 'then') return undefined;
+      throw new AreteError(
+        `This session has no ${what}: it has no stack or program members. Pass options.${what} `
+          + 'or add a stack or program to the session.',
+        'INVALID_CONFIG'
+      );
+    },
+  });
+}
+
 export async function createSession<
   TDef extends SessionDefinition,
   TStackPrograms extends SessionStackPrograms<TDef> = {},
+  TAuth extends AuthConfig = AuthConfig,
+  TProtocolKeyClass extends ProtocolKeyClass | undefined = undefined,
 >(
   definition: TDef,
   ...args: TDef extends { readonly mode: 'composition' }
-    ? [options: CompositionSessionOptions<TDef, TStackPrograms>]
-    : [options?: SessionOptions<TDef, TStackPrograms>]
-): Promise<Session<TDef, TStackPrograms>> {
+    ? [options: CompositionSessionOptions<TDef, TStackPrograms, TAuth, TProtocolKeyClass>]
+    : [options?: SessionOptions<TDef, TStackPrograms, TAuth, TProtocolKeyClass>]
+): Promise<Session<TDef, TStackPrograms, SessionProtocolKeyClass<TAuth, TProtocolKeyClass>>> {
+  type TKeyClass = SessionProtocolKeyClass<TAuth, TProtocolKeyClass>;
   const options = args[0] as SessionOptions<TDef, TStackPrograms> | undefined;
-  const stackEntries = Object.entries(definition.stacks ?? {});
-  const programEntries = Object.entries(definition.programs ?? {});
-  if (stackEntries.length === 0 && programEntries.length === 0) {
+  const explicitStackEntries = Object.entries(definition.stacks ?? {});
+  const explicitProgramEntries = Object.entries(definition.programs ?? {});
+  const protocolEntries = Object.entries(definition.protocols ?? {});
+  if (
+    explicitStackEntries.length === 0
+    && explicitProgramEntries.length === 0
+    && protocolEntries.length === 0
+  ) {
     throw new AreteError('createSession requires at least one stack or program member', 'INVALID_CONFIG');
   }
+  for (const [key, protocol] of protocolEntries) {
+    if (!protocol || protocol.kind !== 'protocol') {
+      throw new AreteError(
+        `Session protocol '${key}' is not a generated protocol definition`,
+        'INVALID_CONFIG'
+      );
+    }
+  }
+
+  // Protocols hoist their stacks and programs into the session. A stack the
+  // session already has under any key (the same object or the same package
+  // release) is shared; a different stack under a taken key is a conflict.
+  const stackKeyDefinitions = new Map<string, { source: string; stack: StackDefinition }>(
+    explicitStackEntries.map(([key, stack]) => [key, { source: `stack '${key}'`, stack }])
+  );
+  const stackAliases = new Map<string, string>();
+  const promotedStackEntries: [string, StackDefinition][] = [];
+  for (const [protocolKey, protocol] of protocolEntries) {
+    const source = `protocol '${protocolKey}'`;
+    for (const [stackKey, stack] of Object.entries(protocol.stacks ?? {}) as [string, StackDefinition][]) {
+      const existing = stackKeyDefinitions.get(stackKey);
+      if (existing) {
+        if (!isSameStackSdk(existing.stack, stack)) {
+          throw sessionStackKeyConflict(stackKey, existing.source, existing.stack, source, stack);
+        }
+        continue;
+      }
+      stackKeyDefinitions.set(stackKey, { source, stack });
+      const shared = [...stackKeyDefinitions].find(([key, entry]) =>
+        key !== stackKey && !stackAliases.has(key) && isSameStackSdk(entry.stack, stack)
+      );
+      if (shared) {
+        stackAliases.set(stackKey, shared[0]);
+        continue;
+      }
+      promotedStackEntries.push([stackKey, stack]);
+    }
+  }
+  const stackEntries = [...explicitStackEntries, ...promotedStackEntries];
+
+  const programKeyDefinitions = new Map<string, { source: string; program: ProgramSdkDefinition }>(
+    explicitProgramEntries.map(([key, program]) => [key, { source: `program '${key}'`, program }])
+  );
+  const promotedProgramEntries: [string, ProgramSdkDefinition][] = [];
+  for (const [protocolKey, protocol] of protocolEntries) {
+    const source = `protocol '${protocolKey}'`;
+    for (const [programKey, program] of Object.entries(protocol.programs ?? {}) as [string, ProgramSdkDefinition][]) {
+      const existing = programKeyDefinitions.get(programKey);
+      if (existing) {
+        if (compareProgramIdentity(existing.program, program) === 'different') {
+          throw sessionProtocolProgramKeyConflict(
+            programKey,
+            existing.source,
+            existing.program,
+            source,
+            program
+          );
+        }
+        continue;
+      }
+      programKeyDefinitions.set(programKey, { source, program });
+      promotedProgramEntries.push([programKey, program]);
+    }
+  }
+  const programEntries = [...explicitProgramEntries, ...promotedProgramEntries];
   const generatedGateway = definition.gateway && (!options?.chain || !options?.transactions)
     ? createHostedSolanaGatewayTransports(definition.gateway, {
         auth: options?.auth,
@@ -448,7 +690,7 @@ export async function createSession<
     );
   }
   if (definition.programReads) {
-    const programKeys = programEntries.map(([key]) => key);
+    const programKeys = explicitProgramEntries.map(([key]) => key);
     const descriptorKeys = Object.keys(definition.programReads);
     if (
       programKeys.some((key) => !descriptorKeys.includes(key))
@@ -603,10 +845,21 @@ export async function createSession<
     ...connectedStacks.map(([, client]) => client),
     ...connectedPrograms.map(([, client]) => client),
   ];
-  const executionHost = memberClients[0]!;
-  const transactions = sharedTransactions ?? executionHost.transactions;
+  // A session of protocols without stacks or programs has no execution host.
+  const executionHost = memberClients[0];
+  const noExecutionHost = () => new AreteError(
+    'This session has no stack or program members to execute transactions through',
+    'INVALID_CONFIG'
+  );
+  const transactions = sharedTransactions
+    ?? executionHost?.transactions
+    ?? unavailableInSession<TransactionTransport>('transactions');
 
-  const stacks = Object.fromEntries(connectedStacks) as unknown as SessionStacks<TDef, TStackPrograms>;
+  const connectedStackMap = Object.fromEntries(connectedStacks) as Record<string, unknown>;
+  for (const [alias, target] of stackAliases) {
+    connectedStackMap[alias] = connectedStackMap[target];
+  }
+  const stacks = connectedStackMap as unknown as AllSessionStacks<TDef, TStackPrograms>;
   const connectedProgramEntries = connectedPrograms.map(([key, client]) => [
     key,
     (client.programs as Record<string, ProgramInterface<ProgramSdkDefinition>>)[key],
@@ -649,7 +902,7 @@ export async function createSession<
     }
   }
 
-  const programs = promotedPrograms as SessionPrograms<TDef, TStackPrograms>;
+  const programs = promotedPrograms as unknown as AllSessionPrograms<TDef, TStackPrograms>;
 
   const chain =
     sharedChain ?? (options?.endpoints?.http !== undefined
@@ -657,11 +910,44 @@ export async function createSession<
           options.endpoints.http,
           (options?.fetch ?? globalThis.fetch?.bind(globalThis)) as typeof fetch
         )
-      : executionHost.chain);
+      : executionHost?.chain ?? unavailableInSession<ChainClient>('chain'));
 
-  const session: Session<TDef, TStackPrograms> = {
+  const protocolClients = protocolEntries.map(([protocolKey, protocol]) => {
+    const memberStacks: Record<string, unknown> = {};
+    for (const stackKey of Object.keys(protocol.stacks ?? {})) {
+      memberStacks[stackKey] = connectedStackMap[stackKey];
+    }
+    const memberPrograms: Record<string, unknown> = {};
+    for (const programKey of Object.keys(protocol.programs ?? {})) {
+      // Read through session.programs so an ambiguous key explains itself.
+      Object.defineProperty(memberPrograms, programKey, {
+        get: () => (promotedPrograms as Record<string, unknown>)[programKey],
+        enumerable: true,
+      });
+    }
+    const protocolOptions = (options?.protocols as Record<string, SessionProtocolOptions> | undefined)?.[protocolKey];
+    const client = createProtocolClientWithMembers(
+      protocol,
+      {
+        ...protocolOptions,
+        auth: options?.auth,
+        fetch: options?.fetch,
+        keyClass: options?.protocolKeyClass,
+      },
+      { stacks: memberStacks, programs: memberPrograms }
+    );
+    return [protocolKey, client] as const;
+  });
+  const protocols = Object.fromEntries(protocolClients) as unknown as SessionProtocols<
+    TDef,
+    TStackPrograms,
+    TKeyClass
+  >;
+
+  const session: Session<TDef, TStackPrograms, TKeyClass> = {
     stacks,
     programs,
+    protocols,
     get wallet() {
       return wallet;
     },
@@ -672,6 +958,7 @@ export async function createSession<
       const defaults = options?.execution;
       const configuredSigners = transactionOptions?.signers ?? defaults?.signers;
       const signers = [...new Set([...signerRegistry.values(), ...(configuredSigners ?? [])])];
+      if (!executionHost) return Promise.reject(noExecutionHost());
       return executionHost.transaction(instructions, {
         wallet: transactionOptions?.wallet ?? defaults?.wallet,
         transactionTransport: transactionOptions?.transactionTransport ?? transactions,
@@ -686,6 +973,7 @@ export async function createSession<
     ) {
       const defaults = options?.execution as OperationExecutionOptions<TSigner, TPrepared> | undefined;
       const configuredSigners = executionOptions?.signers ?? defaults?.signers;
+      if (!executionHost) return Promise.reject(noExecutionHost());
       return executionHost.execute(prepared, {
         wallet: executionOptions?.wallet ?? defaults?.wallet,
         transactionTransport:
@@ -710,6 +998,9 @@ export async function createSession<
       }
     },
     close() {
+      for (const [, client] of protocolClients) {
+        client.close();
+      }
       for (const client of memberClients) {
         client.disconnect();
       }

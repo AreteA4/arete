@@ -289,7 +289,8 @@ function isAuthTokenTarget(value: unknown): value is AuthTokenTarget {
   }
 
   const candidate = value as Record<string, unknown>;
-  return candidate['targetKind'] === 'solana-gateway-binding'
+  return (candidate['targetKind'] === 'solana-gateway-binding'
+      || candidate['targetKind'] === 'protocol-deployment')
     && typeof candidate['targetId'] === 'string'
     && candidate['programReleaseHash'] === undefined;
 }

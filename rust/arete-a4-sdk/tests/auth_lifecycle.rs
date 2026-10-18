@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{
-    accept_hdr_async,
+    accept_async, accept_hdr_async,
     tungstenite::{
         handshake::server::{Request, Response},
         Message,
@@ -641,6 +641,8 @@ async fn spawn_websocket_server(
             .await
             .expect("websocket server should accept a connection");
 
+        // tungstenite fixes the callback error type to an unboxed HTTP response.
+        #[allow(clippy::result_large_err)]
         let ws_stream = accept_hdr_async(stream, {
             let handshake_tx = handshake_tx.clone();
             move |request: &Request, response: Response| {
@@ -706,11 +708,9 @@ async fn spawn_socket_issue_server(issue_payload: Value) -> WebSocketServerHandl
             .await
             .expect("socket issue server should accept a connection");
 
-        let mut ws_stream = accept_hdr_async(stream, |_request: &Request, response: Response| {
-            Ok(response)
-        })
-        .await
-        .expect("socket issue websocket handshake should succeed");
+        let mut ws_stream = accept_async(stream)
+            .await
+            .expect("socket issue websocket handshake should succeed");
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         ws_stream

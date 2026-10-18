@@ -315,6 +315,46 @@ await or compose the result.
 
 Program and read hooks are safe to call while the client is still connecting: mutations throw "Arete client is not connected" if submitted early, and reads stay disabled.
 
+## Protocols
+
+Protocol clients come from `@usearete/sdk` (`createProtocolClient(DEFINITION, { auth })` or `session.protocols.<key>`; see its README). Create one per key outside render (or memoize it) and pass it to these hooks:
+
+```tsx
+import { createProtocolClient } from '@usearete/sdk';
+import { useAllowedSteps, useProtocolEvents, useProtocolInstance } from '@usearete/react';
+import TOKEN_RAISE from './generated/typescript/protocols/token-raise/token-raise';
+
+const raise = createProtocolClient(TOKEN_RAISE, { auth: { publishableKey: 'a4_pk_...' } });
+
+function Raise({ id, wallet }: { id: string; wallet?: string }) {
+  const { instance, live, error, isLoading } = useProtocolInstance(raise, id, { wallet });
+  const steps = useAllowedSteps(raise, { instance: id, wallet }, { refreshOnEvents: true });
+  useProtocolEvents(raise, id, {
+    onEvent: (event) => {
+      if (event.type === 'emit' && event.event === 'raise.succeeded') celebrate();
+    },
+  });
+
+  if (isLoading) return <Spinner />;
+  const contribute = steps.data?.find((step) => step.step === 'contribute');
+  return (
+    <button
+      disabled={!contribute?.allowed}
+      onClick={() => raise.steps.contribute.prepare({ instance: id, wallet: wallet!, amount: '1000000' })}
+    >
+      {instance?.state} {contribute?.reason}
+    </button>
+  );
+}
+```
+
+- `useProtocolInstance(client, instanceId, { wallet? })` returns the canonical instance, refreshed on every event of the instance's stream, plus `live` (the protocol stack's row when the client belongs to a session whose protocol ships a stack). The stream opens while mounted.
+- `useAllowedSteps(client, { instance, wallet })` and `useProtocolParticipant(client, { instance, wallet })` are one-shot reads with the same `status`, `refresh()` and argument-keyed behavior as other read hooks; they stay disabled until every argument is set. `refreshOnEvents: true` re-reads on stream events.
+- `useWalletActions(client, { wallet, instance?, cursor?, limit? })` reads `client.actions`: the create steps and one page of instances the wallet relates to, with each step's availability, reason and typed args. It is disabled until `wallet` is set and re-reads when any argument changes (pass `data.nextCursor` as `cursor` to page). With `instance` set, `refreshOnEvents: true` re-reads on that instance's stream events.
+- `useProtocolEvents(client, instanceId, { onEvent, onError?, lastEventId? })` follows the stream with the latest callbacks, reopening only when the client or instance changes.
+
+All of them keep the generated types: instance and participant states, step names, guard codes and event names. A publishable-key client has only the `public` steps, so a secret step does not compile in browser code.
+
 ## Safe amount parsing
 
 `safeToRawAmount(input, decimals)` is re-exported by `@usearete/react` for form validation. Unlike `toRawAmount`, it reports invalid input without throwing:
