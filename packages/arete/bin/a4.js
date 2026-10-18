@@ -13,7 +13,6 @@
 //     by anything other than `a4 self install` options.
 //
 // No lifecycle scripts, no dependencies, no network access at `npm install`.
-// Design: docs/internal/agent-first-onboarding.md (WP3).
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end onboarding acceptance test (docs/internal/agent-first-onboarding.md, section 0)
+# End-to-end acceptance test for CLI installation and project onboarding.
 # run inside a clean ubuntu:24.04 container: pass 1 with only curl/ca-certificates/git,
 # pass 2 with nodejs/npm added (skills install, doctor ok).
 #

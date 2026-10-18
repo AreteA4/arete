@@ -1,7 +1,5 @@
 //! `a4 doctor`: read-only health check of everything `a4 init` writes plus
 //! the environment; `--fix` re-runs the init writers for failing agent checks.
-//!
-//! Spec: `docs/internal/agent-first-onboarding.md` (WP8).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

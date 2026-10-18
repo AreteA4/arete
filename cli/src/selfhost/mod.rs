@@ -1,7 +1,7 @@
 //! Self-hosting: `a4 self install|update|uninstall`, `a4 upgrade`, the
 //! install receipt and the update nudge.
 //!
-//! Spec: `docs/internal/agent-first-onboarding.md` (WP2, WP4). Module map:
+//! Module map:
 //!
 //! * [`install`]   – `a4 self install` (verify, copy, receipt, PATH, output)
 //! * [`uninstall`] – `a4 self uninstall`

@@ -2,8 +2,8 @@
 //!
 //! Written by `a4 self install`, updated by `a4 self update`, read by
 //! `a4 doctor`, `a4 init` (absolute MCP command path) and the npm
-//! bootstrapper (`packages/arete/bin/a4.js`). Field names are camelCase and
-//! part of the public contract in `docs/internal/agent-first-onboarding.md`.
+//! bootstrapper (`packages/arete/bin/a4.js`). The [`Receipt`] struct defines
+//! the public field contract; serialized field names are camelCase.
 
 use std::fs;
 use std::path::PathBuf;

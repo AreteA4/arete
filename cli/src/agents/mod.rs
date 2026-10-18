@@ -1,8 +1,6 @@
 //! Coding-agent integration shared by `a4 init` and `a4 doctor`: agent
 //! detection, the `AGENTS.md` managed block, skills installation and MCP
 //! config writers.
-//!
-//! Spec: `docs/internal/agent-first-onboarding.md` (WP7, WP8).
 
 pub mod agents_md;
 pub mod detect;

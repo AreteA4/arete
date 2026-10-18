@@ -10,8 +10,6 @@
 //! A4_BIN=/Users/x/.local/bin/a4
 //! export PATH="$HOME/.local/bin:$PATH"
 //! ```
-//!
-//! Spec: `docs/internal/agent-first-onboarding.md` WP2, steps 1–7.
 
 use std::fs;
 use std::path::{Path, PathBuf};
