@@ -10,6 +10,26 @@
   `catalog-bundle`, `catalog-publication-set`) with shared Rust/TypeScript
   vectors; no existing identity changes
 
+## [0.6.0](https://github.com/AreteA4/arete/compare/arete-hash-v0.5.3...arete-hash-v0.6.0) (2026-10-18)
+
+
+### Features
+
+* **hash:** add protocol artifact contracts and native builtin identities ([6eb21da](https://github.com/AreteA4/arete/commit/6eb21da937fc1a617112be4f0ca8898611a5f44c))
+* **hash:** add protocol artifact contracts and native builtin identities ([34a802b](https://github.com/AreteA4/arete/commit/34a802be4c35ee7c78d057aae15072586aa23b02))
+
+
+### Bug Fixes
+
+* **hash:** align IDL layouts and reject unsafe contract values ([8ed312f](https://github.com/AreteA4/arete/commit/8ed312f282d9f3419cb097b71a14aff961d11e55))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-idl bumped from 0.8.0 to 0.9.0
+
 ## [0.5.3](https://github.com/AreteA4/arete/compare/arete-hash-v0.5.2...arete-hash-v0.5.3) (2026-10-11)
 
 

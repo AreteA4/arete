@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.5.0...arete-auth-v0.6.0) (2026-10-18)
+
+
+### Features
+
+* **interpreter:** declared lookups, write guards and entitled row scoping ([d02bf89](https://github.com/AreteA4/arete/commit/d02bf893432aba64d5e4305fbf416df7af83486a))
+* **interpreter:** enforce declared lookups guards and entitled row scopes ([bfa961a](https://github.com/AreteA4/arete/commit/bfa961a599d94f3a81f750190a51b3c242de7762))
+
 ## [0.5.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.4.0...arete-auth-v0.5.0) (2026-09-14)
 
 

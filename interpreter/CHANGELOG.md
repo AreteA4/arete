@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.42.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.41.2...arete-interpreter-v0.42.0) (2026-10-18)
+
+
+### Features
+
+* **hash:** add protocol artifact contracts and native builtin identities ([6eb21da](https://github.com/AreteA4/arete/commit/6eb21da937fc1a617112be4f0ca8898611a5f44c))
+* **interpreter:** declared lookups, write guards and entitled row scoping ([d02bf89](https://github.com/AreteA4/arete/commit/d02bf893432aba64d5e4305fbf416df7af83486a))
+* **interpreter:** enforce declared lookups guards and entitled row scopes ([bfa961a](https://github.com/AreteA4/arete/commit/bfa961a599d94f3a81f750190a51b3c242de7762))
+
+
+### Bug Fixes
+
+* **idl:** keep length-prefixed string consumers compatible ([03a9470](https://github.com/AreteA4/arete/commit/03a94708aeea7e663b2d7cae44d9db45a081d0f5))
+* **interpreter:** skip a sum over a value that is not a number ([f8f4e39](https://github.com/AreteA4/arete/commit/f8f4e397f379fa01eebca696c8fbbcea19a6f602))
+* **interpreter:** skip a sum over a value that is not a number ([ba75326](https://github.com/AreteA4/arete/commit/ba753262f03a129d686d42206327f64ed7342cc0))
+* **macros:** retry a scheduled callback whose condition reads false ([71b6c99](https://github.com/AreteA4/arete/commit/71b6c9980f1b8b795fe06373c5c8756154c0f1b1))
+* **macros:** retry a scheduled callback whose condition reads false ([cb5f20c](https://github.com/AreteA4/arete/commit/cb5f20c9f6b250d08b124c80c470a08ad4c9c72c))
+* **runtime:** preserve row entitlements and guarded lookup state ([216c5c8](https://github.com/AreteA4/arete/commit/216c5c86e4ab6142032e754535c899687540ea52))
+* **runtime:** retain append scope and distinguish pathless siblings ([43a861a](https://github.com/AreteA4/arete/commit/43a861ad1318f6e019fc1e2a73554e5e4b99173c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.41.2 to 0.42.0
+    * arete-idl bumped from 0.8.0 to 0.9.0
+    * arete-hash bumped from 0.5.3 to 0.6.0
+    * arete-artifacts bumped from 0.4.0 to 0.5.0
+
 ## [0.41.2](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.41.1...arete-interpreter-v0.41.2) (2026-10-13)
 
 

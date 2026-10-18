@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.42.0](https://github.com/AreteA4/arete/compare/arete-python-v0.41.2...arete-python-v0.42.0) (2026-10-18)
+
+
+### Features
+
+* **hash:** add protocol artifact contracts and native builtin identities ([6eb21da](https://github.com/AreteA4/arete/commit/6eb21da937fc1a617112be4f0ca8898611a5f44c))
+* **sdk:** add protocol clients across TypeScript React Rust and Python ([789f609](https://github.com/AreteA4/arete/commit/789f60907648de63668fa82a951d602444e44f77))
+* **sdk:** protocol clients for TypeScript, React, Rust and Python ([e96c35c](https://github.com/AreteA4/arete/commit/e96c35c3bea7f2e960e958e41623e012b0a135af))
+
+
+### Bug Fixes
+
+* **idl:** keep length-prefixed string consumers compatible ([03a9470](https://github.com/AreteA4/arete/commit/03a94708aeea7e663b2d7cae44d9db45a081d0f5))
+* **python:** close unclaimed protocol handles after startup cancellation ([cec9dd0](https://github.com/AreteA4/arete/commit/cec9dd04fb838d8ea9731b720679ac6236039586))
+* **sdk:** isolate live handles capture files and metadata proofs ([8d4a3e8](https://github.com/AreteA4/arete/commit/8d4a3e898fa500b81ebe7275bcbd4e46cf363923))
+
 ## [0.41.2](https://github.com/AreteA4/arete/compare/arete-python-v0.41.1...arete-python-v0.41.2) (2026-10-13)
 
 
