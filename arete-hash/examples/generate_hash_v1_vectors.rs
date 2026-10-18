@@ -26,6 +26,7 @@ fn main() {
     generator.domain_separation_vectors();
     generator.tuple_vectors();
     generator.tree_vectors();
+    generator.catalog_vectors();
     generator.jcs_failure_vectors();
     generator.tuple_tree_failure_vectors();
     generator.self_hash_vectors();
@@ -710,6 +711,76 @@ impl Generator {
         );
     }
 
+    // Keep full catalog payload coverage when regenerating the shared vectors.
+    fn catalog_vectors(&mut self) {
+        self.add_hash_vector(
+            "catalog-knowledge-document-program",
+            "Reviewed program annotation; source path is not part of the identity.",
+            HashKindName::KnowledgeDocument,
+            CanonicalizationProfile::AreteJcsV1,
+            VectorInput::RawBytes(r#"{"document":{"accounts":{"Miner":{"concepts":["mining"],"summary":"Miner."}},"instructions":{"deploy":{"concepts":["mining"],"summary":"Deploy."}},"name":"ore","programId":"oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv","protocol":"ore","slug":"ore","summary":"ORE v3 mining program."},"kind":"program","provenance":{"reviewed":true,"source":"manual"},"schema":"arete.knowledge-document/v1","slug":"ore"}"#.as_bytes().to_vec()),
+            json!({"encoding": "utf8", "data": r#"{"document":{"accounts":{"Miner":{"concepts":["mining"],"summary":"Miner."}},"instructions":{"deploy":{"concepts":["mining"],"summary":"Deploy."}},"name":"ore","programId":"oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv","protocol":"ore","slug":"ore","summary":"ORE v3 mining program."},"kind":"program","provenance":{"reviewed":true,"source":"manual"},"schema":"arete.knowledge-document/v1","slug":"ore"}"#}),
+            json!({"name": "arete.knowledge-document/v1"}),
+            None,
+            &[],
+        );
+        self.add_hash_vector(
+            "catalog-knowledge-snapshot-ordered",
+            "Snapshot documents are strictly ordered by source path.",
+            HashKindName::KnowledgeSnapshot,
+            CanonicalizationProfile::AreteJcsV1,
+            VectorInput::RawBytes(r#"{"documents":[{"documentHash":"arete:h1:knowledge-document:sha256:13ffed4baf54739e5749e338025953da5183f40eed7320e5095f27ce2e60f180","sourcePath":"knowledge/concepts.yaml#concepts/mining"},{"documentHash":"arete:h1:knowledge-document:sha256:50751cf6d070a085f3b318e916cee321a63efa2a5d719a4a00987214e1afd11e","sourcePath":"knowledge/programs/ore.yaml"}],"schema":"arete.knowledge-snapshot/v1"}"#.as_bytes().to_vec()),
+            json!({"encoding": "utf8", "data": r#"{"documents":[{"documentHash":"arete:h1:knowledge-document:sha256:13ffed4baf54739e5749e338025953da5183f40eed7320e5095f27ce2e60f180","sourcePath":"knowledge/concepts.yaml#concepts/mining"},{"documentHash":"arete:h1:knowledge-document:sha256:50751cf6d070a085f3b318e916cee321a63efa2a5d719a4a00987214e1afd11e","sourcePath":"knowledge/programs/ore.yaml"}],"schema":"arete.knowledge-snapshot/v1"}"#}),
+            json!({"name": "arete.knowledge-snapshot/v1"}),
+            None,
+            &[],
+        );
+        self.add_hash_vector(
+            "catalog-extension-surface-program",
+            "Surface v2 with derived operation ids and target bindings.",
+            HashKindName::ExtensionSurface,
+            CanonicalizationProfile::AreteJcsV1,
+            VectorInput::RawBytes(r#"{"entries":[{"concepts":["mining"],"doc":"","idlInstruction":"deploy","kind":"raw-instruction","mode":"build","operationId":"program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/raw-instruction/deploy","origin":"generated","path":"rawInstructions.deploy","programId":"oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv","targetBindings":{"python":"raw_instructions.deploy","react":"rawInstructions.deploy","rust":"raw_instructions.deploy","typescript":"rawInstructions.deploy"},"title":"Deploy"},{"account":"Miner","concepts":[],"doc":"Per-miner state.","kind":"account-fetch","mode":"read","operationId":"program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/account-fetch/Miner","origin":"generated","path":"accounts.Miner","programId":"oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv","targetBindings":{"typescript":"accounts.Miner"},"title":"Miner"},{"argCounts":0,"concepts":["mining"],"doc":"Reads the board.","kind":"read","mode":"read","operationId":"program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/read/read.boardState","origin":"extension","path":"read.boardState","programId":"oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv","source":{"file":"ore-devex.ts"},"targetBindings":{"typescript":"read.boardState"},"title":"Board state"},{"concepts":[],"doc":"","kind":"pda","mode":null,"operationId":"program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/pda/addresses.automation","origin":"extension","path":"addresses.automation","programId":"oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv","targetBindings":{"typescript":"addresses.automation"},"title":"Automation"}],"generator":{"name":"arete-surface-extractor","version":"0.1.0"},"input":{"hash":"arete:h1:program-spec:sha256:5555555555555555555555555555555555555555555555555555555555555555","kind":"program-spec"},"schema":"arete.extension-surface/v2","sdkTargets":["typescript","rust","python"],"subject":{"kind":"program","name":"ore","programIds":["oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"]}}"#.as_bytes().to_vec()),
+            json!({"encoding": "utf8", "data": r#"{"entries":[{"concepts":["mining"],"doc":"","idlInstruction":"deploy","kind":"raw-instruction","mode":"build","operationId":"program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/raw-instruction/deploy","origin":"generated","path":"rawInstructions.deploy","programId":"oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv","targetBindings":{"python":"raw_instructions.deploy","react":"rawInstructions.deploy","rust":"raw_instructions.deploy","typescript":"rawInstructions.deploy"},"title":"Deploy"},{"account":"Miner","concepts":[],"doc":"Per-miner state.","kind":"account-fetch","mode":"read","operationId":"program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/account-fetch/Miner","origin":"generated","path":"accounts.Miner","programId":"oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv","targetBindings":{"typescript":"accounts.Miner"},"title":"Miner"},{"argCounts":0,"concepts":["mining"],"doc":"Reads the board.","kind":"read","mode":"read","operationId":"program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/read/read.boardState","origin":"extension","path":"read.boardState","programId":"oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv","source":{"file":"ore-devex.ts"},"targetBindings":{"typescript":"read.boardState"},"title":"Board state"},{"concepts":[],"doc":"","kind":"pda","mode":null,"operationId":"program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/pda/addresses.automation","origin":"extension","path":"addresses.automation","programId":"oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv","targetBindings":{"typescript":"addresses.automation"},"title":"Automation"}],"generator":{"name":"arete-surface-extractor","version":"0.1.0"},"input":{"hash":"arete:h1:program-spec:sha256:5555555555555555555555555555555555555555555555555555555555555555","kind":"program-spec"},"schema":"arete.extension-surface/v2","sdkTargets":["typescript","rust","python"],"subject":{"kind":"program","name":"ore","programIds":["oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"]}}"#}),
+            json!({"name": "arete.extension-surface/v2"}),
+            None,
+            &[],
+        );
+        self.add_hash_vector(
+            "catalog-sdk-install-target-typescript",
+            "TypeScript install target over a ProgramSpec input.",
+            HashKindName::SdkInstallTarget,
+            CanonicalizationProfile::AreteJcsV1,
+            VectorInput::RawBytes(r#"{"extensions":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"generatorContract":"sdk-generator-v1","input":{"hash":"arete:h1:program-spec:sha256:5555555555555555555555555555555555555555555555555555555555555555","kind":"program-spec"},"schema":"arete.sdk-install-target/v1","surfaceHash":"arete:h1:extension-surface:sha256:4f4551eb8ae867495ec65d3a7049a818d778994d88fed149297d1f246d255038","target":"typescript","validationContract":"sdk-target-validation-v1"}"#.as_bytes().to_vec()),
+            json!({"encoding": "utf8", "data": r#"{"extensions":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"generatorContract":"sdk-generator-v1","input":{"hash":"arete:h1:program-spec:sha256:5555555555555555555555555555555555555555555555555555555555555555","kind":"program-spec"},"schema":"arete.sdk-install-target/v1","surfaceHash":"arete:h1:extension-surface:sha256:4f4551eb8ae867495ec65d3a7049a818d778994d88fed149297d1f246d255038","target":"typescript","validationContract":"sdk-target-validation-v1"}"#}),
+            json!({"name": "arete.sdk-install-target/v1"}),
+            None,
+            &[],
+        );
+        self.add_hash_vector(
+            "catalog-catalog-bundle-program",
+            "Program bundle with build and read capabilities.",
+            HashKindName::CatalogBundle,
+            CanonicalizationProfile::AreteJcsV1,
+            VectorInput::RawBytes(r#"{"capabilities":[{"concept":"mining","evidence":{"identity":"arete:h1:extension-surface:sha256:4f4551eb8ae867495ec65d3a7049a818d778994d88fed149297d1f246d255038#program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/raw-instruction/deploy","kind":"surface-entry"},"mode":"build","operationId":"program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/raw-instruction/deploy"},{"concept":"mining","evidence":{"identity":"arete:h1:knowledge-document:sha256:50751cf6d070a085f3b318e916cee321a63efa2a5d719a4a00987214e1afd11e#account/Miner","kind":"knowledge-annotation"},"mode":"read","operationId":"program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/account-fetch/Miner"}],"documents":[{"documentHash":"arete:h1:knowledge-document:sha256:50751cf6d070a085f3b318e916cee321a63efa2a5d719a4a00987214e1afd11e","role":"program"},{"documentHash":"arete:h1:knowledge-document:sha256:13ffed4baf54739e5749e338025953da5183f40eed7320e5095f27ce2e60f180","role":"concept"}],"kind":"program","package":{"kind":"program","packageReleaseHash":"arete:registry-package-release:v2:sha256:fb4442dfd8ad41be394794e08858d601f09150bbf0db13251a1c3f0fa67631c7","slug":"ore","version":"1.0.0"},"schema":"arete.catalog-bundle/v1","sdkTargets":["arete:h1:sdk-install-target:sha256:fbae443659fb401de1c174a208870af51ceb5d6c7100181d0f850c9034055b6d"],"surfaces":["arete:h1:extension-surface:sha256:4f4551eb8ae867495ec65d3a7049a818d778994d88fed149297d1f246d255038"]}"#.as_bytes().to_vec()),
+            json!({"encoding": "utf8", "data": r#"{"capabilities":[{"concept":"mining","evidence":{"identity":"arete:h1:extension-surface:sha256:4f4551eb8ae867495ec65d3a7049a818d778994d88fed149297d1f246d255038#program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/raw-instruction/deploy","kind":"surface-entry"},"mode":"build","operationId":"program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/raw-instruction/deploy"},{"concept":"mining","evidence":{"identity":"arete:h1:knowledge-document:sha256:50751cf6d070a085f3b318e916cee321a63efa2a5d719a4a00987214e1afd11e#account/Miner","kind":"knowledge-annotation"},"mode":"read","operationId":"program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/account-fetch/Miner"}],"documents":[{"documentHash":"arete:h1:knowledge-document:sha256:50751cf6d070a085f3b318e916cee321a63efa2a5d719a4a00987214e1afd11e","role":"program"},{"documentHash":"arete:h1:knowledge-document:sha256:13ffed4baf54739e5749e338025953da5183f40eed7320e5095f27ce2e60f180","role":"concept"}],"kind":"program","package":{"kind":"program","packageReleaseHash":"arete:registry-package-release:v2:sha256:fb4442dfd8ad41be394794e08858d601f09150bbf0db13251a1c3f0fa67631c7","slug":"ore","version":"1.0.0"},"schema":"arete.catalog-bundle/v1","sdkTargets":["arete:h1:sdk-install-target:sha256:fbae443659fb401de1c174a208870af51ceb5d6c7100181d0f850c9034055b6d"],"surfaces":["arete:h1:extension-surface:sha256:4f4551eb8ae867495ec65d3a7049a818d778994d88fed149297d1f246d255038"]}"#}),
+            json!({"name": "arete.catalog-bundle/v1"}),
+            None,
+            &[],
+        );
+        self.add_hash_vector(
+            "catalog-catalog-publication-set-stable-public",
+            "Stable public set with one program entry.",
+            HashKindName::CatalogPublicationSet,
+            CanonicalizationProfile::AreteJcsV1,
+            VectorInput::RawBytes(r#"{"channel":"stable","entries":[{"bundleHash":"arete:h1:catalog-bundle:sha256:ec4a01bec37fae584d4b8a7c5adc8237fce4bd35fe4b737423907cd4ab53adc0","kind":"program","slug":"ore"}],"knowledgeSnapshotHash":"arete:h1:knowledge-snapshot:sha256:327ebac9ed53a707cbca4d2ac7f755fbee4348863011167f2ead7585f4ad849b","schema":"arete.catalog-publication-set/v1","visibility":"public"}"#.as_bytes().to_vec()),
+            json!({"encoding": "utf8", "data": r#"{"channel":"stable","entries":[{"bundleHash":"arete:h1:catalog-bundle:sha256:ec4a01bec37fae584d4b8a7c5adc8237fce4bd35fe4b737423907cd4ab53adc0","kind":"program","slug":"ore"}],"knowledgeSnapshotHash":"arete:h1:knowledge-snapshot:sha256:327ebac9ed53a707cbca4d2ac7f755fbee4348863011167f2ead7585f4ad849b","schema":"arete.catalog-publication-set/v1","visibility":"public"}"#}),
+            json!({"name": "arete.catalog-publication-set/v1"}),
+            None,
+            &[],
+        );
+    }
+
     fn jcs_failure_vectors(&mut self) {
         for (id, description, bytes, code) in [
             (
@@ -1269,7 +1340,7 @@ impl Generator {
             "idlContentHash": baseline.idl_content_hash,
             "normalizedIdlHash": baseline.normalized_idl_hash,
             "decoderAbiVersion": "1",
-            "decoderEngineId": "arete-hosted-decoder-engine/v1",
+            "decoderEngineId": "example-decoder-engine/v1",
             "decoderBindingId": "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
         });
         self.add_release_vector(
@@ -1303,7 +1374,7 @@ impl Generator {
                 idl_content_hash: baseline.idl_content_hash,
                 normalized_idl_hash: baseline.normalized_idl_hash,
                 decoder_abi_version: "1".to_string(),
-                decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+                decoder_engine_id: "example-decoder-engine/v1".to_string(),
                 decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
                 executable_identity: upgradeable_identity,
             })
@@ -1335,7 +1406,7 @@ impl Generator {
                 idl_content_hash: baseline.idl_content_hash,
                 normalized_idl_hash: baseline.normalized_idl_hash,
                 decoder_abi_version: "1".to_string(),
-                decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+                decoder_engine_id: "example-decoder-engine/v1".to_string(),
                 decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
                 executable_identity: no_authority_identity,
             })
@@ -1365,7 +1436,7 @@ impl Generator {
                 idl_content_hash: baseline.idl_content_hash,
                 normalized_idl_hash: baseline.normalized_idl_hash,
                 decoder_abi_version: "1".to_string(),
-                decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+                decoder_engine_id: "example-decoder-engine/v1".to_string(),
                 decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
                 executable_identity: legacy_identity,
             })
@@ -1386,7 +1457,7 @@ impl Generator {
                 idl_content_hash: baseline.idl_content_hash,
                 normalized_idl_hash: baseline.normalized_idl_hash,
                 decoder_abi_version: "1".to_string(),
-                decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+                decoder_engine_id: "example-decoder-engine/v1".to_string(),
                 decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
             })
             .expect("hosted private release");
@@ -1441,7 +1512,7 @@ impl Generator {
                     idl_content_hash: hosted_private.idl_content_hash,
                     normalized_idl_hash: hosted_private.normalized_idl_hash,
                     decoder_abi_version: hosted_private.decoder_abi_version.clone(),
-                    decoder_engine_id: "arete-hosted-decoder-engine/v2".to_string(),
+                    decoder_engine_id: "example-decoder-engine/v2".to_string(),
                     decoder_binding_id: hosted_private.decoder_binding_id.clone(),
                 })
                 .expect("engine variant"),
@@ -1726,7 +1797,7 @@ impl Generator {
             schema: DECODER_FIXTURE_SCHEMA_V2.to_string(),
             program_id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
             normalized_idl_hash,
-            decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+            decoder_engine_id: "example-decoder-engine/v1".to_string(),
             decoder_abi_version: "1".to_string(),
             cases: vec![
                 DecoderFixtureCaseV2 {

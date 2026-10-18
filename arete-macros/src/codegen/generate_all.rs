@@ -2,7 +2,7 @@
 //!
 //! This module provides code generation utilities. Note: The unified
 //! `generate_all_from_spec` function is kept for reference but is currently
-//! unused since `#[ast_spec]` was moved to the closed-source ast-compiler-macros crate.
+//! unused; nothing in this crate expands `#[ast_spec]`.
 
 #![allow(dead_code)]
 

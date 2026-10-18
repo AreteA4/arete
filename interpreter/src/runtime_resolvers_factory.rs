@@ -8,8 +8,9 @@ pub type ResolverFactory =
 
 static FACTORY: OnceLock<ResolverFactory> = OnceLock::new();
 
-/// Register a custom resolver factory. Intended for closed-source backends
-/// (e.g. a remote gRPC resolver) to inject themselves before server startup.
+/// Register a custom resolver factory. Lets an embedding
+/// application (e.g. one with a remote resolver) inject its own resolvers before
+/// server startup.
 ///
 /// Only the first call takes effect; subsequent calls are ignored.
 pub fn set_resolver_factory(factory: ResolverFactory) {

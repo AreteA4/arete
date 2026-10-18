@@ -6,8 +6,6 @@
 //! command is safe to run repeatedly. The only prompt is the agent picker,
 //! shown on a TTY when `--agents` is absent (never under `-y`, `--json`
 //! still gets clean stdout because the picker lives on stderr).
-//!
-//! Spec: `docs/internal/agent-first-onboarding.md` (WP7).
 
 use std::path::{Path, PathBuf};
 

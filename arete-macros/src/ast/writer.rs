@@ -142,7 +142,7 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
         .collect();
 
     // Also include account type definitions (embedded in accounts with steel format)
-    // These are needed for the ast-compiler-macros to generate proper account struct fields
+    // These give consumers of the serialized AST the account struct fields
     for account in &idl.accounts {
         // Skip if type already exists in types (avoid duplicates)
         if types.iter().any(|t| t.name == account.name) {

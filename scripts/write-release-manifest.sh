@@ -6,7 +6,7 @@
 #
 # The manifest lets installers and `a4 self update` learn the asset names,
 # checksums and the checksum/signature file names for one release without the
-# GitHub API. Schema (docs/internal/agent-first-onboarding.md, WP1):
+# GitHub API. Schema (also represented by cli/src/selfhost/manifest.rs):
 #
 #   {
 #     "schemaVersion": 1, "name": "a4", "version": "...", "tag": "a4-cli-v...",

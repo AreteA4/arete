@@ -8,8 +8,6 @@
 //! trust root, and it carries the release public key). The swap uses the
 //! `self-replace` crate so it works while this very binary is running, on
 //! Windows too.
-//!
-//! Spec: `docs/internal/agent-first-onboarding.md` WP4, steps 1–4.
 
 use std::fs;
 use std::path::{Path, PathBuf};

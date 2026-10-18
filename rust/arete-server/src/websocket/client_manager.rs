@@ -1456,7 +1456,7 @@ impl ClientManager {
 
         if let Some(ctx) = auth_context {
             // Admit the token against previously observed account policy and
-            // count legacy tokens so Plan 030 can end compatibility.
+            // count legacy tokens so legacy compatibility can eventually be retired.
             if ctx.is_legacy_policy() {
                 let legacy_policy_token = self.account_policies.record_legacy_token();
                 debug!(legacy_policy_token, "legacy policy token admitted");
