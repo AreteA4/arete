@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "protocol-spec",
+    "hash": "arete:h1:protocol-spec:sha256:29f83127858da49a1eb9308c1986319ea71180eb1bdcd85567d52f31b6c719a0"
+  },
+  "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}",
+  "extensions": null,
+  "artifacts": [
+    "README.md",
+    "protocol-spec.json",
+    "pyproject.toml",
+    "token_raise_protocol/__init__.py",
+    "token_raise_protocol/programs/__init__.py",
+    "token_raise_protocol/programs/squads_v4/__init__.py",
+    "token_raise_protocol/programs/squads_v4/models.py",
+    "token_raise_protocol/programs/squads_v4/programs.py",
+    "token_raise_protocol/programs/squads_v4/sdk-manifest.json",
+    "token_raise_protocol/stacks/__init__.py",
+    "token_raise_protocol/stacks/meteora_presale/__init__.py",
+    "token_raise_protocol/stacks/meteora_presale/models.py",
+    "token_raise_protocol/stacks/meteora_presale/programs.py",
+    "token_raise_protocol/stacks/meteora_presale/sdk-manifest.json",
+    "token_raise_protocol/stacks/meteora_presale/views.py",
+    "token_raise_protocol/stacks/mirror/__init__.py",
+    "token_raise_protocol/stacks/mirror/models.py",
+    "token_raise_protocol/stacks/mirror/programs.py",
+    "token_raise_protocol/stacks/mirror/sdk-manifest.json",
+    "token_raise_protocol/stacks/mirror/views.py"
+  ]
+}

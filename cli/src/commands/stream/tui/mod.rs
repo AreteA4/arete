@@ -1,10 +1,14 @@
 mod app;
+mod nav;
+mod tabs;
 mod ui;
+
+pub use nav::browse;
 
 use anyhow::Result;
 use arete_sdk::{Frame, ServerMessage};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -15,7 +19,11 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 
 use self::app::{App, TuiAction, ViewMode};
-use super::session::{Notice, SessionHandler, StreamEnd, StreamFailure, StreamSession};
+use self::tabs::{TabFeed, Tabs};
+use super::client::Feed;
+use super::session::{
+    redeploy_marker, Notice, Retarget, SessionHandler, StreamEnd, StreamFailure, StreamSession,
+};
 use super::token;
 use super::StreamArgs;
 
@@ -25,13 +33,41 @@ pub async fn run_tui(
     view: &str,
     args: &StreamArgs,
 ) -> Result<()> {
+    let feeds = vec![Feed::new(view, None)];
+    run_tui_feeds(url, refresh, None, feeds, args).await
+}
+
+/// The TUI over `feeds`, one subscription each on one connection: with
+/// several, one tab per view and an "All" tab. `follow` reports redeploys
+/// to move to.
+pub async fn run_tui_feeds(
+    url: String,
+    refresh: Option<token::SessionRefresh>,
+    follow: Option<mpsc::Receiver<Retarget>>,
+    feeds: Vec<Feed>,
+    args: &StreamArgs,
+) -> Result<()> {
     // Connect and subscribe
-    let mut session = StreamSession::new(
+    let subscriptions: Vec<_> = feeds
+        .iter()
+        .map(|feed| crate::commands::stream::build_feed_subscription(feed, args))
+        .collect();
+    let tab_feeds: Vec<TabFeed> = feeds
+        .iter()
+        .zip(&subscriptions)
+        .map(|(feed, subscription)| TabFeed {
+            subscription_id: subscription.subscription_id.clone(),
+            view: feed.view.clone(),
+            label: feed.label(),
+        })
+        .collect();
+    let mut session = StreamSession::with_subscriptions(
         url,
         refresh,
-        crate::commands::stream::build_subscription(view, args),
+        subscriptions,
         crate::commands::stream::reconnect_policy(args),
-    )?;
+    )?
+    .follow(follow);
     let socket = session.connect().await?;
     let display_url = session.display_url();
 
@@ -104,14 +140,18 @@ pub async fn run_tui(
         }
     };
 
-    let mut app = App::new(view.to_string(), display_url, Arc::clone(&dropped_frames))
-        .with_snapshots(!args.no_snapshot);
+    let mut tabs = Tabs::new(
+        tab_feeds,
+        &display_url,
+        Arc::clone(&dropped_frames),
+        !args.no_snapshot,
+    );
 
     // Main loop: poll terminal events + receive frames
     let tick_rate = std::time::Duration::from_millis(50);
     let result = run_loop(
         &mut terminal,
-        &mut app,
+        &mut tabs,
         &mut frame_rx,
         &mut notice_rx,
         &failure,
@@ -166,6 +206,8 @@ enum SocketNotice {
     Reconnecting(String),
     /// A new connection replaced the dropped one.
     Reconnected,
+    /// The stack was redeployed; the marker line.
+    Redeployed(String),
 }
 
 impl SessionHandler for SocketOutputs {
@@ -191,6 +233,7 @@ impl SessionHandler for SocketOutputs {
             Notice::Reconnecting(reconnecting) => {
                 SocketNotice::Reconnecting(reconnecting.to_string())
             }
+            Notice::Redeployed { from, to } => SocketNotice::Redeployed(redeploy_marker(from, to)),
         };
         let _ = self.notices.send(notice);
     }
@@ -202,34 +245,177 @@ impl SessionHandler for SocketOutputs {
     }
 }
 
+/// What a key does to a stream view: `None` when the key only changed
+/// pending input (a count, `g`) or does nothing.
+pub(super) fn app_key_action(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
+    let action = if app.filter_input_active {
+        match key.code {
+            KeyCode::Esc => TuiAction::BackToList,
+            KeyCode::Enter => TuiAction::BackToList,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => TuiAction::Quit,
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                TuiAction::FilterClear
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                TuiAction::FilterDeleteWord
+            }
+            // Ignore other control/alt combos — don't insert them as text
+            KeyCode::Char(_)
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                return None
+            }
+            KeyCode::Char(c) => TuiAction::FilterChar(c),
+            KeyCode::Backspace => TuiAction::FilterBackspace,
+            _ => return None,
+        }
+    } else {
+        // Number prefix accumulation (vim count)
+        if let KeyCode::Char(c @ '0'..='9') = key.code {
+            // Don't treat '0' as count start (could be "go to beginning" in future)
+            if c != '0' || app.pending_count.is_some() {
+                let digit = c as usize - '0' as usize;
+                let current = app.pending_count.unwrap_or(0);
+                app.pending_count =
+                    Some((current.saturating_mul(10).saturating_add(digit)).min(99_999));
+                app.pending_g = false;
+                return None;
+            }
+        }
+
+        match key.code {
+            KeyCode::Char('q') => TuiAction::Quit,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => TuiAction::Quit,
+            // In Detail mode: j/k scroll the JSON pane; arrows still navigate entities
+            KeyCode::Char('j') => {
+                if app.view_mode == ViewMode::Detail {
+                    TuiAction::ScrollDetailDown
+                } else {
+                    TuiAction::NextEntity
+                }
+            }
+            KeyCode::Char('k') => {
+                if app.view_mode == ViewMode::Detail {
+                    TuiAction::ScrollDetailUp
+                } else {
+                    TuiAction::PrevEntity
+                }
+            }
+            KeyCode::Down => TuiAction::NextEntity,
+            KeyCode::Up => TuiAction::PrevEntity,
+            KeyCode::Char('G') => {
+                if app.view_mode == ViewMode::Detail {
+                    TuiAction::ScrollDetailBottom
+                } else {
+                    TuiAction::GotoBottom
+                }
+            }
+            KeyCode::Char('g') => {
+                if app.pending_g {
+                    // gg = go to top (of list or detail pane)
+                    if app.view_mode == ViewMode::Detail {
+                        TuiAction::ScrollDetailTop
+                    } else {
+                        TuiAction::GotoTop
+                    }
+                } else {
+                    app.pending_g = true;
+                    app.pending_count = None;
+                    return None;
+                }
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if app.view_mode == ViewMode::Detail {
+                    TuiAction::ScrollDetailHalfDown
+                } else {
+                    TuiAction::HalfPageDown
+                }
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if app.view_mode == ViewMode::Detail {
+                    TuiAction::ScrollDetailHalfUp
+                } else {
+                    TuiAction::HalfPageUp
+                }
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                TuiAction::ScrollDetailDown
+            }
+            KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                TuiAction::ScrollDetailUp
+            }
+            KeyCode::PageDown => TuiAction::ScrollDetailDown,
+            KeyCode::PageUp => TuiAction::ScrollDetailUp,
+            KeyCode::Char('n') => TuiAction::NextMatch,
+            KeyCode::Enter => TuiAction::FocusDetail,
+            KeyCode::Esc => {
+                app.pending_count = None;
+                app.pending_g = false;
+                TuiAction::BackToList
+            }
+            KeyCode::Right | KeyCode::Char('l') => TuiAction::HistoryForward,
+            KeyCode::Left | KeyCode::Char('h') => {
+                if app.pending_g {
+                    app.pending_g = false;
+                    return None;
+                }
+                TuiAction::HistoryBack
+            }
+            KeyCode::Home => TuiAction::HistoryOldest,
+            KeyCode::End => TuiAction::HistoryNewest,
+            KeyCode::Char('d') => TuiAction::ToggleDiff,
+            KeyCode::Char('r') => TuiAction::ToggleRaw,
+            KeyCode::Char('p') => TuiAction::TogglePause,
+            KeyCode::Char('/') => TuiAction::StartFilter,
+            KeyCode::Char('s') => TuiAction::CycleSortMode,
+            KeyCode::Char('o') => TuiAction::ToggleSortDirection,
+            KeyCode::Char('S') => TuiAction::SaveSnapshot,
+            _ => {
+                app.pending_count = None;
+                app.pending_g = false;
+                return None;
+            }
+        }
+    };
+    Some(action)
+}
+
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut App,
+    tabs: &mut Tabs,
     frame_rx: &mut mpsc::Receiver<(u64, Frame)>,
     notice_rx: &mut mpsc::UnboundedReceiver<SocketNotice>,
     failure: &OnceLock<StreamFailure>,
     tick_rate: std::time::Duration,
 ) -> Result<()> {
     loop {
-        // Update visible rows from terminal size (minus header/timeline/status/borders)
+        // Update visible rows from terminal size (minus header/timeline/status/borders,
+        // and the tab bar when there is one)
         let term_size = terminal.size()?;
+        let tab_bar = u16::from(tabs.len() > 1);
         // 3 fixed rows (header + timeline + status) + 2 border rows = 5
-        app.visible_rows = term_size.height.saturating_sub(5) as usize;
-        app.terminal_width = term_size.width;
+        for app in tabs.apps() {
+            app.visible_rows = term_size.height.saturating_sub(5 + tab_bar) as usize;
+            app.terminal_width = term_size.width;
+        }
 
-        terminal.draw(|f| ui::draw(f, app))?;
+        terminal.draw(|f| ui::draw_tabs(f, tabs))?;
 
         // Drain available frames (non-blocking). When paused, leave
         // frames in the channel so they're applied on resume.
-        if !app.paused {
+        if !tabs.current().paused {
             loop {
                 match frame_rx.try_recv() {
-                    Ok((connection, frame)) => app.apply_connection_frame(connection, frame),
+                    Ok((connection, frame)) => tabs.apply(connection, frame),
                     Err(mpsc::error::TryRecvError::Disconnected) => {
                         // The socket task records a failure before it exits
                         // and drops the frame sender.
                         let status = failure.get().map(StreamFailure::status);
-                        app.set_disconnected(status.as_deref());
+                        for app in tabs.apps() {
+                            app.set_disconnected(status.as_deref());
+                        }
                         break;
                     }
                     Err(mpsc::error::TryRecvError::Empty) => break,
@@ -237,152 +423,41 @@ async fn run_loop(
             }
         }
         while let Ok(notice) = notice_rx.try_recv() {
-            match notice {
-                SocketNotice::Status(message) => app.set_status(&message),
-                SocketNotice::Reconnecting(message) => app.set_reconnecting(&message),
-                SocketNotice::Reconnected => app.set_reconnected(),
+            for app in tabs.apps() {
+                match &notice {
+                    SocketNotice::Status(message) | SocketNotice::Redeployed(message) => {
+                        app.set_status(message)
+                    }
+                    SocketNotice::Reconnecting(message) => app.set_reconnecting(message),
+                    SocketNotice::Reconnected => app.set_reconnected(),
+                }
             }
         }
 
         // Poll for terminal events with timeout
         if event::poll(tick_rate)? {
             if let Event::Key(key) = event::read()? {
-                // When filter input is active, capture all keys for typing
-                let action = if app.filter_input_active {
+                // Tabs: Tab/Shift-Tab cycle, 1-9 jump (counts are off with tabs)
+                if tabs.len() > 1 && !tabs.current().filter_input_active {
                     match key.code {
-                        KeyCode::Esc => TuiAction::BackToList,
-                        KeyCode::Enter => TuiAction::BackToList,
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            TuiAction::Quit
-                        }
-                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            TuiAction::FilterClear
-                        }
-                        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            TuiAction::FilterDeleteWord
-                        }
-                        // Ignore other control/alt combos — don't insert them as text
-                        KeyCode::Char(_)
-                            if key
-                                .modifiers
-                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                        {
-                            continue
-                        }
-                        KeyCode::Char(c) => TuiAction::FilterChar(c),
-                        KeyCode::Backspace => TuiAction::FilterBackspace,
-                        _ => continue,
-                    }
-                } else {
-                    // Number prefix accumulation (vim count)
-                    if let KeyCode::Char(c @ '0'..='9') = key.code {
-                        // Don't treat '0' as count start (could be "go to beginning" in future)
-                        if c != '0' || app.pending_count.is_some() {
-                            let digit = c as usize - '0' as usize;
-                            let current = app.pending_count.unwrap_or(0);
-                            app.pending_count = Some(
-                                (current.saturating_mul(10).saturating_add(digit)).min(99_999),
-                            );
-                            app.pending_g = false;
+                        KeyCode::Tab => {
+                            tabs.next();
                             continue;
                         }
-                    }
-
-                    match key.code {
-                        KeyCode::Char('q') => TuiAction::Quit,
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            TuiAction::Quit
-                        }
-                        // In Detail mode: j/k scroll the JSON pane; arrows still navigate entities
-                        KeyCode::Char('j') => {
-                            if app.view_mode == ViewMode::Detail {
-                                TuiAction::ScrollDetailDown
-                            } else {
-                                TuiAction::NextEntity
-                            }
-                        }
-                        KeyCode::Char('k') => {
-                            if app.view_mode == ViewMode::Detail {
-                                TuiAction::ScrollDetailUp
-                            } else {
-                                TuiAction::PrevEntity
-                            }
-                        }
-                        KeyCode::Down => TuiAction::NextEntity,
-                        KeyCode::Up => TuiAction::PrevEntity,
-                        KeyCode::Char('G') => {
-                            if app.view_mode == ViewMode::Detail {
-                                TuiAction::ScrollDetailBottom
-                            } else {
-                                TuiAction::GotoBottom
-                            }
-                        }
-                        KeyCode::Char('g') => {
-                            if app.pending_g {
-                                // gg = go to top (of list or detail pane)
-                                if app.view_mode == ViewMode::Detail {
-                                    TuiAction::ScrollDetailTop
-                                } else {
-                                    TuiAction::GotoTop
-                                }
-                            } else {
-                                app.pending_g = true;
-                                app.pending_count = None;
-                                continue;
-                            }
-                        }
-                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            if app.view_mode == ViewMode::Detail {
-                                TuiAction::ScrollDetailHalfDown
-                            } else {
-                                TuiAction::HalfPageDown
-                            }
-                        }
-                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            if app.view_mode == ViewMode::Detail {
-                                TuiAction::ScrollDetailHalfUp
-                            } else {
-                                TuiAction::HalfPageUp
-                            }
-                        }
-                        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            TuiAction::ScrollDetailDown
-                        }
-                        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            TuiAction::ScrollDetailUp
-                        }
-                        KeyCode::PageDown => TuiAction::ScrollDetailDown,
-                        KeyCode::PageUp => TuiAction::ScrollDetailUp,
-                        KeyCode::Char('n') => TuiAction::NextMatch,
-                        KeyCode::Enter => TuiAction::FocusDetail,
-                        KeyCode::Esc => {
-                            app.pending_count = None;
-                            app.pending_g = false;
-                            TuiAction::BackToList
-                        }
-                        KeyCode::Right | KeyCode::Char('l') => TuiAction::HistoryForward,
-                        KeyCode::Left | KeyCode::Char('h') => {
-                            if app.pending_g {
-                                app.pending_g = false;
-                                continue;
-                            }
-                            TuiAction::HistoryBack
-                        }
-                        KeyCode::Home => TuiAction::HistoryOldest,
-                        KeyCode::End => TuiAction::HistoryNewest,
-                        KeyCode::Char('d') => TuiAction::ToggleDiff,
-                        KeyCode::Char('r') => TuiAction::ToggleRaw,
-                        KeyCode::Char('p') => TuiAction::TogglePause,
-                        KeyCode::Char('/') => TuiAction::StartFilter,
-                        KeyCode::Char('s') => TuiAction::CycleSortMode,
-                        KeyCode::Char('o') => TuiAction::ToggleSortDirection,
-                        KeyCode::Char('S') => TuiAction::SaveSnapshot,
-                        _ => {
-                            app.pending_count = None;
-                            app.pending_g = false;
+                        KeyCode::BackTab => {
+                            tabs.prev();
                             continue;
                         }
+                        KeyCode::Char(c @ '1'..='9') => {
+                            tabs.select(c as usize - '1' as usize);
+                            continue;
+                        }
+                        _ => {}
                     }
+                }
+                let app = tabs.current();
+                let Some(action) = app_key_action(app, key) else {
+                    continue;
                 };
 
                 if let TuiAction::Quit = action {

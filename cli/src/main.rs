@@ -18,6 +18,7 @@
 //! - `a4 init` - Set up a project for Arete and every detected coding agent
 //! - `a4 doctor` - Check the install, project and agent configuration
 //! - `a4 mcp` - Run the Arete MCP server over stdio
+//! - `a4 dev up` - Run a protocol locally against a Surfpool fork
 //! - `a4 up [stack]` - Deploy a stack (push + build + deploy)
 //! - `a4 stack list` - List all stacks
 //! - `a4 stack show` - Show stack details
@@ -38,6 +39,7 @@ mod arete_home;
 mod commands;
 mod config;
 mod project;
+mod registry_signatures;
 mod selfhost;
 mod telemetry;
 mod templates;
@@ -124,6 +126,10 @@ enum Commands {
     /// Run the Arete stream MCP server over stdio
     Mcp(commands::mcp::McpArgs),
 
+    /// Run a protocol locally against a Surfpool fork and drive it (`a4 dev up`)
+    #[command(subcommand)]
+    Dev(commands::dev::DevCommands),
+
     /// Deploy a stack: push, build, and watch until completion
     Up {
         /// An [authoring.stacks] name, an installed stack's alias, or a
@@ -154,9 +160,9 @@ enum Commands {
     /// Show overview of stacks, builds, and deployments
     Status,
 
-    /// Discover installable stacks and programs through the catalog and pinned descriptors
+    /// Discover installable stacks, programs and protocols through the catalog and pinned descriptors
     Explore {
-        /// `catalog`, `stacks`, `stack`, `program`, `programs`, or a legacy stack reference
+        /// `catalog`, `stacks`, `stack`, `program`, `programs`, `protocol`, or a legacy stack reference
         target: Option<String>,
 
         /// Resource reference, `catalog <kind>`, or an entity for legacy `explore <stack> <entity>`
@@ -268,10 +274,10 @@ enum Commands {
 
     /// Resolve and install dependencies from arete.toml, or add one package
     Install {
-        /// Package kind (`stack` or `program`), or legacy stack shorthand
+        /// Package kind (`stack`, `program` or `protocol`), or legacy stack shorthand
         target: Option<String>,
 
-        /// Program install identifier when using `a4 install program <program>`
+        /// Package to install with `a4 install <stack|program|protocol> <package>`
         install_name: Option<String>,
 
         #[command(flatten)]
@@ -301,9 +307,17 @@ enum Commands {
         #[arg(long)]
         extensions: Option<String>,
 
-        /// Require an existing fresh arete.lock and never change resolution
+        /// Require an existing fresh arete.lock and never change resolution;
+        /// restores published protocol clients that `a4 dev` regenerated
+        /// from a local build
         #[arg(long, conflicts_with = "no_save")]
         locked: bool,
+
+        /// Change nothing; fail unless arete.lock is fresh and every
+        /// generated protocol client is the published release it pins (none
+        /// generated from a local build by `a4 dev`). The CI check
+        #[arg(long, conflicts_with_all = ["no_save", "locked", "dry_run"])]
+        check: bool,
 
         /// Validate and print the complete install graph without writing
         #[arg(long)]
@@ -318,12 +332,17 @@ enum Commands {
         no_save: bool,
 
         /// Local dependency alias to write into arete.toml
-        #[arg(long)]
+        #[arg(long, visible_alias = "as")]
         alias: Option<String>,
 
         /// Save a bare package add as an exact requirement
         #[arg(long)]
         exact: bool,
+
+        /// With `a4 install program <path-to-idl.json>`: the program address,
+        /// when the IDL does not carry one
+        #[arg(long)]
+        program_id: Option<String>,
 
         /// When TypeScript output has no package.json, make it a Node
         /// TypeScript project with npm: create an ES module package.json and a
@@ -336,7 +355,7 @@ enum Commands {
 
     /// Advance registry dependencies within their manifest requirements
     Update {
-        /// Optional dependency kind (stack or program)
+        /// Optional dependency kind (stack, program or protocol)
         kind: Option<String>,
 
         /// Optional dependency alias (requires a kind)
@@ -349,7 +368,7 @@ enum Commands {
 
     /// Remove one project dependency and its provenance-owned SDK outputs
     Remove {
-        /// Dependency kind (`stack` or `program`)
+        /// Dependency kind (`stack`, `program` or `protocol`)
         kind: String,
 
         /// Local dependency alias from arete.toml
@@ -376,6 +395,13 @@ enum Commands {
     #[command(subcommand)]
     Auth(AuthCommands),
 
+    /// Log in with your API key (same as `a4 auth login`); accounts are free
+    Login {
+        /// API key (prompts if not provided; required when not interactive)
+        #[arg(short, long)]
+        key: Option<String>,
+    },
+
     /// Stack management commands - manage your deployed stacks
     #[command(subcommand)]
     Stack(StackCommands),
@@ -383,6 +409,11 @@ enum Commands {
     /// Build and validate portable program artifacts
     #[command(subcommand)]
     Program(ProgramCommands),
+
+    /// Deploy self-serve protocols built with `arete-protocol build`, and
+    /// find and list protocols hosted on Arete
+    #[command(subcommand)]
+    Protocol(commands::protocol::ProtocolCommands),
 
     /// Build commands (advanced) - low-level build management
     #[command(subcommand, hide = true)]
@@ -1005,6 +1036,9 @@ fn main() {
     }
 
     let cmd_name = cli.command.as_ref().map(command_name).unwrap_or("help");
+    if writes_for_pipelines(cmd_name) {
+        restore_default_sigpipe();
+    }
     let json = cli.json;
     project::installer::set_json_output(json);
 
@@ -1099,6 +1133,32 @@ fn main() {
     }
 }
 
+/// Commands whose output is made for pipelines (`a4 dev instance <id> --json
+/// | jq`, `a4 stream ... | head`). When the reader exits early they end
+/// quietly, as other Unix tools do, instead of panicking in `println!` with
+/// "failed printing to stdout: Broken pipe".
+fn writes_for_pipelines(cmd_name: &str) -> bool {
+    matches!(cmd_name, "stream" | "get" | "dev")
+}
+
+/// Rust starts programs with SIGPIPE ignored, so a write to a closed pipe
+/// fails with EPIPE and `println!` panics. Restoring the default action ends
+/// the process on that write instead, without output. Children are
+/// unaffected (`std::process::Command` already resets SIGPIPE for them), and
+/// sockets never raise it (the standard library and tokio suppress it per
+/// socket).
+#[cfg(unix)]
+fn restore_default_sigpipe() {
+    // SAFETY: called once on the main thread at startup, before the command
+    // runs; `signal` with `SIG_DFL` installs no handler code.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_default_sigpipe() {}
+
 fn command_name(cmd: &Commands) -> &'static str {
     match cmd {
         Commands::Create { .. } => "create",
@@ -1107,6 +1167,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::SelfCmd(_) => "self",
         Commands::Upgrade(_) => "upgrade",
         Commands::Mcp(_) => "mcp",
+        Commands::Dev(_) => "dev",
         Commands::Up { .. } => "up",
         Commands::Status => "status",
         Commands::Explore { .. } => "explore",
@@ -1117,8 +1178,10 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Sdk(_) => "sdk",
         Commands::Config(_) => "config",
         Commands::Auth(_) => "auth",
+        Commands::Login { .. } => "login",
         Commands::Stack(_) => "stack",
         Commands::Program(_) => "program",
+        Commands::Protocol(_) => "protocol",
         Commands::Build(_) => "build",
         Commands::Telemetry(_) => "telemetry",
         Commands::Idl(_) => "idl",
@@ -1131,9 +1194,47 @@ fn parse_dependency_kind(value: &str) -> anyhow::Result<project::manifest::Depen
     match value {
         "stack" => Ok(project::manifest::DependencyKind::Stack),
         "program" => Ok(project::manifest::DependencyKind::Program),
+        "protocol" => Ok(project::manifest::DependencyKind::Protocol),
         other => Err(anyhow::anyhow!(
-            "Unknown dependency kind '{other}'; expected 'stack' or 'program'"
+            "Unknown dependency kind '{other}'; expected 'stack', 'program' or 'protocol'"
         )),
+    }
+}
+
+/// `a4 install --check`: fail when a generated protocol client is not the
+/// published release arete.lock pins.
+fn check_install(manifest: impl AsRef<std::path::Path>, json: bool) -> anyhow::Result<()> {
+    let problems = project::installer::check_project(manifest)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": problems.is_empty(),
+                "problems": problems,
+            }))?
+        );
+    } else if problems.is_empty() {
+        println!(
+            "{} arete.lock is fresh and every protocol client is a published release",
+            "ok".green()
+        );
+    } else {
+        for problem in &problems {
+            eprintln!(
+                "{} {}: {}",
+                "error:".red().bold(),
+                problem.alias,
+                problem.problem
+            );
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "a4 install --check failed: {} problem(s)",
+            problems.len()
+        ))
     }
 }
 
@@ -1163,6 +1264,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::SelfCmd(self_cmd) => selfhost::run(self_cmd, cli.json),
         Commands::Upgrade(args) => selfhost::run(selfhost::SelfCommands::Update(args), cli.json),
         Commands::Mcp(args) => commands::mcp::run(args),
+        Commands::Dev(command) => commands::dev::run(command, cli.json),
         Commands::Up {
             stack_name,
             branch,
@@ -1217,11 +1319,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             // `a4 explore stack <ref> [entity]`, or legacy `a4 explore <stack> [entity]`.
             let stack_form = match target.as_deref() {
                 Some("stack") => reference.is_some(),
-                Some("catalog" | "programs" | "program") | None => false,
+                Some("catalog" | "programs" | "program" | "protocol") | None => false,
                 Some(_) => true,
             };
             let program_form =
                 target.as_deref() == Some("program") && reference.is_some();
+            let protocol_form =
+                target.as_deref() == Some("protocol") && reference.is_some();
             if !sections.is_empty() && !program_form {
                 return Err(anyhow::anyhow!(
                     "--section applies only to `a4 explore program <ref>`"
@@ -1250,7 +1354,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let stack_detail = summary || full || !views.is_empty() || operation.is_some();
             let entity_form = match target.as_deref() {
                 Some("stack") => entity.is_some(),
-                Some("catalog" | "programs" | "program") | None => false,
+                Some("catalog" | "programs" | "program" | "protocol") | None => false,
                 Some(_) => reference.is_some(),
             };
             if stack_detail && entity_form {
@@ -1303,9 +1407,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 ));
             }
             // `a4 explore catalog <kind> <slug>` is already complete, so --full is a no-op there.
-            if full && !(catalog_target || is_program_list || stack_form || program_form) {
+            if full
+                && !(catalog_target || is_program_list || stack_form || program_form || protocol_form)
+            {
                 return Err(anyhow::anyhow!(
-                    "--full applies only to `a4 explore catalog`, `a4 explore programs`, `a4 explore stack <ref>` and `a4 explore program <ref>`"
+                    "--full applies only to `a4 explore catalog`, `a4 explore programs`, `a4 explore stack <ref>`, `a4 explore program <ref>` and `a4 explore protocol <ref>`"
                 ));
             }
             let list_shape = commands::explore::catalog_list_shape(&fields, full);
@@ -1363,6 +1469,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 },
                 cli.json,
             ),
+            (Some("protocol"), Some(reference), None) => {
+                commands::explore::show_protocol(reference, full, cli.json)
+            }
+            (Some("protocol"), None, None) => Err(anyhow::anyhow!(
+                "Protocol reference required. Usage: a4 explore protocol <ref>"
+            )),
             (Some("program"), None, None) => Err(anyhow::anyhow!(
                 "Program reference required. Usage: a4 explore program <ref>"
             )),
@@ -1417,11 +1529,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             url,
             extensions,
             locked,
+            check,
             dry_run,
             allow_outside_project,
             no_save,
             alias,
             exact,
+            program_id,
             setup,
         } => match target.as_deref() {
             None
@@ -1435,12 +1549,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     || extensions.is_some()
                     || no_save
                     || alias.is_some()
-                    || exact =>
+                    || exact
+                    || program_id.is_some() =>
             {
                 Err(anyhow::anyhow!(
                     "Package and generation flags require a package add; plain a4 install reads arete.toml"
                 ))
             }
+            None if check => check_install(&cli.config, cli.json),
             None => project::installer::install_project(
                 &cli.config,
                 project::installer::InstallOptions {
@@ -1449,12 +1565,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     dry_run,
                     update: None,
                     setup,
+                    quiet: false,
                 },
             ),
             Some(target) => {
-                if locked || dry_run {
+                if locked || dry_run || check {
                     Err(anyhow::anyhow!(
-                        "--locked and --dry-run apply to project-level a4 install"
+                        "--locked, --check and --dry-run apply to project-level a4 install"
                     ))
                 } else {
                     let (kind, package) = match (target, install_name) {
@@ -1464,9 +1581,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         ("program", Some(package)) => {
                             (project::manifest::DependencyKind::Program, package)
                         }
-                        ("program", None) | ("stack", None) => {
+                        ("protocol", Some(package)) => {
+                            (project::manifest::DependencyKind::Protocol, package)
+                        }
+                        ("program", None) | ("stack", None) | ("protocol", None) => {
                             return Err(anyhow::anyhow!(
-                                "Package required. Usage: a4 install <stack|program> <package>[@<requirement>]"
+                                "Package required. Usage: a4 install <stack|program|protocol> <package>[@<requirement>]"
                             ));
                         }
                         (stack, None) => (
@@ -1475,15 +1595,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         ),
                         (_, Some(_)) => {
                             return Err(anyhow::anyhow!(
-                                "Package kind must be 'stack' or 'program'"
+                                "Package kind must be 'stack', 'program' or 'protocol'"
                             ));
                         }
                     };
                     let selected_target = sdk_target.target();
                     if no_save {
-                        if exact || allow_outside_project {
+                        if exact || allow_outside_project || program_id.is_some() {
                             return Err(anyhow::anyhow!(
-                                "--exact and --allow-outside-project require a saved project dependency"
+                                "--exact, --allow-outside-project and --program-id require a saved project dependency"
                             ));
                         }
                         if url.is_some() || extensions.is_some() {
@@ -1522,6 +1642,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 module,
                                 allow_outside_project,
                                 setup,
+                                program_id,
+                                quiet: false,
                             },
                         )
                     }
@@ -1603,13 +1725,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     .kind
                     .as_deref()
                     .map(|kind| {
-                        parse_dependency_kind(kind).map(|kind| match kind {
+                        parse_dependency_kind(kind).and_then(|kind| match kind {
                             project::manifest::DependencyKind::Stack => {
-                                arete_mcp::sdk_reference::SdkKind::Stack
+                                Ok(arete_mcp::sdk_reference::SdkKind::Stack)
                             }
                             project::manifest::DependencyKind::Program => {
-                                arete_mcp::sdk_reference::SdkKind::Program
+                                Ok(arete_mcp::sdk_reference::SdkKind::Program)
                             }
+                            project::manifest::DependencyKind::Protocol => Err(anyhow::anyhow!(
+                                "a4 sdk describe covers stacks and programs; a protocol's README.md and `a4 explore protocol <ref>` describe it"
+                            )),
                         })
                     })
                     .transpose()?;
@@ -1634,6 +1759,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Config(config_cmd) => match config_cmd {
             ConfigCommands::Validate => commands::config::validate(&cli.config),
         },
+        Commands::Login { key } => commands::auth::login(key, cli.profile.as_deref()),
         Commands::Auth(auth_cmd) => match auth_cmd {
             AuthCommands::Login { key } => commands::auth::login(key, cli.profile.as_deref()),
             AuthCommands::Signup {
@@ -1748,6 +1874,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 make_idl_public,
             } => commands::programs::promote(&user_program_id, make_idl_public, cli.json),
         },
+        Commands::Protocol(command) => commands::protocol::run(command, cli.json),
         Commands::Build(build_cmd) => match build_cmd {
             BuildCommands::List { limit, status } => {
                 commands::build::list(limit, status.as_deref(), cli.json)
@@ -1759,7 +1886,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             } => commands::build::status(build_id, watch, json || cli.json),
         },
         Commands::Idl(args) => commands::idl::run(args),
-        Commands::Stream(args) => commands::stream::run(args, &cli.config),
+        Commands::Stream(args) => commands::stream::run(args, &cli.config, cli.json),
         Commands::Get(args) => commands::stream::run_get(args),
         Commands::Telemetry(telemetry_cmd) => match telemetry_cmd {
             TelemetryCommands::Status => commands::telemetry::status(),
@@ -1822,6 +1949,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_protocol_actions() {
+        let cli = Cli::try_parse_from([
+            "a4",
+            "protocol",
+            "actions",
+            "token-raise",
+            "--wallet",
+            "W",
+            "--instance",
+            "i-1",
+            "--json",
+        ])
+        .expect("protocol actions parses");
+        assert!(cli.json);
+        match cli.command {
+            Some(Commands::Protocol(commands::protocol::ProtocolCommands::Actions(args))) => {
+                assert_eq!(args.target.as_deref(), Some("token-raise"));
+                assert_eq!(args.wallet, "W");
+                assert_eq!(args.instance.as_deref(), Some("i-1"));
+                assert!(!args.dev);
+            }
+            _ => panic!("expected protocol actions"),
+        }
+        let cli =
+            Cli::try_parse_from(["a4", "protocol", "actions", "--dev", "--wallet", "default"])
+                .expect("--dev needs no target");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Protocol(commands::protocol::ProtocolCommands::Actions(ref args))) if args.dev
+        ));
+        assert!(Cli::try_parse_from(["a4", "protocol", "actions", "token-raise"]).is_err());
+    }
+
+    #[test]
     fn parse_install_stack_shorthand() {
         let cli = Cli::try_parse_from(["a4", "install", "ore"]).expect("cli should parse");
 
@@ -1836,6 +1997,16 @@ mod tests {
             }
             _ => panic!("expected install command"),
         }
+    }
+
+    #[test]
+    fn parse_install_check() {
+        let cli = Cli::try_parse_from(["a4", "install", "--check"]).expect("--check parses");
+        match cli.command {
+            Some(Commands::Install { check, locked, .. }) => assert!(check && !locked),
+            _ => panic!("expected install command"),
+        }
+        assert!(Cli::try_parse_from(["a4", "install", "--check", "--locked"]).is_err());
     }
 
     #[test]
@@ -2061,6 +2232,58 @@ mod tests {
             }
             _ => panic!("expected program events command"),
         }
+    }
+
+    #[test]
+    fn parse_protocol_deploy() {
+        let cli = Cli::try_parse_from([
+            "a4",
+            "protocol",
+            "deploy",
+            "my-protocol",
+            "--dry-run",
+            "--slug",
+            "my-slug",
+            "--resource",
+            "limits=limits.json",
+            "--resource",
+            "defaults=defaults.json",
+            "--no-activate",
+            "--json",
+        ])
+        .expect("protocol deploy should parse");
+        assert!(cli.json);
+        match cli.command {
+            Some(Commands::Protocol(commands::protocol::ProtocolCommands::Deploy(args))) => {
+                assert_eq!(args.dir, std::path::PathBuf::from("my-protocol"));
+                // Deploy builds by default.
+                assert!(args.dry_run && args.no_activate && !args.no_build);
+                assert_eq!(args.slug.as_deref(), Some("my-slug"));
+                assert_eq!(args.resources.len(), 2);
+            }
+            _ => panic!("expected protocol deploy"),
+        }
+
+        let cli = Cli::try_parse_from(["a4", "protocol", "deploy"]).expect("defaults parse");
+        match cli.command {
+            Some(Commands::Protocol(commands::protocol::ProtocolCommands::Deploy(args))) => {
+                assert_eq!(args.dir, std::path::PathBuf::from("."));
+            }
+            _ => panic!("expected protocol deploy"),
+        }
+
+        let cli = Cli::try_parse_from(["a4", "protocol", "deploy", "--no-build"])
+            .expect("--no-build parses");
+        match cli.command {
+            Some(Commands::Protocol(commands::protocol::ProtocolCommands::Deploy(args))) => {
+                assert!(args.no_build);
+            }
+            _ => panic!("expected protocol deploy"),
+        }
+        assert!(
+            Cli::try_parse_from(["a4", "protocol", "deploy", "--build"]).is_err(),
+            "--build is gone: deploy builds by default"
+        );
     }
 
     #[test]

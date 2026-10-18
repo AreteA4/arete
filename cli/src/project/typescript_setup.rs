@@ -342,6 +342,137 @@ fn run_npm(directory: &Path, args: &[String], json: bool) -> Result<()> {
     }
 }
 
+/// The import alias installed programs are imported by: `@programs/<name>`.
+pub const PROGRAM_IMPORT_ALIAS: &str = "@programs/*";
+
+/// Make installed programs importable as `@programs/<name>`: ensure the
+/// project's `tsconfig.json` maps `compilerOptions.paths["@programs/*"]` to
+/// `<programs_dir>/*/index.js` (each installed program directory has an
+/// `index.ts`). The file is edited in place, inserting only the missing key
+/// and leaving everything else as written. Returns a note when it changed
+/// the file, or when it could not and the user should add the line.
+pub fn ensure_program_import_alias(root: &Path, programs_dir: &Path) -> Option<String> {
+    let relative = programs_dir.strip_prefix(root).ok()?;
+    let relative = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
+    let target = format!("./{relative}/*/index.js");
+    let entry = format!(
+        "\"{PROGRAM_IMPORT_ALIAS}\": [{}]",
+        serde_json::Value::String(target.clone())
+    );
+    let manual = |reason: &str| {
+        Some(format!(
+            "{reason}; to import installed programs as `@programs/<name>`, add to its compilerOptions: \"paths\": {{ {entry} }}"
+        ))
+    };
+    let path = root.join("tsconfig.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return manual("No tsconfig.json at the project root");
+    };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return manual("tsconfig.json is not plain JSON, so a4 left it alone");
+    };
+    let options = &parsed["compilerOptions"];
+    match options["paths"].get(PROGRAM_IMPORT_ALIAS) {
+        Some(existing) if *existing == serde_json::json!([target]) => return None,
+        Some(_) => {
+            return Some(format!(
+                "tsconfig.json already maps \"{PROGRAM_IMPORT_ALIAS}\"; a4 left it alone (installed programs are under ./{relative}/<name>/index.ts)"
+            ))
+        }
+        None => {}
+    }
+    let root_object = text.find('{')?;
+    let edited = if let Some(options_body) = object_member(&text, root_object, "compilerOptions") {
+        match object_member(&text, options_body - 1, "paths") {
+            Some(paths_body) => insert_member(&text, paths_body, &entry),
+            None if options.is_object() => {
+                insert_member(&text, options_body, &format!("\"paths\": {{ {entry} }}"))
+            }
+            None => return manual("tsconfig.json has an unexpected compilerOptions"),
+        }
+    } else if parsed.get("compilerOptions").is_some() {
+        return manual("tsconfig.json has an unexpected compilerOptions");
+    } else {
+        insert_member(
+            &text,
+            root_object + 1,
+            &format!("\"compilerOptions\": {{ \"paths\": {{ {entry} }} }}"),
+        )
+    };
+    // Write only an edit that parses to the same document plus the alias.
+    let check = serde_json::from_str::<serde_json::Value>(&edited).ok()?;
+    if check["compilerOptions"]["paths"][PROGRAM_IMPORT_ALIAS] != serde_json::json!([target]) {
+        return manual("a4 could not edit tsconfig.json");
+    }
+    if fs::write(&path, edited).is_err() {
+        return manual("a4 could not write tsconfig.json");
+    }
+    Some(format!(
+        "tsconfig.json: added compilerOptions.paths[\"{PROGRAM_IMPORT_ALIAS}\"] = [\"{target}\"], so installed programs import as `@programs/<name>`"
+    ))
+}
+
+/// The byte offset just past the `{` that opens the object value of `key`,
+/// a direct member of the object whose `{` is at `object`.
+fn object_member(text: &str, object: usize, key: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut index = object + 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => {
+                let start = index + 1;
+                index += 1;
+                while index < bytes.len() && bytes[index] != b'"' {
+                    index += if bytes[index] == b'\\' { 2 } else { 1 };
+                }
+                let name = text.get(start..index)?;
+                index += 1;
+                if depth == 0 {
+                    let mut next = index;
+                    while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+                        next += 1;
+                    }
+                    if bytes.get(next) == Some(&b':') && name == key {
+                        next += 1;
+                        while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+                            next += 1;
+                        }
+                        return (bytes.get(next) == Some(&b'{')).then_some(next + 1);
+                    }
+                }
+                continue;
+            }
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+/// Insert `member` as the first member of the object whose body starts at
+/// `body`, in the layout of the members already there.
+fn insert_member(text: &str, body: usize, member: &str) -> String {
+    let rest = &text[body..];
+    let whitespace = &rest[..rest.len() - rest.trim_start().len()];
+    if rest.trim_start().starts_with('}') {
+        format!("{} {member} {}", &text[..body], rest.trim_start())
+    } else {
+        format!("{}{whitespace}{member},{rest}", &text[..body])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,5 +639,78 @@ mod tests {
         );
         assert!(report.ran.is_empty());
         assert!(report.failed.is_some());
+    }
+
+    #[test]
+    fn the_program_import_alias_is_added_in_place() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let programs = root.join("generated/typescript/programs");
+        let original = "{\n  \"compilerOptions\": {\n    \"strict\": true\n  },\n  \"include\": [\"*.ts\"]\n}\n";
+        fs::write(root.join("tsconfig.json"), original).unwrap();
+        let note = ensure_program_import_alias(root, &programs).expect("a note");
+        assert!(note.contains("added"), "{note}");
+        let edited = fs::read_to_string(root.join("tsconfig.json")).unwrap();
+        assert_eq!(
+            edited,
+            "{\n  \"compilerOptions\": {\n    \"paths\": { \"@programs/*\": [\"./generated/typescript/programs/*/index.js\"] },\n    \"strict\": true\n  },\n  \"include\": [\"*.ts\"]\n}\n"
+        );
+        // Idempotent.
+        assert_eq!(ensure_program_import_alias(root, &programs), None);
+
+        // An existing `paths` gains the key; other mappings stay.
+        fs::write(
+            root.join("tsconfig.json"),
+            "{\"compilerOptions\":{\"paths\":{\"@/*\":[\"./src/*\"]}}}",
+        )
+        .unwrap();
+        ensure_program_import_alias(root, &programs).unwrap();
+        let edited: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("tsconfig.json")).unwrap()).unwrap();
+        assert_eq!(
+            edited["compilerOptions"]["paths"]["@/*"],
+            serde_json::json!(["./src/*"])
+        );
+        assert_eq!(
+            edited["compilerOptions"]["paths"]["@programs/*"],
+            serde_json::json!(["./generated/typescript/programs/*/index.js"])
+        );
+
+        // No compilerOptions at all.
+        fs::write(root.join("tsconfig.json"), "{}").unwrap();
+        ensure_program_import_alias(root, &programs).unwrap();
+        let edited: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("tsconfig.json")).unwrap()).unwrap();
+        assert_eq!(
+            edited["compilerOptions"]["paths"]["@programs/*"],
+            serde_json::json!(["./generated/typescript/programs/*/index.js"])
+        );
+    }
+
+    #[test]
+    fn a_tsconfig_a4_cannot_edit_is_left_alone_with_the_line_to_add() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let programs = root.join("generated/typescript/programs");
+        let note = ensure_program_import_alias(root, &programs).unwrap();
+        assert!(note.contains("No tsconfig.json"), "{note}");
+        let commented = "{\n  // comment\n  \"compilerOptions\": {}\n}\n";
+        fs::write(root.join("tsconfig.json"), commented).unwrap();
+        let note = ensure_program_import_alias(root, &programs).unwrap();
+        assert!(
+            note.contains("\"@programs/*\": [\"./generated/typescript/programs/*/index.js\"]"),
+            "{note}"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("tsconfig.json")).unwrap(),
+            commented
+        );
+        fs::write(
+            root.join("tsconfig.json"),
+            "{\"compilerOptions\":{\"paths\":{\"@programs/*\":[\"./elsewhere/*\"]}}}",
+        )
+        .unwrap();
+        let note = ensure_program_import_alias(root, &programs).unwrap();
+        assert!(note.contains("left it alone"), "{note}");
     }
 }

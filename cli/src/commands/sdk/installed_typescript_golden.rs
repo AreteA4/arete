@@ -373,6 +373,7 @@ fn generate(dependency: Value, output: &Path, project_dir: &str) {
             python_module: false,
             stack_endpoints: None,
             reference: Some(&reference),
+            program_install: None,
         },
     )
     .unwrap_or_else(|error| panic!("generate {}: {error:#}", output.display()));

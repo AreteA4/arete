@@ -140,8 +140,11 @@ impl ComposedStack {
                 .collect(),
             parts: self.parts.clone(),
             sdk_extension_hashes: Vec::new(),
+            protocol: None,
+            stacks: Vec::new(),
             targets: targets.to_vec(),
             generator_contract: super::GENERATOR_CONTRACT.into(),
+            local_build: None,
         }
     }
 }
@@ -804,6 +807,7 @@ pub(crate) fn resolve_composition(
                     requirement: requirement.to_string(),
                     locked_package_release_hash: locked,
                     locked_programs: Vec::new(),
+                    locked_stacks: Vec::new(),
                 });
                 Pending::Registry {
                     requirement: requirement.to_string(),
@@ -845,6 +849,7 @@ pub(crate) fn resolve_composition(
                         requirement,
                     ),
                     locked_programs: Vec::new(),
+                    locked_stacks: Vec::new(),
                 });
                 PendingProgram::Registry {
                     requirement: requirement.to_string(),

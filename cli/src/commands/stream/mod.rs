@@ -1,13 +1,17 @@
-mod client;
+pub(crate) mod client;
+pub(crate) mod dev;
 mod filter;
 mod once;
 mod output;
-mod session;
+pub(crate) mod protocols;
+pub(crate) mod session;
 mod snapshot;
 mod store;
-mod token;
+pub(crate) mod token;
 #[cfg(feature = "tui")]
 mod tui;
+
+use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use arete_sdk::{Subscription, SubscriptionQuery};
@@ -20,8 +24,15 @@ pub use once::{run as run_get, GetArgs, GET_HELP};
 
 #[derive(Args)]
 pub struct StreamArgs {
-    /// View to subscribe to: EntityName/mode (e.g. OreRound/latest)
+    /// View to subscribe to: EntityName/mode (e.g. OreRound/latest).
+    /// With --dev: the protocol to stream (or a view of the default one);
+    /// without it, lists the local protocols and their views
     pub view: Option<String>,
+
+    /// With --dev: the protocol's view, by name (Activity, Instances,
+    /// Participants) or id (ProtocolActivity/list)
+    #[arg(value_name = "DEV_VIEW", requires = "dev")]
+    pub dev_view: Option<String>,
 
     /// Entity key to watch (for state-mode subscriptions)
     #[arg(short, long)]
@@ -31,9 +42,31 @@ pub struct StreamArgs {
     #[arg(long)]
     pub url: Option<String>,
 
-    /// Owned deployment or registry stack name
+    /// Owned deployment or registry stack name; with --dev, the local stack
     #[arg(short, long)]
     pub stack: Option<String>,
+
+    /// Stream from the running `a4 dev` session: finds it, lists its stacks,
+    /// mints session tokens and follows redeploys
+    #[arg(long, conflicts_with_all = ["url", "load"])]
+    pub dev: bool,
+
+    /// The a4 dev project [default: the nearest directory at or above the
+    /// current one with .arete/dev/session.json]
+    #[arg(long, value_name = "DIR", requires = "dev")]
+    pub project: Option<PathBuf>,
+
+    /// Subscribe to every view of the stack (except <Entity>/state views,
+    /// which need --key), merged into one feed labelled by protocol, stack
+    /// and view
+    #[arg(long, requires = "dev")]
+    pub all: bool,
+
+    /// With --dev: one protocol instance, its state and its activity. The
+    /// instance id `a4 dev step` prints, or the short id the stream keys
+    /// its rows by
+    #[arg(long, value_name = "ID", requires = "dev", conflicts_with_all = ["all", "key"])]
+    pub instance: Option<String>,
 
     /// Output raw WebSocket frames instead of merged entities
     #[arg(long)]
@@ -141,14 +174,242 @@ Reconnecting:
   --duration counts wall time across reconnects. A policy close from the
   server, such as an expired or refused session, is not retried and exits
   with an error, as does giving up after --max-reconnects attempts. Use
-  --no-reconnect to end the stream on the first drop instead.";
+  --no-reconnect to end the stream on the first drop instead.
+
+Local development (--dev):
+  a4 stream --dev                         list the protocols, their views and counts
+  a4 stream --dev --tui                   browse protocols, views, rows and instances
+  a4 stream --dev <protocol>              the protocol's views, one labelled feed
+  a4 stream --dev <protocol> Activity     one view: Instances, Activity, Participants,
+                                          or an id such as ProtocolActivity/list
+  a4 stream --dev <protocol> --instance <id>
+                                          one instance's state and activity
+  a4 stream --dev --all                   every view of the stack, one feed
+  a4 stream --dev --stack <name> <VIEW>   a stack by name, one view by id
+
+  A protocol is named by its spec name (localTipJar), its slug, its stack or
+  its deployment's short id; with one protocol it can be left out. An
+  instance is the id `a4 dev step` prints, or the short id the stream keys
+  its rows by. The session is found from .arete/dev/session.json at or above
+  the current directory (or --project). Tokens are minted from the local
+  runtime for every connection and refreshed before they expire. When
+  `a4 dev` redeploys, the stream moves to the new deployment and prints
+  `— redeployed: <old> → <new>` on stderr. JSON lines carry \"stack\" and,
+  for a protocol, \"protocol\" (and, with --raw, \"view\"); with several
+  views on a terminal each line starts with `protocol · View`.
+
+  In the TUI: Enter opens, Esc goes back, Tab switches between the
+  protocols and their views, / filters. Enter on an instance opens its
+  state and activity.";
 
 /// The reconnect behaviour `args` ask for.
 pub fn reconnect_policy(args: &StreamArgs) -> session::ReconnectPolicy {
     session::ReconnectPolicy::new(!args.no_reconnect, args.max_reconnects)
 }
 
-pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
+/// Flags that need a single view.
+fn check_multi_view_args(args: &StreamArgs) -> Result<()> {
+    let refused = [
+        (args.key.is_some(), "--key"),
+        (args.save.is_some(), "--save"),
+        (args.count, "--count"),
+        (
+            args.history || args.at.is_some() || args.diff,
+            "--history/--at/--diff",
+        ),
+        (args.after.is_some(), "--after"),
+    ];
+    if let Some((_, flag)) = refused.iter().find(|(set, _)| *set) {
+        bail!("{flag} works on one view; drop --all or name a single view.");
+    }
+    Ok(())
+}
+
+/// The flags TUI mode does not take.
+fn check_tui_args(args: &StreamArgs) -> Result<()> {
+    if args.duration.is_some() {
+        bail!("--duration has no effect in TUI mode; stop with 'q' or Ctrl+C.");
+    }
+    if args.count {
+        bail!("--count is incompatible with TUI mode.");
+    }
+    if args.save.is_some() {
+        bail!("--save is not yet supported in TUI mode; use 's' inside the TUI to save.");
+    }
+    if args.history || args.at.is_some() || args.diff {
+        bail!(
+            "--history/--at/--diff are not supported in TUI mode; use h/l keys to browse history."
+        );
+    }
+    if args.raw {
+        bail!("--raw is incompatible with TUI mode; omit --tui to use raw output.");
+    }
+    if args.no_dna {
+        bail!("--no-dna is incompatible with TUI mode; omit --tui to use NO_DNA output.");
+    }
+    if !args.filters.is_empty() {
+        bail!("--where is not supported in TUI mode; use '/' inside the TUI to filter.");
+    }
+    if args.select.is_some() {
+        bail!("--select is not supported in TUI mode.");
+    }
+    if args.ops.is_some() {
+        bail!("--ops is not supported in TUI mode.");
+    }
+    if args.first {
+        bail!("--first is not supported in TUI mode.");
+    }
+    if cfg!(not(feature = "tui")) {
+        bail!(
+            "TUI mode requires the 'tui' feature.\n\
+             Install with: cargo install a4-cli --features tui"
+        );
+    }
+    Ok(())
+}
+
+/// `a4 stream --dev`.
+fn run_dev(args: StreamArgs, json: bool) -> Result<()> {
+    if args.all {
+        check_multi_view_args(&args)?;
+    }
+    if args.tui {
+        check_tui_args(&args)?;
+    }
+    let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+    rt.block_on(async move {
+        let runtime = dev::DevRuntime::open(args.project.as_deref())?;
+        let listing = runtime.listing().await?;
+        let request = protocols::DevRequest {
+            first: args.view.clone(),
+            second: args.dev_view.clone(),
+            stack: args.stack.clone(),
+            all: args.all,
+            instance: args.instance.clone(),
+        };
+        let target = protocols::resolve_target(&request, &listing.stacks, &runtime.session)?;
+
+        // The protocol browser, for all but --all and --key (the tabbed and
+        // single-view TUIs).
+        #[cfg(feature = "tui")]
+        if args.tui && !args.all && args.key.is_none() {
+            if listing.stacks.is_empty() {
+                bail!("{}", dev::no_stacks(&runtime.session));
+            }
+            return tui::browse(runtime, listing, target, &args).await;
+        }
+
+        if target == protocols::DevTarget::Overview {
+            if args.tui {
+                bail!("--key needs a view: a4 stream --dev <protocol> <VIEW> --key <key> --tui");
+            }
+            if json {
+                println!("{}", serde_json::to_string(&listing)?);
+            } else {
+                println!("{}", protocols::render_listing(&listing, &runtime.session));
+            }
+            return Ok(());
+        }
+
+        let name = target.stack().unwrap_or_default();
+        let stack = dev::select_stack(&listing.stacks, Some(name), &runtime.session)?;
+        let feeds = dev_feeds(stack, &target)?;
+        if feeds.is_empty() {
+            bail!(
+                "Stack '{}' lists no views to stream without --key.",
+                stack.name
+            );
+        }
+        if feeds.len() > 1 {
+            check_multi_view_args(&args)?;
+        }
+        if let protocols::DevTarget::Instance { key, .. } = &target {
+            eprintln!("Instance {}", key.describe());
+        }
+
+        let mut refresh = runtime.refresh_for(stack);
+        let url = refresh
+            .renew()
+            .await
+            .context("Could not mint a session for the local stack")?;
+        // Follow the stack the user named, or whichever stack the active
+        // protocol deployment moves to.
+        let requested = target.pinned().then(|| stack.name.clone());
+        let follow = dev::watch(runtime.clone(), requested, stack.identity());
+
+        if args.tui {
+            #[cfg(feature = "tui")]
+            return tui::run_tui_feeds(url, Some(refresh), Some(follow), feeds, &args).await;
+        }
+        if let Some(notice) = protocols::fork_notice(&listing, stack) {
+            eprintln!("Note: {notice}.");
+        }
+        let labels: Vec<String> = feeds.iter().map(client::Feed::label).collect();
+        eprintln!(
+            "Streaming {} from {} ...",
+            labels.join(", "),
+            token::redact_hs_token_for_display(&url)
+        );
+        client::stream_feeds(
+            url,
+            Some(refresh),
+            Some(follow),
+            &feeds,
+            &args,
+            reconnect_policy(&args),
+        )
+        .await
+    })
+}
+
+/// The feeds `target` streams from `stack`, labelled with its protocol.
+fn dev_feeds(stack: &dev::DevStack, target: &protocols::DevTarget) -> Result<Vec<client::Feed>> {
+    use protocols::{DevTarget, ViewEntry};
+
+    let protocol = stack
+        .is_protocol()
+        .then(|| stack.protocol_name().to_string());
+    let catalog = stack.catalog();
+    let feed = |view: &str, title: &str| client::Feed {
+        protocol: protocol.clone(),
+        title: protocol.as_ref().map(|_| title.to_string()),
+        ..client::Feed::new(view, Some(stack.name.clone()))
+    };
+    let of = |entry: &ViewEntry| feed(&entry.raw, &entry.friendly);
+    Ok(match target {
+        DevTarget::Overview => Vec::new(),
+        DevTarget::View { view, .. } => vec![of(protocols::resolve_view(&catalog, view)?)],
+        DevTarget::All { .. } => catalog
+            .iter()
+            .filter(|entry| entry.streamable())
+            .map(of)
+            .collect(),
+        DevTarget::Protocol { .. } => protocols::primary_views(stack).iter().map(of).collect(),
+        DevTarget::Instance { key, .. } => {
+            let (state, activity) = protocols::instance_views(stack);
+            let mut feeds = vec![client::Feed {
+                key: Some(key.key.clone()),
+                ..feed(&state, "Instance")
+            }];
+            if let Some(activity) = activity {
+                feeds.push(client::Feed {
+                    filters: vec![format!("instance={}", key.key)],
+                    ..feed(&activity, "Activity")
+                });
+            }
+            feeds
+        }
+    })
+}
+
+pub fn run(args: StreamArgs, config_path: &str, json: bool) -> Result<()> {
+    if args.dev {
+        return run_dev(args, json);
+    }
+    if args.all || args.project.is_some() || args.instance.is_some() {
+        bail!("--all, --instance and --project need --dev.");
+    }
+
     // --load mode: replay from file, no WebSocket needed
     // (--load + --tui conflict is enforced by clap at the arg level)
     if let Some(load_path) = &args.load {
@@ -170,46 +431,10 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
 
     if args.tui {
-        if args.duration.is_some() {
-            bail!("--duration has no effect in TUI mode; stop with 'q' or Ctrl+C.");
-        }
-        if args.count {
-            bail!("--count is incompatible with TUI mode.");
-        }
-        if args.save.is_some() {
-            bail!("--save is not yet supported in TUI mode; use 's' inside the TUI to save.");
-        }
-        if args.history || args.at.is_some() || args.diff {
-            bail!("--history/--at/--diff are not supported in TUI mode; use h/l keys to browse history.");
-        }
-        if args.raw {
-            bail!("--raw is incompatible with TUI mode; omit --tui to use raw output.");
-        }
-        if args.no_dna {
-            bail!("--no-dna is incompatible with TUI mode; omit --tui to use NO_DNA output.");
-        }
-        if !args.filters.is_empty() {
-            bail!("--where is not supported in TUI mode; use '/' inside the TUI to filter.");
-        }
-        if args.select.is_some() {
-            bail!("--select is not supported in TUI mode.");
-        }
-        if args.ops.is_some() {
-            bail!("--ops is not supported in TUI mode.");
-        }
-        if args.first {
-            bail!("--first is not supported in TUI mode.");
-        }
+        check_tui_args(&args)?;
         #[cfg(feature = "tui")]
         {
             return rt.block_on(tui::run_tui(url, refresh, view, &args));
-        }
-        #[cfg(not(feature = "tui"))]
-        {
-            bail!(
-                "TUI mode requires the 'tui' feature.\n\
-                 Install with: cargo install a4-cli --features tui"
-            );
         }
     }
 
@@ -221,9 +446,11 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
     rt.block_on(client::stream(url, refresh, view, &args))
 }
 
-pub fn build_subscription(view: &str, args: &StreamArgs) -> Subscription {
-    let mut query = SubscriptionQuery::new(view);
-    if let Some(key) = &args.key {
+/// The subscription for one feed: its own key, else `--key`.
+pub fn build_feed_subscription(feed: &client::Feed, args: &StreamArgs) -> Subscription {
+    let key = feed.key.as_deref().or(args.key.as_deref());
+    let mut query = SubscriptionQuery::new(&feed.view);
+    if let Some(key) = key {
         query = query.with_key(key);
     }
     if let Some(take) = args.take {
@@ -383,6 +610,66 @@ mod tests {
 
     fn registry_response() -> String {
         r#"{"name":"ore","stack":"arete:h1:stack-manifest:sha256:test","websocketUrl":"wss://managed-ore.stack.arete.run","httpUrl":null,"websocketAuth":null,"httpAuth":null,"description":null,"visibility":"public","specVersionId":null,"liveSpecHash":null,"liveSpec":null,"liveSpecs":[],"stackManifestHash":"arete:h1:stack-manifest:sha256:test","stackManifest":{},"chainBinding":null,"transactionBinding":null,"extensions":null,"programs":[]}"#.to_string()
+    }
+
+    fn parse(args: &[&str]) -> Result<StreamArgs, clap::Error> {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: StreamArgs,
+        }
+        <Cli as clap::Parser>::try_parse_from(std::iter::once("a4").chain(args.iter().copied()))
+            .map(|cli| cli.args)
+    }
+
+    #[test]
+    fn hosted_streams_still_take_one_view() {
+        let args = parse(&["OreRound/latest", "--key", "k", "--stack", "ore"]).unwrap();
+        assert_eq!(args.view.as_deref(), Some("OreRound/latest"));
+        assert_eq!(args.dev_view, None);
+        assert!(!args.dev);
+        // A second positional, --instance and --all are --dev only.
+        assert!(parse(&["OreRound/latest", "Activity"]).is_err());
+        assert!(parse(&["OreRound/latest", "--instance", "x"]).is_err());
+        assert!(parse(&["--all"]).is_err());
+    }
+
+    #[test]
+    fn dev_streams_take_a_protocol_a_view_or_an_instance() {
+        let args = parse(&["--dev", "localTipJar", "Activity", "--tui"]).unwrap();
+        assert_eq!(args.view.as_deref(), Some("localTipJar"));
+        assert_eq!(args.dev_view.as_deref(), Some("Activity"));
+        assert!(args.tui);
+
+        let args = parse(&["--dev", "localTipJar", "--instance", "8c2b1c56"]).unwrap();
+        assert_eq!(args.instance.as_deref(), Some("8c2b1c56"));
+        assert_eq!(args.dev_view, None);
+
+        let args = parse(&["--dev", "ProtocolActivity/list"]).unwrap();
+        assert_eq!(args.view.as_deref(), Some("ProtocolActivity/list"));
+
+        // --all may name the protocol; --instance takes no --all or --key.
+        assert!(parse(&["--dev", "localTipJar", "--all"]).is_ok());
+        assert!(parse(&["--dev", "--all", "--instance", "x"]).is_err());
+        assert!(parse(&["--dev", "--key", "k", "--instance", "x"]).is_err());
+    }
+
+    #[test]
+    fn a_feed_takes_its_own_key() {
+        let args = parse(&["--dev", "--key", "fallback"]).unwrap();
+        let keyed = client::Feed {
+            key: Some("short".to_string()),
+            ..client::Feed::new("ProtocolInstance/state", None)
+        };
+        assert_eq!(
+            build_feed_subscription(&keyed, &args).query.key.as_deref(),
+            Some("short")
+        );
+        let plain = client::Feed::new("ProtocolInstance/state", None);
+        assert_eq!(
+            build_feed_subscription(&plain, &args).query.key.as_deref(),
+            Some("fallback")
+        );
     }
 
     #[test]

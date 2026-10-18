@@ -1,0 +1,12 @@
+[package]
+name = "token-raise-protocol"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arete-sdk = { package = "arete-a4-sdk", version = "{{ARETE_VERSION}}" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+meteora-presale-stack = { path = "stacks/meteora-presale" }
+mirror-stack = { path = "stacks/mirror" }
+squads-v4-program = { path = "programs/squads-v4" }

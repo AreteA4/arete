@@ -30,6 +30,11 @@ serde_json = "1.0"
 toml = "0.8"
 toml_edit = "0.22"
 anyhow = "1.0"
+axum = "0.7"
+base64 = "0.22"
+bs58 = "0.5"
+getrandom = "0.2"
+ed25519-dalek = "2"
 cap-std = "4.0.2"
 colored = "2.1"
 chrono = "0.4"
@@ -49,7 +54,7 @@ fs2 = "0.4"
 tar = "0.4"
 uuid = { version = "1.0", features = ["v4"] }
 regex = "1.10"
-tokio = { version = "1.0", features = ["rt-multi-thread", "sync", "time", "macros", "signal"] }
+tokio = { version = "1.0", features = ["rt-multi-thread", "sync", "time", "macros", "signal", "process", "io-util", "net"] }
 futures-util = { version = "0.3", features = ["sink"] }
 # Use OS trust store (e.g. Windows) so WSS handshakes match browsers / native TLS clients.
 # webpki-roots alone can fail against some production TLS chains.
@@ -60,16 +65,21 @@ url = "2"
 sha2 = "0.10"
 semver = "1.0"
 arete-mcp = { version = "0.41.2", path = "../rust/arete-mcp" }
+arete-solana-contracts = { version = "0.2.0", path = "../rust/arete-solana-contracts", features = ["raw-capture"] }
 minisign-verify = "0.2"
 self-replace = "1.5"
 serde_yaml = "0.9"
 jsonc-parser = { version = "0.33", features = ["cst"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_SystemInformation"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [build-dependencies]
 arete-hash = { path = "../arete-hash", version = "0.5.3" }
+flate2 = "1.0"
 serde_json = "1.0"
 toml = "0.8"
 

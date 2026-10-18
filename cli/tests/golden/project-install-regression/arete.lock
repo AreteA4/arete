@@ -1,0 +1,49 @@
+lock_version = 1
+manifest_hash = "arete-manifest-v1:b9c604f648f19793a90a1e3c332167c54aba73b46d66a15462867a7dd4ba8c7d"
+resolver_contract = "registry-resolver-v1"
+
+[[dependency]]
+kind = "stack"
+alias = "ore"
+source = "registry:ore"
+requirement = "^1.0.0"
+version = "1.0.0"
+package_release_hash = "arete:registry-package-release:v2:sha256:5555555555555555555555555555555555555555555555555555555555555555"
+stack_manifest_hash = "arete:h1:stack-manifest:sha256:338c718dfbb5a260392414ee5e7f2e07ceb01a07fdcccbf748822d43cdb89a09"
+targets = [
+    "typescript",
+    "rust",
+    "python",
+]
+generator_contract = "sdk-generator-v1"
+
+[[dependency.live_specs]]
+alias = "live"
+artifact_hash = "arete:h1:live-spec:sha256:86e5f877d76cbb52fa83b2b49147cea6c00f65a32648d881b7714e6d43623a3e"
+
+[[dependency.programs]]
+program_id = "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"
+program_spec_hash = "arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b"
+program_release_hash = "arete:h1:program-release:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+[[dependency.programs]]
+program_id = "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
+program_spec_hash = "arete:h1:program-spec:sha256:41a3e99a926050fd86b09761b829570a0a2086c10766e1b6e328b901dd856f72"
+program_release_hash = "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[[dependency]]
+kind = "program"
+alias = "vote"
+source = "registry:vote"
+requirement = "^0.1.0"
+version = "0.1.0"
+package_release_hash = "arete:registry-package-release:v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+program_id = "Vote111111111111111111111111111111111111111"
+program_spec_hash = "arete:h1:program-spec:sha256:79425ade85e0a9614e3f5b9b43e32db349266dc2edd7e7840a4e17b4621b9e86"
+program_release_hash = "arete:h1:program-release:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+targets = [
+    "typescript",
+    "rust",
+    "python",
+]
+generator_contract = "sdk-generator-v1"

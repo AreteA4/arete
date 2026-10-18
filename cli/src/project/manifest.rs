@@ -72,10 +72,7 @@ impl ProjectManifest {
     }
 
     pub fn dependency(&self, kind: DependencyKind, alias: &str) -> Option<&DependencyV1> {
-        match kind {
-            DependencyKind::Stack => self.document.dependencies.stacks.get(alias),
-            DependencyKind::Program => self.document.dependencies.programs.get(alias),
-        }
+        self.document.dependencies.of_kind(kind).get(alias)
     }
 
     pub fn dependencies(&self) -> impl Iterator<Item = (DependencyKind, &String, &DependencyV1)> {
@@ -90,6 +87,13 @@ impl ProjectManifest {
                     .programs
                     .iter()
                     .map(|(alias, dependency)| (DependencyKind::Program, alias, dependency)),
+            )
+            .chain(
+                self.document
+                    .dependencies
+                    .protocols
+                    .iter()
+                    .map(|(alias, dependency)| (DependencyKind::Protocol, alias, dependency)),
             )
     }
 }
@@ -107,6 +111,19 @@ pub struct ManifestV1 {
     pub dependencies: DependenciesV1,
     #[serde(default)]
     pub authoring: AuthoringV1,
+    /// `[protocol]`: `a4 protocol deploy` settings. Only that command reads
+    /// (and strictly validates) this table; it is not resolution input, so it
+    /// never changes the manifest hash and is not re-rendered.
+    // Accepted here so other commands tolerate the table; the deploy
+    // command reads it from the raw TOML.
+    #[allow(dead_code)]
+    #[serde(default, skip_serializing)]
+    pub protocol: Option<toml::Value>,
+    /// `[dev]`: `a4 dev` settings (`sdk = [...]`). Read from the raw TOML by
+    /// `a4 dev`; like `[protocol]`, not resolution input.
+    #[allow(dead_code)]
+    #[serde(default, skip_serializing)]
+    pub dev: Option<toml::Value>,
 }
 
 impl ManifestV1 {
@@ -121,6 +138,8 @@ impl ManifestV1 {
             sdk: SdkV1::default(),
             dependencies: DependenciesV1::default(),
             authoring: AuthoringV1::default(),
+            protocol: None,
+            dev: None,
         }
     }
 
@@ -136,6 +155,7 @@ impl ManifestV1 {
         for (kind, entries) in [
             (DependencyKind::Stack, &self.dependencies.stacks),
             (DependencyKind::Program, &self.dependencies.programs),
+            (DependencyKind::Protocol, &self.dependencies.protocols),
         ] {
             for (alias, dependency) in entries {
                 validate_alias(alias, "dependency alias")?;
@@ -228,7 +248,7 @@ fn compact_manifest_value(value: &mut toml::Value) -> Result<()> {
         .get_mut("dependencies")
         .and_then(toml::Value::as_table_mut)
     {
-        for kind in ["stacks", "programs"] {
+        for kind in ["stacks", "programs", "protocols"] {
             let remove_kind = if let Some(entries) = dependencies
                 .get_mut(kind)
                 .and_then(toml::Value::as_table_mut)
@@ -410,6 +430,31 @@ pub struct DependenciesV1 {
     pub stacks: BTreeMap<String, DependencyV1>,
     #[serde(default)]
     pub programs: BTreeMap<String, DependencyV1>,
+    /// Protocol packages: the protocol client with its hoisted stacks and
+    /// programs. Omitted when empty, so a manifest without protocols keeps
+    /// its resolution hash.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub protocols: BTreeMap<String, DependencyV1>,
+}
+
+impl DependenciesV1 {
+    /// The dependencies of one kind.
+    pub fn of_kind(&self, kind: DependencyKind) -> &BTreeMap<String, DependencyV1> {
+        match kind {
+            DependencyKind::Stack => &self.stacks,
+            DependencyKind::Program => &self.programs,
+            DependencyKind::Protocol => &self.protocols,
+        }
+    }
+
+    /// The dependencies of one kind, to edit.
+    pub fn of_kind_mut(&mut self, kind: DependencyKind) -> &mut BTreeMap<String, DependencyV1> {
+        match kind {
+            DependencyKind::Stack => &mut self.stacks,
+            DependencyKind::Program => &mut self.programs,
+            DependencyKind::Protocol => &mut self.protocols,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,6 +490,14 @@ impl DependencyV1 {
         supported_targets: &[InstallTarget],
         authoring: &AuthoringV1,
     ) -> Result<()> {
+        // Every target (TypeScript, Rust, Python) has a protocol client.
+        if kind == DependencyKind::Protocol
+            && !matches!(self.source, DependencySourceV1::Registry(_))
+        {
+            bail!(
+                "protocol dependency '{alias}' must come from the registry; protocols have no path or workspace source"
+            );
+        }
         match &self.source {
             DependencySourceV1::Registry(RegistrySourceV1 { registry }) => {
                 validate_registry_package(registry)?;
@@ -469,8 +522,27 @@ impl DependencyV1 {
                     match kind {
                         DependencyKind::Stack => ArtifactPathKind::StackManifest,
                         DependencyKind::Program => ArtifactPathKind::ProgramSpec,
+                        DependencyKind::Protocol => unreachable!("protocols are registry-only"),
                     },
                 )?;
+            }
+            DependencySourceV1::Idl(IdlSourceV1 { idl, program_id }) => {
+                if kind != DependencyKind::Program {
+                    bail!("dependency '{alias}' has an IDL source; only programs can");
+                }
+                if self.version.is_some() {
+                    bail!("IDL dependency '{alias}' cannot declare version");
+                }
+                validate_relative_input_path(idl, ".json")?;
+                if let Some(program_id) = program_id {
+                    let base58 = program_id.chars().all(|character| {
+                        character.is_ascii_alphanumeric()
+                            && !matches!(character, '0' | 'O' | 'I' | 'l')
+                    });
+                    if !base58 || !(32..=44).contains(&program_id.len()) {
+                        bail!("IDL dependency '{alias}' program_id '{program_id}' is not a base58 public key");
+                    }
+                }
             }
             DependencySourceV1::Workspace(WorkspaceSourceV1 { workspace }) => {
                 if self.version.is_some() {
@@ -480,6 +552,7 @@ impl DependencyV1 {
                 let exists = match kind {
                     DependencyKind::Stack => authoring.stacks.contains_key(workspace),
                     DependencyKind::Program => authoring.programs.contains_key(workspace),
+                    DependencyKind::Protocol => false,
                 };
                 if !exists {
                     bail!(
@@ -543,6 +616,7 @@ pub enum DependencySourceV1 {
     Registry(RegistrySourceV1),
     Path(PathSourceV1),
     Workspace(WorkspaceSourceV1),
+    Idl(IdlSourceV1),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -563,6 +637,18 @@ pub struct WorkspaceSourceV1 {
     pub workspace: String,
 }
 
+/// A program installed from a local IDL file: `a4 install program
+/// <path-to-idl.json>` builds its ProgramSpec from the IDL bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdlSourceV1 {
+    /// The IDL file, relative to the manifest.
+    pub idl: String,
+    /// The program address, when the IDL does not carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_id: Option<String>,
+}
+
 impl DependencySourceV1 {
     pub fn stable_description(&self) -> String {
         match self {
@@ -571,6 +657,10 @@ impl DependencySourceV1 {
             Self::Workspace(WorkspaceSourceV1 { workspace }) => {
                 format!("workspace:{workspace}")
             }
+            Self::Idl(IdlSourceV1 { idl, program_id }) => match program_id {
+                Some(program_id) => format!("idl:{}#{program_id}", normalize_relative(idl)),
+                None => format!("idl:{}", normalize_relative(idl)),
+            },
         }
     }
 }
@@ -930,6 +1020,7 @@ impl std::fmt::Display for InstallTarget {
 pub enum DependencyKind {
     Stack,
     Program,
+    Protocol,
 }
 
 impl DependencyKind {
@@ -937,6 +1028,7 @@ impl DependencyKind {
         match self {
             Self::Stack => "stack",
             Self::Program => "program",
+            Self::Protocol => "protocol",
         }
     }
 
@@ -944,6 +1036,7 @@ impl DependencyKind {
         match self {
             Self::Stack => "stacks",
             Self::Program => "programs",
+            Self::Protocol => "protocols",
         }
     }
 }
@@ -984,6 +1077,24 @@ fn validate_relative_artifact_path(path: &str, kind: ArtifactPathKind) -> Result
     };
     if !path.ends_with(expected) {
         bail!("artifact path '{path}' must end with '{expected}'");
+    }
+    Ok(())
+}
+
+/// A manifest-relative input file with the given extension.
+fn validate_relative_input_path(path: &str, extension: &str) -> Result<()> {
+    let parsed = Path::new(path);
+    if path.trim().is_empty() || parsed.is_absolute() {
+        bail!("input path '{path}' must be a non-empty manifest-relative path");
+    }
+    if parsed
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        bail!("input path '{path}' cannot contain parent traversal");
+    }
+    if !path.ends_with(extension) {
+        bail!("input path '{path}' must end with '{extension}'");
     }
     Ok(())
 }

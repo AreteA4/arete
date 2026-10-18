@@ -103,6 +103,9 @@ jobs:
       - name: Test Surfpool plugin build paths and release staging
         run: python3 ./scripts/surfpool-geyser/test.py
 
+      - name: Check the compiled-in registry signing keys
+        run: bash ./scripts/update-registry-keys.sh --check
+
       - name: Syntax-check install.sh (POSIX sh)
         run: sh -n docs/public/install.sh
 
@@ -320,7 +323,26 @@ jobs:
           # keeps the repository under its 10 GB cache limit.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Clippy checks a4 with the dev UI embedded, as release builds have it:
+      # under A4_REQUIRE_DEV_UI, cli/build.rs fails when the UI is missing,
+      # and include_bytes! reads every embedded file. The UI is built the way
+      # the release workflows build it, without install scripts.
+      - name: Setup Node.js for the dev UI
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: typescript/dev-ui/package-lock.json
+
+      - name: Build the dev UI
+        working-directory: typescript/dev-ui
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+
       - name: Clippy
+        env:
+          A4_REQUIRE_DEV_UI: "1"
         run: cargo clippy --workspace --locked -- -D warnings
 
   # The repository ruleset requires a check named exactly `Rust`. The Rust
@@ -573,6 +595,32 @@ jobs:
 
       - name: Test packed package boundary
         run: npm run test:pack
+
+  typescript-dev-ui:
+    name: TypeScript Dev UI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: typescript/dev-ui
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: typescript/dev-ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      # Typechecks, then builds what build.rs embeds into a4.
+      - name: Build
+        run: npm run build
 
   typescript-protocol:
     name: TypeScript Protocol
@@ -915,6 +963,45 @@ jobs:
       - name: Test
         run: npm test
 
+  windows-cli-lifecycle:
+    name: Windows CLI lifecycle
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          $channel = (Select-String -Path rust-toolchain.toml -Pattern '^channel = "([^"]+)"$').Matches.Groups[1].Value
+          if (-not $channel) { throw "Missing pinned Rust toolchain" }
+          rustup toolchain install $channel --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "RUSTUP_TOOLCHAIN=$channel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          shared-key: windows-cli-lifecycle
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Test Windows process checks and shutdown
+        run: cargo test --locked -p a4-cli --bin a4 commands::dev::runtime::tests
+
+      - name: Test session retention when shutdown fails
+        run: cargo test --locked -p a4-cli --bin a4 shutdown_failure_preserves_session
+
+      - name: Test relative protocol compiler paths
+        run: cargo test --locked -p a4-cli --bin a4 commands::protocol_bin::tests
+
   record-verified-tree:
     name: Record verified tree
     needs:
@@ -927,11 +1014,13 @@ jobs:
       - rust-features
       - rust-consumers
       - rust-clippy
+      - windows-cli-lifecycle
       - rust
       - generated-example-sdks
       - ore-react
       - typescript-core
       - typescript-hash
+      - typescript-dev-ui
       - typescript-protocol
       - typescript-adapters
       - typescript-react

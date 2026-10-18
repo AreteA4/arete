@@ -678,7 +678,7 @@ impl HostedDeploymentPlan {
     }
 }
 
-fn child_spec_name(stack_name: &str, alias: &str, position: usize) -> String {
+pub(crate) fn child_spec_name(stack_name: &str, alias: &str, position: usize) -> String {
     if position == 0 {
         return stack_name.to_string();
     }
@@ -1293,6 +1293,31 @@ pub fn up(
 
     telemetry::record_stack_deployed(stack_name.unwrap_or(""), start.elapsed());
 
+    Ok(())
+}
+
+/// Deploy already compiled project artifacts into the selected Arete cloud
+/// dev environment, reusing release selection and build health checks.
+pub(crate) fn deploy_environment_stack(
+    origin: &str,
+    key: &str,
+    environment: &str,
+    name: &str,
+    stack: LocalArtifactStack,
+    source_idls: serde_json::Value,
+) -> Result<()> {
+    let client = ApiClient::with_base_url(origin)
+        .with_api_key(key.to_string())
+        .with_environment_stacks(environment, source_idls)?;
+    deploy_artifact_stack_with_deployment_name(
+        &client,
+        stack,
+        Some(environment),
+        Some(name),
+        None,
+        true,
+        true,
+    )?;
     Ok(())
 }
 

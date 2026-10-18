@@ -1,0 +1,32 @@
+{
+  "name": "@usearete/dev-ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The protocol flow UI `a4 dev up` serves; built into the a4 binary",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@wallet-standard/app": "^1.1.1",
+    "@wallet-standard/base": "^1.1.1",
+    "@xyflow/react": "^12.3.0",
+    "elkjs": "^0.9.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.0",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0",
+    "vitest": "^5.0.5"
+  }
+}

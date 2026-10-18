@@ -150,11 +150,13 @@ jobs:
           ARTIFACTS_VERSION="$(crate_version arete-artifacts)"
           TYPESCRIPT_HASH_VERSION="$(jq -r '.version' typescript/hash/package.json)"
           AUTH_VERSION="$(crate_version arete-auth)"
-          echo "idl_version=$IDL_VERSION" >> "$GITHUB_OUTPUT"
-          echo "hash_version=$HASH_VERSION" >> "$GITHUB_OUTPUT"
-          echo "artifacts_version=$ARTIFACTS_VERSION" >> "$GITHUB_OUTPUT"
-          echo "typescript_hash_version=$TYPESCRIPT_HASH_VERSION" >> "$GITHUB_OUTPUT"
-          echo "auth_version=$AUTH_VERSION" >> "$GITHUB_OUTPUT"
+          {
+            echo "idl_version=$IDL_VERSION"
+            echo "hash_version=$HASH_VERSION"
+            echo "artifacts_version=$ARTIFACTS_VERSION"
+            echo "typescript_hash_version=$TYPESCRIPT_HASH_VERSION"
+            echo "auth_version=$AUTH_VERSION"
+          } >> "$GITHUB_OUTPUT"
 
           git fetch --tags --force
           RELEASE_TAGS=(
@@ -315,9 +317,65 @@ jobs:
           ./scripts/publish-crate.sh rust/arete-mcp --allow-existing
           ./scripts/publish-crate.sh cli --allow-existing
 
+  # The dev UI `a4 dev up` serves, built once for every a4 binary below. npm
+  # runs here without install scripts and with a read-only token. A source
+  # from before the dev UI existed has no typescript/dev-ui: nothing is built
+  # and the binaries do not require it.
+  build-dev-ui:
+    name: Build the dev UI
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      present: ${{ steps.detect.outputs.present }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+
+      - name: Detect the dev UI
+        id: detect
+        run: |
+          if [ -f typescript/dev-ui/package.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "$GITHUB_SHA has no typescript/dev-ui; building a4 without it"
+          fi
+        shell: bash
+
+      - name: Setup Node.js
+        if: steps.detect.outputs.present == 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      # esbuild and rollup ship their native binaries as optional dependencies,
+      # so the build does not need their install scripts.
+      - name: Build the dev UI
+        if: steps.detect.outputs.present == 'true'
+        working-directory: typescript/dev-ui
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          test -f dist/index.html
+        shell: bash
+
+      - name: Upload the dev UI
+        if: steps.detect.outputs.present == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dev-ui-dist
+          path: typescript/dev-ui/dist
+          if-no-files-found: error
+          retention-days: 7
+
   build-binaries:
     name: Build ${{ matrix.binary_name }}
-    needs: validate
+    needs: [validate, build-dev-ui]
     strategy:
       fail-fast: false
       matrix:
@@ -404,8 +462,21 @@ jobs:
           pip3 install ziglang==0.16.0
           cargo install cargo-zigbuild --version 0.23.0 --locked
 
+      # `a4 dev up` serves this UI; build.rs embeds A4_DEV_UI_DIST.
+      - name: Download the dev UI
+        if: steps.release-binary.outputs.exists != 'true' && matrix.package == 'a4-cli' && needs.build-dev-ui.outputs.present == 'true'
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: dev-ui-dist
+          path: ${{ runner.temp }}/dev-ui-dist
+
       - name: Build binary
         if: steps.release-binary.outputs.exists != 'true'
+        env:
+          A4_DEV_UI_DIST: ${{ matrix.package == 'a4-cli' && needs.build-dev-ui.outputs.present == 'true' && format('{0}/dev-ui-dist', runner.temp) || '' }}
+          # Fail instead of shipping the placeholder page (sources from before
+          # the dev UI have none to ship).
+          A4_REQUIRE_DEV_UI: ${{ matrix.package == 'a4-cli' && needs.build-dev-ui.outputs.present == 'true' && '1' || '' }}
         run: |
           if [[ "${{ matrix.cross }}" == "true" ]]; then
             cargo zigbuild --locked --release --target "${{ matrix.target }}" --package "${{ matrix.package }}"

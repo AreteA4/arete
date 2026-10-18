@@ -165,6 +165,8 @@ enum ExtensionsInputKind {
     StackManifest,
     ProgramIdl,
     ProgramSpec,
+    /// A protocol client, generated from its `arete.protocol-spec/v1`.
+    ProtocolSpec,
 }
 
 impl ExtensionsInputKind {
@@ -174,6 +176,7 @@ impl ExtensionsInputKind {
             Self::StackManifest => "stack-manifest",
             Self::ProgramIdl => "program-idl",
             Self::ProgramSpec => "program-spec",
+            Self::ProtocolSpec => "protocol-spec",
         }
     }
 
@@ -262,7 +265,7 @@ struct TypeScriptLayout {
     core_path: PathBuf,
 }
 
-const SDK_PROVENANCE_FILE: &str = "sdk-provenance.json";
+pub(crate) const SDK_PROVENANCE_FILE: &str = "sdk-provenance.json";
 const SDK_MANIFEST_FILE: &str = "sdk-manifest.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1109,6 +1112,7 @@ fn create_local_program_sdk(
         python_module: module,
         stack_endpoints: None,
         reference: None,
+        program_install: None,
     };
     let local = LocalProgramSdk {
         extensions: extensions.as_deref().map(Path::new),
@@ -1179,6 +1183,7 @@ pub fn create_typescript(
             &output_path,
             &package_name,
             extensions_override.as_deref().map(Path::new),
+            None,
         )?;
         println!(
             "{} Successfully generated TypeScript SDK!",
@@ -1365,6 +1370,58 @@ pub(crate) struct ProjectGenerationOptions<'a> {
     /// Write the SDK reference (`sdk-reference.json` and `README.md`) into a
     /// TypeScript output, with what this context adds.
     pub reference: Option<&'a reference::ReferenceContext>,
+    /// How the project installed a program dependency: a TypeScript program
+    /// SDK carries it as `programInstall`.
+    pub program_install: Option<&'a ProgramInstallIdentity>,
+}
+
+/// How a project installed a program: the identity a protocol reads from the
+/// generated TypeScript program (`programInstall`), so it never restates a
+/// program's hashes or where its IDL comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProgramInstallIdentity {
+    /// The dependency's alias in arete.toml.
+    pub alias: String,
+    /// The installed program release: a registry install's, or the one
+    /// `a4 protocol deploy` recorded after pushing a local IDL.
+    pub program_release_hash: Option<String>,
+    pub source: ProgramInstallSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProgramInstallSource {
+    /// A registry package at the exact version the lock pins.
+    Registry { registry: String, version: String },
+    /// A local IDL file, relative to the project root.
+    Idl { idl: String },
+}
+
+impl ProgramInstallIdentity {
+    /// The `programInstall` object literal.
+    fn typescript_literal(&self) -> String {
+        let mut lines = vec![format!(
+            "  alias: {},",
+            ts_ident::single_quoted(&self.alias)
+        )];
+        if let Some(hash) = &self.program_release_hash {
+            lines.push(format!(
+                "  programReleaseHash: {},",
+                ts_ident::single_quoted(hash)
+            ));
+        }
+        lines.push(match &self.source {
+            ProgramInstallSource::Registry { registry, version } => format!(
+                "  source: {{ kind: 'registry', registry: {}, version: {} }},",
+                ts_ident::single_quoted(registry),
+                ts_ident::single_quoted(version)
+            ),
+            ProgramInstallSource::Idl { idl } => format!(
+                "  source: {{ kind: 'idl', idl: {} }},",
+                ts_ident::single_quoted(idl)
+            ),
+        });
+        format!("{{\n{}\n}}", lines.join("\n"))
+    }
 }
 
 pub(crate) fn generate_project_local_stack(
@@ -1380,15 +1437,10 @@ pub(crate) fn generate_project_local_stack(
 }
 
 pub(crate) fn generate_project_local_program(
-    program_spec_path: &Path,
+    program_spec: &arete_artifacts::ProgramSpecArtifact,
     options: ProjectGenerationOptions<'_>,
 ) -> Result<()> {
-    let bytes = fs::read(program_spec_path)
-        .with_context(|| format!("Failed to read ProgramSpec {}", program_spec_path.display()))?;
-    let program_spec = arete_artifacts::load_program_spec(&bytes)
-        .with_context(|| format!("Invalid ProgramSpec {}", program_spec_path.display()))?
-        .artifact;
-    generate_project_program(&program_spec, None, options)
+    generate_project_program(program_spec, None, options)
 }
 
 pub(crate) fn generate_project_registry_dependency(
@@ -1492,6 +1544,9 @@ pub(crate) fn generate_project_registry_dependency(
                 composed: false,
             }));
             generate_project_stack_source(&source, options)
+        }
+        ResolvedRegistryDependency::Protocol { .. } => {
+            protocol::generate_project_protocol(dependency, options)
         }
     }
 }
@@ -2090,6 +2145,7 @@ fn generate_project_program(
                     options.typescript_package,
                     None,
                     hosted_artifact.as_ref(),
+                    options.program_install,
                 )?;
             } else {
                 generate_typescript_program_sdk_from_artifact(
@@ -2098,6 +2154,7 @@ fn generate_project_program(
                     options.output,
                     options.typescript_package,
                     None,
+                    options.program_install,
                 )?;
             }
             if let Some(context) = options.reference {
@@ -3457,6 +3514,7 @@ fn validate_provenance_input_pin(input_pin: &ResolvedExtensionsInputPin) -> Resu
     let expected = match input_pin.kind {
         ExtensionsInputKind::StackManifest => arete_hash::HashKindName::StackManifest,
         ExtensionsInputKind::ProgramSpec => arete_hash::HashKindName::ProgramSpec,
+        ExtensionsInputKind::ProtocolSpec => arete_hash::HashKindName::ProtocolSpec,
         ExtensionsInputKind::StackAst | ExtensionsInputKind::ProgramIdl => {
             anyhow::bail!(
                 "SDK provenance V2 requires StackManifest or ProgramSpec input, not {}",
@@ -4674,6 +4732,7 @@ fn render_hosted_program_entry(program: &HostedProgramModule) -> String {
             .definition
             .package_release_hash
             .as_deref(),
+        None,
     )
 }
 
@@ -5329,6 +5388,7 @@ fn render_typescript_program_entry(
     program_name: &str,
     extension_entry: Option<&str>,
     package_release_hash: Option<&str>,
+    install: Option<&ProgramInstallIdentity>,
 ) -> String {
     let core_const_name = arete_interpreter::typescript::program_const_name(program_name);
     let export_name = public_program_export_name(&layout.base_name);
@@ -5376,24 +5436,48 @@ fn render_typescript_program_entry(
         ),
     };
 
+    // A project install also carries how it was installed and the
+    // instruction shapes, the two things a protocol reads from the program
+    // (`@usearete/protocol` documents the shape). They are plain properties
+    // added after the identity stamp, so nothing about the SDK changes.
+    let shapes_const_name = format!("{core_const_name}_INSTRUCTION_SHAPES");
+    let install_const_name = format!("{export_name}_INSTALL");
+    let (program_value, install_declaration, install_type, shapes_import) = match install {
+        Some(install) => (
+            format!(
+                "Object.assign(\n  {},\n  {{ programInstall: {install_const_name}, instructionShapes: {shapes_const_name} }},\n)",
+                program_value.replace('\n', "\n  ")
+            ),
+            format!(
+                "/** How this project installed the program (`programInstall` on {export_name}). */\nexport const {install_const_name} = {} as const;\n\n",
+                install.typescript_literal()
+            ),
+            format!(
+                " & {{\n  readonly programInstall: typeof {install_const_name};\n  readonly instructionShapes: typeof {shapes_const_name};\n}}"
+            ),
+            format!(", {shapes_const_name}"),
+        ),
+        None => (program_value, String::new(), String::new(), String::new()),
+    };
+
     // An extended program's type is spelled from the entry's own imports.
     // Inferred, it would restate the extension's operation types, which
     // declaration emit (`declaration: true`) cannot name when the extension
     // keeps them unexported.
     let declarations = if extension_import.is_some() {
         format!(
-            "export type {type_name} = ReturnType<typeof extendProgram<typeof {core_import_name}, typeof programExtensions>>;\n\nexport const {export_name}: {type_name} = {program_value};\nexport const {read_export_name} = {core_read_import_name};"
+            "{install_declaration}export type {type_name} = ReturnType<typeof extendProgram<typeof {core_import_name}, typeof programExtensions>>{install_type};\n\nexport const {export_name}: {type_name} = {program_value};\nexport const {read_export_name} = {core_read_import_name};"
         )
     } else {
         format!(
-            "export const {export_name} = {program_value};\nexport const {read_export_name} = {core_read_import_name};\n\nexport type {type_name} = typeof {export_name};"
+            "{install_declaration}export const {export_name} = {program_value};\nexport const {read_export_name} = {core_read_import_name};\n\nexport type {type_name} = typeof {export_name};"
         )
     };
 
     finish_typescript_module(format!(
-        r#"import {{ {sdk_imports} }} from '@usearete/sdk';
+        r#"import {{ {sdk_imports} }} from '{sdk_module}';
 
-import {{ {core_const_name} as {core_import_name}, {core_read_const_name} as {core_read_import_name} }} from '{core_import}';{extension_import}
+import {{ {core_const_name} as {core_import_name}, {core_read_const_name} as {core_read_import_name}{shapes_import} }} from '{core_import}';{extension_import}
 
 export * from '{core_import}';
 export {{ {core_const_name} as {core_import_name} }} from '{core_import}';
@@ -5402,6 +5486,7 @@ export {{ {core_const_name} as {core_import_name} }} from '{core_import}';
 
 export default {export_name};"#,
         sdk_imports = sdk_imports.join(", "),
+        sdk_module = arete_interpreter::typescript::TypeScriptProgramRuntime::ProgramEntry.module(),
         extension_import = extension_import.unwrap_or_default(),
     ))
 }
@@ -5576,6 +5661,7 @@ fn generate_typescript_program_sdk_from_idl(
             gateway: None,
             path: extensions_path,
             hosted_artifact: None,
+            install: None,
         },
     )
 }
@@ -5586,6 +5672,7 @@ fn generate_typescript_program_sdk_from_artifact(
     output_path: &Path,
     package_name: &str,
     extensions_path: Option<&Path>,
+    install: Option<&ProgramInstallIdentity>,
 ) -> Result<()> {
     let identity = arete_hash::OssProgramIdentityV1::new(program_spec.payload.clone())
         .map_err(anyhow::Error::msg)?;
@@ -5614,6 +5701,7 @@ fn generate_typescript_program_sdk_from_artifact(
             gateway: None,
             path: extensions_path,
             hosted_artifact: None,
+            install,
         },
     )
 }
@@ -5624,6 +5712,8 @@ struct TypeScriptProgramSdkExtensions<'a> {
     gateway: Option<serde_json::Value>,
     path: Option<&'a Path>,
     hosted_artifact: Option<&'a ResolvedExtensionsArtifact>,
+    /// The project install this SDK is generated for, if any.
+    install: Option<&'a ProgramInstallIdentity>,
 }
 
 fn write_typescript_program_sdk(
@@ -5685,6 +5775,7 @@ fn write_typescript_program_sdk(
         program_name,
         artifact.as_ref().map(|artifact| artifact.entry.as_str()),
         package_release_hash.as_deref(),
+        extensions.install,
     );
     check_typescript_entry(&entry_contents, &core_contents, &layout)?;
     write_typescript_core_modules(&layout, &core_contents, artifact.as_ref())?;
@@ -5698,9 +5789,41 @@ fn write_typescript_program_sdk(
             layout.entry_path.display()
         )
     })?;
-    write_sdk_provenance_manifest(&layout, extensions.input_pin, artifact.as_ref())?;
+    // A project install into its own directory gets an `index.ts`, so the
+    // directory is importable by name: `@programs/<alias>` maps to
+    // `<programs dir>/*/index.js` (see `a4 install`'s tsconfig paths).
+    let own_directory = output_path.extension().and_then(|ext| ext.to_str()) != Some("ts");
+    let index = extensions.install.is_some() && own_directory && layout.base_name != "index";
+    if index {
+        let index_path = layout.output_dir.join("index.ts");
+        fs::write(
+            &index_path,
+            typescript_program_index_module(&layout.base_name),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to write TypeScript index module to {}",
+                index_path.display()
+            )
+        })?;
+    }
+    if index {
+        let mut provenance =
+            build_sdk_provenance_manifest(&layout, extensions.input_pin, artifact.as_ref())?;
+        provenance.artifacts.push("index.ts".to_string());
+        provenance.artifacts.sort();
+        write_sdk_provenance_manifest_file(&layout.output_dir, &provenance)?;
+    } else {
+        write_sdk_provenance_manifest(&layout, extensions.input_pin, artifact.as_ref())?;
+    }
 
     Ok(())
+}
+
+/// The `index.ts` of an installed program's directory: its entry, under the
+/// directory's name.
+fn typescript_program_index_module(base_name: &str) -> String {
+    format!("export * from './{base_name}.js';\nexport {{ default }} from './{base_name}.js';\n")
 }
 
 fn generate_typescript_program_sdk_from_install(
@@ -5710,6 +5833,7 @@ fn generate_typescript_program_sdk_from_install(
     package_name: &str,
     extensions_path: Option<&Path>,
     hosted_artifact: Option<&ResolvedExtensionsArtifact>,
+    project_install: Option<&ProgramInstallIdentity>,
 ) -> Result<()> {
     let program_spec = program_spec_artifact_from_registry(install)?;
     let program_name = program_spec.payload.idl_snapshot.snapshot.name.clone();
@@ -5740,6 +5864,7 @@ fn generate_typescript_program_sdk_from_install(
             )?),
             path: extensions_path,
             hosted_artifact,
+            install: project_install,
         },
     )
 }
@@ -6083,7 +6208,6 @@ fn generate_typescript_composition_sdk(
         live_releases: source.composition_live_releases(),
         live_module_imports: live_module_imports.clone(),
         program_module_imports: program_module_imports.clone(),
-        protocol_module_imports: BTreeMap::new(),
         program_entry_imports: program_modules
             .iter()
             .map(|program| {
@@ -6093,6 +6217,7 @@ fn generate_typescript_composition_sdk(
                 )
             })
             .collect(),
+        protocol_module_imports: BTreeMap::new(),
         extensions,
     };
     let output = arete_interpreter::typescript::compile_composed_public_artifacts_v2(
@@ -7475,6 +7600,12 @@ pub(crate) fn verify_resolved_stack_delivery(
 ) -> Result<()> {
     use crate::project::resolver::ResolvedRegistryDependency;
 
+    if let ResolvedRegistryDependency::Protocol { stacks, .. } = dependency {
+        for stack in stacks {
+            verify_resolved_stack_delivery(stack)?;
+        }
+        return Ok(());
+    }
     let ResolvedRegistryDependency::Stack {
         package,
         stack_manifest,
@@ -8496,7 +8627,7 @@ mod tests {
         );
         let rendered = render_hosted_program_entry(&hosted);
 
-        assert!(rendered.contains("import { withProgramRead } from '@usearete/sdk';"));
+        assert!(rendered.contains("import { withProgramRead } from '@usearete/sdk/program';"));
         assert!(rendered.contains("ENTROPY_READ as ENTROPY_PROGRAM_READ_CORE"));
         assert!(rendered.contains(
             "export const ENTROPY_PROGRAM = withProgramRead(ENTROPY_PROGRAM_CORE, ENTROPY_PROGRAM_READ_CORE);"
@@ -8637,12 +8768,13 @@ mod tests {
 
     #[test]
     fn render_typescript_program_entry_without_extensions_aliases_core() {
-        let rendered = render_typescript_program_entry(&layout("spl-token"), "token", None, None);
+        let rendered =
+            render_typescript_program_entry(&layout("spl-token"), "token", None, None, None);
 
         assert!(rendered.contains("import { TOKEN as SPL_TOKEN_PROGRAM_CORE, TOKEN_READ as SPL_TOKEN_PROGRAM_READ_CORE } from './spl-token-core.js';"));
         assert!(rendered
             .contains("export { TOKEN as SPL_TOKEN_PROGRAM_CORE } from './spl-token-core.js';"));
-        assert!(rendered.contains("import { withProgramRead } from '@usearete/sdk';"));
+        assert!(rendered.contains("import { withProgramRead } from '@usearete/sdk/program';"));
         assert!(rendered.contains(
             "export const SPL_TOKEN_PROGRAM = withProgramRead(SPL_TOKEN_PROGRAM_CORE, SPL_TOKEN_PROGRAM_READ_CORE);"
         ));
@@ -8659,11 +8791,11 @@ mod tests {
             "system_program",
             Some("system-program-extensions.ts"),
             None,
+            None,
         );
 
-        assert!(
-            rendered.contains("import { extendProgram, withProgramRead } from '@usearete/sdk';")
-        );
+        assert!(rendered
+            .contains("import { extendProgram, withProgramRead } from '@usearete/sdk/program';"));
         assert!(rendered.contains("import { SYSTEM_PROGRAM as SYSTEM_PROGRAM_CORE, SYSTEM_PROGRAM_READ as SYSTEM_PROGRAM_READ_CORE } from './system-program-core.js';"));
         assert!(rendered.contains(
             "export { SYSTEM_PROGRAM as SYSTEM_PROGRAM_CORE } from './system-program-core.js';"
@@ -8684,6 +8816,45 @@ mod tests {
     }
 
     #[test]
+    fn a_project_install_attaches_its_install_identity_and_instruction_shapes() {
+        let install = ProgramInstallIdentity {
+            alias: "ore".into(),
+            program_release_hash: Some("arete:h1:program-release:sha256:7".into()),
+            source: ProgramInstallSource::Registry {
+                registry: "ore".into(),
+                version: "1.0.2".into(),
+            },
+        };
+        let plain = render_typescript_program_entry(
+            &layout("ore"),
+            "ore",
+            None,
+            Some("arete:registry-package-release:v2:sha256:7"),
+            Some(&install),
+        );
+        assert!(plain.contains("import { ORE as ORE_PROGRAM_CORE, ORE_READ as ORE_PROGRAM_READ_CORE, ORE_INSTRUCTION_SHAPES } from './ore-core.js';"), "{plain}");
+        assert!(plain.contains("export const ORE_PROGRAM_INSTALL = {\n  alias: 'ore',\n  programReleaseHash: 'arete:h1:program-release:sha256:7',\n  source: { kind: 'registry', registry: 'ore', version: '1.0.2' },\n} as const;"), "{plain}");
+        assert!(plain.contains("export const ORE_PROGRAM = Object.assign(\n  withProgramIdentity(\n    withProgramRead(ORE_PROGRAM_CORE, ORE_PROGRAM_READ_CORE),\n    { packageReleaseHash: 'arete:registry-package-release:v2:sha256:7' },\n  ),\n  { programInstall: ORE_PROGRAM_INSTALL, instructionShapes: ORE_INSTRUCTION_SHAPES },\n);"), "{plain}");
+
+        let idl = ProgramInstallIdentity {
+            alias: "ore".into(),
+            program_release_hash: None,
+            source: ProgramInstallSource::Idl {
+                idl: "idl/ore.json".into(),
+            },
+        };
+        let extended = render_typescript_program_entry(
+            &layout("ore"),
+            "ore",
+            Some("ore-extensions.ts"),
+            None,
+            Some(&idl),
+        );
+        assert!(extended.contains("export const ORE_PROGRAM_INSTALL = {\n  alias: 'ore',\n  source: { kind: 'idl', idl: 'idl/ore.json' },\n} as const;"), "{extended}");
+        assert!(extended.contains("export type OreProgram = ReturnType<typeof extendProgram<typeof ORE_PROGRAM_CORE, typeof programExtensions>> & {\n  readonly programInstall: typeof ORE_PROGRAM_INSTALL;\n  readonly instructionShapes: typeof ORE_INSTRUCTION_SHAPES;\n};"), "{extended}");
+    }
+
+    #[test]
     fn render_typescript_program_entry_stamps_package_release_identity_last() {
         let release = "arete:registry-package-release:v2:sha256:7";
         let extended = render_typescript_program_entry(
@@ -8691,18 +8862,20 @@ mod tests {
             "ore",
             Some("ore-extensions.ts"),
             Some(release),
+            None,
         );
         assert!(extended.contains(
-            "import { extendProgram, withProgramIdentity, withProgramRead } from '@usearete/sdk';"
+            "import { extendProgram, withProgramIdentity, withProgramRead } from '@usearete/sdk/program';"
         ));
         assert!(extended.contains(&format!(
             "export const ORE_PROGRAM: OreProgram = withProgramIdentity(\n  withProgramRead(\n    extendProgram(ORE_PROGRAM_CORE, programExtensions),\n    ORE_PROGRAM_READ_CORE,\n  ),\n  {{ packageReleaseHash: '{release}' }},\n);"
         )), "{extended}");
 
-        let plain = render_typescript_program_entry(&layout("ore"), "ore", None, Some(release));
-        assert!(
-            plain.contains("import { withProgramIdentity, withProgramRead } from '@usearete/sdk';")
-        );
+        let plain =
+            render_typescript_program_entry(&layout("ore"), "ore", None, Some(release), None);
+        assert!(plain.contains(
+            "import { withProgramIdentity, withProgramRead } from '@usearete/sdk/program';"
+        ));
         assert!(plain.contains(&format!(
             "export const ORE_PROGRAM = withProgramIdentity(\n  withProgramRead(ORE_PROGRAM_CORE, ORE_PROGRAM_READ_CORE),\n  {{ packageReleaseHash: '{release}' }},\n);"
         )), "{plain}");
@@ -11633,6 +11806,12 @@ mod tests {
         );
     }
 
+    fn load_program_spec_file(path: &Path) -> arete_artifacts::ProgramSpecArtifact {
+        arete_artifacts::load_program_spec(&fs::read(path).expect("read ProgramSpec"))
+            .expect("valid ProgramSpec")
+            .artifact
+    }
+
     #[test]
     fn generated_rust_program_and_stack_crates_pin_the_linked_sdk_release() {
         let directory = tempfile::tempdir().unwrap();
@@ -11640,7 +11819,7 @@ mod tests {
 
         let program_dir = directory.path().join("ore-program");
         generate_project_local_program(
-            &fixtures.join("ore.program-spec.json"),
+            &load_program_spec_file(&fixtures.join("ore.program-spec.json")),
             ProjectGenerationOptions {
                 alias: "ore",
                 target: crate::project::manifest::InstallTarget::Rust,
@@ -11650,6 +11829,7 @@ mod tests {
                 python_module: false,
                 stack_endpoints: None,
                 reference: None,
+                program_install: None,
             },
         )
         .expect("local program generation should succeed");
@@ -11668,6 +11848,7 @@ mod tests {
                 python_module: false,
                 stack_endpoints: None,
                 reference: None,
+                program_install: None,
             },
         )
         .expect("local stack generation should succeed");
@@ -11675,7 +11856,7 @@ mod tests {
 
         let python_dir = directory.path().join("ore-py");
         generate_project_local_program(
-            &fixtures.join("ore.program-spec.json"),
+            &load_program_spec_file(&fixtures.join("ore.program-spec.json")),
             ProjectGenerationOptions {
                 alias: "ore",
                 target: crate::project::manifest::InstallTarget::Python,
@@ -11685,6 +11866,7 @@ mod tests {
                 python_module: false,
                 stack_endpoints: None,
                 reference: None,
+                program_install: None,
             },
         )
         .expect("local python generation should succeed");
@@ -11701,10 +11883,13 @@ mod tests {
 }
 
 mod extension_outline;
+pub(crate) mod protocol;
+pub(crate) mod protocol_python;
+pub(crate) mod protocol_rust;
 pub(crate) mod reference;
 
 #[cfg(test)]
-mod stack_name_golden;
+pub(crate) mod stack_name_golden;
 
 #[cfg(test)]
 mod shared_idl_types_golden;
@@ -11714,3 +11899,14 @@ mod installed_typescript_golden;
 
 #[cfg(test)]
 mod installed_rust_python_golden;
+
+/// Compare `generated` (relative path -> contents) with the files under
+/// `golden_dir`, or rewrite them when `A4_UPDATE_GOLDEN` is set.
+#[cfg(test)]
+pub(crate) fn compare_golden_tree(
+    name: &str,
+    golden_dir: &Path,
+    generated: BTreeMap<String, String>,
+) {
+    stack_name_golden::compare_with_golden(name, golden_dir, generated);
+}

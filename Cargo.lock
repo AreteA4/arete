@@ -13,6 +13,10 @@ dependencies = [
  "arete-idl",
  "arete-interpreter",
  "arete-mcp",
+ "arete-solana-contracts",
+ "axum 0.7.9",
+ "base64 0.22.1",
+ "bs58",
  "cap-std",
  "chrono",
  "clap",
@@ -22,9 +26,11 @@ dependencies = [
  "crossterm",
  "dialoguer",
  "dirs",
+ "ed25519-dalek",
  "flate2",
  "fs2",
  "futures-util",
+ "getrandom 0.2.16",
  "indicatif",
  "jsonc-parser",
  "libc",
@@ -48,6 +54,7 @@ dependencies = [
  "toml_edit 0.22.27",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

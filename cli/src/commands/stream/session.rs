@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use arete_sdk::{parse_server_message, ClientMessage, ServerMessage, Subscription};
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
@@ -51,6 +52,25 @@ pub enum Notice<'a> {
     /// The connection is down and the next attempt to replace it starts
     /// after `delay`.
     Reconnecting(Reconnecting<'a>),
+    /// The stack behind the stream was replaced (`a4 stream --dev` follows
+    /// local redeploys); the stream moves to the new one.
+    Redeployed { from: &'a str, to: &'a str },
+}
+
+/// A replacement for the stack a stream reads, sent by whatever watches for
+/// redeploys. The session drops its connection and connects to the new
+/// stack with a token minted by `refresh`.
+#[derive(Debug, Clone)]
+pub struct Retarget {
+    pub refresh: token::SessionRefresh,
+    /// The old and new stack, as the redeploy marker names them.
+    pub from: String,
+    pub to: String,
+}
+
+/// The marker line for a redeploy the stream followed.
+pub fn redeploy_marker(from: &str, to: &str) -> String {
+    format!("\u{2014} redeployed: {from} \u{2192} {to}")
 }
 
 /// A pending reconnect attempt.
@@ -259,9 +279,12 @@ fn jitter() -> f64 {
 pub struct StreamSession {
     url: String,
     refresh: Option<token::SessionRefresh>,
-    /// The serialized `subscribe` message, sent again on every connection.
-    subscribe: String,
+    /// The serialized `subscribe` messages, sent again on every connection.
+    /// Several subscriptions share the one connection; frames name theirs.
+    subscribe: Vec<String>,
     policy: ReconnectPolicy,
+    /// Redeploys to follow, if anything watches for them.
+    follow: Option<mpsc::Receiver<Retarget>>,
 }
 
 impl StreamSession {
@@ -271,14 +294,47 @@ impl StreamSession {
         subscription: Subscription,
         policy: ReconnectPolicy,
     ) -> Result<Self> {
-        let subscribe = serde_json::to_string(&ClientMessage::Subscribe(subscription))
-            .context("Failed to serialize subscribe message")?;
+        Self::with_subscriptions(url, refresh, vec![subscription], policy)
+    }
+
+    /// A session carrying several subscriptions over one connection.
+    pub fn with_subscriptions(
+        url: String,
+        refresh: Option<token::SessionRefresh>,
+        subscriptions: Vec<Subscription>,
+        policy: ReconnectPolicy,
+    ) -> Result<Self> {
+        let subscribe = subscriptions
+            .into_iter()
+            .map(|subscription| {
+                serde_json::to_string(&ClientMessage::Subscribe(subscription))
+                    .context("Failed to serialize subscribe message")
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             url,
             refresh,
             subscribe,
             policy,
+            follow: None,
         })
+    }
+
+    /// Follow the redeploys `retargets` reports: each one replaces the
+    /// connection, even with reconnecting off.
+    pub fn follow(mut self, retargets: Option<mpsc::Receiver<Retarget>>) -> Self {
+        self.follow = retargets;
+        self
+    }
+
+    async fn subscribe_all(&self, socket: &mut Socket) -> Result<()> {
+        for message in &self.subscribe {
+            socket
+                .send(Message::Text(message.clone()))
+                .await
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+        }
+        Ok(())
     }
 
     /// The URL with any session token redacted.
@@ -305,8 +361,7 @@ impl StreamSession {
                 hint
             )
         })?;
-        socket
-            .send(Message::Text(self.subscribe.clone()))
+        self.subscribe_all(&mut socket)
             .await
             .context("Failed to send subscribe message")?;
         Ok(socket)
@@ -328,8 +383,7 @@ impl StreamSession {
             let (mut socket, _) = connect_async(&self.url)
                 .await
                 .map_err(|error| anyhow::anyhow!("could not connect: {error}"))?;
-            socket
-                .send(Message::Text(self.subscribe.clone()))
+            self.subscribe_all(&mut socket)
                 .await
                 .map_err(|error| anyhow::anyhow!("could not resubscribe: {error}"))?;
             Ok(socket)
@@ -358,18 +412,56 @@ impl StreamSession {
         F: Future<Output = ()>,
     {
         let mut attempt: u32 = 0;
+        let mut follow = self.follow.take();
         loop {
             let connected_at = Instant::now();
-            let loss = match self.read(socket, handler, stop.as_mut()).await? {
-                StreamEnd::Lost(loss) if self.policy.enabled && loss.is_retryable() => loss,
-                end => return Ok(end),
+            let step = {
+                let read = self.read(socket, handler, stop.as_mut());
+                tokio::select! {
+                    end = read => Step::Ended(end?),
+                    retarget = next_retarget(&mut follow) => Step::Retarget(retarget),
+                }
             };
-            if connected_at.elapsed() >= self.policy.stable_after {
-                attempt = 0;
+            // A redeploy drops the read, and the socket with it.
+            let end = match step {
+                Step::Ended(end) => Some(end),
+                Step::Retarget(retarget) => {
+                    self.retarget(retarget, handler);
+                    None
+                }
+            };
+            let mut reason;
+            let mut retry = false;
+            match end {
+                None => {
+                    // A redeploy: connect to the new stack at once.
+                    attempt = 0;
+                    self.apply_pending_retargets(&mut follow, handler);
+                    let connected = tokio::select! {
+                        connected = self.reconnect() => connected,
+                        () = stop.as_mut() => return Ok(StreamEnd::Stopped),
+                    };
+                    match connected {
+                        Ok(next) => {
+                            socket = next;
+                            handler.on_reconnected(&self.display_url())?;
+                            continue;
+                        }
+                        Err(error) => {
+                            reason = format!("{error:#}");
+                            retry = true;
+                        }
+                    }
+                }
+                Some(StreamEnd::Lost(loss)) if self.policy.enabled && loss.is_retryable() => {
+                    if connected_at.elapsed() >= self.policy.stable_after {
+                        attempt = 0;
+                    }
+                    reason = loss.reason();
+                }
+                Some(end) => return Ok(end),
             }
 
-            let mut reason = loss.reason();
-            let mut retry = false;
             socket = loop {
                 attempt = attempt.saturating_add(1);
                 if self.policy.max_attempts.is_some_and(|max| attempt > max) {
@@ -389,7 +481,9 @@ impl StreamSession {
                 tokio::select! {
                     () = tokio::time::sleep(delay) => {}
                     () = stop.as_mut() => return Ok(StreamEnd::Stopped),
+                    retarget = next_retarget(&mut follow) => self.retarget(retarget, handler),
                 }
+                self.apply_pending_retargets(&mut follow, handler);
                 let connected = tokio::select! {
                     connected = self.reconnect() => connected,
                     () = stop.as_mut() => return Ok(StreamEnd::Stopped),
@@ -403,6 +497,26 @@ impl StreamSession {
                 }
             };
             handler.on_reconnected(&self.display_url())?;
+        }
+    }
+
+    /// Point the session at a redeployed stack.
+    fn retarget<H: SessionHandler>(&mut self, retarget: Retarget, handler: &mut H) {
+        handler.on_notice(Notice::Redeployed {
+            from: &retarget.from,
+            to: &retarget.to,
+        });
+        self.refresh = Some(retarget.refresh);
+    }
+
+    /// Apply redeploys reported while the session was busy reconnecting.
+    fn apply_pending_retargets<H: SessionHandler>(
+        &mut self,
+        follow: &mut Option<mpsc::Receiver<Retarget>>,
+        handler: &mut H,
+    ) {
+        while let Some(retarget) = follow.as_mut().and_then(|rx| rx.try_recv().ok()) {
+            self.retarget(retarget, handler);
         }
     }
 
@@ -422,6 +536,24 @@ impl StreamSession {
         let mut refresher = token::SessionRefresher::start(self.refresh.clone());
         read_connection(&mut sink, &mut source, &mut refresher, handler, stop).await
     }
+}
+
+/// What ended one connection's read.
+enum Step {
+    Ended(StreamEnd),
+    Retarget(Retarget),
+}
+
+/// The next redeploy to follow; never resolves without a watcher, or once
+/// the watcher stops.
+async fn next_retarget(follow: &mut Option<mpsc::Receiver<Retarget>>) -> Retarget {
+    if let Some(receiver) = follow {
+        if let Some(retarget) = receiver.recv().await {
+            return retarget;
+        }
+        *follow = None;
+    }
+    std::future::pending().await
 }
 
 /// Read one connection until it ends or `stop` fires.
@@ -557,6 +689,7 @@ pub(crate) mod tests {
                 Notice::RefreshRefused(reason) => format!("refused: {reason:?}"),
                 Notice::RefreshFailed(error) => format!("refresh failed: {error:#}"),
                 Notice::Reconnecting(reconnecting) => reconnecting.to_string(),
+                Notice::Redeployed { from, to } => redeploy_marker(from, to),
             });
             if let Some(noticed) = self.noticed.take() {
                 let _ = noticed.send(());

@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 
 use super::filter::{self, Filter};
 use super::output::{self, OutputMode};
-use super::session::{Notice, ReconnectPolicy, SessionHandler, StreamEnd, StreamSession};
+use super::session::{
+    redeploy_marker, Notice, ReconnectPolicy, Retarget, SessionHandler, StreamEnd, StreamSession,
+};
 use super::snapshot::{SnapshotPlayer, SnapshotRecorder};
 use super::store::EntityStore;
 use super::token;
@@ -89,6 +91,45 @@ fn build_state(args: &StreamArgs, view: &str, url: &str) -> Result<StreamState> 
     })
 }
 
+/// One view a stream subscribes to, and what it is labelled with.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Feed {
+    pub view: String,
+    /// Set for `a4 stream --dev`: every line carries it as `"stack"`.
+    pub stack: Option<String>,
+    /// The protocol the stack serves (`a4 stream --dev <protocol>`): every
+    /// line carries it as `"protocol"`, and terminal prefixes name it.
+    pub protocol: Option<String>,
+    /// What terminal prefixes call the view (`Activity`); the view id when
+    /// unset.
+    pub title: Option<String>,
+    /// The entity key to subscribe to, instead of `--key`.
+    pub key: Option<String>,
+    /// `--where` expressions this feed adds to the command's own.
+    pub filters: Vec<String>,
+}
+
+impl Feed {
+    /// A feed of `view` on `stack`.
+    pub fn new(view: impl Into<String>, stack: Option<String>) -> Self {
+        Self {
+            view: view.into(),
+            stack,
+            ..Self::default()
+        }
+    }
+
+    /// `protocol · Title` for a protocol's feed, else `stack · View`.
+    pub fn label(&self) -> String {
+        match &self.protocol {
+            Some(protocol) => {
+                output::feed_label(Some(protocol), self.title.as_deref().unwrap_or(&self.view))
+            }
+            None => output::feed_label(self.stack.as_deref(), &self.view),
+        }
+    }
+}
+
 pub async fn stream(
     url: String,
     refresh: Option<token::SessionRefresh>,
@@ -106,25 +147,68 @@ async fn stream_with_policy(
     args: &StreamArgs,
     policy: ReconnectPolicy,
 ) -> Result<()> {
+    let feeds = [Feed::new(view, None)];
+    stream_feeds(url, refresh, None, &feeds, args, policy).await
+}
+
+/// Stream `feeds` over one connection, each its own subscription, into one
+/// output. `follow` reports redeploys of the stack to move to.
+pub async fn stream_feeds(
+    url: String,
+    refresh: Option<token::SessionRefresh>,
+    follow: Option<tokio::sync::mpsc::Receiver<Retarget>>,
+    feeds: &[Feed],
+    args: &StreamArgs,
+    policy: ReconnectPolicy,
+) -> Result<()> {
+    use std::io::IsTerminal;
+
+    // Several views on a terminal: start each line with its `stack · View`.
+    let prefixed = feeds.len() > 1 && std::io::stdout().is_terminal();
     // Validate args and build state before connecting (fails fast on bad --where regex etc.)
-    let mut state = build_state(args, view, &url)?;
+    let mut states = feeds
+        .iter()
+        .map(|feed| {
+            let mut state = build_state(args, &feed.view, &url)?;
+            if !feed.filters.is_empty() {
+                let mut filters = args.filters.clone();
+                filters.extend(feed.filters.iter().cloned());
+                state.filter = Filter::parse(&filters)?;
+            }
+            state.out = output::StdoutWriter::new()
+                .with_stack(feed.stack.clone())
+                .with_protocol(feed.protocol.clone())
+                .with_prefix(prefixed.then(|| feed.label()));
+            Ok(state)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let subscriptions: Vec<_> = feeds
+        .iter()
+        .map(|feed| super::build_feed_subscription(feed, args))
+        .collect();
+    let ids: Vec<String> = subscriptions
+        .iter()
+        .map(|subscription| subscription.subscription_id.clone())
+        .collect();
 
     let mut session =
-        StreamSession::new(url, refresh, super::build_subscription(view, args), policy)?;
+        StreamSession::with_subscriptions(url, refresh, subscriptions, policy)?.follow(follow);
     let socket = session.connect().await?;
 
     eprintln!("Connected.");
 
     // Emit NoDna connected event only after successful WebSocket handshake
-    if let OutputMode::NoDna = state.output_mode {
-        output::emit_no_dna_event(
-            &mut state.out,
-            "connected",
-            view,
-            &serde_json::json!({"url": session.display_url()}),
-            0,
-            0,
-        )?;
+    for (feed, state) in feeds.iter().zip(states.iter_mut()) {
+        if let OutputMode::NoDna = state.output_mode {
+            output::emit_no_dna_event(
+                &mut state.out,
+                "connected",
+                &feed.view,
+                &serde_json::json!({"url": session.display_url()}),
+                0,
+                0,
+            )?;
+        }
     }
 
     // Ctrl+C, or --duration (as a select! arm for precise timing). The
@@ -144,11 +228,22 @@ async fn stream_with_policy(
     };
     tokio::pin!(stop);
 
-    let mut handler = Output {
-        state: &mut state,
-        view,
-        no_snapshot: args.no_snapshot,
-        snapshot_complete: false,
+    let mut handler = Routed {
+        outputs: ids
+            .into_iter()
+            .zip(feeds.iter().zip(states.iter_mut()))
+            .map(|(id, (feed, state))| {
+                (
+                    id,
+                    Output {
+                        state,
+                        view: &feed.view,
+                        no_snapshot: args.no_snapshot,
+                        snapshot_complete: false,
+                    },
+                )
+            })
+            .collect(),
     };
     let failure = match session.run(socket, &mut handler, stop).await? {
         StreamEnd::Stopped | StreamEnd::Finished => None,
@@ -158,35 +253,99 @@ async fn stream_with_policy(
         }
         StreamEnd::Failed(failure) => Some(failure),
     };
+    drop(handler);
 
-    // Save snapshot if --save was specified
-    if let (Some(save_path), Some(recorder)) = (&args.save, &state.recorder) {
-        recorder.save(save_path)?;
+    for (feed, state) in feeds.iter().zip(states.iter_mut()) {
+        // Save snapshot if --save was specified
+        if let (Some(save_path), Some(recorder)) = (&args.save, &state.recorder) {
+            recorder.save(save_path)?;
+        }
+
+        // Clear the overwriting count line before post-stream output
+        if state.count_only {
+            finalize_count(state)?;
+        }
+
+        if let OutputMode::NoDna = state.output_mode {
+            output::emit_no_dna_event(
+                &mut state.out,
+                "disconnected",
+                &feed.view,
+                &serde_json::json!(null),
+                state.update_count,
+                state.entity_count,
+            )?;
+        }
+
+        // Output history/at/diff after stream ends (for non-interactive agent use)
+        output_history_if_requested(state, args)?;
     }
-
-    // Clear the overwriting count line before post-stream output
-    if state.count_only {
-        finalize_count(&mut state)?;
-    }
-
-    if let OutputMode::NoDna = state.output_mode {
-        output::emit_no_dna_event(
-            &mut state.out,
-            "disconnected",
-            view,
-            &serde_json::json!(null),
-            state.update_count,
-            state.entity_count,
-        )?;
-    }
-
-    // Output history/at/diff after stream ends (for non-interactive agent use)
-    output_history_if_requested(&state, args)?;
 
     if let Some(failure) = failure {
         anyhow::bail!("{failure}");
     }
     Ok(())
+}
+
+/// Several views' outputs behind one connection: each message goes to the
+/// subscription it names.
+struct Routed<'a> {
+    outputs: Vec<(String, Output<'a>)>,
+}
+
+impl<'a> Routed<'a> {
+    /// The output for a message's subscription. With one view everything is
+    /// its own, whatever id it carries.
+    fn route(&mut self, subscription_id: Option<&str>) -> Option<&mut Output<'a>> {
+        if self.outputs.len() == 1 {
+            return self.outputs.first_mut().map(|(_, output)| output);
+        }
+        let id = subscription_id?;
+        self.outputs
+            .iter_mut()
+            .find(|(candidate, _)| candidate == id)
+            .map(|(_, output)| output)
+    }
+}
+
+impl SessionHandler for Routed<'_> {
+    fn on_message(&mut self, message: ServerMessage) -> Result<bool> {
+        let id = match &message {
+            ServerMessage::Frame(frame) => Some(frame.subscription_id().to_string()),
+            ServerMessage::Error(error) => error.subscription_id.clone(),
+        };
+        match self.route(id.as_deref()) {
+            Some(output) => output.on_message(message),
+            None => match message {
+                ServerMessage::Error(error) => {
+                    eprintln!("Server error [{}]: {}", error.code, error.message);
+                    Ok(error.fatal)
+                }
+                // A frame for no subscription of ours.
+                ServerMessage::Frame(_) => Ok(false),
+            },
+        }
+    }
+
+    fn on_notice(&mut self, notice: Notice<'_>) {
+        if let Notice::Redeployed { from, to } = notice {
+            for (_, output) in &mut self.outputs {
+                output.redeployed(from, to);
+            }
+            eprintln!("{}", redeploy_marker(from, to));
+            return;
+        }
+        if let Some((_, output)) = self.outputs.first_mut() {
+            output.on_notice(notice);
+        }
+    }
+
+    fn on_reconnected(&mut self, url: &str) -> Result<()> {
+        for (_, output) in &mut self.outputs {
+            output.on_reconnected(url)?;
+        }
+        Ok(())
+    }
 }
 
 /// Where a live stream's messages go: the merged/raw/NO_DNA output on stdout,
@@ -225,6 +384,10 @@ impl SessionHandler for Output<'_> {
                 format!("Warning: could not refresh the session token, retrying: {error:#}")
             }
             Notice::Reconnecting(reconnecting) => reconnecting.to_string(),
+            Notice::Redeployed { from, to } => {
+                self.redeployed(from, to);
+                redeploy_marker(from, to)
+            }
         };
         self.print_notice(&line);
     }
@@ -236,6 +399,21 @@ impl SessionHandler for Output<'_> {
 }
 
 impl Output<'_> {
+    /// Tell a NO_DNA consumer the stack was replaced; the marker line goes
+    /// to stderr with the other notices.
+    fn redeployed(&mut self, from: &str, to: &str) {
+        if let OutputMode::NoDna = self.state.output_mode {
+            let _ = output::emit_no_dna_event(
+                &mut self.state.out,
+                "redeployed",
+                self.view,
+                &serde_json::json!({"from": from, "to": to}),
+                self.state.update_count,
+                self.state.entity_count,
+            );
+        }
+    }
+
     /// Start over for a new connection that replaced a lost one, live or in
     /// a replay of a recording that spans the reconnect.
     ///
@@ -454,7 +632,7 @@ fn handle_server_message(
 }
 
 /// Process a frame. Returns true if the stream should end (--first matched).
-fn process_frame(frame: Frame, view: &str, state: &mut StreamState) -> Result<bool> {
+fn process_frame(mut frame: Frame, view: &str, state: &mut StreamState) -> Result<bool> {
     // Record frame if --save is active
     if let Some(recorder) = &mut state.recorder {
         recorder.record(&frame);
@@ -492,10 +670,13 @@ fn process_frame(frame: Frame, view: &str, state: &mut StreamState) -> Result<bo
         if state.count_only {
             render_count_if_due(state)?;
         } else {
-            output::print_raw_frame(&mut state.out, &frame)?;
+            output::print_raw_frame(&mut state.out, &frame, view)?;
         }
         return Ok(state.first);
     }
+
+    // Raw frames stay as the server sent them; rows get the instance id.
+    super::protocols::add_instance_ids(view, &mut frame);
 
     match frame {
         Frame::Snapshot {
@@ -1240,6 +1421,117 @@ mod tests {
                 serde_json::from_str::<Value>(&mint.request().body).unwrap(),
                 json!({"websocket_url": base_url})
             );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn several_views_share_a_connection_and_follow_a_redeploy() {
+            let mint = MockServer::json(
+                200,
+                &json!({"token": "new", "expires_at": unix_now() + 3_600}).to_string(),
+            );
+            let old = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let new = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let old_url = format!("ws://{}/", old.local_addr().unwrap());
+            let new_url = format!("ws://{}/", new.local_addr().unwrap());
+            let (subscribed, ready) = tokio::sync::oneshot::channel();
+            let old_server = tokio::spawn(async move {
+                let (mut socket, _) = accept(&old).await;
+                let first = next_json(&mut socket).await;
+                let second = next_json(&mut socket).await;
+                subscribed.send(()).unwrap();
+                // The redeploy drops this connection.
+                while let Some(Ok(_)) = socket.next().await {}
+                [first, second]
+            });
+            let new_server = tokio::spawn(async move {
+                let (mut socket, target) = accept(&new).await;
+                let first = next_json(&mut socket).await;
+                let second = next_json(&mut socket).await;
+                let b = second["subscriptionId"].as_str().unwrap().to_string();
+                socket.send(upsert(&b, "2")).await.unwrap();
+                while let Some(Ok(_)) = socket.next().await {}
+                (target, [first, second])
+            });
+
+            let (retargets, follow) = tokio::sync::mpsc::channel(1);
+            let refresh = token::SessionRefresh::local(
+                format!("{}/ws/sessions", mint.base_url()),
+                "a4_sk_dev".to_string(),
+                new_url.clone(),
+                Some("d2".to_string()),
+            );
+            tokio::spawn(async move {
+                ready.await.unwrap();
+                retargets
+                    .send(Retarget {
+                        refresh,
+                        from: "tip-jar d1 (gen 1)".to_string(),
+                        to: "tip-jar d2 (gen 2)".to_string(),
+                    })
+                    .await
+                    .unwrap();
+            });
+            let feeds =
+                ["A/list", "B/list"].map(|view| Feed::new(view, Some("tip-jar".to_string())));
+            // The upsert on B after the redeploy ends the stream.
+            let args = stream_args_from(&["--first", "--where", "id=2"]);
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                stream_feeds(old_url, None, Some(follow), &feeds, &args, quick(&args)),
+            )
+            .await
+            .expect("the stream ends within the timeout");
+
+            assert!(result.is_ok(), "{result:?}");
+            let before = old_server.await.unwrap();
+            assert_eq!(before[0]["query"]["view"], "A/list");
+            assert_eq!(before[1]["query"]["view"], "B/list");
+            let (target, after) = new_server.await.unwrap();
+            assert_eq!(target, "/?hs_token=new");
+            assert_eq!(
+                after, before,
+                "the same subscriptions move to the new stack"
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&mint.request().body).unwrap(),
+                json!({"websocket_url": new_url, "protocolDeploymentId": "d2"})
+            );
+        }
+
+        #[tokio::test]
+        async fn frames_go_to_the_view_their_subscription_names() {
+            let feeds = ["A/list", "B/list"];
+            let mut states: Vec<StreamState> = feeds.iter().map(|_| state()).collect();
+            let mut routed = Routed {
+                outputs: feeds
+                    .iter()
+                    .zip(states.iter_mut())
+                    .map(|(view, state)| {
+                        (
+                            format!("sub:{view}"),
+                            Output {
+                                state,
+                                view,
+                                no_snapshot: false,
+                                snapshot_complete: false,
+                            },
+                        )
+                    })
+                    .collect(),
+            };
+            let frame = |id: &str, key: &str| {
+                let Message::Text(text) = upsert(id, key) else {
+                    unreachable!()
+                };
+                arete_sdk::parse_server_message(text.as_bytes()).unwrap()
+            };
+            routed.on_message(frame("sub:B/list", "b1")).unwrap();
+            routed.on_message(frame("sub:A/list", "a1")).unwrap();
+            routed.on_message(frame("sub:other", "x")).unwrap();
+            drop(routed);
+
+            assert_eq!(states[0].entities.keys().collect::<Vec<_>>(), ["a1"]);
+            assert_eq!(states[1].entities.keys().collect::<Vec<_>>(), ["b1"]);
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

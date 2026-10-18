@@ -1,4 +1,4 @@
-import { extendProgram, withProgramIdentity, withProgramRead } from '@usearete/sdk';
+import { extendProgram, withProgramIdentity, withProgramRead } from '@usearete/sdk/program';
 
 import { VAULT as VAULT_PROGRAM_CORE, VAULT_READ as VAULT_PROGRAM_READ_CORE } from './vault-core.js';
 import programExtensions from './vault-extensions.js';

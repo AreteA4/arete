@@ -532,6 +532,7 @@ fn generate(dependency: &Value, target: InstallTarget, output: &Path) {
             python_module: false,
             stack_endpoints: None,
             reference: None,
+            program_install: None,
         },
     )
     .unwrap_or_else(|error| panic!("generate {}: {error:#}", output.display()));
@@ -1177,6 +1178,7 @@ fn a_refused_bundle_leaves_the_output_untouched() {
                             python_module: false,
                             stack_endpoints: None,
                             reference: None,
+                            program_install: None,
                         },
                     )
                 }

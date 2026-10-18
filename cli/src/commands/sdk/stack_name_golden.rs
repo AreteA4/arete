@@ -238,7 +238,10 @@ pub(super) fn collect_files(root: &Path) -> BTreeMap<String, String> {
         entries.sort();
         for path in entries {
             if path.is_dir() {
-                walk(root, &path, files);
+                // Importing a generated Python golden writes bytecode next to it.
+                if path.file_name().and_then(|name| name.to_str()) != Some("__pycache__") {
+                    walk(root, &path, files);
+                }
             } else if path.file_name().and_then(|name| name.to_str()) != Some(SDK_PROVENANCE_FILE) {
                 let relative = path
                     .strip_prefix(root)
@@ -298,7 +301,7 @@ fn declared_rust_type_names(items: &[syn::Item], names: &mut Vec<String>) {
 /// Every generated Rust file must parse and declare only UpperCamelCase type
 /// names, and every Python file must compile. (TypeScript is type-checked
 /// with `tsc` in CI.)
-pub(super) fn assert_syntax(name: &str, root: &Path, files: &BTreeMap<String, String>) {
+pub(crate) fn assert_syntax(name: &str, root: &Path, files: &BTreeMap<String, String>) {
     for (relative, contents) in files {
         if relative.ends_with(".rs") {
             let file = syn::parse_file(contents).unwrap_or_else(|error| {
@@ -366,7 +369,7 @@ fn without_versioned_tree_hash(path: &str, contents: String) -> String {
     )
 }
 
-pub(super) fn without_release_version(files: BTreeMap<String, String>) -> BTreeMap<String, String> {
+pub(crate) fn without_release_version(files: BTreeMap<String, String>) -> BTreeMap<String, String> {
     let version = env!("CARGO_PKG_VERSION");
     let pins = [
         (
@@ -411,7 +414,7 @@ fn assert_golden(name: &str) {
 
 /// Compare `generated` (relative path -> contents) with `golden_dir`, or
 /// rewrite `golden_dir` when `A4_UPDATE_GOLDEN` is set.
-pub(super) fn compare_with_golden(
+pub(crate) fn compare_with_golden(
     name: &str,
     golden_dir: &Path,
     generated: BTreeMap<String, String>,

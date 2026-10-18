@@ -216,11 +216,11 @@ fn wait_for_terminal(client: &ApiClient, user_program_id: &str) -> Result<UserPr
     }
 }
 
-fn terminal_admission_state(state: &str) -> bool {
+pub(crate) fn terminal_admission_state(state: &str) -> bool {
     matches!(state, "ready" | "failed")
 }
 
-fn validate_program_response(response: &UserProgramResponse) -> Result<()> {
+pub(crate) fn validate_program_response(response: &UserProgramResponse) -> Result<()> {
     if response.schema != USER_PROGRAM_SCHEMA {
         bail!("Server returned an unsupported user-program response schema");
     }

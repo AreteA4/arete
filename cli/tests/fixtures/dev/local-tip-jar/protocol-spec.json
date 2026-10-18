@@ -1,0 +1,130 @@
+{
+  "schema": "arete.protocol-spec/v1",
+  "name": "localTipJar",
+  "version": "0.1.0",
+  "description": "Local development fixture: two templated System Program transfers.",
+  "programs": {
+    "system": {
+      "kind": "programSpec",
+      "programId": "11111111111111111111111111111111",
+      "programSpecHash": "arete:h1:program-spec:sha256:8837e7afe74837f2d3e894f9968ebd0a9b61d75739156b7b3c2c59f84b715778"
+    }
+  },
+  "stacks": {},
+  "params": {
+    "type": "object",
+    "properties": {
+      "amount": { "type": "string", "format": "u64" }
+    },
+    "required": ["amount"],
+    "additionalProperties": false
+  },
+  "roles": {
+    "recipient": { "description": "Receives the tip and closes the jar." }
+  },
+  "resources": {},
+  "instanceVisibility": "shared",
+  "reads": {},
+  "machines": {
+    "instance": {
+      "initial": "open",
+      "states": {
+        "open": { "kind": "recorded", "terminal": false },
+        "closed": { "kind": "recorded", "terminal": true }
+      },
+      "derive": [],
+      "reads": []
+    }
+  },
+  "steps": {
+    "open": {
+      "scope": "create",
+      "title": "Open a tip jar",
+      "authority": { "kind": "creator" },
+      "args": {
+        "type": "object",
+        "properties": {
+          "recipient": { "type": "string", "format": "pubkey" },
+          "amount": { "type": "string", "format": "u64" }
+        },
+        "required": ["amount", "recipient"],
+        "additionalProperties": false
+      },
+      "guards": [{ "code": "amount_zero", "expr": "args.amount > 0" }],
+      "reads": [],
+      "ephemeral": [],
+      "fee": { "kind": "none" },
+      "transitions": [],
+      "glue": { "atas": [], "unwrapSol": false },
+      "build": {
+        "kind": "template",
+        "instructions": [
+          {
+            "program": "system",
+            "instruction": "transfer",
+            "args": { "lamports": "args.amount" },
+            "accounts": { "source": "wallet", "destination": "args.recipient" }
+          }
+        ]
+      },
+      "access": "secret",
+      "bind": {
+        "accounts": { "creator": "wallet" },
+        "roles": { "recipient": "args.recipient" }
+      }
+    },
+    "close": {
+      "scope": "instance",
+      "title": "Close the tip jar",
+      "authority": { "kind": "role", "role": "recipient" },
+      "args": {
+        "type": "object",
+        "properties": {
+          "amount": { "type": "string", "format": "u64" }
+        },
+        "required": ["amount"],
+        "additionalProperties": false
+      },
+      "guards": [
+        { "code": "not_recipient", "expr": "wallet == instance.roles.recipient" },
+        { "code": "not_open", "expr": "instance.state == \"open\"" }
+      ],
+      "reads": [],
+      "ephemeral": [],
+      "fee": { "kind": "none" },
+      "transitions": [{ "machine": "instance", "from": ["open"], "to": "closed" }],
+      "glue": { "atas": [], "unwrapSol": false },
+      "build": {
+        "kind": "template",
+        "instructions": [
+          {
+            "program": "system",
+            "instruction": "transfer",
+            "args": { "lamports": "args.amount" },
+            "accounts": { "source": "wallet", "destination": "instance.accounts.creator" }
+          }
+        ]
+      },
+      "access": "secret"
+    }
+  },
+  "reactions": [
+    {
+      "id": "announceClosed",
+      "trigger": { "kind": "onTransition", "machine": "instance", "from": [], "to": ["closed"] },
+      "action": { "kind": "emit", "event": "tipJar.closed" }
+    }
+  ],
+  "events": {
+    "tipJar.closed": { "machine": "instance" }
+  },
+  "metadata": {},
+  "stack": {
+    "instanceAccounts": {},
+    "instanceFields": {},
+    "activity": [
+      { "step": "open", "program": "system", "instruction": "transfer", "instanceAccount": "destination", "walletAccount": "source", "amountArg": "lamports" },
+      { "step": "close", "program": "system", "instruction": "transfer", "instanceAccount": "destination", "walletAccount": "source", "amountArg": "lamports" }
+    ]
+  }
+}

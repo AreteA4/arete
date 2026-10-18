@@ -17,8 +17,8 @@ use crate::commands::sdk::{
 use super::composition::{self, ComposedStack};
 use super::lockfile::{LockedDependency, LockedLiveSpec, LockedProgram};
 use super::manifest::{
-    DependencyKind, DependencyOutputsV1, DependencySourceV1, DependencyV1, InstallTarget,
-    ManifestV1, PathSourceV1, RegistrySourceV1, StackEndpointsV1, WorkspaceSourceV1,
+    DependencyKind, DependencyOutputsV1, DependencySourceV1, DependencyV1, IdlSourceV1,
+    InstallTarget, ManifestV1, PathSourceV1, RegistrySourceV1, StackEndpointsV1, WorkspaceSourceV1,
 };
 use super::paths::ProjectPaths;
 use super::registry_cache;
@@ -70,6 +70,9 @@ pub struct InstallOptions<'a> {
     /// Make a TypeScript project root with no `package.json` a Node project:
     /// see [`typescript_setup`].
     pub setup: bool,
+    /// Skip the final report, for a command that reports the install as part
+    /// of its own result (`a4 protocol deploy`).
+    pub quiet: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -88,6 +91,12 @@ pub struct AddDependencyOptions {
     pub module: bool,
     pub allow_outside_project: bool,
     pub setup: bool,
+    /// `a4 install program <path-to-idl.json> --program-id`: the program
+    /// address when the IDL has none.
+    pub program_id: Option<String>,
+    /// Skip the install report, for a command that reports the install as
+    /// part of its own result (`a4 protocol init`).
+    pub quiet: bool,
 }
 
 #[derive(Debug, Default)]
@@ -118,6 +127,7 @@ pub fn install_without_saving(
     let output = options.output.map(PathBuf::from).unwrap_or_else(|| {
         let suffix = match target {
             InstallTarget::TypeScript => alias.clone(),
+            InstallTarget::Rust if kind == DependencyKind::Protocol => format!("{alias}-protocol"),
             InstallTarget::Rust => format!("{alias}-stack"),
             InstallTarget::Python => format!("{alias}-py"),
         };
@@ -167,10 +177,10 @@ pub fn install_without_saving(
             endpoints: BTreeMap::new(),
         };
         let requested_alias = alias.clone();
-        match kind {
-            DependencyKind::Stack => manifest.dependencies.stacks.insert(alias, dependency),
-            DependencyKind::Program => manifest.dependencies.programs.insert(alias, dependency),
-        };
+        manifest
+            .dependencies
+            .of_kind_mut(kind)
+            .insert(alias, dependency);
         manifest.validate()?;
         let manifest_path = temporary_root.join("arete.toml");
         fs::write(&manifest_path, manifest.to_toml_pretty()?)?;
@@ -195,10 +205,68 @@ pub fn add_and_install(
     options: AddDependencyOptions,
 ) -> Result<()> {
     let manifest_path = manifest_path.as_ref();
+    let created = create_missing_manifest(manifest_path)?;
+    let result = add_to_manifest_and_install(manifest_path, kind, package_spec, options);
+    if result.is_err() && created {
+        // Leave the directory as it was found.
+        let _ = fs::remove_file(manifest_path);
+    }
+    result
+}
+
+const MANIFEST_FILE: &str = "arete.toml";
+
+/// Adding a package where there is no `arete.toml` yet starts a project
+/// there, as `a4 init` would write it. Refused when a parent directory has
+/// one: that is the project, and the install should run there. Returns
+/// whether it created the file.
+fn create_missing_manifest(manifest_path: &Path) -> Result<bool> {
+    if manifest_path.exists() {
+        return Ok(false);
+    }
+    let root = match manifest_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => std::env::current_dir()?,
+    };
+    let root = super::paths::normalize_absolute(&root)?;
+    if let Some(project) = root
+        .ancestors()
+        .skip(1)
+        .find(|dir| dir.join(MANIFEST_FILE).is_file())
+    {
+        bail!(
+            "No {} in {}, but {} has one; run a4 install there (or pass --config {})",
+            MANIFEST_FILE,
+            root.display(),
+            project.display(),
+            project.join(MANIFEST_FILE).display()
+        );
+    }
+    fs::create_dir_all(&root)?;
+    let contents = crate::commands::config::new_manifest_contents(&root, None)
+        .with_context(|| format!("Failed to build {}", manifest_path.display()))?;
+    fs::write(manifest_path, contents)
+        .with_context(|| format!("Failed to write {}", manifest_path.display()))?;
+    eprintln!("Created {} (a new project)", manifest_path.display());
+    Ok(true)
+}
+
+fn add_to_manifest_and_install(
+    manifest_path: &Path,
+    kind: DependencyKind,
+    package_spec: &str,
+    options: AddDependencyOptions,
+) -> Result<()> {
+    if kind == DependencyKind::Program && is_idl_path(package_spec) {
+        return add_idl_program_and_install(manifest_path, package_spec, options);
+    }
+    if options.program_id.is_some() {
+        bail!("--program-id applies to `a4 install program <path-to-idl.json>`");
+    }
     let original = fs::read(manifest_path)
         .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
     let previous = ProjectManifest::load(manifest_path)?;
-    let mut manifest = previous.document.clone();
+    let manifest = previous.document.clone();
     let (package, supplied_requirement) = split_package_requirement(package_spec)?;
     // The remote lookup (`package`) is sent to the registry unchanged; the
     // local alias is a deterministic cross-language identifier derived from it
@@ -216,11 +284,10 @@ pub fn add_and_install(
     // path segment), so a project written by an older CLI stores a key the new
     // default would not reproduce.
     let declared_alias = {
-        let entries: Box<dyn Iterator<Item = (&String, &DependencyV1)>> = match kind {
-            DependencyKind::Stack => Box::new(manifest.dependencies.stacks.iter()),
-            DependencyKind::Program => Box::new(manifest.dependencies.programs.iter()),
-        };
-        entries
+        manifest
+            .dependencies
+            .of_kind(kind)
+            .iter()
             .filter(|(_, entry)| match &entry.source {
                 DependencySourceV1::Registry(RegistrySourceV1 { registry }) => {
                     registry.eq_ignore_ascii_case(&package)
@@ -255,10 +322,7 @@ pub fn add_and_install(
         }
         (None, explicit) => select_local_alias(kind, &package, explicit)?,
     };
-    let existing = match kind {
-        DependencyKind::Stack => manifest.dependencies.stacks.get(&alias),
-        DependencyKind::Program => manifest.dependencies.programs.get(&alias),
-    };
+    let existing = manifest.dependencies.of_kind(kind).get(&alias);
     if let Some(existing) = existing {
         match &existing.source {
             DependencySourceV1::Registry(RegistrySourceV1 { registry })
@@ -276,7 +340,129 @@ pub fn add_and_install(
         }
         None => resolve_saved_requirement(kind, &alias, &package, options.exact)?,
     };
-    let targets = options.target.map(|target| vec![target]);
+    save_dependency_and_install(
+        manifest_path,
+        &original,
+        &previous,
+        manifest,
+        kind,
+        alias,
+        DependencySourceV1::Registry(RegistrySourceV1 { registry: package }),
+        Some(requirement),
+        &options,
+    )
+}
+
+/// `a4 install program <path-to-idl.json> [--alias <alias>] [--program-id
+/// <address>]`: declare a program built from a local IDL and install it. The
+/// IDL must be inside the project; arete.toml records its project-relative
+/// path, and arete.lock the ProgramSpec hash built from it.
+fn add_idl_program_and_install(
+    manifest_path: &Path,
+    idl_spec: &str,
+    options: AddDependencyOptions,
+) -> Result<()> {
+    let kind = DependencyKind::Program;
+    if options.exact {
+        bail!("--exact applies to registry packages; an IDL install has no version");
+    }
+    let original = fs::read(manifest_path)
+        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
+    let previous = ProjectManifest::load(manifest_path)?;
+    let manifest = previous.document.clone();
+    let root = super::paths::normalize_absolute(&previous.root)?;
+    let supplied = Path::new(idl_spec);
+    let absolute = if supplied.is_absolute() {
+        supplied.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(supplied)
+    };
+    let canonical =
+        fs::canonicalize(&absolute).with_context(|| format!("Failed to read IDL {idl_spec}"))?;
+    let canonical_root = fs::canonicalize(&root)?;
+    let idl = canonical
+        .strip_prefix(&canonical_root)
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "IDL {idl_spec} is outside the project; copy it under {} (for example into idl/) and install it from there",
+                root.display()
+            )
+        })?
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
+    let stem = Path::new(&idl)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.trim_end_matches(".json").trim_end_matches(".idl"))
+        .unwrap_or_default()
+        .to_string();
+    let same_idl = |source: &DependencySourceV1| matches!(source, DependencySourceV1::Idl(IdlSourceV1 { idl: declared, .. }) if Path::new(declared) == Path::new(&idl));
+    let declared_alias = manifest
+        .dependencies
+        .of_kind(kind)
+        .iter()
+        .find(|(_, entry)| same_idl(&entry.source))
+        .map(|(alias, _)| alias.clone());
+    let alias = match (declared_alias, options.alias.as_deref()) {
+        (Some(declared), Some(requested)) if declared != requested => bail!(
+            "arete.toml already declares IDL {idl} under the local alias '{declared}'; remove that entry first to install it as '{requested}'"
+        ),
+        (Some(declared), _) => declared,
+        (None, explicit) => select_local_alias(kind, &stem, explicit)?,
+    };
+    if let Some(existing) = manifest.dependencies.of_kind(kind).get(&alias) {
+        if !same_idl(&existing.source) {
+            bail!(
+                "program alias '{alias}' already names a different dependency in arete.toml; pass --alias <name> to choose another local alias for {idl}"
+            );
+        }
+    }
+    let source = DependencySourceV1::Idl(IdlSourceV1 {
+        idl,
+        program_id: options.program_id.clone(),
+    });
+    save_dependency_and_install(
+        manifest_path,
+        &original,
+        &previous,
+        manifest,
+        kind,
+        alias,
+        source,
+        None,
+        &options,
+    )
+}
+
+/// Whether `a4 install program <value>` names a local IDL file rather than a
+/// registry package.
+fn is_idl_path(value: &str) -> bool {
+    value.ends_with(".json") || Path::new(value).is_file()
+}
+
+/// Write one dependency into arete.toml (keeping its format) and install the
+/// project, restoring arete.toml when the install fails before it commits.
+#[allow(clippy::too_many_arguments)]
+fn save_dependency_and_install(
+    manifest_path: &Path,
+    original: &[u8],
+    previous: &ProjectManifest,
+    mut manifest: ManifestV1,
+    kind: DependencyKind,
+    alias: String,
+    source: DependencySourceV1,
+    requirement: Option<String>,
+    options: &AddDependencyOptions,
+) -> Result<()> {
+    let existing = manifest.dependencies.of_kind(kind).get(&alias);
+    let targets = match (kind, options.target) {
+        // A protocol is a TypeScript client unless Rust or Python is asked
+        // for, whatever the project generates.
+        (DependencyKind::Protocol, None) => Some(vec![InstallTarget::TypeScript]),
+        (_, target) => target.map(|target| vec![target]),
+    };
     let mut outputs = DependencyOutputsV1::default();
     if let (Some(target), Some(output)) = (options.target, options.output.as_ref()) {
         match target {
@@ -293,26 +479,16 @@ pub fn add_and_install(
         .map(|existing| existing.endpoints.clone())
         .unwrap_or_default();
     let dependency = DependencyV1 {
-        source: DependencySourceV1::Registry(RegistrySourceV1 { registry: package }),
-        version: Some(requirement),
+        source,
+        version: requirement,
         targets,
         outputs,
         endpoints,
     };
-    match kind {
-        DependencyKind::Stack => {
-            manifest
-                .dependencies
-                .stacks
-                .insert(alias.clone(), dependency.clone());
-        }
-        DependencyKind::Program => {
-            manifest
-                .dependencies
-                .programs
-                .insert(alias.clone(), dependency.clone());
-        }
-    }
+    manifest
+        .dependencies
+        .of_kind_mut(kind)
+        .insert(alias.clone(), dependency.clone());
     if let Some(package) = options.typescript_package.as_ref() {
         manifest.sdk.typescript.package = package.clone();
     }
@@ -326,7 +502,7 @@ pub fn add_and_install(
     manifest.validate()?;
     let replacement_manifest_hash = manifest.resolution_hash()?;
     let replacement = render_manifest_addition(
-        &original,
+        original,
         kind,
         &alias,
         &dependency,
@@ -339,10 +515,11 @@ pub fn add_and_install(
         InstallOptions {
             allow_outside_project: options.allow_outside_project,
             setup: options.setup,
+            quiet: options.quiet,
             ..InstallOptions::default()
         },
         &[(kind, alias.clone())],
-        Some(&previous),
+        Some(previous),
     );
     if result.is_err() {
         let install_committed =
@@ -351,7 +528,7 @@ pub fn add_and_install(
                 .flatten()
                 .is_some_and(|lock| lock.is_fresh(&replacement_manifest_hash));
         if !install_committed {
-            write_manifest_atomic(manifest_path, &original)?;
+            write_manifest_atomic(manifest_path, original)?;
         }
     }
     result
@@ -394,14 +571,11 @@ pub fn remove_and_install(
         }
     }
 
-    match kind {
-        DependencyKind::Stack => {
-            existing.document.dependencies.stacks.remove(alias);
-        }
-        DependencyKind::Program => {
-            existing.document.dependencies.programs.remove(alias);
-        }
-    }
+    existing
+        .document
+        .dependencies
+        .of_kind_mut(kind)
+        .remove(alias);
     existing.document.validate()?;
     let replacement_manifest_hash = existing.document.resolution_hash()?;
     let replacement = render_manifest_removal(&original, kind, alias)?;
@@ -443,10 +617,7 @@ fn render_manifest_addition(
     module_target: Option<InstallTarget>,
 ) -> Result<String> {
     let mut document = parse_editable_manifest(original)?;
-    let kind_key = match kind {
-        DependencyKind::Stack => "stacks",
-        DependencyKind::Program => "programs",
-    };
+    let kind_key = kind.namespace();
     insert_manifest_item(
         document.as_item_mut(),
         &["dependencies", kind_key, alias],
@@ -686,10 +857,7 @@ fn render_composition(
 
 fn render_manifest_removal(original: &[u8], kind: DependencyKind, alias: &str) -> Result<String> {
     let mut document = parse_editable_manifest(original)?;
-    let kind_key = match kind {
-        DependencyKind::Stack => "stacks",
-        DependencyKind::Program => "programs",
-    };
+    let kind_key = kind.namespace();
     remove_manifest_item(document.as_item_mut(), &["dependencies", kind_key, alias])?;
     Ok(document.to_string())
 }
@@ -760,6 +928,12 @@ fn dependency_manifest_item(dependency: &DependencyV1) -> Item {
         }
         DependencySourceV1::Workspace(WorkspaceSourceV1 { workspace }) => {
             source.insert("workspace", workspace.clone().into());
+        }
+        DependencySourceV1::Idl(IdlSourceV1 { idl, program_id }) => {
+            source.insert("idl", idl.clone().into());
+            if let Some(program_id) = program_id {
+                source.insert("program_id", program_id.clone().into());
+            }
         }
     }
     source.fmt();
@@ -915,6 +1089,7 @@ fn resolve_saved_requirement(
             requirement: "*".into(),
             locked_package_release_hash: None,
             locked_programs: Vec::new(),
+            locked_stacks: Vec::new(),
         }],
         targets: vec![InstallTarget::TypeScript],
         generator_contract: GENERATOR_CONTRACT.into(),
@@ -929,15 +1104,14 @@ fn resolve_saved_requirement(
     if resolved.alias() != alias || resolved.package() != package {
         bail!("Registry response did not match requested package '{package}'");
     }
+    let mut resolved = resolved.clone();
+    super::protocol::fetch_missing_protocol_spec(&mut resolved)?;
+    let resolved = &resolved;
     verify_resolved_kind_and_contract(kind, resolved)?;
     verify_resolved_extensions(resolved, &[InstallTarget::TypeScript])?;
     verify_resolved_release_identity(resolved)?;
     verify_resolved_stack_delivery(resolved)?;
-    let version = match resolved {
-        ResolvedRegistryDependency::Stack { version, .. }
-        | ResolvedRegistryDependency::Program { version, .. } => version,
-    };
-    let version = semver::Version::parse(version)?;
+    let version = semver::Version::parse(resolved.version())?;
     Ok(if exact {
         format!("={version}")
     } else {
@@ -1005,6 +1179,18 @@ fn install_loaded_project(
                 manifest.path.display()
             );
         }
+        // `--locked` restores published clients; one never published has
+        // nothing to restore.
+        if let Some(unpublished) = lock
+            .dependencies
+            .iter()
+            .find(|entry| entry.is_local_build() && !entry.is_published())
+        {
+            bail!(
+                "protocol '{}' was only ever generated from a local build (`a4 dev`) and has no published release to restore. Deploy it with `a4 protocol deploy`, then run `a4 install`; --locked changed nothing",
+                unpublished.alias
+            );
+        }
     }
     validate_local_closure(&manifest)?;
     if options.dry_run {
@@ -1017,13 +1203,15 @@ fn install_loaded_project(
 
     let resolved = resolve_dependencies(&manifest, previous_lock.as_ref(), options.update)?;
     let prospective_lock = build_lock(&manifest, &resolved)?;
-    // `--locked` never rewrites arete.lock: it installs exactly what the lock
+    // `--locked` never changes resolution: it installs exactly what the lock
     // pins, which for a lock written before program SDK identities were
-    // resolved leaves only the program package releases implied.
+    // resolved leaves only the program package releases implied. It only
+    // drops `local_build` markers: the published clients are restored.
     let prospective_lock = match previous_lock.as_ref() {
         Some(previous) if options.locked => {
-            check_locked_resolution(previous, &prospective_lock, &resolved)?;
-            previous.clone()
+            let published = without_local_builds(previous);
+            check_locked_resolution(&published, &prospective_lock, &resolved)?;
+            published
         }
         _ => prospective_lock,
     };
@@ -1082,6 +1270,7 @@ fn install_loaded_project(
             )
         })
         .flatten();
+    let import_alias_note = program_import_alias(&manifest, &plan, &resolved);
     let report = InstallReport {
         lockfile: lock_path.display().to_string(),
         installed: prospective_lock.dependencies.len(),
@@ -1112,13 +1301,51 @@ fn install_loaded_project(
         notes: redeploy_notes(&manifest, previous_lock.as_ref(), &prospective_lock)
             .into_iter()
             .chain(composition_notes(&resolved))
+            .chain(unbundled_program_notes(&resolved, &prospective_lock))
             .chain(stale_notes)
+            .chain(import_alias_note)
             .collect(),
         warnings: served_version_notices(&manifest, &resolved),
     }
     .with_dependencies(&requested, previous_lock.as_ref(), &prospective_lock)
     .with_auth(&requested, &resolved);
+    if options.quiet {
+        return Ok(());
+    }
     report.emit()
+}
+
+/// Make the installed TypeScript programs importable as `@programs/<name>`
+/// (see [`typescript_setup::ensure_program_import_alias`]), when the
+/// project installs any into their own directories under one parent.
+fn program_import_alias(
+    manifest: &ProjectManifest,
+    plan: &InstallPlan,
+    resolved: &[ResolvedProjectDependency],
+) -> Option<String> {
+    let installed = resolved
+        .iter()
+        .filter(|dependency| program_install_identity(dependency).is_some())
+        .map(|dependency| dependency.alias())
+        .collect::<BTreeSet<_>>();
+    let parents = plan
+        .outputs
+        .iter()
+        .filter(|output| {
+            output.kind == DependencyKind::Program
+                && output.target == InstallTarget::TypeScript
+                && installed.contains(output.alias.as_str())
+                && output.path.extension().and_then(|ext| ext.to_str()) != Some("ts")
+        })
+        .filter_map(|output| output.path.parent())
+        .collect::<BTreeSet<_>>();
+    match parents.len() {
+        0 => None,
+        1 => typescript_setup::ensure_program_import_alias(&manifest.root, parents.first()?),
+        _ => Some(
+            "Installed TypeScript programs are in more than one directory, so a4 added no `@programs/*` tsconfig path; import them by path".to_string(),
+        ),
+    }
 }
 
 /// What each composed stack's resolution says: explicit program SDKs that
@@ -1132,6 +1359,49 @@ fn composition_notes(resolved: &[ResolvedProjectDependency]) -> Vec<String> {
                     notes.push(note.clone());
                 }
             }
+        }
+    }
+    notes
+}
+
+/// One note per program a protocol client does not bundle (its package
+/// leaves the program unpinned: installed from a local IDL, with no program
+/// package): the project's own install of that exact program when the lock
+/// has one, else how to add it.
+fn unbundled_program_notes(
+    resolved: &[ResolvedProjectDependency],
+    lock: &ProjectLock,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    for dependency in resolved {
+        let ResolvedProjectDependency::Registry { resolved, .. } = dependency else {
+            continue;
+        };
+        let ResolvedRegistryDependency::Protocol {
+            alias,
+            protocol,
+            unpinned_programs,
+            ..
+        } = resolved.as_ref()
+        else {
+            continue;
+        };
+        for program in super::protocol::unbundled_protocol_programs(protocol, unpinned_programs) {
+            let own = lock.dependencies.iter().find(|entry| {
+                entry.kind == DependencyKind::Program
+                    && entry.program_spec_hash.as_deref()
+                        == Some(program.program_spec_hash.as_str())
+            });
+            notes.push(match own {
+                Some(entry) => format!(
+                    "note: protocol {alias} does not bundle an SDK for its program '{}'; use this project's program {}, which is the same program (same ProgramSpec).",
+                    program.key, entry.alias
+                ),
+                None => format!(
+                    "note: protocol {alias} does not bundle an SDK for its program '{}' ({}): it was installed from a local IDL, so there is no program package. Steps don't need it; if the app does, install it from its IDL: a4 install program <idl.json> --as <alias>.",
+                    program.key, program.program_id
+                ),
+            });
         }
     }
     notes
@@ -1349,6 +1619,10 @@ impl SdkReferencePointer {
                         vec!["arete-programs"],
                         "https://docs.arete.run/using-stacks/transactions/",
                     ),
+                    DependencyKind::Protocol => (
+                        vec!["arete-streams", "arete-programs"],
+                        "https://docs.arete.run/sdks/typescript/",
+                    ),
                 };
                 Self {
                     kind: output.kind,
@@ -1368,10 +1642,11 @@ impl SdkReferencePointer {
         let what = match self.kind {
             DependencyKind::Stack => "views, row fields (TypeScript paths with their wire names, types and units), reads and programs",
             DependencyKind::Program => "reads, operations and accounts",
+            DependencyKind::Protocol => "steps, rejections, events and hoisted stacks and programs",
         };
         let part = match self.kind {
             DependencyKind::Stack => "--read <name>` or `--view <Entity/view>",
-            DependencyKind::Program => "--read <name>",
+            DependencyKind::Program | DependencyKind::Protocol => "--read <name>",
         };
         println!(
             "SDK reference: {} {}: `{} {part}` prints one part with the row fields it uses (or the MCP tool {}).",
@@ -2505,8 +2780,14 @@ enum ResolvedProjectDependency {
         alias: String,
         source: String,
         targets: Vec<InstallTarget>,
-        program_spec_path: PathBuf,
         program_spec: arete_artifacts::ProgramSpecArtifact,
+        /// The project-relative IDL file of an IDL source; `None` for a
+        /// ProgramSpec file.
+        idl: Option<String>,
+        /// The Program Release `a4 protocol deploy` recorded after pushing
+        /// this IDL's ProgramSpec to the account (kept from arete.lock while
+        /// the ProgramSpec is unchanged); `None` until then.
+        program_release_hash: Option<String>,
     },
     Registry {
         kind: DependencyKind,
@@ -2615,6 +2896,20 @@ fn resolve_dependencies(
                             && entry.requirement.as_deref() == Some(requirement.as_str())
                             && entry.targets == targets
                     });
+                // This project's own protocol before its first publish: the
+                // client stays generated from the local build `a4 dev` made.
+                if let Some(entry) =
+                    reusable.filter(|entry| entry.is_local_build() && !entry.is_published())
+                {
+                    resolved.push(resolve_unpublished_local_build(
+                        dependency,
+                        registry,
+                        requirement,
+                        targets,
+                        entry,
+                    )?);
+                    continue;
+                }
                 registry_requests.push(RegistryDependencyRequest {
                     kind,
                     alias: alias.clone(),
@@ -2625,11 +2920,22 @@ fn resolve_dependencies(
                     locked_programs: reusable
                         .map(|entry| entry.programs.clone())
                         .unwrap_or_default(),
+                    locked_stacks: reusable
+                        .map(|entry| entry.stacks.clone())
+                        .unwrap_or_default(),
                 });
             }
             DependencySourceV1::Path(PathSourceV1 { path }) => resolved.push(
                 resolve_path_dependency(&paths, kind, alias, dependency, path, targets)?,
             ),
+            DependencySourceV1::Idl(source) => resolved.push(resolve_idl_dependency(
+                &paths,
+                alias,
+                dependency,
+                source,
+                targets,
+                previous.get(&(kind, alias.as_str())).copied(),
+            )?),
             DependencySourceV1::Workspace(WorkspaceSourceV1 { workspace })
                 if composed_workspace(manifest, kind, dependency).is_some() =>
             {
@@ -2745,7 +3051,8 @@ pub(crate) fn resolve_registry_batch(
     if response.dependencies.len() != registry_requests.len() {
         bail!("Registry resolver did not return exactly one dependency per request");
     }
-    for (request, response) in registry_requests.iter().zip(response.dependencies) {
+    for (request, mut response) in registry_requests.iter().zip(response.dependencies) {
+        super::protocol::fetch_missing_protocol_spec(&mut response)?;
         if response.alias() != request.alias {
             bail!(
                 "Resolver response order mismatch: expected '{}', received '{}'",
@@ -2787,6 +3094,7 @@ pub(crate) fn resolve_registry_batch(
                 );
             }
             verify_locked_program_sdks(request, &response)?;
+            super::protocol::verify_locked_protocol_stacks(request, &response)?;
         }
         resolved.push(response);
     }
@@ -2861,6 +3169,7 @@ pub(crate) fn restore_locked_registry_cache(
         requirement: dependency.version.clone().expect("validated version"),
         locked_package_release_hash: Some(package_release_hash),
         locked_programs: locked.programs.clone(),
+        locked_stacks: locked.stacks.clone(),
     };
     for dependency in resolve_registry_requests(manifest, vec![request])? {
         if let ResolvedProjectDependency::Registry { resolved, .. } = &dependency {
@@ -2903,11 +3212,73 @@ fn resolve_path_dependency(
                 alias: alias.into(),
                 source,
                 targets,
-                program_spec_path,
                 program_spec,
+                idl: None,
+                program_release_hash: None,
             })
         }
+        DependencyKind::Protocol => {
+            bail!("protocol dependency '{alias}' must come from the registry")
+        }
     }
+}
+
+/// A program installed from a local IDL: its ProgramSpec is built from the
+/// IDL bytes exactly as `a4 program build` and the registry build it, so the
+/// locked ProgramSpec hash is the one a registry install of the same IDL
+/// would pin. It has no program release until `a4 protocol deploy` pushes it
+/// and records one in `previous` (the arete.lock entry), which is kept while
+/// the source and its ProgramSpec are unchanged.
+fn resolve_idl_dependency(
+    paths: &ProjectPaths,
+    alias: &str,
+    dependency: &DependencyV1,
+    source: &IdlSourceV1,
+    targets: Vec<InstallTarget>,
+    previous: Option<&LockedDependency>,
+) -> Result<ResolvedProjectDependency> {
+    let idl_path = paths.input(&source.idl, "IDL dependency")?;
+    let bytes = fs::read(&idl_path)
+        .with_context(|| format!("Failed to read IDL {}", idl_path.display()))?;
+    let payload =
+        arete_hash::build_program_spec_v1_from_bytes(&bytes, source.program_id.as_deref())
+            .map_err(|error| match error {
+                arete_hash::HashError::MissingProgramId => anyhow::anyhow!(
+                    "IDL {} has no program address; pass --program-id <address>",
+                    source.idl
+                ),
+                error => anyhow::Error::new(error).context(format!(
+                    "Failed to build a ProgramSpec from IDL {}",
+                    source.idl
+                )),
+            })?;
+    let program_spec = arete_artifacts::ProgramSpecArtifact::new(payload)?;
+    let source_description = dependency.source.stable_description();
+    let program_spec_hash = program_spec.artifact_hash.to_string();
+    let program_release_hash = previous
+        .filter(|entry| {
+            entry.kind == DependencyKind::Program
+                && entry.source == source_description
+                && entry.program_spec_hash.as_deref() == Some(program_spec_hash.as_str())
+        })
+        .and_then(|entry| entry.program_release_hash.clone());
+    Ok(ResolvedProjectDependency::LocalProgram {
+        alias: alias.into(),
+        source: source_description,
+        targets,
+        program_spec,
+        program_release_hash,
+        idl: Some(
+            Path::new(&source.idl)
+                .components()
+                .filter_map(|component| match component {
+                    std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("/"),
+        ),
+    })
 }
 
 fn resolve_workspace_dependency(
@@ -2955,9 +3326,13 @@ fn resolve_workspace_dependency(
                 alias: alias.into(),
                 source,
                 targets,
-                program_spec_path,
                 program_spec,
+                idl: None,
+                program_release_hash: None,
             })
+        }
+        DependencyKind::Protocol => {
+            bail!("protocol dependency '{alias}' must come from the registry")
         }
     }
 }
@@ -2974,19 +3349,29 @@ fn verify_resolved_kind_and_contract(
     expected: DependencyKind,
     resolved: &ResolvedRegistryDependency,
 ) -> Result<()> {
-    let (actual, contract) = match resolved {
+    let contract = match resolved {
         ResolvedRegistryDependency::Stack {
             generator_contract, ..
-        } => (DependencyKind::Stack, generator_contract),
-        ResolvedRegistryDependency::Program {
+        }
+        | ResolvedRegistryDependency::Program {
             generator_contract, ..
-        } => (DependencyKind::Program, generator_contract),
+        }
+        | ResolvedRegistryDependency::Protocol {
+            generator_contract, ..
+        } => generator_contract,
     };
+    let actual = resolved.kind();
     if actual != expected {
         bail!("Registry resolver returned kind '{actual}' for requested '{expected}'");
     }
     if contract != GENERATOR_CONTRACT {
         bail!("Registry requires unsupported generator contract '{contract}'");
+    }
+    // A protocol's stacks are stack resolutions under the same contract.
+    if let ResolvedRegistryDependency::Protocol { stacks, .. } = resolved {
+        for stack in stacks {
+            verify_resolved_kind_and_contract(DependencyKind::Stack, stack)?;
+        }
     }
     Ok(())
 }
@@ -2998,6 +3383,23 @@ fn verify_resolved_extensions(
     let extensions = match resolved {
         ResolvedRegistryDependency::Stack { sdk_extensions, .. }
         | ResolvedRegistryDependency::Program { sdk_extensions, .. } => sdk_extensions,
+        ResolvedRegistryDependency::Protocol {
+            stacks, programs, ..
+        } => {
+            for stack in stacks {
+                verify_resolved_extensions(stack, targets)?;
+            }
+            for program in programs {
+                if let Some(extensions) = &program.sdk_extensions {
+                    verify_extension_list(
+                        extensions,
+                        targets,
+                        &format!(" for program '{}'", program.install_name),
+                    )?;
+                }
+            }
+            return Ok(());
+        }
     };
     verify_extension_list(extensions, targets, "")?;
     // A stack's programs carry their program SDKs' extensions under the same
@@ -3109,6 +3511,34 @@ fn verify_resolved_release_identity(resolved: &ResolvedRegistryDependency) -> Re
             "Registry returned an invalid immutable release identity '{release}' for '{}'",
             resolved.package()
         );
+    }
+    if let ResolvedRegistryDependency::Protocol {
+        package,
+        stacks,
+        programs,
+        ..
+    } = resolved
+    {
+        for stack in stacks {
+            verify_resolved_release_identity(stack)?;
+        }
+        for program in programs {
+            let package_reference = program.program_package.as_ref();
+            if program.release.program_release_hash.trim().is_empty()
+                || program.release.program_spec_hash != program.definition.program_spec_hash
+                || !package_reference.is_some_and(|reference| {
+                    !reference.package.trim().is_empty()
+                        && !reference.version.trim().is_empty()
+                        && is_package_release_hash(&reference.package_release_hash)
+                })
+            {
+                bail!(
+                    "Registry returned program '{}' for protocol '{package}' without an exact program release and program package identity",
+                    program.definition.program_id
+                );
+            }
+        }
+        return super::protocol::verify_resolved_protocol(resolved);
     }
     if let ResolvedRegistryDependency::Program {
         package,
@@ -3328,14 +3758,18 @@ fn build_lock(
                     .collect(),
                 parts: Vec::new(),
                 sdk_extension_hashes: Vec::new(),
+                protocol: None,
+                stacks: Vec::new(),
                 targets: targets.clone(),
                 generator_contract: GENERATOR_CONTRACT.into(),
+                local_build: None,
             },
             ResolvedProjectDependency::LocalProgram {
                 alias,
                 source,
                 targets,
                 program_spec,
+                program_release_hash,
                 ..
             } => LockedDependency {
                 kind: DependencyKind::Program,
@@ -3347,13 +3781,16 @@ fn build_lock(
                 stack_manifest_hash: None,
                 program_id: Some(program_spec.payload.program_id.clone()),
                 program_spec_hash: Some(program_spec.artifact_hash.to_string()),
-                program_release_hash: None,
+                program_release_hash: program_release_hash.clone(),
                 live_specs: Vec::new(),
                 programs: Vec::new(),
                 parts: Vec::new(),
                 sdk_extension_hashes: Vec::new(),
+                protocol: None,
+                stacks: Vec::new(),
                 targets: targets.clone(),
                 generator_contract: GENERATOR_CONTRACT.into(),
+                local_build: None,
             },
             ResolvedProjectDependency::Registry {
                 kind,
@@ -3408,7 +3845,8 @@ fn check_locked_resolution(
                 ..
             } if resolved.alias() == after.alias => match resolved.as_ref() {
                 ResolvedRegistryDependency::Stack { programs, .. } => Some(programs),
-                ResolvedRegistryDependency::Program { .. } => None,
+                ResolvedRegistryDependency::Program { .. }
+                | ResolvedRegistryDependency::Protocol { .. } => None,
             },
             _ => None,
         });
@@ -3514,6 +3952,17 @@ fn locked_program_match(
     }
 }
 
+/// The protocol release a local-build resolution (`a4 dev`) was generated
+/// from; `None` for a registry resolution.
+fn local_build_of(resolved: &ResolvedRegistryDependency) -> Option<&str> {
+    match resolved {
+        ResolvedRegistryDependency::Protocol { protocol, .. } if protocol.local_dev => {
+            Some(protocol.protocol_release_hash.as_str())
+        }
+        _ => None,
+    }
+}
+
 fn registry_lock(
     kind: DependencyKind,
     source: &str,
@@ -3521,6 +3970,22 @@ fn registry_lock(
     targets: &[InstallTarget],
     resolved: &ResolvedRegistryDependency,
 ) -> LockedDependency {
+    if let Some(local_build) = local_build_of(resolved) {
+        let ResolvedRegistryDependency::Protocol {
+            alias, protocol, ..
+        } = resolved
+        else {
+            unreachable!("only a protocol resolution is a local build");
+        };
+        return unpublished_protocol_lock(
+            alias,
+            source,
+            requirement,
+            targets,
+            local_build,
+            protocol,
+        );
+    }
     match resolved {
         ResolvedRegistryDependency::Stack {
             alias,
@@ -3551,21 +4016,7 @@ fn registry_lock(
                 .collect(),
             programs: programs
                 .iter()
-                .map(|program| LockedProgram {
-                    program_id: program.definition.program_id.clone(),
-                    program_spec_hash: program.definition.program_spec_hash.clone(),
-                    program_release_hash: Some(program.release.program_release_hash.clone()),
-                    package_release_hash: program
-                        .program_package
-                        .as_ref()
-                        .map(|package| package.package_release_hash.clone()),
-                    sdk_extension_hashes: super::resolver::program_extension_artifacts(
-                        program, targets,
-                    )
-                    .into_iter()
-                    .map(extension_lock_hash)
-                    .collect(),
-                })
+                .map(|program| locked_registry_program(program, targets))
                 .collect(),
             parts: Vec::new(),
             sdk_extension_hashes: sdk_extensions
@@ -3577,8 +4028,11 @@ fn registry_lock(
                 })
                 .map(|extension| extension.content_hash.clone())
                 .collect(),
+            protocol: None,
+            stacks: Vec::new(),
             targets: targets.to_vec(),
             generator_contract: GENERATOR_CONTRACT.into(),
+            local_build: None,
         },
         ResolvedRegistryDependency::Program {
             alias,
@@ -3610,9 +4064,90 @@ fn registry_lock(
                 })
                 .map(|extension| extension.content_hash.clone())
                 .collect(),
+            protocol: None,
+            stacks: Vec::new(),
             targets: targets.to_vec(),
             generator_contract: GENERATOR_CONTRACT.into(),
+            local_build: None,
         },
+        ResolvedRegistryDependency::Protocol {
+            alias,
+            version,
+            package_release_hash,
+            protocol,
+            stacks,
+            programs,
+            ..
+        } => LockedDependency {
+            kind,
+            alias: alias.clone(),
+            source: source.into(),
+            requirement: Some(requirement.into()),
+            version: Some(version.clone()),
+            package_release_hash: Some(package_release_hash.clone()),
+            stack_manifest_hash: None,
+            program_id: None,
+            program_spec_hash: None,
+            program_release_hash: None,
+            live_specs: Vec::new(),
+            programs: programs
+                .iter()
+                .map(|program| locked_registry_program(program, targets))
+                .collect(),
+            parts: Vec::new(),
+            sdk_extension_hashes: Vec::new(),
+            protocol: Some(super::lockfile::LockedProtocol {
+                protocol_release_hash: protocol.protocol_release_hash.clone(),
+                protocol_spec_hash: protocol.protocol_spec_hash.clone(),
+                deployment_id: protocol.deployment.deployment_id.clone(),
+                deployment_access: protocol.deployment.access.as_str().into(),
+            }),
+            stacks: stacks
+                .iter()
+                .map(|stack| {
+                    let locked = registry_lock(
+                        DependencyKind::Stack,
+                        &format!("registry:{}", stack.package()),
+                        stack.version(),
+                        targets,
+                        stack,
+                    );
+                    super::lockfile::LockedProtocolStack {
+                        alias: locked.alias,
+                        package: stack.package().into(),
+                        version: stack.version().into(),
+                        package_release_hash: stack.package_release_hash().into(),
+                        stack_manifest_hash: locked.stack_manifest_hash.unwrap_or_default(),
+                        live_specs: locked.live_specs,
+                        programs: locked.programs,
+                        sdk_extension_hashes: locked.sdk_extension_hashes,
+                    }
+                })
+                .collect(),
+            targets: targets.to_vec(),
+            generator_contract: GENERATOR_CONTRACT.into(),
+            local_build: None,
+        },
+    }
+}
+
+/// One exact program release as a lock pins it.
+fn locked_registry_program(
+    program: &crate::api_client::RegistryProgramInstallResponse,
+    targets: &[InstallTarget],
+) -> LockedProgram {
+    LockedProgram {
+        program_id: program.definition.program_id.clone(),
+        program_spec_hash: program.definition.program_spec_hash.clone(),
+        program_release_hash: Some(program.release.program_release_hash.clone()),
+        package_release_hash: program
+            .program_package
+            .as_ref()
+            .map(|package| package.package_release_hash.clone()),
+        sdk_extension_hashes: super::resolver::program_extension_artifacts(program, targets)
+            .into_iter()
+            .map(extension_lock_hash)
+            .collect(),
     }
 }
 
@@ -3628,6 +4163,16 @@ fn validate_local_closure(manifest: &ProjectManifest) -> Result<()> {
     for (kind, alias, dependency) in manifest.dependencies() {
         match &dependency.source {
             DependencySourceV1::Registry(_) => {}
+            DependencySourceV1::Idl(source) => {
+                resolve_idl_dependency(
+                    &paths,
+                    alias,
+                    dependency,
+                    source,
+                    dependency.selected_targets(&manifest.document.sdk).to_vec(),
+                    None,
+                )?;
+            }
             DependencySourceV1::Path(PathSourceV1 { path }) => {
                 resolve_path_dependency(
                     &paths,
@@ -3774,12 +4319,22 @@ fn generate_all(
     resolved: &[ResolvedProjectDependency],
     staging_root: &Path,
 ) -> Result<Vec<StagedOutput>> {
+    generate_outputs(manifest, plan.outputs.iter(), resolved, staging_root)
+}
+
+/// Generate `outputs` into `staging_root`; [`generate_all`] for a subset.
+fn generate_outputs<'a>(
+    manifest: &ProjectManifest,
+    outputs: impl Iterator<Item = &'a super::graph::PlannedOutput>,
+    resolved: &[ResolvedProjectDependency],
+    staging_root: &Path,
+) -> Result<Vec<StagedOutput>> {
     let by_alias = resolved
         .iter()
         .map(|dependency| ((dependency.kind(), dependency.alias()), dependency))
         .collect::<BTreeMap<_, _>>();
-    let mut staged = Vec::with_capacity(plan.outputs.len());
-    for (position, output) in plan.outputs.iter().enumerate() {
+    let mut staged = Vec::new();
+    for (position, output) in outputs.enumerate() {
         let dependency = by_alias
             .get(&(output.kind, output.alias.as_str()))
             .ok_or_else(|| {
@@ -3804,6 +4359,7 @@ fn generate_all(
             .join(format!("{position:04}"))
             .join("output");
         let reference = reference_context(&manifest.root, &output.path, dependency);
+        let program_install = program_install_identity(dependency);
         let options = ProjectGenerationOptions {
             alias: &output.alias,
             target: output.target,
@@ -3815,6 +4371,7 @@ fn generate_all(
                 .dependency(output.kind, &output.alias)
                 .map(|dependency| &dependency.endpoints),
             reference: Some(&reference),
+            program_install: program_install.as_ref(),
         };
         match dependency {
             ResolvedProjectDependency::LocalStack {
@@ -3822,9 +4379,9 @@ fn generate_all(
                 artifact_roots,
                 ..
             } => generate_project_local_stack(manifest_path, artifact_roots, options)?,
-            ResolvedProjectDependency::LocalProgram {
-                program_spec_path, ..
-            } => generate_project_local_program(program_spec_path, options)?,
+            ResolvedProjectDependency::LocalProgram { program_spec, .. } => {
+                generate_project_local_program(program_spec, options)?
+            }
             ResolvedProjectDependency::Registry { resolved, .. } => {
                 generate_project_registry_dependency(resolved, options)?
             }
@@ -3859,6 +4416,46 @@ fn generate_all(
     Ok(staged)
 }
 
+/// How the project installed a program dependency, for its generated
+/// TypeScript program (`programInstall`): a registry package at the exact
+/// locked version with its program release, or a local IDL. A ProgramSpec
+/// file or another kind of dependency has none.
+fn program_install_identity(
+    dependency: &ResolvedProjectDependency,
+) -> Option<crate::commands::sdk::ProgramInstallIdentity> {
+    use crate::commands::sdk::{ProgramInstallIdentity, ProgramInstallSource};
+    match dependency {
+        ResolvedProjectDependency::LocalProgram {
+            alias,
+            idl: Some(idl),
+            program_release_hash,
+            ..
+        } => Some(ProgramInstallIdentity {
+            alias: alias.clone(),
+            program_release_hash: program_release_hash.clone(),
+            source: ProgramInstallSource::Idl { idl: idl.clone() },
+        }),
+        ResolvedProjectDependency::Registry { resolved, .. } => match resolved.as_ref() {
+            ResolvedRegistryDependency::Program {
+                alias,
+                package,
+                version,
+                install,
+                ..
+            } => Some(ProgramInstallIdentity {
+                alias: alias.clone(),
+                program_release_hash: Some(install.release.program_release_hash.clone()),
+                source: ProgramInstallSource::Registry {
+                    registry: package.clone(),
+                    version: version.clone(),
+                },
+            }),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// What an SDK's reference records about its install: the registry
 /// package, and the output's folder relative to the project root.
 fn reference_context(
@@ -3867,14 +4464,10 @@ fn reference_context(
     dependency: &ResolvedProjectDependency,
 ) -> crate::commands::sdk::reference::ReferenceContext {
     let (package, version) = match dependency {
-        ResolvedProjectDependency::Registry { resolved, .. } => match resolved.as_ref() {
-            ResolvedRegistryDependency::Stack {
-                package, version, ..
-            }
-            | ResolvedRegistryDependency::Program {
-                package, version, ..
-            } => (Some(package.clone()), Some(version.clone())),
-        },
+        ResolvedProjectDependency::Registry { resolved, .. } => (
+            Some(resolved.package().to_string()),
+            Some(resolved.version().to_string()),
+        ),
         _ => (None, None),
     };
     let project_dir = inside(output, root)
@@ -3929,6 +4522,22 @@ pub(crate) fn cache_registry_dependency(resolved: &ResolvedRegistryDependency) -
                     &extension.content_hash,
                     &serde_json::to_value(&extension.artifact)?,
                 )?;
+            }
+        }
+        ResolvedRegistryDependency::Protocol {
+            protocol,
+            stacks,
+            programs,
+            ..
+        } => {
+            if let Some(spec) = &protocol.protocol_spec {
+                cache_immutable_json("protocol-spec", &protocol.protocol_spec_hash, spec)?;
+            }
+            for stack in stacks {
+                cache_registry_dependency(stack)?;
+            }
+            for program in programs {
+                cache_program_install(program)?;
             }
         }
     }
@@ -4000,17 +4609,14 @@ fn attach_project_provenance(
     })?;
     let mut value: serde_json::Value = serde_json::from_str(&contents)
         .with_context(|| format!("Generated invalid provenance {}", path.display()))?;
+    let local_build = match dependency {
+        ResolvedProjectDependency::Registry { resolved, .. } => local_build_of(resolved),
+        _ => None,
+    };
     let package_release_hash = match dependency {
-        ResolvedProjectDependency::Registry { resolved, .. } => Some(match resolved.as_ref() {
-            ResolvedRegistryDependency::Stack {
-                package_release_hash,
-                ..
-            }
-            | ResolvedRegistryDependency::Program {
-                package_release_hash,
-                ..
-            } => package_release_hash,
-        }),
+        ResolvedProjectDependency::Registry { resolved, .. } if local_build.is_none() => {
+            Some(resolved.package_release_hash())
+        }
         _ => None,
     };
     value["project"] = serde_json::json!({
@@ -4021,6 +4627,17 @@ fn attach_project_provenance(
         "generatorContract": GENERATOR_CONTRACT,
         "target": target,
     });
+    // A client generated from a local build (`a4 dev`) says so, which is
+    // what `a4 install --check` refuses.
+    if let Some(local_build) = local_build {
+        value["project"]["localBuild"] = serde_json::json!(local_build);
+        if let ResolvedProjectDependency::Registry { resolved, .. } = dependency {
+            if let ResolvedRegistryDependency::Protocol { protocol, .. } = resolved.as_ref() {
+                value["project"]["localBuildDeploymentId"] =
+                    serde_json::json!(protocol.deployment.deployment_id);
+            }
+        }
+    }
     fs::write(
         &path,
         format!("{}\n", serde_json::to_string_pretty(&value)?),
@@ -4350,6 +4967,592 @@ fn remove_path(path: &Path) -> Result<()> {
         fs::remove_file(path)?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Protocol clients generated from a local build (`a4 dev`)
+// ---------------------------------------------------------------------------
+
+/// The deployment a client generated from a local build calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalBuildDeployment {
+    /// `a4 dev` (the deployment in the project's dev environment), or
+    /// `a4 protocol deploy` before the release is published (the deployment
+    /// just activated).
+    Deployed { id: String, access: String },
+}
+
+/// One local build of this project's protocol.
+#[derive(Debug, Clone)]
+pub struct LocalProtocolBuild {
+    /// The build's `protocol-spec.json`.
+    pub spec_json: serde_json::Value,
+    /// Its protocol release hash.
+    pub release_hash: String,
+    pub deployment: LocalBuildDeployment,
+    /// The API origin the descriptor names: Arete's, as a registry install
+    /// would (`ARETE_API_URL` at generation time, else the default).
+    pub api_base: String,
+}
+
+/// What [`install_local_protocol_build`] did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalProtocolInstall {
+    pub alias: String,
+    /// The deployment the generated descriptor carries.
+    pub deployment_id: String,
+    /// Whether arete.lock pins a published release (`a4 install --locked`
+    /// restores it).
+    pub published: bool,
+    pub outputs: Vec<PathBuf>,
+    /// False when the outputs already were this build for this deployment.
+    pub changed: bool,
+}
+
+/// The lock without `local_build` markers: what `--locked` restores.
+fn without_local_builds(lock: &ProjectLock) -> ProjectLock {
+    let mut lock = lock.clone();
+    for entry in &mut lock.dependencies {
+        entry.local_build = None;
+    }
+    lock
+}
+
+/// The lock entry of a protocol never published: its local build's
+/// identity and the deployment its client calls.
+fn unpublished_protocol_lock(
+    alias: &str,
+    source: &str,
+    requirement: &str,
+    targets: &[InstallTarget],
+    local_build: &str,
+    protocol: &super::resolver::ResolvedProtocol,
+) -> LockedDependency {
+    LockedDependency {
+        kind: DependencyKind::Protocol,
+        alias: alias.into(),
+        source: source.into(),
+        requirement: Some(requirement.into()),
+        version: None,
+        package_release_hash: None,
+        stack_manifest_hash: None,
+        program_id: None,
+        program_spec_hash: None,
+        program_release_hash: None,
+        live_specs: Vec::new(),
+        programs: Vec::new(),
+        parts: Vec::new(),
+        sdk_extension_hashes: Vec::new(),
+        protocol: Some(super::lockfile::LockedProtocol {
+            protocol_release_hash: protocol.protocol_release_hash.clone(),
+            protocol_spec_hash: protocol.protocol_spec_hash.clone(),
+            deployment_id: protocol.deployment.deployment_id.clone(),
+            deployment_access: protocol.deployment.access.as_str().into(),
+        }),
+        stacks: Vec::new(),
+        targets: targets.to_vec(),
+        generator_contract: GENERATOR_CONTRACT.into(),
+        local_build: Some(local_build.into()),
+    }
+}
+
+/// The resolution generators take for a local build: no registry stacks or
+/// programs, so nothing is hoisted (`local_dev`).
+fn local_build_resolution(
+    alias: &str,
+    package: &str,
+    spec_json: &serde_json::Value,
+    release_hash: &str,
+    deployment: super::resolver::ResolvedProtocolDeployment,
+) -> Result<ResolvedRegistryDependency> {
+    let spec = arete_hash::protocol::validate_protocol_spec_value(spec_json)
+        .map_err(|error| anyhow::anyhow!("protocol-spec.json is invalid: {error}"))?;
+    let spec_hash = spec
+        .hash()
+        .context("Failed to hash protocol-spec.json")?
+        .to_string();
+    Ok(ResolvedRegistryDependency::Protocol {
+        alias: alias.into(),
+        package: package.into(),
+        version: spec.version.clone(),
+        package_release_hash: release_hash.into(),
+        generator_contract: GENERATOR_CONTRACT.into(),
+        protocol: Box::new(super::resolver::ResolvedProtocol {
+            protocol_release_hash: release_hash.into(),
+            protocol_spec_hash: spec_hash,
+            protocol_spec: Some(spec_json.clone()),
+            deployment,
+            live_stack: None,
+            local_dev: true,
+        }),
+        stacks: Vec::new(),
+        programs: Vec::new(),
+        unpinned_programs: Vec::new(),
+    })
+}
+
+/// `<origin>/api` and `<origin>/ws/sessions`, the descriptor's URLs.
+fn deployment_urls(
+    api_base: &str,
+    deployment_id: &str,
+    access: &str,
+) -> super::resolver::ResolvedProtocolDeployment {
+    use super::resolver::{ProtocolDeploymentAccess, ResolvedProtocolDeployment};
+    let base = api_base.trim().trim_end_matches('/');
+    ResolvedProtocolDeployment {
+        deployment_id: deployment_id.into(),
+        access: if access == "public" {
+            ProtocolDeploymentAccess::Public
+        } else {
+            ProtocolDeploymentAccess::Private
+        },
+        api_url: format!("{base}/api"),
+        session_endpoint: format!("{base}/ws/sessions"),
+    }
+}
+
+/// `a4 install` for a protocol never published: regenerate its client from
+/// the spec `a4 dev` cached for the locked local build.
+fn resolve_unpublished_local_build(
+    dependency: &DependencyV1,
+    package: &str,
+    requirement: String,
+    targets: Vec<InstallTarget>,
+    entry: &LockedDependency,
+) -> Result<ResolvedProjectDependency> {
+    let protocol = entry
+        .protocol
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("protocol '{}' locks no protocol identity", entry.alias))?;
+    let path = registry_cache::file(
+        &registry_cache::root()?,
+        "protocol-spec",
+        &protocol.protocol_spec_hash,
+    )?;
+    let spec_json: serde_json::Value = fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "protocol '{}' has not been published, and the local build arete.lock names is not cached on this machine. Run `a4 dev up` (or `a4 dev sdk`) to generate it again, or deploy it with `a4 protocol deploy`",
+                entry.alias
+            )
+        })?;
+    let local_build = entry
+        .local_build
+        .clone()
+        .expect("only local-build entries come here");
+    let resolved = local_build_resolution(
+        &entry.alias,
+        package,
+        &spec_json,
+        &local_build,
+        deployment_urls(
+            &ApiClient::configured_api_url(),
+            &protocol.deployment_id,
+            &protocol.deployment_access,
+        ),
+    )?;
+    Ok(ResolvedProjectDependency::Registry {
+        kind: DependencyKind::Protocol,
+        source: dependency.source.stable_description(),
+        requirement,
+        targets,
+        resolved: Box::new(resolved),
+    })
+}
+
+/// Generate the installed client of protocol dependency `alias` from a
+/// local build, where `a4 install` puts it, and record the build in
+/// arete.lock as `local_build`. Only this dependency's outputs and lock
+/// entry change. A published entry keeps its pins (`a4 install --locked`
+/// restores them); a protocol never published gets an entry of its own.
+///
+/// `lock_was_fresh` says arete.lock matched the manifest before the caller
+/// added this dependency to it, so the lock is fresh again afterwards.
+pub fn install_local_protocol_build(
+    manifest_path: &Path,
+    alias: &str,
+    build: &LocalProtocolBuild,
+    lock_was_fresh: bool,
+) -> Result<LocalProtocolInstall> {
+    let manifest = ProjectManifest::load(manifest_path)?;
+    recover_interrupted_install(&manifest.root)?;
+    let dependency = manifest
+        .dependency(DependencyKind::Protocol, alias)
+        .ok_or_else(|| anyhow::anyhow!("arete.toml has no protocol dependency '{alias}'"))?;
+    let DependencySourceV1::Registry(RegistrySourceV1 { registry: package }) = &dependency.source
+    else {
+        bail!("protocol dependency '{alias}' is not a registry dependency");
+    };
+    let requirement = dependency.version.clone().expect("validated version");
+    let targets = dependency.selected_targets(&manifest.document.sdk).to_vec();
+    let source = dependency.source.stable_description();
+    let plan = InstallPlan::build(&manifest, false)?;
+    let outputs: Vec<_> = plan
+        .for_dependency(DependencyKind::Protocol, alias)
+        .collect();
+    let lock_path = manifest.root.join("arete.lock");
+    let previous_lock = ProjectLock::load_optional(&lock_path)?;
+    let previous = previous_lock.as_ref().and_then(|lock| {
+        lock.dependencies
+            .iter()
+            .find(|entry| entry.kind == DependencyKind::Protocol && entry.alias == alias)
+            .filter(|entry| entry.source == source)
+    });
+    let locked = previous.and_then(|entry| entry.protocol.as_ref());
+    let LocalBuildDeployment::Deployed {
+        id: deployment_id,
+        access,
+    } = build.deployment.clone();
+    let published = previous.is_some_and(LockedDependency::is_published);
+    let output_paths: Vec<PathBuf> = outputs.iter().map(|output| output.path.clone()).collect();
+
+    let current = previous.is_some_and(|entry| {
+        entry.local_build.as_deref() == Some(build.release_hash.as_str())
+            && entry.targets == targets
+            && (published || locked.is_some_and(|protocol| protocol.deployment_id == deployment_id))
+    }) && outputs.iter().all(|output| {
+        read_provenance_project(&output.path).is_some_and(|project| {
+            project["localBuild"] == build.release_hash.as_str()
+                && project["localBuildDeploymentId"] == deployment_id.as_str()
+        })
+    });
+    if current {
+        return Ok(LocalProtocolInstall {
+            alias: alias.into(),
+            deployment_id,
+            published,
+            outputs: output_paths,
+            changed: false,
+        });
+    }
+
+    let resolved = local_build_resolution(
+        alias,
+        package,
+        &build.spec_json,
+        &build.release_hash,
+        deployment_urls(&build.api_base, &deployment_id, &access),
+    )?;
+    let entry = match previous.filter(|entry| entry.is_published()) {
+        Some(published) => LockedDependency {
+            local_build: Some(build.release_hash.clone()),
+            ..published.clone()
+        },
+        None => {
+            let ResolvedRegistryDependency::Protocol { protocol, .. } = &resolved else {
+                unreachable!("a local build resolves to a protocol");
+            };
+            unpublished_protocol_lock(
+                alias,
+                &source,
+                &requirement,
+                &targets,
+                &build.release_hash,
+                protocol,
+            )
+        }
+    };
+    let resolved = vec![ResolvedProjectDependency::Registry {
+        kind: DependencyKind::Protocol,
+        source,
+        requirement,
+        targets,
+        resolved: Box::new(resolved),
+    }];
+
+    let mut lock = previous_lock
+        .clone()
+        .unwrap_or_else(|| ProjectLock::empty(manifest.manifest_hash.clone()));
+    if lock_was_fresh {
+        lock.manifest_hash = manifest.manifest_hash.clone();
+    }
+    lock.dependencies
+        .retain(|existing| !(existing.kind == DependencyKind::Protocol && existing.alias == alias));
+    lock.dependencies.push(entry);
+    lock.normalize_and_validate()?;
+
+    let staging_root = manifest
+        .root
+        .join(".arete")
+        .join(format!("install-staging-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&staging_root)?;
+    let staged = match generate_outputs(&manifest, outputs.into_iter(), &resolved, &staging_root) {
+        Ok(staged) => staged,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err(error);
+        }
+    };
+    commit_install(
+        &manifest.root,
+        &lock_path,
+        &lock,
+        staged,
+        Vec::new(),
+        &staging_root,
+    )?;
+    Ok(LocalProtocolInstall {
+        alias: alias.into(),
+        deployment_id,
+        published,
+        outputs: output_paths,
+        changed: true,
+    })
+}
+
+/// The `project` object of an output's `sdk-provenance.json`.
+fn read_provenance_project(output: &Path) -> Option<serde_json::Value> {
+    let bytes = fs::read(output.join("sdk-provenance.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value.get("project").cloned()
+}
+
+/// This project's protocol dependency on `package` (by registry package,
+/// else by alias), when it declares one.
+/// `a4 protocol deploy` reinstalls the project's own protocol client from
+/// the registry, so the dependency must accept the version just deployed:
+/// `a4 dev` writes `^<spec version>` once, and a later version bump (0.1.x to
+/// 0.2.0) would otherwise resolve the older package. Rewrites only the
+/// dependency's `version` key, to `^<version>`, when the requirement doesn't
+/// match. Returns the new requirement when it changed.
+pub fn require_own_protocol_version(
+    manifest_path: &Path,
+    alias: &str,
+    version: &str,
+) -> Result<Option<String>> {
+    let manifest = ProjectManifest::load(manifest_path)?;
+    let Some(dependency) = manifest
+        .document
+        .dependencies
+        .of_kind(DependencyKind::Protocol)
+        .get(alias)
+    else {
+        return Ok(None);
+    };
+    if !matches!(dependency.source, DependencySourceV1::Registry(_)) {
+        return Ok(None);
+    }
+    let version = semver::Version::parse(version)
+        .with_context(|| format!("the protocol version '{version}' is not semantic"))?;
+    if dependency
+        .version
+        .as_deref()
+        .and_then(|requirement| semver::VersionReq::parse(requirement).ok())
+        .is_some_and(|requirement| requirement.matches(&version))
+    {
+        return Ok(None);
+    }
+    let requirement = format!("^{version}");
+    let original = fs::read(manifest_path)
+        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
+    let mut document = parse_editable_manifest(&original)?;
+    insert_manifest_item(
+        document.as_item_mut(),
+        &[
+            "dependencies",
+            DependencyKind::Protocol.namespace(),
+            alias,
+            "version",
+        ],
+        value(requirement.as_str()),
+    )?;
+    let rendered = document.to_string();
+    toml::from_str::<ManifestV1>(&rendered)
+        .map_err(anyhow::Error::from)
+        .and_then(|manifest| manifest.validate())
+        .with_context(|| format!("Failed to update {}", manifest_path.display()))?;
+    write_manifest_atomic(manifest_path, rendered.as_bytes())?;
+    Ok(Some(requirement))
+}
+
+pub fn own_protocol_dependency(manifest: &ProjectManifest, package: &str) -> Option<String> {
+    let mut by_alias = None;
+    for (kind, alias, dependency) in manifest.dependencies() {
+        if kind != DependencyKind::Protocol {
+            continue;
+        }
+        match &dependency.source {
+            DependencySourceV1::Registry(RegistrySourceV1 { registry }) if registry == package => {
+                return Some(alias.clone())
+            }
+            _ if alias == package => by_alias = Some(alias.clone()),
+            _ => {}
+        }
+    }
+    by_alias
+}
+
+/// [`ensure_own_protocol_dependency`]'s answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnProtocolDependency {
+    pub alias: String,
+    /// Whether this call added it to arete.toml.
+    pub added: bool,
+    /// Whether arete.lock matched arete.toml before (see
+    /// [`install_local_protocol_build`]).
+    pub lock_was_fresh: bool,
+}
+
+/// Make sure arete.toml installs this project's own protocol `package`:
+/// before its first publish it does not, so add
+/// `[dependencies.protocols.<package>]` with `source = { registry =
+/// "<package>" }`, `version = "^<version>"` and `targets` (TypeScript when
+/// empty). The entry is the one `a4 install protocol <package>` writes, so
+/// nothing changes when the protocol is published. Creates arete.toml when
+/// the project has none.
+pub fn ensure_own_protocol_dependency(
+    root: &Path,
+    package: &str,
+    version: &str,
+    targets: &[InstallTarget],
+) -> Result<OwnProtocolDependency> {
+    let manifest_path = root.join("arete.toml");
+    let lock_path = root.join("arete.lock");
+    if !manifest_path.is_file() {
+        let manifest = ManifestV1::new(package.into());
+        write_manifest_atomic(&manifest_path, manifest.to_toml_pretty()?.as_bytes())?;
+    }
+    let manifest = ProjectManifest::load(&manifest_path)?;
+    let lock = ProjectLock::load_optional(&lock_path)?;
+    let lock_was_fresh = match &lock {
+        Some(lock) => lock.is_fresh(&manifest.manifest_hash),
+        None => manifest.dependencies().next().is_none(),
+    };
+    if let Some(alias) = own_protocol_dependency(&manifest, package) {
+        return Ok(OwnProtocolDependency {
+            alias,
+            added: false,
+            lock_was_fresh,
+        });
+    }
+    let targets = if targets.is_empty() {
+        vec![InstallTarget::TypeScript]
+    } else {
+        targets.to_vec()
+    };
+    for target in &targets {
+        if !manifest.document.sdk.targets.contains(target) {
+            bail!(
+                "[dev] sdk asks for a {target} client but [sdk].targets in arete.toml does not include {target}; add it there"
+            );
+        }
+    }
+    let semver = semver::Version::parse(version)
+        .with_context(|| format!("the protocol version '{version}' is not semantic"))?;
+    let dependency = DependencyV1 {
+        source: DependencySourceV1::Registry(RegistrySourceV1 {
+            registry: package.into(),
+        }),
+        version: Some(format!("^{semver}")),
+        targets: Some(targets),
+        outputs: DependencyOutputsV1::default(),
+        endpoints: BTreeMap::new(),
+    };
+    let mut document = manifest.document.clone();
+    document
+        .dependencies
+        .of_kind_mut(DependencyKind::Protocol)
+        .insert(package.into(), dependency.clone());
+    document.validate()?;
+    let original = fs::read(&manifest_path)?;
+    let replacement = render_manifest_addition(
+        &original,
+        DependencyKind::Protocol,
+        package,
+        &dependency,
+        None,
+        None,
+    )?;
+    write_manifest_atomic(&manifest_path, replacement.as_bytes())?;
+    Ok(OwnProtocolDependency {
+        alias: package.into(),
+        added: true,
+        lock_was_fresh,
+    })
+}
+
+/// One reason `a4 install --check` fails.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckProblem {
+    pub alias: String,
+    pub problem: String,
+}
+
+/// `a4 install --check`: arete.lock is fresh and every generated protocol
+/// client is a published release, as arete.lock pins it. Offline; changes
+/// nothing. The CI check that no client generated by `a4 dev` from a local
+/// build is committed.
+pub fn check_project(manifest_path: impl AsRef<Path>) -> Result<Vec<CheckProblem>> {
+    let manifest = ProjectManifest::load(manifest_path)?;
+    let lock_path = manifest.root.join("arete.lock");
+    let Some(lock) = ProjectLock::load_optional(&lock_path)? else {
+        bail!("{} is missing; run `a4 install`", lock_path.display());
+    };
+    let mut problems = Vec::new();
+    if !lock.is_fresh(&manifest.manifest_hash) {
+        problems.push(CheckProblem {
+            alias: "arete.lock".into(),
+            problem: "stale for arete.toml; run `a4 install`".into(),
+        });
+    }
+    let plan = InstallPlan::build(&manifest, false)?;
+    for entry in &lock.dependencies {
+        if entry.kind != DependencyKind::Protocol {
+            continue;
+        }
+        if let Some(local_build) = &entry.local_build {
+            problems.push(CheckProblem {
+                alias: entry.alias.clone(),
+                problem: if entry.is_published() {
+                    format!(
+                        "generated from local build {local_build} (`a4 dev`), not from published {}; run `a4 install --locked` to restore it",
+                        entry.version.as_deref().unwrap_or("release")
+                    )
+                } else {
+                    format!(
+                        "generated from local build {local_build} (`a4 dev`) and never published; deploy it with `a4 protocol deploy`, then run `a4 install`"
+                    )
+                },
+            });
+            continue;
+        }
+        for output in plan.for_dependency(DependencyKind::Protocol, &entry.alias) {
+            let problem = match read_provenance_project(&output.path) {
+                None => Some(format!(
+                    "{} client {} is missing or has no provenance; run `a4 install --locked`",
+                    output.target,
+                    output.path.display()
+                )),
+                Some(project) if project.get("localBuild").is_some() => Some(format!(
+                    "{} client {} was generated from a local build; run `a4 install --locked`",
+                    output.target,
+                    output.path.display()
+                )),
+                Some(project)
+                    if project["packageReleaseHash"].as_str()
+                        != entry.package_release_hash.as_deref() =>
+                {
+                    Some(format!(
+                        "{} client {} was generated from another release than arete.lock pins; run `a4 install --locked`",
+                        output.target,
+                        output.path.display()
+                    ))
+                }
+                Some(_) => None,
+            };
+            if let Some(problem) = problem {
+                problems.push(CheckProblem {
+                    alias: entry.alias.clone(),
+                    problem,
+                });
+            }
+        }
+    }
+    Ok(problems)
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -6140,8 +7343,11 @@ version = "^1.0.0"
             programs: Vec::new(),
             parts: Vec::new(),
             sdk_extension_hashes: Vec::new(),
+            protocol: None,
+            stacks: Vec::new(),
             targets: vec![InstallTarget::TypeScript],
             generator_contract: GENERATOR_CONTRACT.into(),
+            local_build: None,
         };
         let lock = |ore: char, plain: char| {
             let mut lock = ProjectLock::empty(manifest.manifest_hash.clone());
@@ -6998,17 +8204,44 @@ version = "^1.0.0"
                 "programs/ore/extensions.json",
             ),
         ] {
+            // A project install adds only how it was installed to its entry.
+            let standalone_without_install = if standalone.ends_with("ore.ts") {
+                without_program_install(&files[standalone])
+            } else {
+                files[standalone].clone()
+            };
             assert_eq!(
-                files[in_stack], files[standalone],
+                files[in_stack], standalone_without_install,
                 "{in_stack} and {standalone} must be byte-identical"
             );
         }
+        assert!(files["programs/ore/index.ts"].contains("export { default } from './ore.js';"));
         assert!(files["programs/ore/ore.ts"].contains(&format!(
             "{{ packageReleaseHash: '{}' }}",
             release_hash('7')
         )));
         let lock = lock_of(&manifest);
         assert_eq!(lock.dependencies.len(), 2);
+    }
+
+    /// A program entry without what a project install adds: the
+    /// `programInstall` constant, the `Object.assign` that attaches it and
+    /// the instruction shapes, and their type.
+    fn without_program_install(entry: &str) -> String {
+        let import = regex::Regex::new(r", [A-Z0-9_]+_INSTRUCTION_SHAPES \}").unwrap();
+        let constant =
+            regex::Regex::new(r"(?s)/\*\* How this project installed.*?\} as const;\n\n").unwrap();
+        let assign = regex::Regex::new(
+            r"(?s)Object\.assign\(\n  (.*?),\n  \{ programInstall: [A-Z0-9_]+, instructionShapes: [A-Z0-9_]+ \},\n\)",
+        )
+        .unwrap();
+        let entry = import.replace(entry, " }");
+        let entry = constant.replace(&entry, "");
+        let entry = assign.replace(&entry, |captures: &regex::Captures<'_>| {
+            captures[1].replace("\n  ", "\n")
+        });
+        let kind = regex::Regex::new(r"(?s) & \{\n  readonly programInstall: .*?\n\}").unwrap();
+        kind.replace(&entry, "").into_owned()
     }
 
     #[test]
@@ -7177,8 +8410,11 @@ version = "^1.0.0"
                 programs: Vec::new(),
                 parts: Vec::new(),
                 sdk_extension_hashes: Vec::new(),
+                protocol: None,
+                stacks: Vec::new(),
                 targets: vec![InstallTarget::TypeScript],
                 generator_contract: GENERATOR_CONTRACT.into(),
+                local_build: None,
             };
         let manifest_hash = format!("arete-manifest-v1:{:064x}", 3);
         let mut previous = ProjectLock::empty(manifest_hash.clone());
@@ -7289,8 +8525,11 @@ version = "^1.0.0"
             programs: Vec::new(),
             parts: Vec::new(),
             sdk_extension_hashes: Vec::new(),
+            protocol: None,
+            stacks: Vec::new(),
             targets: vec![InstallTarget::TypeScript],
             generator_contract: GENERATOR_CONTRACT.into(),
+            local_build: None,
         };
         assert_eq!(regeneration_reason(None, &base), "newly locked");
         assert_eq!(regeneration_reason(Some(&base), &base), "inputs unchanged");
@@ -9019,5 +10258,1081 @@ source = { workspace = "ore-sdk" }
             Some(2)
         );
         assert_eq!(resolved.artifact.manifest.extension_api, None);
+    }
+
+    /// Every file an existing project install writes (arete.toml, arete.lock
+    /// and each generated SDK), keyed by path. Provenance is compared with
+    /// its generator identity masked: that hash covers the generator's own
+    /// sources, so it changes with any CLI change, while the generated
+    /// payload must not.
+    fn project_snapshot(manifest: &Path) -> BTreeMap<String, String> {
+        fn collect(root: &Path, path: &Path, files: &mut BTreeMap<String, String>) {
+            for entry in fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    collect(root, &path, files);
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let mut relative = relative;
+                let mut contents = fs::read_to_string(&path).unwrap();
+                if let Some(directory) = relative.strip_suffix("sdk-provenance.json") {
+                    // The golden walker skips provenance files by name.
+                    relative = format!("{directory}sdk-provenance.masked.json");
+                    let mut value: Value = serde_json::from_str(&contents).unwrap();
+                    value["generator"]["compilerHash"] = json!("<compiler>");
+                    value["generator"]["version"] = json!("<version>");
+                    contents = format!("{}\n", serde_json::to_string_pretty(&value).unwrap());
+                }
+                files.insert(relative, contents);
+            }
+        }
+        let root = manifest.parent().unwrap();
+        let mut files = BTreeMap::new();
+        for name in ["arete.toml", "arete.lock"] {
+            files.insert(
+                name.to_string(),
+                fs::read_to_string(root.join(name)).unwrap(),
+            );
+        }
+        collect(root, &root.join("generated"), &mut files);
+        files
+    }
+
+    const TIP_JAR_IDL: &str = r#"{
+  "address": "Vote111111111111111111111111111111111111111",
+  "metadata": { "name": "tip_jar", "version": "0.1.0", "spec": "0.1.0" },
+  "instructions": [
+    {
+      "name": "tip",
+      "discriminator": [1, 2, 3, 4, 5, 6, 7, 8],
+      "accounts": [
+        { "name": "jar", "writable": true, "pda": { "seeds": [
+          { "kind": "const", "value": [106, 97, 114] },
+          { "kind": "account", "path": "owner" }
+        ] } },
+        { "name": "owner" },
+        { "name": "tipper", "writable": true, "signer": true },
+        { "name": "referrer", "optional": true },
+        { "name": "system_program", "address": "11111111111111111111111111111111" }
+      ],
+      "args": [{ "name": "amount", "type": "u64" }]
+    }
+  ],
+  "accounts": [],
+  "types": []
+}"#;
+
+    fn idl_project(idl: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("idl")).unwrap();
+        fs::write(dir.path().join("idl/tip_jar.json"), idl).unwrap();
+        let manifest = dir.path().join("arete.toml");
+        fs::write(
+            &manifest,
+            "manifest_version = 1\n\n[project]\nname = \"tips\"\n\n[sdk]\ntargets = [\"typescript\"]\n",
+        )
+        .unwrap();
+        (dir, manifest)
+    }
+
+    #[test]
+    fn a_program_installs_from_a_local_idl_with_its_programspec_hash_locked() {
+        let (dir, manifest) = idl_project(TIP_JAR_IDL);
+        add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            dir.path().join("idl/tip_jar.json").to_str().unwrap(),
+            AddDependencyOptions {
+                alias: Some("tip-jar".into()),
+                target: Some(InstallTarget::TypeScript),
+                ..AddDependencyOptions::default()
+            },
+        )
+        .expect("IDL install");
+
+        let toml = fs::read_to_string(&manifest).unwrap();
+        assert!(
+            toml.contains(
+                "[dependencies.programs.tip-jar]\nsource = { idl = \"idl/tip_jar.json\" }\n"
+            ),
+            "{toml}"
+        );
+        // The hash `a4 program build` (and the registry) computes from the same bytes.
+        let expected = arete_hash::build_program_spec_v1_from_bytes(TIP_JAR_IDL.as_bytes(), None)
+            .unwrap()
+            .hash()
+            .unwrap()
+            .to_string();
+        // `@usearete/hash` builds the same hash from the same IDL (the
+        // protocol package's `program-imports` fixture pins it).
+        assert_eq!(
+            expected,
+            "arete:h1:program-spec:sha256:7c9129d489592cd48fa2db1d41ed2c3367b4fece52551323b912b4c515c9e6a1"
+        );
+        let lock = lock_of(&manifest);
+        let entry = &lock.dependencies[0];
+        assert_eq!(entry.source, "idl:idl/tip_jar.json");
+        assert_eq!(entry.program_spec_hash.as_deref(), Some(expected.as_str()));
+        assert_eq!(entry.program_release_hash, None);
+        assert_eq!(entry.version, None);
+
+        let output = dir.path().join("generated/typescript/programs/tip-jar");
+        let entry_module = fs::read_to_string(output.join("tip-jar.ts")).unwrap();
+        assert!(entry_module.contains(
+            "export const TIP_JAR_PROGRAM_INSTALL = {\n  alias: 'tip-jar',\n  source: { kind: 'idl', idl: 'idl/tip_jar.json' },\n} as const;"
+        ), "{entry_module}");
+        assert_eq!(
+            fs::read_to_string(output.join("index.ts")).unwrap(),
+            "export * from './tip-jar.js';\nexport { default } from './tip-jar.js';\n"
+        );
+        let core = fs::read_to_string(output.join("tip-jar-core.ts")).unwrap();
+        assert!(core.contains(&format!("programSpecHash: '{expected}',")));
+        assert!(core.contains(
+            "export const TIP_JAR_INSTRUCTION_SHAPES = {\n  tip: {\n    args: ['amount'],\n    accounts: {\n      jar: { optional: false, derive: ['owner'] },\n      owner: { optional: false, derive: null },\n      tipper: { optional: false, derive: null },\n      referrer: { optional: true, derive: null },\n      system_program: { optional: false, derive: [] },\n    },\n  },\n} as const;"
+        ), "{core}");
+        // No tsconfig.json yet: nothing is written, the install prints the line.
+        assert!(!dir.path().join("tsconfig.json").exists());
+
+        // With a tsconfig.json, a reinstall maps `@programs/*` into it.
+        fs::write(
+            dir.path().join("tsconfig.json"),
+            "{\n  \"compilerOptions\": {}\n}\n",
+        )
+        .unwrap();
+        install_project(&manifest, InstallOptions::default()).expect("reinstall");
+        let tsconfig: Value =
+            serde_json::from_slice(&fs::read(dir.path().join("tsconfig.json")).unwrap()).unwrap();
+        assert_eq!(
+            tsconfig["compilerOptions"]["paths"]["@programs/*"],
+            json!(["./generated/typescript/programs/*/index.js"])
+        );
+    }
+
+    #[test]
+    fn a_program_install_without_arete_toml_starts_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("fresh");
+        fs::create_dir_all(root.join("idl")).unwrap();
+        fs::write(root.join("idl/tip_jar.json"), TIP_JAR_IDL).unwrap();
+        let manifest = root.join("arete.toml");
+        add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            root.join("idl/tip_jar.json").to_str().unwrap(),
+            AddDependencyOptions {
+                alias: Some("tip-jar".into()),
+                target: Some(InstallTarget::TypeScript),
+                ..AddDependencyOptions::default()
+            },
+        )
+        .expect("IDL install without arete.toml");
+        let toml = fs::read_to_string(&manifest).unwrap();
+        assert!(toml.contains("[project]\nname = \"fresh\""), "{toml}");
+        assert!(toml.contains("[dependencies.programs.tip-jar]"), "{toml}");
+        assert_eq!(lock_of(&manifest).dependencies.len(), 1);
+        assert!(root
+            .join("generated/typescript/programs/tip-jar/index.ts")
+            .is_file());
+
+        // A failed add leaves no arete.toml behind.
+        let empty = dir.path().join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        assert!(add_and_install(
+            empty.join("arete.toml"),
+            DependencyKind::Program,
+            empty.join("idl/missing.json").to_str().unwrap(),
+            AddDependencyOptions::default(),
+        )
+        .is_err());
+        assert!(!empty.join("arete.toml").exists());
+
+        // Inside a project it is the project's job: no nested manifest.
+        let nested = root.join("app");
+        fs::create_dir_all(&nested).unwrap();
+        let error = add_and_install(
+            nested.join("arete.toml"),
+            DependencyKind::Program,
+            root.join("idl/tip_jar.json").to_str().unwrap(),
+            AddDependencyOptions::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("has one"), "{error}");
+        assert!(!nested.join("arete.toml").exists());
+    }
+
+    #[test]
+    fn an_idl_without_an_address_needs_a_program_id() {
+        let idl = TIP_JAR_IDL.replace(
+            "\"address\": \"Vote111111111111111111111111111111111111111\",\n",
+            "",
+        );
+        let (dir, manifest) = idl_project(&idl);
+        let original = fs::read(&manifest).unwrap();
+        let error = add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            dir.path().join("idl/tip_jar.json").to_str().unwrap(),
+            AddDependencyOptions::default(),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("pass --program-id"),
+            "{error:#}"
+        );
+        assert_eq!(fs::read(&manifest).unwrap(), original);
+
+        add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            dir.path().join("idl/tip_jar.json").to_str().unwrap(),
+            AddDependencyOptions {
+                program_id: Some("Vote111111111111111111111111111111111111111".into()),
+                ..AddDependencyOptions::default()
+            },
+        )
+        .expect("install with --program-id");
+        let toml = fs::read_to_string(&manifest).unwrap();
+        assert!(toml.contains(
+            "[dependencies.programs.tip-jar]\nsource = { idl = \"idl/tip_jar.json\", program_id = \"Vote111111111111111111111111111111111111111\" }\n"
+        ), "{toml}");
+        let expected = arete_hash::build_program_spec_v1_from_bytes(
+            idl.as_bytes(),
+            Some("Vote111111111111111111111111111111111111111"),
+        )
+        .unwrap()
+        .hash()
+        .unwrap()
+        .to_string();
+        assert_eq!(
+            lock_of(&manifest).dependencies[0]
+                .program_spec_hash
+                .as_deref(),
+            Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn an_idl_outside_the_project_is_refused() {
+        let (_dir, manifest) = idl_project(TIP_JAR_IDL);
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("other.json"), TIP_JAR_IDL).unwrap();
+        let error = add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            outside.path().join("other.json").to_str().unwrap(),
+            AddDependencyOptions::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("outside the project"), "{error}");
+    }
+
+    /// Existing installs (a hosted stack and a standalone program, for every
+    /// SDK target) generate byte-identical output, lock and manifest.
+    /// Regenerate with `A4_UPDATE_GOLDEN=1` only for an intended change.
+    #[test]
+    fn existing_installs_generate_byte_identical_output() {
+        let program =
+            serde_json::from_str::<Value>(&program_resolution("vote", "vote", "0.1.0", 'c'))
+                .unwrap()["dependencies"][0]
+                .clone();
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                resolution(vec![
+                    ore_stack_dependency(Some(hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4))),
+                    program,
+                ]),
+            )],
+            false,
+        );
+        let manifest = stack_project(
+            &sandbox,
+            "\n[dependencies.programs.vote]\nsource = { registry = \"vote\" }\nversion = \"^0.1.0\"\n",
+        );
+        install_project(&manifest, InstallOptions::default()).expect("existing install");
+        sandbox.request();
+        crate::commands::sdk::compare_golden_tree(
+            "existing project install",
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/project-install-regression"),
+            project_snapshot(&manifest),
+        );
+    }
+
+    // ── Protocol packages ──────────────────────────────────────────────────
+
+    /// The vote program as a protocol's direct program: an exact release
+    /// with the program package it installs as.
+    fn protocol_vote_program() -> Value {
+        let mut program = program_install(
+            "Vote111111111111111111111111111111111111111",
+            "vote_program",
+            &format!("arete:h1:program-release:sha256:{}", "c".repeat(64)),
+        );
+        program["programPackage"] = json!({
+            "package": "vote",
+            "version": "0.1.0",
+            "packageReleaseHash": release_hash('c')
+        });
+        program
+    }
+
+    /// The Ore fixture stack under `alias`, with its programs pinned to the
+    /// program package releases `marker` names.
+    fn protocol_ore_stack(alias: &str, marker: char) -> Value {
+        let mut stack = ore_stack_dependency(Some(hosted_delivery(HOSTED_WS, HOSTED_HTTP, 4)));
+        stack["alias"] = json!(alias);
+        for (program, package) in stack["programs"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .zip(["ore", "entropy"])
+        {
+            program["programPackage"] = json!({
+                "package": package,
+                "version": "1.0.0",
+                "packageReleaseHash": release_hash(marker)
+            });
+        }
+        stack
+    }
+
+    /// A token-raise protocol over two stacks (both the Ore fixture, so
+    /// they bundle the same programs) and the vote program on its own.
+    fn token_raise_resolution(mirror_marker: char) -> Value {
+        use super::super::protocol::test_support;
+        let ore = ore_fixture("ore.program-spec.json");
+        let manifest = ore_fixture("OreStream.stack-manifest.json");
+        let manifest_hash = manifest["artifactHash"].as_str().unwrap().to_string();
+        let vote = protocol_vote_program();
+        let spec = test_support::token_raise_spec(
+            (
+                ore["payload"]["programId"].as_str().unwrap(),
+                ore["artifactHash"].as_str().unwrap(),
+            ),
+            (
+                vote["definition"]["programId"].as_str().unwrap(),
+                vote["definition"]["programSpecHash"].as_str().unwrap(),
+            ),
+            &[
+                ("meteoraPresale", &manifest_hash, "ore"),
+                ("mirror", &manifest_hash, "ore"),
+            ],
+        );
+        json!({
+            "kind": "protocol",
+            "alias": "token-raise",
+            "package": "token-raise",
+            "version": "1.0.0",
+            "packageReleaseHash": release_hash('9'),
+            "generatorContract": GENERATOR_CONTRACT,
+            "protocol": test_support::protocol(&spec, "public"),
+            "stacks": [
+                protocol_ore_stack("meteoraPresale", '6'),
+                protocol_ore_stack("mirror", mirror_marker)
+            ],
+            "programs": [vote]
+        })
+    }
+
+    fn protocol_project(sandbox: &RegistrySandbox) -> PathBuf {
+        let manifest = sandbox.project();
+        let mut contents = fs::read_to_string(&manifest).unwrap();
+        contents.push_str(
+            "\n[dependencies.protocols.token-raise]\nsource = { registry = \"token-raise\" }\nversion = \"^1.0.0\"\ntargets = [\"typescript\"]\n",
+        );
+        fs::write(&manifest, contents).unwrap();
+        manifest
+    }
+
+    #[test]
+    fn a_two_stack_protocol_hoists_both_stacks_and_their_programs_once() {
+        let sandbox = RegistrySandbox::new(
+            vec![(200, resolution(vec![token_raise_resolution('6')]))],
+            false,
+        );
+        let manifest = protocol_project(&sandbox);
+        install_project(&manifest, InstallOptions::default()).expect("protocol install");
+        let request = request_dependency(&sandbox.request());
+        assert_eq!(request["kind"], "protocol");
+        assert_eq!(request["alias"], "token-raise");
+
+        let files = generated_files(&manifest, "typescript");
+        let root = "protocols/token-raise";
+        for stack in ["meteora-presale", "mirror"] {
+            assert!(
+                files.contains_key(&format!("{root}/stacks/{stack}/{stack}.ts")),
+                "stack {stack} generated: {:?}",
+                files.keys().collect::<Vec<_>>()
+            );
+            assert!(files.contains_key(&format!(
+                "{root}/stacks/{stack}/programs/ore/__arete-program.ts"
+            )));
+        }
+        // The vote program is generated once, on its own; the Ore program
+        // is the first stack's module, never a second copy.
+        assert!(files.contains_key(&format!("{root}/programs/squads-v4/squads-v4.ts")));
+        assert!(!files
+            .keys()
+            .any(|path| path.starts_with(&format!("{root}/programs/meteora-presale"))));
+        let entry = &files[&format!("{root}/token-raise.ts")];
+        assert!(
+            entry.contains("  meteoraPresale: METEORA_PRESALE_STACK.programs.ore,"),
+            "{entry}"
+        );
+        assert!(entry.contains("  squadsV4: SQUADS_V4_PROGRAM,"), "{entry}");
+        assert!(
+            entry.contains(&format!(
+                "  meteoraPresale: {{ ...METEORA_PRESALE_STACK, packageReleaseHash: '{}' }},\n  mirror: {{ ...MIRROR_STACK, packageReleaseHash: '{}' }},",
+                release_hash('5'),
+                release_hash('5')
+            )),
+            "{entry}"
+        );
+        assert_eq!(entry.matches("PROGRAMS = {").count(), 1);
+        assert!(entry.contains(super::super::protocol::test_support::DEPLOYMENT_ID));
+        assert!(entry.contains("access: 'public'"));
+        assert!(entry.contains("export type TokenRaiseContributeGuardCode = 'deadline_passed' | 'hard_cap_exceeded' | 'raise_not_open' | 'wallet_cap_exceeded';"), "{entry}");
+        // Squads proposals are never client-callable.
+        assert!(!entry.contains("readonly finalize:"), "{entry}");
+        assert!(entry
+            .contains("readonly create: { readonly scope: 'create'; readonly access: 'secret';"));
+        assert!(files.contains_key(&format!("{root}/protocol-spec.json")));
+
+        // A public protocol records the shared deployment and no credential.
+        for (path, contents) in &files {
+            assert!(!contents.contains(OWNER_KEY), "{path} carries a key");
+            assert!(
+                !contents.contains("a4_sk_") && !contents.contains("a4_pk_"),
+                "{path} carries a key"
+            );
+        }
+        let lock = lock_of(&manifest);
+        let locked = &lock.dependencies[0];
+        assert_eq!(locked.kind, DependencyKind::Protocol);
+        let protocol = locked.protocol.as_ref().expect("protocol identity");
+        assert_eq!(
+            protocol.deployment_id,
+            super::super::protocol::test_support::DEPLOYMENT_ID
+        );
+        assert_eq!(protocol.deployment_access, "public");
+        assert_eq!(
+            locked
+                .stacks
+                .iter()
+                .map(|stack| stack.alias.as_str())
+                .collect::<Vec<_>>(),
+            ["meteoraPresale", "mirror"]
+        );
+        assert!(locked.stacks.iter().all(|stack| stack.programs.len() == 2));
+        assert_eq!(locked.programs.len(), 1);
+        assert_eq!(
+            locked.programs[0].package_release_hash.as_deref(),
+            Some(release_hash('c').as_str())
+        );
+        let lock_text = fs::read_to_string(manifest.with_file_name("arete.lock")).unwrap();
+        assert!(
+            !lock_text.contains("ore.stack.example.test"),
+            "lock carries transport"
+        );
+
+        let provenance: Value =
+            serde_json::from_str(&files[&format!("{root}/sdk-provenance.json")]).unwrap();
+        assert_eq!(provenance["project"]["dependencyKind"], "protocol");
+        assert_eq!(provenance["project"]["rootAlias"], "token-raise");
+        assert_eq!(provenance["input"]["kind"], "protocol-spec");
+        let artifacts = provenance["artifacts"].as_array().unwrap();
+        assert!(artifacts.contains(&json!("stacks/mirror/sdk-manifest.json")));
+        assert!(!artifacts.contains(&json!("stacks/mirror/sdk-provenance.json")));
+        assert!(artifacts.contains(&json!("programs/squads-v4/squads-v4.ts")));
+        crate::commands::sdk::verify_generated_sdk_output(
+            &manifest
+                .with_file_name("generated")
+                .join("typescript")
+                .join(root),
+        )
+        .expect("protocol output verifies");
+
+        // Removing the protocol removes everything it generated.
+        let sandbox_files = generated_files(&manifest, "typescript").len();
+        assert!(sandbox_files > 0);
+        remove_and_install(
+            &manifest,
+            DependencyKind::Protocol,
+            "token-raise",
+            RemoveDependencyOptions::default(),
+        )
+        .expect("remove protocol");
+        assert!(!manifest
+            .with_file_name("generated")
+            .join("typescript")
+            .join(root)
+            .exists());
+    }
+
+    #[test]
+    fn a_protocol_program_with_two_identities_is_a_program_key_conflict() {
+        let sandbox = RegistrySandbox::new(
+            vec![(200, resolution(vec![token_raise_resolution('8')]))],
+            false,
+        );
+        let manifest = protocol_project(&sandbox);
+        let original = fs::read(&manifest).unwrap();
+        let error = install_project(&manifest, InstallOptions::default())
+            .expect_err("different program SDKs under one key");
+        sandbox.request();
+        assert!(
+            format!("{error:#}").contains("PROGRAM_KEY_CONFLICT"),
+            "{error:#}"
+        );
+        assert_project_untouched(&manifest, &original);
+    }
+
+    #[test]
+    fn a_protocol_spec_that_does_not_match_its_hash_is_refused() {
+        let mut resolved = token_raise_resolution('6');
+        resolved["protocol"]["protocolSpec"]["version"] = json!("9.9.9");
+        let sandbox = RegistrySandbox::new(vec![(200, resolution(vec![resolved]))], false);
+        let manifest = protocol_project(&sandbox);
+        let original = fs::read(&manifest).unwrap();
+        let error = install_project(&manifest, InstallOptions::default())
+            .expect_err("spec does not hash to its pin");
+        sandbox.request();
+        assert!(format!("{error:#}").contains("not its pinned"), "{error:#}");
+        assert_project_untouched(&manifest, &original);
+    }
+
+    #[test]
+    fn a_protocol_without_its_spec_document_reads_it_from_the_artifact_route() {
+        let mut resolved = token_raise_resolution('6');
+        let spec = resolved["protocol"]["protocolSpec"].take();
+        resolved["protocol"]
+            .as_object_mut()
+            .unwrap()
+            .remove("protocolSpec");
+        let sandbox = RegistrySandbox::new(
+            vec![(200, resolution(vec![resolved])), (200, spec.to_string())],
+            false,
+        );
+        let manifest = protocol_project(&sandbox);
+        install_project(&manifest, InstallOptions::default()).expect("protocol install");
+        sandbox.request();
+        let artifact = sandbox.request();
+        assert!(
+            artifact.request_line.starts_with(
+                "GET /api/registry/artifacts/protocol-spec/arete:h1:protocol-spec:sha256:"
+            ),
+            "{}",
+            artifact.request_line
+        );
+        assert!(generated_files(&manifest, "typescript")
+            .contains_key("protocols/token-raise/protocol-spec.json"));
+    }
+
+    #[test]
+    fn protocols_are_registry_dependencies_with_targets() {
+        for (entry, expected) in [
+            (
+                "[dependencies.protocols.raise]\nsource = { registry = \"raise\" }\nversion = \"^1\"\ntargets = []\n",
+                "targets",
+            ),
+            (
+                "[dependencies.protocols.raise]\nsource = { path = \"raise.json\" }\ntargets = [\"typescript\"]\n",
+                "must come from the registry",
+            ),
+        ] {
+            let source = format!(
+                "manifest_version = 1\n\n[project]\nname = \"p\"\n\n[sdk]\ntargets = [\"typescript\", \"rust\"]\n\n{entry}"
+            );
+            let error = toml::from_str::<super::super::manifest::ManifestV1>(&source)
+                .unwrap()
+                .validate()
+                .expect_err("invalid protocol dependency");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    /// The generated protocol client, byte for byte. CI type-checks it with
+    /// `cli/tests/golden/tsconfig.strict.json`, together with
+    /// `protocol-client.type-test.ts`. Regenerate with `A4_UPDATE_GOLDEN=1`.
+    #[test]
+    fn protocol_install_golden() {
+        let sandbox = RegistrySandbox::new(
+            vec![(200, resolution(vec![token_raise_resolution('6')]))],
+            false,
+        );
+        let manifest = protocol_project(&sandbox);
+        install_project(&manifest, InstallOptions::default()).expect("protocol install");
+        sandbox.request();
+        let generated = generated_files(&manifest, "typescript")
+            .into_iter()
+            .filter_map(|(path, contents)| {
+                path.strip_prefix("protocols/token-raise/")
+                    .filter(|relative| !relative.ends_with("sdk-provenance.json"))
+                    .map(|relative| (relative.to_string(), contents))
+            })
+            .collect();
+        crate::commands::sdk::compare_golden_tree(
+            "token-raise protocol",
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/golden/installed-protocol/token-raise"),
+            generated,
+        );
+    }
+
+    /// The generated Rust protocol client, byte for byte: the protocol crate
+    /// with its two hoisted stacks and the vote program as path-dependency
+    /// crates. Every Rust file must parse. Regenerate with `A4_UPDATE_GOLDEN=1`.
+    #[test]
+    fn protocol_install_rust_golden() {
+        let sandbox = RegistrySandbox::new(
+            vec![(200, resolution(vec![token_raise_resolution('6')]))],
+            false,
+        );
+        let manifest = sandbox.project();
+        let mut contents = fs::read_to_string(&manifest).unwrap().replace(
+            "targets = [\"typescript\"]",
+            "targets = [\"typescript\", \"rust\"]",
+        );
+        contents.push_str(
+            "\n[dependencies.protocols.token-raise]\nsource = { registry = \"token-raise\" }\nversion = \"^1.0.0\"\ntargets = [\"rust\"]\n",
+        );
+        fs::write(&manifest, contents).unwrap();
+        install_project(&manifest, InstallOptions::default()).expect("rust protocol install");
+        sandbox.request();
+        let root = manifest
+            .with_file_name("generated")
+            .join("rust")
+            .join("protocols")
+            .join("token-raise-protocol");
+        let generated = generated_files(&manifest, "rust")
+            .into_iter()
+            .filter_map(|(path, contents)| {
+                path.strip_prefix("protocols/token-raise-protocol/")
+                    .filter(|relative| !relative.ends_with("sdk-provenance.json"))
+                    .map(|relative| (relative.to_string(), contents))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let entry = &generated["src/lib.rs"];
+        assert!(
+            entry.contains("pub struct TokenRaiseSecretClient {"),
+            "{entry}"
+        );
+        assert!(
+            entry
+                .contains("    pub use ::meteora_presale_stack::programs::ore as meteora_presale;"),
+            "{entry}"
+        );
+        assert!(
+            entry.contains("    pub use ::squads_v4_program as squads_v4;"),
+            "{entry}"
+        );
+        let cargo = &generated["Cargo.toml"];
+        assert!(cargo.contains("name = \"token-raise-protocol\""), "{cargo}");
+        assert!(
+            cargo.contains("meteora-presale-stack = { path = \"stacks/meteora-presale\" }"),
+            "{cargo}"
+        );
+        assert!(generated.contains_key("stacks/meteora-presale/Cargo.toml"));
+        assert!(generated.contains_key("programs/squads-v4/Cargo.toml"));
+        for (path, contents) in &generated {
+            // Doc comments name the key prefixes (`a4_pk_...`); no key follows one.
+            assert!(!contents.contains(OWNER_KEY), "{path} carries a key");
+            for prefix in ["a4_sk_", "a4_pk_"] {
+                for (index, _) in contents.match_indices(prefix) {
+                    assert!(
+                        contents[index + prefix.len()..].starts_with("..."),
+                        "{path} carries a key"
+                    );
+                }
+            }
+        }
+        crate::commands::sdk::verify_generated_sdk_output(&root)
+            .expect("rust protocol output verifies");
+        crate::commands::sdk::protocol_rust::compare_rust_protocol_golden(
+            "token-raise rust protocol",
+            &root,
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/golden/installed-protocol-rust/token-raise"),
+            generated,
+        );
+    }
+
+    fn local_build_of_token_raise(release_marker: char) -> LocalProtocolBuild {
+        LocalProtocolBuild {
+            spec_json: serde_json::from_slice(
+                &fs::read(
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("tests/fixtures/protocol/token-raise.protocol-spec.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            release_hash: format!(
+                "arete:h1:protocol-release:sha256:{}",
+                release_marker.to_string().repeat(64)
+            ),
+            deployment: LocalBuildDeployment::Deployed {
+                id: "local-1".into(),
+                access: "private".into(),
+            },
+            api_base: "https://api.example.test".into(),
+        }
+    }
+
+    fn token_raise_entry(manifest: &Path) -> LockedDependency {
+        ProjectLock::load(manifest.with_file_name("arete.lock"))
+            .unwrap()
+            .dependencies
+            .into_iter()
+            .find(|entry| entry.alias == "token-raise")
+            .unwrap()
+    }
+
+    /// `a4 dev` over a published install keeps the published pins, calls
+    /// the dev deployment, marks `local_build`, and `a4 install --locked`
+    /// restores the published client; `a4 install --check` tells them apart.
+    #[test]
+    fn a_local_build_over_a_published_protocol_is_restored_by_locked() {
+        let sandbox = RegistrySandbox::new(
+            vec![
+                (200, resolution(vec![token_raise_resolution('6')])),
+                (200, resolution(vec![token_raise_resolution('6')])),
+            ],
+            false,
+        );
+        let manifest = sandbox.project();
+        let mut contents = fs::read_to_string(&manifest).unwrap();
+        contents.push_str(
+            "\n[dependencies.protocols.token-raise]\nsource = { registry = \"token-raise\" }\nversion = \"^1.0.0\"\ntargets = [\"typescript\"]\n",
+        );
+        fs::write(&manifest, contents).unwrap();
+        install_project(&manifest, InstallOptions::default()).expect("published install");
+        let published = token_raise_entry(&manifest);
+        assert!(published.is_published() && !published.is_local_build());
+        assert!(check_project(&manifest).unwrap().is_empty());
+
+        let install = install_local_protocol_build(
+            &manifest,
+            "token-raise",
+            &local_build_of_token_raise('c'),
+            true,
+        )
+        .unwrap();
+        assert!(install.published && install.changed);
+        assert_eq!(install.deployment_id, "local-1");
+        let local = token_raise_entry(&manifest);
+        assert_eq!(
+            LockedDependency {
+                local_build: None,
+                ..local.clone()
+            },
+            published,
+            "a local build keeps every published pin"
+        );
+        let problems = check_project(&manifest).unwrap();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].problem.contains("a4 install --locked"));
+
+        install_project(
+            &manifest,
+            InstallOptions {
+                locked: true,
+                ..InstallOptions::default()
+            },
+        )
+        .expect("--locked restores the published client");
+        assert_eq!(token_raise_entry(&manifest), published);
+        assert!(check_project(&manifest).unwrap().is_empty());
+        let provenance: Value = serde_json::from_slice(
+            &fs::read(install.outputs[0].join("sdk-provenance.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(provenance["project"].get("localBuild").is_none());
+    }
+
+    /// A protocol never published installs from the local build `a4 dev`
+    /// cached, offline, and `--locked` refuses it.
+    #[test]
+    fn a_never_published_protocol_installs_from_its_local_build() {
+        // The registry fails every request: nothing here may reach it.
+        let sandbox = RegistrySandbox::new(vec![(500, "{}".into())], false);
+        let manifest = sandbox.project();
+        let root = manifest.parent().unwrap().to_path_buf();
+        let ensured = ensure_own_protocol_dependency(&root, "token-raise", "1.0.0", &[]).unwrap();
+        install_local_protocol_build(
+            &manifest,
+            &ensured.alias,
+            &local_build_of_token_raise('d'),
+            ensured.lock_was_fresh,
+        )
+        .unwrap();
+        let before = token_raise_entry(&manifest);
+        assert!(before.is_local_build() && !before.is_published());
+
+        install_project(&manifest, InstallOptions::default())
+            .expect("installs from the cached local build");
+        assert_eq!(token_raise_entry(&manifest), before);
+
+        let error = install_project(
+            &manifest,
+            InstallOptions {
+                locked: true,
+                ..InstallOptions::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("no published release"), "{error}");
+        assert!(check_project(&manifest).unwrap()[0]
+            .problem
+            .contains("never published"));
+    }
+
+    /// The generated Python protocol client, byte for byte: the protocol
+    /// package with its two hoisted stacks and the vote program as
+    /// subpackages. Every Python file must compile. Regenerate with
+    /// `A4_UPDATE_GOLDEN=1`.
+    #[test]
+    fn protocol_install_python_golden() {
+        let sandbox = RegistrySandbox::new(
+            vec![(200, resolution(vec![token_raise_resolution('6')]))],
+            false,
+        );
+        let manifest = sandbox.project();
+        let mut contents = fs::read_to_string(&manifest).unwrap().replace(
+            "targets = [\"typescript\"]",
+            "targets = [\"typescript\", \"python\"]",
+        );
+        contents.push_str(
+            "\n[dependencies.protocols.token-raise]\nsource = { registry = \"token-raise\" }\nversion = \"^1.0.0\"\ntargets = [\"python\"]\n",
+        );
+        fs::write(&manifest, contents).unwrap();
+        install_project(&manifest, InstallOptions::default()).expect("python protocol install");
+        sandbox.request();
+        let root = manifest
+            .with_file_name("generated")
+            .join("python")
+            .join("protocols")
+            .join("token-raise-protocol");
+        let generated = generated_files(&manifest, "python")
+            .into_iter()
+            .filter_map(|(path, contents)| {
+                path.strip_prefix("protocols/token-raise-protocol/")
+                    .filter(|relative| !relative.ends_with("sdk-provenance.json"))
+                    .map(|relative| (relative.to_string(), contents))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let entry = &generated["token_raise_protocol/__init__.py"];
+        assert!(entry.contains("class TokenRaiseSecretClient(ProtocolClient):"));
+        assert!(
+            entry.contains("\"squadsV4\": _squads_v4_program.PROGRAMS["),
+            "{entry}"
+        );
+        for (path, contents) in &generated {
+            assert!(
+                !contents.contains("a4_sk_") && !contents.contains("a4_pk_"),
+                "{path} carries a key"
+            );
+        }
+        crate::commands::sdk::verify_generated_sdk_output(&root)
+            .expect("python protocol output verifies");
+        crate::commands::sdk::protocol_python::compare_python_protocol_golden(
+            "token-raise python protocol",
+            &root,
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/golden/installed-protocol-python/token-raise"),
+            generated,
+        );
+    }
+    /// The token-raise resolution with its direct program (`squadsV4`, the
+    /// vote program) left unpinned, as an owner-private package records a
+    /// program installed from a local IDL.
+    fn token_raise_with_unpinned_program() -> Value {
+        let mut resolved = token_raise_resolution('6');
+        let vote = resolved["programs"][0].take();
+        resolved["programs"] = json!([]);
+        resolved["protocol"]["deployment"]["access"] = json!("private");
+        resolved["unpinnedPrograms"] = json!([{
+            "key": "squadsV4",
+            "programId": vote["definition"]["programId"],
+            "programSpecHash": vote["definition"]["programSpecHash"]
+        }]);
+        resolved
+    }
+
+    /// An unpinned program is skipped in every target: nothing is generated
+    /// for it, the client lists only the programs it has, and each README
+    /// says which program the app installs itself. Regenerate the READMEs
+    /// with `A4_UPDATE_GOLDEN=1`.
+    #[test]
+    fn a_protocol_with_an_unpinned_program_installs_without_it() {
+        let sandbox = RegistrySandbox::new(
+            vec![(200, resolution(vec![token_raise_with_unpinned_program()]))],
+            false,
+        );
+        let manifest = sandbox.project();
+        let mut contents = fs::read_to_string(&manifest).unwrap().replace(
+            "targets = [\"typescript\"]",
+            "targets = [\"typescript\", \"rust\", \"python\"]",
+        );
+        contents.push_str(
+            "\n[dependencies.protocols.token-raise]\nsource = { registry = \"token-raise\" }\nversion = \"^1.0.0\"\ntargets = [\"typescript\", \"rust\", \"python\"]\n",
+        );
+        fs::write(&manifest, contents).unwrap();
+        install_project(&manifest, InstallOptions::default()).expect("protocol install");
+        sandbox.request();
+
+        let typescript = generated_files(&manifest, "typescript");
+        let root = "protocols/token-raise";
+        assert!(!typescript
+            .keys()
+            .any(|path| path.starts_with(&format!("{root}/programs/"))));
+        let entry = &typescript[&format!("{root}/token-raise.ts")];
+        assert!(
+            entry.contains("  meteoraPresale: METEORA_PRESALE_STACK.programs.ore,"),
+            "{entry}"
+        );
+        assert!(!entry.contains("squadsV4: "), "{entry}");
+        crate::commands::sdk::verify_generated_sdk_output(
+            &manifest
+                .with_file_name("generated")
+                .join("typescript")
+                .join(root),
+        )
+        .expect("protocol output verifies");
+
+        let rust = generated_files(&manifest, "rust");
+        let rust_root = "protocols/token-raise-protocol";
+        assert!(!rust
+            .keys()
+            .any(|path| path.starts_with(&format!("{rust_root}/programs/"))));
+        assert!(!rust[&format!("{rust_root}/src/lib.rs")].contains("squads_v4"));
+        let python = generated_files(&manifest, "python");
+        assert!(!python
+            .keys()
+            .any(|path| path.starts_with(&format!("{rust_root}/programs/"))));
+        assert!(
+            !python[&format!("{rust_root}/token_raise_protocol/__init__.py")].contains("squadsV4")
+        );
+
+        // The lock pins the protocol; there is no program release to pin.
+        let lock = lock_of(&manifest);
+        let locked = &lock.dependencies[0];
+        assert_eq!(locked.kind, DependencyKind::Protocol);
+        assert!(locked.programs.is_empty());
+
+        let readmes = BTreeMap::from([
+            (
+                "typescript.README.md".to_string(),
+                typescript[&format!("{root}/README.md")].clone(),
+            ),
+            (
+                "rust.README.md".to_string(),
+                rust[&format!("{rust_root}/README.md")].clone(),
+            ),
+            (
+                "python.README.md".to_string(),
+                python[&format!("{rust_root}/README.md")].clone(),
+            ),
+        ]);
+        for (target, readme) in &readmes {
+            assert!(
+                readme.contains("## Programs this client does not bundle"),
+                "{target}: {readme}"
+            );
+            assert!(
+                readme.contains("| `squadsV4` | `Vote111111111111111111111111111111111111111` |")
+            );
+        }
+        crate::commands::sdk::compare_golden_tree(
+            "token-raise protocol with an unpinned program",
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/installed-protocol-unpinned"),
+            readmes,
+        );
+    }
+
+    #[test]
+    fn an_unpinned_program_must_be_the_specs_and_nothing_else() {
+        let mut undeclared = token_raise_with_unpinned_program();
+        undeclared["unpinnedPrograms"][0]["key"] = json!("other");
+        let mut moved = token_raise_with_unpinned_program();
+        moved["unpinnedPrograms"][0]["programSpecHash"] =
+            json!(format!("arete:h1:program-spec:sha256:{}", "1".repeat(64)));
+        let mut both = token_raise_resolution('6');
+        both["unpinnedPrograms"] = json!([{
+            "key": "squadsV4",
+            "programId": both["programs"][0]["definition"]["programId"],
+            "programSpecHash": both["programs"][0]["definition"]["programSpecHash"]
+        }]);
+        let mut twice = token_raise_with_unpinned_program();
+        let entry = twice["unpinnedPrograms"][0].clone();
+        twice["unpinnedPrograms"] = json!([entry.clone(), entry]);
+        for (resolved, expected) in [
+            (undeclared, "declares no such program"),
+            (moved, "but the spec pins"),
+            (both, "both resolved and unpinned"),
+            (twice, "twice"),
+        ] {
+            let sandbox = RegistrySandbox::new(vec![(200, resolution(vec![resolved]))], false);
+            let manifest = protocol_project(&sandbox);
+            let original = fs::read(&manifest).unwrap();
+            let error = install_project(&manifest, InstallOptions::default())
+                .expect_err("invalid unpinned program");
+            sandbox.request();
+            assert!(format!("{error:#}").contains(expected), "{error:#}");
+            assert_project_untouched(&manifest, &original);
+        }
+    }
+
+    #[test]
+    fn unbundled_program_notes_name_the_projects_own_install() {
+        let resolved = serde_json::from_value::<ResolvedRegistryDependency>(
+            token_raise_with_unpinned_program(),
+        )
+        .unwrap();
+        let spec_hash = match &resolved {
+            ResolvedRegistryDependency::Protocol {
+                unpinned_programs, ..
+            } => unpinned_programs[0].program_spec_hash.clone(),
+            _ => unreachable!(),
+        };
+        let dependencies = vec![ResolvedProjectDependency::Registry {
+            kind: DependencyKind::Protocol,
+            source: "registry:token-raise".into(),
+            requirement: "^1.0.0".into(),
+            targets: vec![InstallTarget::TypeScript],
+            resolved: Box::new(resolved),
+        }];
+        let mut lock = ProjectLock {
+            lock_version: 1,
+            manifest_hash: "sha256:test".into(),
+            resolver_contract: "test".into(),
+            dependencies: Vec::new(),
+        };
+        let notes = unbundled_program_notes(&dependencies, &lock);
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].contains("a4 install program <idl.json>"),
+            "{notes:?}"
+        );
+
+        let mut own: LockedDependency = toml::from_str(&format!(
+            "kind = \"program\"\nalias = \"vote\"\nsource = \"path:idl/vote.json\"\nprogram_id = \"Vote111111111111111111111111111111111111111\"\nprogram_spec_hash = \"{spec_hash}\"\ngenerator_contract = \"{GENERATOR_CONTRACT}\"\n"
+        ))
+        .unwrap();
+        own.targets = vec![InstallTarget::TypeScript];
+        lock.dependencies.push(own);
+        let notes = unbundled_program_notes(&dependencies, &lock);
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].contains("use this project's program vote"),
+            "{notes:?}"
+        );
     }
 }

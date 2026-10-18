@@ -7,8 +7,54 @@ use ratatui::{
 };
 
 use super::app::{App, SortDirection, SortMode, ViewMode};
+use super::tabs::Tabs;
 
-pub fn draw(f: &mut Frame, app: &mut App) {
+/// The current tab, under a tab bar when there are several.
+pub fn draw_tabs(f: &mut Frame, tabs: &mut Tabs) {
+    if tabs.len() == 1 {
+        let area = f.area();
+        return draw(f, tabs.current(), area);
+    }
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(f.area());
+    draw_tab_bar(f, tabs, chunks[0]);
+    draw(f, tabs.current(), chunks[1]);
+}
+
+/// ` 1 All●  2 ProtocolActivity/list ...`: the selected tab highlighted, and
+/// a green dot on each tab that had a frame in the last couple of seconds.
+fn draw_tab_bar(f: &mut Frame, tabs: &Tabs, area: Rect) {
+    let now = std::time::Instant::now();
+    let mut spans = Vec::new();
+    for (index, tab) in tabs.tabs.iter().enumerate() {
+        let style = if index == tabs.active {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        spans.push(Span::styled(
+            format!(" {} {} ", index + 1, tab.title),
+            style,
+        ));
+        spans.push(if tabs.is_live(index, now) {
+            Span::styled("\u{25cf} ", Style::default().fg(Color::Green))
+        } else {
+            Span::raw("  ")
+        });
+    }
+    spans.push(Span::styled(
+        "Tab/Shift-Tab or 1-9 switch",
+        Style::default().fg(Color::DarkGray),
+    ));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     app.ensure_filtered_cache();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -18,7 +64,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Constraint::Length(1), // Timeline
             Constraint::Length(1), // Status bar
         ])
-        .split(f.area());
+        .split(area);
 
     draw_header(f, app, chunks[0]);
 
@@ -121,7 +167,7 @@ fn draw_entity_list(f: &mut Frame, app: &mut App, area: Rect) {
             ListItem::new(format!(
                 "{}{}",
                 prefix,
-                truncate_key(key, area.width as usize - 3)
+                truncate_key(key, (area.width as usize).saturating_sub(3))
             ))
             .style(style)
         })
@@ -174,7 +220,11 @@ fn draw_entity_detail(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 ""
             };
-            format!("{}{}", truncate_key(&key, area.width as usize - 10), mode)
+            format!(
+                "{}{}",
+                truncate_key(&key, (area.width as usize).saturating_sub(10)),
+                mode
+            )
         }
         None => "Detail".to_string(),
     };
