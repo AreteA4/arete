@@ -546,6 +546,16 @@ pub async fn simulate_signer_effect(
     signer: &str,
 ) -> Result<SignerEffect> {
     let lookups = resolve_lookups(rpc, decoded).await;
+    simulate_signer_effect_with_lookups(rpc, transaction, decoded, signer, &lookups).await
+}
+
+async fn simulate_signer_effect_with_lookups(
+    rpc: &Rpc,
+    transaction: &[u8],
+    decoded: &DecodedTransaction,
+    signer: &str,
+    lookups: &ResolvedLookups,
+) -> Result<SignerEffect> {
     let mut addresses: Vec<String> = Vec::new();
     for key in std::iter::once(signer.to_string())
         .chain(decoded.writable_static_keys())
@@ -610,7 +620,7 @@ pub async fn simulate_signer_effect(
         return Ok(SignerEffect {
             err,
             logs_tail,
-            unresolved: lookups.unresolved,
+            unresolved: lookups.unresolved.clone(),
             omitted_accounts,
             findings: checked.findings,
             inner_checked,
@@ -663,7 +673,7 @@ pub async fn simulate_signer_effect(
         closed_lamports_out,
         err,
         logs_tail,
-        unresolved: lookups.unresolved,
+        unresolved: lookups.unresolved.clone(),
         omitted_accounts,
         findings: checked.findings,
         inner_checked,
@@ -760,12 +770,35 @@ pub async fn summarize(prepared: &Value, signer: &str, rpc: Option<&Rpc>) -> Res
                 still_required.push(key.clone());
             }
         }
+        // Resolve once for both the displayed write set and simulation. Even
+        // if simulation fails, the write set must not silently omit ALT keys.
+        let lookups = match rpc {
+            Some(rpc) => resolve_lookups(rpc, &decoded).await,
+            None => ResolvedLookups::default(),
+        };
+        let mut accounts_written = decoded.writable_static_keys();
+        let mut unresolved_writes = Vec::new();
+        let mut offset = 0;
+        for lookup in &decoded.lookups {
+            for &address_index in &lookup.writable {
+                match lookups.keys.get(offset).and_then(Option::as_ref) {
+                    Some(key) => accounts_written.push(key.clone()),
+                    None => unresolved_writes.push(json!({
+                        "table": lookup.table,
+                        "addressIndex": address_index,
+                    })),
+                }
+                offset += 1;
+            }
+        }
         let mut entry = json!({
             "index": index,
             "version": match decoded.version { Some(v) => json!(format!("v{v}")), None => json!("legacy") },
             "feePayer": decoded.static_keys.first(),
             "programs": programs,
-            "accountsWritten": decoded.writable_static_keys(),
+            "accountsWritten": accounts_written,
+            "accountsWrittenComplete": unresolved_writes.is_empty(),
+            "unresolvedWritableAccounts": unresolved_writes,
             "signatures": {
                 "required": signers.iter().map(|(key, _)| key).collect::<Vec<_>>(),
                 "present": signers.iter().filter(|(_, signed)| *signed).map(|(key, _)| key).collect::<Vec<_>>(),
@@ -789,47 +822,51 @@ pub async fn summarize(prepared: &Value, signer: &str, rpc: Option<&Rpc>) -> Res
         let mut unsafe_instructions: Vec<crate::authority::Finding> =
             crate::authority::check_top_level(&decoded, signer, &[]).findings;
         match rpc {
-            Some(rpc) => match simulate_signer_effect(rpc, bytes, &decoded, signer).await {
-                Ok(effect) => {
-                    unsafe_instructions = effect.findings.clone();
-                    if !effect.err.is_null() {
-                        simulation_errors.push(json!({
-                            "transaction": index,
-                            "err": effect.err,
-                            "dependsOnEarlierTransactions": dependent,
-                        }));
+            Some(rpc) => {
+                match simulate_signer_effect_with_lookups(rpc, bytes, &decoded, signer, &lookups)
+                    .await
+                {
+                    Ok(effect) => {
+                        unsafe_instructions = effect.findings.clone();
+                        if !effect.err.is_null() {
+                            simulation_errors.push(json!({
+                                "transaction": index,
+                                "err": effect.err,
+                                "dependsOnEarlierTransactions": dependent,
+                            }));
+                        }
+                        match (effect.sol_lamports, sol_total) {
+                            (Some(delta), Some(total)) => sol_total = Some(total + delta),
+                            _ => sol_total = None,
+                        }
+                        for (mint, delta) in &effect.tokens {
+                            *token_totals.entry(mint.clone()).or_default() += delta;
+                        }
+                        entry["signerEffect"] = json!({
+                            "solLamports": effect.sol_lamports.map(|v| v.to_string()),
+                            "sol": effect.sol_lamports.map(lamports_to_sol),
+                            "tokens": effect.tokens.iter().map(|(mint, delta)| json!({ "mint": mint, "amount": delta.to_string() })).collect::<Vec<_>>(),
+                            "closedAccountLamportsOut": effect.closed_lamports_out.map(|v| v.to_string()),
+                            "known": effect.known(),
+                            "unresolvedLookupTables": effect.unresolved,
+                            "omittedAccounts": effect.omitted_accounts,
+                            "innerInstructionsChecked": effect.inner_checked,
+                            "preStateSlot": effect.slots.0,
+                            "simulatedSlot": effect.slots.1,
+                        });
+                        if effect.omitted_accounts > 0 {
+                            sol_total = None;
+                        }
+                        entry["simulation"] =
+                            json!({ "err": effect.err, "logsTail": effect.logs_tail });
                     }
-                    match (effect.sol_lamports, sol_total) {
-                        (Some(delta), Some(total)) => sol_total = Some(total + delta),
-                        _ => sol_total = None,
-                    }
-                    for (mint, delta) in &effect.tokens {
-                        *token_totals.entry(mint.clone()).or_default() += delta;
-                    }
-                    entry["signerEffect"] = json!({
-                        "solLamports": effect.sol_lamports.map(|v| v.to_string()),
-                        "sol": effect.sol_lamports.map(lamports_to_sol),
-                        "tokens": effect.tokens.iter().map(|(mint, delta)| json!({ "mint": mint, "amount": delta.to_string() })).collect::<Vec<_>>(),
-                        "closedAccountLamportsOut": effect.closed_lamports_out.map(|v| v.to_string()),
-                        "known": effect.known(),
-                        "unresolvedLookupTables": effect.unresolved,
-                        "omittedAccounts": effect.omitted_accounts,
-                        "innerInstructionsChecked": effect.inner_checked,
-                        "preStateSlot": effect.slots.0,
-                        "simulatedSlot": effect.slots.1,
-                    });
-                    if effect.omitted_accounts > 0 {
+                    Err(error) => {
                         sol_total = None;
+                        entry["signerEffect"] =
+                            json!({ "known": false, "error": format!("{error:#}") });
                     }
-                    entry["simulation"] =
-                        json!({ "err": effect.err, "logsTail": effect.logs_tail });
                 }
-                Err(error) => {
-                    sol_total = None;
-                    entry["signerEffect"] =
-                        json!({ "known": false, "error": format!("{error:#}") });
-                }
-            },
+            }
             None => {
                 sol_total = None;
                 entry["signerEffect"] = json!({ "known": false });
@@ -982,6 +1019,120 @@ pub(crate) mod tests {
         assert_eq!(decoded.lookups[0].writable, vec![0, 3]);
         assert_eq!(decoded.lookups[0].readonly, vec![5]);
         assert_eq!(decoded.writable_static_keys(), vec![base58(&[1; 32])]);
+    }
+
+    fn lookup_transaction() -> Vec<u8> {
+        let mut message = vec![0x80, 1, 0, 1, 2];
+        message.extend_from_slice(&[1; 32]);
+        message.extend_from_slice(&[4; 32]);
+        message.extend_from_slice(&[7; 32]);
+        message.extend_from_slice(&[1, 1, 0, 0, 1]);
+        message.extend_from_slice(&[8; 32]);
+        message.extend_from_slice(&[2, 0, 3, 1, 5]);
+        let mut transaction = vec![1];
+        transaction.extend_from_slice(&[0; 64]);
+        transaction.extend_from_slice(&message);
+        transaction
+    }
+
+    #[tokio::test]
+    async fn summaries_mark_writable_lookups_unresolved_without_rpc() {
+        let prepared = json!({ "transactions": [{ "transactionBase64": base64::engine::general_purpose::STANDARD.encode(lookup_transaction()) }] });
+        let result = summarize(&prepared, &base58(&[1; 32]), None).await.unwrap();
+        let entry = &result["transactions"][0];
+        assert_eq!(entry["accountsWritten"], json!([base58(&[1; 32])]));
+        assert_eq!(entry["accountsWrittenComplete"], false);
+        assert_eq!(
+            entry["unresolvedWritableAccounts"],
+            json!([
+                { "table": base58(&[8; 32]), "addressIndex": 0 },
+                { "table": base58(&[8; 32]), "addressIndex": 3 },
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn summaries_include_lookup_writes_even_when_simulation_fails() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        for count in [Some(6), Some(1), None] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                // Lookup resolution, pre-state, simulation.
+                for _ in 0..3 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut length = 0;
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some(value) =
+                            line.to_ascii_lowercase().strip_prefix("content-length:")
+                        {
+                            length = value.trim().parse().unwrap();
+                        }
+                    }
+                    let mut bytes = vec![0; length];
+                    reader.read_exact(&mut bytes).unwrap();
+                    let request: Value = serde_json::from_slice(&bytes).unwrap();
+                    let response = match request["method"].as_str().unwrap() {
+                        "getMultipleAccounts" => {
+                            let values: Vec<Value> = request["params"][0].as_array().unwrap().iter().map(|key| {
+                                if key == &json!(base58(&[8; 32])) {
+                                    count.map(|count| {
+                                        let mut bytes = vec![0; LOOKUP_TABLE_HEADER];
+                                        for index in 0..count { bytes.extend_from_slice(&[10 + index as u8; 32]); }
+                                        json!({ "data": [base64::engine::general_purpose::STANDARD.encode(bytes), "base64"] })
+                                    }).unwrap_or(Value::Null)
+                                } else { Value::Null }
+                            }).collect();
+                            json!({ "result": { "context": { "slot": 1 }, "value": values } })
+                        }
+                        "simulateTransaction" => json!({ "error": { "message": "simulation unavailable" } }),
+                        other => panic!("unexpected request {other}"),
+                    }.to_string();
+                    write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response}", response.len()).unwrap();
+                }
+            });
+            let http = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap();
+            let rpc = Rpc::new(http, &format!("http://{address}"));
+            let prepared = json!({ "transactions": [{ "transactionBase64": base64::engine::general_purpose::STANDARD.encode(lookup_transaction()) }] });
+            let result = summarize(&prepared, &base58(&[1; 32]), Some(&rpc))
+                .await
+                .unwrap();
+            let entry = &result["transactions"][0];
+            let mut expected = vec![base58(&[1; 32])];
+            if count.is_some() {
+                expected.push(base58(&[10; 32]));
+            }
+            if count == Some(6) {
+                expected.push(base58(&[13; 32]));
+            }
+            assert_eq!(entry["accountsWritten"], json!(expected));
+            assert_eq!(entry["accountsWrittenComplete"], count == Some(6));
+            assert_eq!(
+                entry["unresolvedWritableAccounts"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                match count {
+                    Some(6) => 0,
+                    Some(_) => 1,
+                    None => 2,
+                }
+            );
+            assert!(entry["signerEffect"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("simulation unavailable"));
+            server.join().unwrap();
+        }
     }
 
     #[test]

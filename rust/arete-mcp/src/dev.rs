@@ -453,7 +453,19 @@ impl DevWallet {
         let key = SigningKey::from_bytes(&seed);
         let mut bytes = seed.to_vec();
         bytes.extend_from_slice(key.verifying_key().as_bytes());
-        write_private(&path, serde_json::to_string(&bytes)?.as_bytes())?;
+        fs::create_dir_all(dir)?;
+        // Publish a complete, owner-only file without replacing a concurrent
+        // creator's key. Readers never observe a partially written keypair.
+        let mut temporary = tempfile::NamedTempFile::new_in(dir)?;
+        temporary.write_all(serde_json::to_string(&bytes)?.as_bytes())?;
+        temporary.as_file().sync_all()?;
+        match temporary.persist_noclobber(&path) {
+            Ok(_) => {}
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Self::load_or_create(dir, name);
+            }
+            Err(error) => return Err(error.error).context("Failed to save the new dev wallet"),
+        }
         Ok((
             Self {
                 name: name.to_string(),
@@ -1632,6 +1644,50 @@ mod tests {
         );
         assert_eq!(record["result"]["message"], "the jar is closed");
         assert_eq!(record["result"]["hint"], "read protocol_actions");
+    }
+
+    #[test]
+    fn concurrent_wallet_creators_keep_one_saved_key() {
+        use std::sync::{Arc, Barrier};
+        let dir = tempfile::tempdir().unwrap();
+        let barrier = Arc::new(Barrier::new(16));
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                let path = dir.path().to_path_buf();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let (wallet, created) = DevWallet::load_or_create(&path, "shared").unwrap();
+                    (wallet.pubkey(), created)
+                })
+            })
+            .collect();
+        let results: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
+        let (saved, created) = DevWallet::load_or_create(dir.path(), "shared").unwrap();
+        assert!(!created);
+        assert_eq!(results.iter().filter(|(_, created)| *created).count(), 1);
+        assert!(results.iter().all(|(key, _)| key == &saved.pubkey()));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&saved.path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn wallet_creation_preserves_an_invalid_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("saved.json");
+        fs::write(&path, b"invalid keypair").unwrap();
+        assert!(DevWallet::load_or_create(dir.path(), "saved").is_err());
+        assert_eq!(fs::read(path).unwrap(), b"invalid keypair");
     }
 
     #[test]

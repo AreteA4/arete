@@ -323,13 +323,9 @@ pub struct CaptureSummary {
     pub requests: usize,
 }
 
-/// An RPC URL without credentials: scheme and host (and port) only. Many
-/// providers put the API key in the path or the query.
-/// Where a capture tool writes: `output` as given when absolute, else under
-/// `base` (the project or working directory). It must name a `.arcap` file
-/// whose directory exists, and may not contain `..`, so a relative path
-/// cannot climb out of `base`.
-pub fn resolve_capture_output(output: &str, base: &std::path::Path) -> anyhow::Result<PathBuf> {
+/// A file path, absolute or relative to `base`, with an existing parent
+/// directory and no `..` components. Shared by JSON and raw-capture tools.
+pub fn resolve_file_path(output: &str, base: &std::path::Path) -> anyhow::Result<PathBuf> {
     let path = std::path::Path::new(output.trim());
     if path.as_os_str().is_empty() {
         bail!("`output` is empty");
@@ -339,14 +335,6 @@ pub fn resolve_capture_output(output: &str, base: &std::path::Path) -> anyhow::R
         .any(|component| matches!(component, std::path::Component::ParentDir))
     {
         bail!("`output` may not contain `..`: {output}");
-    }
-    if path.extension().and_then(|extension| extension.to_str())
-        != Some(arete_solana_contracts::raw_capture::RAW_CAPTURE_EXTENSION)
-    {
-        bail!(
-            "`output` must name a .{} file: {output}",
-            arete_solana_contracts::raw_capture::RAW_CAPTURE_EXTENSION
-        );
     }
     let path = if path.is_absolute() {
         path.to_path_buf()
@@ -365,6 +353,22 @@ pub fn resolve_capture_output(output: &str, base: &std::path::Path) -> anyhow::R
     }
 }
 
+/// A raw-capture output path: the shared file checks plus the `.arcap` suffix.
+pub fn resolve_capture_output(output: &str, base: &std::path::Path) -> anyhow::Result<PathBuf> {
+    let path = resolve_file_path(output, base)?;
+    if path.extension().and_then(|extension| extension.to_str())
+        != Some(arete_solana_contracts::raw_capture::RAW_CAPTURE_EXTENSION)
+    {
+        bail!(
+            "`output` must name a .{} file: {output}",
+            arete_solana_contracts::raw_capture::RAW_CAPTURE_EXTENSION
+        );
+    }
+    Ok(path)
+}
+
+/// An RPC URL without credentials: scheme and host (and port) only. Many
+/// providers put the API key in the path or the query.
 pub fn rpc_source_label(url: &str) -> String {
     match reqwest::Url::parse(url) {
         Ok(parsed) => match parsed.host_str() {
@@ -1449,6 +1453,31 @@ mod tests {
         }
         std::fs::create_dir(base.join("dir.arcap")).unwrap();
         assert!(resolve_capture_output("dir.arcap", base).is_err());
+    }
+
+    #[test]
+    fn json_paths_share_file_checks_without_capture_suffixes() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        for name in ["scenario.json", "repro.json"] {
+            assert_eq!(resolve_file_path(name, base).unwrap(), base.join(name));
+            let absolute = base.join(name);
+            assert_eq!(
+                resolve_file_path(absolute.to_str().unwrap(), base).unwrap(),
+                absolute
+            );
+            assert!(resolve_capture_output(name, base).is_err());
+        }
+        std::fs::create_dir(base.join("directory.json")).unwrap();
+        for bad in [
+            "",
+            "../scenario.json",
+            "sub/../../repro.json",
+            "missing/repro.json",
+            "directory.json",
+        ] {
+            assert!(resolve_file_path(bad, base).is_err(), "{bad}");
+        }
     }
 
     const PROGRAM: &str = "whirLbMiicVdio4qvUfM5KS9gd5StM6dENbZyRy7Jpc";

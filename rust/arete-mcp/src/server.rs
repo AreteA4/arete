@@ -797,6 +797,23 @@ fn dev_client(project: Option<&str>) -> Result<crate::dev::DevClient, McpError> 
         .map_err(dev_error)
 }
 
+/// Include project/session details only for the environment already selected
+/// by the common resolver, including its API origin.
+fn project_status_client(
+    project: Option<&str>,
+    rpc: &crate::dev_env::EnvRpc,
+) -> Option<crate::dev::DevClient> {
+    let project = crate::dev::DevProject::discover(project.map(std::path::Path::new)).ok()?;
+    let selection = project.load_selection().ok()??;
+    if selection.id != rpc.env()
+        || crate::dev_env::api_origin(&selection.api_url) != rpc.api().origin()
+    {
+        return None;
+    }
+    let session = project.session_for(&selection);
+    Some(crate::dev::DevClient::new(project, session, rpc.clone()))
+}
+
 /// The environment a dev tool acts on.
 async fn dev_env(args: &DevEnvArgs) -> Result<crate::dev_env::EnvRpc, McpError> {
     crate::dev_env::resolve_env(
@@ -1489,12 +1506,10 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<DevEnvArgs>,
     ) -> Result<CallToolResult, McpError> {
-        if args.environment.is_none() {
-            if let Ok(client) = dev_client(args.project.as_deref()) {
-                return shaped_result(&client.status().await);
-            }
-        }
         let rpc = dev_env(&args).await?;
+        if let Some(client) = project_status_client(args.project.as_deref(), &rpc) {
+            return shaped_result(&client.status().await);
+        }
         let environment = rpc.api().get_env(rpc.env()).await.map_err(dev_error)?;
         let chain = if environment["state"] == "running" {
             match crate::dev_env::read_clock(&rpc).await {
@@ -1825,7 +1840,7 @@ impl AreteMcp {
         let invalid = |error: anyhow::Error| McpError::invalid_params(format!("{error:#}"), None);
         let scenario = match args.scenario {
             Value::String(path) => {
-                let path = crate::dev_capture::resolve_capture_output(
+                let path = crate::dev_capture::resolve_file_path(
                     &path,
                     &std::env::current_dir()
                         .map_err(|error| McpError::internal_error(error.to_string(), None))?,
@@ -1887,7 +1902,7 @@ impl AreteMcp {
         };
         let cwd = std::env::current_dir()
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-        let path = crate::dev_capture::resolve_capture_output(&output, &cwd)
+        let path = crate::dev_capture::resolve_file_path(&output, &cwd)
             .map_err(|error| McpError::invalid_params(format!("{error:#}"), None))?;
         let bytes = serde_json::to_vec_pretty(&result)
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
@@ -4259,6 +4274,46 @@ mod explore_args_tests {
             registry: RegistryClient::with_base_url(&format!("http://{address}")),
             ..AreteMcp::new()
         }
+    }
+
+    #[test]
+    fn status_project_details_follow_the_resolved_environment_and_origin() {
+        use crate::dev::{DevProject, DevSession};
+        use crate::dev_env::{EnvApi, EnvRpc, EnvSelection};
+        let dir = tempfile::tempdir().unwrap();
+        let project = DevProject::new(dir.path());
+        let a = "denv_01hzx3k8m9q2r4s5t6v7w8x9yz";
+        let b = "denv_01hzx3k8m9q2r4s5t6v7w8x9ya";
+        let origin = "http://127.0.0.1:3000";
+        let selection = EnvSelection::new(a, "project-a", origin);
+        selection.save(&project.environment_path()).unwrap();
+        let mut session = DevSession::offline(&selection);
+        session.deployment_id = Some("deployment-a".into());
+        crate::dev::write_private(
+            &project.session_path(),
+            &serde_json::to_vec(&session).unwrap(),
+        )
+        .unwrap();
+        let make_rpc = |id, origin| {
+            EnvRpc::new(
+                EnvApi::new(reqwest::Client::new(), origin, "test-key").unwrap(),
+                id,
+            )
+            .unwrap()
+        };
+        let project_path = dir.path().to_str();
+        // The common resolver selects B for an override; A's session must
+        // never shortcut that result, regardless of how B was selected.
+        assert!(project_status_client(project_path, &make_rpc(b, origin)).is_none());
+        assert!(
+            project_status_client(project_path, &make_rpc(a, "http://127.0.0.1:3001")).is_none()
+        );
+        let client = project_status_client(project_path, &make_rpc(a, origin)).unwrap();
+        assert_eq!(client.env.env(), a);
+        assert_eq!(
+            client.session.deployment_id.as_deref(),
+            Some("deployment-a")
+        );
     }
 
     fn pumpfun_entry(modes: serde_json::Value) -> String {
