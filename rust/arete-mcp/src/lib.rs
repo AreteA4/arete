@@ -4,18 +4,28 @@
 //! [`serve_stdio`]. There is no standalone binary; `a4 init` writes the MCP
 //! config that launches it.
 
+pub mod authority;
 pub mod catalog_view;
 mod connections;
 pub mod credentials;
 pub mod descriptor;
+pub mod dev;
+pub mod dev_capture;
+pub mod dev_env;
 pub mod extension_reads;
 pub mod field_amounts;
 mod filter;
 pub mod oneshot;
+pub mod prepared_summary;
+pub mod protocol;
+pub mod protocol_agent;
+pub mod protocol_api;
+pub mod protocol_listing;
 mod recovery;
 mod registry;
 pub mod sdk_reference;
 pub mod server;
+pub mod signer;
 pub mod stack_knowledge;
 mod subscriptions;
 

@@ -33,7 +33,19 @@ pub struct AccountStatus {
     pub trial_access_enabled: bool,
     #[serde(rename = "starterGuidance")]
     pub starter_guidance: Option<String>,
+    /// The plan's usage as the account endpoint reports it (allowance
+    /// window and meters), including `onExhausted`: `block` (requests are
+    /// refused once the allowance is used) or `metered` (usage beyond the
+    /// allowance is billed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<serde_json::Value>,
+    /// `metered beyond allowance` when `usage.onExhausted` is `metered`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overage: Option<String>,
 }
+
+/// What `account_status` says when usage past the allowance is metered.
+pub const METERED_OVERAGE: &str = "metered beyond allowance";
 
 #[derive(Deserialize)]
 struct AccountStatusWire {
@@ -55,6 +67,8 @@ struct AccountStatusWire {
     trial_access_enabled: bool,
     #[serde(rename = "starterGuidance", default)]
     starter_guidance: Option<String>,
+    #[serde(default)]
+    usage: Option<serde_json::Value>,
 }
 
 impl From<AccountStatusWire> for AccountStatus {
@@ -71,6 +85,12 @@ impl From<AccountStatusWire> for AccountStatus {
             entitlement_expires_at: value.entitlement_expires_at,
             trial_access_enabled: value.trial_access_enabled,
             starter_guidance: value.starter_guidance,
+            overage: value
+                .usage
+                .as_ref()
+                .filter(|usage| usage["onExhausted"] == "metered")
+                .map(|_| METERED_OVERAGE.to_string()),
+            usage: value.usage.filter(serde_json::Value::is_object),
         }
     }
 }
@@ -299,5 +319,33 @@ mod tests {
         assert_eq!(old.entitlement_expires_at, None);
         assert!(!old.trial_access_enabled);
         assert_eq!(old.starter_guidance, None);
+        assert_eq!(old.usage, None);
+        assert!(serde_json::to_value(&old).unwrap().get("overage").is_none());
+    }
+
+    #[test]
+    fn account_status_shows_what_happens_when_the_allowance_is_used() {
+        let status = |usage: &str| -> serde_json::Value {
+            let body = format!(
+                r#"{{"slug":"agent-1","display_name":"Agent One","status":"active","created_at":"2026-09-29T00:00:00Z","claimState":"claimed","plan":"free","usage":{usage}}}"#
+            );
+            let status: AccountStatus = serde_json::from_str::<AccountStatusWire>(&body)
+                .unwrap()
+                .into();
+            serde_json::to_value(&status).unwrap()
+        };
+        let metered = status(
+            r#"{"window":"month","windowStart":"2026-10-01T00:00:00Z","meters":[],"exhausted":false,"onExhausted":"metered"}"#,
+        );
+        assert_eq!(metered["usage"]["onExhausted"], "metered");
+        assert_eq!(metered["overage"], "metered beyond allowance");
+
+        let blocked = status(r#"{"onExhausted":"block","exhausted":true}"#);
+        assert_eq!(blocked["usage"]["onExhausted"], "block");
+        assert!(blocked.get("overage").is_none());
+
+        let older = status(r#"{"exhausted":false}"#);
+        assert!(older["usage"].get("onExhausted").is_none());
+        assert!(older.get("overage").is_none());
     }
 }

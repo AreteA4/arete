@@ -13,7 +13,10 @@
 //! An api key is attached when one happens to be resolvable (env var or the
 //! file `a4 auth login` writes), because `GET /api/registry` widens its result
 //! set to include global stacks for an authenticated caller. Absence of a key
-//! is never an error here — it just means you see the public set.
+//! is not an error here — it just means you see the public set. A registry
+//! may require a key for install descriptors, artifacts and schemas; it then
+//! answers 401 `registry-key-required`, which this module turns into a
+//! message naming `a4 login` and `ARETE_API_KEY`.
 //!
 //! The **knowledge** endpoints (`/api/registry/knowledge/*`) are the one
 //! exception: they require API-key auth on every route, so those methods fail
@@ -39,6 +42,37 @@ use serde_json::Value;
 use crate::credentials;
 
 const DEFAULT_API_URL: &str = "https://api.arete.run";
+
+/// The `User-Agent` of every registry request: the `arete-mcp/<version>`
+/// product token.
+pub const USER_AGENT: &str = concat!("arete-mcp/", env!("CARGO_PKG_VERSION"));
+
+/// Request header that asks the registry for package release signatures.
+pub const REGISTRY_SIGNATURES_HEADER: &str = "X-Arete-Registry-Signatures";
+
+/// The signature formats asked for with [`REGISTRY_SIGNATURES_HEADER`].
+pub const REGISTRY_SIGNATURE_VERSIONS: &str = "v1";
+
+/// The HTTP client behind [`RegistryClient`]: every request carries
+/// [`USER_AGENT`].
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// The code of a registry route's 401 when it needs an API key and none was
+/// sent.
+pub const REGISTRY_KEY_REQUIRED: &str = "registry-key-required";
+
+/// What the MCP server reports for [`REGISTRY_KEY_REQUIRED`].
+pub const REGISTRY_KEY_REQUIRED_MESSAGE: &str = "The Arete registry needs an API key for this \
+     request. Run `a4 login` (free) and restart the MCP server, or set `ARETE_API_KEY` in the \
+     MCP server environment (e.g. `claude mcp add -e ARETE_API_KEY=...`).";
+
+/// Largest page `explore_protocols` asks for (the registry's limit).
+pub const MAX_PROTOCOL_LISTING_LIMIT: usize = 50;
 const ENV_VAR_API_URL: &str = "ARETE_API_URL";
 
 /// Hard ceiling on a single registry response. ASTs and stack manifests are
@@ -68,13 +102,17 @@ enum BodyCap {
     StackDescriptor,
     /// A program install descriptor read for shaping: [`MAX_DESCRIPTOR_BYTES`].
     ProgramDescriptor,
+    /// A protocol install descriptor read for shaping: [`MAX_DESCRIPTOR_BYTES`].
+    ProtocolDescriptor,
 }
 
 impl BodyCap {
     fn bytes(self) -> usize {
         match self {
             Self::ToolResult => MAX_RESPONSE_BYTES,
-            Self::StackDescriptor | Self::ProgramDescriptor => MAX_DESCRIPTOR_BYTES,
+            Self::StackDescriptor | Self::ProgramDescriptor | Self::ProtocolDescriptor => {
+                MAX_DESCRIPTOR_BYTES
+            }
         }
     }
 
@@ -100,6 +138,11 @@ impl BodyCap {
                  instructions and accounts by `section`, and `a4 install program` reads the \
                  full descriptor on the command line."
             ),
+            Self::ProtocolDescriptor => format!(
+                "the protocol install descriptor at {path} is at least {bytes} bytes, over the \
+                 {limit} byte limit this server reads. `a4 explore protocol <ref>` reads it on \
+                 the command line, and resolve_artifact returns its `protocol-spec` alone."
+            ),
         }
     }
 }
@@ -109,9 +152,14 @@ impl BodyCap {
 /// transaction bindings its operations use.
 const INSTALL_CAPABILITIES: &str = "capabilities=managed-solana-gateway-v1";
 
-/// Artifact kinds accepted by `resolve_artifact`, mirroring the three
+/// Artifact kinds accepted by `resolve_artifact`, mirroring the
 /// `/api/registry/artifacts/{kind}/{hash}` routes.
-const ARTIFACT_KINDS: [&str; 3] = ["program-spec", "live-spec", "stack-manifest"];
+const ARTIFACT_KINDS: [&str; 4] = [
+    "program-spec",
+    "live-spec",
+    "stack-manifest",
+    "protocol-spec",
+];
 
 #[derive(Clone)]
 pub struct RegistryClient {
@@ -144,12 +192,11 @@ impl Default for RegistryClient {
 }
 
 impl RegistryClient {
-    /// A client for `base_url`, for tests against a local server.
-    #[cfg(test)]
+    /// A client for `base_url` instead of the configured API.
     pub(crate) fn with_base_url(base_url: &str) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            http: reqwest::Client::new(),
+            http: http_client(),
         }
     }
 
@@ -162,7 +209,7 @@ impl RegistryClient {
 
         Self {
             base_url,
-            http: reqwest::Client::new(),
+            http: http_client(),
         }
     }
 
@@ -217,6 +264,16 @@ impl RegistryClient {
             .await
     }
 
+    /// The pinned install descriptor of one protocol package: the
+    /// resolver's protocol entry (spec, deployment, hoisted stacks and
+    /// programs).
+    pub async fn protocol_install(&self, protocol: &str) -> Result<String> {
+        let protocol = path_segment(protocol, "protocol")?;
+        let path = format!("/api/registry/protocols/{protocol}/install?{INSTALL_CAPABILITIES}");
+        self.send(&path, self.public_key(), None, BodyCap::ProtocolDescriptor)
+            .await
+    }
+
     /// Fetch a content-addressed artifact by kind and hash.
     pub async fn artifact(&self, kind: &str, hash: &str) -> Result<String> {
         let kind = kind.trim();
@@ -228,6 +285,20 @@ impl RegistryClient {
         }
         let hash = path_segment(hash, "hash")?;
         self.get(&format!("/api/registry/artifacts/{kind}/{hash}"))
+            .await
+    }
+
+    // ── Protocol listings (anonymous) ────────────────────────────────────────
+
+    /// Listed protocol packages hosted on Arete, reviewed ones first
+    /// (`GET /api/registry/protocols`). `limit` is clamped to 1..=50.
+    pub async fn protocol_listings(
+        &self,
+        query: Option<&str>,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<String> {
+        self.get(&protocol_listings_path(query, cursor, limit))
             .await
     }
 
@@ -401,7 +472,12 @@ impl RegistryClient {
         cap: BodyCap,
     ) -> Result<String> {
         let url = format!("{}{path}", self.base_url);
-        let mut request = self.http.get(&url);
+        // Package release entries (install descriptors) carry their
+        // `signatures` only when asked for.
+        let mut request = self
+            .http
+            .get(&url)
+            .header(REGISTRY_SIGNATURES_HEADER, REGISTRY_SIGNATURE_VERSIONS);
         if let Some(key) = key {
             request = request.bearer_auth(key);
         }
@@ -430,6 +506,10 @@ impl RegistryClient {
                     action: None,
                     extra: std::collections::BTreeMap::new(),
                 });
+            let mut problem = problem;
+            if problem.code.as_deref() == Some(REGISTRY_KEY_REQUIRED) {
+                problem.error = REGISTRY_KEY_REQUIRED_MESSAGE.to_string();
+            }
             return Err(RegistryApiError { status, problem }.into());
         }
 
@@ -525,7 +605,7 @@ fn check_size(bytes: Option<u64>, path: &str, cap: BodyCap) -> Result<()> {
 /// thing to have lying around in a shell profile, and it would put the key on
 /// the wire in cleartext. Loopback is the one exception — the request never
 /// reaches a network — so local development over plain HTTP keeps working.
-fn is_arete_origin(base_url: &str) -> bool {
+pub(crate) fn is_arete_origin(base_url: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base_url) else {
         return false;
     };
@@ -731,6 +811,35 @@ fn catalog_search_path(
         url.path(),
         url.query().unwrap_or_default()
     ))
+}
+
+/// `/api/registry/protocols` with the non-empty filters, encoded.
+fn protocol_listings_path(
+    query: Option<&str>,
+    cursor: Option<&str>,
+    limit: Option<usize>,
+) -> String {
+    let mut url =
+        reqwest::Url::parse("http://registry.invalid/api/registry/protocols").expect("static URL");
+    {
+        let mut pairs = url.query_pairs_mut();
+        if let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) {
+            pairs.append_pair("q", query);
+        }
+        if let Some(cursor) = cursor.map(str::trim).filter(|cursor| !cursor.is_empty()) {
+            pairs.append_pair("cursor", cursor);
+        }
+        if let Some(limit) = limit {
+            pairs.append_pair(
+                "limit",
+                &limit.clamp(1, MAX_PROTOCOL_LISTING_LIMIT).to_string(),
+            );
+        }
+    }
+    match url.query() {
+        Some(query) if !query.is_empty() => format!("{}?{query}", url.path()),
+        _ => url.path().to_string(),
+    }
 }
 
 /// Decide the credential for a knowledge request, given the resolved key (if
@@ -1098,6 +1207,86 @@ mod tests {
             knowledge_key("http://localhost:3000", Some("a4_sk_x".into())).unwrap(),
             "a4_sk_x"
         );
+    }
+
+    #[test]
+    fn protocol_listing_paths_encode_filters_and_clamp_the_limit() {
+        assert_eq!(
+            protocol_listings_path(None, None, None),
+            "/api/registry/protocols"
+        );
+        assert_eq!(
+            protocol_listings_path(Some(" tip jar "), Some("c/1"), Some(500)),
+            "/api/registry/protocols?q=tip+jar&cursor=c%2F1&limit=50"
+        );
+        assert_eq!(
+            protocol_listings_path(Some(""), None, Some(0)),
+            "/api/registry/protocols?limit=1"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_registry_key_refusal_says_how_to_get_a_key() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer);
+            let body = r#"{"error":"Registry artifacts need an Arete API key","code":"registry-key-required"}"#;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        });
+        let client = RegistryClient::with_base_url(&format!("http://{address}"));
+        let error = client.protocol_install("tip-jar").await.unwrap_err();
+        let api_error = error.downcast_ref::<RegistryApiError>().unwrap();
+        assert_eq!(api_error.status, reqwest::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            api_error.problem.code.as_deref(),
+            Some(REGISTRY_KEY_REQUIRED)
+        );
+        assert!(api_error.problem.error.contains("a4 login"), "{error}");
+        assert!(api_error.problem.error.contains("ARETE_API_KEY"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn registry_requests_ask_for_signatures_and_name_the_server() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 8192];
+            let read = stream.read(&mut buffer).unwrap_or(0);
+            let _ = sent.send(String::from_utf8_lossy(&buffer[..read]).to_string());
+            let body = r#"{"protocol":"tip-jar"}"#;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        });
+        let client = RegistryClient::with_base_url(&format!("http://{address}"));
+        client.protocol_install("tip-jar").await.unwrap();
+
+        let head = received.recv().unwrap().to_ascii_lowercase();
+        assert!(
+            head.contains("\r\nx-arete-registry-signatures: v1\r\n"),
+            "{head}"
+        );
+        assert!(
+            head.contains(&format!(
+                "\r\nuser-agent: {}\r\n",
+                USER_AGENT.to_ascii_lowercase()
+            )),
+            "{head}"
+        );
+        assert!(USER_AGENT.starts_with("arete-mcp/"));
     }
 
     #[test]

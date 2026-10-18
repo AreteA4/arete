@@ -104,6 +104,7 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::connections::ConnectionRegistry;
@@ -124,6 +125,8 @@ pub struct AreteMcp {
     recovery: RecoveryClient,
     /// The project's installed SDK references, for `describe_sdk`.
     sdk_references: Option<Arc<dyn SdkReferenceSource>>,
+    /// The protocol tools' API targets, remembered ids and optional signer.
+    protocols: crate::protocol_agent::ProtocolAgent,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -305,9 +308,566 @@ pub struct ExploreProgramArgs {
     pub full: Option<bool>,
 }
 
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct DevProjectArgs {
+    /// Project directory holding `.arete/dev/` (default: the server's
+    /// working directory or the nearest parent with a session).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevStepArgs {
+    /// Step name from the protocol spec (e.g. `open`).
+    pub step: String,
+    /// Instance id for instance steps; omit for create steps.
+    #[serde(default)]
+    pub instance: Option<String>,
+    /// Step args as a JSON object (e.g. `{"amount": "1000"}`).
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+    /// Dev wallet name (default `default`).
+    #[serde(default)]
+    pub wallet: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevInstanceArgs {
+    /// Instance id (from a create step's `instanceId`).
+    pub instance: String,
+    /// Evaluate `allowedSteps` for this wallet: a dev wallet name (e.g.
+    /// `default`) or a base58 public key.
+    #[serde(default)]
+    pub wallet: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevActionsArgs {
+    /// A dev wallet name (e.g. `default`) or a base58 public key.
+    pub wallet: String,
+    /// Restrict the answer to this instance.
+    #[serde(default)]
+    pub instance: Option<String>,
+    /// `nextCursor` from the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProtocolActionsArgs {
+    /// Base58 public key of the wallet (in an `a4 dev` session also a dev
+    /// wallet name).
+    pub wallet: String,
+    /// Deployment id. Give this or `protocol`.
+    #[serde(default)]
+    pub deployment: Option<String>,
+    /// Protocol package reference (e.g. `token-raise`); its install
+    /// descriptor's deployment is used.
+    #[serde(default)]
+    pub protocol: Option<String>,
+    /// Restrict the answer to this instance.
+    #[serde(default)]
+    pub instance: Option<String>,
+    /// `nextCursor` from the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Target the local `a4 dev` session instead of Arete.
+    #[serde(default)]
+    pub dev: Option<bool>,
+    /// `a4 dev` project directory (implies `dev`).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProtocolInstancesArgs {
+    /// Deployment id. Give this or `protocol`.
+    #[serde(default)]
+    pub deployment: Option<String>,
+    /// Protocol package reference (e.g. `token-raise`).
+    #[serde(default)]
+    pub protocol: Option<String>,
+    /// Only instances in this machine state.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// `nextCursor` from the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Target the local `a4 dev` session instead of Arete.
+    #[serde(default)]
+    pub dev: Option<bool>,
+    /// `a4 dev` project directory (implies `dev`).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProtocolInstanceArgs {
+    /// Instance id.
+    pub instance: String,
+    /// Evaluate `allowedSteps` for this wallet (base58 public key).
+    #[serde(default)]
+    pub wallet: Option<String>,
+    /// Deployment id; not needed for an instance an earlier tool returned.
+    #[serde(default)]
+    pub deployment: Option<String>,
+    /// Protocol package reference (e.g. `token-raise`).
+    #[serde(default)]
+    pub protocol: Option<String>,
+    /// Target the local `a4 dev` session instead of Arete.
+    #[serde(default)]
+    pub dev: Option<bool>,
+    /// `a4 dev` project directory (implies `dev`).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProtocolPrepareArgs {
+    /// Step name from the protocol spec (e.g. `contribute`).
+    pub step: String,
+    /// Base58 public key of the wallet that will sign (in an `a4 dev`
+    /// session also a dev wallet name).
+    pub wallet: String,
+    /// Instance id for instance and participant steps; omit for create steps.
+    #[serde(default)]
+    pub instance: Option<String>,
+    /// Step args as a JSON object (integers wider than 53 bits as decimal
+    /// strings, e.g. `{"amount": "1000000"}`).
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+    /// Deployment id. Give this or `protocol`.
+    #[serde(default)]
+    pub deployment: Option<String>,
+    /// Protocol package reference (e.g. `token-raise`).
+    #[serde(default)]
+    pub protocol: Option<String>,
+    /// `v0` (default) or `v1`.
+    #[serde(default)]
+    pub transaction_format: Option<String>,
+    /// Target the local `a4 dev` session instead of Arete.
+    #[serde(default)]
+    pub dev: Option<bool>,
+    /// `a4 dev` project directory (implies `dev`).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolSubmitArgs {
+    /// `executionId` from protocol_prepare.
+    pub execution_id: String,
+    /// The prepared transactions, signed by the wallet, as base64, in the
+    /// order prepare returned them.
+    pub signed_transactions: Vec<String>,
+    /// Wait for the intent to settle (default true).
+    #[serde(default)]
+    pub wait: Option<bool>,
+    /// Longest wait in seconds (default 60, at most 120).
+    #[serde(default, deserialize_with = "lenient::opt_usize")]
+    pub timeout_seconds: Option<usize>,
+    /// Deployment id; not needed for an execution this server prepared.
+    #[serde(default)]
+    pub deployment: Option<String>,
+    /// Target the local `a4 dev` session instead of Arete.
+    #[serde(default)]
+    pub dev: Option<bool>,
+    /// `a4 dev` project directory (implies `dev`).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolIntentArgs {
+    /// `executionId` from protocol_prepare.
+    pub execution_id: String,
+    /// Deployment id; not needed for an execution this server prepared.
+    #[serde(default)]
+    pub deployment: Option<String>,
+    /// Target the local `a4 dev` session instead of Arete.
+    #[serde(default)]
+    pub dev: Option<bool>,
+    /// `a4 dev` project directory (implies `dev`).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProtocolReceiptArgs {
+    /// The transaction signature (base58), from protocol_submit or
+    /// protocol_execute `transactions[].signature`.
+    pub signature: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProtocolExecuteArgs {
+    /// Step name from the protocol spec.
+    pub step: String,
+    /// Instance id for instance and participant steps; omit for create steps.
+    #[serde(default)]
+    pub instance: Option<String>,
+    /// Step args as a JSON object.
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+    /// Deployment id. Give this or `protocol`.
+    #[serde(default)]
+    pub deployment: Option<String>,
+    /// Protocol package reference (e.g. `token-raise`).
+    #[serde(default)]
+    pub protocol: Option<String>,
+    /// `v0` (default) or `v1`.
+    #[serde(default)]
+    pub transaction_format: Option<String>,
+    /// Wait for the intent to settle (default true).
+    #[serde(default)]
+    pub wait: Option<bool>,
+    /// Longest wait in seconds (default 60, at most 120).
+    #[serde(default, deserialize_with = "lenient::opt_usize")]
+    pub timeout_seconds: Option<usize>,
+    /// Target the local `a4 dev` session instead of Arete.
+    #[serde(default)]
+    pub dev: Option<bool>,
+    /// `a4 dev` project directory (implies `dev`).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+fn target_args(
+    dev: Option<bool>,
+    project: Option<String>,
+    deployment: Option<String>,
+    protocol: Option<String>,
+) -> crate::protocol_agent::TargetArgs {
+    crate::protocol_agent::TargetArgs {
+        dev: dev.unwrap_or(false),
+        project,
+        deployment,
+        protocol,
+    }
+}
+
+fn transaction_format(format: Option<&str>) -> Result<Option<&str>, McpError> {
+    match format {
+        None | Some("v0") | Some("v1") => Ok(format),
+        Some(other) => Err(McpError::invalid_params(
+            format!("`transaction_format` must be `v0` or `v1`, got `{other}`"),
+            None,
+        )),
+    }
+}
+
+/// Map a protocol tool failure: argument problems are `invalid_params`.
+fn protocol_error(error: anyhow::Error) -> McpError {
+    if error
+        .downcast_ref::<crate::protocol_agent::InvalidArgs>()
+        .is_some()
+    {
+        McpError::invalid_params(error.to_string(), None)
+    } else {
+        registry_error(error)
+    }
+}
+
+/// Which environment a dev tool acts on.
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct DevEnvArgs {
+    /// An environment name or id (default: `ARETE_DEV_ENV`, else the
+    /// project's environment from `a4 dev up`).
+    #[serde(default)]
+    pub environment: Option<String>,
+    /// Project directory holding `.arete/dev/` (default: the server's
+    /// working directory or the nearest parent with one).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevWarpArgs {
+    /// `+<n>[s|m|h|d]` (from the environment's clock), a Unix timestamp in
+    /// seconds, `slot:<n>` or `epoch:<n>`. Forward only.
+    pub to: String,
+    #[serde(flatten)]
+    pub env: DevEnvArgs,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevFundArgs {
+    /// The account to fund: a base58 public key, or a dev wallet name of the
+    /// project (`default`, created on first use).
+    pub account: String,
+    /// SOL to set as its balance (default 100). Sets, does not add.
+    #[serde(default)]
+    pub sol: Option<String>,
+    /// Set a token balance instead: the mint (base58).
+    #[serde(default)]
+    pub mint: Option<String>,
+    /// With `mint`: the balance in base units, as a decimal string.
+    #[serde(default)]
+    pub amount: Option<String>,
+    /// With `mint`: the token program (default SPL Token; pass the Token-2022
+    /// program id for Token-2022 mints).
+    #[serde(default)]
+    pub token_program: Option<String>,
+    #[serde(flatten)]
+    pub env: DevEnvArgs,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevAccountArgs {
+    /// The account (base58 public key).
+    pub account: String,
+    /// pin: also pin the accounts it owns. reset_account: also reset them.
+    #[serde(default)]
+    pub include_owned: Option<bool>,
+    /// pin: unpin instead. follow: stop following instead.
+    #[serde(default)]
+    pub undo: Option<bool>,
+    #[serde(flatten)]
+    pub env: DevEnvArgs,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevCheckpointArgs {
+    /// `create` (default), `list` or `delete`.
+    #[serde(default)]
+    pub action: Option<String>,
+    /// create: an optional name. delete: the checkpoint's id or name.
+    #[serde(default)]
+    pub checkpoint: Option<String>,
+    #[serde(flatten)]
+    pub env: DevEnvArgs,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevBranchArgs {
+    /// The checkpoint (id or name) to branch from.
+    pub checkpoint: String,
+    /// The new environment's name (1-63 lowercase letters, digits or `-`).
+    pub name: String,
+    #[serde(flatten)]
+    pub env: DevEnvArgs,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevRestoreArgs {
+    /// The checkpoint (id or name) to restore.
+    pub checkpoint: String,
+    #[serde(flatten)]
+    pub env: DevEnvArgs,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevRebaseArgs {
+    /// Accounts to leave alone this time, besides the written and pinned ones.
+    #[serde(default)]
+    pub keep: Vec<String>,
+    #[serde(flatten)]
+    pub env: DevEnvArgs,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevConfirmArgs {
+    /// The environment's name, repeated to confirm (this cannot be undone).
+    pub confirm: String,
+    #[serde(flatten)]
+    pub env: DevEnvArgs,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevScenarioArgs {
+    /// An `arete.scenario/v1` document (JSON), or the path of a file holding
+    /// one (relative to the server's working directory).
+    pub scenario: serde_json::Value,
+    /// Only encode the writes; change nothing.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+    #[serde(flatten)]
+    pub env: DevEnvArgs,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevPreviewArgs {
+    /// A signed or unsigned transaction, base64 (one packet).
+    pub transaction: String,
+    #[serde(flatten)]
+    pub env: DevEnvArgs,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevReproArgs {
+    /// The signature of a transaction sent in this environment.
+    pub signature: String,
+    /// Also write the bundle to this file (relative to the server's working
+    /// directory, no `..`).
+    #[serde(default)]
+    pub output: Option<String>,
+    #[serde(flatten)]
+    pub env: DevEnvArgs,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevEnvEventsArgs {
+    /// Only events after this event id (`next` from an earlier call).
+    #[serde(default)]
+    pub after: Option<i64>,
+    /// At most this many (default 100, max 500).
+    #[serde(default, deserialize_with = "lenient::opt_usize")]
+    pub limit: Option<usize>,
+    #[serde(flatten)]
+    pub env: DevEnvArgs,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevCaptureArgs {
+    /// Program addresses (base58) to capture.
+    pub programs: Vec<String>,
+    /// Window start: a slot, an RFC 3339 time, or `-10m`/`-2h` relative to now.
+    pub from: String,
+    /// Window end: a slot, a time, or `+5m` relative to `from` (default now).
+    #[serde(default)]
+    pub to: Option<String>,
+    /// The `.arcap` file to write: absolute, or relative to the server's
+    /// working directory (no `..`).
+    pub output: String,
+    /// JSON-RPC node (default the public mainnet RPC, which rate-limits hard).
+    #[serde(default)]
+    pub rpc_url: Option<String>,
+    /// Accounts whose current state to include as starting state.
+    #[serde(default)]
+    pub accounts: Vec<String>,
+    /// Refuse windows with more transactions than this (default 500).
+    #[serde(default, deserialize_with = "lenient::opt_usize")]
+    pub max_transactions: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevEventsArgs {
+    /// The `cursor` an earlier call returned; omit it to read every event
+    /// `a4 dev up` still buffers.
+    #[serde(default)]
+    pub after: Option<String>,
+    /// At most this many events (default 200).
+    #[serde(default, deserialize_with = "lenient::opt_usize")]
+    pub limit: Option<usize>,
+    /// Wait up to this many milliseconds (max 30000) for the first new event
+    /// when there is none yet.
+    #[serde(default, deserialize_with = "lenient::opt_usize")]
+    pub wait_ms: Option<usize>,
+    /// Keep only these event types or type prefixes (`step.`, `build.failed`).
+    #[serde(default)]
+    pub types: Option<Vec<String>>,
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// `body` with only the events whose type matches one of `types` (exactly,
+/// or as a prefix ending in `.`).
+pub fn filter_dev_events(mut body: serde_json::Value, types: &[String]) -> serde_json::Value {
+    if types.is_empty() {
+        return body;
+    }
+    if let Some(events) = body
+        .get_mut("events")
+        .and_then(|events| events.as_array_mut())
+    {
+        events.retain(|event| {
+            let kind = event
+                .get("type")
+                .and_then(|kind| kind.as_str())
+                .unwrap_or_default();
+            types.iter().any(|wanted| {
+                kind == wanted || (wanted.ends_with('.') && kind.starts_with(wanted.as_str()))
+            })
+        });
+    }
+    body
+}
+
+fn dev_client(project: Option<&str>) -> Result<crate::dev::DevClient, McpError> {
+    crate::dev::DevProject::discover(project.map(std::path::Path::new))
+        .and_then(crate::dev::DevClient::open)
+        .map_err(dev_error)
+}
+
+/// The environment a dev tool acts on.
+async fn dev_env(args: &DevEnvArgs) -> Result<crate::dev_env::EnvRpc, McpError> {
+    crate::dev_env::resolve_env(
+        args.project.as_deref().map(std::path::Path::new),
+        args.environment.as_deref(),
+    )
+    .await
+    .map_err(dev_error)
+}
+
+/// A dev wallet name of the project, as its public key; a public key as is.
+fn dev_account(account: &str, project: Option<&str>) -> anyhow::Result<String> {
+    if crate::dev_env::is_pubkey(account) {
+        return Ok(account.to_string());
+    }
+    crate::dev::validate_wallet_name(account)?;
+    let project = crate::dev::DevProject::discover(project.map(std::path::Path::new))?;
+    let (wallet, _) = crate::dev::DevWallet::load_or_create(&project.wallets_dir(), account)?;
+    Ok(wallet.pubkey())
+}
+
+/// Refuse a destructive tool call whose `confirm` is not the environment's
+/// name.
+fn confirm_env_name(env: &serde_json::Value, confirm: &str) -> Result<(), McpError> {
+    let name = env["name"].as_str().unwrap_or_default();
+    if name.is_empty() || confirm.trim() != name {
+        return Err(McpError::invalid_params(
+            format!("`confirm` must be the environment's name (`{name}`); ask the user first"),
+            None,
+        ));
+    }
+    Ok(())
+}
+
+fn dev_error(error: anyhow::Error) -> McpError {
+    let hint = error
+        .downcast_ref::<crate::dev_env::ApiFailure>()
+        .and_then(|failure| failure.hint());
+    match hint {
+        Some(hint) => McpError::internal_error(format!("{error:#} {hint}"), None),
+        None => McpError::internal_error(format!("{error:#}"), None),
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExploreProtocolArgs {
+    /// Bare protocol package reference (e.g. `token-raise`).
+    pub protocol: String,
+    /// Return the whole pinned install descriptor (the full protocol spec,
+    /// every hoisted stack and program descriptor) instead of the summary.
+    #[serde(default)]
+    pub full: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct ExploreProtocolsArgs {
+    /// Free text matched against listed protocols' names and descriptions.
+    /// Omit it to page through every listing.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// `nextCursor` from the previous page. Repeat the same `query`.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Page size, 1 to 50 (integer or string-encoded integer). Defaults to 20.
+    #[serde(default, deserialize_with = "lenient::opt_usize")]
+    pub limit: Option<usize>,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ResolveArtifactArgs {
-    /// One of `program-spec`, `live-spec`, `stack-manifest`.
+    /// One of `program-spec`, `live-spec`, `stack-manifest`, `protocol-spec`.
     pub kind: String,
     /// Artifact hash taken from an install descriptor.
     pub hash: String,
@@ -858,15 +1418,46 @@ struct ConnectionInfo {
 
 #[tool_router]
 impl AreteMcp {
+    /// The server, with the local signer from `ARETE_MCP_SIGNER_CONFIG` or
+    /// `~/.arete/mcp.toml` when one is configured. A signer config that does
+    /// not load is reported on stderr and leaves the server without one.
     pub fn new() -> Self {
+        let signer = match crate::signer::LocalSigner::from_environment() {
+            Ok(signer) => signer,
+            Err(error) => {
+                tracing::warn!("signer config not loaded, protocol_execute is disabled: {error}");
+                None
+            }
+        };
+        Self::with_protocol_agent(crate::protocol_agent::ProtocolAgent::new(signer))
+    }
+
+    /// The server with these protocol tools. `protocol_execute` is listed
+    /// only when the agent has a signer.
+    pub fn with_protocol_agent(protocols: crate::protocol_agent::ProtocolAgent) -> Self {
+        let mut tool_router = Self::tool_router();
+        if protocols.signer().is_none() {
+            tool_router.remove_route("protocol_execute");
+        }
         Self {
-            tool_router: Self::tool_router(),
+            tool_router,
             connections: ConnectionRegistry::new(),
             subscriptions: SubscriptionRegistry::new(),
             registry: RegistryClient::new(),
             recovery: RecoveryClient::new(),
             sdk_references: None,
+            protocols,
         }
+    }
+
+    /// The names of the tools this server lists.
+    #[cfg(test)]
+    pub(crate) fn tool_names(&self) -> Vec<String> {
+        self.tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
     }
 
     /// Serve `describe_sdk` from `source`.
@@ -878,6 +1469,625 @@ impl AreteMcp {
     #[tool(description = "Health check. Returns \"pong\" if the server is alive.")]
     async fn ping(&self) -> Result<CallToolResult, McpError> {
         Ok(CallToolResult::success(vec![Content::text("pong")]))
+    }
+
+    #[tool(
+        description = "Status of this project's Arete cloud dev environment (or `environment`): \
+                          the environment (id, name, state `running`/`sleeping`/`creating`, \
+                          tier, storage, last activity, the slot before its last sleep), whether \
+                          `a4 dev up` is serving it locally (`upRunning`), the session (`rpcUrl`: \
+                          the local RPC wallets and apps use while `a4 dev up` runs; \
+                          `environmentRpcUrl`: the environment's own endpoint, which needs a \
+                          token; the protocol deployment, stack and dev UI URLs), the chain's \
+                          slot and clock when running and, when the protocol stack is loaded, \
+                          `stack.streamUrl` with a read session token for WebSocket clients. \
+                          Environments sleep when idle and keep their state; any RPC call or \
+                          `dev_wake` wakes one. Start `a4 dev up` in a terminal to create one; \
+                          these tools never start or stop local processes."
+    )]
+    async fn dev_status(
+        &self,
+        Parameters(args): Parameters<DevEnvArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.environment.is_none() {
+            if let Ok(client) = dev_client(args.project.as_deref()) {
+                return shaped_result(&client.status().await);
+            }
+        }
+        let rpc = dev_env(&args).await?;
+        let environment = rpc.api().get_env(rpc.env()).await.map_err(dev_error)?;
+        let chain = if environment["state"] == "running" {
+            match crate::dev_env::read_clock(&rpc).await {
+                Ok((slot, unix)) => json!({ "healthy": true, "slot": slot, "unixTimestamp": unix }),
+                Err(error) => json!({ "healthy": false, "error": format!("{error:#}") }),
+            }
+        } else {
+            Value::Null
+        };
+        shaped_result(&json!({
+            "environment": crate::dev_env::public_view(&environment),
+            "chain": chain,
+        }))
+    }
+
+    #[tool(
+        description = "List the account's Arete cloud dev environments (id, name, state, \
+                          tier, storage) and the plan's quotas and usage (`limits`: \
+                          environments, idle retention days, checkpoints per environment, \
+                          storage, active hours per month, request and send rates, idle \
+                          sleep seconds; `usage`)."
+    )]
+    async fn dev_environments(&self) -> Result<CallToolResult, McpError> {
+        let api =
+            crate::dev_env::EnvApi::from_environment(reqwest::Client::new()).map_err(dev_error)?;
+        let environments = api.list().await.map_err(dev_error)?;
+        let quotas = api.quotas().await.unwrap_or(Value::Null);
+        shaped_result(&json!({
+            "environments": environments.iter().map(crate::dev_env::public_view).collect::<Vec<_>>(),
+            "quotas": quotas,
+        }))
+    }
+
+    #[tool(
+        description = "Wake a sleeping dev environment (it restores the state it slept with; \
+                          the clock jumps to mainnet's tip) and return it. A running one is \
+                          returned as is. RPC calls wake environments on their own too."
+    )]
+    async fn dev_wake(
+        &self,
+        Parameters(args): Parameters<DevEnvArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args).await?;
+        let env = rpc.api().wake(rpc.env()).await.map_err(dev_error)?;
+        shaped_result(&crate::dev_env::public_view(&env))
+    }
+
+    #[tool(
+        description = "Put a dev environment to sleep now: its state is saved and it stops \
+                          counting active hours until it is woken. Environments also sleep on \
+                          their own when idle."
+    )]
+    async fn dev_sleep(
+        &self,
+        Parameters(args): Parameters<DevEnvArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args).await?;
+        let env = rpc.api().sleep(rpc.env()).await.map_err(dev_error)?;
+        shaped_result(&crate::dev_env::public_view(&env))
+    }
+
+    #[tool(
+        description = "Delete a dev environment with its state and checkpoints. This cannot \
+                          be undone: `confirm` must repeat the environment's name. Ask the \
+                          user first."
+    )]
+    async fn dev_delete(
+        &self,
+        Parameters(args): Parameters<DevConfirmArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args.env).await?;
+        let env = rpc.api().get_env(rpc.env()).await.map_err(dev_error)?;
+        confirm_env_name(&env, &args.confirm)?;
+        rpc.api().delete(rpc.env()).await.map_err(dev_error)?;
+        shaped_result(&json!({ "deleted": rpc.env(), "name": env["name"] }))
+    }
+
+    #[tool(
+        description = "Checkpoints of a dev environment: a saved copy of its whole state. \
+                          `action: create` (default; `checkpoint` is an optional name) saves \
+                          one, `list` lists them (id, name, bytes, created), `delete` removes \
+                          `checkpoint` (an id or a name). Restore one with `dev_restore` or \
+                          start a new environment from one with `dev_branch`. Plans limit how \
+                          many each environment keeps."
+    )]
+    async fn dev_checkpoint(
+        &self,
+        Parameters(args): Parameters<DevCheckpointArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args.env).await?;
+        let api = rpc.api();
+        let result = match args.action.as_deref().unwrap_or("create") {
+            "create" => api
+                .checkpoint(rpc.env(), args.checkpoint.as_deref())
+                .await
+                .map_err(dev_error)?,
+            "list" => json!({
+                "checkpoints": api.checkpoints(rpc.env()).await.map_err(dev_error)?
+            }),
+            "delete" => {
+                let checkpoint = args.checkpoint.as_deref().ok_or_else(|| {
+                    McpError::invalid_params("delete needs `checkpoint`".to_string(), None)
+                })?;
+                api.delete_checkpoint(rpc.env(), checkpoint)
+                    .await
+                    .map_err(dev_error)?;
+                json!({ "deleted": checkpoint })
+            }
+            other => {
+                return Err(McpError::invalid_params(
+                    format!("action is create, list or delete, not {other}"),
+                    None,
+                ))
+            }
+        };
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Create a new dev environment `name` from a checkpoint (id or name) of \
+                          this one. The new environment starts running with the checkpoint's \
+                          state; the original is untouched. It counts against the plan's \
+                          environment limit."
+    )]
+    async fn dev_branch(
+        &self,
+        Parameters(args): Parameters<DevBranchArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args.env).await?;
+        let env = rpc
+            .api()
+            .branch(rpc.env(), &args.checkpoint, &args.name)
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&crate::dev_env::public_view(&env))
+    }
+
+    #[tool(
+        description = "Restore a checkpoint (id or name) into this dev environment: \
+                          everything written since is undone."
+    )]
+    async fn dev_restore(
+        &self,
+        Parameters(args): Parameters<DevRestoreArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args.env).await?;
+        let env = rpc
+            .api()
+            .restore(rpc.env(), &args.checkpoint)
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&crate::dev_env::public_view(&env))
+    }
+
+    #[tool(
+        description = "Rebase a dev environment onto mainnet now: every account it never \
+                          wrote (and did not pin) is refetched from mainnet, and the clock \
+                          moves to mainnet's tip; accounts it funded, sent transactions to or \
+                          pinned stay as they are. Use it when pools or oracles went stale \
+                          (swaps failing on slippage). `keep` adds accounts to leave alone \
+                          this time. Returns how many accounts were reset and kept."
+    )]
+    async fn dev_rebase(
+        &self,
+        Parameters(args): Parameters<DevRebaseArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        for account in &args.keep {
+            if !crate::dev_env::is_pubkey(account) {
+                return Err(McpError::invalid_params(
+                    format!("`{account}` is not a base58 public key"),
+                    None,
+                ));
+            }
+        }
+        let rpc = dev_env(&args.env).await?;
+        let result = rpc
+            .api()
+            .rebase(rpc.env(), &args.keep)
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Reset a dev environment to a fresh fork of mainnet: every account it \
+                          wrote, funded or pinned is dropped (checkpoints stay). This cannot \
+                          be undone: `confirm` must repeat the environment's name. Ask the \
+                          user first; `dev_reset_account` drops a single account."
+    )]
+    async fn dev_reset(
+        &self,
+        Parameters(args): Parameters<DevConfirmArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args.env).await?;
+        let env = rpc.api().get_env(rpc.env()).await.map_err(dev_error)?;
+        confirm_env_name(&env, &args.confirm)?;
+        let result = rpc.api().reset(rpc.env()).await.map_err(dev_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Drop one account from a dev environment so the next read refetches it \
+                          from mainnet (`include_owned`: also the accounts it owns)."
+    )]
+    async fn dev_reset_account(
+        &self,
+        Parameters(args): Parameters<DevAccountArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args.env).await?;
+        let result = rpc
+            .reset_account(&args.account, args.include_owned.unwrap_or(false))
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Pin an account in a dev environment: it is never refreshed from \
+                          mainnet and `dev_rebase` leaves it alone, for repeatable tests \
+                          (`include_owned`: also the accounts it owns). `undo: true` unpins \
+                          it. A followed account cannot be pinned."
+    )]
+    async fn dev_pin(
+        &self,
+        Parameters(args): Parameters<DevAccountArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args.env).await?;
+        let result = rpc
+            .pin(
+                &args.account,
+                args.include_owned.unwrap_or(false),
+                args.undo.unwrap_or(false),
+            )
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Follow an account in a dev environment: it is refetched from mainnet \
+                          every block (an oracle or a pool that should stay live while \
+                          everything else stays put). Plans cap how many accounts one \
+                          environment follows, and follows count as mainnet reads. \
+                          `undo: true` stops following. A pinned account cannot be followed."
+    )]
+    async fn dev_follow(
+        &self,
+        Parameters(args): Parameters<DevAccountArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args.env).await?;
+        let result = rpc
+            .follow(&args.account, args.undo.unwrap_or(false))
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Fund an account in a dev environment. Without `mint`, set its SOL \
+                          balance to `sol` (default 100; it sets, it does not add; owner and \
+                          data stay). With `mint` and `amount` (base units, a decimal \
+                          string), set its token balance of that mint instead (its token \
+                          account is created if needed; `token_program` for Token-2022). \
+                          `account` is a base58 public key or a dev wallet name of the \
+                          project (`default`)."
+    )]
+    async fn dev_fund(
+        &self,
+        Parameters(args): Parameters<DevFundArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args.env).await?;
+        let invalid = |error: anyhow::Error| McpError::invalid_params(format!("{error:#}"), None);
+        let account = dev_account(&args.account, args.env.project.as_deref()).map_err(invalid)?;
+        let result = match (&args.mint, &args.amount) {
+            (Some(mint), Some(amount)) => rpc
+                .set_token_balance(&account, mint, amount, args.token_program.as_deref())
+                .await
+                .map_err(dev_error)?,
+            (Some(_), None) => {
+                return Err(McpError::invalid_params(
+                    "`mint` needs `amount` (base units)".to_string(),
+                    None,
+                ))
+            }
+            (None, _) => {
+                let lamports =
+                    crate::dev_env::sol_to_lamports(args.sol.as_deref().unwrap_or("100"))
+                        .map_err(invalid)?;
+                rpc.fund(&account, lamports).await.map_err(dev_error)?
+            }
+        };
+        shaped_result(&json!({ "account": account, "result": result }))
+    }
+
+    #[tool(
+        description = "Move a dev environment's clock forward, e.g. to pass a deadline or an \
+                          unlock time. `to`: `+90s`, `+15m`, `+2h`, `+7d` (from the \
+                          environment's clock), a Unix timestamp in seconds, `slot:<n>` or \
+                          `epoch:<n>`. Forward only. Returns the slot and clock before and \
+                          after."
+    )]
+    async fn dev_warp(
+        &self,
+        Parameters(args): Parameters<DevWarpArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args.env).await?;
+        let result = crate::dev_env::warp_to(&rpc, &args.to)
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Run a scenario in a dev environment: an `arete.scenario/v1` document \
+                          (steps at relative slots, each overriding fields of program accounts \
+                          by path, e.g. a price or a pool's liquidity, with optional \
+                          expectations). Arete encodes every override against the program's \
+                          layout and refuses what it cannot encode exactly, then warps through \
+                          the steps and checks the expectations. Returns per step the writes \
+                          (field before and after) and expectation results, `passed`, and a \
+                          `digest` equal across runs from the same state. `dry_run` only \
+                          encodes. `scenario` is the document or a file path."
+    )]
+    async fn dev_scenario(
+        &self,
+        Parameters(args): Parameters<DevScenarioArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let invalid = |error: anyhow::Error| McpError::invalid_params(format!("{error:#}"), None);
+        let scenario = match args.scenario {
+            Value::String(path) => {
+                let path = crate::dev_capture::resolve_capture_output(
+                    &path,
+                    &std::env::current_dir()
+                        .map_err(|error| McpError::internal_error(error.to_string(), None))?,
+                )
+                .map_err(invalid)?;
+                let text = std::fs::read_to_string(&path).map_err(|error| {
+                    McpError::invalid_params(format!("{}: {error}", path.display()), None)
+                })?;
+                serde_json::from_str(&text).map_err(|error| {
+                    McpError::invalid_params(
+                        format!("{} is not JSON: {error}", path.display()),
+                        None,
+                    )
+                })?
+            }
+            other => other,
+        };
+        let rpc = dev_env(&args.env).await?;
+        let result = rpc
+            .scenario(scenario, args.dry_run.unwrap_or(false))
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Preview a transaction in a dev environment without committing it: \
+                          its error and logs, compute units in total and per instruction, and \
+                          every account it touches before and after (decoded where Arete \
+                          knows the program). `transaction` is base64."
+    )]
+    async fn dev_preview(
+        &self,
+        Parameters(args): Parameters<DevPreviewArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args.env).await?;
+        let result = rpc
+            .preview(args.transaction.trim())
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Export the minimal state to reproduce one transaction sent in a dev \
+                          environment (`arete.devenv-repro/v1`: the transaction, the accounts \
+                          it read as they were before it, programs included), to attach to a \
+                          bug report or replay elsewhere. With `output`, also writes it to \
+                          that file and returns only a summary."
+    )]
+    async fn dev_repro(
+        &self,
+        Parameters(args): Parameters<DevReproArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args.env).await?;
+        let result = rpc.repro(args.signature.trim()).await.map_err(dev_error)?;
+        let Some(output) = args.output else {
+            return shaped_result(&result);
+        };
+        let cwd = std::env::current_dir()
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        let path = crate::dev_capture::resolve_capture_output(&output, &cwd)
+            .map_err(|error| McpError::invalid_params(format!("{error:#}"), None))?;
+        let bytes = serde_json::to_vec_pretty(&result)
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        std::fs::write(&path, &bytes).map_err(|error| {
+            McpError::internal_error(format!("{}: {error}", path.display()), None)
+        })?;
+        shaped_result(&json!({
+            "output": path.display().to_string(),
+            "bytes": bytes.len(),
+            "format": result["format"],
+            "signature": result["signature"],
+            "slot": result["slot"],
+            "accounts": result["accounts"].as_object().map(|accounts| accounts.len()),
+        }))
+    }
+
+    #[tool(
+        description = "The lifecycle events of a dev environment, oldest first: created, \
+                          woken, slept (with the reason: idle, requested), checkpointed, \
+                          branched, restored, rebased, reset, deleted, each with its detail \
+                          and time. Pass `next` from the previous answer as `after`."
+    )]
+    async fn dev_environment_events(
+        &self,
+        Parameters(args): Parameters<DevEnvEventsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rpc = dev_env(&args.env).await?;
+        let result = rpc
+            .api()
+            .events(rpc.env(), args.after, args.limit.map(|limit| limit as u32))
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Run one protocol step on the project's deployment in its dev \
+                          environment end to end: prepare it through the Arete API, sign it \
+                          locally with the dev wallet `wallet` (default `default`; created \
+                          under `.arete/dev/wallets/` and funded with 100 SOL in the \
+                          environment when new or empty), submit it and wait until the \
+                          execution intent settles. Omit `instance` for create steps; pass \
+                          the instance id for instance steps. Returns `state` (`completed`, \
+                          `chain_failed`, `rejected`, ...), `executionId`, `instanceId` and \
+                          per-transaction states; a guard rejection comes back as `state: \
+                          \"rejected\"` with its code. Every step is appended to \
+                          `.arete/dev/history.jsonl` for `a4 dev replay`."
+    )]
+    async fn dev_step(
+        &self,
+        Parameters(args): Parameters<DevStepArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = dev_client(args.project.as_deref())?;
+        let request = crate::dev::StepRequest {
+            step: args.step,
+            instance: args.instance,
+            args: args.args.unwrap_or_else(|| serde_json::json!({})),
+            wallet: args.wallet.unwrap_or_else(|| "default".to_string()),
+            result: None,
+        };
+        let result = client.step(&request).await.map_err(dev_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Read one protocol instance of the project's deployment in its dev \
+                          environment: its machine state, roles, metadata and participants, \
+                          as the protocol API returns them. With `wallet` (a dev wallet name \
+                          such as `default`, or a base58 public key), `allowedSteps` says \
+                          which instance and participant steps that wallet can call now, each \
+                          with `allowed`, the guard, access or state code in `reason` when it \
+                          cannot, `scope`, its typed `args` and `argsDependent` guards that \
+                          are decided only by the args at prepare."
+    )]
+    async fn dev_instance(
+        &self,
+        Parameters(args): Parameters<DevInstanceArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = dev_client(args.project.as_deref())?;
+        let result = client
+            .instance(&args.instance, args.wallet.as_deref())
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "What a wallet can do now on the project's deployment in its dev \
+                          environment. `wallet` is a dev wallet name (e.g. `default`, as \
+                          dev_step uses) or a base58 public key. Returns `createSteps` (steps \
+                          that create an instance, evaluated without one) and `instances`: \
+                          each instance the wallet relates to (`relation`: `participant`, \
+                          `role:<name>`, `creator`), newest first, with its `state`, \
+                          `participantState` and `steps`. Every step entry has `step`, \
+                          `allowed`, `reason` (the guard, access or state code) when not \
+                          allowed, `scope` (`create`, `instance`, `participant`), typed `args` \
+                          (name, optional, the JSON `type` and a `format` such as `u64` or \
+                          `pubkey`) and `argsDependent` guards that only the args decide; \
+                          prepare remains the authority. `instance` restricts the answer to \
+                          one instance; pass `cursor: nextCursor` for the next page. Run a \
+                          step with dev_step."
+    )]
+    async fn dev_actions(
+        &self,
+        Parameters(args): Parameters<DevActionsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = dev_client(args.project.as_deref())?;
+        let result = client
+            .actions(
+                &args.wallet,
+                args.instance.as_deref(),
+                args.cursor.as_deref(),
+            )
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Capture a window of raw Solana updates for programs from a JSON-RPC node \
+                          into an `arete.raw-capture/v1` file (`.arcap`). \
+                          Reads the programs' signatures and transactions in the window \
+                          (`getSignaturesForAddress`, `getTransaction`, blocks for ordering) and \
+                          the current state of accounts the transactions touch that the \
+                          programs own, plus `accounts` (`getMultipleAccounts`); never a \
+                          program-wide scan. JSON-RPC has no historical account data, so the \
+                          starting state is as of the capture time (`startingState.fidelity: \
+                          current`), and account writes inside the window are not captured. \
+                          Keep windows small on public RPCs. Returns the header (counts, slot \
+                          range, content hash, limits)."
+    )]
+    async fn dev_capture(
+        &self,
+        Parameters(args): Parameters<DevCaptureArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::dev_capture::{capture_from_rpc, parse_window, HttpRpc, RpcCaptureOptions};
+        let invalid = |error: anyhow::Error| McpError::invalid_params(format!("{error:#}"), None);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+        let (from, to) = parse_window(&args.from, args.to.as_deref(), now).map_err(invalid)?;
+        let rpc_url = args
+            .rpc_url
+            .unwrap_or_else(|| "https://api.mainnet-beta.solana.com".to_string());
+        let cwd = std::env::current_dir().map_err(|error| {
+            McpError::internal_error(
+                format!("Failed to read the current directory: {error}"),
+                None,
+            )
+        })?;
+        let output =
+            crate::dev_capture::resolve_capture_output(&args.output, &cwd).map_err(invalid)?;
+        let mut options = RpcCaptureOptions::new(rpc_url.clone(), args.programs, from, to, output);
+        options.accounts = args.accounts;
+        if let Some(max) = args.max_transactions {
+            options.max_transactions = max;
+        }
+        let rpc = HttpRpc::new(rpc_url, options.requests_per_second).map_err(invalid)?;
+        let mut progress = |_: &str| {};
+        let summary = capture_from_rpc(&rpc, &options, &mut progress)
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&serde_json::to_value(&summary).unwrap_or_default())
+    }
+
+    #[tool(
+        description = "Read what happened in the running `a4 dev up` since a cursor: the same \
+                          feed the dev UI shows. Event types: `build.started`, `build.failed` \
+                          (with `diagnostics`), `build.succeeded` (with a spec `diff`: steps, \
+                          states, transitions, reactions and events added, removed or \
+                          changed), `deploy.activated`, `deploy.failed`, `step.prepared`, \
+                          `step.submitted`, `step.confirmed`, `step.failed` (with \
+                          transactions, signatures, simulation logs and errors), \
+                          `instance.transitioned`, `stack.row` (summarised frames of the \
+                          protocol stack's views), `chain.clock` (clock jumps such as warps), \
+                          `chain.airdrop` (funding) and `env.changed` (the environment's \
+                          lifecycle: woken, slept, checkpointed, restored, rebased, reset). \
+                          Pass the returned `cursor` as `after` to read only newer events, \
+                          `waitMs` to wait for the next one, and `types` (e.g. \
+                          `[\"step.\", \"build.failed\"]`) to filter. `truncated: true` means \
+                          events between `after` and the oldest buffered one were dropped."
+    )]
+    async fn dev_events(
+        &self,
+        Parameters(args): Parameters<DevEventsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = dev_client(args.project.as_deref())?;
+        let body = client
+            .events(
+                args.after.as_deref(),
+                args.limit,
+                args.wait_ms.map(|wait| wait as u64),
+            )
+            .await
+            .map_err(dev_error)?;
+        shaped_result(&filter_dev_events(
+            body,
+            args.types.as_deref().unwrap_or_default(),
+        ))
     }
 
     #[tool(
@@ -1209,11 +2419,357 @@ impl AreteMcp {
     }
 
     #[tool(
+        description = "Find callable Arete protocol packages hosted on Arete: protocols \
+                          their publishers listed in the public registry, which an app or \
+                          agent installs (`a4 install protocol`) and calls through its \
+                          hosted deployment. These are not the curated knowledge protocols \
+                          of `search_knowledge`/`get_protocol` (which describe on-chain \
+                          protocols such as DEXes); use this tool to find something you can \
+                          execute.\n\n\
+                          Each item has `slug`, `name`, `description`, `version`, \
+                          `packageRef`, `deploymentId`, its `steps` (name, `scope`, \
+                          `access`), `attestedExecutions30d`, `trustTier` and `trust`: \
+                          \"reviewed by Arete\" (Arete reviewed the release; `reviewHash` \
+                          identifies the review) or \"unreviewed\" (nobody at Arete \
+                          reviewed its code). `install` is the exact install command. \
+                          Results come reviewed first, then by attested executions. \
+                          `query` is free text; pass `nextCursor` back as `cursor` for \
+                          the next page. Drill into one with `explore_protocol` (its \
+                          `packageRef` without the version) and `protocol_actions`.\n\n\
+                          No credential required."
+    )]
+    async fn explore_protocols(
+        &self,
+        Parameters(args): Parameters<ExploreProtocolsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let body = self
+            .registry_body(
+                self.registry
+                    .protocol_listings(args.query.as_deref(), args.cursor.as_deref(), args.limit)
+                    .await,
+            )
+            .await?;
+        let page = parse_descriptor(Ok(body))?;
+        shaped_result(&crate::protocol_listing::listings_view(&page))
+    }
+
+    #[tool(
+        description = "Describe one protocol package from its pinned install descriptor: \
+                          what `a4 install protocol <ref> --ts` installs.\n\n\
+                          By default returns a summary: the release and spec identity, \
+                          the deployment the generated client calls (`deploymentId`, \
+                          `access`: `public` deployments are shared and need no setup in \
+                          your account), the instance and participant machines with \
+                          their states, each step with its scope, authority, \
+                          `clientCallable`, `access` (`public` steps can be prepared with \
+                          a publishable key from a browser; `secret` steps need a secret \
+                          key), typed args and guard (rejection) codes, the access \
+                          rejection codes every prepare may return, named events, \
+                          metadata fields and who writes them, and the stacks and \
+                          programs the protocol hoists. `full: true` returns the whole \
+                          descriptor. Pass a bare protocol reference (e.g. \
+                          `token-raise`), not a URL."
+    )]
+    async fn explore_protocol(
+        &self,
+        Parameters(args): Parameters<ExploreProtocolArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let body = self
+            .registry_body(self.registry.protocol_install(&args.protocol).await)
+            .await?;
+        if args.full.unwrap_or(false) {
+            return full_descriptor_result(
+                body,
+                "Drop `full` for the summary, or read the spec alone with resolve_artifact kind `protocol-spec`.",
+            );
+        }
+        let install: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+            McpError::internal_error(
+                format!("the protocol install descriptor is not JSON: {error}"),
+                None,
+            )
+        })?;
+        let mut summary = crate::protocol::protocol_install_summary(&install);
+        summary["next"] = serde_json::json!(
+            "Install the typed client with `a4 install protocol <ref> --ts`; pass `full: true` for the whole descriptor."
+        );
+        shaped_result(&summary)
+    }
+
+    #[tool(
+        description = "What a wallet can do now on a protocol deployment: the agent's \
+                          starting point for acting on a protocol.\n\n\
+                          Name the deployment with `deployment` (an id) or `protocol` (a \
+                          package reference such as `token-raise`; its install descriptor's \
+                          deployment is used, as generated clients do). Calls Arete with the \
+                          API key from ARETE_API_KEY or the a4 login (never pass a key), or \
+                          the local `a4 dev` session with `dev: true` / `project`.\n\n\
+                          Returns `createSteps`: steps that create a new instance, evaluated \
+                          for this wallet without an instance; and `instances`: every \
+                          instance the wallet relates to (`relation`: `participant`, \
+                          `role:<name>`, `creator`), newest first, with `state`, \
+                          `participantState` and `steps`. Each step entry has `step`, \
+                          `allowed`, `reason` (the guard, access or state rejection code; \
+                          `instance_terminal` / `participant_terminal` mean the instance or \
+                          the wallet's participant has finished) when not allowed, `detail`, `scope` (`create`, `instance`, `participant`), \
+                          typed `args` (name, optional, the JSON `type` and a `format` such \
+                          as `u64` or `pubkey`) and \
+                          `argsDependent`: guards decided only by the args (or by an \
+                          instance that does not exist yet), which prepare evaluates. \
+                          Prepare remains the authority. `instance` restricts the answer to \
+                          one instance; `cursor: nextCursor` pages. Next: protocol_prepare."
+    )]
+    async fn protocol_actions(
+        &self,
+        Parameters(args): Parameters<ProtocolActionsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let target = target_args(args.dev, args.project, args.deployment, args.protocol);
+        let result = self
+            .protocols
+            .actions(
+                &target,
+                &args.wallet,
+                args.instance.as_deref(),
+                args.cursor.as_deref(),
+            )
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "List a protocol deployment's instances, newest first: id, state, \
+                          terminal, accounts, roles, creator and timestamps. Name the \
+                          deployment with `deployment` or `protocol` (package reference); \
+                          `state` filters by machine state and `cursor: nextCursor` pages. \
+                          Instances on `account`-visibility deployments are only those your \
+                          account created. Uses the a4 login / ARETE_API_KEY, or the local \
+                          `a4 dev` session with `dev: true`."
+    )]
+    async fn protocol_instances(
+        &self,
+        Parameters(args): Parameters<ProtocolInstancesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let target = target_args(args.dev, args.project, args.deployment, args.protocol);
+        let result = self
+            .protocols
+            .instances(&target, args.state.as_deref(), args.cursor.as_deref())
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Read one protocol instance: machine state, params, accounts, roles, \
+                          metadata, derived values, pending timers and participants. With \
+                          `wallet` (base58 public key), `allowedSteps` lists the instance and \
+                          participant steps that wallet can call now, each with `allowed`, \
+                          `reason`, `scope`, typed `args` and `argsDependent`. The deployment \
+                          is remembered for instances other protocol tools returned; \
+                          otherwise pass `deployment` or `protocol`."
+    )]
+    async fn protocol_instance(
+        &self,
+        Parameters(args): Parameters<ProtocolInstanceArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let target = target_args(args.dev, args.project, args.deployment, args.protocol);
+        let result = self
+            .protocols
+            .instance(&target, &args.instance, args.wallet.as_deref())
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Prepare one protocol step for a wallet to sign. Nothing is signed or \
+                          sent: this server never signs here.\n\n\
+                          `wallet` is the signer's base58 public key; omit `instance` for \
+                          create steps; `args` is the step's args object (protocol_actions \
+                          lists each step's typed args). Name the deployment with \
+                          `deployment` or `protocol`, or use `dev: true` for `a4 dev`.\n\n\
+                          Returns `state: \"prepared\"`, `executionId`, `expiresAt`, `fees`, \
+                          `transactions` (unsigned base64 wire transactions with any \
+                          platform signatures already in place, and `requiredWalletSigners`) \
+                          and `summary`, read from the transactions themselves: per \
+                          transaction the programs invoked (labelled `program`, `glue` or \
+                          `runtime` from the prepare's anatomy), accounts written, required, \
+                          present and missing signatures and the server's simulation \
+                          metrics; overall `programsInvoked`, `signaturesStillRequired`, \
+                          `simulationErrors` and `signerBalanceChanges`: the wallet's SOL and \
+                          per-mint token changes from simulating the exact bytes, available \
+                          when an RPC URL is configured (ARETE_MCP_RPC_URL or the signer's \
+                          `rpcUrl`; always in `a4 dev`), otherwise reported unavailable, \
+                          never as zero. Check the summary, sign every transaction, then \
+                          call protocol_submit.\n\n\
+                          A guard, access or state rejection is a result, not an error: \
+                          `state: \"rejected\"` with `rejected` (the code), `guard` and \
+                          `detail` (e.g. `simulation_failed` carries the error and the last \
+                          log lines). State rejections (`instance_terminal`, \
+                          `participant_terminal`, with `detail.state`) mean the instance or \
+                          the wallet's participant has finished and carry a `hint`; do not \
+                          retry them. Transactions default to format `v0`."
+    )]
+    async fn protocol_prepare(
+        &self,
+        Parameters(args): Parameters<ProtocolPrepareArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let format = transaction_format(args.transaction_format.as_deref())?;
+        let step_args = args.args.unwrap_or_else(|| serde_json::json!({}));
+        let target = target_args(args.dev, args.project, args.deployment, args.protocol);
+        let call = crate::protocol_agent::StepCall {
+            step: &args.step,
+            instance: args.instance.as_deref(),
+            args: &step_args,
+            transaction_format: format,
+        };
+        let result = self
+            .protocols
+            .prepare(&target, &call, &args.wallet)
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Submit the wallet-signed transactions of a prepared step and wait \
+                          (bounded, default 60s, at most 120s; `wait: false` returns at once) \
+                          for the execution intent to settle. `signedTransactions` are the \
+                          base64 transactions protocol_prepare returned, signed, in the same \
+                          order; each is checked for missing signatures before it is sent. \
+                          Returns `step`, `wallet`, `executionId`, `instanceId` (a create \
+                          step's new instance), `state` (`completed`, `chain_failed`, \
+                          `expired`, `rejected`, or a pending state), `settled` and \
+                          per-transaction states with signatures. When `settled` is false, \
+                          read it later with protocol_intent and do not resubmit."
+    )]
+    async fn protocol_submit(
+        &self,
+        Parameters(args): Parameters<ProtocolSubmitArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let target = target_args(args.dev, args.project, args.deployment, None);
+        let result = self
+            .protocols
+            .submit(
+                &target,
+                &args.execution_id,
+                &args.signed_transactions,
+                args.wait,
+                args.timeout_seconds
+                    .map(|seconds| std::time::Duration::from_secs(seconds as u64)),
+            )
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Read an execution intent's current state by `executionId`: `state` \
+                          (`prepared`, `submitting`, `partially_completed`, `completed`, \
+                          `chain_failed`, `submitted_unknown`, `expired`, `rejected`) and \
+                          per-transaction states and signatures, plus `receiptUrl` when Arete \
+                          issues receipts for the deployment (check one with protocol_receipt)."
+    )]
+    async fn protocol_intent(
+        &self,
+        Parameters(args): Parameters<ProtocolIntentArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let target = target_args(args.dev, args.project, args.deployment, None);
+        let result = self
+            .protocols
+            .intent(&target, &args.execution_id)
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Fetch and verify the signed execution receipt of a protocol \
+                          transaction on Arete by its `signature`. Arete issues one only for a \
+                          completed intent transaction whose message hash it confirmed and \
+                          whose memo the revision's attestation key signed; local a4 dev \
+                          executions get none (`found: false`).\n\n\
+                          Returns the `receipt` (deployment, revision, release and review \
+                          hashes, trust tier, step, instance, message hash, intent hash, \
+                          attestation key, fees, status), `signatureCheck` (the receipt's \
+                          Ed25519 signature against the published receipt keys, offline) and \
+                          `onChain` (the receipt checked against the transaction fetched with \
+                          `getTransaction` from `ARETE_MCP_RPC_URL` or the signer's RPC: \
+                          message hash, memo prefix, deployment and attestation signer; \
+                          `checked: false` without an RPC). Public deployments' receipts need \
+                          no API key."
+    )]
+    async fn protocol_receipt(
+        &self,
+        Parameters(args): Parameters<ProtocolReceiptArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = self
+            .protocols
+            .receipt(&args.signature)
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Prepare, check, sign, submit and wait for one protocol step with the \
+                          signer configured for this server (listed only when one is \
+                          configured). The signer's wallet is the step's wallet.\n\n\
+                          Before signing, the signer's policy is checked: the deployment must \
+                          be in its `deployments` allow-list and the target cluster in its \
+                          `clusters` (mainnet only when listed); every program a transaction \
+                          invokes must be in `programs` when set (compute budget, memo, \
+                          System, token and associated token programs are always allowed); \
+                          the simulated SOL leaving the signer in each transaction (wrapped \
+                          SOL and token accounts closed to someone else included) must be at \
+                          most `maxSolPerTransaction`, and each mint's outflow within its \
+                          `maxTokenAmounts` cap (no cap, no outflow). The caps are per \
+                          transaction, not per step or over time. Instructions that hand \
+                          control of the signer's funds to someone else (token approvals, \
+                          authority changes, System assignments, nonce and stake authority \
+                          changes or withdrawals) are refused (`rule: \"authority\"`). A \
+                          balance change that cannot be simulated is refused. With `project`, \
+                          the a4 dev project must be at or below the server's working \
+                          directory. A refusal returns `state: \"refused\"` with the `rule` it \
+                          broke and why, and nothing is signed or sent.\n\n\
+                          Otherwise returns what protocol_submit returns plus the prepare \
+                          `summary`. Guard and access rejections come back as `state: \
+                          \"rejected\"` like protocol_prepare."
+    )]
+    async fn protocol_execute(
+        &self,
+        Parameters(args): Parameters<ProtocolExecuteArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let format = transaction_format(args.transaction_format.as_deref())?;
+        let step_args = args.args.unwrap_or_else(|| serde_json::json!({}));
+        let target = target_args(args.dev, args.project, args.deployment, args.protocol);
+        let call = crate::protocol_agent::StepCall {
+            step: &args.step,
+            instance: args.instance.as_deref(),
+            args: &step_args,
+            transaction_format: format,
+        };
+        let result = self
+            .protocols
+            .execute(
+                &target,
+                &call,
+                args.wait,
+                args.timeout_seconds
+                    .map(|seconds| std::time::Duration::from_secs(seconds as u64)),
+            )
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
         description = "Fetch a content-addressed artifact by hash. `kind` must be one \
-                          of `program-spec`, `live-spec`, or `stack-manifest`; the hash \
-                          comes from the full explore_stack or explore_program descriptor \
-                          (`full: true`: `stackManifestHash`, `liveSpecHash`, \
-                          `programSpecHash`).\n\n\
+                          of `program-spec`, `live-spec`, `stack-manifest`, or \
+                          `protocol-spec`; the hash comes from the full explore_stack, \
+                          explore_program or explore_protocol descriptor (`full: true`: \
+                          `stackManifestHash`, `liveSpecHash`, `programSpecHash`, \
+                          `protocolSpecHash`).\n\n\
                           Large artifacts are refused rather than truncated — use the \
                           `a4` CLI for those."
     )]
@@ -1264,7 +2820,9 @@ impl AreteMcp {
                           allowed) to keep only those keys, or `full: true` for every \
                           field as the server sent it.\n\n\
                           No credential is required; an API key widens results to \
-                          global-visibility entries."
+                          global-visibility entries.\n\n\
+                          For callable protocol packages hosted on Arete (protocols an \
+                          agent can execute), use `explore_protocols` instead."
     )]
     async fn search_catalog(
         &self,
@@ -1427,7 +2985,8 @@ impl AreteMcp {
                           protocol; follow `programs[].slug` into get_program_knowledge \
                           for instruction-level detail.\n\n\
                           Pass a bare slug, not a URL. Requires an API key \
-                          (`a4 auth login`)."
+                          (`a4 auth login`). For callable protocol packages hosted on \
+                          Arete, use `explore_protocols`."
     )]
     async fn get_protocol(
         &self,
@@ -1504,7 +3063,7 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Show the authenticated agent account, including slug, status, plan, entitlement expiry, claim state, whether trial access is enabled, and starter-stack guidance. The API key is resolved from ARETE_API_KEY or the a4 login and is never returned."
+        description = "Show the authenticated agent account, including slug, status, plan, entitlement expiry, claim state, whether trial access is enabled, starter-stack guidance, and the plan's `usage` when the account reports it. `usage.onExhausted` says what happens once the allowance is used: `block` (requests are refused) or `metered` (usage continues and is billed; `overage` then reads \"metered beyond allowance\"). The API key is resolved from ARETE_API_KEY or the a4 login and is never returned."
     )]
     async fn account_status(&self) -> Result<CallToolResult, McpError> {
         match self.recovery.account_status().await {
@@ -2763,6 +4322,84 @@ mod explore_args_tests {
     }
 
     #[tokio::test]
+    async fn explore_protocols_lists_callable_packages_with_trust_and_install_hints() {
+        let page = serde_json::json!({
+            "items": [{
+                "slug": "tip-jar",
+                "name": "Tip Jar",
+                "description": "Tips for creators.",
+                "version": "1.2.0",
+                "packageRef": "acme/tip-jar@1.2.0",
+                "deploymentId": "6f1c0e2a-0000-4000-8000-000000000000",
+                "trustTier": "reviewed",
+                "reviewedByArete": true,
+                "reviewHash": "arete:h1:protocol-release-review:sha256:aa",
+                "attestationPubkey": "11111111111111111111111111111111",
+                "publisher": {"handle": "acme"},
+                "steps": [{"name": "tip", "scope": "create", "access": "public"}],
+                "attestedExecutions30d": 123,
+                "listedAt": "2026-10-01T00:00:00Z"
+            }, {
+                "slug": "raffle",
+                "name": "Raffle",
+                "version": "0.1.0",
+                "packageRef": "bob/raffle@0.1.0",
+                "deploymentId": "6f1c0e2a-0000-4000-8000-000000000001",
+                "trustTier": "unreviewed",
+                "reviewedByArete": false,
+                "steps": [],
+                "attestedExecutions30d": 0,
+                "listedAt": "2026-10-02T00:00:00Z"
+            }],
+            "nextCursor": "next-1"
+        });
+        let server = canned_registry(vec![("/api/registry/protocols", 200, page.to_string())]);
+        let result = server
+            .explore_protocols(Parameters(ExploreProtocolsArgs {
+                query: Some("tips".into()),
+                cursor: None,
+                limit: Some(2),
+            }))
+            .await
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_str(&result_text(&result)).unwrap();
+        assert_eq!(answer["items"][0]["trust"], "reviewed by Arete");
+        assert_eq!(answer["items"][0]["attestedExecutions30d"], 123);
+        assert_eq!(answer["items"][0]["steps"][0]["access"], "public");
+        assert_eq!(
+            answer["items"][0]["install"],
+            "a4 install protocol acme/tip-jar@=1.2.0"
+        );
+        assert_eq!(answer["items"][1]["trust"], "unreviewed");
+        assert_eq!(answer["nextCursor"], "next-1");
+        assert!(server
+            .tool_names()
+            .contains(&"explore_protocols".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_registry_key_refusal_reaches_the_agent_with_the_login_hint() {
+        let refusal = r#"{"schemaVersion":1,"error":"Registry artifacts need an Arete API key","code":"registry-key-required","retryable":false}"#;
+        let server = canned_registry(vec![(
+            "/api/registry/protocols/tip-jar/install",
+            401,
+            refusal.to_string(),
+        )]);
+        let error = server
+            .explore_protocol(Parameters(ExploreProtocolArgs {
+                protocol: "tip-jar".into(),
+                full: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("a4 login"), "{}", error.message);
+        assert_eq!(
+            error.data.as_ref().unwrap()["code"],
+            "registry-key-required"
+        );
+    }
+
+    #[tokio::test]
     async fn a_missing_live_stack_keeps_its_error() {
         let server = canned_registry(vec![(
             "/api/registry/v1/catalog/entries/stack/pumpfun",
@@ -3030,6 +4667,24 @@ mod explore_args_tests {
                 "{unproven}"
             );
         }
+    }
+
+    #[test]
+    fn dev_events_filter_by_type_or_prefix() {
+        let body = serde_json::json!({ "cursor": "b:3", "events": [
+            { "type": "step.prepared" }, { "type": "build.failed" }, { "type": "chain.clock" }
+        ]});
+        let all = filter_dev_events(body.clone(), &[]);
+        assert_eq!(all["events"].as_array().unwrap().len(), 3);
+        let some = filter_dev_events(body, &["step.".to_string(), "build.failed".to_string()]);
+        let kinds: Vec<&str> = some["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["step.prepared", "build.failed"]);
+        assert_eq!(some["cursor"], "b:3");
     }
 
     #[test]

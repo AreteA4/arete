@@ -136,12 +136,13 @@ then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
 
 | Group | Tools | Auth |
 |-------|-------|------|
-| Discovery | `explore_stacks`, `explore_stack`, `explore_stack_schema`, `explore_programs`, `explore_program`, `resolve_artifact` | None required; a resolved key widens `explore_stacks` |
+| Discovery | `explore_stacks`, `explore_stack`, `explore_stack_schema`, `explore_programs`, `explore_program`, `explore_protocol`, `resolve_artifact` | None required; a resolved key widens `explore_stacks` |
 | One-shot read | `read_view` | Key resolved automatically; required for hosted stacks |
 | Knowledge | `search_knowledge`, `get_protocol`, `get_program_knowledge`, `get_recipe`, `list_concepts` | **API key required** — fails up front without one |
 | Connection | `connect`, `disconnect`, `list_connections` | Key resolved automatically; required for hosted stacks |
 | Subscription | `subscribe`, `unsubscribe`, `list_subscriptions` | Per connection |
 | Cache | `get_entity`, `list_entities`, `get_recent`, `query_entities` | Per subscription |
+| Protocols | `protocol_actions`, `protocol_instances`, `protocol_instance`, `protocol_prepare`, `protocol_submit`, `protocol_intent`, `protocol_receipt`, `protocol_execute` (only with a configured signer) | Key resolved automatically; sent only to Arete origins |
 | Health | `ping` | None |
 
 ### Discovery
@@ -184,9 +185,20 @@ error here.
   `sections` returns `accounts`, `events`, `instructions`, `operations` or
   `types` in detail; `full: true` returns the whole descriptor. Semantic
   operations come from the knowledge surface and need an API key.
+- `explore_protocol({ protocol, full? })` — one protocol package from its
+  pinned install descriptor. By default a summary: release and spec identity,
+  the deployment its client calls (`deploymentId`, `access`), the instance and
+  participant machines, each step with its scope, authority, whether a client
+  can call it, its `access` (`public` steps can be prepared with a publishable
+  key, `secret` steps need a secret key), args and guard (rejection) codes,
+  the access and state (`instance_terminal`, `participant_terminal`) rejection
+  codes, events, metadata fields, and the stacks and
+  programs it hoists; `full: true` returns the whole descriptor. The same
+  summary backs `a4 explore protocol <ref> --json` (`arete_mcp::protocol`).
 - `resolve_artifact({ kind, hash })` — fetch a content-addressed artifact.
-  `kind` is one of `program-spec`, `live-spec`, `stack-manifest`; the hash comes
-  from `explore_stack` or `explore_program`.
+  `kind` is one of `program-spec`, `live-spec`, `stack-manifest`,
+  `protocol-spec`; the hash comes from `explore_stack`, `explore_program` or
+  `explore_protocol`.
 
 Summaries, sections, views and operations are cut from the full descriptor on
 the client (`arete_mcp::descriptor`, shared with `a4 explore`). `full: true`
@@ -398,6 +410,87 @@ view. Equivalent subscriptions share one reference-counted wire subscription.
   - `limit` — defaults to 100, hard-capped at 1000. Caps every response so
     the stdio transport is never asked to ship 10k entities at once.
 
+### Cloud dev environments (`a4 dev`)
+
+These tools act on an Arete cloud dev environment (a persistent mainnet fork
+Arete hosts for the account): the project's (`.arete/dev/environment.json`
+at or above the working directory, or `project`), `ARETE_DEV_ENV`, or the
+one `environment` names. They never start or stop processes; `a4 dev up`
+creates or wakes the project's environment and serves it locally.
+
+- `dev_status({ environment?, project? })` — the environment, whether `a4 dev
+  up` serves it, the session's URLs and deployment, the chain's slot and
+  clock, and a stack stream URL with a token.
+- `dev_environments()` — the account's environments and the plan's quotas.
+- `dev_wake`, `dev_sleep({ environment?, project? })`;
+  `dev_delete({ confirm, … })` and `dev_reset({ confirm, … })`, where
+  `confirm` repeats the environment's name.
+- `dev_checkpoint({ action?: create|list|delete, checkpoint?, … })`,
+  `dev_branch({ checkpoint, name, … })`, `dev_restore({ checkpoint, … })`.
+- `dev_rebase({ keep?, … })`, `dev_reset_account({ account, include_owned?, … })`,
+  `dev_pin({ account, include_owned?, undo?, … })`,
+  `dev_follow({ account, undo?, … })` — freshness.
+- `dev_fund({ account, sol?, mint?, amount?, token_program?, … })` — a SOL or
+  token balance; `account` is a public key or a dev wallet name.
+- `dev_warp({ to, … })` — `+2h`, Unix seconds, `slot:<n>` or `epoch:<n>`.
+- `dev_scenario({ scenario, dry_run?, … })`, `dev_preview({ transaction, … })`,
+  `dev_repro({ signature, output?, … })`.
+- `dev_environment_events({ after?, limit?, … })` — lifecycle events.
+- `dev_step({ step, instance?, args?, wallet?, project? })` — prepare on the
+  project's dev deployment, sign locally with a dev wallet, submit and wait.
+- `dev_instance({ instance, wallet?, project? })` and
+  `dev_actions({ wallet, instance?, cursor?, project? })`.
+- `dev_events({ after?, limit?, waitMs?, types?, project? })` — the running
+  `a4 dev up`'s event feed since a cursor; pass the returned `cursor` as
+  `after`.
+- `dev_capture({ programs, from, to?, output, … })` — a capture from a Solana
+  RPC node.
+
+### Protocols
+
+Act on a protocol deployment: find what a wallet can do, prepare a step,
+sign it outside the server, submit it. Name the deployment with `deployment`
+or a package reference `protocol`; `dev: true` targets the project's dev deployment.
+
+- `protocol_actions({ wallet, deployment? | protocol?, instance?, cursor? })` —
+  create steps and the instances the wallet relates to, each step with
+  `allowed`, `reason`, `scope`, typed `args` and `argsDependent`.
+- `protocol_instances({ deployment? | protocol?, state?, cursor? })` and
+  `protocol_instance({ instance, wallet? })`.
+- `protocol_prepare({ step, wallet, instance?, args?, deployment? | protocol? })` —
+  unsigned base64 transactions and a `summary` (programs invoked, accounts
+  written, signatures still required, the wallet's simulated SOL and token
+  changes when an RPC is configured, simulation errors). Guard and access
+  rejections are results.
+- `protocol_submit({ executionId, signedTransactions, wait?, timeoutSeconds? })`
+  and `protocol_intent({ executionId })`. Both carry `receiptUrl` when Arete
+  issues receipts for the deployment.
+- `protocol_receipt({ signature })` — fetches the signed execution receipt of
+  a transaction on Arete, checks its signature against the published receipt
+  keys, and, with `ARETE_MCP_RPC_URL` or a signer `rpcUrl`, checks it against
+  the transaction itself (message hash, memo, deployment, attestation
+  signer). Local `a4 dev` executions get no receipt.
+- `protocol_execute(...)` — listed only when a signer is configured in the
+  `[signer]` table of `~/.arete/mcp.toml` (or the file
+  `ARETE_MCP_SIGNER_CONFIG` names): prepares, checks the signer's policy
+  (`deployments`, `maxSolPerTransaction`, optional `programs`,
+  `maxTokenAmounts`, `clusters`), signs, submits and waits. A refusal names
+  the rule. The keypair never appears in output, errors or logs. The caps
+  hold per transaction. Without `maxTokenAmounts` no token may leave the
+  signer; wrapped SOL and the lamports of a token account closed to another
+  account count against `maxSolPerTransaction`. Token approvals, authority
+  changes, System `Assign`/`AssignWithSeed`/`Allocate` of the signer, nonce
+  and stake authority changes or withdrawals, and upgradeable-loader
+  instructions the signer takes part in are refused (`rule: "authority"`),
+  top-level always and inner when the RPC's simulation returns inner
+  instructions. A transaction writing more accounts than the simulation
+  reports on (64) is refused as unknown. With `dev: true` a `project`
+  argument must be at or below the server's working directory, the signer
+  is funded in the dev environment when it has no SOL, and simulation uses
+  the signer's `rpcUrl` unless the policy lists `localnet` in `clusters`
+  (the local RPC endpoint of a running `a4 dev up` is used when the signer
+  has none).
+
 ### Health
 
 - `ping()` — returns `pong`. Used by clients to verify the server is up.
@@ -445,6 +538,8 @@ RUST_LOG=hs_mcp=debug,arete_sdk=info a4 mcp
 | --------------- | -------------------------------------------------------------------------------------------- |
 | `ARETE_API_KEY` | API key for `connect` and the knowledge tools (required), and for widening `explore_stacks`   |
 | `ARETE_API_URL` | API base for the discovery tools and credentials lookup. Defaults to `https://api.arete.run`  |
+| `ARETE_MCP_RPC_URL` | Solana RPC the protocol tools simulate prepared transactions against (signer balance changes) |
+| `ARETE_MCP_SIGNER_CONFIG` | A TOML file with a `[signer]` table, instead of `~/.arete/mcp.toml`                    |
 | `RUST_LOG`      | Log verbosity (stderr only)                                                                   |
 
 A resolved API key is attached to discovery requests **only when `ARETE_API_URL`
