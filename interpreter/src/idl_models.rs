@@ -346,6 +346,10 @@ impl ModelBuilder<'_> {
                 WireType::Option(Box::new(self.wire_type(&option.option)))
             }
             IdlTypeSnapshot::Vec(vec) => WireType::List(Box::new(self.wire_type(&vec.vec))),
+            // The prefix width is a wire detail; the value is text either way.
+            IdlTypeSnapshot::String(_) => {
+                self.wire_type(&IdlTypeSnapshot::Simple("string".to_string()))
+            }
             IdlTypeSnapshot::Array(array) => match array.array.as_slice() {
                 [IdlArrayElementSnapshot::Type(element), IdlArrayElementSnapshot::Size(_)] => {
                     WireType::List(Box::new(self.wire_type(element)))

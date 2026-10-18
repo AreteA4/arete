@@ -147,6 +147,12 @@ pub fn convert_idl_type(idl_type: &idl_parser::IdlType) -> IdlTypeSnapshot {
             vec: Box::new(convert_idl_type(&vec_type.vec)),
             length_prefix: vec_type.length_prefix,
         }),
+        idl_parser::IdlType::String(string) => {
+            IdlTypeSnapshot::String(arete_idl::snapshot::IdlStringTypeSnapshot {
+                string: string.string,
+                length_prefix: string.length_prefix,
+            })
+        }
         idl_parser::IdlType::Defined(defined) => IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
             defined: match &defined.defined {
                 idl_parser::IdlTypeDefinedInner::Named { name } => {
@@ -223,7 +229,6 @@ mod tests {
         assert!(spec.content_hash.is_some());
     }
 
-    #[test]
     #[test]
     fn preserves_nested_seed_paths_when_building_program_only_specs() {
         let idl = arete_idl::parse::parse_idl_content(

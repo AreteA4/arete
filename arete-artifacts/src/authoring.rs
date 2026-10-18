@@ -9,10 +9,11 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::{
-    ArtifactError, LiveSpecArtifact, LiveSpecArtifactV2, LiveSpecReferenceV2, LiveSpecV2,
-    PortableEntity, PortableFieldPath, PortableView, PortableViewOutput, PortableViewSource,
-    ProgramAdapterV2, ProgramRequirementV2, ProgramSpecArtifact, ProgramSpecReferenceV2,
-    SelectedViewV2, StackManifestArtifact, StackManifestArtifactV2, StackManifestV2,
+    ArtifactError, LiveLimitsV2, LiveSpecArtifact, LiveSpecArtifactV2, LiveSpecReferenceV2,
+    LiveSpecV2, PortableEntity, PortableFieldPath, PortableView, PortableViewOutput,
+    PortableViewSource, ProgramAdapterV2, ProgramRequirementV2, ProgramSpecArtifact,
+    ProgramSpecReferenceV2, SelectedViewV2, StackManifestArtifact, StackManifestArtifactV2,
+    StackManifestV2,
 };
 
 pub const DEFAULT_LIVE_ALIAS: &str = "live";
@@ -25,6 +26,14 @@ pub struct StackAuthoringV2 {
     pub pda_overrides: BTreeMap<String, BTreeMap<String, PdaDefinitionV1>>,
     pub instruction_overrides: Vec<InstructionDefinitionV1>,
     pub live_alias: String,
+    /// Runtime capacity overrides published in the LiveSpec. `None` leaves
+    /// the LiveSpec without `limits`, byte-identical to one authored before
+    /// they existed.
+    pub limits: Option<LiveLimitsV2>,
+    /// Row scoping published in the LiveSpec: entity name -> scope field
+    /// path. Empty leaves the LiveSpec without `rowScopes`, byte-identical to
+    /// one authored before row scoping existed.
+    pub row_scopes: BTreeMap<String, String>,
 }
 
 impl StackAuthoringV2 {
@@ -40,6 +49,8 @@ impl StackAuthoringV2 {
             pda_overrides: BTreeMap::new(),
             instruction_overrides: Vec::new(),
             live_alias: DEFAULT_LIVE_ALIAS.to_string(),
+            limits: None,
+            row_scopes: BTreeMap::new(),
         }
     }
 }
@@ -203,7 +214,16 @@ pub fn author_stack_v2(input: StackAuthoringV2) -> Result<AuthoredStackV2, Artif
         });
     }
 
-    let live_spec = live_spec_v2(&program_specs, input.entities, adapters)?;
+    let live_spec = if input.limits.is_none() && input.row_scopes.is_empty() {
+        live_spec_v2(&program_specs, input.entities, adapters)?
+    } else {
+        let mut payload = live_spec_v2(&program_specs, input.entities, adapters)?.payload;
+        payload.limits = input.limits;
+        if !input.row_scopes.is_empty() {
+            payload.row_scopes = Some(input.row_scopes);
+        }
+        LiveSpecArtifactV2::new(payload)?
+    };
     let selected = selected_views(&input.live_alias, &live_spec.payload);
     let stack_manifest = stack_manifest_v2(
         input.name,

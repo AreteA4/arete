@@ -78,6 +78,9 @@ pub enum ArgType {
     F64,
     Bool,
     String,
+    /// UTF-8 string with a u64 LE byte length (bincode-style), as the native
+    /// programs' seeds are encoded.
+    StringU64Len,
     Pubkey,
     Bytes,
     /// Variable-length sequence: u32 LE count followed by the elements.

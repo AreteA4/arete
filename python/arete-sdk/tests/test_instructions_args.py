@@ -64,6 +64,11 @@ class TestPrimitives:
         schema = [ArgSchema("s", "string")]
         assert list(ser(schema, {"s": "hi"})) == [2, 0, 0, 0, 0x68, 0x69]
 
+    def test_serializes_string_u64_len_with_an_eight_byte_prefix(self):
+        # Pinned to the Rust test `serializes_string_u64_len_with_an_eight_byte_prefix`.
+        schema = [ArgSchema("seed", "stringU64Len")]
+        assert list(ser(schema, {"seed": "hi"})) == [2, 0, 0, 0, 0, 0, 0, 0, 0x68, 0x69]
+
     def test_serializes_f32_f64_little_endian_and_bytes_with_length_prefix(self):
         schema = [
             ArgSchema("ratio", "f32"),

@@ -43,6 +43,7 @@ pub fn to_rust_type_string(idl_type: &IdlType) -> String {
             let inner_type = to_rust_type_string(&vec.vec);
             format!("Vec<{}>", inner_type)
         }
+        IdlType::String(_) => "String".to_string(),
         IdlType::HashMap(hm) => {
             let key_type = to_rust_type_string(&hm.hash_map.0);
             let val_type = to_rust_type_string(&hm.hash_map.1);
@@ -61,7 +62,7 @@ pub fn to_rust_type_string(idl_type: &IdlType) -> String {
 }
 
 /// Type string for `InstructionArgDef.arg_type`, spelling a `u64`-prefixed sequence as
-/// `VecU64Len<T>`. Not valid Rust, so struct-field codegen and PDA seed validation keep
+/// `VecU64Len<T>` and a `u64`-prefixed string as `StringU64Len`. Not valid Rust, so struct-field codegen and PDA seed validation keep
 /// using [`to_rust_type_string`]. Degrades to `Vec` inside a `defined` type or hash map.
 pub fn to_spec_arg_type_string(idl_type: &IdlType) -> String {
     match idl_type {
@@ -73,6 +74,7 @@ pub fn to_spec_arg_type_string(idl_type: &IdlType) -> String {
                 format!("Vec<{}>", inner)
             }
         }
+        IdlType::String(string) if string.is_u64_prefixed() => "StringU64Len".to_string(),
         IdlType::Option(opt) => {
             format!("Option<{}>", to_spec_arg_type_string(&opt.option))
         }
@@ -122,6 +124,7 @@ pub fn to_rust_type_string_bytemuck(idl_type: &IdlType) -> String {
             let inner_type = to_rust_type_string_bytemuck(&vec.vec);
             format!("Vec<{}>", inner_type)
         }
+        IdlType::String(_) => "String".to_string(),
         IdlType::HashMap(hm) => {
             let key_type = to_rust_type_string_bytemuck(&hm.hash_map.0);
             let val_type = to_rust_type_string_bytemuck(&hm.hash_map.1);

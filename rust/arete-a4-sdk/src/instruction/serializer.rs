@@ -261,6 +261,16 @@ fn serialize_value(
             out.extend_from_slice(&(s.len() as u32).to_le_bytes());
             out.extend_from_slice(s.as_bytes());
         }
+        ArgType::StringU64Len => {
+            let Value::String(s) = value else {
+                return Err(invalid(
+                    ctx,
+                    format!("expected a string, got {}", json_kind(value)),
+                ));
+            };
+            out.extend_from_slice(&(s.len() as u64).to_le_bytes());
+            out.extend_from_slice(s.as_bytes());
+        }
         ArgType::Pubkey => {
             let bytes = match value {
                 Value::String(s) => {
@@ -659,6 +669,16 @@ mod tests {
         assert_eq!(
             ser(&schema, json!({ "s": "hi" })),
             vec![2, 0, 0, 0, 0x68, 0x69]
+        );
+    }
+
+    #[test]
+    fn serializes_string_u64_len_with_an_eight_byte_prefix() {
+        let schema = [arg("seed", ArgType::StringU64Len)];
+        assert_eq!(
+            ser(&schema, json!({ "seed": "hi" })),
+            vec![2, 0, 0, 0, 0, 0, 0, 0, 0x68, 0x69],
+            "bincode writes the byte length as u64 LE, not u32"
         );
     }
 

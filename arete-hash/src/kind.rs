@@ -71,6 +71,14 @@ pub enum HashKindName {
     SdkInstallTarget,
     CatalogBundle,
     CatalogPublicationSet,
+    ProtocolSpec,
+    ProtocolHandlerBundle,
+    ProtocolStackSource,
+    ProtocolRelease,
+    ProtocolReleaseReview,
+    ProtocolResource,
+    ProviderSnapshot,
+    ExecutionIntent,
 }
 
 impl HashKindName {
@@ -100,6 +108,14 @@ impl HashKindName {
             Self::SdkInstallTarget => "sdk-install-target",
             Self::CatalogBundle => "catalog-bundle",
             Self::CatalogPublicationSet => "catalog-publication-set",
+            Self::ProtocolSpec => "protocol-spec",
+            Self::ProtocolHandlerBundle => "protocol-handler-bundle",
+            Self::ProtocolStackSource => "protocol-stack-source",
+            Self::ProtocolRelease => "protocol-release",
+            Self::ProtocolReleaseReview => "protocol-release-review",
+            Self::ProtocolResource => "protocol-resource",
+            Self::ProviderSnapshot => "provider-snapshot",
+            Self::ExecutionIntent => "execution-intent",
         }
     }
 }
@@ -139,6 +155,14 @@ impl FromStr for HashKindName {
             "sdk-install-target" => Ok(Self::SdkInstallTarget),
             "catalog-bundle" => Ok(Self::CatalogBundle),
             "catalog-publication-set" => Ok(Self::CatalogPublicationSet),
+            "protocol-spec" => Ok(Self::ProtocolSpec),
+            "protocol-handler-bundle" => Ok(Self::ProtocolHandlerBundle),
+            "protocol-stack-source" => Ok(Self::ProtocolStackSource),
+            "protocol-release" => Ok(Self::ProtocolRelease),
+            "protocol-release-review" => Ok(Self::ProtocolReleaseReview),
+            "protocol-resource" => Ok(Self::ProtocolResource),
+            "provider-snapshot" => Ok(Self::ProviderSnapshot),
+            "execution-intent" => Ok(Self::ExecutionIntent),
             _ => Err(HashError::UnknownKind(value.to_string())),
         }
     }
@@ -235,6 +259,14 @@ const fn api_field(kind: HashKindName) -> &'static str {
         HashKindName::SdkInstallTarget => "sdkInstallTargetHash",
         HashKindName::CatalogBundle => "bundleHash",
         HashKindName::CatalogPublicationSet => "setHash",
+        HashKindName::ProtocolSpec => "protocolSpecHash",
+        HashKindName::ProtocolHandlerBundle => "handlerBundleHash",
+        HashKindName::ProtocolStackSource => "protocolStackSourceHash",
+        HashKindName::ProtocolRelease => "protocolReleaseHash",
+        HashKindName::ProtocolReleaseReview => "reviewHash",
+        HashKindName::ProtocolResource => "resourceHash",
+        HashKindName::ProviderSnapshot => "providerSnapshotHash",
+        HashKindName::ExecutionIntent => "executionIntentHash",
     }
 }
 
@@ -264,6 +296,14 @@ const fn rust_type(kind: HashKindName) -> &'static str {
         HashKindName::SdkInstallTarget => "HashId<SdkInstallTarget>",
         HashKindName::CatalogBundle => "HashId<CatalogBundle>",
         HashKindName::CatalogPublicationSet => "HashId<CatalogPublicationSet>",
+        HashKindName::ProtocolSpec => "HashId<ProtocolSpec>",
+        HashKindName::ProtocolHandlerBundle => "HashId<ProtocolHandlerBundle>",
+        HashKindName::ProtocolStackSource => "HashId<ProtocolStackSource>",
+        HashKindName::ProtocolRelease => "HashId<ProtocolRelease>",
+        HashKindName::ProtocolReleaseReview => "HashId<ProtocolReleaseReview>",
+        HashKindName::ProtocolResource => "HashId<ProtocolResource>",
+        HashKindName::ProviderSnapshot => "HashId<ProviderSnapshot>",
+        HashKindName::ExecutionIntent => "HashId<ExecutionIntent>",
     }
 }
 
@@ -293,6 +333,14 @@ const fn typescript_type(kind: HashKindName) -> &'static str {
         HashKindName::SdkInstallTarget => "SdkInstallTargetHash",
         HashKindName::CatalogBundle => "CatalogBundleHash",
         HashKindName::CatalogPublicationSet => "CatalogPublicationSetHash",
+        HashKindName::ProtocolSpec => "ProtocolSpecHash",
+        HashKindName::ProtocolHandlerBundle => "ProtocolHandlerBundleHash",
+        HashKindName::ProtocolStackSource => "ProtocolStackSourceHash",
+        HashKindName::ProtocolRelease => "ProtocolReleaseHash",
+        HashKindName::ProtocolReleaseReview => "ProtocolReleaseReviewHash",
+        HashKindName::ProtocolResource => "ProtocolResourceHash",
+        HashKindName::ProviderSnapshot => "ProviderSnapshotHash",
+        HashKindName::ExecutionIntent => "ExecutionIntentHash",
     }
 }
 
@@ -322,6 +370,14 @@ const fn projection(kind: HashKindName) -> &'static str {
         HashKindName::SdkInstallTarget => "arete.sdk-install-target/v1",
         HashKindName::CatalogBundle => "arete.catalog-bundle/v1",
         HashKindName::CatalogPublicationSet => "arete.catalog-publication-set/v1",
+        HashKindName::ProtocolSpec => "arete.protocol-spec/v1",
+        HashKindName::ProtocolHandlerBundle => "arete.protocol-handler-bundle/exact-bytes-v1",
+        HashKindName::ProtocolStackSource => "arete.protocol-stack-source/v1",
+        HashKindName::ProtocolRelease => "arete.protocol-release/v1",
+        HashKindName::ProtocolReleaseReview => "arete.protocol-release-review/v1",
+        HashKindName::ProtocolResource => "arete.protocol-resource/v1",
+        HashKindName::ProviderSnapshot => "arete.provider-snapshot/v1",
+        HashKindName::ExecutionIntent => "arete.execution-intent/v1",
     }
 }
 
@@ -397,6 +453,24 @@ const fn database_mappings(kind: HashKindName) -> &'static [&'static str] {
             "catalog_active_sets.set_hash",
             "catalog_publication_events.set_hash",
         ],
+        HashKindName::ProtocolSpec => &["protocol_specs.spec_hash", "protocol_releases.spec_hash"],
+        HashKindName::ProtocolHandlerBundle => &[
+            "protocol_handler_bundles.bundle_hash",
+            "protocol_releases.bundle_hash",
+        ],
+        HashKindName::ProtocolStackSource => &[
+            "protocol_stack_sources.stack_source_hash",
+            "protocol_releases.stack_source_hash",
+        ],
+        HashKindName::ProtocolRelease => &[
+            "protocol_releases.release_hash",
+            "protocol_release_reviews.release_hash",
+            "protocol_deployment_revisions.release_hash",
+        ],
+        HashKindName::ProtocolReleaseReview => &["protocol_release_reviews.review_hash"],
+        HashKindName::ProtocolResource => &["protocol_resource_versions.resource_hash"],
+        HashKindName::ProviderSnapshot => &["protocol_execution_intents.provider_snapshot_hash"],
+        HashKindName::ExecutionIntent => &["protocol_execution_intents.intent_hash"],
     }
 }
 
@@ -571,6 +645,56 @@ define_kinds!(
         CatalogPublicationSet,
         AreteJcsV1,
         Public,
+        Composite
+    ),
+    (ProtocolSpec, ProtocolSpec, AreteJcsV1, Public, Composite),
+    (
+        ProtocolHandlerBundle,
+        ProtocolHandlerBundle,
+        RawBytesV1,
+        Public,
+        CanonicalContent
+    ),
+    (
+        ProtocolStackSource,
+        ProtocolStackSource,
+        AreteJcsV1,
+        Public,
+        Composite
+    ),
+    (
+        ProtocolRelease,
+        ProtocolRelease,
+        AreteJcsV1,
+        Public,
+        Composite
+    ),
+    (
+        ProtocolReleaseReview,
+        ProtocolReleaseReview,
+        AreteJcsV1,
+        Public,
+        Composite
+    ),
+    (
+        ProtocolResource,
+        ProtocolResource,
+        AreteJcsV1,
+        AuthenticatedOwner,
+        Composite
+    ),
+    (
+        ProviderSnapshot,
+        ProviderSnapshot,
+        AreteJcsV1,
+        AuthenticatedOwner,
+        Composite
+    ),
+    (
+        ExecutionIntent,
+        ExecutionIntent,
+        AreteJcsV1,
+        AuthenticatedOwner,
         Composite
     ),
 );

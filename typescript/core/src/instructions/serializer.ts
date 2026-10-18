@@ -30,6 +30,8 @@ export type ArgType =
   | 'f32' | 'f64'
   | 'bool'
   | 'string'
+  /** UTF-8 string with a u64 LE byte length (bincode-style). */
+  | 'stringU64Len'
   | 'pubkey'
   | 'bytes'
   | { vec: ArgType }
@@ -336,11 +338,17 @@ function serializePrimitive(value: unknown, type: string): Buffer {
       return Buffer.concat([lenPrefix, Buffer.from(raw)]);
     }
     case 'string':
+    case 'stringU64Len': {
       const str = value as string;
       const strBytes = Buffer.from(str, 'utf-8');
-      const strLen = Buffer.alloc(4);
-      strLen.writeUInt32LE(strBytes.length, 0);
+      const strLen = Buffer.alloc(type === 'stringU64Len' ? 8 : 4);
+      if (type === 'stringU64Len') {
+        strLen.writeBigUInt64LE(BigInt(strBytes.length), 0);
+      } else {
+        strLen.writeUInt32LE(strBytes.length, 0);
+      }
       return Buffer.concat([strLen, strBytes]);
+    }
     case 'pubkey': {
       // Public key is 32 bytes. Accept base58 strings or raw 32-byte buffers.
       if (value instanceof Uint8Array) {

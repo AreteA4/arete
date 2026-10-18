@@ -237,6 +237,18 @@ pub struct IdlInstructionSnapshot {
 }
 
 impl IdlInstructionSnapshot {
+    /// Declared untagged: no discriminator, no discriminant, and
+    /// [`crate::types::INSTRUCTION_UNTAGGED_MARKER`] in its docs (see
+    /// [`crate::types::IdlInstruction::is_untagged`]).
+    pub fn is_untagged(&self) -> bool {
+        self.discriminator.is_empty()
+            && self.discriminant.is_none()
+            && self
+                .docs
+                .iter()
+                .any(|doc| doc.trim() == crate::types::INSTRUCTION_UNTAGGED_MARKER)
+    }
+
     /// The discriminator as it appears on the wire.
     ///
     /// Explicit bytes win. Otherwise the declared discriminant is encoded at its declared width,
@@ -244,6 +256,9 @@ impl IdlInstructionSnapshot {
     /// fall back to an Anchor hash for anything above `u8::MAX`, so a `u32` tag in a snapshot
     /// decoded as a hash of the instruction name and matched nothing on chain.
     pub fn get_discriminator(&self) -> Vec<u8> {
+        if self.is_untagged() {
+            return Vec::new();
+        }
         if !self.discriminator.is_empty() {
             return self.discriminator.clone();
         }
@@ -294,6 +309,7 @@ pub enum IdlTypeSnapshot {
     Array(IdlArrayTypeSnapshot),
     Option(IdlOptionTypeSnapshot),
     Vec(IdlVecTypeSnapshot),
+    String(IdlStringTypeSnapshot),
     HashMap(IdlHashMapTypeSnapshot),
     Tuple(IdlTupleTypeSnapshot),
     Defined(IdlDefinedTypeSnapshot),
@@ -359,6 +375,25 @@ pub struct IdlVecTypeSnapshot {
         rename = "lengthPrefix"
     )]
     pub length_prefix: Option<crate::types::IdlLengthPrefix>,
+}
+
+/// Mirrors [`crate::types::IdlTypeString`]: `{"string": "utf8", "lengthPrefix": "u64"}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdlStringTypeSnapshot {
+    pub string: crate::types::IdlStringEncoding,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "lengthPrefix"
+    )]
+    pub length_prefix: Option<crate::types::IdlLengthPrefix>,
+}
+
+impl IdlStringTypeSnapshot {
+    /// Whether the string carries a bincode-style `u64` byte length.
+    pub fn is_u64_prefixed(&self) -> bool {
+        matches!(self.length_prefix, Some(crate::types::IdlLengthPrefix::U64))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -650,6 +685,10 @@ fn snapshot_type(idl_type: &crate::types::IdlType) -> IdlTypeSnapshot {
         crate::types::IdlType::Vec(vec_type) => IdlTypeSnapshot::Vec(IdlVecTypeSnapshot {
             vec: Box::new(snapshot_type(&vec_type.vec)),
             length_prefix: vec_type.length_prefix,
+        }),
+        crate::types::IdlType::String(string) => IdlTypeSnapshot::String(IdlStringTypeSnapshot {
+            string: string.string,
+            length_prefix: string.length_prefix,
         }),
         crate::types::IdlType::Defined(defined) => {
             IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {

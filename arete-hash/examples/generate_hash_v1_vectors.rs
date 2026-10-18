@@ -172,6 +172,8 @@ impl Generator {
         println!("wrote {}", path.display());
     }
 
+    // One positional field per vector column; a builder would only rename them.
+    #[allow(clippy::too_many_arguments)]
     fn add_hash_vector(
         &mut self,
         id: &str,
@@ -998,6 +1000,8 @@ impl Generator {
         let inline_tuple = mpl_core_tuple_idl();
         let codama_root = subscriptions_codama_idl();
         let untagged_accounts = untagged_accounts_idl();
+        let untagged_instructions = untagged_instructions_idl();
+        let prefixed_strings = codama_prefixed_strings_idl("le", "utf8");
 
         let primary_document =
             CanonicalIdlDocument::parse(primary.as_bytes(), None).expect("primary IDL parses");
@@ -1081,6 +1085,18 @@ impl Generator {
                 json!({"fixtureSource": "trimmed Subscriptions Codama rootNode"}),
             ),
             (
+                "idl-untagged-instruction-discriminators",
+                untagged_instructions,
+                None,
+                json!({"cases": ["marker", "trimmed marker", "explicit bytes", "explicit discriminant", "unmarked", "false marker"]}),
+            ),
+            (
+                "idl-codama-prefixed-strings",
+                prefixed_strings,
+                None,
+                json!({"prefixWidths": [4, 8]}),
+            ),
+            (
                 "idl-untagged-account-discriminators",
                 untagged_accounts,
                 None,
@@ -1125,6 +1141,11 @@ impl Generator {
 
     fn idl_failure_vectors(&mut self) {
         let cases = [
+            ("idl-codama-big-endian-string", codama_prefixed_strings_idl("be", "utf8"), None, "invalid-idl"),
+            ("idl-codama-non-utf8-string", codama_prefixed_strings_idl("le", "utf16"), None, "invalid-idl"),
+            ("idl-account-tuple-remainder", r#"{"address":"11111111111111111111111111111111","instructions":[],"accounts":[{"name":"A","type":{"kind":"struct","fields":["rest_bytes"]}}]}"#.to_string(), None, "invalid-idl"),
+            ("idl-account-named-enum-remainder", r#"{"address":"11111111111111111111111111111111","instructions":[],"accounts":[{"name":"A","type":{"kind":"enum","variants":[{"name":"V","fields":[{"name":"rest","type":"rest_utf8"}]}]}}]}"#.to_string(), None, "invalid-idl"),
+            ("idl-account-tuple-enum-remainder", r#"{"address":"11111111111111111111111111111111","instructions":[],"accounts":[{"name":"A","type":{"kind":"enum","variants":[{"name":"V","fields":["rest_bytes"]}]}}]}"#.to_string(), None, "invalid-idl"),
             (
                 "idl-missing-program-id",
                 minimal_idl_fields(""),
@@ -1450,6 +1471,35 @@ impl Generator {
             &[],
         );
 
+        // The mainnet System program: owned by the native loader, executable,
+        // and its account data is the built-in's name.
+        let native_identity = SolanaExecutableIdentityV1::new(
+            "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+            SolanaExecutableLoaderV1::native_builtin("solana_system_program")
+                .expect("native built-in loader identity"),
+        )
+        .expect("native executable identity");
+        let hosted_native =
+            HostedManagedProgramReleaseV2::new(HostedManagedProgramReleaseV2Fields {
+                program_id: "11111111111111111111111111111111".to_string(),
+                program_spec_hash: baseline.program_spec_hash,
+                idl_content_hash: baseline.idl_content_hash,
+                normalized_idl_hash: baseline.normalized_idl_hash,
+                decoder_abi_version: "1".to_string(),
+                decoder_engine_id: "example-decoder-engine/v1".to_string(),
+                decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
+                executable_identity: native_identity,
+            })
+            .expect("hosted native built-in release");
+        self.add_release_vector(
+            "release-hosted-managed-v2-native-builtin",
+            "Hosted V2 binds a native built-in program by its loader and built-in name.",
+            &hosted_native,
+            json!({"loader": "native-builtin"}),
+            None,
+            &[],
+        );
+
         let hosted_private =
             HostedPrivateProgramReleaseV3::new(HostedPrivateProgramReleaseV3Fields {
                 program_id: baseline.program_id.clone(),
@@ -1586,6 +1636,79 @@ impl Generator {
         }
 
         self.hosted_release_failure_vectors(&hosted_upgradeable, &hosted_legacy);
+        self.native_builtin_failure_vectors(&hosted_native);
+    }
+
+    fn native_builtin_failure_vectors(&mut self, native: &HostedManagedProgramReleaseV2) {
+        let native_value = serde_json::to_value(native).expect("release serializes");
+        for (id, description, mutation) in [
+            (
+                "native-builtin-rejects-loader-id-mismatch",
+                "Native built-in identities require the native loader program ID.",
+                "loader-id",
+            ),
+            (
+                "native-builtin-rejects-empty-name",
+                "Native built-in names must not be empty.",
+                "empty-name",
+            ),
+            (
+                "native-builtin-rejects-non-ascii-name",
+                "Native built-in names are printable ASCII only.",
+                "non-ascii-name",
+            ),
+            (
+                "native-builtin-rejects-control-character-name",
+                "Native built-in names reject spaces and control characters.",
+                "control-name",
+            ),
+            (
+                "native-builtin-rejects-overlong-name",
+                "Native built-in names are at most 64 bytes.",
+                "long-name",
+            ),
+            (
+                "native-builtin-rejects-unknown-field",
+                "Native built-in identities reject unknown fields.",
+                "unknown-field",
+            ),
+            (
+                "native-builtin-rejects-executable-digest",
+                "Native built-in identities cannot carry BPF loader fields.",
+                "bpf-field",
+            ),
+        ] {
+            let mut value = native_value.clone();
+            let loader = &mut value["executableIdentity"]["loader"];
+            match mutation {
+                "loader-id" => {
+                    loader["loaderProgramId"] = json!(SOLANA_BPF_UPGRADEABLE_LOADER_PROGRAM_ID)
+                }
+                "empty-name" => loader["builtinName"] = json!(""),
+                "non-ascii-name" => loader["builtinName"] = json!("solana_system_programé"),
+                "control-name" => loader["builtinName"] = json!("solana system\nprogram"),
+                "long-name" => loader["builtinName"] = json!("a".repeat(65)),
+                "unknown-field" => loader["validatorVersion"] = json!("2.3.0"),
+                "bpf-field" => {
+                    loader["executablePayloadSha256"] = json!(format!("sha256:{}", "ab".repeat(32)))
+                }
+                _ => unreachable!(),
+            }
+            let error = match parse_hosted_managed_program_release_v2(
+                &serde_json::to_vec(&value).expect("release JSON"),
+            ) {
+                Ok(_) => panic!("invalid native built-in vector '{id}' was accepted"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code(), "invalid-projection");
+            self.add_failure(
+                id,
+                description,
+                "hosted-program-release-v2",
+                json!({"projection": value}),
+                &error,
+            );
+        }
     }
 
     fn hosted_release_failure_vectors(
@@ -2501,4 +2624,40 @@ fn minimal_idl_fields(program_id: &str) -> String {
 
 fn minimal_idl_fields_body() -> &'static str {
     "\"version\":\"1.0.0\",\"name\":\"demo\",\"instructions\":[],\"accounts\":[],\"types\":[],\"events\":[],\"errors\":[]"
+}
+
+fn untagged_instructions_idl() -> String {
+    json!({
+        "address": "11111111111111111111111111111111",
+        "name": "untagged_instructions_fixture", "version": "0.1.0",
+        "instructions": [
+            {"accounts": [], "args": [], "name": "memo", "docs": ["arete.instruction_untagged=true"]},
+            {"accounts": [], "args": [], "name": "trimmed", "docs": ["  arete.instruction_untagged=true\n"]},
+            {"accounts": [], "args": [], "name": "explicit", "discriminator": [9], "docs": ["arete.instruction_untagged=true"]},
+            {"accounts": [], "args": [], "name": "enumTag", "discriminant": {"type":"u32", "value":2}, "docs": ["arete.instruction_untagged=true"]},
+            {"accounts": [], "args": [], "name": "unmarked"},
+            {"accounts": [], "args": [], "name": "falseMarker", "docs": ["arete.instruction_untagged=false"]}
+        ]
+    }).to_string()
+}
+
+fn codama_prefixed_strings_idl(endian: &str, encoding: &str) -> String {
+    json!({
+        "kind": "rootNode",
+        "program": {
+            "kind": "programNode", "name": "prefixed_strings",
+            "publicKey": "11111111111111111111111111111111", "version": "0.1.0",
+            "instructions": [],
+            "definedTypes": [{"kind":"definedTypeNode", "name":"Seeds", "type": {
+                "kind":"structTypeNode", "fields": (["u32", "u64"].map(|format| json!({
+                    "kind":"structFieldTypeNode", "name":format, "type":{
+                        "kind":"sizePrefixTypeNode",
+                        "type":{"kind":"stringTypeNode", "encoding":encoding},
+                        "prefix":{"kind":"numberTypeNode", "format":format, "endian":endian}
+                    }
+                })))
+            }}]
+        }
+    })
+    .to_string()
 }

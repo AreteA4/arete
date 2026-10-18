@@ -3041,6 +3041,8 @@ impl<'a> PythonDefinedTypes<'a> {
             "f64" => py_prim("f64", "float"),
             "bool" => py_prim("bool", "bool"),
             "String" | "string" | "str" => py_prim("string", "str"),
+            // bincode string (`u64` byte length), the native programs' seeds.
+            "StringU64Len" => py_prim("stringU64Len", "str"),
             "Pubkey" | "pubkey" | "PublicKey" | "publicKey" => py_prim("pubkey", "str"),
             "bytes" => py_prim("bytes", "bytes"),
             _ => self
@@ -3073,6 +3075,10 @@ impl<'a> PythonDefinedTypes<'a> {
                     supported: inner.supported,
                 }
             }
+            IdlTypeSnapshot::String(s) if s.is_u64_prefixed() => {
+                self.parse_arg_type("StringU64Len")
+            }
+            IdlTypeSnapshot::String(_) => self.parse_arg_type("string"),
             IdlTypeSnapshot::Array(arr) => {
                 let mut element: Option<PyParsedArg> = None;
                 let mut size: Option<u32> = None;
@@ -6747,6 +6753,30 @@ print("ok")
             compile_stack_spec(spec, Some(config)).expect("ore stack should compile to Python");
 
         write_python_module(&output, &out_dir).expect("ore example should write");
+    }
+
+    #[test]
+    fn python_generator_encodes_a_u64_prefixed_string_as_string_u64_len() {
+        let string = |length_prefix| {
+            IdlTypeSnapshot::String(arete_idl::snapshot::IdlStringTypeSnapshot {
+                string: arete_idl::types::IdlStringEncoding::Utf8,
+                length_prefix,
+            })
+        };
+        let mut parser = PythonDefinedTypes::new(&[]);
+        let parsed = parser.parse_arg_type("StringU64Len");
+        assert_eq!(parsed.schema, "\"stringU64Len\"");
+        assert_eq!(parsed.param_type, "str");
+        assert_eq!(
+            parser
+                .parse_snapshot_type(&string(Some(arete_idl::types::IdlLengthPrefix::U64)))
+                .schema,
+            "\"stringU64Len\""
+        );
+        assert_eq!(
+            parser.parse_snapshot_type(&string(None)).schema,
+            "\"string\""
+        );
     }
 
     #[test]

@@ -31,7 +31,11 @@ export const SOLANA_BPF_LOADER_V2_PROGRAM_ID =
   "BPFLoader2111111111111111111111111111111111" as const;
 export const SOLANA_BPF_UPGRADEABLE_LOADER_PROGRAM_ID =
   "BPFLoaderUpgradeab1e11111111111111111111111" as const;
+export const SOLANA_NATIVE_LOADER_PROGRAM_ID =
+  "NativeLoader1111111111111111111111111111111" as const;
 export const SOLANA_EXECUTABLE_PAYLOAD_SHA256_PREFIX = "sha256:" as const;
+/** Largest accepted `builtinName`, in bytes. */
+export const SOLANA_NATIVE_BUILTIN_NAME_MAX_BYTES = 64 as const;
 
 export type SolanaExecutablePayloadSha256 = `sha256:${string}`;
 
@@ -52,6 +56,15 @@ export type SolanaExecutableLoaderV1 =
       readonly deploymentSlot: string;
       readonly upgradeAuthority: SolanaUpgradeAuthorityV1;
       readonly executablePayloadSha256: SolanaExecutablePayloadSha256;
+    }
+  | {
+      /**
+       * A program built into the validator. `builtinName` is the program
+       * account's data verbatim: 1-64 bytes of printable ASCII.
+       */
+      readonly kind: "native-builtin";
+      readonly loaderProgramId: typeof SOLANA_NATIVE_LOADER_PROGRAM_ID;
+      readonly builtinName: string;
     };
 
 export interface SolanaExecutableIdentityV1 {
@@ -325,6 +338,34 @@ export function createBpfUpgradeableLoaderExecutableIdentityV1(
       executablePayloadSha256,
     },
   });
+}
+
+export function createNativeBuiltinExecutableIdentityV1(
+  genesisHash: string,
+  builtinName: string,
+): SolanaExecutableIdentityV1 {
+  return validateSolanaExecutableIdentityV1({
+    schema: SOLANA_EXECUTABLE_IDENTITY_SCHEMA_V1,
+    genesisHash,
+    loader: {
+      kind: "native-builtin",
+      loaderProgramId: SOLANA_NATIVE_LOADER_PROGRAM_ID,
+      builtinName,
+    },
+  });
+}
+
+/**
+ * Whether `value` is an acceptable native built-in name: 1-64 bytes of
+ * printable ASCII (0x21-0x7e, so no spaces or control characters).
+ */
+export function isValidNativeBuiltinName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= SOLANA_NATIVE_BUILTIN_NAME_MAX_BYTES &&
+    /^[\x21-\x7e]+$/.test(value)
+  );
 }
 
 export function parseSolanaExecutableIdentityV1(
@@ -645,8 +686,30 @@ function validateSolanaExecutableLoaderV1(
       executablePayloadSha256: expectSha256Digest(loader.executablePayloadSha256),
     };
   }
+  if (loader.kind === "native-builtin") {
+    expectKeys(
+      loader,
+      ["kind", "loaderProgramId", "builtinName"],
+      "executableIdentity.loader",
+    );
+    expectExactString(
+      loader.loaderProgramId,
+      SOLANA_NATIVE_LOADER_PROGRAM_ID,
+      "loaderProgramId for 'native-builtin'",
+    );
+    if (!isValidNativeBuiltinName(loader.builtinName)) {
+      return invalidProgramRelease(
+        `builtinName must be 1..${SOLANA_NATIVE_BUILTIN_NAME_MAX_BYTES} bytes of printable ASCII`,
+      );
+    }
+    return {
+      kind: "native-builtin",
+      loaderProgramId: SOLANA_NATIVE_LOADER_PROGRAM_ID,
+      builtinName: loader.builtinName,
+    };
+  }
   return invalidProgramRelease(
-    "executableIdentity.loader.kind must be 'bpf-loader-v2' or 'bpf-upgradeable-loader'",
+    "executableIdentity.loader.kind must be 'bpf-loader-v2', 'bpf-upgradeable-loader' or 'native-builtin'",
   );
 }
 

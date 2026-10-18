@@ -11,6 +11,7 @@ mod identifier;
 mod idl;
 mod kind;
 mod projection;
+pub mod protocol;
 mod tree;
 mod vectors;
 

@@ -262,6 +262,7 @@ export function parseIdlV1(
 ): CanonicalIdlDocumentV1 {
   const projections = projectIdlV1(sourceBytes, explicitProgramId);
   const idl = parseStandardIdl(projections.contentProjection, projections.programId);
+  validateRemainderTypes(idl);
   const normalizedSnapshot = normalizeIdlSnapshotV1(idl);
   const normalized = hashJcs("idl-normalized", normalizedSnapshot);
   const programSpec = createProgramSpecV1(idl, normalizedSnapshot, {
@@ -608,10 +609,16 @@ function codamaType(value: unknown, location: string): JsonValue {
   const item = requiredObject(value, location);
   switch (item.kind) {
     case "numberTypeNode":
+      if (item.endian != null && item.endian !== "le") {
+        return invalidIdl("unsupported Codama number endian (only le is supported)");
+      }
       return requiredString(item.format, `${location}.format`);
     case "publicKeyTypeNode":
       return "publicKey";
     case "stringTypeNode":
+      if (item.encoding != null && item.encoding !== "utf8") {
+        return invalidIdl("unsupported Codama string encoding (only utf8 is supported)");
+      }
       return "string";
     case "definedTypeLinkNode":
       return { defined: requiredString(item.name, `${location}.name`) };
@@ -632,9 +639,21 @@ function codamaType(value: unknown, location: string): JsonValue {
         return invalidIdl(`${location}.size must be a u32`);
       }
       const child = requiredObject(item.type, `${location}.type`);
+      const childType = codamaType(child, `${location}.type`);
       return {
-        array: [child.kind === "stringTypeNode" ? "u8" : codamaType(child, `${location}.type`), size],
+        array: [child.kind === "stringTypeNode" ? "u8" : childType, size],
       };
+    }
+    case "sizePrefixTypeNode": {
+      const child = requiredObject(item.type, `${location}.type`);
+      const prefix = requiredObject(item.prefix, `${location}.prefix`);
+      const prefixType = codamaType(prefix, `${location}.prefix`);
+      if (child.kind !== "stringTypeNode" || prefix.kind !== "numberTypeNode" ||
+          (prefixType !== "u32" && prefixType !== "u64")) {
+        return invalidIdl("unsupported Codama sizePrefixTypeNode");
+      }
+      codamaType(child, `${location}.type`);
+      return prefixType === "u64" ? { string: "utf8", lengthPrefix: "u64" } : "string";
     }
     case "tupleTypeNode":
       return {
@@ -1063,6 +1082,21 @@ function normalizeIdlType(value: unknown, location: string): JsonValue {
       vec.lengthPrefix = prefix;
     }
     return vec;
+  }
+  if (Object.hasOwn(item, "string")) {
+    // `{"string": "utf8", "lengthPrefix": "u64"}`: Rust's `IdlTypeString`. Same
+    // prefix rules as `vec`; `utf8` is the only encoding Rust accepts.
+    const encoding = requiredString(item.string, `${location}.string`);
+    if (encoding !== "utf8") return invalidIdl(`${location}.string must be "utf8"`);
+    const text: JsonValue = { string: encoding };
+    if (item.lengthPrefix !== undefined && item.lengthPrefix !== null) {
+      const prefix = requiredString(item.lengthPrefix, `${location}.lengthPrefix`);
+      if (prefix !== "u32" && prefix !== "u64") {
+        return invalidIdl(`${location}.lengthPrefix must be "u32" or "u64"`);
+      }
+      text.lengthPrefix = prefix;
+    }
+    return text;
   }
   if (Object.hasOwn(item, "tuple")) {
     return {
@@ -1514,6 +1548,7 @@ function instructionDiscriminator(instruction: ParsedInstruction): number[] {
     }
     return bytes;
   }
+  if (instruction.docs.some((doc) => doc.trim() === "arete.instruction_untagged=true")) return [];
   return discriminator([], `global:${toSnakeCase(instruction.name)}`);
 }
 
@@ -1541,6 +1576,7 @@ function idlTypeToRustString(type: JsonValue): string {
     const inner = idlTypeToRustString(type.vec);
     return type.lengthPrefix === "u64" ? `VecU64Len<${inner}>` : `Vec<${inner}>`;
   }
+  if (type.string !== undefined) return type.lengthPrefix === "u64" ? "StringU64Len" : "String";
   if (Array.isArray(type.tuple)) {
     return `(${type.tuple.map((element) => idlTypeToRustString(element)).join(", ")})`;
   }
@@ -1675,4 +1711,34 @@ function byteArray(value: unknown, location: string, required = false): number[]
 
 function invalidIdl(message: string): never {
   return hashError("invalid-idl", `failed to parse IDL: ${message}`);
+}
+
+// Remainders consume the remaining instruction data, so they cannot be nested
+// or appear in account, event or defined-type layouts.
+function validateRemainderTypes(idl: ParsedIdl): void {
+  const bare = (type: JsonValue) => type === "rest_bytes" || type === "rest_utf8";
+  const uses = (type: JsonValue): boolean => {
+    if (typeof type === "string") return bare(type);
+    if (Array.isArray(type)) return type.some(uses);
+    if (!isObject(type) || "defined" in type || "string" in type) return false;
+    return Object.values(type).some(uses);
+  };
+  const fieldType = (field: ParsedField | JsonValue): JsonValue =>
+    isObjectLike(field) && "name" in field && "type" in field ? field.type as JsonValue : field as JsonValue;
+  const layoutUses = (layout: ParsedTypeDefKind): boolean =>
+    "variants" in layout
+      ? layout.variants.some((variant) => variant.fields.some((field) => uses(fieldType(field))))
+      : layout.fields.some((field) => uses(fieldType(field)));
+  for (const instruction of idl.instructions) {
+    instruction.args.forEach((arg, index) => {
+      if (uses(arg.type) && !(bare(arg.type) && index === instruction.args.length - 1)) {
+        invalidIdl("remainder types are allowed only as an instruction's last bare argument");
+      }
+    });
+  }
+  if (idl.types.some((type) => layoutUses(type.typeDef)) ||
+      idl.accounts.some((account) => account.typeDef !== undefined && layoutUses(account.typeDef)) ||
+      idl.events.some((event) => event.fields.some((field) => uses(field.type)))) {
+    invalidIdl("remainder types are not allowed in account, event or defined-type layouts");
+  }
 }

@@ -812,8 +812,10 @@ pub(crate) fn resolve_composition(
             }
             ComposedLiveSource::Path(path) => Pending::File {
                 source: format!("path:{}", normalized(path)),
-                artifact: load_live_file(&paths, path)
-                    .with_context(|| format!("composed stack '{name}' live '{alias}'"))?,
+                artifact: Box::new(
+                    load_live_file(&paths, path)
+                        .with_context(|| format!("composed stack '{name}' live '{alias}'"))?,
+                ),
             },
         };
         lives.push((alias.clone(), live.views.clone(), source));
@@ -885,7 +887,10 @@ pub(crate) fn resolve_composition(
                     live_alias,
                     resolved: responses.next().expect("one response per request"),
                 },
-                Pending::File { source, artifact } => LivePartSource::File { source, artifact },
+                Pending::File { source, artifact } => LivePartSource::File {
+                    source,
+                    artifact: *artifact,
+                },
             },
         })
         .collect();
@@ -922,7 +927,7 @@ enum Pending {
     },
     File {
         source: String,
-        artifact: LiveSpecArtifactV2,
+        artifact: Box<LiveSpecArtifactV2>,
     },
 }
 

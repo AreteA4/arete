@@ -957,6 +957,14 @@ fn analyze_idl_type_with_resolution(
                 resolved_type,
             )
         }
+        IdlType::String(_) => (
+            "string".to_string(),
+            BaseType::String,
+            None,
+            false,
+            false,
+            None,
+        ),
         IdlType::Vec(vec) => {
             let (inner_type, base_type, integer_kind, is_optional, _, resolved_type) =
                 analyze_idl_type_with_resolution(&vec.vec, idl);

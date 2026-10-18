@@ -11,7 +11,7 @@ fn fixture_path(name: &str) -> PathBuf {
 
 #[test]
 fn test_parse_ore_legacy() {
-    let idl = parse_idl_file(&fixture_path("ore.json")).expect("should parse ore.json");
+    let idl = parse_idl_file(fixture_path("ore.json")).expect("should parse ore.json");
     assert_eq!(
         idl.instructions.len(),
         19,
@@ -79,7 +79,7 @@ fn test_ore_instructions_have_discriminators() {
 
 #[test]
 fn test_parse_entropy_legacy() {
-    let idl = parse_idl_file(&fixture_path("entropy.json")).expect("should parse entropy.json");
+    let idl = parse_idl_file(fixture_path("entropy.json")).expect("should parse entropy.json");
     assert_eq!(
         idl.instructions.len(),
         5,
@@ -89,14 +89,14 @@ fn test_parse_entropy_legacy() {
 
 #[test]
 fn test_parse_pump_modern() {
-    let idl = parse_idl_file(&fixture_path("pump.json")).expect("should parse pump.json");
+    let idl = parse_idl_file(fixture_path("pump.json")).expect("should parse pump.json");
     assert_eq!(idl.instructions.len(), 6, "pump should have 6 instructions");
 }
 
 #[test]
 fn test_parse_meteora_dlmm_modern() {
     let idl =
-        parse_idl_file(&fixture_path("meteora_dlmm.json")).expect("should parse meteora_dlmm.json");
+        parse_idl_file(fixture_path("meteora_dlmm.json")).expect("should parse meteora_dlmm.json");
     assert_eq!(
         idl.instructions.len(),
         74,
@@ -115,7 +115,7 @@ fn test_parse_mpl_core_tuple_types() {
     // inline `{"tuple": [..]}` type nodes inside `vec` and `option<vec>`.
     // These previously failed deserialization with "data did not match any
     // variant of untagged enum IdlTypeDefKind".
-    let idl = parse_idl_file(&fixture_path("mpl_core_tuple.json"))
+    let idl = parse_idl_file(fixture_path("mpl_core_tuple.json"))
         .expect("should parse mpl_core_tuple.json");
 
     assert_eq!(idl.instructions.len(), 1);
@@ -175,7 +175,7 @@ fn test_parse_mpl_core_tuple_types() {
 fn test_mpl_core_tuple_snapshot_roundtrip() {
     use arete_idl::snapshot::{normalize_idl_snapshot, IdlTypeSnapshot};
 
-    let idl = parse_idl_file(&fixture_path("mpl_core_tuple.json"))
+    let idl = parse_idl_file(fixture_path("mpl_core_tuple.json"))
         .expect("should parse mpl_core_tuple.json");
     let snapshot = normalize_idl_snapshot(&idl);
 

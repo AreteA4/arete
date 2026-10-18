@@ -22,7 +22,10 @@ pub const SOLANA_EXECUTABLE_IDENTITY_SCHEMA_V1: &str = "arete.solana-executable-
 pub const SOLANA_BPF_LOADER_V2_PROGRAM_ID: &str = "BPFLoader2111111111111111111111111111111111";
 pub const SOLANA_BPF_UPGRADEABLE_LOADER_PROGRAM_ID: &str =
     "BPFLoaderUpgradeab1e11111111111111111111111";
+pub const SOLANA_NATIVE_LOADER_PROGRAM_ID: &str = "NativeLoader1111111111111111111111111111111";
 pub const SOLANA_EXECUTABLE_PAYLOAD_SHA256_PREFIX: &str = "sha256:";
+/// Largest accepted `builtinName`, in bytes.
+pub const SOLANA_NATIVE_BUILTIN_NAME_MAX_BYTES: usize = 64;
 
 /// Remove the declared top-level self-hash field and no other field.
 ///
@@ -234,6 +237,7 @@ pub struct SolanaExecutableIdentityV1 {
 pub enum SolanaExecutableLoaderV1 {
     BpfLoaderV2(SolanaBpfLoaderV2IdentityV1),
     BpfUpgradeableLoader(SolanaBpfUpgradeableLoaderIdentityV1),
+    NativeBuiltin(SolanaNativeBuiltinIdentityV1),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +255,21 @@ pub struct SolanaBpfUpgradeableLoaderIdentityV1 {
     pub deployment_slot: String,
     pub upgrade_authority: SolanaUpgradeAuthorityV1,
     pub executable_payload_sha256: String,
+}
+
+/// A program built into the validator and owned by the native loader.
+///
+/// Such a program has no executable bytes, no ProgramData account and no
+/// upgrade authority. The only on-chain fact it exposes is its account data,
+/// the name of the built-in the validator dispatches to, which is recorded
+/// verbatim in `builtin_name`. The identity attests that the address is still
+/// that named built-in on the cluster selected by `genesisHash`; it does not
+/// attest the validator version or feature set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SolanaNativeBuiltinIdentityV1 {
+    pub loader_program_id: String,
+    pub builtin_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,6 +335,17 @@ impl SolanaExecutableLoaderV1 {
         validate_solana_executable_loader_v1(&loader)?;
         Ok(loader)
     }
+
+    /// Build a native built-in loader identity from the program account's
+    /// data, which must be the built-in's printable ASCII name.
+    pub fn native_builtin(builtin_name: impl Into<String>) -> Result<Self, HashError> {
+        let loader = Self::NativeBuiltin(SolanaNativeBuiltinIdentityV1 {
+            loader_program_id: SOLANA_NATIVE_LOADER_PROGRAM_ID.to_string(),
+            builtin_name: builtin_name.into(),
+        });
+        validate_solana_executable_loader_v1(&loader)?;
+        Ok(loader)
+    }
 }
 
 impl SolanaUpgradeAuthorityV1 {
@@ -375,7 +405,33 @@ fn validate_solana_executable_loader_v1(
             }
             validate_sha256_digest(&loader.executable_payload_sha256, "executablePayloadSha256")
         }
+        SolanaExecutableLoaderV1::NativeBuiltin(loader) => {
+            validate_loader_program_id(
+                &loader.loader_program_id,
+                SOLANA_NATIVE_LOADER_PROGRAM_ID,
+                "native-builtin",
+            )?;
+            validate_native_builtin_name(&loader.builtin_name)
+        }
     }
+}
+
+/// Whether `bytes` is an acceptable native built-in name: 1 to
+/// [`SOLANA_NATIVE_BUILTIN_NAME_MAX_BYTES`] bytes of printable ASCII
+/// (`0x21..=0x7e`, so no spaces or control characters).
+pub fn is_valid_native_builtin_name(bytes: &[u8]) -> bool {
+    !bytes.is_empty()
+        && bytes.len() <= SOLANA_NATIVE_BUILTIN_NAME_MAX_BYTES
+        && bytes.iter().all(u8::is_ascii_graphic)
+}
+
+fn validate_native_builtin_name(value: &str) -> Result<(), HashError> {
+    if !is_valid_native_builtin_name(value.as_bytes()) {
+        return Err(release_projection_error(format!(
+            "builtinName must be 1..{SOLANA_NATIVE_BUILTIN_NAME_MAX_BYTES} bytes of printable ASCII"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

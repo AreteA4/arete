@@ -2503,7 +2503,7 @@ fn collect_required_defined_types(
     output: &mut BTreeSet<String>,
 ) {
     match idl_type {
-        IdlTypeSnapshot::Simple(_) => {}
+        IdlTypeSnapshot::Simple(_) | IdlTypeSnapshot::String(_) => {}
         IdlTypeSnapshot::Array(array_type) => {
             for element in &array_type.array {
                 if let IdlArrayElementSnapshot::Type(inner) = element {
@@ -2855,6 +2855,7 @@ fn idl_snapshot_type_to_typescript(
     local_name_map: &BTreeMap<String, String>,
 ) -> String {
     match idl_type {
+        IdlTypeSnapshot::String(_) => "string".to_string(),
         IdlTypeSnapshot::Simple(type_name) => match type_name.as_str() {
             "u64" | "u128" | "i64" | "i128" => "bigint".to_string(),
             "u8" | "u16" | "u32" | "i8" | "i16" | "i32" | "f32" | "f64" => "number".to_string(),
@@ -2942,6 +2943,7 @@ fn idl_snapshot_type_to_zod(
     local_name_map: &BTreeMap<String, String>,
 ) -> String {
     match idl_type {
+        IdlTypeSnapshot::String(_) => "z.string()".to_string(),
         IdlTypeSnapshot::Simple(type_name) => match type_name.as_str() {
             "u64" | "u128" | "i64" | "i128" => bigint_zod(),
             "u8" | "u16" | "u32" | "i8" | "i16" | "i32" | "f32" | "f64" => "z.number()".to_string(),

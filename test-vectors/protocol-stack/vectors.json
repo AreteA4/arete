@@ -1,0 +1,1074 @@
+{
+  "schema": "arete.protocol-stack-vectors/v1",
+  "generator": {
+    "name": "@usearete/protocol",
+    "version": "0.1.0"
+  },
+  "cases": [
+    {
+      "name": "token-raise.interim",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "options": {
+        "programs": {
+          "meteoraPresale": {
+            "registry": "meteora-presale",
+            "version": "=1.1.0"
+          }
+        }
+      },
+      "output": "token-raise.interim.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:bbb6c6f95da0545a21d4f9054ed545185fcbdbf686562e500ed45dbca9efc860"
+    },
+    {
+      "name": "token-raise.interim-unpinned",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "options": {},
+      "output": "token-raise.interim-unpinned.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:8e7dc5d2291eb28021398adb6366c8ca32bbd34ceb02a60f94910b30b4dc9884"
+    },
+    {
+      "name": "token-raise.full",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "options": {
+        "profile": "full",
+        "attestation": "Attest1111111111111111111111111111111111111",
+        "deploymentShortId": "raise1",
+        "programs": {
+          "meteoraPresale": {
+            "idl": "./idl/meteora-presale.idl.json"
+          }
+        }
+      },
+      "output": "token-raise.full.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:7d1dc47bd638bbdd235883b04809a1997d00a847d39529321949e7ecd8f091cd"
+    },
+    {
+      "name": "token-raise.full-any-deployment",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "options": {
+        "profile": "full",
+        "attestation": "Attest1111111111111111111111111111111111111",
+        "programs": {
+          "meteoraPresale": {
+            "registry": "meteora-presale",
+            "version": "^1.1"
+          }
+        },
+        "memoProgram": {
+          "registry": "spl-memo",
+          "version": "=3.0.0"
+        }
+      },
+      "output": "token-raise.full-any-deployment.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:564241aa630115fe4b54d5b7b9980e20ebc8b646c686087766abf8a73d3e4e6b"
+    },
+    {
+      "name": "token-raise.full-shared",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "instanceVisibility": "shared"
+      },
+      "options": {
+        "profile": "full",
+        "attestation": "Attest1111111111111111111111111111111111111",
+        "deploymentShortId": "raise1",
+        "programs": {
+          "meteoraPresale": {
+            "idl": "./idl/meteora-presale.idl.json"
+          }
+        }
+      },
+      "output": "token-raise.full-shared.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:ca83f2f44e7931931a6a09bf8b3f9b6df3bfa16740b91d2edd94f5942f515464"
+    },
+    {
+      "name": "token-raise-steps.interim",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "stack": {
+          "instanceAccounts": {
+            "presale": {
+              "program": "meteoraPresale",
+              "account": "Presale"
+            }
+          },
+          "instanceFields": {
+            "totalDeposit": {
+              "account": "presale",
+              "field": "total_deposit"
+            }
+          },
+          "activity": [
+            {
+              "step": "contribute",
+              "program": "meteoraPresale",
+              "instruction": "deposit",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "max_amount"
+            },
+            {
+              "step": "refund",
+              "program": "meteoraPresale",
+              "instruction": "withdraw",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "amount"
+            },
+            {
+              "step": "claim",
+              "program": "meteoraPresale",
+              "instruction": "claim",
+              "instanceAccount": "presale",
+              "walletAccount": "owner"
+            },
+            {
+              "step": "refund",
+              "program": "meteoraPresale",
+              "instruction": "withdrawRemaining",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "amount"
+            }
+          ]
+        }
+      },
+      "options": {
+        "programs": {
+          "meteoraPresale": {
+            "registry": "meteora-presale",
+            "version": "=1.1.0"
+          }
+        }
+      },
+      "output": "token-raise-steps.interim.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:9a116bfea57bf7763ff7788edc27a241a65327ff1be839d319f4759156a0e3f0"
+    },
+    {
+      "name": "token-raise-steps.full",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "stack": {
+          "instanceAccounts": {
+            "presale": {
+              "program": "meteoraPresale",
+              "account": "Presale"
+            }
+          },
+          "instanceFields": {
+            "totalDeposit": {
+              "account": "presale",
+              "field": "total_deposit"
+            }
+          },
+          "activity": [
+            {
+              "step": "contribute",
+              "program": "meteoraPresale",
+              "instruction": "deposit",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "max_amount"
+            },
+            {
+              "step": "refund",
+              "program": "meteoraPresale",
+              "instruction": "withdraw",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "amount"
+            },
+            {
+              "step": "claim",
+              "program": "meteoraPresale",
+              "instruction": "claim",
+              "instanceAccount": "presale",
+              "walletAccount": "owner"
+            },
+            {
+              "step": "refund",
+              "program": "meteoraPresale",
+              "instruction": "withdrawRemaining",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "amount"
+            }
+          ]
+        }
+      },
+      "options": {
+        "profile": "full",
+        "attestation": "Attest1111111111111111111111111111111111111",
+        "deploymentShortId": "raise1",
+        "programs": {
+          "meteoraPresale": {
+            "idl": "./idl/meteora-presale.idl.json"
+          }
+        }
+      },
+      "output": "token-raise-steps.full.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:7802effdf523ab0f06db4f339ec6e2232be046bd3eafbdaa3a2ded9d575239e0"
+    },
+    {
+      "name": "shared-transfer.interim",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "programs": {
+          "meteoraPresale": {
+            "kind": "programSpec",
+            "programId": "presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj",
+            "programSpecHash": "arete:h1:program-spec:sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+          },
+          "splToken": {
+            "kind": "builtin",
+            "builtin": "splToken"
+          },
+          "squadsV4": {
+            "kind": "programSpec",
+            "programId": "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
+            "programSpecHash": "arete:h1:program-spec:sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+          },
+          "system": {
+            "kind": "builtin",
+            "builtin": "system"
+          },
+          "tipJar": {
+            "kind": "programSpec",
+            "programId": "TipJar1111111111111111111111111111111111111",
+            "programSpecHash": "arete:h1:program-spec:sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+          }
+        },
+        "stack": {
+          "instanceAccounts": {
+            "presale": {
+              "program": "meteoraPresale",
+              "account": "Presale"
+            }
+          },
+          "instanceFields": {
+            "totalDeposit": {
+              "account": "presale",
+              "field": "total_deposit"
+            }
+          },
+          "activity": [
+            {
+              "step": "contribute",
+              "program": "tipJar",
+              "instruction": "transfer",
+              "instanceAccount": "to",
+              "walletAccount": "from",
+              "amountArg": "lamports"
+            },
+            {
+              "step": "refund",
+              "program": "tipJar",
+              "instruction": "transfer",
+              "instanceAccount": "to",
+              "walletAccount": "from",
+              "amountArg": "lamports"
+            },
+            {
+              "step": "claim",
+              "program": "meteoraPresale",
+              "instruction": "claim",
+              "instanceAccount": "to",
+              "walletAccount": "from"
+            }
+          ]
+        }
+      },
+      "options": {
+        "programs": {
+          "meteoraPresale": {
+            "registry": "meteora-presale",
+            "version": "=1.1.0"
+          },
+          "tipJar": {
+            "registry": "tip-jar",
+            "version": "=1.0.0"
+          }
+        }
+      },
+      "output": "shared-transfer.interim.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:f34b5f51380f81d6d74652768b78d92096ef4aa2785b8087ca715a3718301aa1"
+    },
+    {
+      "name": "shared-transfer.full",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "programs": {
+          "meteoraPresale": {
+            "kind": "programSpec",
+            "programId": "presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj",
+            "programSpecHash": "arete:h1:program-spec:sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+          },
+          "splToken": {
+            "kind": "builtin",
+            "builtin": "splToken"
+          },
+          "squadsV4": {
+            "kind": "programSpec",
+            "programId": "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
+            "programSpecHash": "arete:h1:program-spec:sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+          },
+          "system": {
+            "kind": "builtin",
+            "builtin": "system"
+          },
+          "tipJar": {
+            "kind": "programSpec",
+            "programId": "TipJar1111111111111111111111111111111111111",
+            "programSpecHash": "arete:h1:program-spec:sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+          }
+        },
+        "stack": {
+          "instanceAccounts": {
+            "presale": {
+              "program": "meteoraPresale",
+              "account": "Presale"
+            }
+          },
+          "instanceFields": {
+            "totalDeposit": {
+              "account": "presale",
+              "field": "total_deposit"
+            }
+          },
+          "activity": [
+            {
+              "step": "contribute",
+              "program": "tipJar",
+              "instruction": "transfer",
+              "instanceAccount": "to",
+              "walletAccount": "from",
+              "amountArg": "lamports"
+            },
+            {
+              "step": "refund",
+              "program": "tipJar",
+              "instruction": "transfer",
+              "instanceAccount": "to",
+              "walletAccount": "from",
+              "amountArg": "lamports"
+            },
+            {
+              "step": "claim",
+              "program": "meteoraPresale",
+              "instruction": "claim",
+              "instanceAccount": "to",
+              "walletAccount": "from"
+            }
+          ]
+        }
+      },
+      "options": {
+        "profile": "full",
+        "attestation": "Attest1111111111111111111111111111111111111",
+        "deploymentShortId": "raise1",
+        "programs": {
+          "meteoraPresale": {
+            "idl": "./idl/meteora-presale.idl.json"
+          },
+          "tipJar": {
+            "idl": "./idl/tip-jar.json"
+          }
+        }
+      },
+      "output": "shared-transfer.full.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:fa4d3c269957c25e223e851ebbe347fba92c88e914736b77cc84ce8dcd3e9a9a"
+    },
+    {
+      "name": "error.shared-instruction-mismatch",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "programs": {
+          "meteoraPresale": {
+            "kind": "programSpec",
+            "programId": "presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj",
+            "programSpecHash": "arete:h1:program-spec:sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+          },
+          "splToken": {
+            "kind": "builtin",
+            "builtin": "splToken"
+          },
+          "squadsV4": {
+            "kind": "programSpec",
+            "programId": "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
+            "programSpecHash": "arete:h1:program-spec:sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+          },
+          "system": {
+            "kind": "builtin",
+            "builtin": "system"
+          },
+          "tipJar": {
+            "kind": "programSpec",
+            "programId": "TipJar1111111111111111111111111111111111111",
+            "programSpecHash": "arete:h1:program-spec:sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+          }
+        },
+        "stack": {
+          "instanceAccounts": {
+            "presale": {
+              "program": "meteoraPresale",
+              "account": "Presale"
+            }
+          },
+          "instanceFields": {
+            "totalDeposit": {
+              "account": "presale",
+              "field": "total_deposit"
+            }
+          },
+          "activity": [
+            {
+              "step": "contribute",
+              "program": "tipJar",
+              "instruction": "transfer",
+              "instanceAccount": "to",
+              "walletAccount": "from",
+              "amountArg": "lamports"
+            },
+            {
+              "step": "refund",
+              "program": "tipJar",
+              "instruction": "transfer",
+              "instanceAccount": "to",
+              "walletAccount": "from"
+            },
+            {
+              "step": "claim",
+              "program": "meteoraPresale",
+              "instruction": "claim",
+              "instanceAccount": "to",
+              "walletAccount": "from"
+            }
+          ]
+        }
+      },
+      "options": {},
+      "error": "stack.activity: steps 'contribute' and 'refund' both list tipJar.instructions.transfer, so they must name the same instanceAccount, walletAccount and amountArg"
+    },
+    {
+      "name": "escrow-resolution.interim",
+      "spec": "../protocol/escrow-resolution.protocol-spec.json",
+      "options": {},
+      "error": "the protocol stack needs stack.instanceAccounts or stack.activity; declare what the stack should track"
+    },
+    {
+      "name": "escrow-resolution.full",
+      "spec": "../protocol/escrow-resolution.protocol-spec.json",
+      "options": {
+        "profile": "full",
+        "attestation": "Attest1111111111111111111111111111111111111",
+        "deploymentShortId": "escrow1"
+      },
+      "error": "the protocol stack needs stack.instanceAccounts or stack.activity; declare what the stack should track"
+    },
+    {
+      "name": "escrow-activity.interim",
+      "spec": "../protocol/escrow-resolution.protocol-spec.json",
+      "specOverrides": {
+        "stack": {
+          "instanceAccounts": {},
+          "instanceFields": {},
+          "activity": [
+            {
+              "step": "open",
+              "program": "escrowVault",
+              "instruction": "deposit",
+              "instanceAccount": "vault",
+              "walletAccount": "depositor",
+              "amountArg": "amount"
+            },
+            {
+              "step": "release",
+              "program": "escrowVault",
+              "instruction": "settle",
+              "instanceAccount": "vault",
+              "walletAccount": "authority"
+            },
+            {
+              "step": "release",
+              "program": "escrowVault",
+              "instruction": "release",
+              "instanceAccount": "vault",
+              "walletAccount": "authority"
+            },
+            {
+              "step": "refund",
+              "program": "escrowVault",
+              "instruction": "refund",
+              "instanceAccount": "vault",
+              "walletAccount": "authority"
+            }
+          ]
+        }
+      },
+      "options": {},
+      "error": "ProtocolParticipant needs every stack.activity entry to name the same walletAccount; found authority, depositor"
+    },
+    {
+      "name": "escrow-activity.full",
+      "spec": "../protocol/escrow-resolution.protocol-spec.json",
+      "specOverrides": {
+        "stack": {
+          "instanceAccounts": {},
+          "instanceFields": {},
+          "activity": [
+            {
+              "step": "open",
+              "program": "escrowVault",
+              "instruction": "deposit",
+              "instanceAccount": "vault",
+              "walletAccount": "depositor",
+              "amountArg": "amount"
+            },
+            {
+              "step": "release",
+              "program": "escrowVault",
+              "instruction": "settle",
+              "instanceAccount": "vault",
+              "walletAccount": "authority"
+            },
+            {
+              "step": "release",
+              "program": "escrowVault",
+              "instruction": "release",
+              "instanceAccount": "vault",
+              "walletAccount": "authority"
+            },
+            {
+              "step": "refund",
+              "program": "escrowVault",
+              "instruction": "refund",
+              "instanceAccount": "vault",
+              "walletAccount": "authority"
+            }
+          ]
+        }
+      },
+      "options": {
+        "profile": "full",
+        "attestation": "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
+        "deploymentShortId": "escrow-1_A",
+        "programs": {
+          "escrowVault": {
+            "idl": "./idl/escrow-vault.json"
+          }
+        }
+      },
+      "output": "escrow-activity.full.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:2e3c6f234da8432adfdf53709519fd6ca5532d2b10fe5890df530dad19035da5"
+    },
+    {
+      "name": "escrow-accounts.interim",
+      "spec": "../protocol/escrow-resolution.protocol-spec.json",
+      "specOverrides": {
+        "stack": {
+          "instanceAccounts": {
+            "vault": {
+              "program": "escrowVault",
+              "account": "Vault"
+            },
+            "depositor": {
+              "program": "escrowVault",
+              "account": "DepositorRecord"
+            }
+          },
+          "instanceFields": {
+            "amount": {
+              "account": "vault",
+              "field": "amount"
+            },
+            "owner": {
+              "account": "depositor",
+              "field": "owner"
+            },
+            "openedAt": {
+              "account": "depositor",
+              "field": "timing.opened_at"
+            }
+          },
+          "activity": [
+            {
+              "step": "open",
+              "program": "escrowVault",
+              "instruction": "deposit",
+              "instanceAccount": "depositor",
+              "walletAccount": "authority",
+              "amountArg": "amount"
+            },
+            {
+              "step": "refund",
+              "program": "escrowVault",
+              "instruction": "refund",
+              "instanceAccount": "depositor",
+              "walletAccount": "authority"
+            }
+          ]
+        }
+      },
+      "options": {
+        "programs": {
+          "escrowVault": {
+            "idl": "./idl/escrow-vault.json"
+          }
+        }
+      },
+      "output": "escrow-accounts.interim.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:ba3da542687f600a4518f7aefadbf9d3532c41a4f15755f28f2cfdfb734debd4"
+    },
+    {
+      "name": "escrow-accounts.full",
+      "spec": "../protocol/escrow-resolution.protocol-spec.json",
+      "specOverrides": {
+        "stack": {
+          "instanceAccounts": {
+            "vault": {
+              "program": "escrowVault",
+              "account": "Vault"
+            },
+            "depositor": {
+              "program": "escrowVault",
+              "account": "DepositorRecord"
+            }
+          },
+          "instanceFields": {
+            "amount": {
+              "account": "vault",
+              "field": "amount"
+            },
+            "owner": {
+              "account": "depositor",
+              "field": "owner"
+            },
+            "openedAt": {
+              "account": "depositor",
+              "field": "timing.opened_at"
+            }
+          },
+          "activity": [
+            {
+              "step": "open",
+              "program": "escrowVault",
+              "instruction": "deposit",
+              "instanceAccount": "depositor",
+              "walletAccount": "authority",
+              "amountArg": "amount"
+            },
+            {
+              "step": "refund",
+              "program": "escrowVault",
+              "instruction": "refund",
+              "instanceAccount": "depositor",
+              "walletAccount": "authority"
+            }
+          ]
+        }
+      },
+      "options": {
+        "profile": "full",
+        "attestation": "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
+        "deploymentShortId": "escrow-1_A",
+        "programs": {
+          "escrowVault": {
+            "idl": "./idl/escrow-vault.json"
+          }
+        }
+      },
+      "output": "escrow-accounts.full.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:d61830b2a0b59024987f7e7340325e706a409d10dc0c46dfc23c7fcad2803906"
+    },
+    {
+      "name": "token-raise-name-64-bytes.interim",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "name": "tokenRaiseXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+      },
+      "options": {},
+      "output": "token-raise-name-64-bytes.interim.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:64e4122f74866528b120b21d89c7d812add231ac3b037338e14165b7ff12bd52"
+    },
+    {
+      "name": "token-raise-name-65-bytes.interim",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "name": "tokenRaiseYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY"
+      },
+      "options": {},
+      "output": "token-raise-name-65-bytes.interim.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:57eef1e488c38c9a05cfbe9791b2129953d346f25f7730815635b01369777a06"
+    },
+    {
+      "name": "escrow-kebab-alias.interim",
+      "spec": "../protocol/escrow-resolution.protocol-spec.json",
+      "specOverrides": {
+        "programs": {
+          "escrowVault": {
+            "kind": "programSpec",
+            "programId": "Vau1t11111111111111111111111111111111111111",
+            "programSpecHash": "arete:h1:program-spec:sha256:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+          },
+          "token_v2Vault9XProgram": {
+            "kind": "programSpec",
+            "programId": "SysvarRent111111111111111111111111111111111",
+            "programSpecHash": "arete:h1:program-spec:sha256:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+          }
+        },
+        "stack": {
+          "instanceAccounts": {},
+          "instanceFields": {},
+          "activity": [
+            {
+              "step": "open",
+              "program": "token_v2Vault9XProgram",
+              "instruction": "deposit",
+              "instanceAccount": "vault",
+              "walletAccount": "depositor"
+            }
+          ]
+        }
+      },
+      "options": {},
+      "output": "escrow-kebab-alias.interim.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:62cf7e32826de11d80ea5e2a337b1a2fd326ac8983de0075976215cdda1a7b21"
+    },
+    {
+      "name": "error.full-missing-attestation",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "options": {
+        "profile": "full",
+        "deploymentShortId": "raise1"
+      },
+      "error": "the full profile needs options.attestation: the deployment revision's attestation public key (base58)"
+    },
+    {
+      "name": "error.full-invalid-attestation",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "options": {
+        "profile": "full",
+        "attestation": "not-a-key",
+        "deploymentShortId": "raise1",
+        "programs": {
+          "meteoraPresale": {
+            "idl": "./idl/meteora-presale.idl.json"
+          }
+        }
+      },
+      "error": "the full profile needs options.attestation: the deployment revision's attestation public key (base58)"
+    },
+    {
+      "name": "error.full-short-attestation",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "options": {
+        "profile": "full",
+        "attestation": "1111111111111111111111111111111",
+        "deploymentShortId": "raise1",
+        "programs": {
+          "meteoraPresale": {
+            "idl": "./idl/meteora-presale.idl.json"
+          }
+        }
+      },
+      "error": "the full profile needs options.attestation: the deployment revision's attestation public key (base58)"
+    },
+    {
+      "name": "error.full-invalid-short-id",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "options": {
+        "profile": "full",
+        "attestation": "Attest1111111111111111111111111111111111111",
+        "deploymentShortId": "x\") || true || (\"",
+        "programs": {
+          "meteoraPresale": {
+            "idl": "./idl/meteora-presale.idl.json"
+          }
+        }
+      },
+      "error": "options.deploymentShortId must be 1-64 characters of [A-Za-z0-9_-]"
+    },
+    {
+      "name": "error.full-empty-short-id",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "options": {
+        "profile": "full",
+        "attestation": "Attest1111111111111111111111111111111111111",
+        "deploymentShortId": "",
+        "programs": {
+          "meteoraPresale": {
+            "idl": "./idl/meteora-presale.idl.json"
+          }
+        }
+      },
+      "error": "options.deploymentShortId must be 1-64 characters of [A-Za-z0-9_-]"
+    },
+    {
+      "name": "error.full-reserved-memo-alias",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "programs": {
+          "areteMemo": {
+            "kind": "programSpec",
+            "programId": "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo",
+            "programSpecHash": "arete:h1:program-spec:sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+          },
+          "meteoraPresale": {
+            "kind": "programSpec",
+            "programId": "presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj",
+            "programSpecHash": "arete:h1:program-spec:sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+          },
+          "squadsV4": {
+            "kind": "programSpec",
+            "programId": "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
+            "programSpecHash": "arete:h1:program-spec:sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+          },
+          "system": {
+            "kind": "builtin",
+            "builtin": "system"
+          },
+          "splToken": {
+            "kind": "builtin",
+            "builtin": "splToken"
+          }
+        },
+        "stack": {
+          "instanceAccounts": {
+            "presale": {
+              "program": "areteMemo",
+              "account": "Presale"
+            }
+          },
+          "instanceFields": {},
+          "activity": [
+            {
+              "step": "contribute",
+              "program": "areteMemo",
+              "instruction": "deposit",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "max_amount"
+            }
+          ]
+        }
+      },
+      "options": {
+        "profile": "full",
+        "attestation": "Attest1111111111111111111111111111111111111",
+        "deploymentShortId": "raise1",
+        "programs": {
+          "meteoraPresale": {
+            "idl": "./idl/meteora-presale.idl.json"
+          }
+        }
+      },
+      "error": "the program alias 'areteMemo' is reserved for the memo program"
+    },
+    {
+      "name": "error.step-mismatch",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "stack": {
+          "instanceAccounts": {
+            "presale": {
+              "program": "meteoraPresale",
+              "account": "Presale"
+            }
+          },
+          "instanceFields": {
+            "totalDeposit": {
+              "account": "presale",
+              "field": "total_deposit"
+            }
+          },
+          "activity": [
+            {
+              "step": "contribute",
+              "program": "meteoraPresale",
+              "instruction": "deposit",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "max_amount"
+            },
+            {
+              "step": "contribute",
+              "program": "meteoraPresale",
+              "instruction": "depositWithCap",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "amount"
+            }
+          ]
+        }
+      },
+      "options": {},
+      "error": "stack.activity for step 'contribute': every instruction of a step must name the same instanceAccount, walletAccount and amountArg"
+    },
+    {
+      "name": "error.duplicate-activity",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "stack": {
+          "instanceAccounts": {
+            "presale": {
+              "program": "meteoraPresale",
+              "account": "Presale"
+            }
+          },
+          "instanceFields": {
+            "totalDeposit": {
+              "account": "presale",
+              "field": "total_deposit"
+            }
+          },
+          "activity": [
+            {
+              "step": "contribute",
+              "program": "meteoraPresale",
+              "instruction": "deposit",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "max_amount"
+            },
+            {
+              "step": "contribute",
+              "program": "meteoraPresale",
+              "instruction": "deposit",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "max_amount"
+            }
+          ]
+        }
+      },
+      "options": {},
+      "error": "stack.activity lists meteoraPresale.instructions.deposit twice for step 'contribute'"
+    },
+    {
+      "name": "error.interim-wallet-accounts-differ",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "stack": {
+          "instanceAccounts": {
+            "presale": {
+              "program": "meteoraPresale",
+              "account": "Presale"
+            }
+          },
+          "instanceFields": {
+            "totalDeposit": {
+              "account": "presale",
+              "field": "total_deposit"
+            }
+          },
+          "activity": [
+            {
+              "step": "contribute",
+              "program": "meteoraPresale",
+              "instruction": "deposit",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "max_amount"
+            },
+            {
+              "step": "refund",
+              "program": "meteoraPresale",
+              "instruction": "withdraw",
+              "instanceAccount": "presale",
+              "walletAccount": "payer"
+            }
+          ]
+        }
+      },
+      "options": {},
+      "error": "ProtocolParticipant needs every stack.activity entry to name the same walletAccount; found owner, payer"
+    },
+    {
+      "name": "error.interim-instance-accounts-differ",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "stack": {
+          "instanceAccounts": {
+            "presale": {
+              "program": "meteoraPresale",
+              "account": "Presale"
+            }
+          },
+          "instanceFields": {
+            "totalDeposit": {
+              "account": "presale",
+              "field": "total_deposit"
+            }
+          },
+          "activity": [
+            {
+              "step": "contribute",
+              "program": "meteoraPresale",
+              "instruction": "deposit",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "max_amount"
+            },
+            {
+              "step": "claim",
+              "program": "meteoraPresale",
+              "instruction": "claim",
+              "instanceAccount": "presaleAccount",
+              "walletAccount": "owner"
+            }
+          ]
+        }
+      },
+      "options": {},
+      "error": "ProtocolParticipant needs every stack.activity entry to name the same instanceAccount; found presale, presaleAccount"
+    },
+    {
+      "name": "error.full-instance-accounts-differ",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "stack": {
+          "instanceAccounts": {
+            "presale": {
+              "program": "meteoraPresale",
+              "account": "Presale"
+            }
+          },
+          "instanceFields": {
+            "totalDeposit": {
+              "account": "presale",
+              "field": "total_deposit"
+            }
+          },
+          "activity": [
+            {
+              "step": "contribute",
+              "program": "meteoraPresale",
+              "instruction": "deposit",
+              "instanceAccount": "presale",
+              "walletAccount": "owner",
+              "amountArg": "max_amount"
+            },
+            {
+              "step": "claim",
+              "program": "meteoraPresale",
+              "instruction": "claim",
+              "instanceAccount": "presaleAccount",
+              "walletAccount": "owner"
+            }
+          ]
+        }
+      },
+      "options": {
+        "profile": "full",
+        "attestation": "Attest1111111111111111111111111111111111111",
+        "deploymentShortId": "raise1",
+        "programs": {
+          "meteoraPresale": {
+            "idl": "./idl/meteora-presale.idl.json"
+          }
+        }
+      },
+      "error": "the full profile routes all activity through one instance account; stack.activity names presaleAccount, presale"
+    }
+  ]
+}

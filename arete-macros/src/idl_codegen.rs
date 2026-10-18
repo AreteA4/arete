@@ -221,6 +221,7 @@ fn contains_u64_len_vec_directly(idl_type: &IdlType) -> bool {
         IdlType::Array(array_type) => array_inner_type(array_type)
             .map(|inner| contains_u64_len_vec_directly(&inner))
             .unwrap_or(false),
+        IdlType::String(string) => string.is_u64_prefixed(),
         IdlType::Simple(_) | IdlType::HashMap(_) | IdlType::Defined(_) | IdlType::Tuple(_) => false,
     }
 }
@@ -428,6 +429,7 @@ fn contains_u64_len_vec(
             visited.remove(name);
             result
         }
+        IdlType::String(string) => string.is_u64_prefixed(),
         IdlType::Simple(_) => false,
     }
 }
@@ -461,6 +463,25 @@ fn borsh_read_expr(
                     __items.push(#inner);
                 }
                 __items
+            }}
+        }
+        IdlType::String(_) => {
+            // Only the `u64`-prefixed string reaches here; a `u32` one takes the derived path.
+            quote! {{
+                let __len = <u64 as borsh::BorshDeserialize>::deserialize_reader(reader)?;
+                let __len = usize::try_from(__len).map_err(|_| borsh::io::Error::new(
+                    borsh::io::ErrorKind::InvalidData,
+                    "string length overflows usize",
+                ))?;
+                // Bound the pre-allocation; a truncated buffer surfaces as a read error.
+                let mut __bytes = Vec::with_capacity(__len.min(1024));
+                for _ in 0..__len {
+                    __bytes.push(<u8 as borsh::BorshDeserialize>::deserialize_reader(reader)?);
+                }
+                String::from_utf8(__bytes).map_err(|_| borsh::io::Error::new(
+                    borsh::io::ErrorKind::InvalidData,
+                    "string is not valid UTF-8",
+                ))?
             }}
         }
         IdlType::Option(option_type) => {
@@ -535,6 +556,10 @@ fn borsh_write_stmt(
                 }
             }
         }
+        IdlType::String(_) => quote! {
+            borsh::BorshSerialize::serialize(&(#value_expr.len() as u64), writer)?;
+            borsh::io::Write::write_all(writer, #value_expr.as_bytes())?;
+        },
         IdlType::Option(option_type) => {
             let inner = borsh_write_stmt(&option_type.option, types, quote! { __inner });
             quote! {
@@ -588,6 +613,7 @@ fn generate_json_value_for_type(
             _ => quote! { (#value_expr).to_json_value() },
         },
         IdlType::Defined(_) => quote! { (#value_expr).to_json_value() },
+        IdlType::String(_) => quote! { arete::runtime::serde_json::json!(#value_expr) },
         IdlType::Option(option_type) => {
             let inner_value =
                 generate_json_value_for_type(&option_type.option, quote! { value }, use_bytemuck);
