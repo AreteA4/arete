@@ -24,7 +24,7 @@ pub fn resolve(project_root: &Path) -> Result<PathBuf> {
 fn resolve_with(project_root: &Path, explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         if path.is_file() {
-            return Ok(path);
+            return Ok(std::path::absolute(path)?);
         }
         bail!("{ARETE_PROTOCOL_BIN_ENV}={} does not exist", path.display());
     }
@@ -33,6 +33,7 @@ fn resolve_with(project_root: &Path, explicit: Option<PathBuf>) -> Result<PathBu
     } else {
         "arete-protocol"
     };
+    let project_root = std::path::absolute(project_root)?;
     for dir in project_root.ancestors() {
         let candidate = dir.join("node_modules").join(".bin").join(name);
         if candidate.is_file() {
@@ -92,6 +93,46 @@ mod tests {
         };
         std::fs::write(bin.join(name), "").unwrap();
         assert_eq!(resolve_with(&project, None).unwrap(), bin.join(name));
+    }
+
+    #[test]
+    fn relative_compiler_paths_survive_a_child_directory_change() {
+        let cwd = std::env::current_dir().unwrap();
+        let root = tempfile::tempdir_in(&cwd).unwrap();
+        let project = root.path().join("my-protocol");
+        let bin = project.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let script = project.join("compiler.js");
+        std::fs::write(&script, "console.log('built');\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let entry = bin.join("arete-protocol");
+            std::fs::write(&entry, "#!/usr/bin/env node\nconsole.log('built');\n").unwrap();
+            std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(windows)]
+        std::fs::write(
+            bin.join("arete-protocol.cmd"),
+            "@echo off\r\nnode \"%~dp0..\\..\\compiler.js\"\r\n",
+        )
+        .unwrap();
+        let relative_project = project.strip_prefix(&cwd).unwrap();
+        let relative_script = script.strip_prefix(&cwd).unwrap();
+        for explicit in [None, Some(relative_script.to_path_buf())] {
+            let executable = resolve_with(relative_project, explicit).unwrap();
+            assert!(executable.is_absolute());
+            let output = command(&executable)
+                .current_dir(relative_project)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "built");
+        }
     }
 
     #[test]

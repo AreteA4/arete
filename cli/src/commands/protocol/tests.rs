@@ -327,12 +327,15 @@ fn template_only_deploy_creates_protocol_release_inputs_and_deployment_then_acti
 #[test]
 fn an_existing_deployment_of_the_release_is_reused() {
     let dir = project(&escrow_spec(), None);
+    let mut development = deployment_json("cloud-dev", "active", ESCROW_RELEASE, "private");
+    development["environmentId"] = json!("denv_test");
     let server = responses(vec![
         (200, json!([protocol_json("escrow-resolution")])),
         (200, upload_json(ESCROW_RELEASE, false, "passed", false)),
         (
             200,
             json!([
+                development,
                 deployment_json(
                     "other-release",
                     "active",
@@ -367,6 +370,21 @@ fn an_existing_deployment_of_the_release_is_reused() {
     let deployment = outcome.deployment.unwrap();
     assert!(!deployment.created);
     assert_eq!(deployment.deployment.id, DEPLOYMENT_ID);
+}
+
+#[test]
+fn environment_bound_deployments_are_never_production_reuse_candidates() {
+    for environment in [json!("denv_test"), json!("")] {
+        let mut value = deployment_json("cloud-dev", "active", ESCROW_RELEASE, "private");
+        value["environmentId"] = environment.clone();
+        let deployment: ProtocolDeployment = serde_json::from_value(value).unwrap();
+        assert_eq!(deployment.environment_id.as_deref(), environment.as_str());
+        assert!(select_reusable_deployment(&[deployment], ESCROW_RELEASE).is_none());
+    }
+    let mut value = deployment_json("production", "disabled", ESCROW_RELEASE, "private");
+    value["environmentId"] = Value::Null;
+    let deployment: ProtocolDeployment = serde_json::from_value(value).unwrap();
+    assert!(select_reusable_deployment(&[deployment], ESCROW_RELEASE).is_some());
 }
 
 #[test]

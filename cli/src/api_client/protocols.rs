@@ -76,6 +76,9 @@ pub struct ProtocolDeployment {
     pub id: String,
     #[serde(default)]
     pub protocol_id: Option<String>,
+    /// Cloud dev environment binding; absent for production deployments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
     pub short_id: String,
     /// `disabled`, `activating` or `active`.
     pub status: String,

@@ -1392,6 +1392,7 @@ fn select_reusable_deployment<'a>(
         .iter()
         .filter(|deployment| {
             deployment.release_hash == release_hash
+                && deployment.environment_id.is_none()
                 && deployment.access_mode == "private"
                 && rank(&deployment.status) < 3
         })

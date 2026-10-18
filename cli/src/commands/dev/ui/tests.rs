@@ -31,6 +31,16 @@ async fn get_json(url: &str) -> (u16, Value) {
 }
 
 #[tokio::test]
+async fn row_feed_startup_is_idempotent() {
+    let (ui, _, _) = serve();
+    let initial = ui.tasks.lock().unwrap().len();
+    for _ in 0..3 {
+        ui.start_stack_rows();
+    }
+    assert_eq!(ui.tasks.lock().unwrap().len(), initial + 1);
+}
+
+#[tokio::test]
 async fn serves_the_protocol_without_keys() {
     let (ui, base, dir) = serve();
     std::fs::create_dir_all(dir.path().join(".arete/dev/wallets")).unwrap();

@@ -963,6 +963,45 @@ jobs:
       - name: Test
         run: npm test
 
+  windows-cli-lifecycle:
+    name: Windows CLI lifecycle
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          $channel = (Select-String -Path rust-toolchain.toml -Pattern '^channel = "([^"]+)"$').Matches.Groups[1].Value
+          if (-not $channel) { throw "Missing pinned Rust toolchain" }
+          rustup toolchain install $channel --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "RUSTUP_TOOLCHAIN=$channel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          shared-key: windows-cli-lifecycle
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Test Windows process checks and shutdown
+        run: cargo test --locked -p a4-cli --bin a4 commands::dev::runtime::tests
+
+      - name: Test session retention when shutdown fails
+        run: cargo test --locked -p a4-cli --bin a4 shutdown_failure_preserves_session
+
+      - name: Test relative protocol compiler paths
+        run: cargo test --locked -p a4-cli --bin a4 commands::protocol_bin::tests
+
   record-verified-tree:
     name: Record verified tree
     needs:
@@ -975,6 +1014,7 @@ jobs:
       - rust-features
       - rust-consumers
       - rust-clippy
+      - windows-cli-lifecycle
       - rust
       - generated-example-sdks
       - ore-react

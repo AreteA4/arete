@@ -36,6 +36,7 @@ pub mod run;
 pub mod wallet;
 
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -129,6 +130,7 @@ pub struct DevUi {
     /// The UI's URL; `None` with `--no-ui` ([`disabled`]).
     pub url: Option<String>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+    stack_rows_started: AtomicBool,
 }
 
 pub struct UiOptions {
@@ -153,6 +155,7 @@ pub fn start(listener: std::net::TcpListener, options: UiOptions) -> Result<DevU
         state,
         url: Some(url),
         tasks: Mutex::new(vec![server]),
+        stack_rows_started: AtomicBool::new(false),
     })
 }
 
@@ -163,6 +166,7 @@ pub fn disabled(options: UiOptions) -> DevUi {
         state: ui_state(0, options),
         url: None,
         tasks: Mutex::new(Vec::new()),
+        stack_rows_started: AtomicBool::new(false),
     }
 }
 
@@ -223,7 +227,7 @@ impl DevUi {
 
     /// Start streaming the protocol stack's rows (after the first deploy).
     pub fn start_stack_rows(&self) {
-        if self.url.is_none() {
+        if self.url.is_none() || self.stack_rows_started.swap(true, Ordering::AcqRel) {
             return;
         }
         self.spawn(feeds::stack_rows(self.state.clone()));

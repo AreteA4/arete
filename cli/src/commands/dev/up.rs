@@ -590,7 +590,6 @@ impl Session<'_> {
                 }
             };
             self.after_deploy(&outcome).await?;
-            self.ui.start_stack_rows();
         } else if config.protocol {
             self.build(&[]).await?;
             // --no-deploy: show the deployment an earlier `a4 dev up` left in
@@ -610,7 +609,6 @@ impl Session<'_> {
                 self.find_stack().await;
                 self.refresh_stack_session(true).await;
                 self.write_session()?;
-                self.ui.start_stack_rows();
             }
         }
 
@@ -1078,21 +1076,21 @@ impl Session<'_> {
 /// `purge` deletes `.arete/dev` (the project forgets its environment, which
 /// keeps running in the cloud; `a4 dev delete` deletes it).
 pub fn down(project_root: &Path, purge: bool) -> Result<Value> {
+    down_with_stop(project_root, purge, |pid| {
+        super::runtime::stop_process(pid, Duration::from_secs(30))
+    })
+}
+
+fn down_with_stop(
+    project_root: &Path,
+    purge: bool,
+    mut stop: impl FnMut(u32) -> Result<()>,
+) -> Result<Value> {
     let project = DevProject::new(project_root);
     let mut stopped = Vec::new();
     if let Some(state) = load_state(&project) {
-        if state.pid != std::process::id() && pid_alive(state.pid) {
-            #[cfg(unix)]
-            // SAFETY: signalling a pid recorded by our own `a4 dev up`.
-            unsafe {
-                libc::kill(state.pid as libc::pid_t, libc::SIGTERM);
-            }
-            let deadline = std::time::Instant::now() + Duration::from_secs(30);
-            while pid_alive(state.pid) && std::time::Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(200));
-            }
-            stopped.push(json!({ "name": "a4 dev up", "pid": state.pid }));
-        }
+        stop(state.pid)?;
+        stopped.push(json!({ "name": "a4 dev up", "pid": state.pid }));
         let _ = std::fs::remove_file(state_path(&project));
     }
     let _ = std::fs::remove_file(project.session_path());
@@ -1188,6 +1186,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(default_env_name(&root), "tip-jar");
+    }
+
+    #[test]
+    fn shutdown_failure_preserves_session_and_state_even_with_purge() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = DevProject::new(dir.path());
+        let state = DevState {
+            schema: STATE_SCHEMA.into(),
+            pid: 12345,
+            started_at: 0,
+            environment: "denv_test".into(),
+            ports: Ports {
+                rpc: 1,
+                ws: 2,
+                ui: 3,
+            },
+        };
+        write_private(&state_path(&project), &serde_json::to_vec(&state).unwrap()).unwrap();
+        write_private(&project.session_path(), b"saved session").unwrap();
+        let result = down_with_stop(dir.path(), true, |_| bail!("shutdown denied"));
+        assert!(result.is_err());
+        assert_eq!(load_state(&project), Some(state));
+        assert_eq!(
+            std::fs::read(project.session_path()).unwrap(),
+            b"saved session"
+        );
     }
 
     #[test]

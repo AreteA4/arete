@@ -411,6 +411,7 @@ mod tests {
         ProtocolDeployment {
             id: id.into(),
             protocol_id: None,
+            environment_id: None,
             short_id: format!("s-{id}"),
             status: status.into(),
             revision: None,
