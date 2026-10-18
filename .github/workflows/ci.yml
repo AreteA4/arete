@@ -929,6 +929,7 @@ jobs:
       - ore-react
       - typescript-core
       - typescript-hash
+      - typescript-protocol
       - typescript-adapters
       - typescript-react
       - python-matrix
