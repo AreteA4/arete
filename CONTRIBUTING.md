@@ -174,6 +174,43 @@ Located in `typescript/core` and `typescript/react`:
 | Test | `npm test` |
 | Lint | `npm run lint` |
 
+#### The `a4 dev` UI
+
+`typescript/dev-ui` is the protocol flow UI `a4 dev up` serves. `cli/build.rs`
+embeds its Vite build (`typescript/dev-ui/dist`, or `A4_DEV_UI_DIST`) into
+`a4`; without one, `a4` serves a placeholder page. Release builds set
+`A4_REQUIRE_DEV_UI=1`, which fails the build when the UI is missing.
+
+| Action | Command |
+|--------|---------|
+| Install | `npm ci` |
+| Test | `npm test` |
+| Build (then rebuild `a4`) | `npm run build` |
+| Develop against a running session | `A4_DEV_UI=http://127.0.0.1:48702 npm run dev`, then `a4 dev up --ui-dev-url http://localhost:5173` and open the UI URL `a4 dev up` prints |
+
+Vite's own URL (`http://localhost:5173`) can read the session through its
+proxy, but running steps, funding and time travel only work from the URL
+`a4 dev up` prints, or from Vite's origin once it is passed as
+`--ui-dev-url`: the dev server refuses writes from any other origin.
+
+#### Registry signing keys
+
+`a4` checks the signatures the registry puts on package releases (see
+`cli/src/registry_signatures.rs`). Trust anchors come from the compiled-in
+`cli/registry-keys.json` or an explicit operator-managed trust file. The
+registry's `GET /api/registry/v1/keys` response and its cache may retire a
+matching pinned key; they cannot add a trusted key or replace its public key.
+
+The refresh helper below fetches a proposed pin file. Verify every new or
+changed key through an independent trusted channel and review the diff before
+committing it. Distribute approved pin changes through a signed CLI release
+or an explicit operator-managed trust file:
+
+| Action | Command |
+|--------|---------|
+| Update the compiled-in keys | `scripts/update-registry-keys.sh` |
+| Check the file (CI runs this) | `scripts/update-registry-keys.sh --check` |
+
 #### Python
 
 Located in `python/arete-sdk`:

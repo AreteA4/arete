@@ -1,0 +1,294 @@
+---
+title: Protocols for Agents
+sidebar:
+  order: 6
+description: Let an agent find what a wallet can do on a protocol, prepare a step, check it, sign it with its own wallet and submit it.
+---
+
+An agent can act on an Arete protocol with the stream MCP server (`a4 mcp`):
+find what its wallet can do, prepare a step, check what the transactions do,
+sign them with the wallet it was given, and submit them. The server never
+holds a key unless you configure a signer for it.
+
+The same reads are in every client: `actions()` in the TypeScript, Rust and
+Python protocol clients, `useWalletActions` in React, and
+`a4 protocol actions` on the command line.
+
+## The flow
+
+```text
+explore_protocols  → which listed protocols can I call? (optional)
+protocol_actions   → what can this wallet do now?
+protocol_prepare   → unsigned transactions + a summary
+  (check the summary, sign with the wallet)
+protocol_submit    → submit the signed transactions, wait for the outcome
+protocol_intent    → read the outcome later, if it had not settled
+protocol_receipt   → check the signed receipt of a landed transaction
+```
+
+Every tool calls Arete with the API key the server resolves
+(`ARETE_API_KEY` or the `a4 auth login` key), never a key passed as an
+argument. The key is only sent to an Arete origin over HTTPS or to a
+loopback runtime, whatever `ARETE_API_URL` says. Add `dev: true` (or
+`project`) to run the same tools against the project's deployment in its
+[cloud dev environment](/cli/local-development/).
+
+### Finding a protocol
+
+`explore_protocols { query?, cursor?, limit? }` searches the callable
+protocol packages listed on Arete, reviewed ones first, then the most
+executed. Each item names its `packageRef` and `deploymentId`, its steps with
+their `scope` and `access`, its attested executions in the last 30 days, and
+`trust`: `reviewed by Arete` (with the review's `reviewHash`) or `unreviewed`,
+meaning nobody at Arete reviewed its code. Check the steps and the prepare
+summary before relying on an unreviewed protocol. `install` is the command
+that installs its client at the exact version. On the command line,
+`a4 protocol search` and `a4 protocol show <slug>` show the same listings.
+
+These are protocols you can execute. The curated protocols of
+`search_knowledge` and `get_protocol` describe on-chain protocols instead.
+
+A publisher asks for a deployment to be listed with
+`a4 protocol request-listing` and follows the request with
+`a4 protocol listing-status` (see the [CLI reference](/cli/commands/#a4-protocol-request-listing)).
+
+### Naming the deployment
+
+Pass `deployment` (an id) or `protocol` (a package reference such as
+`token-raise`). A package reference resolves to the deployment its install
+descriptor names, the one `a4 install protocol` generates a client for. In an
+`a4 dev` project the deployment `a4 dev up` deployed into its environment is
+the default. Instances and
+executions a tool returned are remembered, so `protocol_instance`,
+`protocol_submit` and `protocol_intent` need only their ids afterwards.
+
+## What a wallet can do
+
+```json
+// protocol_actions { "protocol": "token-raise", "wallet": "<pubkey>" }
+{
+  "deploymentId": "…",
+  "wallet": "<pubkey>",
+  "createSteps": [
+    { "step": "launch", "allowed": true, "scope": "create",
+      "args": [{ "name": "goal", "type": "string", "format": "u64", "optional": false }] }
+  ],
+  "instances": [
+    {
+      "instanceId": "…", "state": "raising",
+      "relation": ["participant"], "participantState": "contributed",
+      "steps": [
+        { "step": "contribute", "allowed": true, "scope": "participant",
+          "args": [{ "name": "amount", "type": "string", "format": "u64", "optional": false }],
+          "argsDependent": ["under_cap"] },
+        { "step": "refund", "allowed": false, "reason": "raise_not_failed",
+          "scope": "participant", "args": [] }
+      ]
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+- `createSteps` are the steps that create a new instance, checked for this
+  wallet without an instance.
+- `instances` are the instances the wallet relates to: as a participant
+  (`participant`), a role holder (`role:<name>`) or the creator (`creator`),
+  newest first. Page with `cursor: nextCursor`, or pass `instance` for one.
+- Each step has `allowed`, and `reason` (the guard, access or state
+  rejection code) when it is not. A terminal instance closes every step
+  (`instance_terminal`), and a terminal participant state closes that
+  wallet's participant steps (`participant_terminal`), both with
+  `detail: { state }`. `scope` says what it acts on (`create`, `instance`
+  or `participant`) and `args` lists its typed arguments: each one's
+  `name`, `optional`, and its schema as the spec declares it. Amounts and
+  keys are strings with a `format` (`u64`, `pubkey`, `unixTimestamp`), so
+  pass `"1000000"`, not `1000000`.
+- `argsDependent` names guards only the arguments decide (or that read an
+  instance a create step has not made yet). Prepare evaluates them. Prepare
+  is always the authority: a step listed as allowed can still be rejected.
+
+`protocol_instances` lists a deployment's instances, and `protocol_instance`
+reads one (with `wallet`, its `allowedSteps` for that wallet).
+
+## Prepare, check, sign, submit
+
+`protocol_prepare` takes the `step`, the signer's `wallet` (a public key),
+`instance` for instance and participant steps, and `args`. It returns
+unsigned base64 transactions (with any platform signatures already in
+place), `executionId`, `expiresAt` and a `summary` read from the transactions
+themselves:
+
+| Summary field                                | What it holds                                                                                                                             |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `transactions[].programs`                    | each program invoked, labelled `program` (the step's own), `glue` (token accounts, wrapped SOL) or `runtime` (compute budget, memo, fees) |
+| `transactions[].accountsWritten`             | the accounts each transaction writes, plus any lookup tables it loads from                                                                |
+| `transactions[].signatures`                  | required, present and missing signatures                                                                                                  |
+| `programsInvoked`, `signaturesStillRequired` | the same across every transaction                                                                                                         |
+| `signerBalanceChanges`                       | the wallet's SOL and per-mint token changes from simulating the exact bytes                                                               |
+| `simulationErrors`                           | simulation errors, with the tail of the logs per transaction                                                                              |
+
+Balance changes need an RPC to simulate against: set `ARETE_MCP_RPC_URL` (or
+the signer's `rpcUrl`, below). A running `a4 dev up` serves one. Without an
+RPC the summary says the changes are unavailable; it never reports them as
+zero.
+
+A guard, access or state rejection is a result, not an error:
+
+```json
+{ "state": "rejected", "rejected": "raise_closed", "step": "contribute",
+  "guard": "…", "detail": { … } }
+```
+
+`instance_terminal` and `participant_terminal` are state rejections: the
+instance, or the wallet's participant, has finished (`detail.state` names
+the terminal state). They carry a `hint`; don't retry them, check
+`protocol_actions` again instead.
+
+Sign every transaction with the wallet, keeping the signatures already
+present, and pass them to `protocol_submit` in the same order before
+`expiresAt`. It checks that no required signature is missing, submits, and
+waits up to 60 seconds (`timeoutSeconds`, at most 120; `wait: false` returns
+at once). The result has `state` (`completed`, `chain_failed`, `expired`,
+`rejected`, or a pending state), `settled`, `instanceId` (a create step's new
+instance) and each transaction's signature. If it has not settled, read it
+later with `protocol_intent`. Do not submit it again.
+
+## Receipts
+
+For a transaction that completed an execution on Arete, the API issues a
+signed **execution receipt**: the deployment, revision, release and review
+hashes, the trust tier, the step and instance, the message hash, the intent
+hash, the attestation key and the fees. `protocol_submit`, `protocol_execute`
+and `protocol_intent` carry `receiptUrl` when one is available.
+
+```json
+// protocol_receipt { "signature": "<transaction signature>" }
+{
+  "found": true,
+  "receipt": { "schema": "arete.protocol-execution-receipt/v1", "…": "…" },
+  "signatureCheck": { "valid": true, "keyId": "…" },
+  "onChain": { "checked": true, "valid": true }
+}
+```
+
+`signatureCheck` verifies the receipt offline against Arete's published
+receipt keys. `onChain` fetches the transaction from `ARETE_MCP_RPC_URL` (or
+the signer's `rpcUrl`) and checks it independently: the message hash, the
+attested `arete:p2:` memo for this deployment and step, and the attestation
+key's signature. Without an RPC, `onChain.checked` is `false`.
+
+The TypeScript, Rust and Python SDKs do the same checks with
+`verifyReceipt(receipt, keys)` and `verifyReceiptOnChain(receipt, transaction)`
+(`verify_receipt` and `verify_receipt_on_chain` in Rust and Python), and the
+protocol clients fetch receipts with `getReceipt(signature)`.
+
+## The optional signer
+
+To let the server sign, give it a keypair and a policy. Without one,
+`protocol_execute` is not listed and the server never signs. Put a
+`[signer]` table in `~/.arete/mcp.toml`, or in the TOML file
+`ARETE_MCP_SIGNER_CONFIG` names:
+
+```toml
+[signer]
+keypair = "~/.config/solana/agent.json"   # a Solana CLI keypair file
+rpcUrl = "https://<your-rpc>"             # simulates balance changes
+
+[signer.policy]
+deployments = ["<deployment id>"]         # required: where it may sign
+maxSolPerTransaction = 0.05               # required: SOL out of the signer per transaction
+programs = ["<program id>"]               # optional: programs a transaction may invoke
+clusters = ["devnet", "localnet"]         # optional; mainnet only when listed
+
+[signer.policy.maxTokenAmounts]           # base units out per mint; without
+"<mint>" = "5000000"                      # it no token may leave
+```
+
+`protocol_execute` takes the same arguments as `protocol_prepare` except
+`wallet` (the signer's wallet is used). It prepares the step, checks the
+policy, then signs, submits and waits. The policy checks are:
+
+- `deployments`: the deployment must be listed.
+- `clusters`: a deployment on Arete settles on mainnet; a deployment in a
+  dev environment (`dev: true`) counts as `localnet`. When `clusters` is omitted it is `localnet`, `devnet` and
+  `testnet`, so mainnet must always be listed explicitly.
+- `programs`: when set, every program a transaction invokes must be listed.
+  The compute budget, memo, System, SPL Token, Token-2022 and associated
+  token programs the transaction compiler adds are always allowed. What they
+  move is bounded by the caps below.
+- `maxSolPerTransaction`: the SOL leaving the signer in each transaction, as
+  simulated. Wrapped SOL counts as SOL (wrapping is not an outflow, spending
+  wrapped SOL is), and so do the lamports of a token account the signer
+  closes to another account. If the change cannot be simulated (no
+  `rpcUrl`, a transaction that depends on an earlier one, or one that writes
+  more than 64 accounts), the step is refused.
+- `maxTokenAmounts`: each mint's outflow must be within its cap. An outflow
+  of a mint that is not listed is refused, so without this table no token
+  may leave the signer. A token account handed to another owner counts as
+  its whole balance leaving.
+- `authority`: instructions that hand control of the signer's funds to
+  someone else are always refused: SPL Token and Token-2022 `Approve`,
+  `ApproveChecked` and `SetAuthority`, Token-2022 extension instructions the
+  signer takes part in, System `Assign`, `AssignWithSeed` and `Allocate` of
+  the signer, nonce authority changes and withdrawals, stake authority
+  changes and withdrawals, and upgradeable-loader instructions. Top-level
+  instructions are always read; inner (CPI) instructions are read when the
+  RPC returns them from the simulation.
+
+The caps hold per transaction, not per step and not over time: a step of
+three transactions may move three times the cap, and so may three steps.
+
+The simulation reads the signer's accounts, then simulates at that slot or
+later. An account that changes between the two reads can skew the measured
+change.
+
+A refusal names the rule and nothing is signed:
+
+```json
+{ "state": "refused", "rule": "maxSolPerTransaction",
+  "reason": "transaction 0 moves 0.2 SOL out of the signer, over the 0.05 SOL cap",
+  "executionId": "…", "summary": { … } }
+```
+
+The keypair's secret never appears in tool output, errors or logs. A config
+that fails to load is reported on the server's stderr, and the server starts
+without a signer.
+
+With `dev: true` the signer's wallet is funded in the dev environment when
+it has no SOL, so you can try the policy on a dev deployment before allowing
+a real one. The session file's local URLs must be loopback URLs and its API
+an Arete one, and a `project` argument must be at or below the directory the
+MCP server runs in. The signer simulates with its own `rpcUrl` when it has
+one; to simulate against the environment instead (through the local RPC
+endpoint a running `a4 dev up` serves), list `localnet` in `clusters` (or
+leave `rpcUrl` out).
+
+## From code and the command line
+
+```ts
+// TypeScript
+const actions = await client.actions({ wallet, instance, cursor });
+```
+
+```tsx
+// React
+const { data } = useWalletActions(client, { wallet });
+```
+
+```rust
+// Rust
+let actions = client.actions(ProtocolWalletActionsRequest::new(wallet)).await?;
+```
+
+```python
+# Python
+actions = await client.actions(wallet, instance=instance_id)
+```
+
+```bash
+a4 protocol actions token-raise --wallet <pubkey> [--instance <id>] [--json]
+a4 protocol actions --dev --wallet default
+```
+
+Generated protocol clients expose `actions` too.

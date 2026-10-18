@@ -367,6 +367,50 @@ so within one server lifetime a key never goes back to an older epoch.
 
 Derived live frames carry the source envelope's `seq` on both membership removals and full upserts. If a source envelope has no sequence, the derived frame may use the selected entity's `_seq`; otherwise `seq` is omitted because the server has no ordering cursor to preserve.
 
+## Row scoping
+
+An entity may name one string field as its **scope field** (LiveSpec
+`rowScopes`, carried on the entity spec as `scope_field`). Each row's value in
+that field is its scope id. The server then delivers a row of that entity, on
+every view of it including derived views, only when:
+
+- the row's scope is absent, `null` or the empty string (a **public** row), or
+- the session's verified token lists the row's scope in its `row_scopes`
+  claim.
+
+A row whose scope field holds anything other than a string or `null` is
+delivered to nobody. Entities without a scope field are unaffected.
+
+The scopes come only from the verified token, never from the subscription.
+`partition`, `filters` and `key` still apply, but only after the scope check,
+so they can narrow what a session receives and never widen it. A session
+without the claim, and a server without authentication, receives only the
+public rows of scoped entities.
+
+The check applies to every way a row reaches a client: snapshots, recovery
+snapshots after lag, live patches and upserts, list membership (`remove` when
+a row's scope moves out of the session's scopes, a whole `upsert` when it moves
+in), and replayed and live tape records. A tape record that does not carry the
+scope field takes the scope of the cached row; with no cached row it is
+withheld.
+
+Sorted views of a scoped entity keep their rows **per scope**: each scope's
+rows and the public rows form a partition bounded on its own, so a session
+reading its scopes and the public rows gets full `take` windows however busy
+other scopes are. The number of scope partitions per view is capped (default
+10,000, `ViewIndex::set_max_scope_partitions`); creating one more evicts the
+scope written least recently, counted in
+`arete.view.scope_partition.evictions`. Each partition can hold the view's row
+bound, so a view's worst-case memory is the row bound times the partition cap.
+
+When an in-band `refresh_auth` changes the session's row scopes, every
+subscription to a scoped view is resnapshotted in place: no second
+`subscribed` frame, and an authoritative snapshot that replaces what the client
+holds. No frame computed for the old scopes follows that snapshot. A
+replayable append subscription cannot be resnapshotted without resending
+records, so it stops with the retryable, fatal `subscription-rescoped` error;
+resubscribe from your last cursor.
+
 ## SDK Examples
 
 The SDKs construct protocol v2 subscriptions. Applications normally use generated view APIs instead of sending the JSON envelopes directly.
@@ -478,7 +522,7 @@ Protocol and subscription errors are non-fatal unless explicitly marked otherwis
 }
 ```
 
-Stable protocol codes include `malformed-message`, `invalid-subscription`, `invalid-unsubscription`, `duplicate-subscription-id`, `unknown-subscription-id`, `subscription-rejected`, `cursor-expired`, `cursor-epoch-changed`, `cursor-unknown`, `invalid-cursor`, `replay-gap`, and `replay-lagged`. Authentication, quota, and rate-limit errors keep their existing codes and use the same v2 envelope.
+Stable protocol codes include `malformed-message`, `invalid-subscription`, `invalid-unsubscription`, `duplicate-subscription-id`, `unknown-subscription-id`, `subscription-rejected`, `cursor-expired`, `cursor-epoch-changed`, `cursor-unknown`, `invalid-cursor`, `replay-gap`, `replay-lagged`, and `subscription-rescoped`. Authentication, quota, and rate-limit errors keep their existing codes and use the same v2 envelope.
 
 ## Conformance Fixtures
 

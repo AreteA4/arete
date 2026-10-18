@@ -91,19 +91,20 @@ It speaks MCP over stdio and writes logs to stderr only. Install `a4` with `curl
 
 ### Discovery tools
 
-Read-only lookups against the public `/api/registry/*` endpoints. No signup required — public stacks and programs are visible to unauthenticated callers. When an api key resolves, `explore_stacks` also returns global stacks; a missing key is never an error here.
+Read-only lookups against the public `/api/registry/*` endpoints. No signup required — public stacks and programs are visible to unauthenticated callers. When an api key resolves, `explore_stacks` also returns global stacks. Lists and searches never need a key; when the registry requires it, the tools that read install descriptors, artifacts and schemas do (see [Authentication](#authentication)).
 
-| Tool                      | Parameters                                                                                | Purpose                                                                                                   |
-| ------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `explore_stacks`          | `{ fields?, full? }`                                                                      | List stacks in the registry. The `websocket_url` in each entry is what `connect` takes. Brief by default. |
-| `explore_stack`           | `{ stack, summary?, views?, full? }`                                                      | One stack, from its pinned install descriptor. Returns a compact summary unless you ask for more.         |
-| `explore_stack_schema`    | `{ stack }`                                                                               | Entity and view schema: field paths, types, primary keys, and the view ids `subscribe` accepts.           |
-| `explore_programs`        | `{ fields?, full? }`                                                                      | List standalone Solana programs installable independent of any stack. Hashes omitted by default.          |
-| `explore_program`         | `{ program, operationId?, sections?, full? }`                                             | One program, from its pinned install descriptor. Returns a compact summary unless you ask for more.       |
-| `resolve_artifact`        | `{ kind, hash }`                                                                          | Fetch a content-addressed artifact. `kind` is `program-spec`, `live-spec`, or `stack-manifest`.           |
-| `search_catalog`          | `{ query?, concept?, category?, kind?, mode?, target?, limit?, cursor?, fields?, full? }` | Search the active catalog by intent. Brief results, 10 per page, unless you ask for more.                 |
-| `get_catalog_entry`       | `{ kind, slug, fields?, full? }`                                                          | One active catalog entry. Compact unless you ask for more.                                                |
-| `list_catalog_vocabulary` | `{ full? }`                                                                               | Concept and category slugs and names for `search_catalog` filters.                                        |
+| Tool                      | Parameters                                                                                | Purpose                                                                                                      |
+| ------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `explore_stacks`          | `{ fields?, full? }`                                                                      | List stacks in the registry. The `websocket_url` in each entry is what `connect` takes. Brief by default.    |
+| `explore_stack`           | `{ stack, summary?, views?, full? }`                                                      | One stack, from its pinned install descriptor. Returns a compact summary unless you ask for more.            |
+| `explore_stack_schema`    | `{ stack }`                                                                               | Entity and view schema: field paths, types, primary keys, and the view ids `subscribe` accepts.              |
+| `explore_programs`        | `{ fields?, full? }`                                                                      | List standalone Solana programs installable independent of any stack. Hashes omitted by default.             |
+| `explore_program`         | `{ program, operationId?, sections?, full? }`                                             | One program, from its pinned install descriptor. Returns a compact summary unless you ask for more.          |
+| `resolve_artifact`        | `{ kind, hash }`                                                                          | Fetch a content-addressed artifact. `kind` is `program-spec`, `live-spec`, or `stack-manifest`.              |
+| `search_catalog`          | `{ query?, concept?, category?, kind?, mode?, target?, limit?, cursor?, fields?, full? }` | Search the active catalog by intent. Brief results, 10 per page, unless you ask for more.                    |
+| `get_catalog_entry`       | `{ kind, slug, fields?, full? }`                                                          | One active catalog entry. Compact unless you ask for more.                                                   |
+| `list_catalog_vocabulary` | `{ full? }`                                                                               | Concept and category slugs and names for `search_catalog` filters.                                           |
+| `explore_protocols`       | `{ query?, cursor?, limit? }`                                                             | Callable protocol packages listed on Arete, with trust tier, attested executions, steps and install command. |
 
 List, search and vocabulary tools are **brief by default**. Pass `full: true`
 for every field the server sent, or `fields` (top-level keys or dotted paths)
@@ -143,6 +144,19 @@ to choose your own:
   entry as sent.
 
 The stack and program lists stay JSON arrays, so they carry no `hint`.
+
+**`explore_protocols`** finds callable protocol packages hosted on Arete:
+protocols their publishers listed, which an agent installs
+(`a4 install protocol`) and executes with the [protocol tools](#protocol-tools).
+They are not the curated knowledge protocols of `search_knowledge` and
+`get_protocol`, which describe on-chain protocols. Each item keeps the
+registry's fields (`slug`, `name`, `description`, `version`, `packageRef`,
+`deploymentId`, `steps` with `scope` and `access`, `attestedExecutions30d`,
+`trustTier`, `reviewHash` when reviewed, `attestationPubkey`, `publisher`) and
+adds `trust`, either `reviewed by Arete` or `unreviewed` (nobody at Arete
+reviewed its code), and `install`, the exact install command. Reviewed
+protocols come first, then the most executed. Pages hold 20 items (`limit` 1
+to 50); pass `nextCursor` back as `cursor` with the same `query`.
 
 `explore_stack` and `explore_program` return a **summary by default**, cut
 from the full descriptor on the client:
@@ -369,6 +383,63 @@ operations.
 An unknown alias, view or read is an invalid-params error that lists what is
 installed.
 
+### Dev environment tools
+
+These tools act on an Arete cloud dev environment: the project's (the
+nearest `.arete/dev/environment.json` at or above the server's working
+directory, or `project`), `ARETE_DEV_ENV`, or the one `environment` names
+(a name or an id). They never start or stop processes; `a4 dev up` in a
+terminal creates or wakes the project's environment and serves it locally.
+
+| Tool                     | Arguments                                                                           | What it does                                                                                                                                                                            |
+| ------------------------ | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dev_status`             | `environment?`, `project?`                                                          | the environment (state, tier, storage), whether `a4 dev up` serves it (`upRunning`), the session's URLs and deployment, the chain's slot and clock, and a stack stream URL with a token |
+| `dev_environments`       |                                                                                     | your environments and your plan's quotas and usage                                                                                                                                      |
+| `dev_wake`, `dev_sleep`  | `environment?`, `project?`                                                          | wake the environment, or put it to sleep now (its state is kept)                                                                                                                        |
+| `dev_delete`             | `confirm`, `environment?`, `project?`                                               | delete it with its checkpoints; `confirm` must repeat its name                                                                                                                          |
+| `dev_checkpoint`         | `action?` (`create`, `list`, `delete`), `checkpoint?`, `environment?`, `project?`   | save, list or delete checkpoints                                                                                                                                                        |
+| `dev_branch`             | `checkpoint`, `name`, `environment?`, `project?`                                    | a new environment from a checkpoint                                                                                                                                                     |
+| `dev_restore`            | `checkpoint`, `environment?`, `project?`                                            | restore a checkpoint (later writes are undone)                                                                                                                                          |
+| `dev_rebase`             | `keep?`, `environment?`, `project?`                                                 | refetch every account the environment never wrote from mainnet; returns how many were reset and kept                                                                                    |
+| `dev_reset`              | `confirm`, `environment?`, `project?`                                               | a fresh fork; `confirm` must repeat the environment's name                                                                                                                              |
+| `dev_reset_account`      | `account`, `include_owned?`, `environment?`, `project?`                             | drop one account so its next read refetches it                                                                                                                                          |
+| `dev_pin`, `dev_follow`  | `account`, `include_owned?` (pin), `undo?`, `environment?`, `project?`              | pin an account (never refreshed) or follow one (refetched every block); `undo` reverses it                                                                                              |
+| `dev_fund`               | `account`, `sol?`, `mint?`, `amount?`, `token_program?`, `environment?`, `project?` | set a SOL balance (default 100), or a token balance with `mint` and `amount`; `account` is a public key or a dev wallet name                                                            |
+| `dev_warp`               | `to` (`+2h`, Unix seconds, `slot:<n>`, `epoch:<n>`), `environment?`, `project?`     | move the clock forward; returns it before and after                                                                                                                                     |
+| `dev_scenario`           | `scenario` (a document or a file path), `dry_run?`, `environment?`, `project?`      | run an `arete.scenario/v1` document; returns each step's writes and expectations, `passed` and a `digest`                                                                               |
+| `dev_preview`            | `transaction` (base64), `environment?`, `project?`                                  | simulate without committing: compute units and every account before and after                                                                                                           |
+| `dev_repro`              | `signature`, `output?`, `environment?`, `project?`                                  | the minimal state to reproduce a sent transaction                                                                                                                                       |
+| `dev_environment_events` | `after?`, `limit?`, `environment?`, `project?`                                      | the environment's lifecycle events                                                                                                                                                      |
+| `dev_step`               | `step`, `instance?`, `args?`, `wallet?`, `project?`                                 | prepares the step on the project's dev deployment, signs locally with a dev wallet, submits and waits; returns `state`, `executionId`, `instanceId`                                     |
+| `dev_instance`           | `instance`, `wallet?`, `project?`                                                   | reads one protocol instance; with `wallet` (a dev wallet name or a public key), `allowedSteps` is evaluated for it                                                                      |
+| `dev_actions`            | `wallet`, `instance?`, `cursor?`, `project?`                                        | what the wallet can do now: create steps and the instances it relates to, each step with `allowed`, `reason`, `scope`, `args`                                                           |
+| `dev_events`             | `after?`, `limit?`, `waitMs?`, `types?`, `project?`                                 | the running `a4 dev up`'s event feed since a cursor: builds, deploys, steps, instance changes, stack rows, clock jumps and the environment's lifecycle; returns `cursor`                |
+| `dev_capture`            | `programs`, `from`, `to?`, `output`, `rpc_url?`, `accounts?`, `max_transactions?`   | record a window of raw updates from a Solana RPC node into a `.arcap` capture                                                                                                           |
+
+See [Develop with a4 dev and cloud dev environments](/cli/local-development/).
+
+### Protocol tools
+
+Act on a protocol deployment from an agent: find what a wallet can do,
+prepare a step, sign it outside the server, submit it. They call Arete with
+the resolved API key (never a tool argument); `dev: true` uses the
+project's deployment in its dev environment. Name the deployment with `deployment` or a protocol package
+reference `protocol`.
+
+| Tool                 | Arguments                                                                                           | What it does                                                                                                    |
+| -------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `protocol_actions`   | `wallet`, `deployment?` \| `protocol?`, `instance?`, `cursor?`, `dev?`                              | create steps and the instances the wallet relates to, each step with its availability, `scope` and typed `args` |
+| `protocol_instances` | `deployment?` \| `protocol?`, `state?`, `cursor?`, `dev?`                                           | one page of instances, newest first                                                                             |
+| `protocol_instance`  | `instance`, `wallet?`, `deployment?`, `dev?`                                                        | one instance; `allowedSteps` for `wallet`                                                                       |
+| `protocol_prepare`   | `step`, `wallet`, `instance?`, `args?`, `deployment?` \| `protocol?`, `transaction_format?`, `dev?` | unsigned transactions and a `summary` to check before signing; rejections are results                           |
+| `protocol_submit`    | `executionId`, `signedTransactions`, `wait?`, `timeoutSeconds?`                                     | submits the signed transactions and waits (bounded) for the intent to settle                                    |
+| `protocol_intent`    | `executionId`                                                                                       | the execution intent's state                                                                                    |
+| `protocol_receipt`   | `signature`                                                                                         | fetches the signed execution receipt and checks it offline and, with an RPC, against the transaction            |
+| `protocol_execute`   | as `protocol_prepare` without `wallet`, `wait?`                                                     | only with a configured signer: prepares, checks the signer's policy, signs, submits and waits                   |
+
+See [Protocols for agents](/agent-skills/protocols/) for the flow, the
+summary and the signer config.
+
 ### Streaming tools
 
 Stateful, for following a view over time. A session calls `connect` once, then
@@ -415,13 +486,19 @@ Do not pass `api_key` in tool calls. The server resolves credentials in this ord
 3. Without a selected profile, `ARETE_API_KEY`, then an unambiguous profile or
    legacy entry of the `a4` login
 
+`account_status` reports the resolved account: its plan, claim state and,
+when the account reports it, the plan's `usage`. `usage.onExhausted` says what
+happens once the allowance is used: `block` (requests are refused) or
+`metered` (usage continues and is billed, with
+`overage: "metered beyond allowance"`).
+
 Generated MCP config runs `a4 --profile agent mcp`; the selected profile
 deliberately outranks an ambient human key. Run
 `a4 --profile agent auth signup --if-missing` during bootstrap and omit the
 argument. Humans store a separate key with
 `a4 auth login --profile human --key <a4_sk_…>`.
 
-The knowledge tools (`search_knowledge`, `get_protocol`, `get_program_knowledge`, `get_recipe`, `list_concepts`) require a key from step 2 or 3 and fail with an actionable error when none resolves. The discovery tools attach a resolved key **only when `ARETE_API_URL` names an Arete origin over HTTPS** — `https://arete.run` or any `https://*.arete.run` subdomain. Plain HTTP is accepted only for loopback (`localhost`, `127.0.0.1`, `[::1]`), where the request never reaches a network. Everything else, including `http://api.arete.run`, gets an unauthenticated request rather than your key in cleartext or sent to a host it does not belong to — the endpoints these tools touch are public, so you still get the public result set.
+The knowledge tools (`search_knowledge`, `get_protocol`, `get_program_knowledge`, `get_recipe`, `list_concepts`) require a key from step 2 or 3 and fail with an actionable error when none resolves. When the registry requires it, install descriptors, artifacts and stack schemas (`explore_stack`, `explore_stack_schema`, `explore_program`, `explore_protocol`, `resolve_artifact`) need a key too; without one the tool fails with code `registry-key-required` and says to run `a4 login` (free) or set `ARETE_API_KEY` in the server's environment. The discovery tools attach a resolved key **only when `ARETE_API_URL` names an Arete origin over HTTPS** — `https://arete.run` or any `https://*.arete.run` subdomain. Plain HTTP is accepted only for loopback (`localhost`, `127.0.0.1`, `[::1]`), where the request never reaches a network. Everything else, including `http://api.arete.run`, gets an unauthenticated request rather than your key in cleartext or sent to a host it does not belong to — the endpoints these tools touch are public, so you still get the public result set.
 
 ### Configure your agent
 

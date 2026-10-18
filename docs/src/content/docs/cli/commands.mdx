@@ -79,39 +79,49 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 
 ## Quick Reference
 
-| Command                                                                       | Description                                                      |
-| ----------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `a4 create [name]`                                                            | Scaffold a new app from a template                               |
-| `a4 init`                                                                     | Set up the project for Arete and coding agents                   |
-| `a4 doctor`                                                                   | Check install, project, auth, agents                             |
-| `a4 self install`                                                             | Finish installing the `a4` binary                                |
-| `a4 self update` / `a4 upgrade`                                               | Update `a4` in place                                             |
-| `a4 self uninstall`                                                           | Remove `a4`                                                      |
-| `a4 mcp`                                                                      | Run the stream MCP server (stdio)                                |
-| `a4 auth signup`                                                              | Register an agent account                                        |
-| `a4 program build <idl>`                                                      | Build a portable ProgramSpec                                     |
-| `a4 stack compose`                                                            | Compose live views and program SDKs                              |
-| `a4 sdk describe <alias>`                                                     | Print an installed SDK's reference (views, fields, reads)        |
-| `a4 sdk create --manifest ... --ts`                                           | Generate a TypeScript SDK from a StackManifest                   |
-| `a4 sdk create --manifest ... --rust`                                         | Generate a Rust SDK from a StackManifest                         |
-| `a4 sdk create --program-spec ... --rust`                                     | Generate a Rust (or `--python`) program SDK from a ProgramSpec   |
-| `a4 sdk create --manifest ... --rust --program-extensions <program>=<bundle>` | Embed a program's own bundle in a Rust (or `--python`) stack SDK |
-| `a4 up <manifest>`                                                            | Deploy one exact StackManifest                                   |
-| `a4 up <alias>`                                                               | Deploy an installed stack                                        |
-| `a4 status`                                                                   | Show project overview                                            |
-| `a4 stack list`                                                               | List deployed stacks                                             |
-| `a4 telemetry status`                                                         | Show telemetry status                                            |
-| `a4 explore`, `a4 explore stacks`                                             | Discover installable stacks                                      |
-| `a4 explore programs`                                                         | Discover installable standalone programs                         |
-| `a4 explore stack <ref>`                                                      | Inspect an exact stack install descriptor                        |
-| `a4 explore program <ref>`                                                    | Inspect an exact program install descriptor                      |
-| `a4 get <Entity>/<view> --stack <ref>`                                        | Read a view's current entities once, as JSON                     |
-| `a4 stream <Entity>/<view> --stack <ref>`                                     | Stream a view's live updates                                     |
-| `a4 know search --query <intent>`                                             | Search the knowledge layer by intent                             |
-| `a4 know protocol <slug>`                                                     | Curated knowledge for one protocol                               |
-| `a4 know program <slug>`                                                      | Curated annotations for one program                              |
-| `a4 know recipe <slug>`                                                       | One cross-protocol recipe                                        |
-| `a4 know concepts`                                                            | Concept and category vocabularies                                |
+| Command                                                                       | Description                                                       |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `a4 create [name]`                                                            | Scaffold a new app from a template                                |
+| `a4 init`                                                                     | Set up the project for Arete and coding agents                    |
+| `a4 doctor`                                                                   | Check install, project, auth, agents                              |
+| `a4 self install`                                                             | Finish installing the `a4` binary                                 |
+| `a4 self update` / `a4 upgrade`                                               | Update `a4` in place                                              |
+| `a4 self uninstall`                                                           | Remove `a4`                                                       |
+| `a4 mcp`                                                                      | Run the stream MCP server (stdio)                                 |
+| `a4 auth signup`                                                              | Register an agent account                                         |
+| `a4 login` / `a4 auth login`                                                  | Save an API key (accounts are free)                               |
+| `a4 program build <idl>`                                                      | Build a portable ProgramSpec                                      |
+| `a4 stack compose`                                                            | Compose live views and program SDKs                               |
+| `a4 sdk describe <alias>`                                                     | Print an installed SDK's reference (views, fields, reads)         |
+| `a4 sdk create --manifest ... --ts`                                           | Generate a TypeScript SDK from a StackManifest                    |
+| `a4 sdk create --manifest ... --rust`                                         | Generate a Rust SDK from a StackManifest                          |
+| `a4 sdk create --program-spec ... --rust`                                     | Generate a Rust (or `--python`) program SDK from a ProgramSpec    |
+| `a4 sdk create --manifest ... --rust --program-extensions <program>=<bundle>` | Embed a program's own bundle in a Rust (or `--python`) stack SDK  |
+| `a4 up <manifest>`                                                            | Deploy one exact StackManifest                                    |
+| `a4 up <alias>`                                                               | Deploy an installed stack                                         |
+| `a4 protocol init [dir]`                                                      | Scaffold a protocol project (a template-only tip jar)             |
+| `a4 protocol deploy [dir]`                                                    | Upload a built protocol and deploy it privately                   |
+| `a4 protocol actions [protocol\|deployment] --wallet <pubkey>`                | What a wallet can do now on a deployment                          |
+| `a4 dev up`                                                                   | Develop against your cloud dev environment, redeploying on change |
+| `a4 dev status\|list\|checkpoint\|rebase\|fund\|warp\|…`                      | Manage and drive the dev environment                              |
+| `a4 protocol search [query]`                                                  | Search the callable protocols listed on Arete                     |
+| `a4 protocol show <slug>`                                                     | One listed protocol: trust tier, steps, install command           |
+| `a4 protocol request-listing`                                                 | Ask for your deployment to be listed                              |
+| `a4 protocol listing-status`                                                  | Your deployment's listing state                                   |
+| `a4 status`                                                                   | Show project overview                                             |
+| `a4 stack list`                                                               | List deployed stacks                                              |
+| `a4 telemetry status`                                                         | Show telemetry status                                             |
+| `a4 explore`, `a4 explore stacks`                                             | Discover installable stacks                                       |
+| `a4 explore programs`                                                         | Discover installable standalone programs                          |
+| `a4 explore stack <ref>`                                                      | Inspect an exact stack install descriptor                         |
+| `a4 explore program <ref>`                                                    | Inspect an exact program install descriptor                       |
+| `a4 get <Entity>/<view> --stack <ref>`                                        | Read a view's current entities once, as JSON                      |
+| `a4 stream <Entity>/<view> --stack <ref>`                                     | Stream a view's live updates                                      |
+| `a4 know search --query <intent>`                                             | Search the knowledge layer by intent                              |
+| `a4 know protocol <slug>`                                                     | Curated knowledge for one protocol                                |
+| `a4 know program <slug>`                                                      | Curated annotations for one program                               |
+| `a4 know recipe <slug>`                                                       | One cross-protocol recipe                                         |
+| `a4 know concepts`                                                            | Concept and category vocabularies                                 |
 
 :::note[One binary]
 Every install route (`install.sh`, `install.ps1`, `npx @usearete/a4 install`) puts the same prebuilt binary at `~/.local/bin/a4`. `npx @usearete/a4 <command>` runs that binary too, installing it first if needed.
@@ -440,11 +450,12 @@ the human flow: `a4 auth login --profile human --key <a4_sk_…>`.
 
 ### a4 auth login
 
-Save a human-issued API key.
+Save a human-issued API key. `a4 login` is the same command.
 
 ```bash
 # Prompts for the key only in an interactive terminal
 a4 auth login
+a4 login
 
 # Pass directly (required when non-interactive)
 a4 auth login --profile human --key <a4_sk_...>
@@ -479,6 +490,12 @@ Verify authentication with server.
 ```bash
 a4 auth whoami
 ```
+
+For an agent key it also shows the plan's usage. `When used up` says what
+happens once the allowance is used: `block` (requests are refused until the
+allowance resets) or `metered` (usage continues and is billed, shown as
+`overage: metered beyond allowance`). `--json` carries the same as
+`usage.onExhausted` and `overage`.
 
 **Credentials location:** `~/.arete/credentials.toml`. Named profiles keep the
 restricted `agent` key separate from the broader `human` key. Inside a project
@@ -936,6 +953,31 @@ field's `amount` (see [Token amounts](#a4-explore)).
 Follow a view's live updates. Run `a4 stream --help` for filtering,
 selection, history, recording and TUI options.
 
+**Dev environments.** `--dev` streams from the stacks serving in the
+project's cloud dev environment instead of a named stack, protocol first: it
+finds the project, lists its protocols and their views, mints and refreshes
+session tokens itself, and follows redeploys (printing `— redeployed: <old>
+→ <new>` on stderr). With
+`--dev` the positionals are `[PROTOCOL] [VIEW]`. See
+[Streaming the stack](/cli/local-development/#streaming-the-stack).
+
+| Flag                        | Meaning                                                                                                                                                                                                  |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--dev`                     | stream from the project's dev environment; without a protocol or view, list its protocols, counts and views (`--json` for JSON; with `--tui`, browse them)                                               |
+| `--dev <protocol> [<view>]` | one protocol (by spec name, slug, stack or deployment short id): its views as one feed, or one view by name (`Instances`, `Activity`, `Participants`) or id (`ProtocolActivity/list`)                    |
+| `--instance <id>`           | with `--dev`, one instance (the id `a4 dev step` prints, or its short id): its state row and its activity                                                                                                |
+| `--project <dir>`           | the `a4 dev` project (default: the nearest one at or above the current directory)                                                                                                                        |
+| `--stack <name>`            | with `--dev`, a stack in the environment (a positional is then a view id); otherwise an owned deployment or registry stack                                                                               |
+| `--all`                     | every view of the stack (except `<Entity>/state` views) over one connection, as one feed: JSON lines carry `"protocol"`, `"stack"` and `"view"`, and with `--tui` each view gets a tab plus an "All" tab |
+
+```bash
+a4 stream --dev
+a4 stream --dev --tui
+a4 stream --dev localTipJar Activity --where step=open
+a4 stream --dev localTipJar --instance 99e8592f-6b0f-472a-9716-45ca0ef97f11
+a4 stream --dev --all --raw | jq -c '{protocol, stack, view, op}'
+```
+
 ---
 
 ## Deployment
@@ -998,6 +1040,288 @@ If a program SDK that `arete.lock` pins no longer fits its program, `a4 up`
 stops before anything is built. Run `a4 update stack <alias>`, then deploy
 again. When the registry doesn't report program SDKs, `a4 up` notes that and
 deploys without the report.
+
+### a4 protocol init \[dir\]
+
+`a4 protocol init [dir]` creates a protocol project in `dir` (default: the
+current directory, created when missing): a template-only tip jar in
+`protocol.ts` whose steps are System Program transfers, the registry's
+`system-program` package installed as `@programs/system` (`a4 install program
+system-program --as system --ts`: `arete.toml`, `arete.lock` and
+`generated/typescript/programs/system/`), `package.json` with
+`@usearete/protocol`, `@usearete/sdk` and `zod`, `tsconfig.json` mapping
+`@programs/*`, `.gitignore` and a `README.md`. It refuses to overwrite an
+existing file (`.gitignore` only gains missing lines). `--name <name>` sets
+the spec name (`^[a-z][A-Za-z0-9]*$`, default: the directory name in
+camelCase); `--no-install` skips the program install.
+
+When the registry can't install `system-program` (no network, no API key, or a
+registry without the package), init warns and installs the System Program's
+`transfer` instruction from a local IDL instead, `idl/system.idl.json`, with
+the same instruction, account and argument names, so `protocol.ts` is the
+same. `--local-idl` does that without asking the registry. `a4 protocol
+deploy` pushes such a program to your account before it uploads the release.
+
+```bash
+a4 protocol init my-protocol
+cd my-protocol && npm install && npx arete-protocol check && a4 dev up
+```
+
+### a4 protocol deploy \[dir\]
+
+`a4 protocol deploy [dir]` builds your protocol with `arete-protocol build`
+(from `@usearete/protocol`) and takes it to a private deployment. It uploads
+only `.arete/protocol/protocol-spec.json`, plus `handlers.mjs` when a step has
+a handler; the server derives the stack source and release from them.
+
+```bash
+a4 protocol deploy                       # the protocol in the current directory
+a4 protocol deploy ./my-protocol         # builds first, then deploys
+a4 protocol deploy --no-build            # upload the existing build, if it is current
+a4 protocol deploy --dry-run             # print the plan; changes nothing
+a4 protocol deploy \
+  --fee-policy fee-policy.json \
+  --resource launchDefaults=launch-defaults.json
+a4 protocol deploy --no-activate --json
+```
+
+The command:
+
+1. Builds the project (`npx --no arete-protocol build`), unless you pass
+   `--no-build`. With `--no-build` it uploads the existing `.arete/protocol/`
+   output, and refuses it when a source changed since that build: the build
+   records each source file's hash (`build-sources.json`, behind the receipt's
+   `sourceTreeSha256`), and the error names the changed and deleted files.
+2. Pushes the programs the project installed from a local IDL
+   (`[dependencies.programs]` with `source = { idl = ... }`). Arete checks
+   templates against, compiles the stack from and pins in the protocol's
+   package only programs it has, and a release carries only the spec. For each
+   such program, deploy uses the account's program with the same ProgramSpec
+   when there is one, or a registry program package of that exact
+   ProgramSpec. Otherwise it registers the program as `a4 program push` does:
+   a private program aliased `<slug>-<alias>` (with the ProgramSpec digest's
+   first 8 characters added when that alias already names another of your
+   programs), published as your private program package. It waits for the
+   admission (`waiting: program <alias> admission queued`), at most
+   `--wait-secs`; a failed admission stops the deploy. `arete.toml` keeps the
+   IDL source. `arete.lock` records the program's `program_release_hash`, the
+   generated program is regenerated with it, and the project is rebuilt, so
+   the release pins that Program Release and the protocol's package pins the
+   program package. `a4 install` keeps the recorded release while the IDL's
+   ProgramSpec is unchanged. An IDL that no longer matches `arete.lock` is
+   refused: run `a4 install` first. With `--no-build` the program is pushed
+   but `arete.lock` is left as it is. `--dry-run` lists the programs and
+   pushes nothing.
+3. Validates the spec locally and prints the release hash the server should
+   derive. If the server returns a different hash, it warns and continues
+   with the server's release.
+4. Finds your protocol by slug or creates it. The slug defaults to the spec
+   name in kebab case (`tokenRaise` becomes `token-raise`).
+5. Uploads the release. Re-uploading an identical release is a no-op.
+6. Reuses a private deployment of the same release if one exists. Otherwise
+   it stores the fee policy, publishes a version of every resource the spec
+   declares, and creates the deployment.
+7. Activates the deployment, unless it is already active or you passed
+   `--no-activate`.
+8. When the deployment is active and the project installs its own protocol
+   (`[dependencies.protocols]` with this slug, which `a4 dev up` adds), updates
+   that client to the new deployment: `a4 update protocol <alias>` from the
+   registry, or, while the registry has no package release for the deployment
+   yet, the client is generated from the deployed build with the new
+   deployment id and `arete.lock` marks it `local_build` (the command says so).
+   Run `a4 install` once the package is published.
+
+What happens at activation depends on the protocol:
+
+- **Template-only protocols** (no handler code) activate as private
+  deployments at trust tier `unreviewed`. While the server's template check is
+  `pending`, activation waits until the server has the program specs the
+  templates target (step 2 pushes the project's own).
+- **Protocols with handler code** can't run until an operator reviews the
+  release. The command creates the deployment, prints the release hash to
+  share with the operator, and exits 0 with status `review-required`. The
+  operator reviews the release and activates the deployment; owners never
+  activate handler code themselves.
+- **Public deployments** can only be created by an operator. Self-serve
+  deployments are always private.
+
+| Flag                             | Description                                                                                                                                              |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--no-build`                     | Upload the existing `.arete/protocol/` output instead of building; refused when the sources changed since that build                                     |
+| `--dry-run`                      | Print the files, expected release hash, slug, and whether a deployment would be created or reused. Reads the server only when a secret key is configured |
+| `--slug <slug>`, `--name <name>` | Override the protocol slug (`^[a-z0-9][a-z0-9-]{0,62}$`) and display name                                                                                |
+| `--fee-policy <file>`            | Fee policy document for a new deployment                                                                                                                 |
+| `--resource <name>=<file>`       | JSON value for a declared resource (repeatable)                                                                                                          |
+| `--no-activate`                  | Create or reuse the deployment without activating it                                                                                                     |
+| `--json`                         | Print the result as JSON: `status`, `protocol`, `release`, `deployment`, `client` (the installed client update, when there is one), `warnings`           |
+
+The command needs a secret API key; publishable keys are refused. A new
+deployment needs a fee policy, which is a JSON document like this:
+
+```json
+{
+  "schema": "arete.protocol-fee-policy/v1",
+  "steps": {}
+}
+```
+
+Arete fills in the platform fee destination, so `platformDestination` is
+optional. A policy that names one is still accepted.
+
+Flags override the optional `[protocol]` section of the project's
+`arete.toml`. Paths in that section are relative to the project directory, and
+paths passed as flags are relative to the current directory.
+
+```toml
+[protocol]
+slug = "token-raise"
+name = "Token Raise"
+fee_policy = "fee-policy.json"
+access = "private"            # the only accepted value
+
+[protocol.resources]
+launchDefaults = "resources/launch-defaults.json"
+```
+
+### a4 protocol actions \[protocol|deployment\]
+
+`a4 protocol actions` lists what a wallet can do now on a protocol
+deployment: the steps that create an instance, and every instance the wallet
+relates to (as a participant, a role holder or the creator), newest first.
+Each step shows whether it is allowed, the guard or access code when it is
+not, its typed args, and the guards only its args decide (prepare evaluates
+those). Name the deployment by protocol package or deployment id; `--dev`
+asks about the project's deployment in its dev environment instead.
+
+```bash
+a4 protocol actions token-raise --wallet <pubkey>
+a4 protocol actions token-raise --wallet <pubkey> --instance <id> --json
+a4 protocol actions --dev --wallet default    # a dev wallet name or a pubkey
+```
+
+| Flag                        | Description                                       |
+| --------------------------- | ------------------------------------------------- |
+| `--wallet <pubkey>`         | The wallet (with `--dev`, also a dev wallet name) |
+| `--instance <id>`           | Only this instance                                |
+| `--cursor <cursor>`         | The next page (`nextCursor`)                      |
+| `--dev` / `--project <dir>` | The project's dev deployment                      |
+| `--json`                    | The answer as JSON                                |
+
+### a4 protocol search \[query\]
+
+`a4 protocol search` lists the callable protocol packages that publishers
+listed on Arete: protocols an app or agent installs and calls through their
+hosted deployment. These are not the curated protocols of `a4 know protocol`,
+which describe on-chain protocols. Search and show need no API key.
+
+```bash
+a4 protocol search
+a4 protocol search "tip jar"
+a4 protocol search tips --limit 50 --json
+a4 protocol show tip-jar
+```
+
+Each row shows the slug, version, trust tier, attested executions in the
+last 30 days, number of steps and package reference. Reviewed protocols come
+first, then the most executed.
+
+| Trust tier          | Meaning                                                                          |
+| ------------------- | -------------------------------------------------------------------------------- |
+| `reviewed by Arete` | Arete reviewed this release; `a4 protocol show` prints the review hash           |
+| `unreviewed`        | Nobody at Arete reviewed its code; read its steps and spec before you rely on it |
+
+| Flag                | Description                             |
+| ------------------- | --------------------------------------- |
+| `--limit <n>`       | Results per page, 1 to 50 (default 20)  |
+| `--cursor <cursor>` | The next page (printed after the table) |
+| `--json`            | The registry's page as JSON             |
+
+### a4 protocol show \<slug\>
+
+`a4 protocol show` prints one listing: description, package, publisher,
+trust tier and review hash, attested executions, deployment id, attestation
+key, each step with its scope and access, and the command that installs it
+at its exact version (`a4 install protocol <package>@=<version>`).
+`a4 explore protocol <package>` describes the package in full.
+
+### a4 protocol request-listing
+
+`a4 protocol request-listing` asks for one of your deployments to be listed,
+and `a4 protocol listing-status` shows where that request stands (`requested`,
+`listed`, `rejected` with a reason, or `delisted`). Both need the deployment
+owner's secret key. Without `--deployment`, they read the project the way
+`a4 protocol deploy` does: the protocol slug from `[protocol].slug` (else the
+built spec's name), then the deployment `arete.lock` records for the
+project's own client, else the active deployment of the built release, else
+the only active deployment.
+
+```bash
+a4 protocol request-listing
+a4 protocol request-listing --deployment <id> --note "Ready for review"
+a4 protocol listing-status
+a4 protocol listing-status --deployment <id> --json
+```
+
+| Flag                | Description                                       |
+| ------------------- | ------------------------------------------------- |
+| `--deployment <id>` | The deployment (default: the project's, as above) |
+| `--dir <dir>`       | The protocol project to read (default `.`)        |
+| `--note <text>`     | `request-listing` only: a note for the reviewer   |
+| `--json`            | The listing state as JSON                         |
+
+A request can be refused:
+
+| Code                                | What to do                                                                                                         |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `protocol-listing-not-public`       | Only public deployments are listed; self-serve deployments are private. Ask Arete to make it public                |
+| `protocol-listing-edges-private`    | The protocol uses private stacks or programs (the error names them). Use public ones and deploy again              |
+| `protocol-listing-fee-policy`       | The fee policy misses the listing rules (minimum platform fee or fee destination). Deploy with one that meets them |
+| `protocol-listing-not-owner`        | Use a secret key of the account that owns the deployment                                                           |
+| `protocol-listing-account-standing` | The account cannot list protocols right now; contact Arete support                                                 |
+
+### a4 dev
+
+Develop against an Arete cloud dev environment: a persistent fork of mainnet
+Arete hosts for your account. `a4 dev up` creates or wakes the project's
+environment, serves it on `127.0.0.1` (RPC and WebSocket, no token needed),
+runs the dev UI, and deploys the project's protocol into it, redeploying on
+change. Signing stays local. See
+[Develop with a4 dev and cloud dev environments](/cli/local-development/).
+
+```bash
+a4 dev up                          # create or wake the environment, serve it, deploy
+a4 dev status                      # the environment, the session and the chain
+a4 dev list                        # your environments and quotas
+a4 dev fund default 50             # 50 SOL for the dev wallet `default`
+a4 dev fund <owner> --mint <mint> --amount 1000000
+a4 dev warp +2h                    # move the clock forward
+a4 dev checkpoint before-test      # save the state; restore or branch from it
+a4 dev restore before-test
+a4 dev rebase                      # refetch every account you never wrote
+a4 dev pin <pubkey>                # never refresh this account
+a4 dev step open --args '{"amount":"1000"}' --wallet default
+a4 dev sleep                       # or let it sleep when idle
+a4 dev delete --yes
+```
+
+| Command                                                               | What it does                                                         |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `a4 dev up [--env name] [--no-deploy] [--no-ui] [--port-base n]`      | create or wake, serve locally, deploy and watch                      |
+| `a4 dev down [--sleep] [--purge]`                                     | stop a running `a4 dev up`                                           |
+| `a4 dev status`, `a4 dev list`, `a4 dev use <name>`                   | the environment, all of yours, or point the project at another       |
+| `a4 dev wake`, `a4 dev sleep`, `a4 dev delete`                        | lifecycle                                                            |
+| `a4 dev checkpoint [name]`, `--list`, `--delete <id\|name>`           | checkpoints                                                          |
+| `a4 dev restore <checkpoint>`, `a4 dev branch <checkpoint> <name>`    | undo to a checkpoint, or start a new environment from one            |
+| `a4 dev rebase`, `a4 dev reset [--account <pubkey>]`                  | refresh untouched accounts, or start over                            |
+| `a4 dev fund`, `a4 dev pin`, `a4 dev follow`                          | balances and freshness of accounts                                   |
+| `a4 dev warp`, `a4 dev pause`, `a4 dev resume`                        | the clock                                                            |
+| `a4 dev scenario <file>`, `a4 dev preview <tx>`, `a4 dev repro <sig>` | scenarios, previews and repro exports                                |
+| `a4 dev events`, `a4 dev token`                                       | lifecycle events; an environment token with the RPC URLs             |
+| `a4 dev step`, `a4 dev wallet`, `a4 dev instance`, `a4 dev replay`    | drive the protocol with local dev wallets                            |
+| `a4 dev sdk`, `a4 dev capture`                                        | the protocol client from the local build; a capture from an RPC node |
+
+Every environment command takes `--env <name|id>` (default `ARETE_DEV_ENV`,
+else the project's) and `--json`.
 
 ### a4 status
 
@@ -1200,10 +1524,12 @@ a4 stack stop my-stack --force  # Skip confirmation
 ```bash
 a4 install
 a4 install --locked
+a4 install --check
 a4 install --dry-run
 a4 install stack ore@^1.4.0 --ts
 a4 install stack ore --ts --setup
 a4 install program spl-token@=4.0.2 --rust
+a4 install program ./idl/my_program.json --as my-program --ts
 a4 update
 a4 update stack ore
 a4 remove program spl-token
@@ -1214,6 +1540,84 @@ With no package argument, `a4 install` resolves the complete strict
 `arete.toml` graph and atomically commits generated outputs plus
 `arete.lock`. A package add saves dependency intent before resolving the
 whole project. Use `--no-save` for one-off exact registry generation.
+
+`a4 install --check` changes nothing. It fails unless `arete.lock` is fresh
+and every generated protocol client is the published release `arete.lock`
+pins: a client `a4 dev` generated from a local build (`local_build` in the
+lock, `project.localBuild` in its `sdk-provenance.json`) fails it. Run it in
+CI. `a4 install --locked` restores the published clients.
+
+### API key for installs
+
+When the registry requires it, install descriptors, resolution, artifacts and
+stack schemas need an Arete API key (any plan, the free one included). Without
+one `a4` stops with `run \`a4 login\` (free)`: create a key on the free plan
+and save it with `a4 login`, or set `ARETE_API_KEY`. Once logged in, `a4`
+sends the key with every registry request. Searching and browsing the registry
+needs no key.
+
+### Signed releases
+
+The registry signs the package releases it publishes, and `a4` checks those
+signatures on everything it installs: the packages `a4 install` and
+`a4 update` resolve, the program SDK releases a stack references, and the
+stacks and programs a protocol hoists. A signature is an Ed25519 signature by
+a trusted registry key over a domain-separated message binding the key id
+and release's `package_release_hash`. Trust anchors are compiled into each
+CLI release or explicitly provisioned through
+`ARETE_REGISTRY_TRUSTED_KEYS_FILE`. The public key endpoint
+`GET /api/registry/v1/keys` is cached in `~/.arete` for a day; its metadata
+can retire matching pinned keys, but cannot introduce a new trust anchor or
+replace a pinned public key. New keys require an approved CLI release or an
+operator-managed trust file.
+
+The registry returns signatures only to clients that ask for them: `a4`
+(and `a4 mcp`) send `X-Arete-Registry-Signatures: v1` on the registry
+requests whose responses carry package releases.
+
+Official builds enforce signatures by default. Missing or invalid signatures,
+unknown keys, and releases signed only by retired keys are refused. An unsigned
+publication timestamp cannot restore trust in a retired key. Bootstrap builds
+without provisioned trust anchors warn instead; set
+`ARETE_REQUIRE_REGISTRY_SIGNATURES=1` to require signatures explicitly.
+
+### Programs from a local IDL
+
+`a4 install program <path-to-idl.json>` installs a program that is not in
+the registry (or not yet). The IDL must be inside the project:
+
+```bash
+a4 install program ./idl/my_program.json --as my-program --ts
+a4 install program ./idl/legacy.json --program-id <address> --ts   # an IDL with no address
+```
+
+Run where there is no `arete.toml` yet, it starts the project: it writes
+`arete.toml` (as `a4 init` would) before adding the program, and removes it
+again if the install fails. Inside a directory whose parent has an
+`arete.toml`, it refuses and names that project instead.
+
+`arete.toml` records the project-relative path
+(`source = { idl = "idl/my_program.json" }`, plus `program_id` when given).
+`a4 install` builds the ProgramSpec from the IDL bytes, as `a4 program
+build` and the registry do, so `arete.lock` pins the same ProgramSpec hash a
+registry install of the same IDL would. It has no program release. The SDK is
+generated as for a registry program; `--as` is an alias of `--alias`.
+
+### Importing installed programs
+
+A TypeScript program install writes `index.ts` into the program's output
+directory, and `a4 install` makes sure the project's `tsconfig.json` maps
+`compilerOptions.paths["@programs/*"]` to that directory
+(`./generated/typescript/programs/*/index.js` by default), so code imports
+the program as `@programs/<alias>`. It adds only the missing key and leaves
+the rest of the file as written. When there is no `tsconfig.json`, or it
+isn't plain JSON, `a4 install` prints the line to add instead.
+
+The generated program carries `programInstall` (the arete.toml alias, the
+program release of a registry install, and its source: the registry package
+at the exact installed version, or the IDL path) and `instructionShapes`
+(each instruction's argument and account names). `@usearete/protocol` reads
+both: see its README.
 
 `a4 remove <stack|program> <alias>` removes the dependency from the manifest,
 prunes its lock entry, and deletes only generated output whose provenance
@@ -1930,20 +2334,22 @@ a4 telemetry disable
 
 ## Environment Variables
 
-| Variable                     | Description                                                                             |
-| ---------------------------- | --------------------------------------------------------------------------------------- |
-| `ARETE_API_URL`              | Override API endpoint                                                                   |
-| `ARETE_PROFILE`              | Named credential profile outside initialized repos; `.arete/auth.toml` wins inside them |
-| `ARETE_API_KEY`              | Legacy direct key override, used only when no profile is selected                       |
-| `ARETE_CREDENTIALS_PATH`     | Override the credentials file                                                           |
-| `A4_INSTALL_DIR`             | Install directory for `a4 self install` and the bootstrappers                           |
-| `A4_NO_MODIFY_PATH=1`        | Do not edit shell profiles or the Windows PATH on install                               |
-| `A4_NO_UPDATE_CHECK=1`       | Disable the once-per-day "update available" notice                                      |
-| `A4_NON_INTERACTIVE=1`       | Never prompt (same as `--non-interactive`)                                              |
-| `A4_VERSION`                 | Version for `install.sh` / `install.ps1` to install                                     |
-| `CI`                         | When set: never prompt, no PATH edits, no update notice, no telemetry banner            |
-| `DO_NOT_TRACK=1`             | Disable telemetry (standard)                                                            |
-| `ARETE_TELEMETRY_DISABLED=1` | Disable telemetry (Arete-specific)                                                      |
+| Variable                              | Description                                                                                                               |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `ARETE_API_URL`                       | Override API endpoint                                                                                                     |
+| `ARETE_PROFILE`                       | Named credential profile outside initialized repos; `.arete/auth.toml` wins inside them                                   |
+| `ARETE_API_KEY`                       | Legacy direct key override, used only when no profile is selected                                                         |
+| `ARETE_CREDENTIALS_PATH`              | Override the credentials file                                                                                             |
+| `ARETE_DEV_ENV`                       | The dev environment `a4 dev` commands and the MCP dev tools act on (a name or an id)                                      |
+| `ARETE_REQUIRE_REGISTRY_SIGNATURES=1` | Require valid registry signatures even in bootstrap builds without trust anchors; official builds enforce them by default |
+| `A4_INSTALL_DIR`                      | Install directory for `a4 self install` and the bootstrappers                                                             |
+| `A4_NO_MODIFY_PATH=1`                 | Do not edit shell profiles or the Windows PATH on install                                                                 |
+| `A4_NO_UPDATE_CHECK=1`                | Disable the once-per-day "update available" notice                                                                        |
+| `A4_NON_INTERACTIVE=1`                | Never prompt (same as `--non-interactive`)                                                                                |
+| `A4_VERSION`                          | Version for `install.sh` / `install.ps1` to install                                                                       |
+| `CI`                                  | When set: never prompt, no PATH edits, no update notice, no telemetry banner                                              |
+| `DO_NOT_TRACK=1`                      | Disable telemetry (standard)                                                                                              |
+| `ARETE_TELEMETRY_DISABLED=1`          | Disable telemetry (Arete-specific)                                                                                        |
 
 ---
 
@@ -1952,6 +2358,8 @@ a4 telemetry disable
 | Error                                         | Solution                                                                                                                           |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `Not authenticated`                           | Run `a4 auth signup` (agent) or `a4 auth login --profile human --key <a4_sk_…>`                                                    |
+| `registry-key-required`                       | The registry needs an API key for this request: run `a4 login` (free), or set `ARETE_API_KEY`                                      |
+| `Registry signature: ...`                     | A release is unsigned or its signature does not verify; see [Signed releases](#signed-releases)                                    |
 | `a4: command not found`                       | Run `export PATH="$HOME/.local/bin:$PATH"` or use the `A4_BIN=` path the installer printed; `a4 doctor` reports this as `cli.path` |
 | `a4 was not installed by the Arete installer` | Reinstall with `curl -fsSL https://arete.run/install.sh \| sh`; Cargo builds must use `cargo install a4-cli --force`               |
 | `Stack not found`                             | Check `a4 stack list` for available stacks                                                                                         |

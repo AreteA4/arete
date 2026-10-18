@@ -13,7 +13,11 @@ functions remain supported. New TypeScript generation emits `SdkDefinitionV2`:
 - `inputKind`: `program-spec`
 - `inputHash`: the exact ProgramSpec identity
 - `target`: `typescript`
-- `runtimeContract`: `@usearete/sdk/program-definition-v1`
+- `runtimeContract`: `@usearete/sdk/program-definition-v2` for program modules,
+  which import their runtime from `@usearete/sdk/program`;
+  `@usearete/sdk/program-definition-v1` for the program definitions a stack
+  module embeds, which import from `@usearete/sdk`. The emitted imports are
+  part of the hash, so each import specifier has its own contract version.
 - `outputTreeHash`: an `SdkOutputTree` identity over the content described below
 
 The enclosing hash protocol remains `arete:h1:sdk-definition:sha256:...`.
