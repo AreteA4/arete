@@ -3748,6 +3748,35 @@ mod tests {
     }
 
     #[test]
+    fn rust_generator_encodes_a_u64_prefixed_string_as_string_u64_len() {
+        let string = |length_prefix| {
+            IdlTypeSnapshot::String(arete_idl::snapshot::IdlStringTypeSnapshot {
+                string: arete_idl::types::IdlStringEncoding::Utf8,
+                length_prefix,
+            })
+        };
+        let bincode =
+            idl_type_snapshot_to_rust_string(&string(Some(arete_idl::types::IdlLengthPrefix::U64)));
+        assert_eq!(bincode, "StringU64Len");
+        assert_eq!(idl_type_snapshot_to_rust_string(&string(None)), "String");
+
+        let mut parser = RustDefinedTypes::new(&[]);
+        let parsed = parser.parse_arg_type(&bincode);
+        assert_eq!(parsed.schema, "ArgType::StringU64Len");
+        assert_eq!(parsed.param_type, "String");
+        assert_eq!(
+            parser
+                .parse_snapshot_type(&string(Some(arete_idl::types::IdlLengthPrefix::U64)))
+                .schema,
+            "ArgType::StringU64Len"
+        );
+        assert_eq!(
+            parser.parse_snapshot_type(&string(None)).schema,
+            "ArgType::String"
+        );
+    }
+
+    #[test]
     fn rust_generator_selects_u64_length_prefixed_vec_schema() {
         let mut parser = RustDefinedTypes::new(&[]);
         let vec_of_pubkey = |length_prefix| {
@@ -5460,6 +5489,8 @@ impl<'a> RustDefinedTypes<'a> {
             "f64" => rust_prim("ArgType::F64", "f64"),
             "bool" => rust_prim("ArgType::Bool", "bool"),
             "String" | "string" | "str" => rust_prim("ArgType::String", "String"),
+            // bincode string (`u64` byte length), the native programs' seeds.
+            "StringU64Len" => rust_prim("ArgType::StringU64Len", "String"),
             "Pubkey" | "pubkey" | "PublicKey" | "publicKey" => {
                 rust_prim("ArgType::Pubkey", "String")
             }
@@ -5495,6 +5526,10 @@ impl<'a> RustDefinedTypes<'a> {
                     supported: inner.supported,
                 }
             }
+            IdlTypeSnapshot::String(s) if s.is_u64_prefixed() => {
+                self.parse_arg_type("StringU64Len")
+            }
+            IdlTypeSnapshot::String(_) => self.parse_arg_type("string"),
             IdlTypeSnapshot::Array(arr) => {
                 let mut element: Option<RustParsedArg> = None;
                 let mut size: Option<u32> = None;

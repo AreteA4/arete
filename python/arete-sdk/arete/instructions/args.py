@@ -8,7 +8,8 @@ key's UTF-8 bytes.
 
 Type schema mirrors the TS ``ArgType`` shape: primitives are strings
 (``"u8"`` ... ``"u128"``, ``"i8"`` ... ``"i128"``, ``"f32"``, ``"f64"``,
-``"bool"``, ``"string"``, ``"pubkey"``, ``"bytes"``); composites are
+``"bool"``, ``"string"``, ``"stringU64Len"`` (u64 byte length),
+``"pubkey"``, ``"bytes"``); composites are
 single-key dicts (``{"vec": t}`` with a u32 count, ``{"vecU64Len": t}`` with a
 u64 count, ``{"option": t}``, ``{"array": (t, n)}``,
 ``{"tuple": (t, ...)}``, ``{"hashMap": (k, v)}``,
@@ -242,14 +243,15 @@ def _serialize_primitive(value: Any, ty: str, ctx: str, out: bytearray) -> None:
                 f"got {_type_name(value)}"
             )
         out.append(1 if value else 0)
-    elif ty == "string":
+    elif ty in ("string", "stringU64Len"):
         if not isinstance(value, str):
             raise InstructionError(
                 f'Invalid value for "{ctx}": expected a string, '
                 f"got {_type_name(value)}"
             )
         encoded = value.encode("utf-8")
-        out += struct.pack("<I", len(encoded))
+        # ``stringU64Len`` is bincode's string (the native programs' seeds).
+        out += struct.pack("<Q" if ty == "stringU64Len" else "<I", len(encoded))
         out += encoded
     elif ty == "pubkey":
         _serialize_pubkey(value, ctx, out)

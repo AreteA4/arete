@@ -318,6 +318,14 @@ describe('serializeInstructionData', () => {
     ]);
   });
 
+  it('serializes stringU64Len with a u64 little-endian byte length', () => {
+    // Pinned to the Rust test `serializes_string_u64_len_with_an_eight_byte_prefix`.
+    const schema: ArgSchema[] = [{ name: 'seed', type: 'stringU64Len' }];
+    expect([...serializeInstructionData(new Uint8Array(0), { seed: 'hi' }, schema)]).toEqual([
+      2, 0, 0, 0, 0, 0, 0, 0, 0x68, 0x69,
+    ]);
+  });
+
   it('serializes the ExtendLookupTable payload shape end to end', () => {
     // Pinned to the Rust test `serializes_an_address_lookup_table_extend_payload`
     // and the Python test of the same name: u32-LE tag, u64-LE count, raw keys.

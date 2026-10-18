@@ -483,6 +483,9 @@ fn idl_field_shape(idl_type: &IdlTypeSnapshot) -> IdlFieldShape {
                 ..inner
             }
         }
+        IdlTypeSnapshot::String(_) => {
+            idl_field_shape(&IdlTypeSnapshot::Simple("string".to_string()))
+        }
         IdlTypeSnapshot::Vec(vec) => {
             let inner = idl_field_shape(&vec.vec);
             IdlFieldShape {
@@ -898,6 +901,7 @@ fn referenced_type_names(def: &IdlTypeDefSnapshot) -> BTreeSet<String> {
             }
             IdlTypeSnapshot::Option(option) => walk(&option.option, names),
             IdlTypeSnapshot::Vec(vec) => walk(&vec.vec, names),
+            IdlTypeSnapshot::String(_) => {}
             IdlTypeSnapshot::HashMap(map) => {
                 walk(&map.hash_map.0, names);
                 walk(&map.hash_map.1, names);

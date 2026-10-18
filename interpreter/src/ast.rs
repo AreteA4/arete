@@ -57,6 +57,8 @@ pub fn idl_type_snapshot_to_rust_string(ty: &IdlTypeSnapshot) -> String {
                 _ => format!("Vec<{}>", inner),
             }
         }
+        IdlTypeSnapshot::String(string) if string.is_u64_prefixed() => "StringU64Len".to_string(),
+        IdlTypeSnapshot::String(_) => "String".to_string(),
         IdlTypeSnapshot::HashMap(map) => {
             let key_type = idl_type_snapshot_to_rust_string(&map.hash_map.0);
             let val_type = idl_type_snapshot_to_rust_string(&map.hash_map.1);

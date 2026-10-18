@@ -337,6 +337,12 @@ pub fn convert_idl_type(idl_type: &idl_parser::IdlType) -> IdlTypeSnapshot {
             vec: Box::new(convert_idl_type(&vec.vec)),
             length_prefix: vec.length_prefix,
         }),
+        idl_parser::IdlType::String(string) => {
+            IdlTypeSnapshot::String(arete_idl::snapshot::IdlStringTypeSnapshot {
+                string: string.string,
+                length_prefix: string.length_prefix,
+            })
+        }
         idl_parser::IdlType::Defined(def) => IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
             defined: match &def.defined {
                 idl_parser::IdlTypeDefinedInner::Named { name } => {

@@ -1020,6 +1020,8 @@ impl<'a> DefinedTypes<'a> {
             "f64" => prim("f64", "number"),
             "bool" => prim("bool", "boolean"),
             "String" | "string" | "str" => prim("string", "string"),
+            // bincode string (`u64` byte length), the native programs' seeds.
+            "StringU64Len" => prim("stringU64Len", "string"),
             "Pubkey" | "pubkey" | "PublicKey" | "publicKey" => prim("pubkey", "string"),
             // IDL `bytes` (instruction args reach here as Vec<u8> instead and
             // keep the wire-identical `{ vec: 'u8' }` schema).
@@ -1056,6 +1058,10 @@ impl<'a> DefinedTypes<'a> {
                     supported: inner.supported,
                 }
             }
+            IdlTypeSnapshot::String(s) if s.is_u64_prefixed() => {
+                self.parse_arg_type("StringU64Len")
+            }
+            IdlTypeSnapshot::String(_) => self.parse_arg_type("string"),
             IdlTypeSnapshot::Array(arr) => {
                 let mut element: Option<ParsedArgType> = None;
                 let mut size: Option<u32> = None;
@@ -2629,7 +2635,8 @@ pub(crate) fn normalize_seed_arg_type(raw: &str) -> Option<String> {
     }
     match t {
         "Pubkey" | "pubkey" | "publicKey" | "PublicKey" => Some("pubkey".to_string()),
-        "String" | "string" | "str" => Some("string".to_string()),
+        // A seed is the raw UTF-8 bytes; the length prefix never reaches it.
+        "String" | "string" | "str" | "StringU64Len" => Some("string".to_string()),
         _ => None,
     }
 }
@@ -2974,6 +2981,54 @@ mod tests {
         assert_eq!(out.stack_entries.len(), 1, "warnings: {:?}", out.warnings);
         assert!(out.code.contains("amount: bigint;"));
         assert!(out.code.contains("{ name: 'amount', type: 'u64' }"));
+    }
+
+    #[test]
+    fn emits_u64_length_prefixed_string_schema() {
+        let mut idl = idl("demo", "Prog111", vec![]);
+        let u64_string = IdlTypeSnapshot::String(arete_idl::snapshot::IdlStringTypeSnapshot {
+            string: arete_idl::types::IdlStringEncoding::Utf8,
+            length_prefix: Some(IdlLengthPrefix::U64),
+        });
+        idl.instructions = vec![instruction_snapshot(
+            "assignWithSeed",
+            vec![10, 0, 0, 0],
+            vec![field("seed", u64_string), field("label", simple("string"))],
+        )];
+        let idls = vec![idl];
+
+        let instr = InstructionDef {
+            name: "assignWithSeed".to_string(),
+            discriminator: vec![10, 0, 0, 0],
+            discriminator_size: 4,
+            accounts: vec![],
+            args: vec![arg("seed", "StringU64Len"), arg("label", "String")],
+            errors: vec![],
+            program_id: Some("Prog111".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "Demo",
+            std::slice::from_ref(&instr),
+            &idls,
+            &BTreeMap::new(),
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert_eq!(out.stack_entries.len(), 1, "warnings: {:?}", out.warnings);
+        assert!(
+            out.code.contains("{ name: 'seed', type: 'stringU64Len' }"),
+            "{}",
+            out.code
+        );
+        assert!(out.code.contains("seed: string;"), "{}", out.code);
+        assert!(
+            out.code.contains("{ name: 'label', type: 'string' }"),
+            "{}",
+            out.code
+        );
     }
 
     #[test]

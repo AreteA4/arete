@@ -79,6 +79,8 @@ fn format_idl_type(ty: &IdlType) -> String {
         }
         IdlType::Option(o) => format!("Option<{}>", format_idl_type(&o.option)),
         IdlType::Vec(v) => format!("Vec<{}>", format_idl_type(&v.vec)),
+        IdlType::String(s) if s.is_u64_prefixed() => "string (u64 length)".to_string(),
+        IdlType::String(_) => "string".to_string(),
         IdlType::HashMap(m) => format!(
             "HashMap<{}, {}>",
             format_idl_type(&m.hash_map.0),
