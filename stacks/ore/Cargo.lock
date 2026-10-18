@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "arete-artifacts"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arete-hash",
  "arete-idl",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "arete-auth"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "arete-hash"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "arete-idl",
  "bs58",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "arete-idl"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "bs58",
  "serde",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "arete-solana-contracts"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bs58",
  "chrono",
