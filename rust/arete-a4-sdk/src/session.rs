@@ -46,6 +46,28 @@
 //! - **Session-level chain over shared endpoints** authenticates with the
 //!   session auth configuration (TS uses a raw unauthenticated `fetch` for
 //!   this one path).
+//!
+//! ## Protocols
+//!
+//! [`SessionBuilder::protocol`] registers a protocol client under a key
+//! ([`Session::protocol`]), and [`Session::protocol_client`] builds one on
+//! demand (generated clients' `from_session`). Either way the client uses
+//! the session's auth (unless its options carry their own) and the
+//! session-wide [`SessionBuilder::protocol_key_class`], and its instance
+//! handles follow the protocol's live stack view through the session's
+//! connected members (TS `session.protocols`). Differences:
+//!
+//! - **Stacks are not hoisted.** A Rust [`ProtocolDefinition`] does not
+//!   carry its stacks' generated types, so the session cannot connect them
+//!   itself: register the protocol's live stack as a member under the key
+//!   the definition names (`live_stack.stack`), e.g.
+//!   `.stack::<MeteoraPresaleStack>("meteoraPresale")`. A protocol whose live
+//!   stack is not a member still works; its handles carry no live row.
+//! - **Programs are not wired** onto the protocol client: Rust protocol
+//!   clients prepare through the hosted API and expose no `programs`; use
+//!   [`Session::program`] for the program SDKs.
+//! - **No shared fetch.** Protocol clients keep their own HTTP client unless
+//!   their options pass one.
 
 use std::any::Any;
 use std::future::Future;
@@ -63,6 +85,10 @@ use crate::operations::{
     ExecuteOptions, OperationExecutionError, OperationReceipt, PreparedOperation, SignerRegistry,
 };
 use crate::program::{ProgramSdk, ProgramStack};
+use crate::protocol::{
+    ProtocolClient, ProtocolClientOptions, ProtocolDefinition, ProtocolError, ProtocolKeyClass,
+    ProtocolStackViews, StateViewSource,
+};
 use crate::transactions::TransactionTransport;
 use crate::wallet::WalletAdapter;
 
@@ -119,6 +145,7 @@ trait SessionMember: Send + Sync {
         operation: &PreparedOperation,
         options: ExecuteOptions,
     ) -> Result<OperationReceipt, OperationExecutionError>;
+    fn state_view_source(&self) -> StateViewSource;
     fn as_any(&self) -> &dyn Any;
     fn type_label(&self) -> &'static str;
 }
@@ -157,6 +184,10 @@ impl<S: Stack> SessionMember for Arete<S> {
         Arete::execute(self, operation, options).await
     }
 
+    fn state_view_source(&self) -> StateViewSource {
+        Arete::state_view_source(self)
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -189,6 +220,8 @@ type MemberConnector = Box<dyn FnOnce(SharedMemberOptions) -> MemberFuture + Sen
 pub struct SessionBuilder {
     members: Vec<(String, MemberConnector)>,
     shared: SharedMemberOptions,
+    protocols: Vec<(String, ProtocolDefinition, ProtocolClientOptions)>,
+    protocol_key_class: Option<ProtocolKeyClass>,
 }
 
 impl SessionBuilder {
@@ -323,6 +356,26 @@ impl SessionBuilder {
         self
     }
 
+    /// Register a protocol client under `key` ([`Session::protocol`]), built
+    /// at connect time like [`Session::protocol_client`].
+    pub fn protocol(
+        mut self,
+        key: impl Into<String>,
+        definition: &ProtocolDefinition,
+        options: ProtocolClientOptions,
+    ) -> Self {
+        self.protocols.push((key.into(), *definition, options));
+        self
+    }
+
+    /// The key class of the session's protocol clients when the session
+    /// auth cannot tell (tokens, providers, endpoints); TS
+    /// `protocolKeyClass`.
+    pub fn protocol_key_class(mut self, key_class: ProtocolKeyClass) -> Self {
+        self.protocol_key_class = Some(key_class);
+        self
+    }
+
     /// Connect every member (sequentially, in definition order) and assemble
     /// the session.
     pub async fn connect(self) -> Result<Session, AreteError> {
@@ -337,6 +390,20 @@ impl SessionBuilder {
             if keys.windows(2).any(|pair| pair[0] == pair[1]) {
                 return Err(AreteError::InvalidConfig(
                     "Session member keys must be unique".to_string(),
+                ));
+            }
+        }
+
+        {
+            let mut keys: Vec<&str> = self
+                .protocols
+                .iter()
+                .map(|(key, ..)| key.as_str())
+                .collect();
+            keys.sort_unstable();
+            if keys.windows(2).any(|pair| pair[0] == pair[1]) {
+                return Err(AreteError::InvalidConfig(
+                    "Session protocol keys must be unique".to_string(),
                 ));
             }
         }
@@ -380,13 +447,34 @@ impl SessionBuilder {
             .clone()
             .unwrap_or_else(|| execution_host.transactions());
 
-        Ok(Session {
+        let mut session = Session {
             members,
             wallet: RwLock::new(shared.wallet),
             signer_registry: shared.signer_registry.unwrap_or_default(),
             chain,
             transactions,
-        })
+            auth: shared.auth,
+            protocol_key_class: self.protocol_key_class,
+            protocols: Vec::with_capacity(self.protocols.len()),
+        };
+        for (key, definition, options) in self.protocols {
+            let client = session
+                .protocol_client(&definition, options)
+                .map_err(|error| {
+                    AreteError::InvalidConfig(format!("Session protocol '{key}': {error}"))
+                })?;
+            if let Some(live) = definition.live_stack {
+                if !session.keys().contains(&live.stack) {
+                    tracing::warn!(
+                        protocol = %key,
+                        stack = live.stack,
+                        "protocol live stack is not a session member; its instance handles carry no live row"
+                    );
+                }
+            }
+            session.protocols.push((key, client));
+        }
+        Ok(session)
     }
 }
 
@@ -397,6 +485,9 @@ pub struct Session {
     signer_registry: Arc<SignerRegistry>,
     chain: Arc<dyn ChainClient>,
     transactions: Arc<dyn TransactionTransport>,
+    auth: Option<AuthConfig>,
+    protocol_key_class: Option<ProtocolKeyClass>,
+    protocols: Vec<(String, ProtocolClient)>,
 }
 
 impl Session {
@@ -431,6 +522,55 @@ impl Session {
     /// [`SessionBuilder::program`].
     pub fn program<P: ProgramSdk>(&self, key: &str) -> Result<&P, AreteError> {
         Ok(&self.stack::<ProgramStack<P>>(key)?.programs)
+    }
+
+    /// The protocol client registered under `key` with
+    /// [`SessionBuilder::protocol`].
+    pub fn protocol(&self, key: &str) -> Result<&ProtocolClient, AreteError> {
+        self.protocols
+            .iter()
+            .find(|(candidate, _)| candidate == key)
+            .map(|(_, client)| client)
+            .ok_or_else(|| AreteError::InvalidConfig(format!("Session has no protocol '{key}'")))
+    }
+
+    /// The registered protocol keys, in registration order.
+    pub fn protocol_keys(&self) -> Vec<&str> {
+        self.protocols.iter().map(|(key, _)| key.as_str()).collect()
+    }
+
+    /// The session's members as live views for protocol instance handles,
+    /// keyed by member key.
+    pub fn live_views(&self) -> ProtocolStackViews {
+        self.members
+            .iter()
+            .fold(ProtocolStackViews::new(), |views, (key, member)| {
+                let source = member.state_view_source();
+                views.with_listener(key.clone(), move |view, row| {
+                    Box::pin(source(view).listen(row))
+                })
+            })
+    }
+
+    /// A protocol client sharing this session: the session's auth unless
+    /// `options` has its own, the session's protocol key class unless
+    /// `options` names one, and the session's members as live views unless
+    /// `options` brings its own.
+    pub fn protocol_client(
+        &self,
+        definition: &ProtocolDefinition,
+        mut options: ProtocolClientOptions,
+    ) -> Result<ProtocolClient, ProtocolError> {
+        if options.auth.is_none() {
+            options.auth = self.auth.clone();
+        }
+        if options.key_class.is_none() {
+            options.key_class = self.protocol_key_class;
+        }
+        if options.live_views.is_none() {
+            options.live_views = Some(Arc::new(self.live_views()));
+        }
+        ProtocolClient::new(definition, options)
     }
 
     /// The member keys, in definition (connection) order.
@@ -566,5 +706,75 @@ mod tests {
             .expect("enriched stack accessor");
         let _attached: &TestProgramSdk = &client.programs.attached;
         session.close().await;
+    }
+
+    const RAISE: ProtocolDefinition = ProtocolDefinition {
+        name: "tokenRaise",
+        version: "1.0.0",
+        package: "token-raise",
+        package_release_hash: "release",
+        protocol_spec_hash: "spec",
+        protocol_release_hash: "protocol-release",
+        deployment: crate::protocol::ProtocolDeploymentDescriptor {
+            deployment_id: "dep_1",
+            access: crate::protocol::ProtocolDeploymentAccess::Public,
+            api_url: "https://api.example.test/api",
+            session_endpoint: "https://api.example.test/ws/sessions",
+        },
+        instance_visibility: crate::protocol::ProtocolInstanceVisibility::Account,
+        steps: &[],
+        events: &[],
+        instance_metadata: &[],
+        participant_metadata: &[],
+        live_stack: Some(crate::protocol::ProtocolLiveStackDescriptor {
+            stack: "raiseStack",
+            view: "TokenRaiseInstance/state",
+            key_account: "presale",
+        }),
+    };
+
+    #[tokio::test]
+    async fn protocols_share_the_session_auth_and_members() {
+        let session = Session::builder()
+            .stack_with::<TestLiveStack>("raiseStack", |member| member.transport(Transport::Http))
+            .auth(AuthConfig::default().with_secret_key("a4_sk_test"))
+            .protocol("raise", &RAISE, ProtocolClientOptions::default())
+            .connect()
+            .await
+            .expect("session with a protocol should connect");
+
+        assert_eq!(session.protocol_keys(), vec!["raise"]);
+        let raise = session.protocol("raise").expect("registered protocol");
+        assert_eq!(raise.key_class(), ProtocolKeyClass::Secret);
+        assert_eq!(raise.deployment_id(), "dep_1");
+        let views = raise.live_views().expect("session members as live views");
+        assert!(views
+            .listen("raiseStack", "TokenRaiseInstance/state", "P1")
+            .is_some());
+        assert!(views.listen("other", "X/state", "P1").is_none());
+        assert!(session.protocol("missing").is_err());
+
+        // On demand, with options of its own.
+        let publishable = session
+            .protocol_client(
+                &RAISE,
+                ProtocolClientOptions::default().with_publishable_key("a4_pk_test"),
+            )
+            .expect("protocol client");
+        assert_eq!(publishable.key_class(), ProtocolKeyClass::Publishable);
+        session.close().await;
+    }
+
+    #[tokio::test]
+    async fn protocol_keys_are_unique() {
+        let error = Session::builder()
+            .program::<TestProgramSdk>("test")
+            .protocol("raise", &RAISE, ProtocolClientOptions::default())
+            .protocol("raise", &RAISE, ProtocolClientOptions::default())
+            .connect()
+            .await
+            .err()
+            .expect("duplicate protocol keys");
+        assert!(error.to_string().contains("unique"), "{error}");
     }
 }

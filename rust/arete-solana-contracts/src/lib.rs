@@ -1,6 +1,9 @@
 //! Managed Solana capabilities v1. Wire fixtures live in tests/fixtures/managed-solana-v1.
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "raw-capture")]
+pub mod raw_capture;
+
 pub const CONTRACT_VERSION: &str = "managed-solana/v1";
 pub const MAX_BATCH_ADDRESSES: usize = 100;
 pub const MAX_PAGE_SIZE: u16 = 100;

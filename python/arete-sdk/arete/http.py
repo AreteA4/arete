@@ -81,7 +81,13 @@ DEFAULT_READ_SCOPE = "read"
 
 PROGRAM_READ_BINDING_KIND = "program-read-binding"
 SOLANA_GATEWAY_BINDING_KIND = "solana-gateway-binding"
-_TARGET_KINDS = (PROGRAM_READ_BINDING_KIND, SOLANA_GATEWAY_BINDING_KIND)
+PROTOCOL_DEPLOYMENT_KIND = "protocol-deployment"
+_TARGET_KINDS = (
+    PROGRAM_READ_BINDING_KIND,
+    SOLANA_GATEWAY_BINDING_KIND,
+    PROTOCOL_DEPLOYMENT_KIND,
+)
+_UNRELEASED_TARGET_KINDS = (SOLANA_GATEWAY_BINDING_KIND, PROTOCOL_DEPLOYMENT_KIND)
 
 
 def normalize_scopes(scopes: Optional[Sequence[str]]) -> Tuple[str, ...]:
@@ -98,9 +104,10 @@ def _is_send_scope(scope: str) -> bool:
 class AuthTokenTarget:
     """Targeted-token request key.
 
-    ``kind`` is ``"program-read-binding"`` or ``"solana-gateway-binding"``;
-    ``target_id`` is the ``prb_…`` / ``sgb_…`` binding id; ``release_hash``
-    applies to program-read targets only.
+    ``kind`` is ``"program-read-binding"``, ``"solana-gateway-binding"`` or
+    ``"protocol-deployment"``; ``target_id`` is the ``prb_…`` / ``sgb_…``
+    binding id or the protocol deployment id; ``release_hash`` applies to
+    program-read targets only.
     """
 
     kind: str
@@ -114,7 +121,7 @@ class AuthTokenTarget:
             and bool(self.target_id)
             and (
                 (self.kind == PROGRAM_READ_BINDING_KIND and self.release_hash)
-                or (self.kind == SOLANA_GATEWAY_BINDING_KIND and self.release_hash is None)
+                or (self.kind in _UNRELEASED_TARGET_KINDS and self.release_hash is None)
             )
         )
         if not complete:

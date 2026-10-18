@@ -45,6 +45,8 @@ base64 = "0.22"
 bs58 = "0.5"
 # Home directory for the `a4` CLI credentials file (same crate the CLI uses).
 dirs = "5"
+# Verifies execution receipts and attestation signatures offline.
+ed25519-dalek = "2"
 flate2 = "1.0"
 futures-util = { version = "0.3", features = ["sink"] }
 pin-project-lite = "0.2"
@@ -68,6 +70,8 @@ tracing = "0.1"
 unicode-normalization = "0.1"
 unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
 url = "2"
+# Idempotency keys of protocol prepares.
+uuid = { version = "1", features = ["v4"] }
 
 # Optional `solana-adapter` graph. The versions are the compatible set the
 # upstream V1 examples use (solana-foundation/transaction-v1-examples,

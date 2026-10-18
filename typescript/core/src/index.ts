@@ -30,6 +30,9 @@ export type {
 
 export { PROGRAM_KEY_CONFLICT, compareProgramIdentity, isSameProgramSdk } from './program-identity';
 export type { ProgramIdentityMatch } from './program-identity';
+export { STACK_KEY_CONFLICT, isSameStackSdk } from './stack-identity';
+
+export * from './protocol';
 
 export {
   EXTENSION_API_VERSION,
@@ -88,6 +91,9 @@ export type {
   SessionOptions,
   CompositionSessionOptions,
   SessionMemberOptions,
+  SessionProtocolKeyClass,
+  SessionProtocolOptions,
+  SessionProtocols,
 } from './session';
 
 export { createChainClient, deriveHttpEndpoint } from './chain';
@@ -288,6 +294,7 @@ export type {
   AuthTokenRequest,
   ProgramReadBindingAuthTarget,
   SolanaGatewayBindingAuthTarget,
+  ProtocolDeploymentAuthTarget,
   WebSocketFactoryInit,
   TypedViews,
   TypedViewGroup,
@@ -448,7 +455,6 @@ export {
   createPublicKeySeed,
   decodeBase58,
   encodeBase58,
-  serializeInstructionData,
   parseInstructionError,
   formatProgramError,
   InstructionError,
@@ -466,5 +472,8 @@ export {
   pda,
   createProgramPdas,
 } from './instructions';
+// The Buffer-returning serializer lives outside `./instructions`, which the
+// pure `@usearete/sdk/program` entry reaches.
+export { serializeInstructionData } from './instructions/buffer-serializer';
 
 export * from './managed-solana';

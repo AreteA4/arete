@@ -44,6 +44,8 @@ pub enum TokenTargetKind {
     ProgramReadBinding,
     /// Hosted Solana gateway binding (`sgb_…`); never carries a release hash.
     SolanaGatewayBinding,
+    /// Protocol deployment (`protocol:*` scopes); never carries a release hash.
+    ProtocolDeployment,
 }
 
 impl TokenTargetKind {
@@ -52,6 +54,7 @@ impl TokenTargetKind {
         match self {
             Self::ProgramReadBinding => "program-read-binding",
             Self::SolanaGatewayBinding => "solana-gateway-binding",
+            Self::ProtocolDeployment => "protocol-deployment",
         }
     }
 }
@@ -68,6 +71,7 @@ impl<'de> serde::Deserialize<'de> for TokenTargetKind {
         match raw.as_str() {
             "program-read-binding" => Ok(Self::ProgramReadBinding),
             "solana-gateway-binding" => Ok(Self::SolanaGatewayBinding),
+            "protocol-deployment" => Ok(Self::ProtocolDeployment),
             other => Err(serde::de::Error::custom(format!(
                 "unknown token target kind '{other}'"
             ))),
@@ -105,10 +109,22 @@ impl AuthTokenTarget {
         }
     }
 
+    /// Protocol deployment target: sessions that read, prepare and submit
+    /// against one deployment.
+    pub fn protocol_deployment(deployment_id: impl Into<String>) -> Self {
+        Self {
+            target_kind: TokenTargetKind::ProtocolDeployment,
+            target_id: deployment_id.into(),
+            program_release_hash: None,
+        }
+    }
+
     fn validate(&self) -> Result<(), AreteError> {
         let complete = match self.target_kind {
             TokenTargetKind::ProgramReadBinding => self.program_release_hash.is_some(),
-            TokenTargetKind::SolanaGatewayBinding => self.program_release_hash.is_none(),
+            TokenTargetKind::SolanaGatewayBinding | TokenTargetKind::ProtocolDeployment => {
+                self.program_release_hash.is_none()
+            }
         };
         if complete && !self.target_id.is_empty() {
             Ok(())
@@ -712,6 +728,7 @@ fn read_target_to_token_target(
     let target_kind = match target.target_kind.as_str() {
         "program-read-binding" => TokenTargetKind::ProgramReadBinding,
         "solana-gateway-binding" => TokenTargetKind::SolanaGatewayBinding,
+        "protocol-deployment" => TokenTargetKind::ProtocolDeployment,
         other => {
             return Err(invalid_auth_error(
                 &format!("Unsupported token target kind '{other}'"),
@@ -1494,6 +1511,36 @@ mod tests {
                 .unwrap(),
             TokenTargetKind::SolanaGatewayBinding
         );
+        assert_eq!(
+            serde_json::to_value(TokenTargetKind::ProtocolDeployment).unwrap(),
+            serde_json::json!("protocol-deployment")
+        );
+        assert_eq!(
+            serde_json::from_value::<TokenTargetKind>(serde_json::json!("protocol-deployment"))
+                .unwrap(),
+            TokenTargetKind::ProtocolDeployment
+        );
+    }
+
+    #[tokio::test]
+    async fn protocol_deployment_targets_carry_no_release_hash() {
+        let client = HttpAuthClient::new(
+            Some(AuthConfig::default().with_token("static")),
+            None,
+            reqwest::Client::new(),
+        );
+        let ok = AuthTokenRequest::targeted(
+            vec!["protocol:read".to_string()],
+            AuthTokenTarget::protocol_deployment("dep_1"),
+        );
+        assert_eq!(
+            client.token(&ok, false).await.unwrap().as_deref(),
+            Some("static")
+        );
+        let mut bad = AuthTokenTarget::protocol_deployment("dep_1");
+        bad.program_release_hash = Some("unexpected".to_string());
+        let request = AuthTokenRequest::targeted(vec!["protocol:read".to_string()], bad);
+        assert!(client.token(&request, false).await.is_err());
     }
 
     // fetch_json refresh-replay and predispatch-marker semantics are covered

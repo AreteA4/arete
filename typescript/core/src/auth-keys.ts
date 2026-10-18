@@ -49,7 +49,7 @@ interface DenoEnvironment {
  * Read an environment variable in Node, Bun or Deno without prompting for or
  * failing on missing permissions. Browsers have no environment.
  */
-function readEnvironmentVariable(name: string): string | undefined {
+export function readEnvironmentVariable(name: string): string | undefined {
   try {
     const deno = (globalThis as { Deno?: DenoEnvironment }).Deno;
     if (deno) {

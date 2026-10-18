@@ -12,7 +12,7 @@ import {
   type AccountResolutionOptions,
   type ResolvedAccount,
 } from './account-resolver';
-import { serializeInstructionData, type ArgSchema } from './serializer';
+import { encodeInstructionData, type ArgSchema } from './serializer';
 import {
   TransactionExecutionError,
   normalizeTransactionError,
@@ -107,7 +107,7 @@ export function createInstructionHandler<
     errors,
     argNames,
     build(args: Record<string, unknown>, resolved: ResolvedAccount[]): BuiltInstruction {
-      const data = serializeInstructionData(discriminator, args, config.args);
+      const data = encodeInstructionData(discriminator, args, config.args);
       return {
         programId: config.programId,
         keys: resolved.map((r) => ({

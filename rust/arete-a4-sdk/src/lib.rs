@@ -59,6 +59,7 @@ pub mod operations;
 pub mod prelude;
 pub mod program;
 pub mod program_read_transport;
+pub mod protocol;
 pub mod read;
 pub mod rpc;
 pub mod serde_utils;

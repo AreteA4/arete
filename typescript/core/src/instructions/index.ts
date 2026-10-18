@@ -31,7 +31,6 @@ export {
   encodeBase58,
 } from './pda';
 export type { ArgSchema, ArgType, ArgStructField, EnumVariant } from './serializer';
-export { serializeInstructionData } from './serializer';
 export type { CanonicalSeedType } from './seed-serializer';
 export { normalizeSeedType, serializeSeedValue } from './seed-serializer';
 export type {

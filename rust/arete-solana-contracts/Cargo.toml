@@ -11,3 +11,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bs58 = "0.5"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+sha2 = { version = "0.10", optional = true }
+zstd = { version = "0.13", optional = true }
+
+[features]
+default = []
+# `arete.raw-capture/v1`: recorded raw updates for offline replay.
+raw-capture = ["dep:sha2", "dep:zstd"]
+
+[dev-dependencies]
+tempfile = "3"

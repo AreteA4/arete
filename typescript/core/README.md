@@ -195,6 +195,19 @@ await session.transaction([ix]);
 
 Raw builders are the exact IDL escape hatch. Instruction names, account names, argument names, and nested objects retain the generated IDL shape, including snake_case where the IDL uses it.
 
+### Building without a connection: `@usearete/sdk/program`
+
+`@usearete/sdk/program` is the subset that builds data and never connects: instruction handlers (`createInstructionHandler`, `buildInstruction`), PDA seeds, account read descriptors, operation metadata and amount conversion. It reaches no client, WebSocket, `fetch`, `process`, `Buffer` or Node built-in, so it bundles into code that runs without network or file access, such as a protocol's handlers:
+
+```ts
+import { buildInstruction } from '@usearete/sdk/program';
+import { pingInstruction } from '@programs/vote';
+
+const ix = buildInstruction(pingInstruction, { payer: wallet });
+```
+
+The root `@usearete/sdk` entry re-exports the same values, so a program built through one entry works with the other.
+
 ### Semantic Operations
 
 Use semantic operations for normal application code. Their `.prepare(...)` methods accept semantic, camelCase object inputs, derive routine addresses, normalize amounts, and return prepared artifacts. Use `raw` only when you deliberately need the exact IDL surface.
@@ -377,6 +390,144 @@ The same rule applies to `withPrograms`, `ConnectOptions.programs`, a session me
 `extendProgram`, `extendPrograms`, and `withProgramRead` drop `packageReleaseHash`, because a program changed outside its generated SDK is no longer provably that SDK. Generated entries stamp it last with `withProgramIdentity(program, { packageReleaseHash })`, after the package's own extension.
 
 Generated stack and program objects carry their runtime extensions under registry symbols, so `{ ...MY_STACK }` keeps `read`, `flows`, program operations and read descriptors, while `Object.keys` and JSON never list them. `EXTENSION_API_VERSION` (also `arete.extensionApi` in this package's `package.json`) versions that extension contract and changes only on a breaking change.
+
+## Protocols
+
+A protocol is a hosted state machine over Solana programs: an instance moves through states as wallets call its steps, guards decide whether a step may run, and the hosted API builds each step's transactions for the caller's wallet to sign. Install one as a typed module:
+
+```bash
+a4 install protocol token-raise --ts
+```
+
+This writes `generated/typescript/protocols/token-raise/token-raise.ts`. Its default export (`TOKEN_RAISE_PROTOCOL`) carries the deployment it talks to, the client-callable steps with their guard codes, the events, the metadata fields, and the stacks and programs the protocol uses. It never contains credentials. The module also exports the types (`TokenRaiseProtocolTypes`, `TokenRaiseContributeArgs`, ...) and `verifyTokenRaiseWebhook`.
+
+### Clients and keys
+
+```ts
+import { createProtocolClient } from '@usearete/sdk';
+import TOKEN_RAISE from './generated/typescript/protocols/token-raise/token-raise';
+
+// Browser: publishable key, bound to your origins.
+const raise = createProtocolClient(TOKEN_RAISE, { auth: { publishableKey: 'a4_pk_...' } });
+
+// Server: secret key (or ARETE_API_KEY).
+const admin = createProtocolClient(TOKEN_RAISE, { auth: { secretKey: process.env.ARETE_SECRET_KEY! } });
+```
+
+Every step is either `public` or `secret`. The client is typed by key class: a publishable-key client's `steps` holds only the `public` steps, so calling a secret step does not compile; a secret-key client has every client-callable step. With `token`, `getToken`, `tokenEndpoint` or `ARETE_API_KEY`, pass `keyClass: 'secret'` to get the secret type. The runtime enforces the same rule: a publishable client asked for a secret step resolves to the `step_requires_secret_key` rejection without a network call. Steps only a keeper or a multisig can run are never on the client.
+
+Sessions are minted for the protocol deployment and scoped to what the client does. Reads, metadata, allowed steps and event streams use a read-only session. The first `prepare` or `submit` mints a session that can prepare the client's steps (the `public` steps for publishable keys, or `options.steps`; every step for secret keys) and submit. Read-only pages therefore never mint a session that can prepare. Expired sessions are re-minted and the request retried once.
+
+### Prepare, sign, submit
+
+```ts
+const result = await raise.steps.contribute.prepare({
+  instance: instanceId,
+  wallet: walletAddress,
+  amount: 1_000_000n, // u64 and wider integers take a bigint or a decimal string
+});
+
+if (!result.ok) {
+  switch (result.rejection.rejected) {
+    case 'raise_not_open':
+    case 'deadline_passed':
+    case 'wallet_cap_exceeded':
+    case 'hard_cap_exceeded':
+      return showGuard(result.rejection); // `guard` and `detail` explain the evaluation
+    case 'step_requires_secret_key':
+    case 'step_not_in_session_scope':
+    case 'step_not_client_callable':
+      return showAccess(result.rejection);
+    case 'instance_terminal': // the instance has ended
+    case 'participant_terminal': // this wallet's participant has ended
+      return showFinished(result.rejection); // `detail.state` names the terminal state
+    default: {
+      const unreachable: never = result.rejection.rejected;
+      return unreachable;
+    }
+  }
+}
+
+// result.transactions: partially signed transactions (base64), one per intent transaction.
+const signed = await wallet.signAllTransactions(result.transactions.map(decode));
+const state = await raise.submit(result.intent, signed.map(serialize)); // base64 strings or bytes
+await raise.intents.get(state.executionId);
+```
+
+`create`-scope steps take `{ wallet, ...args }`; instance and participant steps take `{ instance, wallet, ...args }`. `prepare` options: `transactionFormat` (`'v1'` default, `'v0'` may return several transactions), `idempotencyKey` (generated when absent) and `clientContext`. A rejection's `rejected` is the step's guard-code union plus the access codes and the state codes (`instance_terminal`, `participant_terminal`, each with `detail.state`), so a `switch` over it is exhaustive. Other failures throw `AreteError`.
+
+### Instances, participants and events
+
+```ts
+const page = await raise.instances.list({ state: 'open', metadata: { ticker: 'ABC' }, limit: 20 });
+const instance = await raise.instances.get(id, { wallet }); // allowedSteps evaluated for `wallet`
+const steps = await raise.allowedSteps({ instance: id, wallet }); // [{ step, allowed, reason?, detail? }]
+const me = await raise.participants.get({ instance: id, wallet });
+
+// Everything `wallet` can do now: create steps plus the instances it relates to.
+const actions = await raise.actions({ wallet, limit: 20 }); // { createSteps, instances, nextCursor }
+for (const { instanceId, relation, steps } of actions.instances) {
+  // relation: ['participant' | 'creator' | `role:${name}`]; steps: [{ step, allowed, reason?, scope?, args? }]
+}
+
+const subscription = raise.events(id, {
+  onEvent(event) {
+    if (event.type === 'emit') console.log(event.event); // 'raise.succeeded' | ...
+  },
+  onError: console.error,
+});
+subscription.close();
+```
+
+`actions({ wallet, instance?, cursor?, limit? })` reads which steps a wallet can call across the deployment: `createSteps`, evaluated without an instance (guards that read the arguments or the instance-to-be are listed in `argsDependent`), and one page of the instances the wallet relates to, each with its `state`, `relation`, `participantState` and `steps`. Each step carries its `scope` and its typed `args` (`{ name, optional, type, format?, description? }`: the JSON type, with a `format` such as `u64` or `pubkey` for Solana amounts and keys), so an agent or UI can build the call without the spec. Pass `nextCursor` back as `cursor` for the next page (`limit` is at most 50), or `instance` to read one instance.
+
+`events` reads the instance's Server-Sent Events stream over `fetch` (so the session token is sent as a header), delivering `transition`, `participant`, `observation` and `emit` events. The server ends streams periodically and when the session expires; the client reconnects with `Last-Event-ID` and a fresh token, so no event is skipped. Pass `lastEventId` to resume a stream you stored.
+
+`instances.use(id)` returns a handle for `useSyncExternalStore`-style consumers: `get()` returns `{ instance, live }`, refreshed from the hosted API on every stream event. Inside a session, when the protocol ships its own stack, `live` is that stack's row for the instance.
+
+### Metadata
+
+Creator-writer fields need a secret-key client. Participant-writer fields need a signature from the participant's wallet:
+
+```ts
+import { protocolMetadataProof } from '@usearete/sdk';
+
+const metadata = raise.metadata.participant({ instance: id, wallet });
+const patch = { note: 'hello' }; // JSON merge patch; null removes a field
+const proof = metadata.proofMessage(patch, { wallet }); // expires in 4 minutes by default
+const signature = await walletAdapter.signMessage(proof.bytes); // 64-byte Ed25519
+await metadata.update(patch, {
+  walletProof: protocolMetadataProof({ wallet, signature, expiresAt: proof.expiresAt }),
+});
+```
+
+The signed message is six lines: `arete.protocol-metadata/v1`, the deployment id, the instance id, the wallet, the lowercase hex SHA-256 of the patch's RFC 8785 canonical JSON (`canonicalizeJson`), and `expiresAt` in unix seconds (at most 300 seconds ahead). `protocolMetadataProofMessage` builds it without a client.
+
+### Sessions
+
+```ts
+const session = await createSession(
+  { protocols: { tokenRaise: TOKEN_RAISE } },
+  { auth: { publishableKey: 'a4_pk_...' } }
+);
+session.protocols.tokenRaise.steps.contribute;
+session.stacks.meteoraPresale; // hoisted from the protocol, connected once
+```
+
+Each protocol's stacks join `session.stacks` and its programs join `session.programs`. A stack or program the session already has (the same object or the same `packageReleaseHash`) is connected once and shared, even across protocols; a different one under a taken key throws `STACK_KEY_CONFLICT` or `PROGRAM_KEY_CONFLICT` before anything connects. `session.protocols.<key>.stacks` and `.programs` are the session's connected members. Protocol clients are secret-typed when `auth.secretKey` is given or `protocolKeyClass: 'secret'` is set; per-protocol options go in `options.protocols.<key>`.
+
+### Webhooks
+
+Endpoints subscribed to a protocol's events receive signed POSTs. Verify them with the raw body:
+
+```ts
+import { verifyTokenRaiseWebhook } from './generated/typescript/protocols/token-raise/token-raise';
+
+const { id, payload } = verifyTokenRaiseWebhook(secret, rawBody, request.headers);
+// payload.event: 'contribution.confirmed' | 'raise.failed' | 'raise.succeeded'
+```
+
+`verifyWebhook` checks the `arete-webhook-id`, `arete-webhook-timestamp` and `arete-webhook-signature` headers (`v1=<hex HMAC-SHA256 of "<timestamp>.<body>">`, several entries while a secret rotates) with a 300-second tolerance, and throws `WebhookVerificationError` with a `code` on failure.
 
 ## Chain Reads
 

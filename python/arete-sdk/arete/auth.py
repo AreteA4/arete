@@ -522,7 +522,7 @@ def build_token_endpoint_request_body(
     Untargeted: ``{"websocket_url", "scopes"[, "stackManifestHash",
     "liveAlias"]}`` — the served stack version is named only when
     ``stack_release`` is given. Targeted (program-read-binding /
-    solana-gateway-binding): ``{"targetKind", "targetId", "scopes"[,
+    solana-gateway-binding / protocol-deployment): ``{"targetKind", "targetId", "scopes"[,
     "programReleaseHash"]}``; a stack release is never added to it.
     """
     if target_kind is not None:
@@ -688,7 +688,18 @@ async def request_token_from_endpoint(
         raise AuthError(
             f"Token endpoint returned {response.status_code}: {error_message}",
             error_code,
-            {"status": response.status_code, "wire_error_code": error_code_header},
+            {
+                "status": response.status_code,
+                "wire_error_code": error_code_header,
+                # The body's own code, which the header may not repeat
+                # (protocol access refusals such as `step_not_in_session_scope`).
+                "body_code": (
+                    error_data.get("code")
+                    if isinstance(error_data, dict)
+                    and isinstance(error_data.get("code"), str)
+                    else None
+                ),
+            },
         )
 
     data = response.json()

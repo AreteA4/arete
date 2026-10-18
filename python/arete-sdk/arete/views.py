@@ -649,3 +649,19 @@ class ViewsNamespace:
 
     def __dir__(self):
         return [*super().__dir__(), *self._defs]
+
+
+def state_view_by_path(views: ViewsNamespace, view: str) -> StateViewHandle:
+    """A state handle for the view whose wire id is ``view``
+    (``"<Entity>/<mode>"``), taking one positional key, for views known only
+    at runtime such as a protocol's live stack view. The view's generated
+    parser applies when the stack declares it."""
+    parser: Optional[Parser] = None
+    for group in views._defs.values():
+        for view_def in group.values():
+            if view_def.view == view:
+                parser = view_def.parser
+                break
+    return StateViewHandle(
+        view, views._registry, (), parser, views._initial_data_timeout
+    )

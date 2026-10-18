@@ -193,3 +193,24 @@ export function ambiguousSessionProgram(
     { key, stacks: providers.map(({ stackKey }) => stackKey) },
   );
 }
+
+/**
+ * Two members of one session (an explicit program, or a protocol's hoisted
+ * programs) provide different program SDKs under one key.
+ */
+export function sessionProtocolProgramKeyConflict(
+  key: string,
+  existingSource: string,
+  existing: ProgramSdkDefinition,
+  incomingSource: string,
+  incoming: ProgramSdkDefinition,
+): AreteError {
+  return new AreteError(
+    `Program key '${key}' conflicts in this session: ${existingSource} and ${incomingSource} `
+      + `provide different '${key}' program SDKs (${existingSource}: ${identityOf(existing)}; `
+      + `${incomingSource}: ${identityOf(incoming)}). Install the same program version for both, `
+      + `or give the explicit program a different key in createSession({ programs }).`,
+    PROGRAM_KEY_CONFLICT,
+    { key, sources: [existingSource, incomingSource] },
+  );
+}
