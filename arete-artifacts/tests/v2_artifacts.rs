@@ -226,7 +226,7 @@ fn two_and_three_live_compositions_resolve_hash_keyed_dependency_subsets() {
     let vote = artifact("vote", "Vote111111111111111111111111111111111111111");
     let memo = artifact("memo", "Memo111111111111111111111111111111111111111");
     let primary = live(&[system.clone(), vote.clone()], "Primary", &[]);
-    let secondary = live(&[vote.clone()], "Secondary", &[]);
+    let secondary = live(std::slice::from_ref(&vote), "Secondary", &[]);
     let tertiary = live(&[memo.clone(), system.clone()], "Tertiary", &[]);
     let lives = vec![
         ("primary".to_string(), primary),

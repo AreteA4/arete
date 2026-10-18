@@ -51,6 +51,8 @@ impl CanonicalIdlDocument {
             .map_err(|error| HashError::Serialization(error.to_string()))?;
         let mut idl =
             arete_idl::parse::parse_idl_content(&parser_input).map_err(HashError::InvalidIdl)?;
+        idl.validate_remainder_types()
+            .map_err(HashError::InvalidIdl)?;
         idl.address = Some(program_id.clone());
 
         let mut snapshot = normalize_idl_snapshot_v1(&idl);
@@ -793,6 +795,9 @@ fn idl_type_to_rust_string(idl_type: &IdlType) -> String {
                 format!("Vec<{inner}>")
             }
         }
+        // `StringU64Len` is the bincode-style string, as `VecU64Len<T>` is for sequences.
+        IdlType::String(string) if string.is_u64_prefixed() => "StringU64Len".to_string(),
+        IdlType::String(_) => "String".to_string(),
         IdlType::HashMap(hash_map) => format!(
             "std::collections::HashMap<{}, {}>",
             idl_type_to_rust_string(&hash_map.hash_map.0),
@@ -817,6 +822,34 @@ fn idl_type_to_rust_string(idl_type: &IdlType) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pinned in `typescript/hash/src/index.test.ts` ("u64-prefixed string"): both
+    /// implementations must hash this IDL identically.
+    const U64_STRING_IDL: &str = r#"{"version":"0.0.0","name":"seeded_probe","address":"11111111111111111111111111111111","metadata":{"name":"seeded_probe","address":"11111111111111111111111111111111"},"instructions":[{"name":"assignWithSeed","discriminant":{"type":"u32","value":10},"accounts":[{"name":"account","isMut":true,"isSigner":false}],"args":[{"name":"base","type":"publicKey"},{"name":"seed","type":{"string":"utf8","lengthPrefix":"u64"}},{"name":"owner","type":"publicKey"}]}],"accounts":[],"types":[],"events":[],"errors":[]}"#;
+
+    #[test]
+    fn a_u64_prefixed_string_reaches_the_arg_type_and_hash() {
+        let spec = build_program_spec_v1_from_bytes(U64_STRING_IDL.as_bytes(), None).unwrap();
+        let assign = &spec.instructions[0];
+        assert_eq!(assign.discriminator, vec![10, 0, 0, 0]);
+        assert_eq!(assign.args[1].name, "seed");
+        assert_eq!(assign.args[1].arg_type, "StringU64Len");
+        assert_eq!(
+            spec.normalized_idl_hash.to_string(),
+            "arete:h1:idl-normalized:sha256:f28cf9709d8218443cff5533a8cc9eac2e13806871736b2d1c3f1a711d0a2e59"
+        );
+        assert_eq!(
+            spec.hash().unwrap().to_string(),
+            "arete:h1:program-spec:sha256:88b2fba23aed4bb98851ca20d45a84bad704e8057ce23c67e28089c38d065a0c"
+        );
+
+        // Without the prefix the arg is an ordinary string, and the hash differs.
+        let plain =
+            U64_STRING_IDL.replace(r#"{"string":"utf8","lengthPrefix":"u64"}"#, r#""string""#);
+        let plain = build_program_spec_v1_from_bytes(plain.as_bytes(), None).unwrap();
+        assert_eq!(plain.instructions[0].args[1].arg_type, "String");
+        assert_ne!(plain.normalized_idl_hash, spec.normalized_idl_hash);
+    }
 
     #[test]
     fn preserves_account_selected_pda_programs() {

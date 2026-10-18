@@ -274,6 +274,11 @@ pub enum PortableKeyResolutionStrategy {
     },
     Lookup {
         primary_field: PortableFieldPath,
+        /// The lookup index this handler declares (`<field>_lookup_index`);
+        /// see the interpreter's `KeyResolutionStrategy::Lookup`. Omitted
+        /// when absent so undeclared lookups keep their bytes and hashes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index_name: Option<String>,
     },
     Computed {
         primary_field: PortableFieldPath,
@@ -491,6 +496,18 @@ pub enum PortableHookAction {
         pda_field: PortableFieldPath,
         seed_field: PortableFieldPath,
         lookup_name: String,
+        /// Read `pda_field` and/or `seed_field` from sibling instructions of
+        /// the same transaction. Omitted for same-instruction registration.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sibling: Option<PortableSiblingSelector>,
+        /// The seed as an expression over the registering instruction,
+        /// replacing `seed_field`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seed_expr: Option<PortableComputedExpr>,
+        /// Register only when this boolean expression over the registering
+        /// instruction is `true`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guard: Option<PortableComputedExpr>,
     },
     SetField {
         target_field: String,
@@ -502,6 +519,18 @@ pub enum PortableHookAction {
         increment_by: i64,
         condition: Option<PortableConditionExpr>,
     },
+}
+
+/// The sibling instructions a `RegisterPdaMapping` reads from: every
+/// instruction of `instruction_type` in the registering instruction's
+/// transaction, whichever arrives first.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortableSiblingSelector {
+    pub instruction_type: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pda_from_sibling: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub seed_from_sibling: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -521,6 +550,10 @@ pub enum PortableParsedCondition {
         op: PortableLogicalOp,
         conditions: Vec<Self>,
     },
+    /// Write-gating condition (v2): a boolean expression over the incoming
+    /// update. The mapping applies only when it is `true`, for every
+    /// population strategy. Runtimes without it reject the artifact.
+    Guard { expr: PortableComputedExpr },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -738,6 +771,37 @@ pub struct ProgramAdapterV2 {
     pub instruction_resolutions: Vec<InstructionResolutionAdapterV2>,
 }
 
+/// The largest PDA reverse lookup capacity a LiveSpec may request.
+pub const MAX_LIVE_PDA_REVERSE_LOOKUP_ENTRIES: u64 = 1_000_000;
+
+/// Per-stack runtime capacity overrides. Every field is optional and an
+/// absent field keeps the runtime default; an empty `limits` is rejected so a
+/// LiveSpec has one canonical form.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LiveLimitsV2 {
+    /// Entries each PDA reverse lookup table keeps (`register_from`
+    /// registrations) before evicting the least recently used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pda_reverse_lookup_entries: Option<u64>,
+}
+
+impl LiveLimitsV2 {
+    pub fn validate(&self) -> Result<(), ArtifactError> {
+        let Some(entries) = self.pda_reverse_lookup_entries else {
+            return Err(ArtifactError::InvalidArtifact(
+                "live limits must set at least one capacity".to_string(),
+            ));
+        };
+        if !(1..=MAX_LIVE_PDA_REVERSE_LOOKUP_ENTRIES).contains(&entries) {
+            return Err(ArtifactError::InvalidArtifact(format!(
+                "pdaReverseLookupEntries must be between 1 and {MAX_LIVE_PDA_REVERSE_LOOKUP_ENTRIES}"
+            )));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LiveSpecV2 {
@@ -748,7 +812,23 @@ pub struct LiveSpecV2 {
     pub entities: Vec<PortableEntity>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub program_adapters: Vec<ProgramAdapterV2>,
+    /// Runtime capacity overrides. Omitted when the stack sets none, so
+    /// LiveSpecs without them keep their bytes and hashes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<LiveLimitsV2>,
+    /// Row scoping: entity name -> dotted path of the string field that
+    /// holds each row's scope id. A runtime delivers a row of a listed entity
+    /// only to sessions whose row scopes cover it; rows with an empty scope
+    /// are public. Omitted when no entity is scoped, so LiveSpecs without it
+    /// keep their bytes and hashes. Runtimes that predate it reject a
+    /// LiveSpec carrying it (`deny_unknown_fields`) rather than serve scoped
+    /// rows to everyone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_scopes: Option<BTreeMap<String, String>>,
 }
+
+/// The longest scope field path a LiveSpec may name, in bytes.
+pub const MAX_LIVE_ROW_SCOPE_PATH_BYTES: usize = 256;
 
 impl LiveSpecV2 {
     pub fn new(
@@ -763,6 +843,8 @@ impl LiveSpecV2 {
             programs,
             entities,
             program_adapters,
+            limits: None,
+            row_scopes: None,
         }
     }
 
@@ -777,6 +859,9 @@ impl LiveSpecV2 {
             return Err(ArtifactError::InvalidArtifact(
                 "live compiler and wire contract versions must not be empty".to_string(),
             ));
+        }
+        if let Some(limits) = &self.limits {
+            limits.validate()?;
         }
         let mut program_hashes = BTreeSet::new();
         for program in &self.programs {
@@ -808,6 +893,9 @@ impl LiveSpecV2 {
                 }
             }
         }
+        if let Some(row_scopes) = &self.row_scopes {
+            self.validate_row_scopes(row_scopes)?;
+        }
         let mut adapter_hashes = BTreeSet::new();
         for adapter in &self.program_adapters {
             if !program_hashes.contains(&adapter.program_spec_hash.to_string())
@@ -831,6 +919,47 @@ impl LiveSpecV2 {
             }
         }
         reject_private_fields(&serde_json::to_value(self).map_err(json_error)?)
+    }
+
+    fn validate_row_scopes(
+        &self,
+        row_scopes: &BTreeMap<String, String>,
+    ) -> Result<(), ArtifactError> {
+        if row_scopes.is_empty() {
+            return Err(ArtifactError::InvalidArtifact(
+                "rowScopes must name at least one entity".to_string(),
+            ));
+        }
+        for (entity_name, path) in row_scopes {
+            let entity = self
+                .entities
+                .iter()
+                .find(|entity| &entity.state_name == entity_name)
+                .ok_or_else(|| {
+                    ArtifactError::InvalidArtifact(format!(
+                        "rowScopes names unknown entity '{entity_name}'"
+                    ))
+                })?;
+            if path.is_empty()
+                || path.len() > MAX_LIVE_ROW_SCOPE_PATH_BYTES
+                || path.split('.').any(str::is_empty)
+            {
+                return Err(ArtifactError::InvalidArtifact(format!(
+                    "rowScopes path for '{entity_name}' must be a dotted field path"
+                )));
+            }
+            let field = entity.field_mappings.get(path).ok_or_else(|| {
+                ArtifactError::InvalidArtifact(format!(
+                    "rowScopes path '{path}' is not a field of '{entity_name}'"
+                ))
+            })?;
+            if field.base_type != PortableBaseType::String || field.is_array {
+                return Err(ArtifactError::InvalidArtifact(format!(
+                    "rowScopes field '{entity_name}.{path}' must be a string"
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub fn view_ids(&self) -> BTreeSet<&str> {
@@ -914,4 +1043,8 @@ fn default_true() -> bool {
 
 fn is_true(value: &bool) -> bool {
     *value
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }

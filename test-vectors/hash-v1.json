@@ -1560,6 +1560,204 @@
       "operation": "hosted-program-release-v2"
     },
     {
+      "description": "Native built-in identities require the native loader program ID.",
+      "expectedError": "invalid-projection",
+      "id": "native-builtin-rejects-loader-id-mismatch",
+      "input": {
+        "projection": {
+          "decoderAbiVersion": "1",
+          "decoderBindingId": "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
+          "decoderEngineId": "example-decoder-engine/v1",
+          "executableIdentity": {
+            "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+            "loader": {
+              "builtinName": "solana_system_program",
+              "kind": "native-builtin",
+              "loaderProgramId": "BPFLoaderUpgradeab1e11111111111111111111111"
+            },
+            "schema": "arete.solana-executable-identity/v1"
+          },
+          "idlContentHash": "arete:h1:idl-content:sha256:310b1b6b392e4fb354a37ee057ea29f39b58ef483458298afb0902247bb74e7b",
+          "normalizedIdlHash": "arete:h1:idl-normalized:sha256:dd7e6328fe49589da9a1ed89d409b9ea05a7e3aca589aa80922b1861d093b34e",
+          "programId": "11111111111111111111111111111111",
+          "programSpecHash": "arete:h1:program-spec:sha256:2cca30c28b37ce4e71b617229b4dc98643002bd1fe9d31fd3b2653b3109d99a4",
+          "releaseProfile": "hosted-managed",
+          "schema": "arete.program-release/v2"
+        }
+      },
+      "operation": "hosted-program-release-v2"
+    },
+    {
+      "description": "Native built-in names must not be empty.",
+      "expectedError": "invalid-projection",
+      "id": "native-builtin-rejects-empty-name",
+      "input": {
+        "projection": {
+          "decoderAbiVersion": "1",
+          "decoderBindingId": "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
+          "decoderEngineId": "example-decoder-engine/v1",
+          "executableIdentity": {
+            "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+            "loader": {
+              "builtinName": "",
+              "kind": "native-builtin",
+              "loaderProgramId": "NativeLoader1111111111111111111111111111111"
+            },
+            "schema": "arete.solana-executable-identity/v1"
+          },
+          "idlContentHash": "arete:h1:idl-content:sha256:310b1b6b392e4fb354a37ee057ea29f39b58ef483458298afb0902247bb74e7b",
+          "normalizedIdlHash": "arete:h1:idl-normalized:sha256:dd7e6328fe49589da9a1ed89d409b9ea05a7e3aca589aa80922b1861d093b34e",
+          "programId": "11111111111111111111111111111111",
+          "programSpecHash": "arete:h1:program-spec:sha256:2cca30c28b37ce4e71b617229b4dc98643002bd1fe9d31fd3b2653b3109d99a4",
+          "releaseProfile": "hosted-managed",
+          "schema": "arete.program-release/v2"
+        }
+      },
+      "operation": "hosted-program-release-v2"
+    },
+    {
+      "description": "Native built-in names are printable ASCII only.",
+      "expectedError": "invalid-projection",
+      "id": "native-builtin-rejects-non-ascii-name",
+      "input": {
+        "projection": {
+          "decoderAbiVersion": "1",
+          "decoderBindingId": "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
+          "decoderEngineId": "example-decoder-engine/v1",
+          "executableIdentity": {
+            "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+            "loader": {
+              "builtinName": "solana_system_programé",
+              "kind": "native-builtin",
+              "loaderProgramId": "NativeLoader1111111111111111111111111111111"
+            },
+            "schema": "arete.solana-executable-identity/v1"
+          },
+          "idlContentHash": "arete:h1:idl-content:sha256:310b1b6b392e4fb354a37ee057ea29f39b58ef483458298afb0902247bb74e7b",
+          "normalizedIdlHash": "arete:h1:idl-normalized:sha256:dd7e6328fe49589da9a1ed89d409b9ea05a7e3aca589aa80922b1861d093b34e",
+          "programId": "11111111111111111111111111111111",
+          "programSpecHash": "arete:h1:program-spec:sha256:2cca30c28b37ce4e71b617229b4dc98643002bd1fe9d31fd3b2653b3109d99a4",
+          "releaseProfile": "hosted-managed",
+          "schema": "arete.program-release/v2"
+        }
+      },
+      "operation": "hosted-program-release-v2"
+    },
+    {
+      "description": "Native built-in names reject spaces and control characters.",
+      "expectedError": "invalid-projection",
+      "id": "native-builtin-rejects-control-character-name",
+      "input": {
+        "projection": {
+          "decoderAbiVersion": "1",
+          "decoderBindingId": "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
+          "decoderEngineId": "example-decoder-engine/v1",
+          "executableIdentity": {
+            "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+            "loader": {
+              "builtinName": "solana system\nprogram",
+              "kind": "native-builtin",
+              "loaderProgramId": "NativeLoader1111111111111111111111111111111"
+            },
+            "schema": "arete.solana-executable-identity/v1"
+          },
+          "idlContentHash": "arete:h1:idl-content:sha256:310b1b6b392e4fb354a37ee057ea29f39b58ef483458298afb0902247bb74e7b",
+          "normalizedIdlHash": "arete:h1:idl-normalized:sha256:dd7e6328fe49589da9a1ed89d409b9ea05a7e3aca589aa80922b1861d093b34e",
+          "programId": "11111111111111111111111111111111",
+          "programSpecHash": "arete:h1:program-spec:sha256:2cca30c28b37ce4e71b617229b4dc98643002bd1fe9d31fd3b2653b3109d99a4",
+          "releaseProfile": "hosted-managed",
+          "schema": "arete.program-release/v2"
+        }
+      },
+      "operation": "hosted-program-release-v2"
+    },
+    {
+      "description": "Native built-in names are at most 64 bytes.",
+      "expectedError": "invalid-projection",
+      "id": "native-builtin-rejects-overlong-name",
+      "input": {
+        "projection": {
+          "decoderAbiVersion": "1",
+          "decoderBindingId": "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
+          "decoderEngineId": "example-decoder-engine/v1",
+          "executableIdentity": {
+            "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+            "loader": {
+              "builtinName": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "kind": "native-builtin",
+              "loaderProgramId": "NativeLoader1111111111111111111111111111111"
+            },
+            "schema": "arete.solana-executable-identity/v1"
+          },
+          "idlContentHash": "arete:h1:idl-content:sha256:310b1b6b392e4fb354a37ee057ea29f39b58ef483458298afb0902247bb74e7b",
+          "normalizedIdlHash": "arete:h1:idl-normalized:sha256:dd7e6328fe49589da9a1ed89d409b9ea05a7e3aca589aa80922b1861d093b34e",
+          "programId": "11111111111111111111111111111111",
+          "programSpecHash": "arete:h1:program-spec:sha256:2cca30c28b37ce4e71b617229b4dc98643002bd1fe9d31fd3b2653b3109d99a4",
+          "releaseProfile": "hosted-managed",
+          "schema": "arete.program-release/v2"
+        }
+      },
+      "operation": "hosted-program-release-v2"
+    },
+    {
+      "description": "Native built-in identities reject unknown fields.",
+      "expectedError": "invalid-projection",
+      "id": "native-builtin-rejects-unknown-field",
+      "input": {
+        "projection": {
+          "decoderAbiVersion": "1",
+          "decoderBindingId": "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
+          "decoderEngineId": "example-decoder-engine/v1",
+          "executableIdentity": {
+            "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+            "loader": {
+              "builtinName": "solana_system_program",
+              "kind": "native-builtin",
+              "loaderProgramId": "NativeLoader1111111111111111111111111111111",
+              "validatorVersion": "2.3.0"
+            },
+            "schema": "arete.solana-executable-identity/v1"
+          },
+          "idlContentHash": "arete:h1:idl-content:sha256:310b1b6b392e4fb354a37ee057ea29f39b58ef483458298afb0902247bb74e7b",
+          "normalizedIdlHash": "arete:h1:idl-normalized:sha256:dd7e6328fe49589da9a1ed89d409b9ea05a7e3aca589aa80922b1861d093b34e",
+          "programId": "11111111111111111111111111111111",
+          "programSpecHash": "arete:h1:program-spec:sha256:2cca30c28b37ce4e71b617229b4dc98643002bd1fe9d31fd3b2653b3109d99a4",
+          "releaseProfile": "hosted-managed",
+          "schema": "arete.program-release/v2"
+        }
+      },
+      "operation": "hosted-program-release-v2"
+    },
+    {
+      "description": "Native built-in identities cannot carry BPF loader fields.",
+      "expectedError": "invalid-projection",
+      "id": "native-builtin-rejects-executable-digest",
+      "input": {
+        "projection": {
+          "decoderAbiVersion": "1",
+          "decoderBindingId": "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
+          "decoderEngineId": "example-decoder-engine/v1",
+          "executableIdentity": {
+            "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+            "loader": {
+              "builtinName": "solana_system_program",
+              "executablePayloadSha256": "sha256:abababababababababababababababababababababababababababababababab",
+              "kind": "native-builtin",
+              "loaderProgramId": "NativeLoader1111111111111111111111111111111"
+            },
+            "schema": "arete.solana-executable-identity/v1"
+          },
+          "idlContentHash": "arete:h1:idl-content:sha256:310b1b6b392e4fb354a37ee057ea29f39b58ef483458298afb0902247bb74e7b",
+          "normalizedIdlHash": "arete:h1:idl-normalized:sha256:dd7e6328fe49589da9a1ed89d409b9ea05a7e3aca589aa80922b1861d093b34e",
+          "programId": "11111111111111111111111111111111",
+          "programSpecHash": "arete:h1:program-spec:sha256:2cca30c28b37ce4e71b617229b4dc98643002bd1fe9d31fd3b2653b3109d99a4",
+          "releaseProfile": "hosted-managed",
+          "schema": "arete.program-release/v2"
+        }
+      },
+      "operation": "hosted-program-release-v2"
+    },
+    {
       "description": "Address-bearing fixture V1 fails closed.",
       "expectedError": "unknown-version",
       "id": "decoder-fixture-v1-rejected",
@@ -2383,6 +2581,62 @@
       "expectedKind": "catalog-publication-set",
       "id": "hash-id-valid-catalog-publication-set",
       "input": "arete:h1:catalog-publication-set:sha256:abababababababababababababababababababababababababababababababab",
+      "valid": true
+    },
+    {
+      "expectedDigestHex": "abababababababababababababababababababababababababababababababab",
+      "expectedKind": "protocol-spec",
+      "id": "hash-id-valid-protocol-spec",
+      "input": "arete:h1:protocol-spec:sha256:abababababababababababababababababababababababababababababababab",
+      "valid": true
+    },
+    {
+      "expectedDigestHex": "abababababababababababababababababababababababababababababababab",
+      "expectedKind": "protocol-handler-bundle",
+      "id": "hash-id-valid-protocol-handler-bundle",
+      "input": "arete:h1:protocol-handler-bundle:sha256:abababababababababababababababababababababababababababababababab",
+      "valid": true
+    },
+    {
+      "expectedDigestHex": "abababababababababababababababababababababababababababababababab",
+      "expectedKind": "protocol-stack-source",
+      "id": "hash-id-valid-protocol-stack-source",
+      "input": "arete:h1:protocol-stack-source:sha256:abababababababababababababababababababababababababababababababab",
+      "valid": true
+    },
+    {
+      "expectedDigestHex": "abababababababababababababababababababababababababababababababab",
+      "expectedKind": "protocol-release",
+      "id": "hash-id-valid-protocol-release",
+      "input": "arete:h1:protocol-release:sha256:abababababababababababababababababababababababababababababababab",
+      "valid": true
+    },
+    {
+      "expectedDigestHex": "abababababababababababababababababababababababababababababababab",
+      "expectedKind": "protocol-release-review",
+      "id": "hash-id-valid-protocol-release-review",
+      "input": "arete:h1:protocol-release-review:sha256:abababababababababababababababababababababababababababababababab",
+      "valid": true
+    },
+    {
+      "expectedDigestHex": "abababababababababababababababababababababababababababababababab",
+      "expectedKind": "protocol-resource",
+      "id": "hash-id-valid-protocol-resource",
+      "input": "arete:h1:protocol-resource:sha256:abababababababababababababababababababababababababababababababab",
+      "valid": true
+    },
+    {
+      "expectedDigestHex": "abababababababababababababababababababababababababababababababab",
+      "expectedKind": "provider-snapshot",
+      "id": "hash-id-valid-provider-snapshot",
+      "input": "arete:h1:provider-snapshot:sha256:abababababababababababababababababababababababababababababababab",
+      "valid": true
+    },
+    {
+      "expectedDigestHex": "abababababababababababababababababababababababababababababababab",
+      "expectedKind": "execution-intent",
+      "id": "hash-id-valid-execution-intent",
+      "input": "arete:h1:execution-intent:sha256:abababababababababababababababababababababababababababababababab",
       "valid": true
     },
     {
@@ -8336,6 +8590,160 @@
       "rustType": "HashId<CatalogPublicationSet>",
       "typescriptType": "CatalogPublicationSetHash",
       "visibility": "public"
+    },
+    {
+      "allowedDtoAudiences": [
+        "public",
+        "authenticated-owner",
+        "internal-only"
+      ],
+      "apiField": "protocolSpecHash",
+      "databaseMappings": [
+        "protocol_specs.spec_hash",
+        "protocol_releases.spec_hash"
+      ],
+      "identityClass": "composite",
+      "kind": "protocol-spec",
+      "legacyAliases": [],
+      "profile": "arete-jcs-v1",
+      "projection": "arete.protocol-spec/v1",
+      "rustType": "HashId<ProtocolSpec>",
+      "typescriptType": "ProtocolSpecHash",
+      "visibility": "public"
+    },
+    {
+      "allowedDtoAudiences": [
+        "public",
+        "authenticated-owner",
+        "internal-only"
+      ],
+      "apiField": "handlerBundleHash",
+      "databaseMappings": [
+        "protocol_handler_bundles.bundle_hash",
+        "protocol_releases.bundle_hash"
+      ],
+      "identityClass": "canonical-content",
+      "kind": "protocol-handler-bundle",
+      "legacyAliases": [],
+      "profile": "raw-bytes-v1",
+      "projection": "arete.protocol-handler-bundle/exact-bytes-v1",
+      "rustType": "HashId<ProtocolHandlerBundle>",
+      "typescriptType": "ProtocolHandlerBundleHash",
+      "visibility": "public"
+    },
+    {
+      "allowedDtoAudiences": [
+        "public",
+        "authenticated-owner",
+        "internal-only"
+      ],
+      "apiField": "protocolStackSourceHash",
+      "databaseMappings": [
+        "protocol_stack_sources.stack_source_hash",
+        "protocol_releases.stack_source_hash"
+      ],
+      "identityClass": "composite",
+      "kind": "protocol-stack-source",
+      "legacyAliases": [],
+      "profile": "arete-jcs-v1",
+      "projection": "arete.protocol-stack-source/v1",
+      "rustType": "HashId<ProtocolStackSource>",
+      "typescriptType": "ProtocolStackSourceHash",
+      "visibility": "public"
+    },
+    {
+      "allowedDtoAudiences": [
+        "public",
+        "authenticated-owner",
+        "internal-only"
+      ],
+      "apiField": "protocolReleaseHash",
+      "databaseMappings": [
+        "protocol_releases.release_hash",
+        "protocol_release_reviews.release_hash",
+        "protocol_deployment_revisions.release_hash"
+      ],
+      "identityClass": "composite",
+      "kind": "protocol-release",
+      "legacyAliases": [],
+      "profile": "arete-jcs-v1",
+      "projection": "arete.protocol-release/v1",
+      "rustType": "HashId<ProtocolRelease>",
+      "typescriptType": "ProtocolReleaseHash",
+      "visibility": "public"
+    },
+    {
+      "allowedDtoAudiences": [
+        "public",
+        "authenticated-owner",
+        "internal-only"
+      ],
+      "apiField": "reviewHash",
+      "databaseMappings": [
+        "protocol_release_reviews.review_hash"
+      ],
+      "identityClass": "composite",
+      "kind": "protocol-release-review",
+      "legacyAliases": [],
+      "profile": "arete-jcs-v1",
+      "projection": "arete.protocol-release-review/v1",
+      "rustType": "HashId<ProtocolReleaseReview>",
+      "typescriptType": "ProtocolReleaseReviewHash",
+      "visibility": "public"
+    },
+    {
+      "allowedDtoAudiences": [
+        "authenticated-owner",
+        "internal-only"
+      ],
+      "apiField": "resourceHash",
+      "databaseMappings": [
+        "protocol_resource_versions.resource_hash"
+      ],
+      "identityClass": "composite",
+      "kind": "protocol-resource",
+      "legacyAliases": [],
+      "profile": "arete-jcs-v1",
+      "projection": "arete.protocol-resource/v1",
+      "rustType": "HashId<ProtocolResource>",
+      "typescriptType": "ProtocolResourceHash",
+      "visibility": "authenticated-owner"
+    },
+    {
+      "allowedDtoAudiences": [
+        "authenticated-owner",
+        "internal-only"
+      ],
+      "apiField": "providerSnapshotHash",
+      "databaseMappings": [
+        "protocol_execution_intents.provider_snapshot_hash"
+      ],
+      "identityClass": "composite",
+      "kind": "provider-snapshot",
+      "legacyAliases": [],
+      "profile": "arete-jcs-v1",
+      "projection": "arete.provider-snapshot/v1",
+      "rustType": "HashId<ProviderSnapshot>",
+      "typescriptType": "ProviderSnapshotHash",
+      "visibility": "authenticated-owner"
+    },
+    {
+      "allowedDtoAudiences": [
+        "authenticated-owner",
+        "internal-only"
+      ],
+      "apiField": "executionIntentHash",
+      "databaseMappings": [
+        "protocol_execution_intents.intent_hash"
+      ],
+      "identityClass": "composite",
+      "kind": "execution-intent",
+      "legacyAliases": [],
+      "profile": "arete-jcs-v1",
+      "projection": "arete.execution-intent/v1",
+      "rustType": "HashId<ExecutionIntent>",
+      "typescriptType": "ExecutionIntentHash",
+      "visibility": "authenticated-owner"
     }
   ],
   "nonHashIdentities": [
@@ -8728,6 +9136,43 @@
       },
       "projectionMetadata": {
         "loader": "bpf-loader-v2"
+      }
+    },
+    {
+      "description": "Hosted V2 binds a native built-in program by its loader and built-in name.",
+      "differsFrom": [],
+      "equivalenceGroup": null,
+      "expected": {
+        "canonicalPayloadHex": "7b226465636f64657241626956657273696f6e223a2231222c226465636f64657242696e64696e674964223a226465635f41514944424155474277674a4367734d44513450454245534578515646686359222c226465636f646572456e67696e654964223a226578616d706c652d6465636f6465722d656e67696e652f7631222c2265786563757461626c654964656e74697479223a7b2267656e6573697348617368223a223565796b7434557346763850384e4a64545245705931767a714b715a4b7664704b75633134376477324e3964222c226c6f61646572223a7b226275696c74696e4e616d65223a22736f6c616e615f73797374656d5f70726f6772616d222c226b696e64223a226e61746976652d6275696c74696e222c226c6f6164657250726f6772616d4964223a224e61746976654c6f6164657231313131313131313131313131313131313131313131313131313131313131227d2c22736368656d61223a2261726574652e736f6c616e612d65786563757461626c652d6964656e746974792f7631227d2c2269646c436f6e74656e7448617368223a2261726574653a68313a69646c2d636f6e74656e743a7368613235363a33313062316236623339326534666233353461333765653035376561323966333962353865663438333435383239386166623039303232343762623734653762222c226e6f726d616c697a656449646c48617368223a2261726574653a68313a69646c2d6e6f726d616c697a65643a7368613235363a64643765363332386665343935383964613961316564383964343039623965613035613765336163613538396161383039323262313836316430393362333465222c2270726f6772616d4964223a223131313131313131313131313131313131313131313131313131313131313131222c2270726f6772616d5370656348617368223a2261726574653a68313a70726f6772616d2d737065633a7368613235363a32636361333063323862333763653465373162363137323239623464633938363433303032626431666539643331666433623236353362333130396439396134222c2272656c6561736550726f66696c65223a22686f737465642d6d616e61676564222c22736368656d61223a2261726574652e70726f6772616d2d72656c656173652f7632227d",
+        "digestHex": "89d7bd044c584100c1be34518f989ca894a1047e51f0dc0b0124d251bbaf2409",
+        "hashId": "arete:h1:program-release:sha256:89d7bd044c584100c1be34518f989ca894a1047e51f0dc0b0124d251bbaf2409",
+        "preimageHex": "000000000000000a61726574652d6861736800000001000000000000000f70726f6772616d2d72656c65617365000000000000000c61726574652d6a63732d7631000000000000035a7b226465636f64657241626956657273696f6e223a2231222c226465636f64657242696e64696e674964223a226465635f41514944424155474277674a4367734d44513450454245534578515646686359222c226465636f646572456e67696e654964223a226578616d706c652d6465636f6465722d656e67696e652f7631222c2265786563757461626c654964656e74697479223a7b2267656e6573697348617368223a223565796b7434557346763850384e4a64545245705931767a714b715a4b7664704b75633134376477324e3964222c226c6f61646572223a7b226275696c74696e4e616d65223a22736f6c616e615f73797374656d5f70726f6772616d222c226b696e64223a226e61746976652d6275696c74696e222c226c6f6164657250726f6772616d4964223a224e61746976654c6f6164657231313131313131313131313131313131313131313131313131313131313131227d2c22736368656d61223a2261726574652e736f6c616e612d65786563757461626c652d6964656e746974792f7631227d2c2269646c436f6e74656e7448617368223a2261726574653a68313a69646c2d636f6e74656e743a7368613235363a33313062316236623339326534666233353461333765653035376561323966333962353865663438333435383239386166623039303232343762623734653762222c226e6f726d616c697a656449646c48617368223a2261726574653a68313a69646c2d6e6f726d616c697a65643a7368613235363a64643765363332386665343935383964613961316564383964343039623965613035613765336163613538396161383039323262313836316430393362333465222c2270726f6772616d4964223a223131313131313131313131313131313131313131313131313131313131313131222c2270726f6772616d5370656348617368223a2261726574653a68313a70726f6772616d2d737065633a7368613235363a32636361333063323862333763653465373162363137323239623464633938363433303032626431666539643331666433623236353362333130396439396134222c2272656c6561736550726f66696c65223a22686f737465642d6d616e61676564222c22736368656d61223a2261726574652e70726f6772616d2d72656c656173652f7632227d"
+      },
+      "id": "release-hosted-managed-v2-native-builtin",
+      "kind": "program-release",
+      "profile": "arete-jcs-v1",
+      "projection": {
+        "decoderAbiVersion": "1",
+        "decoderBindingId": "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
+        "decoderEngineId": "example-decoder-engine/v1",
+        "executableIdentity": {
+          "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+          "loader": {
+            "builtinName": "solana_system_program",
+            "kind": "native-builtin",
+            "loaderProgramId": "NativeLoader1111111111111111111111111111111"
+          },
+          "schema": "arete.solana-executable-identity/v1"
+        },
+        "idlContentHash": "arete:h1:idl-content:sha256:310b1b6b392e4fb354a37ee057ea29f39b58ef483458298afb0902247bb74e7b",
+        "normalizedIdlHash": "arete:h1:idl-normalized:sha256:dd7e6328fe49589da9a1ed89d409b9ea05a7e3aca589aa80922b1861d093b34e",
+        "programId": "11111111111111111111111111111111",
+        "programSpecHash": "arete:h1:program-spec:sha256:2cca30c28b37ce4e71b617229b4dc98643002bd1fe9d31fd3b2653b3109d99a4",
+        "releaseProfile": "hosted-managed",
+        "schema": "arete.program-release/v2"
+      },
+      "projectionMetadata": {
+        "loader": "native-builtin"
       }
     },
     {

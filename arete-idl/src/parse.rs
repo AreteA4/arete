@@ -437,6 +437,23 @@ fn codama_type_to_idl(type_node: &CodamaTypeNode) -> Result<IdlType, String> {
                 .map(codama_type_to_idl)
                 .collect::<Result<Vec<_>, _>>()?,
         })),
+        // A string with an explicit length prefix: `u32` is Borsh's `string`, `u64`
+        // is bincode's (the native programs' seeds).
+        CodamaTypeNode::SizePrefix { type_, prefix } => match (type_.as_ref(), prefix.as_ref()) {
+            (CodamaTypeNode::String {}, CodamaTypeNode::Number { format }) if format == "u32" => {
+                Ok(IdlType::Simple("string".to_string()))
+            }
+            (CodamaTypeNode::String {}, CodamaTypeNode::Number { format }) if format == "u64" => {
+                Ok(IdlType::String(crate::types::IdlTypeString {
+                    string: crate::types::IdlStringEncoding::Utf8,
+                    length_prefix: Some(crate::types::IdlLengthPrefix::U64),
+                }))
+            }
+            _ => Err(format!(
+                "unsupported Codama sizePrefixTypeNode (only a string with a u32 or u64 prefix is supported): {:?}",
+                type_node
+            )),
+        },
         CodamaTypeNode::Unknown => {
             Err("unsupported Codama type node kind (not modelled by arete-idl)".to_string())
         }
@@ -622,6 +639,12 @@ enum CodamaTypeNode {
     Enum { variants: Vec<CodamaEnumVariant> },
     #[serde(rename = "tupleTypeNode")]
     Tuple { items: Vec<CodamaTypeNode> },
+    #[serde(rename = "sizePrefixTypeNode")]
+    SizePrefix {
+        #[serde(rename = "type")]
+        type_: Box<CodamaTypeNode>,
+        prefix: Box<CodamaTypeNode>,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -1145,6 +1168,56 @@ mod tests {
             [IdlEnumVariantField::Tuple(_), IdlEnumVariantField::Tuple(_)] => {}
             other => panic!("expected two tuple fields, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_codama_size_prefixed_strings_keep_their_prefix_width() {
+        let json = r#"{
+            "kind": "rootNode",
+            "program": {
+                "kind": "programNode",
+                "name": "demo",
+                "publicKey": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+                "version": "0.1.0",
+                "definedTypes": [
+                    {
+                        "kind": "definedTypeNode",
+                        "name": "seeded",
+                        "type": {
+                            "kind": "structTypeNode",
+                            "fields": [
+                                { "kind": "structFieldTypeNode", "name": "bincodeSeed", "type": {
+                                    "kind": "sizePrefixTypeNode",
+                                    "type": { "kind": "stringTypeNode", "encoding": "utf8" },
+                                    "prefix": { "kind": "numberTypeNode", "format": "u64", "endian": "le" }
+                                } },
+                                { "kind": "structFieldTypeNode", "name": "borshSeed", "type": {
+                                    "kind": "sizePrefixTypeNode",
+                                    "type": { "kind": "stringTypeNode", "encoding": "utf8" },
+                                    "prefix": { "kind": "numberTypeNode", "format": "u32", "endian": "le" }
+                                } }
+                            ]
+                        }
+                    }
+                ],
+                "instructions": []
+            }
+        }"#;
+
+        let spec = parse_idl_content(json).expect("codama idl with size-prefixed strings");
+        let seeded = spec
+            .types
+            .iter()
+            .find(|t| t.name == "seeded")
+            .expect("type");
+        let IdlTypeDefKind::Struct { fields, .. } = &seeded.type_def else {
+            panic!("expected struct, got {:?}", seeded.type_def);
+        };
+        match &fields[0].type_ {
+            IdlType::String(string) => assert!(string.is_u64_prefixed()),
+            other => panic!("expected a u64-prefixed string, got {:?}", other),
+        }
+        assert!(matches!(&fields[1].type_, IdlType::Simple(name) if name == "string"));
     }
 
     #[test]

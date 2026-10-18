@@ -1,0 +1,308 @@
+{
+  "schema": "arete.protocol-spec/v1",
+  "name": "escrowResolution",
+  "version": "0.1.0",
+  "programs": {
+    "escrowVault": {
+      "kind": "programSpec",
+      "programId": "Vau1t11111111111111111111111111111111111111",
+      "programSpecHash": "arete:h1:program-spec:sha256:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+    }
+  },
+  "stacks": {},
+  "params": {
+    "type": "object",
+    "properties": {
+      "resolveAfter": {
+        "type": "string",
+        "format": "unixTimestamp"
+      },
+      "amount": {
+        "type": "string",
+        "format": "u64"
+      }
+    },
+    "required": [
+      "amount",
+      "resolveAfter"
+    ],
+    "additionalProperties": false
+  },
+  "roles": {
+    "resolver": {
+      "description": "Decides the off-chain outcome."
+    }
+  },
+  "resources": {},
+  "instanceVisibility": "shared",
+  "reads": {
+    "vault": {
+      "kind": "lamports",
+      "address": "instance.accounts.vault"
+    }
+  },
+  "machines": {
+    "instance": {
+      "initial": "funded",
+      "states": {
+        "funded": {
+          "kind": "recorded",
+          "terminal": false
+        },
+        "awaiting_resolution": {
+          "kind": "derived",
+          "terminal": false
+        },
+        "released": {
+          "kind": "recorded",
+          "terminal": true
+        },
+        "refunded": {
+          "kind": "recorded",
+          "terminal": true
+        }
+      },
+      "derive": [
+        {
+          "from": [
+            "funded"
+          ],
+          "to": "awaiting_resolution",
+          "when": "now >= params.resolveAfter",
+          "at": "params.resolveAfter"
+        }
+      ],
+      "reads": []
+    }
+  },
+  "steps": {
+    "open": {
+      "scope": "create",
+      "authority": {
+        "kind": "creator"
+      },
+      "args": {
+        "type": "object",
+        "properties": {
+          "resolver": {
+            "type": "string",
+            "format": "pubkey"
+          },
+          "amount": {
+            "type": "string",
+            "format": "u64"
+          },
+          "resolveAfter": {
+            "type": "string",
+            "format": "unixTimestamp"
+          }
+        },
+        "required": [
+          "amount",
+          "resolveAfter",
+          "resolver"
+        ],
+        "additionalProperties": false
+      },
+      "guards": [],
+      "reads": [],
+      "ephemeral": [
+        "vault"
+      ],
+      "fee": {
+        "kind": "none"
+      },
+      "transitions": [],
+      "glue": {
+        "atas": [],
+        "unwrapSol": false
+      },
+      "build": {
+        "kind": "template",
+        "instructions": [
+          {
+            "program": "escrowVault",
+            "instruction": "deposit",
+            "args": {
+              "amount": "args.amount"
+            },
+            "accounts": {
+              "vault": "ephemeral.vault",
+              "depositor": "wallet"
+            }
+          }
+        ]
+      },
+      "access": "secret",
+      "bind": {
+        "accounts": {
+          "vault": "ephemeral.vault",
+          "depositor": "wallet"
+        },
+        "roles": {
+          "resolver": "args.resolver"
+        }
+      }
+    },
+    "release": {
+      "scope": "instance",
+      "authority": {
+        "kind": "role",
+        "role": "resolver"
+      },
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "guards": [
+        {
+          "code": "not_resolver",
+          "expr": "wallet == instance.roles.resolver"
+        },
+        {
+          "code": "not_awaiting_resolution",
+          "expr": "instance.state == \"awaiting_resolution\""
+        }
+      ],
+      "reads": [],
+      "ephemeral": [],
+      "fee": {
+        "kind": "none"
+      },
+      "transitions": [
+        {
+          "machine": "instance",
+          "from": [
+            "awaiting_resolution"
+          ],
+          "to": "released"
+        }
+      ],
+      "glue": {
+        "atas": [],
+        "unwrapSol": false
+      },
+      "build": {
+        "kind": "template",
+        "instructions": [
+          {
+            "program": "escrowVault",
+            "instruction": "release",
+            "args": {},
+            "accounts": {
+              "vault": "instance.accounts.vault",
+              "authority": "wallet"
+            }
+          }
+        ]
+      },
+      "access": "secret"
+    },
+    "refund": {
+      "scope": "instance",
+      "authority": {
+        "kind": "role",
+        "role": "resolver"
+      },
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "guards": [
+        {
+          "code": "not_resolver",
+          "expr": "wallet == instance.roles.resolver"
+        },
+        {
+          "code": "not_awaiting_resolution",
+          "expr": "instance.state == \"awaiting_resolution\""
+        }
+      ],
+      "reads": [],
+      "ephemeral": [],
+      "fee": {
+        "kind": "none"
+      },
+      "transitions": [
+        {
+          "machine": "instance",
+          "from": [
+            "awaiting_resolution"
+          ],
+          "to": "refunded"
+        }
+      ],
+      "glue": {
+        "atas": [],
+        "unwrapSol": false
+      },
+      "build": {
+        "kind": "template",
+        "instructions": [
+          {
+            "program": "escrowVault",
+            "instruction": "refund",
+            "args": {},
+            "accounts": {
+              "vault": "instance.accounts.vault",
+              "authority": "wallet",
+              "depositor": "instance.accounts.depositor"
+            }
+          }
+        ]
+      },
+      "access": "secret"
+    }
+  },
+  "reactions": [
+    {
+      "id": "askResolver",
+      "trigger": {
+        "kind": "onTransition",
+        "machine": "instance",
+        "from": [],
+        "to": [
+          "awaiting_resolution"
+        ]
+      },
+      "action": {
+        "kind": "emit",
+        "event": "escrow.awaitingResolution"
+      }
+    },
+    {
+      "id": "announceResolved",
+      "trigger": {
+        "kind": "onTransition",
+        "machine": "instance",
+        "from": [],
+        "to": [
+          "refunded",
+          "released"
+        ]
+      },
+      "action": {
+        "kind": "emit",
+        "event": "escrow.resolved"
+      }
+    }
+  ],
+  "events": {
+    "escrow.awaitingResolution": {
+      "machine": "instance"
+    },
+    "escrow.resolved": {
+      "machine": "instance"
+    }
+  },
+  "metadata": {},
+  "stack": {
+    "instanceAccounts": {},
+    "instanceFields": {},
+    "activity": []
+  }
+}

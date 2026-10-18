@@ -50,6 +50,8 @@ import {
   type AuthenticatedOwnerHashKind,
   validateHostedManagedProgramReleaseV2,
   validateHostedPrivateProgramReleaseV3,
+  createNativeBuiltinExecutableIdentityV1,
+  isValidNativeBuiltinName,
   type HostedManagedProgramReleaseV2,
   type HostedPrivateProgramReleaseV3,
   type JsonValue,
@@ -629,6 +631,44 @@ describe("shared hash-v1 vectors", () => {
     );
   });
 
+  test("hosted Release V2 binds a native built-in by loader and name", () => {
+    const vector = corpus.releaseVectors.find(
+      (item) => item.id === "release-hosted-managed-v2-native-builtin",
+    )!;
+    const identity = createNativeBuiltinExecutableIdentityV1(
+      "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+      "solana_system_program",
+    );
+    expect(vector.projection.executableIdentity).toEqual(identity);
+    expect(identity.loader).toEqual({
+      kind: "native-builtin",
+      loaderProgramId: "NativeLoader1111111111111111111111111111111",
+      builtinName: "solana_system_program",
+    });
+    const projection = validateHostedManagedProgramReleaseV2(vector.projection);
+    expectHash(
+      vector.expected,
+      canonicalizeJcs(projection as unknown as JsonValue),
+      hashHostedManagedProgramReleaseV2(projection),
+    );
+  });
+
+  test("native built-in names are 1-64 bytes of printable ASCII", () => {
+    expect(isValidNativeBuiltinName("solana_system_program")).toBe(true);
+    expect(isValidNativeBuiltinName("a".repeat(64))).toBe(true);
+    for (const name of ["", "a".repeat(65), "solana system", "tab\t", "é", "\u0000", 7]) {
+      expect(isValidNativeBuiltinName(name)).toBe(false);
+    }
+    for (const name of ["", "a".repeat(65), "solana_system_programé", "a b"]) {
+      expect(() =>
+        createNativeBuiltinExecutableIdentityV1(
+          "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+          name,
+        ),
+      ).toThrowError(expect.objectContaining({ code: "invalid-projection" }));
+    }
+  });
+
   test.each(corpus.decoderFixtureVectors)("decoder fixture $id", (vector) => {
     const projection = validateDecoderFixtureSetV2(vector.input);
     expect(projection).toEqual(vector.expectedProjection);
@@ -734,6 +774,31 @@ describe("u64 length-prefixed sequences", () => {
     const bytes = new TextEncoder().encode(JSON.stringify(plain, null, 2));
     const spec = buildProgramSpecV1FromBytes(bytes, "AddressLookupTab1e1111111111111111111111111");
     expect(spec.instructions?.[0]?.args?.[0]?.type).toBe("Vec<solana_pubkey::Pubkey>");
+  });
+});
+
+describe("u64-prefixed string", () => {
+  // Byte-identical to `U64_STRING_IDL` in arete-hash/src/idl.rs.
+  const source =
+    '{"version":"0.0.0","name":"seeded_probe","address":"11111111111111111111111111111111","metadata":{"name":"seeded_probe","address":"11111111111111111111111111111111"},"instructions":[{"name":"assignWithSeed","discriminant":{"type":"u32","value":10},"accounts":[{"name":"account","isMut":true,"isSigner":false}],"args":[{"name":"base","type":"publicKey"},{"name":"seed","type":{"string":"utf8","lengthPrefix":"u64"}},{"name":"owner","type":"publicKey"}]}],"accounts":[],"types":[],"events":[],"errors":[]}';
+  const build = (text: string) => buildProgramSpecV1FromBytes(new TextEncoder().encode(text));
+
+  test("hash and arg type match the Rust implementation", () => {
+    const spec = build(source);
+    expect(spec.instructions?.[0]?.args?.[1]?.type).toBe("StringU64Len");
+    expect(spec.normalizedIdlHash).toBe(
+      "arete:h1:idl-normalized:sha256:f28cf9709d8218443cff5533a8cc9eac2e13806871736b2d1c3f1a711d0a2e59",
+    );
+    expect(hashProgramSpecV1(spec)).toBe(
+      "arete:h1:program-spec:sha256:88b2fba23aed4bb98851ca20d45a84bad704e8057ce23c67e28089c38d065a0c",
+    );
+  });
+
+  test("an unsupported encoding or prefix is rejected, as Rust rejects it", () => {
+    expect(() => build(source.replace('"string":"utf8"', '"string":"utf16"'))).toThrow(/string/);
+    expect(() => build(source.replace('"lengthPrefix":"u64"', '"lengthPrefix":"u128"'))).toThrow(
+      /lengthPrefix/,
+    );
   });
 });
 

@@ -172,6 +172,8 @@ impl Generator {
         println!("wrote {}", path.display());
     }
 
+    // One positional field per vector column; a builder would only rename them.
+    #[allow(clippy::too_many_arguments)]
     fn add_hash_vector(
         &mut self,
         id: &str,
@@ -1450,6 +1452,35 @@ impl Generator {
             &[],
         );
 
+        // The mainnet System program: owned by the native loader, executable,
+        // and its account data is the built-in's name.
+        let native_identity = SolanaExecutableIdentityV1::new(
+            "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+            SolanaExecutableLoaderV1::native_builtin("solana_system_program")
+                .expect("native built-in loader identity"),
+        )
+        .expect("native executable identity");
+        let hosted_native =
+            HostedManagedProgramReleaseV2::new(HostedManagedProgramReleaseV2Fields {
+                program_id: "11111111111111111111111111111111".to_string(),
+                program_spec_hash: baseline.program_spec_hash,
+                idl_content_hash: baseline.idl_content_hash,
+                normalized_idl_hash: baseline.normalized_idl_hash,
+                decoder_abi_version: "1".to_string(),
+                decoder_engine_id: "example-decoder-engine/v1".to_string(),
+                decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
+                executable_identity: native_identity,
+            })
+            .expect("hosted native built-in release");
+        self.add_release_vector(
+            "release-hosted-managed-v2-native-builtin",
+            "Hosted V2 binds a native built-in program by its loader and built-in name.",
+            &hosted_native,
+            json!({"loader": "native-builtin"}),
+            None,
+            &[],
+        );
+
         let hosted_private =
             HostedPrivateProgramReleaseV3::new(HostedPrivateProgramReleaseV3Fields {
                 program_id: baseline.program_id.clone(),
@@ -1586,6 +1617,79 @@ impl Generator {
         }
 
         self.hosted_release_failure_vectors(&hosted_upgradeable, &hosted_legacy);
+        self.native_builtin_failure_vectors(&hosted_native);
+    }
+
+    fn native_builtin_failure_vectors(&mut self, native: &HostedManagedProgramReleaseV2) {
+        let native_value = serde_json::to_value(native).expect("release serializes");
+        for (id, description, mutation) in [
+            (
+                "native-builtin-rejects-loader-id-mismatch",
+                "Native built-in identities require the native loader program ID.",
+                "loader-id",
+            ),
+            (
+                "native-builtin-rejects-empty-name",
+                "Native built-in names must not be empty.",
+                "empty-name",
+            ),
+            (
+                "native-builtin-rejects-non-ascii-name",
+                "Native built-in names are printable ASCII only.",
+                "non-ascii-name",
+            ),
+            (
+                "native-builtin-rejects-control-character-name",
+                "Native built-in names reject spaces and control characters.",
+                "control-name",
+            ),
+            (
+                "native-builtin-rejects-overlong-name",
+                "Native built-in names are at most 64 bytes.",
+                "long-name",
+            ),
+            (
+                "native-builtin-rejects-unknown-field",
+                "Native built-in identities reject unknown fields.",
+                "unknown-field",
+            ),
+            (
+                "native-builtin-rejects-executable-digest",
+                "Native built-in identities cannot carry BPF loader fields.",
+                "bpf-field",
+            ),
+        ] {
+            let mut value = native_value.clone();
+            let loader = &mut value["executableIdentity"]["loader"];
+            match mutation {
+                "loader-id" => {
+                    loader["loaderProgramId"] = json!(SOLANA_BPF_UPGRADEABLE_LOADER_PROGRAM_ID)
+                }
+                "empty-name" => loader["builtinName"] = json!(""),
+                "non-ascii-name" => loader["builtinName"] = json!("solana_system_programé"),
+                "control-name" => loader["builtinName"] = json!("solana system\nprogram"),
+                "long-name" => loader["builtinName"] = json!("a".repeat(65)),
+                "unknown-field" => loader["validatorVersion"] = json!("2.3.0"),
+                "bpf-field" => {
+                    loader["executablePayloadSha256"] = json!(format!("sha256:{}", "ab".repeat(32)))
+                }
+                _ => unreachable!(),
+            }
+            let error = match parse_hosted_managed_program_release_v2(
+                &serde_json::to_vec(&value).expect("release JSON"),
+            ) {
+                Ok(_) => panic!("invalid native built-in vector '{id}' was accepted"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code(), "invalid-projection");
+            self.add_failure(
+                id,
+                description,
+                "hosted-program-release-v2",
+                json!({"projection": value}),
+                &error,
+            );
+        }
     }
 
     fn hosted_release_failure_vectors(

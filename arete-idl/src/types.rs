@@ -163,8 +163,80 @@ pub struct IdlInstruction {
     pub args: Vec<IdlField>,
 }
 
+/// Docs marker declaring an instruction untagged: its data carries no
+/// discriminator, so it matches any data no tagged instruction of the program
+/// claims. Mirrors `arete.account_untagged=true` on accounts.
+pub const INSTRUCTION_UNTAGGED_MARKER: &str = "arete.instruction_untagged=true";
+
+/// Argument type that consumes every remaining instruction byte, unprefixed.
+pub const REST_BYTES_TYPE: &str = "rest_bytes";
+/// Argument type that consumes every remaining instruction byte as UTF-8 text,
+/// unprefixed (SPL Memo's payload).
+pub const REST_UTF8_TYPE: &str = "rest_utf8";
+
+/// Whether `name` is a remainder argument type ([`REST_BYTES_TYPE`] or
+/// [`REST_UTF8_TYPE`]).
+pub fn is_remainder_type_name(name: &str) -> bool {
+    name == REST_BYTES_TYPE || name == REST_UTF8_TYPE
+}
+
+/// Whether `idl_type` is or contains a remainder type anywhere.
+pub fn idl_type_uses_remainder(idl_type: &IdlType) -> bool {
+    match idl_type {
+        IdlType::Simple(name) => is_remainder_type_name(name),
+        IdlType::Array(array) => array.array.iter().any(|element| match element {
+            IdlTypeArrayElement::Nested(inner) => idl_type_uses_remainder(inner),
+            IdlTypeArrayElement::Type(name) => is_remainder_type_name(name),
+            IdlTypeArrayElement::Size(_) => false,
+        }),
+        IdlType::Option(option) => idl_type_uses_remainder(&option.option),
+        IdlType::Vec(vec) => idl_type_uses_remainder(&vec.vec),
+        IdlType::String(_) => false,
+        IdlType::HashMap(map) => {
+            idl_type_uses_remainder(&map.hash_map.0) || idl_type_uses_remainder(&map.hash_map.1)
+        }
+        IdlType::Tuple(tuple) => tuple.tuple.iter().any(idl_type_uses_remainder),
+        IdlType::Defined(_) => false,
+    }
+}
+
 impl IdlInstruction {
+    /// Explicitly declared discriminator-free instruction: no `discriminator`,
+    /// no `discriminant`, and [`INSTRUCTION_UNTAGGED_MARKER`] in its docs.
+    /// Omitting a discriminator alone keeps the Anchor derivation.
+    pub fn is_untagged(&self) -> bool {
+        self.discriminator.is_empty()
+            && self.discriminant.is_none()
+            && self
+                .docs
+                .iter()
+                .any(|doc| doc.trim() == INSTRUCTION_UNTAGGED_MARKER)
+    }
+
+    /// Reject remainder argument types anywhere but as the bare type of the
+    /// last argument: a remainder consumes every byte that follows, so nothing
+    /// can be decoded after it, and it has no length to nest by.
+    pub fn validate_remainder_args(&self) -> Result<(), String> {
+        let last = self.args.len().saturating_sub(1);
+        for (index, arg) in self.args.iter().enumerate() {
+            let bare = matches!(&arg.type_, IdlType::Simple(name) if is_remainder_type_name(name));
+            if bare && index == last {
+                continue;
+            }
+            if idl_type_uses_remainder(&arg.type_) {
+                return Err(format!(
+                    "instruction '{}' argument '{}': {REST_BYTES_TYPE} and {REST_UTF8_TYPE} are allowed only as the type of the last argument",
+                    self.name, arg.name
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn get_discriminator(&self) -> Vec<u8> {
+        if self.is_untagged() {
+            return Vec::new();
+        }
         if !self.discriminator.is_empty() {
             return self.discriminator.clone();
         }
@@ -362,7 +434,6 @@ impl IdlAccount {
 
         crate::discriminator::anchor_discriminator(&format!("account:{}", self.name))
     }
-
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -410,6 +481,7 @@ pub enum IdlType {
     Array(IdlTypeArray),
     Option(IdlTypeOption),
     Vec(IdlTypeVec),
+    String(IdlTypeString),
     HashMap(IdlTypeHashMap),
     Tuple(IdlTypeTuple),
     Defined(IdlTypeDefined),
@@ -449,6 +521,38 @@ pub struct IdlTypeVec {
         rename = "lengthPrefix"
     )]
     pub length_prefix: Option<IdlLengthPrefix>,
+}
+
+/// Text encoding of an [`IdlTypeString`]. Only UTF-8 is modelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IdlStringEncoding {
+    Utf8,
+}
+
+/// A length-prefixed UTF-8 string with an explicit prefix width:
+/// `{"string": "utf8", "lengthPrefix": "u64"}`.
+///
+/// The bare `"string"` type is Borsh's (`u32` byte length). bincode, used by the
+/// native Solana programs, writes a `u64` length, as for sequences
+/// ([`IdlTypeVec::length_prefix`]). Absent `lengthPrefix` means `U32`, the same
+/// layout as `"string"`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IdlTypeString {
+    pub string: IdlStringEncoding,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "lengthPrefix"
+    )]
+    pub length_prefix: Option<IdlLengthPrefix>,
+}
+
+impl IdlTypeString {
+    /// Whether the string carries a bincode-style `u64` byte length.
+    pub fn is_u64_prefixed(&self) -> bool {
+        matches!(self.length_prefix, Some(IdlLengthPrefix::U64))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -615,6 +719,59 @@ impl IdlSpec {
             .as_deref()
             .or_else(|| self.metadata.as_ref().and_then(|m| m.name.as_deref()))
             .unwrap_or("unknown")
+    }
+
+    /// Reject remainder argument types ([`REST_BYTES_TYPE`],
+    /// [`REST_UTF8_TYPE`]) anywhere but as the last argument of an
+    /// instruction: never in accounts, events, defined types or nested.
+    pub fn validate_remainder_types(&self) -> Result<(), String> {
+        for instruction in &self.instructions {
+            instruction.validate_remainder_args()?;
+        }
+        let field_uses = |fields: &[IdlField]| {
+            fields
+                .iter()
+                .any(|field| idl_type_uses_remainder(&field.type_))
+        };
+        for type_def in &self.types {
+            let uses = match &type_def.type_def {
+                IdlTypeDefKind::Struct { fields, .. } => field_uses(fields),
+                IdlTypeDefKind::TupleStruct { fields, .. } => {
+                    fields.iter().any(idl_type_uses_remainder)
+                }
+                IdlTypeDefKind::Enum { variants, .. } => variants.iter().any(|variant| {
+                    variant.fields.iter().any(|field| match field {
+                        IdlEnumVariantField::Named(field) => idl_type_uses_remainder(&field.type_),
+                        IdlEnumVariantField::Tuple(inner) => idl_type_uses_remainder(inner),
+                    })
+                }),
+            };
+            if uses {
+                return Err(format!(
+                    "type '{}': {REST_BYTES_TYPE} and {REST_UTF8_TYPE} are allowed only as the type of an instruction's last argument",
+                    type_def.name
+                ));
+            }
+        }
+        for event in &self.events {
+            if field_uses(&event.fields) {
+                return Err(format!(
+                    "event '{}': {REST_BYTES_TYPE} and {REST_UTF8_TYPE} are allowed only as the type of an instruction's last argument",
+                    event.name
+                ));
+            }
+        }
+        for account in &self.accounts {
+            if let Some(IdlTypeDefKind::Struct { fields, .. }) = &account.type_def {
+                if field_uses(fields) {
+                    return Err(format!(
+                        "account '{}': {REST_BYTES_TYPE} and {REST_UTF8_TYPE} are allowed only as the type of an instruction's last argument",
+                        account.name
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn get_version(&self) -> &str {
@@ -785,6 +942,44 @@ mod account_discriminator_tests {
 }
 
 #[cfg(test)]
+mod instruction_untagged_tests {
+    use super::*;
+
+    fn instruction(json: &str) -> IdlInstruction {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn untagged_instructions_require_an_explicit_declaration() {
+        let mut ix = instruction(r#"{"name":"memo","accounts":[],"args":[]}"#);
+        assert!(!ix.is_untagged());
+        assert_eq!(ix.get_discriminator().len(), 8);
+        ix.docs.push(format!("  {INSTRUCTION_UNTAGGED_MARKER}\n"));
+        assert!(ix.is_untagged());
+        assert!(ix.get_discriminator().is_empty());
+        ix.discriminator = vec![3];
+        assert!(!ix.is_untagged());
+        assert_eq!(ix.get_discriminator(), vec![3]);
+    }
+
+    #[test]
+    fn a_remainder_argument_must_be_the_bare_last_argument() {
+        let last = instruction(
+            r#"{"name":"memo","accounts":[],"args":[{"name":"a","type":"u8"},{"name":"memo","type":"rest_utf8"}]}"#,
+        );
+        assert!(last.validate_remainder_args().is_ok());
+        let first = instruction(
+            r#"{"name":"memo","accounts":[],"args":[{"name":"memo","type":"rest_bytes"},{"name":"a","type":"u8"}]}"#,
+        );
+        assert!(first.validate_remainder_args().is_err());
+        let nested = instruction(
+            r#"{"name":"memo","accounts":[],"args":[{"name":"memo","type":{"option":"rest_utf8"}}]}"#,
+        );
+        assert!(nested.validate_remainder_args().is_err());
+    }
+}
+
+#[cfg(test)]
 mod length_prefix_tests {
     use super::*;
 
@@ -809,6 +1004,39 @@ mod length_prefix_tests {
         }
         // Hash stability: an ordinary vec must serialize byte-identically to before.
         assert_eq!(serde_json::to_string(&t).unwrap(), r#"{"vec":"publicKey"}"#);
+    }
+
+    #[test]
+    fn parses_a_u64_length_prefixed_string_and_round_trips_it() {
+        let json = r#"{"string":"utf8","lengthPrefix":"u64"}"#;
+        let t: IdlType = serde_json::from_str(json).expect("parse u64 string");
+        match &t {
+            IdlType::String(s) => {
+                assert_eq!(s.string, IdlStringEncoding::Utf8);
+                assert!(s.is_u64_prefixed());
+            }
+            other => panic!("expected String, got {other:?}"),
+        }
+        assert_eq!(serde_json::to_string(&t).unwrap(), json);
+    }
+
+    #[test]
+    fn a_string_without_a_prefix_defaults_to_u32_and_bare_string_stays_simple() {
+        let t: IdlType = serde_json::from_str(r#"{"string":"utf8"}"#).expect("parse string");
+        match &t {
+            IdlType::String(s) => assert!(!s.is_u64_prefixed()),
+            other => panic!("expected String, got {other:?}"),
+        }
+        let bare: IdlType = serde_json::from_str(r#""string""#).expect("parse bare string");
+        assert!(matches!(bare, IdlType::Simple(ref name) if name == "string"));
+    }
+
+    #[test]
+    fn rejects_an_unknown_string_encoding_or_prefix() {
+        assert!(serde_json::from_str::<IdlType>(r#"{"string":"utf16"}"#).is_err());
+        assert!(
+            serde_json::from_str::<IdlType>(r#"{"string":"utf8","lengthPrefix":"u128"}"#).is_err()
+        );
     }
 }
 

@@ -1,0 +1,252 @@
+{
+  "schema": "arete.protocol-client-vector/v1",
+  "description": "The message a wallet signs (Ed25519) to authorise a protocol metadata patch: lines joined by \"\\n\": `arete.protocol-metadata/v1`, deployment id, instance id, wallet, lowercase hex SHA-256 of the patch in RFC 8785 (JCS) form, expiresAt in unix seconds. expiresAt must be after `now` and at most 300 seconds ahead. Integers outside the IEEE-754 safe range are refused (send them as decimal strings). Cases that must be refused carry `expected.error`: `expires-at` or `invalid-field`.",
+  "maxTtlSeconds": 300,
+  "cases": [
+    {
+      "name": "participant-display-name",
+      "input": {
+        "deploymentId": "7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10",
+        "instanceId": "inst_1",
+        "wallet": "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
+        "patch": {
+          "displayName": "Ada",
+          "note": null
+        },
+        "expiresAt": 1790000240,
+        "now": 1790000000
+      },
+      "expected": {
+        "canonicalPatch": "{\"displayName\":\"Ada\",\"note\":null}",
+        "patchSha256": "b98c953149bb46ea937e23e89e7581588caa3d79da51b70856ad485b6e6e099f",
+        "message": "arete.protocol-metadata/v1\n7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10\ninst_1\nSQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf\nb98c953149bb46ea937e23e89e7581588caa3d79da51b70856ad485b6e6e099f\n1790000240"
+      }
+    },
+    {
+      "name": "nested-unicode-and-numbers",
+      "input": {
+        "deploymentId": "dep_1",
+        "instanceId": "inst_2",
+        "wallet": "presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj",
+        "patch": {
+          "z": [
+            1,
+            2.5,
+            0,
+            1e+21,
+            1e-07,
+            1e-06
+          ],
+          "é": {
+            "b": true,
+            "a": "line\nbreak \"q\"  "
+          },
+          "😀": "emoji",
+          "ﬁ": "ligature"
+        },
+        "expiresAt": 1790000001,
+        "now": 1790000000
+      },
+      "expected": {
+        "canonicalPatch": "{\"z\":[1,2.5,0,1e+21,1e-7,0.000001],\"é\":{\"a\":\"line\\nbreak \\\"q\\\"  \",\"b\":true},\"😀\":\"emoji\",\"ﬁ\":\"ligature\"}",
+        "patchSha256": "03fd5e7174f41e08db2a9930a4880251bccd41d38c92a5d139f34537d2685c0f",
+        "message": "arete.protocol-metadata/v1\ndep_1\ninst_2\npresSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj\n03fd5e7174f41e08db2a9930a4880251bccd41d38c92a5d139f34537d2685c0f\n1790000001"
+      }
+    },
+    {
+      "name": "empty-patch",
+      "input": {
+        "deploymentId": "dep_1",
+        "instanceId": "inst_3",
+        "wallet": "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
+        "patch": {},
+        "expiresAt": 1790000300,
+        "now": 1790000000
+      },
+      "expected": {
+        "canonicalPatch": "{}",
+        "patchSha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "message": "arete.protocol-metadata/v1\ndep_1\ninst_3\nSQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\n1790000300"
+      }
+    },
+    {
+      "name": "flat-patch",
+      "input": {
+        "deploymentId": "7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10",
+        "instanceId": "pi_01HZX3K2Y8Q4",
+        "wallet": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+        "now": 1790000000,
+        "patch": {
+          "name": "Raise",
+          "ticker": "RAISE"
+        },
+        "expiresAt": 1790000240
+      },
+      "expected": {
+        "canonicalPatch": "{\"name\":\"Raise\",\"ticker\":\"RAISE\"}",
+        "patchSha256": "05803ff6de321f93cdcf6d66036c6aea2c7ad40534e4ca819163c25462f42d9a",
+        "message": "arete.protocol-metadata/v1\n7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10\npi_01HZX3K2Y8Q4\n9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin\n05803ff6de321f93cdcf6d66036c6aea2c7ad40534e4ca819163c25462f42d9a\n1790000240",
+        "messageSha256": "adbdbece79c298d9eeaa7368dd597030324d3aeae2d6ea216f89121d04375d94"
+      }
+    },
+    {
+      "name": "members-sorted-null-removes-a-field",
+      "input": {
+        "deploymentId": "7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10",
+        "instanceId": "pi_01HZX3K2Y8Q4",
+        "wallet": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+        "now": 1790000000,
+        "patch": {
+          "tagline": null,
+          "name": "Raise"
+        },
+        "expiresAt": 1790000300
+      },
+      "expected": {
+        "canonicalPatch": "{\"name\":\"Raise\",\"tagline\":null}",
+        "patchSha256": "c96668a9f9076f9aa235364c466dae8fee896c0657e363ca933995fd4534885e",
+        "message": "arete.protocol-metadata/v1\n7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10\npi_01HZX3K2Y8Q4\n9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin\nc96668a9f9076f9aa235364c466dae8fee896c0657e363ca933995fd4534885e\n1790000300",
+        "messageSha256": "37bdadf743e5e99a42709974b6920adb9b2e4bacb62494f09901f6d3f22e3284"
+      }
+    },
+    {
+      "name": "nested-objects-arrays-and-numbers",
+      "input": {
+        "deploymentId": "7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10",
+        "instanceId": "pi_01HZX3K2Y8Q4",
+        "wallet": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+        "now": 1790000000,
+        "patch": {
+          "z": [
+            3,
+            1.5,
+            -2,
+            0,
+            true,
+            false,
+            null
+          ],
+          "a": {
+            "c": "x",
+            "b": 1e+21,
+            "d": 1e-06,
+            "e": 1e-07,
+            "f": 123456789012
+          },
+          "m": 1.25
+        },
+        "expiresAt": 1790000001
+      },
+      "expected": {
+        "canonicalPatch": "{\"a\":{\"b\":1e+21,\"c\":\"x\",\"d\":0.000001,\"e\":1e-7,\"f\":123456789012},\"m\":1.25,\"z\":[3,1.5,-2,0,true,false,null]}",
+        "patchSha256": "c5250004d78db115351b06a3124f2fea5a7f707ae8ed311e8dd868d4a99d2dc2",
+        "message": "arete.protocol-metadata/v1\n7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10\npi_01HZX3K2Y8Q4\n9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin\nc5250004d78db115351b06a3124f2fea5a7f707ae8ed311e8dd868d4a99d2dc2\n1790000001",
+        "messageSha256": "569a7c1ce6da147cd82fc9b953c817898ac82dfd545a9d529d73cd8aaef334bd"
+      }
+    },
+    {
+      "name": "escapes-and-non-ASCII",
+      "input": {
+        "deploymentId": "7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10",
+        "instanceId": "pi_01HZX3K2Y8Q4",
+        "wallet": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+        "now": 1790000000,
+        "patch": {
+          "note": "line\nbreak \"quoted\" \\ tab\t\u0001 é 😀  ",
+          "é": 1,
+          "e": 2,
+          "😀": 3,
+          "｡": 4
+        },
+        "expiresAt": 1790000120
+      },
+      "expected": {
+        "canonicalPatch": "{\"e\":2,\"note\":\"line\\nbreak \\\"quoted\\\" \\\\ tab\\t\\u0001 é 😀  \",\"é\":1,\"😀\":3,\"｡\":4}",
+        "patchSha256": "a67422114345c822e194aa8f72b08259ea8a80fa0d6a5c836ca4d74072410dc6",
+        "message": "arete.protocol-metadata/v1\n7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10\npi_01HZX3K2Y8Q4\n9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin\na67422114345c822e194aa8f72b08259ea8a80fa0d6a5c836ca4d74072410dc6\n1790000120",
+        "messageSha256": "1641b46cc7e6d5dab04f19d71a46084c3792bd216aec22eb155eb23ef3794b6b"
+      }
+    },
+    {
+      "name": "empty-patch",
+      "input": {
+        "deploymentId": "7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10",
+        "instanceId": "pi_01HZX3K2Y8Q4",
+        "wallet": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+        "now": 1790000000,
+        "patch": {},
+        "expiresAt": 1790000060
+      },
+      "expected": {
+        "canonicalPatch": "{}",
+        "patchSha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "message": "arete.protocol-metadata/v1\n7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10\npi_01HZX3K2Y8Q4\n9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\n1790000060",
+        "messageSha256": "c666f13a96022e2312f3a13316378a28b15c48c7ca244a7896e41fb0b7b77807"
+      }
+    },
+    {
+      "name": "expiresAt-in-the-past",
+      "input": {
+        "deploymentId": "7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10",
+        "instanceId": "pi_01HZX3K2Y8Q4",
+        "wallet": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+        "now": 1790000000,
+        "patch": {
+          "name": "x"
+        },
+        "expiresAt": 1790000000
+      },
+      "expected": {
+        "error": "expires-at"
+      }
+    },
+    {
+      "name": "expiresAt-too-far-ahead",
+      "input": {
+        "deploymentId": "7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10",
+        "instanceId": "pi_01HZX3K2Y8Q4",
+        "wallet": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+        "now": 1790000000,
+        "patch": {
+          "name": "x"
+        },
+        "expiresAt": 1790000301
+      },
+      "expected": {
+        "error": "expires-at"
+      }
+    },
+    {
+      "name": "multi-line-instance-id",
+      "input": {
+        "deploymentId": "7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10",
+        "instanceId": "pi_1\npi_2",
+        "wallet": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+        "now": 1790000000,
+        "patch": {
+          "name": "x"
+        },
+        "expiresAt": 1790000100
+      },
+      "expected": {
+        "error": "invalid-field"
+      }
+    },
+    {
+      "name": "empty-wallet",
+      "input": {
+        "deploymentId": "7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10",
+        "instanceId": "pi_01HZX3K2Y8Q4",
+        "wallet": "",
+        "now": 1790000000,
+        "patch": {
+          "name": "x"
+        },
+        "expiresAt": 1790000100
+      },
+      "expected": {
+        "error": "invalid-field"
+      }
+    }
+  ]
+}

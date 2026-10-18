@@ -1,0 +1,191 @@
+{
+  "schema": "arete.protocol-release-vectors/v1",
+  "cases": [
+    {
+      "name": "escrow-resolution.server",
+      "spec": "../protocol/escrow-resolution.protocol-spec.json",
+      "mode": "server",
+      "error": "the protocol stack needs stack.instanceAccounts or stack.activity; declare what the stack should track"
+    },
+    {
+      "name": "escrow-accounts.server",
+      "spec": "../protocol/escrow-resolution.protocol-spec.json",
+      "specOverrides": {
+        "stack": {
+          "instanceAccounts": {
+            "vault": {
+              "program": "escrowVault",
+              "account": "Vault"
+            },
+            "depositor": {
+              "program": "escrowVault",
+              "account": "DepositorRecord"
+            }
+          },
+          "instanceFields": {
+            "amount": {
+              "account": "vault",
+              "field": "amount"
+            },
+            "owner": {
+              "account": "depositor",
+              "field": "owner"
+            },
+            "openedAt": {
+              "account": "depositor",
+              "field": "timing.opened_at"
+            }
+          },
+          "activity": [
+            {
+              "step": "open",
+              "program": "escrowVault",
+              "instruction": "deposit",
+              "instanceAccount": "depositor",
+              "walletAccount": "authority",
+              "amountArg": "amount"
+            },
+            {
+              "step": "refund",
+              "program": "escrowVault",
+              "instruction": "refund",
+              "instanceAccount": "depositor",
+              "walletAccount": "authority"
+            }
+          ]
+        }
+      },
+      "mode": "server",
+      "expected": {
+        "stackSourceHash": "arete:h1:protocol-stack-source:sha256:b800ddc3288ffcc8b0c50738f5dbe70da7ef8a5268b58536e78f22db25d321d9",
+        "releaseHash": "arete:h1:protocol-release:sha256:12669446dd0391e9c1eac87e8640bf5fb19ef9659bbc8e7e81fb833c40398075",
+        "release": "{\"compilerHash\":\"arete:h1:compiler:sha256:c6f61102022ac6e7b14b710c2575e1e437978c7de0bbd2e8ade9cfdeb3ece71a\",\"dependencies\":{\"programs\":[{\"alias\":\"escrowVault\",\"programId\":\"Vau1t11111111111111111111111111111111111111\",\"programSpecHash\":\"arete:h1:program-spec:sha256:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4\"}],\"sdkExtensions\":[],\"stacks\":[]},\"handlerBundleHash\":null,\"protocol\":\"escrowResolution\",\"schema\":\"arete.protocol-release/v1\",\"specHash\":\"arete:h1:protocol-spec:sha256:d16be342a61c767e7d1c702cc5dc6d41fadcd46d02b8345dc353e1a4af4a4754\",\"stackSourceHash\":\"arete:h1:protocol-stack-source:sha256:b800ddc3288ffcc8b0c50738f5dbe70da7ef8a5268b58536e78f22db25d321d9\",\"version\":\"0.1.0\"}",
+        "receipt": "{\"compiler\":{\"esbuild\":\"0.0.0\",\"name\":\"arete-protocol-server\",\"version\":\"1.0.0\"},\"dependencies\":[],\"lockfileSha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"outputs\":{\"handlerBundleHash\":null,\"releaseHash\":\"arete:h1:protocol-release:sha256:12669446dd0391e9c1eac87e8640bf5fb19ef9659bbc8e7e81fb833c40398075\",\"specHash\":\"arete:h1:protocol-spec:sha256:d16be342a61c767e7d1c702cc5dc6d41fadcd46d02b8345dc353e1a4af4a4754\",\"stackSourceHash\":\"arete:h1:protocol-stack-source:sha256:b800ddc3288ffcc8b0c50738f5dbe70da7ef8a5268b58536e78f22db25d321d9\"},\"schema\":\"arete.protocol-build-receipt/v1\",\"sourceTreeSha256\":\"c44b5ea29e748c768abec86e29d4b71f2722de577744da567ffe191cba5b5dc9\"}"
+      }
+    },
+    {
+      "name": "token-raise.server",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "bundleBase64": "ZXhwb3J0IGNvbnN0IGhhbmRsZXJfY29udHJpYnV0ZSA9ICgpID0+IG51bGw7Cg==",
+      "mode": "server",
+      "expected": {
+        "stackSourceHash": "arete:h1:protocol-stack-source:sha256:0937ba4e9f7c14cd444b3cee863cdabfa5d47396ebb5bb11117e39038a15bc2a",
+        "releaseHash": "arete:h1:protocol-release:sha256:43819eb555924faaa5ea9b006b95de74cf72034d64c371bec494f4d4cde66608",
+        "release": "{\"compilerHash\":\"arete:h1:compiler:sha256:c6f61102022ac6e7b14b710c2575e1e437978c7de0bbd2e8ade9cfdeb3ece71a\",\"dependencies\":{\"programs\":[{\"alias\":\"meteoraPresale\",\"programId\":\"presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj\",\"programSpecHash\":\"arete:h1:program-spec:sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\"},{\"alias\":\"squadsV4\",\"programId\":\"SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf\",\"programSpecHash\":\"arete:h1:program-spec:sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\"}],\"sdkExtensions\":[],\"stacks\":[{\"alias\":\"meteoraPresale\",\"stackManifestHash\":\"arete:h1:stack-manifest:sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3\"}]},\"handlerBundleHash\":\"arete:h1:protocol-handler-bundle:sha256:5b8f06a7dda30866586b679c57cd589883855bbc9018b0bd27d09eaa4d61ca50\",\"protocol\":\"tokenRaise\",\"schema\":\"arete.protocol-release/v1\",\"specHash\":\"arete:h1:protocol-spec:sha256:cf233c5f9ea3f93cc63d356093bf019e7d96d92741b7cfa59ebdcf2546fb04eb\",\"stackSourceHash\":\"arete:h1:protocol-stack-source:sha256:0937ba4e9f7c14cd444b3cee863cdabfa5d47396ebb5bb11117e39038a15bc2a\",\"version\":\"1.0.0\"}",
+        "receipt": "{\"compiler\":{\"esbuild\":\"0.0.0\",\"name\":\"arete-protocol-server\",\"version\":\"1.0.0\"},\"dependencies\":[],\"lockfileSha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"outputs\":{\"handlerBundleHash\":\"arete:h1:protocol-handler-bundle:sha256:5b8f06a7dda30866586b679c57cd589883855bbc9018b0bd27d09eaa4d61ca50\",\"releaseHash\":\"arete:h1:protocol-release:sha256:43819eb555924faaa5ea9b006b95de74cf72034d64c371bec494f4d4cde66608\",\"specHash\":\"arete:h1:protocol-spec:sha256:cf233c5f9ea3f93cc63d356093bf019e7d96d92741b7cfa59ebdcf2546fb04eb\",\"stackSourceHash\":\"arete:h1:protocol-stack-source:sha256:0937ba4e9f7c14cd444b3cee863cdabfa5d47396ebb5bb11117e39038a15bc2a\"},\"schema\":\"arete.protocol-build-receipt/v1\",\"sourceTreeSha256\":\"af1d5ab48141ed4aef9d2cda2250b45c866b31af905ec640785feb4e8088224e\"}"
+      }
+    },
+    {
+      "name": "token-raise.server-missing-bundle",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "mode": "server",
+      "error": "the spec has handler steps but no handler bundle was supplied"
+    },
+    {
+      "name": "escrow-resolution.server-unexpected-bundle",
+      "spec": "../protocol/escrow-resolution.protocol-spec.json",
+      "bundleBase64": "ZXhwb3J0IHt9Owo=",
+      "mode": "server",
+      "error": "a template-only spec cannot carry a handler bundle"
+    },
+    {
+      "name": "token-raise.local-build",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "bundleBase64": "ZXhwb3J0IGNvbnN0IGhhbmRsZXJfY29udHJpYnV0ZSA9ICgpID0+IG51bGw7Cg==",
+      "mode": "release",
+      "compiler": {
+        "name": "@usearete/protocol",
+        "version": "0.1.0",
+        "esbuild": "0.28.2"
+      },
+      "stackOptions": {
+        "programs": {
+          "meteoraPresale": {
+            "registry": "meteora-presale",
+            "version": "=1.1.0"
+          }
+        },
+        "generator": {
+          "name": "@usearete/protocol",
+          "version": "0.1.0"
+        }
+      },
+      "expected": {
+        "stackSourceHash": "arete:h1:protocol-stack-source:sha256:bbb6c6f95da0545a21d4f9054ed545185fcbdbf686562e500ed45dbca9efc860",
+        "releaseHash": "arete:h1:protocol-release:sha256:58ad40c3200c03d19cad6957bd333a850fd3628fe4ce0064af22f58453857bf0",
+        "release": "{\"compilerHash\":\"arete:h1:compiler:sha256:5bd5edf20f47a74684409da5a4415bfdcd20577f3057b927447029559ee4b764\",\"dependencies\":{\"programs\":[{\"alias\":\"meteoraPresale\",\"programId\":\"presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj\",\"programSpecHash\":\"arete:h1:program-spec:sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\"},{\"alias\":\"squadsV4\",\"programId\":\"SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf\",\"programSpecHash\":\"arete:h1:program-spec:sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\"}],\"sdkExtensions\":[],\"stacks\":[{\"alias\":\"meteoraPresale\",\"stackManifestHash\":\"arete:h1:stack-manifest:sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3\"}]},\"handlerBundleHash\":\"arete:h1:protocol-handler-bundle:sha256:5b8f06a7dda30866586b679c57cd589883855bbc9018b0bd27d09eaa4d61ca50\",\"protocol\":\"tokenRaise\",\"schema\":\"arete.protocol-release/v1\",\"specHash\":\"arete:h1:protocol-spec:sha256:cf233c5f9ea3f93cc63d356093bf019e7d96d92741b7cfa59ebdcf2546fb04eb\",\"stackSourceHash\":\"arete:h1:protocol-stack-source:sha256:bbb6c6f95da0545a21d4f9054ed545185fcbdbf686562e500ed45dbca9efc860\",\"version\":\"1.0.0\"}"
+      }
+    },
+    {
+      "name": "escrow-accounts.local-build",
+      "spec": "../protocol/escrow-resolution.protocol-spec.json",
+      "mode": "release",
+      "compiler": {
+        "name": "@usearete/protocol",
+        "version": "0.1.0",
+        "esbuild": "0.28.2"
+      },
+      "stackOptions": {
+        "generator": {
+          "name": "@usearete/protocol",
+          "version": "0.1.0"
+        }
+      },
+      "specOverrides": {
+        "stack": {
+          "instanceAccounts": {
+            "vault": {
+              "program": "escrowVault",
+              "account": "Vault"
+            },
+            "depositor": {
+              "program": "escrowVault",
+              "account": "DepositorRecord"
+            }
+          },
+          "instanceFields": {
+            "amount": {
+              "account": "vault",
+              "field": "amount"
+            },
+            "owner": {
+              "account": "depositor",
+              "field": "owner"
+            },
+            "openedAt": {
+              "account": "depositor",
+              "field": "timing.opened_at"
+            }
+          },
+          "activity": [
+            {
+              "step": "open",
+              "program": "escrowVault",
+              "instruction": "deposit",
+              "instanceAccount": "depositor",
+              "walletAccount": "authority",
+              "amountArg": "amount"
+            },
+            {
+              "step": "refund",
+              "program": "escrowVault",
+              "instruction": "refund",
+              "instanceAccount": "depositor",
+              "walletAccount": "authority"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "stackSourceHash": "arete:h1:protocol-stack-source:sha256:720edbee801e0dcede338ec0dfbaa810722a916ec691c199031893a657d40fef",
+        "releaseHash": "arete:h1:protocol-release:sha256:0cf9d9a73c0075321b191b0b7a848fe0a321c264028c0fb972e603122d0e4034",
+        "release": "{\"compilerHash\":\"arete:h1:compiler:sha256:5bd5edf20f47a74684409da5a4415bfdcd20577f3057b927447029559ee4b764\",\"dependencies\":{\"programs\":[{\"alias\":\"escrowVault\",\"programId\":\"Vau1t11111111111111111111111111111111111111\",\"programSpecHash\":\"arete:h1:program-spec:sha256:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4\"}],\"sdkExtensions\":[],\"stacks\":[]},\"handlerBundleHash\":null,\"protocol\":\"escrowResolution\",\"schema\":\"arete.protocol-release/v1\",\"specHash\":\"arete:h1:protocol-spec:sha256:d16be342a61c767e7d1c702cc5dc6d41fadcd46d02b8345dc353e1a4af4a4754\",\"stackSourceHash\":\"arete:h1:protocol-stack-source:sha256:720edbee801e0dcede338ec0dfbaa810722a916ec691c199031893a657d40fef\",\"version\":\"0.1.0\"}"
+      }
+    }
+  ],
+  "serverCompiler": {
+    "name": "arete-protocol-server",
+    "version": "1.0.0",
+    "compilerHash": "arete:h1:compiler:sha256:c6f61102022ac6e7b14b710c2575e1e437978c7de0bbd2e8ade9cfdeb3ece71a"
+  }
+}

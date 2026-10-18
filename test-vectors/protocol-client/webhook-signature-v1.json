@@ -1,0 +1,387 @@
+{
+  "schema": "arete.protocol-client-vector/v1",
+  "description": "Protocol webhook signatures (v1): lowercase hex HMAC-SHA256 keyed with the endpoint secret over `${timestamp}.${body}`, sent as space-separated `v1=<hex>` entries in arete-webhook-signature. Bodies are the exact UTF-8 bytes received. Header names compare case-insensitively. Each case is a signing case (`expected.signature`), a verification that succeeds (`expected.id`/`timestamp`; the payload is the parsed body) or one that fails (`expected.error`).",
+  "toleranceSeconds": 300,
+  "cases": [
+    {
+      "name": "hosted-signer",
+      "input": {
+        "secret": "whsec_test",
+        "timestamp": 1790000000,
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}"
+      },
+      "expected": {
+        "signature": "33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+      }
+    },
+    {
+      "name": "verify-valid",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "id": "dlv_1",
+        "timestamp": 1790000000
+      }
+    },
+    {
+      "name": "verify-rotated-secret",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000300,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=0000000000000000000000000000000000000000000000000000000000000000 v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "id": "dlv_1",
+        "timestamp": 1790000000
+      }
+    },
+    {
+      "name": "verify-stale",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000301,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "error": "timestamp-out-of-tolerance"
+      }
+    },
+    {
+      "name": "verify-tampered",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"} ",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "error": "invalid-signature"
+      }
+    },
+    {
+      "name": "verify-negative-timestamp",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "-1",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "error": "invalid-timestamp"
+      }
+    },
+    {
+      "name": "verify-missing-header",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1"
+        }
+      },
+      "expected": {
+        "error": "missing-header"
+      }
+    },
+    {
+      "name": "valid-signature",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "id": "dlv_1",
+        "timestamp": 1790000000
+      }
+    },
+    {
+      "name": "mixed-case-header-names",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "Arete-Webhook-Id": "dlv_1",
+          "ARETE-WEBHOOK-TIMESTAMP": "1790000000",
+          "Arete-Webhook-Signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "id": "dlv_1",
+        "timestamp": 1790000000
+      }
+    },
+    {
+      "name": "rotated-secret-any-v1-entry-may-match",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=0000000000000000000000000000000000000000000000000000000000000000 v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "id": "dlv_1",
+        "timestamp": 1790000000
+      }
+    },
+    {
+      "name": "entries-with-other-versions-are-ignored",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v0=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "error": "invalid-signature"
+      }
+    },
+    {
+      "name": "tampered-body",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"} ",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "error": "invalid-signature"
+      }
+    },
+    {
+      "name": "wrong-secret",
+      "input": {
+        "secret": "other",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "error": "invalid-signature"
+      }
+    },
+    {
+      "name": "uppercase-hex-does-not-match",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=33CB922725C0A7E5885D14CA4D55BFD3B792B3FB33509F35CF346090C099B88C"
+        }
+      },
+      "expected": {
+        "error": "invalid-signature"
+      }
+    },
+    {
+      "name": "at-the-tolerance-edge",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000300,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "id": "dlv_1",
+        "timestamp": 1790000000
+      }
+    },
+    {
+      "name": "past-the-tolerance",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000301,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "error": "timestamp-out-of-tolerance"
+      }
+    },
+    {
+      "name": "ahead-of-the-tolerance",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1789999699,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "error": "timestamp-out-of-tolerance"
+      }
+    },
+    {
+      "name": "missing-id-header",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "error": "missing-header"
+      }
+    },
+    {
+      "name": "missing-timestamp-header",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "error": "missing-header"
+      }
+    },
+    {
+      "name": "missing-signature-header",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000"
+        }
+      },
+      "expected": {
+        "error": "missing-header"
+      }
+    },
+    {
+      "name": "negative-timestamp",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "-1",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "error": "invalid-timestamp"
+      }
+    },
+    {
+      "name": "leading-zero-timestamp",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "01790000000",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "error": "invalid-timestamp"
+      }
+    },
+    {
+      "name": "fractional-timestamp",
+      "input": {
+        "secret": "whsec_test",
+        "body": "{\"id\":\"evt_1\",\"event\":\"raise.succeeded\",\"deploymentId\":\"dep_1\",\"instanceId\":\"inst_1\",\"participantId\":null,\"state\":\"succeeded\",\"occurredAt\":\"2026-10-13T00:00:00Z\"}",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000.5",
+          "arete-webhook-signature": "v1=33cb922725c0a7e5885d14ca4d55bfd3b792b3fb33509f35cf346090c099b88c"
+        }
+      },
+      "expected": {
+        "error": "invalid-timestamp"
+      }
+    },
+    {
+      "name": "signed-body-that-is-not-JSON",
+      "input": {
+        "secret": "whsec_test",
+        "body": "not json",
+        "now": 1790000000,
+        "headers": {
+          "arete-webhook-id": "dlv_1",
+          "arete-webhook-timestamp": "1790000000",
+          "arete-webhook-signature": "v1=d11f0e77954ab08060f6c71ab5ebf1de71a4bdb306638b0652fb2ed369f76b96"
+        }
+      },
+      "expected": {
+        "error": "invalid-payload"
+      }
+    }
+  ]
+}

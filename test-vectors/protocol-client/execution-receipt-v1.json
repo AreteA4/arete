@@ -1,0 +1,1387 @@
+{
+  "description": "Execution receipts. verifyReceipt(receipt, keySet): the body is the receipt without `signatures`, in RFC 8785 (JCS) form; each signature is base64 Ed25519 by `keyId` over the UTF-8 lines `arete.protocol-execution-receipt/v1`, keyId, lowercase hex SHA-256 of the body. A key with `retiredAt` verifies only receipts whose issuedAt is before it. A receipt is valid when any signature verifies; otherwise the error is the first of bad-signature (a usable key did not verify), key-retired, unknown-key; a malformed receipt is invalid-receipt. verifyReceiptOnChain(receipt, transaction): the transaction is base64 wire bytes or a getTransaction result with encoding base64. Checks in order: transaction-failed (meta.err), slot-mismatch, invalid-transaction, signature-mismatch (first signature), message-hash-mismatch (SHA-256 of the message bytes), attestation-not-signer, memo-missing / memo-not-unique / memo-invalid (exactly one memo instruction, through either SPL Memo program, lists the attestation key; it must be SPL Memo v2 (MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr), list only that key, and carry an `arete:p2:` memo with 8 colon-separated parts), memo-mismatch (short id, instance and participant as base58 of the UUID bytes, step, n/count = index+1/count), attestation-signature-invalid (Ed25519 over the message bytes).",
+  "keySet": {
+    "keys": [
+      {
+        "keyId": "test-receipt-0",
+        "publicKey": "3BuW9SR5tG6VFK4MmkQQ3Ak8ny1K1Vv5Uz7is8Aa5pwG",
+        "retiredAt": 1760000000
+      },
+      {
+        "keyId": "test-receipt-1",
+        "publicKey": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV"
+      }
+    ],
+    "schema": "arete.protocol-receipt-keys/v1"
+  },
+  "onChainCases": [
+    {
+      "expected": {
+        "valid": true
+      },
+      "name": "legacy-wire",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-1",
+            "signature": "4pkveiFqRFpSj5uEzwRKKkitGWRz/xpekHDccVGcST2nWekznPz0CPbvuiWiX6SgGdG5Cqx72tQoKkraPdfHAQ=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "An0G7ol72Eu89SIAP+nk3Uww2pFreKIJ1yuQh8qqyZt4LemKkLFuK4wT0C9xH7tKeli+s+rL4Krwnip+KTlFKglbIhSe3NBRUDY6bsoE1dNKg7vvYDNnKKy1Kyq9EqE6uB+1kfgiA0V5ra+EONywjrkFD0cFM2l32I9AtW06LVILAgEBA1EcNKGiy1Id8WuyRrjejnmXziNcfnayKj11A6JIGd2KMd6+VdN8cidosTcTHKpghwgLLgtguUvXhdFFdc+kmLwFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAQIBATlhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOi06Y29udHJpYnV0ZToxLzE="
+    },
+    {
+      "expected": {
+        "valid": true
+      },
+      "name": "v0-wire",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "ebddc33529d2ffddef362d5c444ebce636c89f1fa1b25ceb8d177eda376cbad6",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "5UvUohre3vqGEuV5NZTDdWuEN2benJ7gZmWyudySpcQnfxA6gB9jLgDydYoqqqWzKRUxLbFD76DLX6tr4r4iam7j",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "AuAlnFptagJgC8bd6CImuF1o5fyIgY+i45WlRde7255oeWnIY++Iv4cXyO5nHk17cG+0bTE8urJHIvchQ5+fIA6t6mLhFsdzzuT9ysr96xXEpzhiuEIWodVrIcYomdaOZeUB+S3s/L3Fvoiv8BntRmbStNNYTekYJGeRnSSseg0EgAIBAQNRHDShostSHfFrska43o55l84jXH52sio9dQOiSBndijHevlXTfHInaLE3ExyqYIcICy4LYLlL14XRRXXPpJi8BUpTWpkpIQZNJOhxYNo4fHw1td28kruB5B+oQEEFRI0JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQECAQE5YXJldGU6cDI6cmFpc2UxOi06NmJXdXlKamNVVHhhcW1tcHRKNnVRRzotOmNvbnRyaWJ1dGU6MS8xAA=="
+    },
+    {
+      "expected": {
+        "valid": true
+      },
+      "name": "v1-wire-participant",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "28c69fae43fa02479b1593e78ebd64de2cc748b8ed8ae0cec2c2850c3f11139c",
+        "participantId": "0b7d8f8e-5d0c-4a59-9a43-7a7f1d4e2c10",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "51Fe8Eykni2YQHHsgAGwPupmcTDAg19oDBveNdDZzGnCuQkY6BuKNjLLJSGnwTNFkD8NRM5n1trQNvd65HHbk6ij",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 2,
+          "index": 1
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "gQIBAQAAAAAJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQEDURw0oaLLUh3xa7JGuN6OeZfOI1x+drIqPXUDokgZ3Yox3r5V03xyJ2ixNxMcqmCHCAsuC2C5S9eF0UV1z6SYvAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNAgFOAAFhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOjJSSjl3YkZ4NVRXNHFERXRCSkhKeGY6Y29udHJpYnV0ZToyLzLISSF2dN757VYwmpz762IT8PFIh/RiT7oQsw6dbogqw13K4560IARbKPNI4vnBDsU0EOfzgr+m6dsud6Naww0AVjoWeT2/mpDD9vPQV0yHCMXRdY8/buAiOzEf23REvYK8RVaRSlqnI6FsnpHN+JB6RsAllBbw5dAQnXmRLpzTBQ=="
+    },
+    {
+      "expected": {
+        "valid": true
+      },
+      "name": "rpc-response",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-1",
+            "signature": "4pkveiFqRFpSj5uEzwRKKkitGWRz/xpekHDccVGcST2nWekznPz0CPbvuiWiX6SgGdG5Cqx72tQoKkraPdfHAQ=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": {
+        "meta": {
+          "err": null
+        },
+        "slot": 312000123,
+        "transaction": [
+          "An0G7ol72Eu89SIAP+nk3Uww2pFreKIJ1yuQh8qqyZt4LemKkLFuK4wT0C9xH7tKeli+s+rL4Krwnip+KTlFKglbIhSe3NBRUDY6bsoE1dNKg7vvYDNnKKy1Kyq9EqE6uB+1kfgiA0V5ra+EONywjrkFD0cFM2l32I9AtW06LVILAgEBA1EcNKGiy1Id8WuyRrjejnmXziNcfnayKj11A6JIGd2KMd6+VdN8cidosTcTHKpghwgLLgtguUvXhdFFdc+kmLwFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAQIBATlhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOi06Y29udHJpYnV0ZToxLzE=",
+          "base64"
+        ]
+      }
+    },
+    {
+      "expected": {
+        "error": "transaction-failed",
+        "valid": false
+      },
+      "name": "rpc-transaction-failed",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-1",
+            "signature": "4pkveiFqRFpSj5uEzwRKKkitGWRz/xpekHDccVGcST2nWekznPz0CPbvuiWiX6SgGdG5Cqx72tQoKkraPdfHAQ=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": {
+        "meta": {
+          "err": {
+            "InstructionError": [
+              0,
+              {
+                "Custom": 1
+              }
+            ]
+          }
+        },
+        "slot": 312000123,
+        "transaction": [
+          "An0G7ol72Eu89SIAP+nk3Uww2pFreKIJ1yuQh8qqyZt4LemKkLFuK4wT0C9xH7tKeli+s+rL4Krwnip+KTlFKglbIhSe3NBRUDY6bsoE1dNKg7vvYDNnKKy1Kyq9EqE6uB+1kfgiA0V5ra+EONywjrkFD0cFM2l32I9AtW06LVILAgEBA1EcNKGiy1Id8WuyRrjejnmXziNcfnayKj11A6JIGd2KMd6+VdN8cidosTcTHKpghwgLLgtguUvXhdFFdc+kmLwFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAQIBATlhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOi06Y29udHJpYnV0ZToxLzE=",
+          "base64"
+        ]
+      }
+    },
+    {
+      "expected": {
+        "error": "slot-mismatch",
+        "valid": false
+      },
+      "name": "rpc-slot-mismatch",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-1",
+            "signature": "4pkveiFqRFpSj5uEzwRKKkitGWRz/xpekHDccVGcST2nWekznPz0CPbvuiWiX6SgGdG5Cqx72tQoKkraPdfHAQ=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": {
+        "meta": {
+          "err": null
+        },
+        "slot": 312000124,
+        "transaction": [
+          "An0G7ol72Eu89SIAP+nk3Uww2pFreKIJ1yuQh8qqyZt4LemKkLFuK4wT0C9xH7tKeli+s+rL4Krwnip+KTlFKglbIhSe3NBRUDY6bsoE1dNKg7vvYDNnKKy1Kyq9EqE6uB+1kfgiA0V5ra+EONywjrkFD0cFM2l32I9AtW06LVILAgEBA1EcNKGiy1Id8WuyRrjejnmXziNcfnayKj11A6JIGd2KMd6+VdN8cidosTcTHKpghwgLLgtguUvXhdFFdc+kmLwFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAQIBATlhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOi06Y29udHJpYnV0ZToxLzE=",
+          "base64"
+        ]
+      }
+    },
+    {
+      "expected": {
+        "error": "invalid-transaction",
+        "valid": false
+      },
+      "name": "rpc-json-encoding",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-1",
+            "signature": "4pkveiFqRFpSj5uEzwRKKkitGWRz/xpekHDccVGcST2nWekznPz0CPbvuiWiX6SgGdG5Cqx72tQoKkraPdfHAQ=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": {
+        "meta": {
+          "err": null
+        },
+        "slot": 312000123,
+        "transaction": {
+          "message": {},
+          "signatures": [
+            "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L"
+          ]
+        }
+      }
+    },
+    {
+      "expected": {
+        "error": "invalid-transaction",
+        "valid": false
+      },
+      "name": "not-a-transaction",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-1",
+            "signature": "4pkveiFqRFpSj5uEzwRKKkitGWRz/xpekHDccVGcST2nWekznPz0CPbvuiWiX6SgGdG5Cqx72tQoKkraPdfHAQ=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "AQID"
+    },
+    {
+      "expected": {
+        "error": "signature-mismatch",
+        "valid": false
+      },
+      "name": "signature-mismatch",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "5UvUohre3vqGEuV5NZTDdWuEN2benJ7gZmWyudySpcQnfxA6gB9jLgDydYoqqqWzKRUxLbFD76DLX6tr4r4iam7j",
+        "signatures": [
+          {
+            "keyId": "test-receipt-1",
+            "signature": "4pkveiFqRFpSj5uEzwRKKkitGWRz/xpekHDccVGcST2nWekznPz0CPbvuiWiX6SgGdG5Cqx72tQoKkraPdfHAQ=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "An0G7ol72Eu89SIAP+nk3Uww2pFreKIJ1yuQh8qqyZt4LemKkLFuK4wT0C9xH7tKeli+s+rL4Krwnip+KTlFKglbIhSe3NBRUDY6bsoE1dNKg7vvYDNnKKy1Kyq9EqE6uB+1kfgiA0V5ra+EONywjrkFD0cFM2l32I9AtW06LVILAgEBA1EcNKGiy1Id8WuyRrjejnmXziNcfnayKj11A6JIGd2KMd6+VdN8cidosTcTHKpghwgLLgtguUvXhdFFdc+kmLwFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAQIBATlhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOi06Y29udHJpYnV0ZToxLzE="
+    },
+    {
+      "expected": {
+        "error": "message-hash-mismatch",
+        "valid": false
+      },
+      "name": "message-hash-mismatch",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-1",
+            "signature": "4pkveiFqRFpSj5uEzwRKKkitGWRz/xpekHDccVGcST2nWekznPz0CPbvuiWiX6SgGdG5Cqx72tQoKkraPdfHAQ=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "An0G7ol72Eu89SIAP+nk3Uww2pFreKIJ1yuQh8qqyZt4LemKkLFuK4wT0C9xH7tKeli+s+rL4Krwnip+KTlFKglbIhSe3NBRUDY6bsoE1dNKg7vvYDNnKKy1Kyq9EqE6uB+1kfgiA0V5ra+EONywjrkFD0cFM2l32I9AtW06LVILAgEBA1EcNKGiy1Id8WuyRrjejnmXziNcfnayKj11A6JIGd2KMd6+VdN8cidosTcTHKpghwgLLgtguUvXhdFFdc+kmLwFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAQIBATlhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOi06Y29udHJpYnV0ZToxLzE="
+    },
+    {
+      "expected": {
+        "error": "memo-mismatch",
+        "valid": false
+      },
+      "name": "memo-other-deployment",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise2"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "28c69fae43fa02479b1593e78ebd64de2cc748b8ed8ae0cec2c2850c3f11139c",
+        "participantId": "0b7d8f8e-5d0c-4a59-9a43-7a7f1d4e2c10",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "51Fe8Eykni2YQHHsgAGwPupmcTDAg19oDBveNdDZzGnCuQkY6BuKNjLLJSGnwTNFkD8NRM5n1trQNvd65HHbk6ij",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 2,
+          "index": 1
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "gQIBAQAAAAAJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQEDURw0oaLLUh3xa7JGuN6OeZfOI1x+drIqPXUDokgZ3Yox3r5V03xyJ2ixNxMcqmCHCAsuC2C5S9eF0UV1z6SYvAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNAgFOAAFhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOjJSSjl3YkZ4NVRXNHFERXRCSkhKeGY6Y29udHJpYnV0ZToyLzLISSF2dN757VYwmpz762IT8PFIh/RiT7oQsw6dbogqw13K4560IARbKPNI4vnBDsU0EOfzgr+m6dsud6Naww0AVjoWeT2/mpDD9vPQV0yHCMXRdY8/buAiOzEf23REvYK8RVaRSlqnI6FsnpHN+JB6RsAllBbw5dAQnXmRLpzTBQ=="
+    },
+    {
+      "expected": {
+        "error": "memo-mismatch",
+        "valid": false
+      },
+      "name": "memo-other-step",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "28c69fae43fa02479b1593e78ebd64de2cc748b8ed8ae0cec2c2850c3f11139c",
+        "participantId": "0b7d8f8e-5d0c-4a59-9a43-7a7f1d4e2c10",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "51Fe8Eykni2YQHHsgAGwPupmcTDAg19oDBveNdDZzGnCuQkY6BuKNjLLJSGnwTNFkD8NRM5n1trQNvd65HHbk6ij",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "refund",
+        "transaction": {
+          "count": 2,
+          "index": 1
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "gQIBAQAAAAAJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQEDURw0oaLLUh3xa7JGuN6OeZfOI1x+drIqPXUDokgZ3Yox3r5V03xyJ2ixNxMcqmCHCAsuC2C5S9eF0UV1z6SYvAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNAgFOAAFhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOjJSSjl3YkZ4NVRXNHFERXRCSkhKeGY6Y29udHJpYnV0ZToyLzLISSF2dN757VYwmpz762IT8PFIh/RiT7oQsw6dbogqw13K4560IARbKPNI4vnBDsU0EOfzgr+m6dsud6Naww0AVjoWeT2/mpDD9vPQV0yHCMXRdY8/buAiOzEf23REvYK8RVaRSlqnI6FsnpHN+JB6RsAllBbw5dAQnXmRLpzTBQ=="
+    },
+    {
+      "expected": {
+        "error": "memo-mismatch",
+        "valid": false
+      },
+      "name": "memo-other-instance",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0e",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "28c69fae43fa02479b1593e78ebd64de2cc748b8ed8ae0cec2c2850c3f11139c",
+        "participantId": "0b7d8f8e-5d0c-4a59-9a43-7a7f1d4e2c10",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "51Fe8Eykni2YQHHsgAGwPupmcTDAg19oDBveNdDZzGnCuQkY6BuKNjLLJSGnwTNFkD8NRM5n1trQNvd65HHbk6ij",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 2,
+          "index": 1
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "gQIBAQAAAAAJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQEDURw0oaLLUh3xa7JGuN6OeZfOI1x+drIqPXUDokgZ3Yox3r5V03xyJ2ixNxMcqmCHCAsuC2C5S9eF0UV1z6SYvAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNAgFOAAFhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOjJSSjl3YkZ4NVRXNHFERXRCSkhKeGY6Y29udHJpYnV0ZToyLzLISSF2dN757VYwmpz762IT8PFIh/RiT7oQsw6dbogqw13K4560IARbKPNI4vnBDsU0EOfzgr+m6dsud6Naww0AVjoWeT2/mpDD9vPQV0yHCMXRdY8/buAiOzEf23REvYK8RVaRSlqnI6FsnpHN+JB6RsAllBbw5dAQnXmRLpzTBQ=="
+    },
+    {
+      "expected": {
+        "error": "memo-mismatch",
+        "valid": false
+      },
+      "name": "memo-other-participant",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "28c69fae43fa02479b1593e78ebd64de2cc748b8ed8ae0cec2c2850c3f11139c",
+        "participantId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "51Fe8Eykni2YQHHsgAGwPupmcTDAg19oDBveNdDZzGnCuQkY6BuKNjLLJSGnwTNFkD8NRM5n1trQNvd65HHbk6ij",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 2,
+          "index": 1
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "gQIBAQAAAAAJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQEDURw0oaLLUh3xa7JGuN6OeZfOI1x+drIqPXUDokgZ3Yox3r5V03xyJ2ixNxMcqmCHCAsuC2C5S9eF0UV1z6SYvAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNAgFOAAFhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOjJSSjl3YkZ4NVRXNHFERXRCSkhKeGY6Y29udHJpYnV0ZToyLzLISSF2dN757VYwmpz762IT8PFIh/RiT7oQsw6dbogqw13K4560IARbKPNI4vnBDsU0EOfzgr+m6dsud6Naww0AVjoWeT2/mpDD9vPQV0yHCMXRdY8/buAiOzEf23REvYK8RVaRSlqnI6FsnpHN+JB6RsAllBbw5dAQnXmRLpzTBQ=="
+    },
+    {
+      "expected": {
+        "error": "memo-mismatch",
+        "valid": false
+      },
+      "name": "memo-other-position",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "28c69fae43fa02479b1593e78ebd64de2cc748b8ed8ae0cec2c2850c3f11139c",
+        "participantId": "0b7d8f8e-5d0c-4a59-9a43-7a7f1d4e2c10",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "51Fe8Eykni2YQHHsgAGwPupmcTDAg19oDBveNdDZzGnCuQkY6BuKNjLLJSGnwTNFkD8NRM5n1trQNvd65HHbk6ij",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 2,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "gQIBAQAAAAAJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQEDURw0oaLLUh3xa7JGuN6OeZfOI1x+drIqPXUDokgZ3Yox3r5V03xyJ2ixNxMcqmCHCAsuC2C5S9eF0UV1z6SYvAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNAgFOAAFhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOjJSSjl3YkZ4NVRXNHFERXRCSkhKeGY6Y29udHJpYnV0ZToyLzLISSF2dN757VYwmpz762IT8PFIh/RiT7oQsw6dbogqw13K4560IARbKPNI4vnBDsU0EOfzgr+m6dsud6Naww0AVjoWeT2/mpDD9vPQV0yHCMXRdY8/buAiOzEf23REvYK8RVaRSlqnI6FsnpHN+JB6RsAllBbw5dAQnXmRLpzTBQ=="
+    },
+    {
+      "expected": {
+        "error": "memo-mismatch",
+        "valid": false
+      },
+      "name": "memo-participant-missing-from-receipt",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "28c69fae43fa02479b1593e78ebd64de2cc748b8ed8ae0cec2c2850c3f11139c",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "51Fe8Eykni2YQHHsgAGwPupmcTDAg19oDBveNdDZzGnCuQkY6BuKNjLLJSGnwTNFkD8NRM5n1trQNvd65HHbk6ij",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 2,
+          "index": 1
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "gQIBAQAAAAAJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQEDURw0oaLLUh3xa7JGuN6OeZfOI1x+drIqPXUDokgZ3Yox3r5V03xyJ2ixNxMcqmCHCAsuC2C5S9eF0UV1z6SYvAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNAgFOAAFhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOjJSSjl3YkZ4NVRXNHFERXRCSkhKeGY6Y29udHJpYnV0ZToyLzLISSF2dN757VYwmpz762IT8PFIh/RiT7oQsw6dbogqw13K4560IARbKPNI4vnBDsU0EOfzgr+m6dsud6Naww0AVjoWeT2/mpDD9vPQV0yHCMXRdY8/buAiOzEf23REvYK8RVaRSlqnI6FsnpHN+JB6RsAllBbw5dAQnXmRLpzTBQ=="
+    },
+    {
+      "expected": {
+        "error": "attestation-not-signer",
+        "valid": false
+      },
+      "name": "attestation-not-signer",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "1e0895b8b26149bef8482ed12f97e72aecc22e4c570c7c80668f93b3d594325d",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "HQUDnABULTYwMX6NwibbQJW4BJueVwXZmznUurARG79FuToJ7wGX6DwWeWKps5agSYgTBufB85raGQfV2D8ViMk",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "AQ4lkN34sitGsjSfMalMvZu6VtJaIjq8iCxImJieAmpZu2AeJ2hKBsW6xHrH5uhSda0CKGp4uA74+uPzQZIadwcBAAIDURw0oaLLUh3xa7JGuN6OeZfOI1x+drIqPXUDokgZ3Yox3r5V03xyJ2ixNxMcqmCHCAsuC2C5S9eF0UV1z6SYvAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkBAgEBOWFyZXRlOnAyOnJhaXNlMTotOjZiV3V5SmpjVVR4YXFtbXB0SjZ1UUc6LTpjb250cmlidXRlOjEvMQ=="
+    },
+    {
+      "expected": {
+        "error": "memo-missing",
+        "valid": false
+      },
+      "name": "memo-missing",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "1e0aad2bc1c7897c8ad2be249a19658f8d405d0a1bb48a2b03b78a387022028d",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "2zcrsd3z1PJk5Z2d1SzK5H8aYTpTZBdxYuzQ6QcgTaGPNedBpPEfMRiXpW6RzVpMtcwCo3iXfSwBjUEMLs1CCjy9",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "AmO0bnYv5gjFJAyZiAJqzL4vx5ejLYJ695pK9m3RNSTij6TScaY6TGm6+f1NljSOqE9BeVU2CTyH0PrkZwMVxgjUQHxH3rXw2juB+XXcrJ/Y1j90XbHd72gkBBBBpjAdmnAxQvukKm59RQcZV7crZ1+7XHp9WTRpH9X5Kjyz7GIEAgEBA1EcNKGiy1Id8WuyRrjejnmXziNcfnayKj11A6JIGd2KMd6+VdN8cidosTcTHKpghwgLLgtguUvXhdFFdc+kmLwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAQICAAEA"
+    },
+    {
+      "expected": {
+        "error": "memo-not-unique",
+        "valid": false
+      },
+      "name": "memo-not-unique",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "eef5322df5af44d3824d704086dd87ee19507bcd6ba3e28e004a4f93db5ac2fb",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "9d1rZm3wFis9WnF5psGLUvPkfxbEqPVxN4n8JnteFfyaRzAzWpUdaPZm9UjvLCgjy4pG4FedFsXtqREahvuXjes",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "AgdvMyxm+/DIoHmlwb4w3KZyTdcCMF+NeKmXCNPSErdvOONHMHPgKrUaI7FjJ1DvDjC9kms8I7zxvpWAIaCRrAwF4J2zUxy3xG3r0Db8rLc5e/DHSiYYyAoWPt5L82w5638dGb655VtOJVricygsHCWiSq6nYudS2p79bdADBPAOAgEBA1EcNKGiy1Id8WuyRrjejnmXziNcfnayKj11A6JIGd2KMd6+VdN8cidosTcTHKpghwgLLgtguUvXhdFFdc+kmLwFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAgIBATlhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOi06Y29udHJpYnV0ZToxLzECAQE5YXJldGU6cDI6cmFpc2UxOi06NmJXdXlKamNVVHhhcW1tcHRKNnVRRzotOmNvbnRyaWJ1dGU6MS8x"
+    },
+    {
+      "expected": {
+        "error": "memo-invalid",
+        "valid": false
+      },
+      "name": "memo-not-attested",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "422fb29fdb50513daceff2c96113672ccb7f3409aeb479c0bdc904a1a5be4aaa",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3LNytBuxHv2AxDbkueAHHgprXVFQPJhnojh1UguGdKCZuSz2FYSudXVtFfhBiApdkg7c1beQchj7adYtEcj68kzh",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "AnS+5aqlieBqCsvNZD2rGULHb7x/s7Jv3KUa1MFmka96+czaNsmfim1b/TXhiOydVPyLTxnCNUYwi1Ree1ISWwaJwpZYs7Yv0VmvoIxUMdUcz3kCic4xoEjbOfXWXu7Ubl54gEFiM5nOUqlzjY2PRqx+GAmlcYd+py4n0tx7BBcKAgEBA1EcNKGiy1Id8WuyRrjejnmXziNcfnayKj11A6JIGd2KMd6+VdN8cidosTcTHKpghwgLLgtguUvXhdFFdc+kmLwFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAQIBAQVoZWxsbw=="
+    },
+    {
+      "expected": {
+        "error": "memo-invalid",
+        "valid": false
+      },
+      "name": "memo-extra-account",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "3c21bd7529e5c434cf66da46b401c711b5f43462019c4f47d0711f395f252cf7",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "4kmhu3LCwc1N4ZpA7c6F2UMbBkjHBQwHn5iz9YDgm2agtocckTp8mUjkVqCH5ZDr7SDeLcuJm7uhiLQAdKw6N4ty",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "ArvMGL9uU22XZ+Yof+11vAtJiKYLKPsEBKJeNsu478UBUGOG5PRYAZHVz5Wlvd6+V1EBe0GPH4seSlfloxG+xwoK9KT2C5QjU0BimL2tZE6ewnBZ5wmqGFyl+OGAABvottKtXW0UP/PImXhKs4OpBlY9BSJgituh0zcM/5fjp4oJAgEBA1EcNKGiy1Id8WuyRrjejnmXziNcfnayKj11A6JIGd2KMd6+VdN8cidosTcTHKpghwgLLgtguUvXhdFFdc+kmLwFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAQICAQA5YXJldGU6cDI6cmFpc2UxOi06NmJXdXlKamNVVHhhcW1tcHRKNnVRRzotOmNvbnRyaWJ1dGU6MS8x"
+    },
+    {
+      "expected": {
+        "error": "attestation-signature-invalid",
+        "valid": false
+      },
+      "name": "attestation-signature-missing",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      },
+      "transaction": "An0G7ol72Eu89SIAP+nk3Uww2pFreKIJ1yuQh8qqyZt4LemKkLFuK4wT0C9xH7tKeli+s+rL4Krwnip+KTlFKgkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgEBA1EcNKGiy1Id8WuyRrjejnmXziNcfnayKj11A6JIGd2KMd6+VdN8cidosTcTHKpghwgLLgtguUvXhdFFdc+kmLwFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAQIBATlhcmV0ZTpwMjpyYWlzZTE6LTo2Yld1eUpqY1VUeGFxbW1wdEo2dVFHOi06Y29udHJpYnV0ZToxLzE="
+    }
+  ],
+  "schema": "arete.protocol-client-vector/v1",
+  "verifyCases": [
+    {
+      "expected": {
+        "bodySha256": "5942b1659e5f5284927770c009d329a9d156fc3050a93a4bc3c91bfe78b9a470",
+        "canonicalBody": "{\"attestationPubkey\":\"4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT\",\"deployment\":{\"deploymentId\":\"6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c\",\"releaseHash\":\"arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"revision\":3,\"shortId\":\"raise1\"},\"fees\":{\"asset\":{\"kind\":\"native\"},\"creator\":\"0\",\"platform\":\"5000000\"},\"instanceId\":\"2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d\",\"intentHash\":\"arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"issuedAt\":1760000100,\"messageSha256\":\"37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd\",\"reviewHash\":\"arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"schema\":\"arete.protocol-execution-receipt/v1\",\"signature\":\"3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L\",\"slot\":\"312000123\",\"status\":\"finalized\",\"step\":\"contribute\",\"transaction\":{\"count\":1,\"index\":0},\"trustTier\":\"reviewed\"}",
+        "keyId": "test-receipt-1",
+        "signingMessage": "arete.protocol-execution-receipt/v1\ntest-receipt-1\n5942b1659e5f5284927770c009d329a9d156fc3050a93a4bc3c91bfe78b9a470",
+        "valid": true
+      },
+      "name": "active-key",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-1",
+            "signature": "4pkveiFqRFpSj5uEzwRKKkitGWRz/xpekHDccVGcST2nWekznPz0CPbvuiWiX6SgGdG5Cqx72tQoKkraPdfHAQ=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      }
+    },
+    {
+      "expected": {
+        "keyId": "test-receipt-0",
+        "valid": true
+      },
+      "name": "retired-key-before-retirement",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1759999999,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-0",
+            "signature": "PGn5PV1+tcQYUPUPrBD7uUYRkJCLzsIhO7KnIJ6pgs/JmDiD2VzmF2pWS/B39evrnQqk70QmRSFpBDHzUlH2Aw=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      }
+    },
+    {
+      "expected": {
+        "error": "key-retired",
+        "valid": false
+      },
+      "name": "retired-key-after-retirement",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-0",
+            "signature": "lm71Lpc9s6hH3SP/+P5IwMJA2TIzYo2ffKkA8qznk/gzg+nbM23xcIsUd3fJe+l4gpoCEUimht9xBCIp1ULzAg=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      }
+    },
+    {
+      "expected": {
+        "error": "unknown-key",
+        "valid": false
+      },
+      "name": "unknown-key",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-9",
+            "signature": "1qW7JIBsvu6Pw3Z6HWIuN8g0GfPkOsWM8sLA0/vJEyVV2GeINDno3s/zB0KwH7v2YMjVjukJ9F17M5mz+b0FBQ=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      }
+    },
+    {
+      "expected": {
+        "error": "bad-signature",
+        "valid": false
+      },
+      "name": "tampered-body",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-1",
+            "signature": "4pkveiFqRFpSj5uEzwRKKkitGWRz/xpekHDccVGcST2nWekznPz0CPbvuiWiX6SgGdG5Cqx72tQoKkraPdfHAQ=="
+          }
+        ],
+        "slot": "312000124",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      }
+    },
+    {
+      "expected": {
+        "error": "bad-signature",
+        "valid": false
+      },
+      "name": "signed-by-another-key",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-1",
+            "signature": "S5KehyfEircmCrW+rv/JGs+74L8RgGRYApNiuH6dPlQ6GKsPvSUKoMzTkU3FLdds4XvIQI7C6kBa2WniJeA1Bw=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      }
+    },
+    {
+      "expected": {
+        "keyId": "test-receipt-1",
+        "valid": true
+      },
+      "name": "any-usable-signature",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-0",
+            "signature": "lm71Lpc9s6hH3SP/+P5IwMJA2TIzYo2ffKkA8qznk/gzg+nbM23xcIsUd3fJe+l4gpoCEUimht9xBCIp1ULzAg=="
+          },
+          {
+            "keyId": "test-receipt-1",
+            "signature": "4pkveiFqRFpSj5uEzwRKKkitGWRz/xpekHDccVGcST2nWekznPz0CPbvuiWiX6SgGdG5Cqx72tQoKkraPdfHAQ=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      }
+    },
+    {
+      "expected": {
+        "error": "invalid-receipt",
+        "valid": false
+      },
+      "name": "unknown-schema",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v2",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [
+          {
+            "keyId": "test-receipt-1",
+            "signature": "4pkveiFqRFpSj5uEzwRKKkitGWRz/xpekHDccVGcST2nWekznPz0CPbvuiWiX6SgGdG5Cqx72tQoKkraPdfHAQ=="
+          }
+        ],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      }
+    },
+    {
+      "expected": {
+        "error": "invalid-receipt",
+        "valid": false
+      },
+      "name": "no-signatures",
+      "receipt": {
+        "attestationPubkey": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "deployment": {
+          "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
+          "releaseHash": "arete:h1:protocol-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "revision": 3,
+          "shortId": "raise1"
+        },
+        "fees": {
+          "asset": {
+            "kind": "native"
+          },
+          "creator": "0",
+          "platform": "5000000"
+        },
+        "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
+        "intentHash": "arete:h1:execution-intent:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issuedAt": 1760000100,
+        "messageSha256": "37c30f5e641d8bb8e34049bc009c53896be8d6d2c1938728f06e14f02389a7fd",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.protocol-execution-receipt/v1",
+        "signature": "3VyxrUnQ4JuNY3XFpqX9ZYmuU57ZZptM2sUXWf2RBtqbbbCG6UsDwNCDNAUMdBeHcy5wva5Spdxw33v1rKeVoi6L",
+        "signatures": [],
+        "slot": "312000123",
+        "status": "finalized",
+        "step": "contribute",
+        "transaction": {
+          "count": 1,
+          "index": 0
+        },
+        "trustTier": "reviewed"
+      }
+    }
+  ]
+}

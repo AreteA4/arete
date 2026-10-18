@@ -1064,6 +1064,21 @@ function normalizeIdlType(value: unknown, location: string): JsonValue {
     }
     return vec;
   }
+  if (Object.hasOwn(item, "string")) {
+    // `{"string": "utf8", "lengthPrefix": "u64"}`: Rust's `IdlTypeString`. Same
+    // prefix rules as `vec`; `utf8` is the only encoding Rust accepts.
+    const encoding = requiredString(item.string, `${location}.string`);
+    if (encoding !== "utf8") return invalidIdl(`${location}.string must be "utf8"`);
+    const text: JsonValue = { string: encoding };
+    if (item.lengthPrefix !== undefined && item.lengthPrefix !== null) {
+      const prefix = requiredString(item.lengthPrefix, `${location}.lengthPrefix`);
+      if (prefix !== "u32" && prefix !== "u64") {
+        return invalidIdl(`${location}.lengthPrefix must be "u32" or "u64"`);
+      }
+      text.lengthPrefix = prefix;
+    }
+    return text;
+  }
   if (Object.hasOwn(item, "tuple")) {
     return {
       tuple: requiredUnknownArray(item.tuple, `${location}.tuple`).map((child, index) =>
@@ -1541,6 +1556,7 @@ function idlTypeToRustString(type: JsonValue): string {
     const inner = idlTypeToRustString(type.vec);
     return type.lengthPrefix === "u64" ? `VecU64Len<${inner}>` : `Vec<${inner}>`;
   }
+  if (type.string !== undefined) return type.lengthPrefix === "u64" ? "StringU64Len" : "String";
   if (Array.isArray(type.tuple)) {
     return `(${type.tuple.map((element) => idlTypeToRustString(element)).join(", ")})`;
   }

@@ -449,6 +449,75 @@ fn hosted_release_v2_without_upgrade_authority_matches_shared_bytes_and_hash() {
 }
 
 #[test]
+fn hosted_release_v2_native_builtin_matches_shared_bytes_and_hash() {
+    let corpus = corpus();
+    let vector = corpus["releaseVectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|vector| vector["id"] == "release-hosted-managed-v2-native-builtin")
+        .expect("shared native built-in release vector");
+    let identity = SolanaExecutableIdentityV1::new(
+        "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        SolanaExecutableLoaderV1::native_builtin("solana_system_program").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        vector["projection"]["executableIdentity"],
+        serde_json::to_value(&identity).unwrap()
+    );
+    assert_eq!(
+        vector["projection"]["executableIdentity"]["loader"],
+        serde_json::json!({
+            "kind": "native-builtin",
+            "loaderProgramId": SOLANA_NATIVE_LOADER_PROGRAM_ID,
+            "builtinName": "solana_system_program"
+        })
+    );
+    let parsed = parse_solana_executable_identity_v1(
+        &serde_json::to_vec(&vector["projection"]["executableIdentity"]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(parsed, identity);
+
+    let projection = &vector["projection"];
+    let release =
+        parse_hosted_managed_program_release_v2(&serde_json::to_vec(projection).unwrap()).unwrap();
+    let payload = canonicalize_jcs(projection).unwrap();
+    assert_expected_identity(
+        &vector["expected"],
+        HashKindName::ProgramRelease,
+        CanonicalizationProfile::AreteJcsV1,
+        &payload,
+        release.hash().unwrap().into_any(),
+    );
+}
+
+#[test]
+fn native_builtin_names_are_bounded_printable_ascii() {
+    assert!(is_valid_native_builtin_name(b"solana_system_program"));
+    assert!(is_valid_native_builtin_name(&[b'a'; 64]));
+    for name in [
+        &b""[..],
+        &[b'a'; 65][..],
+        b"solana system",
+        b"tab\t",
+        "\u{e9}".as_bytes(),
+        b"\0",
+    ] {
+        assert!(!is_valid_native_builtin_name(name), "{name:?}");
+    }
+    for name in ["", &"a".repeat(65), "solana_system_program\u{e9}", "a b"] {
+        assert_eq!(
+            SolanaExecutableLoaderV1::native_builtin(name)
+                .unwrap_err()
+                .code(),
+            "invalid-projection"
+        );
+    }
+}
+
+#[test]
 fn checked_in_decoder_fixture_vectors_are_exact_and_order_invariant() {
     let corpus = corpus();
     assert_eq!(
@@ -514,6 +583,14 @@ fn registry_is_complete_and_domain_separated() {
         "sdk-install-target",
         "catalog-bundle",
         "catalog-publication-set",
+        "protocol-spec",
+        "protocol-handler-bundle",
+        "protocol-stack-source",
+        "protocol-release",
+        "protocol-release-review",
+        "protocol-resource",
+        "provider-snapshot",
+        "execution-intent",
     ];
     let actual: Vec<_> = IDENTITY_REGISTRY
         .iter()
