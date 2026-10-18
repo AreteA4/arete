@@ -424,29 +424,7 @@ impl DevWallet {
         validate_wallet_name(name)?;
         let path = dir.join(format!("{name}.json"));
         if path.is_file() {
-            let bytes: Vec<u8> = serde_json::from_slice(
-                &fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?,
-            )
-            .with_context(|| format!("{} is not a Solana keypair file", path.display()))?;
-            if bytes.len() != 64 {
-                bail!("{} must hold 64 bytes", path.display());
-            }
-            let seed: [u8; 32] = bytes[..32].try_into().expect("checked length");
-            let key = SigningKey::from_bytes(&seed);
-            if key.verifying_key().as_bytes() != &bytes[32..] {
-                bail!(
-                    "{}: the public key does not match the secret key",
-                    path.display()
-                );
-            }
-            return Ok((
-                Self {
-                    name: name.to_string(),
-                    path,
-                    key,
-                },
-                false,
-            ));
+            return Self::load_existing(path, name).map(|wallet| (wallet, false));
         }
         let mut seed = [0u8; 32];
         getrandom::getrandom(&mut seed).map_err(|error| anyhow!("no OS randomness: {error}"))?;
@@ -462,7 +440,7 @@ impl DevWallet {
         match temporary.persist_noclobber(&path) {
             Ok(_) => {}
             Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Self::load_or_create(dir, name);
+                return Self::load_existing(path, name).map(|wallet| (wallet, false));
             }
             Err(error) => return Err(error.error).context("Failed to save the new dev wallet"),
         }
@@ -474,6 +452,36 @@ impl DevWallet {
             },
             true,
         ))
+    }
+
+    /// Read a winner once. Invalid or disappeared destinations are errors,
+    /// not a reason to generate another key or retry creation.
+    fn load_existing(path: PathBuf, name: &str) -> Result<Self> {
+        let metadata =
+            fs::metadata(&path).with_context(|| format!("Failed to read {}", path.display()))?;
+        if !metadata.is_file() {
+            bail!("{} is not a regular keypair file", path.display());
+        }
+        let bytes: Vec<u8> = serde_json::from_slice(
+            &fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?,
+        )
+        .with_context(|| format!("{} is not a Solana keypair file", path.display()))?;
+        if bytes.len() != 64 {
+            bail!("{} must hold 64 bytes", path.display());
+        }
+        let seed: [u8; 32] = bytes[..32].try_into().expect("checked length");
+        let key = SigningKey::from_bytes(&seed);
+        if key.verifying_key().as_bytes() != &bytes[32..] {
+            bail!(
+                "{}: the public key does not match the secret key",
+                path.display()
+            );
+        }
+        Ok(Self {
+            name: name.to_string(),
+            path,
+            key,
+        })
     }
 
     /// Add this wallet's signature to a serialized legacy or v0 transaction.
@@ -1688,6 +1696,30 @@ mod tests {
         fs::write(&path, b"invalid keypair").unwrap();
         assert!(DevWallet::load_or_create(dir.path(), "saved").is_err());
         assert_eq!(fs::read(path).unwrap(), b"invalid keypair");
+    }
+
+    #[test]
+    fn wallet_creation_refuses_a_directory_without_retrying() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("alice.json");
+        fs::create_dir(&path).unwrap();
+        let error = DevWallet::load_or_create(dir.path(), "alice").unwrap_err();
+        assert!(error.to_string().contains("regular keypair file"));
+        assert!(path.is_dir());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wallet_creation_refuses_a_dangling_symlink_without_retrying() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("alice.json");
+        let missing = dir.path().join("missing.json");
+        std::os::unix::fs::symlink(&missing, &path).unwrap();
+        assert!(DevWallet::load_or_create(dir.path(), "alice").is_err());
+        assert_eq!(fs::read_link(&path).unwrap(), missing);
+        assert!(!missing.exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
