@@ -29,6 +29,9 @@
     "stack-names/*/typescript/*.ts",
     "stack-names/*/typescript-programs/*.ts",
     "stack-names/*/typescript-composition/*.ts",
-    "shared-idl-types/*/typescript/*.ts"
+    "shared-idl-types/*/typescript/*.ts",
+    "installed-protocol/**/*.ts",
+    "dev-sdk/typescript/*.ts",
+    "protocol-client.type-test.ts"
   ]
 }

@@ -11,6 +11,10 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod protocols;
+
+pub use protocols::*;
+
 fn ensure_safe_credentials_path(path: &Path) -> Result<()> {
     // The credential file and its dedicated directory must not be symlinks.
     // Do not reject symlinks in filesystem-owned ancestors: on macOS, for
@@ -176,8 +180,27 @@ const DEFAULT_API_URL: &str = "http://localhost:3000";
 /// Default domain suffix for WebSocket URLs
 pub const DEFAULT_DOMAIN_SUFFIX: &str = "stack.arete.run";
 
+/// The `User-Agent` of every API request: the `a4/<version>` product token.
+pub const USER_AGENT: &str = concat!("a4/", env!("CARGO_PKG_VERSION"));
+
+/// Request header that asks the registry for package release signatures.
+pub const REGISTRY_SIGNATURES_HEADER: &str = "X-Arete-Registry-Signatures";
+
+/// The signature formats this build verifies (see
+/// [`crate::registry_signatures`]), sent as [`REGISTRY_SIGNATURES_HEADER`].
+pub const REGISTRY_SIGNATURE_VERSIONS: &str = "v1";
+
+/// The HTTP client behind [`ApiClient`]: every request carries [`USER_AGENT`].
+fn http_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .unwrap_or_else(|_| reqwest::blocking::Client::new())
+}
+
 #[derive(Debug, Clone)]
 pub struct ApiClient {
+    environment_stacks: Option<(String, serde_json::Value)>,
     base_url: String,
     api_key: Option<String>,
     client: reqwest::blocking::Client,
@@ -1044,6 +1067,13 @@ pub struct CreateSecretKeyRequest {
     pub expiry_days: Option<i64>,
 }
 
+/// The code of a registry route's 401 when it needs an API key and none was
+/// sent.
+pub const REGISTRY_KEY_REQUIRED: &str = "registry-key-required";
+
+/// What the CLI says for [`REGISTRY_KEY_REQUIRED`].
+pub const REGISTRY_KEY_REQUIRED_MESSAGE: &str = "The Arete registry needs an API key for this request: run `a4 login` (free), or set ARETE_API_KEY";
+
 /// Clear guidance for the key limits of unclaimed trial agent accounts.
 fn trial_agent_key_message(code: &str) -> Option<&'static str> {
     match code {
@@ -1310,6 +1340,17 @@ pub struct RegistryProgramInstallBinding {
 }
 
 impl ApiClient {
+    /// The API origin this client talks to.
+    pub fn api_base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// The API URL this process talks to: `ARETE_API_URL` (also set by
+    /// `--api-url`) or the default.
+    pub fn configured_api_url() -> String {
+        std::env::var("ARETE_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string())
+    }
+
     pub fn new() -> Result<Self> {
         let base_url =
             std::env::var("ARETE_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());
@@ -1317,9 +1358,10 @@ impl ApiClient {
         let api_key = Self::load_optional_api_key_for_url(&base_url)?;
 
         Ok(ApiClient {
+            environment_stacks: None,
             base_url,
             api_key,
-            client: reqwest::blocking::Client::new(),
+            client: http_client(),
         })
     }
 
@@ -1497,6 +1539,18 @@ impl ApiClient {
         } else {
             request
         }
+    }
+
+    /// A registry request whose response may carry package release
+    /// `signatures`: it asks for them with [`REGISTRY_SIGNATURES_HEADER`],
+    /// and the response goes through [`Self::handle_release_response`], which
+    /// checks and removes them.
+    fn registry_release_request(
+        &self,
+        request: reqwest::blocking::RequestBuilder,
+    ) -> reqwest::blocking::RequestBuilder {
+        self.with_optional_auth(request)
+            .header(REGISTRY_SIGNATURES_HEADER, REGISTRY_SIGNATURE_VERSIONS)
     }
 
     /// List all registry stacks. Auth expands results to global visibility.
@@ -1763,11 +1817,14 @@ impl ApiClient {
             language,
         );
         let response = self
-            .with_optional_auth(self.client.get(url))
+            .registry_release_request(self.client.get(url))
             .send()
             .context("Failed to send registry stack install request")?;
 
-        Self::handle_response(response)
+        self.handle_release_response(
+            response,
+            crate::registry_signatures::ReleaseShape::StackInstall,
+        )
     }
 
     /// Get canonical install data for a hosted program SDK.
@@ -1784,11 +1841,51 @@ impl ApiClient {
             language,
         );
         let response = self
-            .with_optional_auth(self.client.get(url))
+            .registry_release_request(self.client.get(url))
             .send()
             .context("Failed to send registry program install request")?;
 
+        self.handle_release_response(
+            response,
+            crate::registry_signatures::ReleaseShape::ProgramInstall,
+        )
+    }
+
+    /// Read one content-addressed registry artifact
+    /// (`GET /api/registry/artifacts/{kind}/{hash}`).
+    pub fn get_registry_artifact(&self, kind: &str, hash: &str) -> Result<serde_json::Value> {
+        let response = self
+            .with_optional_auth(self.client.get(format!(
+                "{}/api/registry/artifacts/{}/{}",
+                self.base_url,
+                registry_path_segment(kind)?,
+                registry_path_segment(hash)?
+            )))
+            .send()
+            .context("Failed to send registry artifact request")?;
         Self::handle_response(response)
+    }
+
+    /// The pinned install descriptor of one protocol package
+    /// (`GET /api/registry/protocols/{reference}/install`): the same protocol
+    /// resolution the resolver returns, with the reference as its alias.
+    pub fn get_registry_protocol_install(&self, reference: &str) -> Result<serde_json::Value> {
+        let url = registry_install_url(
+            &self.base_url,
+            &format!(
+                "/api/registry/protocols/{}/install",
+                registry_path_segment(reference)?
+            ),
+            None,
+        );
+        let response = self
+            .registry_release_request(self.client.get(url))
+            .send()
+            .context("Failed to send registry protocol install request")?;
+        self.handle_release_response(
+            response,
+            crate::registry_signatures::ReleaseShape::Dependency,
+        )
     }
 
     /// Resolve a complete project dependency batch against one exact registry snapshot.
@@ -1806,7 +1903,7 @@ impl ApiClient {
         request: &crate::project::resolver::RegistryResolveRequest,
     ) -> Result<crate::project::resolver::RegistryResolveResponse> {
         let response = self
-            .with_optional_auth(
+            .registry_release_request(
                 self.client
                     .post(format!(
                         "{}/api/registry/v1/resolve?include=delivery,delivery-lifecycle,program-sdks",
@@ -1816,12 +1913,30 @@ impl ApiClient {
             )
             .send()
             .context("Failed to send registry dependency resolver request")?;
-        Self::handle_response(response)
+        self.handle_release_response(
+            response,
+            crate::registry_signatures::ReleaseShape::ResolveResponse,
+        )
     }
 
     // ========================================================================
     // Build endpoints
     // ========================================================================
+
+    /// Direct stack builds into an Arete cloud dev environment. The plan
+    /// and build must use this same environment as their branch.
+    pub(crate) fn with_environment_stacks(
+        mut self,
+        environment: &str,
+        source_idls: serde_json::Value,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            arete_mcp::dev_env::is_env_id(environment),
+            "Invalid dev environment id"
+        );
+        self.environment_stacks = Some((environment.to_string(), source_idls));
+        Ok(self)
+    }
 
     /// Create a build from explicit public artifacts.
     pub fn create_artifact_build(
@@ -1830,11 +1945,26 @@ impl ApiClient {
     ) -> Result<CreateBuildResponse> {
         let api_key = self.require_api_key()?;
 
+        let (path, body) = match &self.environment_stacks {
+            Some((environment, source_idls)) => {
+                anyhow::ensure!(
+                    req.branch.as_deref() == Some(environment.as_str()),
+                    "The stack build must use the dev environment's branch"
+                );
+                let mut body = serde_json::to_value(&req)?;
+                body["sourceIdls"] = source_idls.clone();
+                (format!("/api/dev/environments/{environment}/stacks"), body)
+            }
+            None => (
+                "/api/builds/artifacts".to_string(),
+                serde_json::to_value(&req)?,
+            ),
+        };
         let response = self
             .client
-            .post(format!("{}/api/builds/artifacts", self.base_url))
+            .post(format!("{}{path}", self.base_url))
             .bearer_auth(api_key)
-            .json(&req)
+            .json(&body)
             .send()
             .context("Failed to send artifact build request")?;
 
@@ -2274,6 +2404,10 @@ impl ApiClient {
                 extra: BTreeMap::new(),
             }
         });
+        let mut problem = problem;
+        if problem.code.as_deref() == Some(REGISTRY_KEY_REQUIRED) {
+            problem.error = REGISTRY_KEY_REQUIRED_MESSAGE.to_string();
+        }
         ApiClientError {
             status,
             headers,
@@ -2289,6 +2423,60 @@ impl ApiClient {
         } else {
             Err(Self::response_error(response).into())
         }
+    }
+
+    /// Like `handle_response`, for a registry response that carries package
+    /// release entries: their `signatures` are checked (see
+    /// [`crate::registry_signatures`]) and removed before the body is read
+    /// into `T`.
+    fn handle_release_response<T: for<'de> Deserialize<'de>>(
+        &self,
+        response: reqwest::blocking::Response,
+        shape: crate::registry_signatures::ReleaseShape,
+    ) -> Result<T> {
+        if !response.status().is_success() {
+            return Err(Self::response_error(response).into());
+        }
+        let mut value: serde_json::Value =
+            response.json().context("Failed to parse response JSON")?;
+        self.check_release_signatures(&mut value, shape)?;
+        serde_json::from_value(value).context("Failed to parse response JSON")
+    }
+
+    /// Check the signatures of every package release entry in `value` and
+    /// remove them. Problems are warnings, or an error when signatures are
+    /// required.
+    pub(crate) fn check_release_signatures(
+        &self,
+        value: &mut serde_json::Value,
+        shape: crate::registry_signatures::ReleaseShape,
+    ) -> Result<()> {
+        use crate::registry_signatures as signatures;
+        let entries = signatures::take_release_entries(value, shape);
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let checks = signatures::check_entries(entries, &mut |refresh| {
+            signatures::load_keys(&self.base_url, refresh, &|| self.fetch_registry_keys())
+        });
+        let warnings = signatures::enforce(&checks, signatures::require_signatures())?;
+        signatures::emit_warnings(&warnings);
+        Ok(())
+    }
+
+    /// The registry's signing keys (`GET /api/registry/v1/keys`), or `None`
+    /// when the registry has no key list.
+    pub(crate) fn fetch_registry_keys(&self) -> Result<Option<serde_json::Value>> {
+        let response = self
+            .client
+            .get(format!("{}/api/registry/v1/keys", self.base_url))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .context("Failed to fetch the registry signing keys")?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        Self::handle_response(response).map(Some)
     }
 
     // Credentials management
@@ -2583,6 +2771,21 @@ impl ApiClient {
 /// Build a registry install URL and request the managed Solana gateway
 /// capability contract. Hosted generation must never silently inherit a
 /// tenant HTTP endpoint for chain reads or transaction dispatch.
+/// One registry path segment, refused unless it is a plain identifier, so a
+/// reference can never change the route it is sent to.
+fn registry_path_segment(value: &str) -> Result<&str> {
+    let plain = !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:@".contains(&byte));
+    if !plain {
+        anyhow::bail!("'{value}' is not a valid registry reference");
+    }
+    Ok(value)
+}
+
 fn registry_install_url(base_url: &str, path: &str, language: Option<&str>) -> String {
     match language {
         Some(language) => {
@@ -2642,6 +2845,17 @@ pub struct AgentUsageSummary {
     pub window_end: Option<String>,
     pub meters: Vec<AgentUsageMeterSummary>,
     pub exhausted: bool,
+    /// What happens once the allowance is used: `block` (requests are
+    /// refused) or `metered` (usage continues and is billed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_exhausted: Option<String>,
+}
+
+impl AgentUsageSummary {
+    /// `metered beyond allowance` when usage past the allowance is billed.
+    pub fn overage(&self) -> Option<&'static str> {
+        (self.on_exhausted.as_deref() == Some("metered")).then_some("metered beyond allowance")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2669,9 +2883,10 @@ impl ApiClient {
     /// so neither operation can accidentally inherit another profile.
     pub(crate) fn with_base_url(base_url: &str) -> Self {
         ApiClient {
+            environment_stacks: None,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: None,
-            client: reqwest::blocking::Client::new(),
+            client: http_client(),
         }
     }
 
@@ -3170,6 +3385,7 @@ pub(crate) mod test_support {
                         202 => "Accepted",
                         400 => "Bad Request",
                         401 => "Unauthorized",
+                        403 => "Forbidden",
                         404 => "Not Found",
                         409 => "Conflict",
                         429 => "Too Many Requests",
@@ -3477,6 +3693,157 @@ mod agent_tests {
         let req = server.request();
         assert_eq!(req.request_line, "GET /api/agents/me HTTP/1.1");
         assert_eq!(req.header("authorization"), Some("Bearer a4_ak_me"));
+    }
+
+    fn signed_protocol_descriptor(signatures: Option<serde_json::Value>) -> String {
+        let mut descriptor = serde_json::json!({
+            "kind": "protocol",
+            "alias": "tip-jar",
+            "package": "tip-jar",
+            "version": "1.0.0",
+            "packageReleaseHash": "arete:registry-package-release:v2:sha256:aa",
+            "stacks": [],
+            "programs": []
+        });
+        if let Some(signatures) = signatures {
+            descriptor["signatures"] = signatures;
+        }
+        descriptor.to_string()
+    }
+
+    #[test]
+    fn install_descriptors_have_their_signatures_checked_and_removed() {
+        use crate::registry_signatures::tests::{key_entry, keys_document, sign, signing_key};
+        let key = signing_key(9);
+        let signature = sign(
+            "arete-1",
+            &key,
+            "arete:registry-package-release:v2:sha256:aa",
+        );
+        let server = MockServer::json_sequence(vec![
+            (
+                200,
+                signed_protocol_descriptor(Some(serde_json::json!([signature]))),
+            ),
+            (
+                200,
+                keys_document(vec![key_entry("arete-1", &key, None)]).to_string(),
+            ),
+        ]);
+        let cache = tempfile::tempdir().unwrap();
+        let trust = cache.path().join("trusted-keys.json");
+        std::fs::write(
+            &trust,
+            keys_document(vec![key_entry("arete-1", &key, None)]).to_string(),
+        )
+        .unwrap();
+        crate::registry_signatures::TEST_TRUST_FILE.with(|file| *file.borrow_mut() = Some(trust));
+        crate::registry_signatures::TEST_CACHE_FILE
+            .with(|file| *file.borrow_mut() = Some(cache.path().join("keys.json")));
+        crate::registry_signatures::TEST_REQUIRE.with(|require| require.set(Some(true)));
+        let client = ApiClient::with_base_url(server.base_url()).with_api_key("a4_sk_me".into());
+        let descriptor = client.get_registry_protocol_install("tip-jar");
+        crate::registry_signatures::TEST_REQUIRE.with(|require| require.set(Some(false)));
+        crate::registry_signatures::TEST_CACHE_FILE.with(|file| *file.borrow_mut() = None);
+
+        crate::registry_signatures::TEST_TRUST_FILE.with(|file| *file.borrow_mut() = None);
+        let descriptor = descriptor.expect("a valid signature passes when required");
+        assert!(descriptor.get("signatures").is_none());
+        let install = server.request();
+        assert!(install
+            .request_line
+            .starts_with("GET /api/registry/protocols/tip-jar/install"));
+        // Logged in: the key goes with registry requests.
+        assert_eq!(install.header("authorization"), Some("Bearer a4_sk_me"));
+        assert_eq!(install.header("x-arete-registry-signatures"), Some("v1"));
+        assert_eq!(install.header("user-agent"), Some(USER_AGENT));
+        assert_eq!(
+            server.request().request_line,
+            "GET /api/registry/v1/keys HTTP/1.1"
+        );
+        assert!(cache.path().join("keys.json").is_file());
+    }
+
+    #[test]
+    fn unsigned_releases_warn_by_default_and_are_refused_when_required() {
+        let server = MockServer::json_sequence(vec![
+            (200, signed_protocol_descriptor(None)),
+            (200, signed_protocol_descriptor(None)),
+        ]);
+        let client = ApiClient::with_base_url(server.base_url());
+        crate::registry_signatures::TEST_REQUIRE.with(|require| require.set(Some(false)));
+        let warned = client.get_registry_protocol_install("tip-jar");
+        crate::registry_signatures::TEST_REQUIRE.with(|require| require.set(Some(true)));
+        let refused = client.get_registry_protocol_install("tip-jar");
+        crate::registry_signatures::TEST_REQUIRE.with(|require| require.set(Some(false)));
+
+        assert!(warned.is_ok());
+        let error = refused.unwrap_err().to_string();
+        assert!(error.contains("no signature for tip-jar@1.0.0"), "{error}");
+        assert!(
+            error.contains(crate::registry_signatures::REQUIRE_SIGNATURES_ENV),
+            "{error}"
+        );
+        // Anonymous: no key is sent.
+        assert_eq!(server.request().header("authorization"), None);
+    }
+
+    #[test]
+    fn registry_release_requests_ask_for_signatures_and_name_the_cli() {
+        let refusal = r#"{"error":"not found"}"#.to_string();
+        let server = MockServer::json_sequence(vec![(404, refusal); 5]);
+        let client = ApiClient::with_base_url(server.base_url());
+
+        let _ = client.get_registry_stack_install("ore", None);
+        let _ = client.get_registry_program_install("spl-token", None);
+        let _ = client.get_registry_protocol_install("tip-jar");
+        let _ = client.resolve_registry_dependencies(
+            &crate::project::resolver::RegistryResolveRequest {
+                manifest_version: 1,
+                dependencies: Vec::new(),
+                targets: Vec::new(),
+                generator_contract: "test".into(),
+            },
+        );
+        let _ = client.get_registry_artifact("protocol-spec", "arete:h1:protocol-spec:sha256:aa");
+
+        for path in [
+            "GET /api/registry/stacks/ore/install",
+            "GET /api/registry/programs/spl-token/install",
+            "GET /api/registry/protocols/tip-jar/install",
+            "POST /api/registry/v1/resolve",
+        ] {
+            let request = server.request();
+            assert!(request.request_line.starts_with(path), "{request:?}");
+            assert_eq!(request.header("x-arete-registry-signatures"), Some("v1"));
+            assert_eq!(request.header("user-agent"), Some(USER_AGENT));
+        }
+        // A response that is never signature-checked does not ask for
+        // signatures, but still names the CLI.
+        let artifact = server.request();
+        assert!(artifact
+            .request_line
+            .starts_with("GET /api/registry/artifacts/"));
+        assert_eq!(artifact.header("x-arete-registry-signatures"), None);
+        assert_eq!(artifact.header("user-agent"), Some(USER_AGENT));
+        assert!(USER_AGENT.starts_with("a4/"));
+        assert_eq!(&USER_AGENT[3..], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn a_registry_key_refusal_says_run_a4_login() {
+        let server = MockServer::json(
+            401,
+            r#"{"error":"Registry artifacts need an Arete API key","code":"registry-key-required"}"#,
+        );
+        let client = ApiClient::with_base_url(server.base_url());
+        let err = client
+            .get_registry_artifact("protocol-spec", "arete:h1:protocol-spec:sha256:aa")
+            .unwrap_err();
+        let details = api_error_details(&err).unwrap();
+        assert_eq!(details.status, 401);
+        assert_eq!(details.code, Some(REGISTRY_KEY_REQUIRED));
+        assert!(err.to_string().contains("run `a4 login` (free)"), "{err}");
     }
 
     #[test]

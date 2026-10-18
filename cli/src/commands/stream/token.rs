@@ -48,6 +48,13 @@ pub fn redact_hs_token_for_display(url: &str) -> String {
 #[derive(Serialize)]
 struct MintBody<'a> {
     websocket_url: &'a str,
+    /// Local stacks only: the protocol deployment whose row scopes the
+    /// session carries.
+    #[serde(
+        rename = "protocolDeploymentId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    protocol_deployment_id: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +80,8 @@ pub struct SessionRefresh {
     api_key: Option<String>,
     /// The stack's URL without `hs_token`; every token is minted for it.
     websocket_url: String,
+    /// Sent with each mint for a local stack (`a4 stream --dev`).
+    protocol_deployment_id: Option<String>,
     expires_at: Option<u64>,
 }
 
@@ -128,12 +137,10 @@ fn spawn_refresh(mut refresh: SessionRefresh) -> mpsc::Receiver<RefreshEvent> {
                 _ = events.closed() => return,
             }
             let next = refresh.clone();
-            let minted = tokio::task::spawn_blocking(move || {
-                mint_session_token(&next.endpoint, next.api_key.as_deref(), &next.websocket_url)
-            })
-            .await
-            .map_err(anyhow::Error::from)
-            .and_then(|minted| minted);
+            let minted = tokio::task::spawn_blocking(move || next.mint())
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|minted| minted);
             let event = match minted {
                 Ok(minted) => {
                     retry = false;
@@ -233,32 +240,54 @@ pub fn ensure_hosted_ws_token(url: String) -> Result<(String, Option<SessionRefr
 
     let base = config::get_api_url(None);
     let endpoint = format!("{}/ws/sessions", base.trim_end_matches('/'));
-    let minted = mint_session_token(&endpoint, api_key.as_deref(), &url)?;
+    let minted = mint_session_token(&endpoint, api_key.as_deref(), &url, None)?;
 
     let connect_url = url_with_token(&url, &minted.token)?;
     let refresh = SessionRefresh {
         endpoint,
         api_key,
         websocket_url: url,
+        protocol_deployment_id: None,
         expires_at: minted.expires_at,
     };
     Ok((connect_url, Some(refresh)))
 }
 
 impl SessionRefresh {
+    /// Sessions for an Arete cloud dev environment stack: minted at the API
+    /// `endpoint` with the account key, carrying `protocol_deployment_id`'s
+    /// row scopes when given. Nothing is minted until [`renew`](Self::renew).
+    pub fn local(
+        endpoint: String,
+        secret_key: String,
+        websocket_url: String,
+        protocol_deployment_id: Option<String>,
+    ) -> Self {
+        Self {
+            endpoint,
+            api_key: Some(secret_key),
+            websocket_url,
+            protocol_deployment_id,
+            expires_at: None,
+        }
+    }
+
+    fn mint(&self) -> Result<MintResponse> {
+        mint_session_token(
+            &self.endpoint,
+            self.api_key.as_deref(),
+            &self.websocket_url,
+            self.protocol_deployment_id.as_deref(),
+        )
+    }
+
     /// Mint a token for a new connection, the way the first one was minted,
     /// and return the URL to connect with.
     pub async fn renew(&mut self) -> Result<String> {
-        let (endpoint, api_key, websocket_url) = (
-            self.endpoint.clone(),
-            self.api_key.clone(),
-            self.websocket_url.clone(),
-        );
-        let minted = tokio::task::spawn_blocking(move || {
-            mint_session_token(&endpoint, api_key.as_deref(), &websocket_url)
-        })
-        .await
-        .context("token mint task failed")??;
+        let this = self.clone();
+        let minted = tokio::task::spawn_blocking(move || this.mint())
+            .await
+            .context("token mint task failed")??;
         self.expires_at = minted.expires_at;
         url_with_token(&self.websocket_url, &minted.token)
     }
@@ -274,12 +303,16 @@ fn mint_session_token(
     endpoint: &str,
     api_key: Option<&str>,
     websocket_url: &str,
+    protocol_deployment_id: Option<&str>,
 ) -> Result<MintResponse> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .context("Failed to build HTTP client for token mint")?;
-    let mut request = client.post(endpoint).json(&MintBody { websocket_url });
+    let mut request = client.post(endpoint).json(&MintBody {
+        websocket_url,
+        protocol_deployment_id,
+    });
     if let Some(key) = api_key {
         request = request.header("Authorization", format!("Bearer {}", key.trim()));
     }
@@ -326,11 +359,17 @@ fn mint_session_token(
 
 #[cfg(test)]
 impl SessionRefresh {
+    /// The stack URL tokens are minted for, without a token.
+    pub(crate) fn websocket_url(&self) -> &str {
+        &self.websocket_url
+    }
+
     pub(crate) fn for_test(endpoint: String, websocket_url: &str, expires_at: u64) -> Self {
         Self {
             endpoint,
             api_key: Some("a4_ak_test".to_string()),
             websocket_url: websocket_url.to_string(),
+            protocol_deployment_id: None,
             expires_at: Some(expires_at),
         }
     }
@@ -456,6 +495,35 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(100), refresher.next())
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn local_sessions_are_minted_with_the_secret_key_and_deployment() {
+        let mint = MockServer::json(
+            200,
+            &serde_json::json!({"token": "local", "expires_at": unix_now() + 3_600}).to_string(),
+        );
+        let mut refresh = SessionRefresh::local(
+            format!("{}/ws/sessions", mint.base_url()),
+            "a4_sk_dev".to_string(),
+            "ws://127.0.0.1:49310".to_string(),
+            Some("d-1".to_string()),
+        );
+        assert_eq!(refresh.expires_at, None);
+
+        let url = refresh.renew().await.expect("the mint succeeds");
+
+        assert_eq!(url, "ws://127.0.0.1:49310/?hs_token=local");
+        assert!(refresh.expires_at.is_some());
+        let request = mint.request();
+        assert_eq!(request.header("authorization"), Some("Bearer a4_sk_dev"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&request.body).unwrap(),
+            serde_json::json!({
+                "websocket_url": "ws://127.0.0.1:49310",
+                "protocolDeploymentId": "d-1"
+            })
         );
     }
 }

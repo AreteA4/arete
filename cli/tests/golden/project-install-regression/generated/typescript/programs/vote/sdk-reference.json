@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "program",
+  "alias": "vote",
+  "language": "typescript",
+  "package": "vote",
+  "version": "0.1.0",
+  "import": {
+    "module": "vote-core.ts",
+    "specifier": "./generated/typescript/programs/vote/vote-core.js",
+    "export": "VOTE_PROGRAM"
+  },
+  "programs": [
+    {
+      "key": "voteProgram",
+      "name": "vote_program",
+      "programId": "Vote111111111111111111111111111111111111111",
+      "instructions": [
+        "ping"
+      ]
+    }
+  ]
+}

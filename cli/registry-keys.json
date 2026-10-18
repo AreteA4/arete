@@ -1,0 +1,9 @@
+{
+  "schema": "arete.registry-keys/v1",
+  "keys": [
+    {
+      "keyId": "registry-prod-1",
+      "publicKey": "FqEuhxRCbTCgqczySuJHY42yXPEeCE7HGKMKmzcdUnVu"
+    }
+  ]
+}

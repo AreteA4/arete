@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "protocol-spec",
+    "hash": "arete:h1:protocol-spec:sha256:29f83127858da49a1eb9308c1986319ea71180eb1bdcd85567d52f31b6c719a0"
+  },
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:dee23eb8ed27e24ff601587e391329a20eca41ab28428280ea214ee612bda118",
+  "extensions": null,
+  "artifacts": [
+    "README.md",
+    "programs/squads-v4/sdk-manifest.json",
+    "programs/squads-v4/squads-v4-core.ts",
+    "programs/squads-v4/squads-v4.ts",
+    "protocol-spec.json",
+    "stacks/meteora-presale/meteora-presale-core.ts",
+    "stacks/meteora-presale/meteora-presale.ts",
+    "stacks/meteora-presale/programs/entropy/__arete-program.ts",
+    "stacks/meteora-presale/programs/entropy/entropy-core.ts",
+    "stacks/meteora-presale/programs/ore/__arete-program.ts",
+    "stacks/meteora-presale/programs/ore/ore-core.ts",
+    "stacks/meteora-presale/sdk-manifest.json",
+    "stacks/mirror/mirror-core.ts",
+    "stacks/mirror/mirror.ts",
+    "stacks/mirror/programs/entropy/__arete-program.ts",
+    "stacks/mirror/programs/entropy/entropy-core.ts",
+    "stacks/mirror/programs/ore/__arete-program.ts",
+    "stacks/mirror/programs/ore/ore-core.ts",
+    "stacks/mirror/sdk-manifest.json",
+    "token-raise.ts"
+  ]
+}

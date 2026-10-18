@@ -14,7 +14,9 @@ use clap::Args;
 use serde_json::{json, Value};
 
 use super::filter::{self, Filter};
-use super::session::{Notice, ReconnectPolicy, SessionHandler, StreamEnd, StreamSession};
+use super::session::{
+    redeploy_marker, Notice, ReconnectPolicy, SessionHandler, StreamEnd, StreamSession,
+};
 use super::token;
 
 #[derive(Args)]
@@ -240,6 +242,7 @@ impl SessionHandler for Collector {
                 "Warning: failed to parse {} frame: {error}",
                 if binary { "binary" } else { "text" }
             ),
+            Notice::Redeployed { from, to } => eprintln!("{}", redeploy_marker(from, to)),
             Notice::RefreshRefused(_) | Notice::RefreshFailed(_) => {}
         }
     }

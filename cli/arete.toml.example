@@ -31,3 +31,14 @@ artifact_roots = ["./.arete"]
 # Install the authored stack explicitly when its SDK is needed.
 [dependencies.stacks.local]
 source = { workspace = "local" }
+
+# Settings for `a4 protocol deploy` (optional; flags override them).
+# Paths are relative to this file's directory.
+[protocol]
+slug = "token-raise"
+name = "Token Raise"
+fee_policy = "./fee-policy.json"
+access = "private" # self-serve deployments are private
+
+[protocol.resources]
+launchDefaults = "./resources/launch-defaults.json"

@@ -178,6 +178,9 @@ pub struct App {
     resync: bool,
     /// Whether the subscription asks for a snapshot (not `--no-snapshot`).
     snapshots: bool,
+    /// The view id the rows come from (`ProtocolActivity/list`), when `view`
+    /// is a display label.
+    source_view: Option<String>,
 }
 
 struct PendingSnapshot {
@@ -229,6 +232,7 @@ impl App {
             connection: 0,
             resync: false,
             snapshots: true,
+            source_view: None,
         }
     }
 
@@ -236,6 +240,13 @@ impl App {
     /// replaces the entity list after a reconnect, so it starts over empty.
     pub fn with_snapshots(mut self, snapshots: bool) -> Self {
         self.snapshots = snapshots;
+        self
+    }
+
+    /// The view id the rows come from, so protocol rows get their instance
+    /// id ([`crate::commands::stream::protocols::add_instance_ids`]).
+    pub fn with_source_view(mut self, view: impl Into<String>) -> Self {
+        self.source_view = Some(view.into());
         self
     }
 
@@ -324,6 +335,10 @@ impl App {
 
         // Always collect raw frames so toggling on shows recent data
         let raw_frame = frame.clone();
+        // Rows (not the raw frames) get the instance id next to its short id.
+        let mut frame = frame;
+        let source = self.source_view.as_deref().unwrap_or(&self.view);
+        crate::commands::stream::protocols::add_instance_ids(source, &mut frame);
         match frame {
             Frame::Snapshot {
                 snapshot_id,

@@ -189,12 +189,73 @@ pub struct LockedDependency {
     pub parts: Vec<LockedPart>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sdk_extension_hashes: Vec<String>,
+    /// A protocol's release, spec and the deployment its client calls.
+    /// Absent for every other dependency, so their entries are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<LockedProtocol>,
+    /// A protocol's hoisted stacks, each with its own programs. A protocol's
+    /// direct programs are its `programs`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stacks: Vec<LockedProtocolStack>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<InstallTarget>,
     pub generator_contract: String,
+    /// A protocol client generated from a local build (`a4 dev`), not from
+    /// a published release: the protocol release hash of that build. The
+    /// registry fields still pin the last published release when there is
+    /// one (`a4 install --locked` restores it); a protocol never published
+    /// has none. `a4 install --check` fails while any entry has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_build: Option<String>,
+}
+
+/// The protocol release hash prefix a `local_build` carries.
+pub const PROTOCOL_RELEASE_HASH_PREFIX: &str = "arete:h1:protocol-release:sha256:";
+
+/// The protocol identity a protocol dependency pins.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LockedProtocol {
+    pub protocol_release_hash: String,
+    pub protocol_spec_hash: String,
+    /// The deployment the generated client calls (the publisher's shared
+    /// deployment for a public protocol). An identifier, never a credential.
+    pub deployment_id: String,
+    /// `public` or `private`.
+    pub deployment_access: String,
+}
+
+/// One stack a protocol hoists, pinned like a stack dependency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LockedProtocolStack {
+    /// The spec's key for the stack.
+    pub alias: String,
+    pub package: String,
+    pub version: String,
+    pub package_release_hash: String,
+    pub stack_manifest_hash: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub live_specs: Vec<LockedLiveSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub programs: Vec<LockedProgram>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sdk_extension_hashes: Vec<String>,
 }
 
 impl LockedDependency {
+    /// Generated from a local build that matches no published release:
+    /// `local_build` is set.
+    pub fn is_local_build(&self) -> bool {
+        self.local_build.is_some()
+    }
+
+    /// Pins a published registry release (a protocol only built locally
+    /// pins none).
+    pub fn is_published(&self) -> bool {
+        self.package_release_hash.is_some()
+    }
+
     fn normalize_and_validate(&mut self) -> Result<()> {
         if self.alias.is_empty() || self.source.is_empty() {
             bail!("lockfile dependency alias and source cannot be empty");
@@ -207,7 +268,27 @@ impl LockedDependency {
             );
         }
         let registry = self.source.starts_with("registry:");
+        if let Some(local_build) = &self.local_build {
+            if self.kind != DependencyKind::Protocol || !registry {
+                bail!(
+                    "{} dependency '{}' locks a local build, which only a registry protocol has",
+                    self.kind,
+                    self.alias
+                );
+            }
+            if !local_build.starts_with(PROTOCOL_RELEASE_HASH_PREFIX) {
+                bail!(
+                    "protocol dependency '{}' locks local build '{local_build}', which is not a protocol release hash",
+                    self.alias
+                );
+            }
+        }
+        // A protocol only ever built locally pins no published release.
+        let unpublished = self.local_build.is_some()
+            && self.version.is_none()
+            && self.package_release_hash.is_none();
         if registry
+            && !unpublished
             && (self.requirement.is_none()
                 || self.version.is_none()
                 || self.package_release_hash.is_none())
@@ -242,7 +323,57 @@ impl LockedDependency {
                     self.alias
                 )
             }
+            DependencyKind::Protocol if !registry || self.protocol.is_none() => {
+                bail!(
+                    "protocol dependency '{}' lacks its registry protocol release identity",
+                    self.alias
+                )
+            }
             _ => {}
+        }
+        if self.kind != DependencyKind::Protocol
+            && (self.protocol.is_some() || !self.stacks.is_empty())
+        {
+            bail!(
+                "{} dependency '{}' locks protocol fields, which only a protocol has",
+                self.kind,
+                self.alias
+            );
+        }
+        if let Some(protocol) = &self.protocol {
+            if !matches!(protocol.deployment_access.as_str(), "public" | "private") {
+                bail!(
+                    "protocol dependency '{}' locks unknown deployment access '{}'",
+                    self.alias,
+                    protocol.deployment_access
+                );
+            }
+        }
+        self.stacks
+            .sort_by(|left, right| left.alias.cmp(&right.alias));
+        for pair in self.stacks.windows(2) {
+            if pair[0].alias == pair[1].alias {
+                bail!(
+                    "protocol dependency '{}' locks stack '{}' twice",
+                    self.alias,
+                    pair[0].alias
+                );
+            }
+        }
+        for stack in &mut self.stacks {
+            stack
+                .live_specs
+                .sort_by(|left, right| left.alias.cmp(&right.alias));
+            stack.programs.sort_by(|left, right| {
+                (left.program_id.as_str(), left.program_spec_hash.as_str())
+                    .cmp(&(right.program_id.as_str(), right.program_spec_hash.as_str()))
+            });
+            for program in &mut stack.programs {
+                program.sdk_extension_hashes.sort();
+                program.sdk_extension_hashes.dedup();
+            }
+            stack.sdk_extension_hashes.sort();
+            stack.sdk_extension_hashes.dedup();
         }
         self.live_specs
             .sort_by(|left, right| left.alias.cmp(&right.alias));
@@ -421,8 +552,11 @@ mod tests {
             programs: Vec::new(),
             parts: Vec::new(),
             sdk_extension_hashes: Vec::new(),
+            protocol: None,
+            stacks: Vec::new(),
             targets: vec![InstallTarget::TypeScript],
             generator_contract: GENERATOR_CONTRACT.into(),
+            local_build: None,
         }
     }
 
@@ -468,8 +602,11 @@ mod tests {
             programs,
             parts: Vec::new(),
             sdk_extension_hashes: Vec::new(),
+            protocol: None,
+            stacks: Vec::new(),
             targets: vec![InstallTarget::TypeScript],
             generator_contract: GENERATOR_CONTRACT.into(),
+            local_build: None,
         }
     }
 

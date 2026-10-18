@@ -1,0 +1,30 @@
+{
+  "artifacts": [
+    "README.md",
+    "index.ts",
+    "sdk-manifest.json",
+    "sdk-reference.json",
+    "vote-core.ts",
+    "vote.ts"
+  ],
+  "extensions": null,
+  "generator": {
+    "compilerHash": "<compiler>",
+    "name": "a4-cli",
+    "version": "<version>"
+  },
+  "input": {
+    "hash": "arete:h1:program-spec:sha256:79425ade85e0a9614e3f5b9b43e32db349266dc2edd7e7840a4e17b4621b9e86",
+    "kind": "program-spec"
+  },
+  "project": {
+    "dependencyKind": "program",
+    "generatorContract": "sdk-generator-v1",
+    "manifestHash": "arete-manifest-v1:b9c604f648f19793a90a1e3c332167c54aba73b46d66a15462867a7dd4ba8c7d",
+    "packageReleaseHash": "arete:registry-package-release:v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "rootAlias": "vote",
+    "target": "typescript"
+  },
+  "schemaVersion": 2,
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:64b2f9b95d58144fb8cab4a684521fca87d5e8416d4edee20e5be7b15e809be4"
+}

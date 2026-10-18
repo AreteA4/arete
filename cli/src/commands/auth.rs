@@ -335,6 +335,9 @@ pub fn whoami(json: bool) -> Result<()> {
                     if meter.exhausted { " (exhausted)" } else { "" }
                 );
             }
+            if let Some(line) = on_exhausted_line(usage) {
+                println!("  {line}");
+            }
         }
         println!("  Target API:  {}", api_url.yellow());
         println!("  Credentials: {}", credentials_path().dimmed());
@@ -388,6 +391,19 @@ pub fn whoami(json: bool) -> Result<()> {
     Ok(())
 }
 
+/// The line saying what happens once the allowance is used, when the
+/// account reports it.
+fn on_exhausted_line(usage: &crate::api_client::AgentUsageSummary) -> Option<String> {
+    let on_exhausted = usage.on_exhausted.as_deref()?;
+    Some(match (on_exhausted, usage.overage()) {
+        (_, Some(overage)) => format!("When used up: {on_exhausted} (overage: {overage})"),
+        ("block", None) => {
+            "When used up: block (requests are refused until the allowance resets)".to_string()
+        }
+        (other, None) => format!("When used up: {other}"),
+    })
+}
+
 fn print_agent_identity_json(identity: &AgentMeResponse) -> Result<()> {
     println!(
         "{}",
@@ -404,6 +420,7 @@ fn print_agent_identity_json(identity: &AgentMeResponse) -> Result<()> {
             "trialAccessEnabled": identity.trial_access_enabled,
             "starterGuidance": identity.starter_guidance,
             "usage": identity.usage,
+            "overage": identity.usage.as_ref().and_then(|usage| usage.overage()),
             "credentialSource": "credentials_file",
         }))?
     );
@@ -2036,5 +2053,49 @@ mod signup_tests {
         let body = credential.strip_prefix("a4_ak_").expect("agent prefix");
         assert_eq!(body.len(), 40);
         assert!(body.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    use crate::api_client::AgentUsageSummary;
+
+    fn usage(on_exhausted: Option<&str>) -> AgentUsageSummary {
+        let mut value = serde_json::json!({
+            "window": "month",
+            "windowStart": "2026-10-01T00:00:00Z",
+            "meters": [],
+            "exhausted": false
+        });
+        if let Some(on_exhausted) = on_exhausted {
+            value["onExhausted"] = serde_json::json!(on_exhausted);
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn whoami_says_what_happens_once_the_allowance_is_used() {
+        let metered = usage(Some("metered"));
+        assert_eq!(metered.overage(), Some("metered beyond allowance"));
+        assert_eq!(
+            on_exhausted_line(&metered).unwrap(),
+            "When used up: metered (overage: metered beyond allowance)"
+        );
+        assert_eq!(
+            serde_json::to_value(&metered).unwrap()["onExhausted"],
+            "metered"
+        );
+
+        let blocked = usage(Some("block"));
+        assert_eq!(blocked.overage(), None);
+        assert!(on_exhausted_line(&blocked).unwrap().contains("block"));
+
+        let older = usage(None);
+        assert_eq!(on_exhausted_line(&older), None);
+        assert!(serde_json::to_value(&older)
+            .unwrap()
+            .get("onExhausted")
+            .is_none());
     }
 }

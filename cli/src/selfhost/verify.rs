@@ -55,6 +55,30 @@ pub fn verify_signature(checksums: &[u8], signature: &str, public_key_b64: &str)
     Ok(())
 }
 
+/// [`verify_signature`], then require the signature's trusted comment (which
+/// the signature covers) to be `trusted_comment`: the release tag the
+/// checksums were signed for, so one release's checksums can't stand in for
+/// another's.
+pub fn verify_signature_for_tag(
+    checksums: &[u8],
+    signature: &str,
+    public_key_b64: &str,
+    trusted_comment: &str,
+) -> Result<()> {
+    verify_signature(checksums, signature, public_key_b64)?;
+    let decoded = Signature::decode(signature).map_err(|error| {
+        VerifyError::Signature(format!("signature file is malformed ({error})"))
+    })?;
+    let actual = decoded.trusted_comment().trim();
+    if actual != trusted_comment {
+        return Err(VerifyError::Signature(format!(
+            "checksums.txt was signed for '{actual}', not '{trusted_comment}'"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
 /// Parse `checksums.txt` lines (`<sha256>  <asset>`; a leading `*` before the
 /// name, as written by `sha256sum -b`, is tolerated) into `(sha256, name)`.
 pub fn parse_checksums(text: &str) -> Vec<(String, String)> {

@@ -245,8 +245,11 @@ pub(crate) fn cache_ore_stack_fixture(cache_root: &Path, alias: &str) -> LockedD
         programs: Vec::new(),
         parts: Vec::new(),
         sdk_extension_hashes: Vec::new(),
+        protocol: None,
+        stacks: Vec::new(),
         targets: vec![InstallTarget::TypeScript],
         generator_contract: crate::project::GENERATOR_CONTRACT.into(),
+        local_build: None,
     };
     for (kind, file) in [
         ("stack-manifest", "OreStream.stack-manifest.json"),
@@ -953,6 +956,7 @@ fn registry_request(
         requirement: requirement.unwrap_or("*").to_string(),
         locked_package_release_hash: None,
         locked_programs: Vec::new(),
+        locked_stacks: Vec::new(),
     }
 }
 

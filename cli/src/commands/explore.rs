@@ -707,6 +707,141 @@ fn render_definition_only(answer: &Value) -> String {
     text
 }
 
+/// `a4 explore protocol <ref>`: the protocol's spec summary (machines,
+/// steps with scope, authority, access and rejection codes, events, metadata
+/// fields) and the stacks and programs it hoists, from its pinned install
+/// descriptor. `--full` prints the descriptor itself.
+pub fn show_protocol(reference: &str, full: bool, json: bool) -> Result<()> {
+    let install = ApiClient::new()?
+        .get_registry_protocol_install(reference)
+        .with_context(|| {
+            format!("Unable to read the install descriptor for protocol '{reference}'")
+        })?;
+    let install = complete_protocol_install(install)?;
+    if full {
+        println!("{}", serde_json::to_string_pretty(&install)?);
+        return Ok(());
+    }
+    let mut output = protocol_explore_output(&install)?;
+    output["schemaVersion"] = json!(EXPLORE_SCHEMA_VERSION);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        print!("{}", render_protocol(&output));
+    }
+    Ok(())
+}
+
+/// The install descriptor with its spec inlined (read from the artifact
+/// route when the descriptor names only its hash).
+fn complete_protocol_install(install: Value) -> Result<Value> {
+    let mut resolved: crate::project::resolver::ResolvedRegistryDependency =
+        serde_json::from_value(install.clone())
+            .context("Registry returned an invalid protocol install descriptor")?;
+    crate::project::protocol::fetch_missing_protocol_spec(&mut resolved)?;
+    let mut install = install;
+    if let crate::project::resolver::ResolvedRegistryDependency::Protocol { protocol, .. } =
+        &resolved
+    {
+        install["protocol"]["protocolSpec"] = protocol.protocol_spec.clone().unwrap_or_default();
+    } else {
+        anyhow::bail!(
+            "Registry returned a {} descriptor for a protocol",
+            resolved.kind()
+        );
+    }
+    Ok(install)
+}
+
+/// The summary `a4 explore protocol --json` prints: the shared MCP summary
+/// of a descriptor whose spec hashes to its pinned identity.
+fn protocol_explore_output(install: &Value) -> Result<Value> {
+    let protocol: crate::project::resolver::ResolvedProtocol =
+        serde_json::from_value(install["protocol"].clone())
+            .context("Registry returned an invalid protocol install descriptor")?;
+    crate::project::protocol::protocol_spec(&protocol)?;
+    let mut output = arete_mcp::protocol::protocol_install_summary(install);
+    output["install"] = json!(format!(
+        "a4 install protocol {} --ts",
+        install["package"].as_str().unwrap_or_default()
+    ));
+    Ok(output)
+}
+
+fn render_protocol(output: &Value) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    let _ = writeln!(
+        text,
+        "{} {} {}",
+        "Protocol".bold(),
+        output["name"].as_str().unwrap_or_default().bold(),
+        output["version"].as_str().unwrap_or_default()
+    );
+    if let Some(description) = output["description"].as_str() {
+        let _ = writeln!(text, "{description}");
+    }
+    if let Some(deployment) = output.get("deployment") {
+        let _ = writeln!(
+            text,
+            "Deployment: {} ({})",
+            deployment["deploymentId"].as_str().unwrap_or_default(),
+            deployment["access"].as_str().unwrap_or_default()
+        );
+    }
+    let _ = writeln!(text, "\n{}", "Steps".bold());
+    for step in output["steps"].as_array().into_iter().flatten() {
+        let access = if step["clientCallable"] == json!(true) {
+            step["access"].as_str().unwrap_or("secret").to_string()
+        } else {
+            "not client-callable".to_string()
+        };
+        let codes = step["guards"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|guard| guard["code"].as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            text,
+            "  {} [{}; {}; {access}] rejections: {}",
+            step["name"].as_str().unwrap_or_default(),
+            step["scope"].as_str().unwrap_or_default(),
+            step["authority"].as_str().unwrap_or_default(),
+            if codes.is_empty() {
+                "-"
+            } else {
+                codes.as_str()
+            }
+        );
+    }
+    let events = output["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|event| event["name"].as_str())
+        .collect::<Vec<_>>();
+    if !events.is_empty() {
+        let _ = writeln!(text, "\n{} {}", "Events:".bold(), events.join(", "));
+    }
+    for (label, key) in [("Stacks", "hoistedStacks"), ("Programs", "directPrograms")] {
+        let names = output[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry["key"].as_str().or(entry["installName"].as_str()))
+            .collect::<Vec<_>>();
+        if !names.is_empty() {
+            let _ = writeln!(text, "{} {}", format!("{label}:").bold(), names.join(", "));
+        }
+    }
+    if let Some(install) = output["install"].as_str() {
+        let _ = writeln!(text, "\nInstall: {install}");
+    }
+    text
+}
+
 pub fn show_program(reference: &str, options: ProgramOptions<'_>, json: bool) -> Result<()> {
     let sections = shape::parse_sections(&options.sections, "--section")?;
     let client = ApiClient::new()?;
@@ -3106,6 +3241,49 @@ fn render_catalog_entry(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn explore_protocol_summarises_the_spec_and_checks_its_hash() {
+        let spec: Value = serde_json::from_slice(
+            &std::fs::read(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../test-vectors/protocol/token-raise.protocol-spec.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut install = json!({
+            "kind": "protocol",
+            "alias": "token-raise",
+            "package": "token-raise",
+            "version": "1.0.0",
+            "packageReleaseHash": format!("arete:registry-package-release:v2:sha256:{}", "9".repeat(64)),
+            "generatorContract": crate::project::GENERATOR_CONTRACT,
+            "protocol": crate::project::protocol::test_support::protocol(&spec, "public"),
+            "stacks": [],
+            "programs": []
+        });
+        let output = protocol_explore_output(&install).expect("summary");
+        assert_eq!(output["deployment"]["access"], "public");
+        let steps = output["steps"].as_array().unwrap();
+        let contribute = steps
+            .iter()
+            .find(|step| step["name"] == "contribute")
+            .unwrap();
+        assert_eq!(contribute["access"], "public");
+        assert_eq!(contribute["guards"][1]["code"], "deadline_passed");
+        assert_eq!(output["install"], "a4 install protocol token-raise --ts");
+        let text = render_protocol(&output);
+        assert!(
+            text.contains("finalize [instance; squadsProposer; not client-callable]"),
+            "{text}"
+        );
+
+        install["protocol"]["protocolSpec"]["version"] = json!("2.0.0");
+        let error = protocol_explore_output(&install).unwrap_err();
+        assert!(format!("{error:#}").contains("not its pinned"), "{error:#}");
+    }
+
     use super::*;
     use crate::api_client::{DeploymentLiveStatus, DeploymentPhase, DeploymentStatus};
     use serde_json::json;

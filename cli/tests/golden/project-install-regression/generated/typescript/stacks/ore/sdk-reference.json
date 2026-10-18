@@ -1,0 +1,649 @@
+{
+  "schemaVersion": 1,
+  "kind": "stack",
+  "alias": "ore",
+  "language": "typescript",
+  "package": "ore",
+  "version": "1.0.0",
+  "import": {
+    "module": "ore.ts",
+    "specifier": "./generated/typescript/stacks/ore/ore.js",
+    "export": "ORE_STREAM_STACK",
+    "typesModule": "ore-core.ts"
+  },
+  "entities": [
+    {
+      "name": "OreRound",
+      "typeName": "OreRound",
+      "views": [
+        {
+          "id": "OreRound/state",
+          "kind": "state",
+          "access": "views.OreRound.state",
+          "key": "{ roundId: bigint }"
+        },
+        {
+          "id": "OreRound/list",
+          "kind": "list",
+          "access": "views.OreRound.list"
+        },
+        {
+          "id": "OreRound/latest",
+          "kind": "list",
+          "access": "views.OreRound.latest"
+        }
+      ],
+      "fields": [
+        {
+          "path": "entropy.entropyEndAt",
+          "wire": "entropy.entropy_end_at",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "entropy.entropySamples",
+          "wire": "entropy.entropy_samples",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "entropy.entropySeed",
+          "wire": "entropy.entropy_seed",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "entropy.entropySlotHash",
+          "wire": "entropy.entropy_slot_hash",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "entropy.entropyStartAt",
+          "wire": "entropy.entropy_start_at",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "entropy.entropyValue",
+          "wire": "entropy.entropy_value",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "entropy.entropyVarAddress",
+          "wire": "entropy.entropy_var_address",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "entropy.resolvedSeed",
+          "wire": "entropy.resolved_seed",
+          "type": "number[]",
+          "nullable": true
+        },
+        {
+          "path": "id.roundAddress",
+          "wire": "id.round_address",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "id.roundId",
+          "wire": "id.round_id",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "metrics.checkpointCount",
+          "wire": "metrics.checkpoint_count",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "metrics.deployCount",
+          "wire": "metrics.deploy_count",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "results.didHitMotherlode",
+          "wire": "results.did_hit_motherlode",
+          "type": "boolean",
+          "nullable": true
+        },
+        {
+          "path": "results.expiresAtSlotHash",
+          "wire": "results.expires_at_slot_hash",
+          "type": "SlotHashBytes",
+          "nullable": true
+        },
+        {
+          "path": "results.preRevealRng",
+          "wire": "results.pre_reveal_rng",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "results.preRevealRngCandidate",
+          "wire": "results.pre_reveal_rng_candidate",
+          "type": "KeccakRngValue",
+          "nullable": true
+        },
+        {
+          "path": "results.preRevealWinningSquare",
+          "wire": "results.pre_reveal_winning_square",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "results.rentPayer",
+          "wire": "results.rent_payer",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "results.rng",
+          "wire": "results.rng",
+          "type": "KeccakRngValue",
+          "nullable": true
+        },
+        {
+          "path": "results.slotHash",
+          "wire": "results.slot_hash",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "results.topMiner",
+          "wire": "results.top_miner",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "results.topMinerReward",
+          "wire": "results.top_miner_reward",
+          "type": "number",
+          "nullable": true,
+          "amount": {
+            "scale": "ui",
+            "decimals": 11
+          }
+        },
+        {
+          "path": "results.winningSquare",
+          "wire": "results.winning_square",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.closesAt",
+          "wire": "state.closes_at",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.countPerSquare",
+          "wire": "state.count_per_square",
+          "type": "bigint[]",
+          "nullable": true
+        },
+        {
+          "path": "state.deployedPerSquare",
+          "wire": "state.deployed_per_square",
+          "type": "bigint[]",
+          "nullable": true,
+          "amount": {
+            "scale": "raw",
+            "decimals": 9,
+            "counterpart": "state.deployedPerSquareUi"
+          }
+        },
+        {
+          "path": "state.deployedPerSquareUi",
+          "wire": "state.deployed_per_square_ui",
+          "type": "number[]",
+          "nullable": true,
+          "amount": {
+            "scale": "ui",
+            "decimals": 9,
+            "counterpart": "state.deployedPerSquare"
+          }
+        },
+        {
+          "path": "state.estimatedExpiresAtUnix",
+          "wire": "state.estimated_expires_at_unix",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.expiresAt",
+          "wire": "state.expires_at",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.motherlode",
+          "wire": "state.motherlode",
+          "type": "number",
+          "nullable": true,
+          "amount": {
+            "scale": "ui",
+            "decimals": 11
+          }
+        },
+        {
+          "path": "state.totalDeployed",
+          "wire": "state.total_deployed",
+          "type": "number",
+          "nullable": true,
+          "amount": {
+            "scale": "ui",
+            "decimals": 9
+          }
+        },
+        {
+          "path": "state.totalMiners",
+          "wire": "state.total_miners",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.totalVaulted",
+          "wire": "state.total_vaulted",
+          "type": "number",
+          "nullable": true,
+          "amount": {
+            "scale": "ui",
+            "decimals": 9
+          }
+        },
+        {
+          "path": "state.totalWinnings",
+          "wire": "state.total_winnings",
+          "type": "number",
+          "nullable": true,
+          "amount": {
+            "scale": "ui",
+            "decimals": 9
+          }
+        },
+        {
+          "path": "treasury.motherlode",
+          "wire": "treasury.motherlode",
+          "type": "number",
+          "nullable": true,
+          "amount": {
+            "scale": "ui",
+            "decimals": 11
+          }
+        },
+        {
+          "path": "oreMetadata",
+          "wire": "ore_metadata",
+          "type": "TokenMetadata",
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "name": "OreBoard",
+      "typeName": "OreBoard",
+      "views": [
+        {
+          "id": "OreBoard/state",
+          "kind": "state",
+          "access": "views.OreBoard.state",
+          "key": "{ address: string }"
+        },
+        {
+          "id": "OreBoard/list",
+          "kind": "list",
+          "access": "views.OreBoard.list"
+        }
+      ],
+      "fields": [
+        {
+          "path": "id.address",
+          "wire": "id.address",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "state.endSlot",
+          "wire": "state.end_slot",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.productionCostEma",
+          "wire": "state.production_cost_ema",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.roundId",
+          "wire": "state.round_id",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.startSlot",
+          "wire": "state.start_slot",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "boardSnapshot",
+          "wire": "board_snapshot",
+          "type": "CaptureWrapper<Board>",
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "name": "OreTreasury",
+      "typeName": "OreTreasury",
+      "views": [
+        {
+          "id": "OreTreasury/state",
+          "kind": "state",
+          "access": "views.OreTreasury.state",
+          "key": "{ address: string }"
+        },
+        {
+          "id": "OreTreasury/list",
+          "kind": "list",
+          "access": "views.OreTreasury.list"
+        }
+      ],
+      "fields": [
+        {
+          "path": "id.address",
+          "wire": "id.address",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "state.motherlode",
+          "wire": "state.motherlode",
+          "type": "number",
+          "nullable": true,
+          "amount": {
+            "scale": "ui",
+            "decimals": 11
+          }
+        },
+        {
+          "path": "state.totalRefined",
+          "wire": "state.total_refined",
+          "type": "number",
+          "nullable": true,
+          "amount": {
+            "scale": "ui",
+            "decimals": 11
+          }
+        },
+        {
+          "path": "state.totalUnclaimed",
+          "wire": "state.total_unclaimed",
+          "type": "number",
+          "nullable": true,
+          "amount": {
+            "scale": "ui",
+            "decimals": 11
+          }
+        },
+        {
+          "path": "treasurySnapshot",
+          "wire": "treasury_snapshot",
+          "type": "CaptureWrapper<Treasury>",
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "name": "OreMiner",
+      "typeName": "OreMiner",
+      "views": [
+        {
+          "id": "OreMiner/state",
+          "kind": "state",
+          "access": "views.OreMiner.state",
+          "key": "{ authority: string }"
+        },
+        {
+          "id": "OreMiner/list",
+          "kind": "list",
+          "access": "views.OreMiner.list"
+        }
+      ],
+      "fields": [
+        {
+          "path": "automation.amount",
+          "wire": "automation.amount",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "automation.balance",
+          "wire": "automation.balance",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "automation.executor",
+          "wire": "automation.executor",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "automation.fee",
+          "wire": "automation.fee",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "automation.mask",
+          "wire": "automation.mask",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "automation.reload",
+          "wire": "automation.reload",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "automation.strategy",
+          "wire": "automation.strategy",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "id.authority",
+          "wire": "id.authority",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "id.automationAddress",
+          "wire": "id.automation_address",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "id.minerAddress",
+          "wire": "id.miner_address",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "path": "rewards.lifetimeDeployed",
+          "wire": "rewards.lifetime_deployed",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "rewards.lifetimeRewardsOre",
+          "wire": "rewards.lifetime_rewards_ore",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "rewards.lifetimeRewardsSol",
+          "wire": "rewards.lifetime_rewards_sol",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "rewards.refinedOre",
+          "wire": "rewards.refined_ore",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "rewards.rewardsOre",
+          "wire": "rewards.rewards_ore",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "rewards.rewardsSol",
+          "wire": "rewards.rewards_sol",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.checkpointFee",
+          "wire": "state.checkpoint_fee",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.checkpointId",
+          "wire": "state.checkpoint_id",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.deployedPerSquare",
+          "wire": "state.deployed_per_square",
+          "type": "bigint[]",
+          "nullable": true,
+          "amount": {
+            "scale": "raw",
+            "decimals": 9,
+            "counterpart": "state.deployedPerSquareUi"
+          }
+        },
+        {
+          "path": "state.deployedPerSquareUi",
+          "wire": "state.deployed_per_square_ui",
+          "type": "number[]",
+          "nullable": true,
+          "amount": {
+            "scale": "ui",
+            "decimals": 9,
+            "counterpart": "state.deployedPerSquare"
+          }
+        },
+        {
+          "path": "state.lastClaimOreAt",
+          "wire": "state.last_claim_ore_at",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.lastClaimSolAt",
+          "wire": "state.last_claim_sol_at",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.roundId",
+          "wire": "state.round_id",
+          "type": "bigint",
+          "nullable": true
+        },
+        {
+          "path": "state.totalDeployed",
+          "wire": "state.total_deployed",
+          "type": "number",
+          "nullable": true,
+          "amount": {
+            "scale": "ui",
+            "decimals": 9
+          }
+        },
+        {
+          "path": "minerSnapshot",
+          "wire": "miner_snapshot",
+          "type": "CaptureWrapper<Miner>",
+          "nullable": true
+        },
+        {
+          "path": "automationSnapshot",
+          "wire": "automation_snapshot",
+          "type": "CaptureWrapper<Automation>",
+          "nullable": true
+        }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "key": "ore",
+      "name": "ore",
+      "programId": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
+      "directory": "programs/ore",
+      "accounts": [
+        "Automation",
+        "Board",
+        "Config",
+        "Miner",
+        "Round",
+        "Treasury"
+      ],
+      "instructions": [
+        "automate",
+        "checkpoint",
+        "claimSol",
+        "claimOre",
+        "close",
+        "deploy",
+        "log",
+        "reset",
+        "bury",
+        "buyback",
+        "wrap",
+        "setAdmin",
+        "newVar"
+      ],
+      "pdas": [
+        "automation",
+        "board",
+        "config",
+        "miner",
+        "treasury"
+      ]
+    },
+    {
+      "key": "entropy",
+      "name": "entropy",
+      "programId": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
+      "directory": "programs/entropy",
+      "accounts": [
+        "Var"
+      ],
+      "instructions": [
+        "open",
+        "close",
+        "next",
+        "reveal",
+        "sample"
+      ]
+    }
+  ]
+}

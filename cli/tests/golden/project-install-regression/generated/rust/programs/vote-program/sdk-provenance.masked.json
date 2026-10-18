@@ -1,0 +1,29 @@
+{
+  "artifacts": [
+    "Cargo.toml",
+    "sdk-manifest.json",
+    "src/lib.rs",
+    "src/programs.rs",
+    "src/types.rs"
+  ],
+  "extensions": null,
+  "generator": {
+    "compilerHash": "<compiler>",
+    "name": "a4-cli",
+    "version": "<version>"
+  },
+  "input": {
+    "hash": "arete:h1:program-spec:sha256:79425ade85e0a9614e3f5b9b43e32db349266dc2edd7e7840a4e17b4621b9e86",
+    "kind": "program-spec"
+  },
+  "project": {
+    "dependencyKind": "program",
+    "generatorContract": "sdk-generator-v1",
+    "manifestHash": "arete-manifest-v1:b9c604f648f19793a90a1e3c332167c54aba73b46d66a15462867a7dd4ba8c7d",
+    "packageReleaseHash": "arete:registry-package-release:v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "rootAlias": "vote",
+    "target": "rust"
+  },
+  "schemaVersion": 2,
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:cac215b8ff39189718c2db9c719d7aaccfa25826110968c915a1a97e0d023740"
+}

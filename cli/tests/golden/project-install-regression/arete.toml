@@ -1,0 +1,15 @@
+manifest_version = 1
+
+[project]
+name = "hosted-install"
+
+[sdk]
+targets = ["typescript", "rust", "python"]
+
+[dependencies.stacks.ore]
+source = { registry = "ore" }
+version = "^1.0.0"
+
+[dependencies.programs.vote]
+source = { registry = "vote" }
+version = "^0.1.0"

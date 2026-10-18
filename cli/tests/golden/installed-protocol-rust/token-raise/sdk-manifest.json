@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "protocol-spec",
+    "hash": "arete:h1:protocol-spec:sha256:29f83127858da49a1eb9308c1986319ea71180eb1bdcd85567d52f31b6c719a0"
+  },
+  "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}",
+  "extensions": null,
+  "artifacts": [
+    "Cargo.toml",
+    "README.md",
+    "programs/squads-v4/Cargo.toml",
+    "programs/squads-v4/sdk-manifest.json",
+    "programs/squads-v4/src/lib.rs",
+    "programs/squads-v4/src/programs.rs",
+    "programs/squads-v4/src/types.rs",
+    "protocol-spec.json",
+    "src/lib.rs",
+    "stacks/meteora-presale/Cargo.toml",
+    "stacks/meteora-presale/sdk-manifest.json",
+    "stacks/meteora-presale/src/entity.rs",
+    "stacks/meteora-presale/src/lib.rs",
+    "stacks/meteora-presale/src/programs.rs",
+    "stacks/meteora-presale/src/types.rs",
+    "stacks/mirror/Cargo.toml",
+    "stacks/mirror/sdk-manifest.json",
+    "stacks/mirror/src/entity.rs",
+    "stacks/mirror/src/lib.rs",
+    "stacks/mirror/src/programs.rs",
+    "stacks/mirror/src/types.rs"
+  ]
+}

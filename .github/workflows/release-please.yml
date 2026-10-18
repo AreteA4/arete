@@ -534,9 +534,48 @@ jobs:
             "a4-cli-v${VERSION}" \
             "arete-templates-v${VERSION}.tar.gz"
 
+  # The dev UI `a4 dev up` serves, built once for every binary below. npm
+  # runs here without install scripts and without the binary jobs' write,
+  # id-token and attestation permissions.
+  build-dev-ui:
+    name: Build the dev UI
+    needs: release-please
+    if: needs.release-please.outputs.cli_release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      # esbuild and rollup ship their native binaries as optional dependencies,
+      # so the build does not need their install scripts.
+      - name: Build the dev UI
+        working-directory: typescript/dev-ui
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          test -f dist/index.html
+        shell: bash
+
+      - name: Upload the dev UI
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dev-ui-dist
+          path: typescript/dev-ui/dist
+          if-no-files-found: error
+          retention-days: 7
+
   build-cli-binaries:
     name: Build CLI Binaries
-    needs: release-please
+    needs: [release-please, build-dev-ui]
     if: needs.release-please.outputs.cli_release_created == 'true'
     strategy:
       fail-fast: false
@@ -589,7 +628,18 @@ jobs:
           pip3 install ziglang==0.16.0
           cargo install cargo-zigbuild --version 0.23.0 --locked
 
+      # `a4 dev up` serves this UI; build.rs embeds A4_DEV_UI_DIST.
+      - name: Download the dev UI
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: dev-ui-dist
+          path: ${{ runner.temp }}/dev-ui-dist
+
       - name: Build binary
+        env:
+          A4_DEV_UI_DIST: ${{ runner.temp }}/dev-ui-dist
+          # Fail instead of shipping the placeholder page.
+          A4_REQUIRE_DEV_UI: "1"
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
             cargo zigbuild --locked --release --target ${{ matrix.target }} --package a4-cli
