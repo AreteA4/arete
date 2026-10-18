@@ -1,0 +1,83 @@
+{
+  "name": "@usearete/protocol",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Arete Protocols: contracts, the handler ABI, defineProtocol and the arete-protocol compiler",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js",
+      "require": "./dist/testing.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "testing": [
+        "./dist/testing.d.ts"
+      ]
+    }
+  },
+  "bin": {
+    "arete-protocol": "./dist/cli.js"
+  },
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AreteA4/arete.git",
+    "directory": "typescript/protocol"
+  },
+  "scripts": {
+    "build": "rollup -c",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "lint": "eslint src --ext .ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "arete",
+    "protocol",
+    "solana"
+  ],
+  "author": "Arete Team",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
+    "@usearete/hash": "^0.6.1",
+    "esbuild": "0.28.2"
+  },
+  "devDependencies": {
+    "@rollup/plugin-node-resolve": "16.0.3",
+    "@rollup/plugin-typescript": "11.1.6",
+    "@types/node": "22.20.1",
+    "@typescript-eslint/eslint-plugin": "8.71.2",
+    "@typescript-eslint/parser": "8.71.2",
+    "eslint": "8.57.1",
+    "rollup": "3.29.5",
+    "rollup-plugin-dts": "6.2.3",
+    "tslib": "2.8.1",
+    "typescript": "5.9.3",
+    "vitest": "1.6.1"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ]
+}

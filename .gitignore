@@ -16,6 +16,8 @@ __pycache__/
 # Production builds
 dist/
 build/
+# Protocol compiler source modules (not generated build output).
+!typescript/protocol/src/build/
 
 # Environment variables
 .env

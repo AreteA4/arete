@@ -1,0 +1,23 @@
+{
+  "address": "Vote111111111111111111111111111111111111111",
+  "metadata": { "name": "tip_jar", "version": "0.1.0", "spec": "0.1.0" },
+  "instructions": [
+    {
+      "name": "tip",
+      "discriminator": [1, 2, 3, 4, 5, 6, 7, 8],
+      "accounts": [
+        { "name": "jar", "writable": true, "pda": { "seeds": [
+          { "kind": "const", "value": [106, 97, 114] },
+          { "kind": "account", "path": "owner" }
+        ] } },
+        { "name": "owner" },
+        { "name": "tipper", "writable": true, "signer": true },
+        { "name": "referrer", "optional": true },
+        { "name": "system_program", "address": "11111111111111111111111111111111" }
+      ],
+      "args": [{ "name": "amount", "type": "u64" }]
+    }
+  ],
+  "accounts": [],
+  "types": []
+}

@@ -1,0 +1,14 @@
+manifest_version = 1
+
+[project]
+name = "program-imports"
+
+[sdk]
+targets = ["typescript"]
+
+[dependencies.programs.tip-jar]
+source = { idl = "idl/tip_jar.json" }
+
+[dependencies.programs.vault]
+source = { registry = "vault" }
+version = "^1.2.3"

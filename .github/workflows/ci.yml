@@ -571,6 +571,55 @@ jobs:
       - name: Test packed package boundary
         run: npm run test:pack
 
+  typescript-protocol:
+    name: TypeScript Protocol
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: |
+            typescript/hash/package-lock.json
+            typescript/protocol/package-lock.json
+            typescript/core/package-lock.json
+
+      - name: Build hash dependency
+        working-directory: typescript/hash
+        run: npm ci && npm run build
+
+      # A build test bundles a generated program module against the SDK
+      # source (`@usearete/sdk/program`), which needs the SDK's dependencies.
+      - name: Install SDK dependencies
+        working-directory: typescript/core
+        run: npm ci
+
+      - name: Install dependencies
+        working-directory: typescript/protocol
+        run: npm ci
+
+      - name: Build
+        working-directory: typescript/protocol
+        run: npm run build
+
+      - name: Typecheck
+        working-directory: typescript/protocol
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: typescript/protocol
+        run: npm run lint
+
+      - name: Test
+        working-directory: typescript/protocol
+        run: npm test
+
+      - name: Verify protocol release guards
+        run: python3 scripts/test-protocol-release.py
+
   typescript-adapters:
     name: TypeScript Adapters
     runs-on: ubuntu-latest
@@ -880,6 +929,7 @@ jobs:
       - ore-react
       - typescript-core
       - typescript-hash
+      - typescript-protocol
       - typescript-adapters
       - typescript-react
       - python-matrix

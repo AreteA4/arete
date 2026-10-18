@@ -1,0 +1,29 @@
+lock_version = 1
+manifest_hash = "arete-manifest-v1:0000000000000000000000000000000000000000000000000000000000000000"
+resolver_contract = "registry-resolver-v1"
+
+[[dependency]]
+kind = "program"
+alias = "tip-jar"
+source = "idl:idl/tip_jar.json"
+program_id = "Vote111111111111111111111111111111111111111"
+program_spec_hash = "arete:h1:program-spec:sha256:7c9129d489592cd48fa2db1d41ed2c3367b4fece52551323b912b4c515c9e6a1"
+targets = [
+    "typescript",
+]
+generator_contract = "sdk-generator-v1"
+
+[[dependency]]
+kind = "program"
+alias = "vault"
+source = "registry:vault"
+requirement = "^1.2.3"
+version = "1.2.3"
+package_release_hash = "arete:registry-package-release:v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+program_id = "Vau1t11111111111111111111111111111111111111"
+program_spec_hash = "arete:h1:program-spec:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+program_release_hash = "arete:h1:program-release:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+targets = [
+    "typescript",
+]
+generator_contract = "sdk-generator-v1"

@@ -8,6 +8,7 @@
   "typescript/react": "0.41.2",
   "typescript/core": "0.41.2",
   "typescript/hash": "0.6.1",
+  "typescript/protocol": "0.1.0",
   "typescript/adapters/kit": "0.41.2",
   "typescript/adapters/web3js": "0.41.2",
   "packages/arete": "0.41.2",

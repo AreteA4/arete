@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "paths": { "@programs/*": ["./programs/*/index.js"] },
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true
+  }
+}
