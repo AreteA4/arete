@@ -396,9 +396,22 @@ fn codama_enum_variant_to_idl(variant: &CodamaEnumVariant) -> Result<IdlEnumVari
 
 fn codama_type_to_idl(type_node: &CodamaTypeNode) -> Result<IdlType, String> {
     match type_node {
-        CodamaTypeNode::Number { format } => Ok(IdlType::Simple(format.clone())),
+        CodamaTypeNode::Number { format, endian } => {
+            if endian.as_deref().is_some_and(|endian| endian != "le") {
+                return Err("unsupported Codama number endian (only le is supported)".into());
+            }
+            Ok(IdlType::Simple(format.clone()))
+        }
         CodamaTypeNode::PublicKey {} => Ok(IdlType::Simple("publicKey".to_string())),
-        CodamaTypeNode::String {} => Ok(IdlType::Simple("string".to_string())),
+        CodamaTypeNode::String { encoding } => {
+            if encoding
+                .as_deref()
+                .is_some_and(|encoding| encoding != "utf8")
+            {
+                return Err("unsupported Codama string encoding (only utf8 is supported)".into());
+            }
+            Ok(IdlType::Simple("string".to_string()))
+        }
         CodamaTypeNode::DefinedTypeLink { name } => Ok(IdlType::Defined(IdlTypeDefined {
             defined: IdlTypeDefinedInner::Simple(name.clone()),
         })),
@@ -421,7 +434,10 @@ fn codama_type_to_idl(type_node: &CodamaTypeNode) -> Result<IdlType, String> {
         }
         CodamaTypeNode::FixedSize { size, type_ } => {
             let element_type = match type_.as_ref() {
-                CodamaTypeNode::String {} => IdlType::Simple("u8".to_string()),
+                CodamaTypeNode::String { .. } => {
+                    codama_type_to_idl(type_)?;
+                    IdlType::Simple("u8".to_string())
+                }
                 other => codama_type_to_idl(other)?,
             };
             Ok(IdlType::Array(IdlTypeArray {
@@ -439,21 +455,24 @@ fn codama_type_to_idl(type_node: &CodamaTypeNode) -> Result<IdlType, String> {
         })),
         // A string with an explicit length prefix: `u32` is Borsh's `string`, `u64`
         // is bincode's (the native programs' seeds).
-        CodamaTypeNode::SizePrefix { type_, prefix } => match (type_.as_ref(), prefix.as_ref()) {
-            (CodamaTypeNode::String {}, CodamaTypeNode::Number { format }) if format == "u32" => {
-                Ok(IdlType::Simple("string".to_string()))
+        CodamaTypeNode::SizePrefix { type_, prefix } => {
+            // Validate representation details before collapsing to the IDL's
+            // little-endian UTF-8 string types.
+            codama_type_to_idl(type_)?;
+            codama_type_to_idl(prefix)?;
+            match (type_.as_ref(), prefix.as_ref()) {
+                (CodamaTypeNode::String { .. }, CodamaTypeNode::Number { format, .. }) if format == "u32" => {
+                    Ok(IdlType::Simple("string".to_string()))
+                }
+                (CodamaTypeNode::String { .. }, CodamaTypeNode::Number { format, .. }) if format == "u64" => {
+                    Ok(IdlType::String(crate::types::IdlTypeString {
+                        string: crate::types::IdlStringEncoding::Utf8,
+                        length_prefix: Some(crate::types::IdlLengthPrefix::U64),
+                    }))
+                }
+                _ => Err("unsupported Codama sizePrefixTypeNode (only a string with a u32 or u64 prefix is supported)".into()),
             }
-            (CodamaTypeNode::String {}, CodamaTypeNode::Number { format }) if format == "u64" => {
-                Ok(IdlType::String(crate::types::IdlTypeString {
-                    string: crate::types::IdlStringEncoding::Utf8,
-                    length_prefix: Some(crate::types::IdlLengthPrefix::U64),
-                }))
-            }
-            _ => Err(format!(
-                "unsupported Codama sizePrefixTypeNode (only a string with a u32 or u64 prefix is supported): {:?}",
-                type_node
-            )),
-        },
+        }
         CodamaTypeNode::Unknown => {
             Err("unsupported Codama type node kind (not modelled by arete-idl)".to_string())
         }
@@ -605,7 +624,7 @@ struct CodamaFieldNode {
 impl CodamaFieldNode {
     fn number_format(&self) -> Option<&str> {
         match &self.type_ {
-            CodamaTypeNode::Number { format } => Some(format.as_str()),
+            CodamaTypeNode::Number { format, .. } => Some(format.as_str()),
             _ => None,
         }
     }
@@ -615,11 +634,18 @@ impl CodamaFieldNode {
 #[serde(tag = "kind")]
 enum CodamaTypeNode {
     #[serde(rename = "numberTypeNode")]
-    Number { format: String },
+    Number {
+        format: String,
+        #[serde(default)]
+        endian: Option<String>,
+    },
     #[serde(rename = "publicKeyTypeNode")]
     PublicKey {},
     #[serde(rename = "stringTypeNode")]
-    String {},
+    String {
+        #[serde(default)]
+        encoding: Option<String>,
+    },
     #[serde(rename = "definedTypeLinkNode")]
     DefinedTypeLink { name: String },
     #[serde(rename = "arrayTypeNode")]
@@ -884,9 +910,9 @@ fn codama_account_pda(
 /// `IdlPdaSeed::Arg` (e.g. `u64`, `publicKey`, `string`).
 fn codama_seed_type_name(type_node: &CodamaTypeNode) -> Option<String> {
     match type_node {
-        CodamaTypeNode::Number { format } => Some(format.clone()),
+        CodamaTypeNode::Number { format, .. } => Some(format.clone()),
         CodamaTypeNode::PublicKey {} => Some("publicKey".to_string()),
-        CodamaTypeNode::String {} => Some("string".to_string()),
+        CodamaTypeNode::String { .. } => Some("string".to_string()),
         _ => None,
     }
 }
@@ -903,7 +929,7 @@ fn codama_constant_seed_bytes(
     match value {
         CodamaValueNode::StringValue { string } => Some(string.as_bytes().to_vec()),
         CodamaValueNode::Number { number } => {
-            let Some(CodamaTypeNode::Number { format }) = seed_type else {
+            let Some(CodamaTypeNode::Number { format, .. }) = seed_type else {
                 return None;
             };
             let (width, signed) = match format.as_str() {

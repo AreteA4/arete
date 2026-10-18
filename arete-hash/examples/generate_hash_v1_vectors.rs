@@ -1000,6 +1000,8 @@ impl Generator {
         let inline_tuple = mpl_core_tuple_idl();
         let codama_root = subscriptions_codama_idl();
         let untagged_accounts = untagged_accounts_idl();
+        let untagged_instructions = untagged_instructions_idl();
+        let prefixed_strings = codama_prefixed_strings_idl("le", "utf8");
 
         let primary_document =
             CanonicalIdlDocument::parse(primary.as_bytes(), None).expect("primary IDL parses");
@@ -1083,6 +1085,18 @@ impl Generator {
                 json!({"fixtureSource": "trimmed Subscriptions Codama rootNode"}),
             ),
             (
+                "idl-untagged-instruction-discriminators",
+                untagged_instructions,
+                None,
+                json!({"cases": ["marker", "trimmed marker", "explicit bytes", "explicit discriminant", "unmarked", "false marker"]}),
+            ),
+            (
+                "idl-codama-prefixed-strings",
+                prefixed_strings,
+                None,
+                json!({"prefixWidths": [4, 8]}),
+            ),
+            (
                 "idl-untagged-account-discriminators",
                 untagged_accounts,
                 None,
@@ -1127,6 +1141,11 @@ impl Generator {
 
     fn idl_failure_vectors(&mut self) {
         let cases = [
+            ("idl-codama-big-endian-string", codama_prefixed_strings_idl("be", "utf8"), None, "invalid-idl"),
+            ("idl-codama-non-utf8-string", codama_prefixed_strings_idl("le", "utf16"), None, "invalid-idl"),
+            ("idl-account-tuple-remainder", r#"{"address":"11111111111111111111111111111111","instructions":[],"accounts":[{"name":"A","type":{"kind":"struct","fields":["rest_bytes"]}}]}"#.to_string(), None, "invalid-idl"),
+            ("idl-account-named-enum-remainder", r#"{"address":"11111111111111111111111111111111","instructions":[],"accounts":[{"name":"A","type":{"kind":"enum","variants":[{"name":"V","fields":[{"name":"rest","type":"rest_utf8"}]}]}}]}"#.to_string(), None, "invalid-idl"),
+            ("idl-account-tuple-enum-remainder", r#"{"address":"11111111111111111111111111111111","instructions":[],"accounts":[{"name":"A","type":{"kind":"enum","variants":[{"name":"V","fields":["rest_bytes"]}]}}]}"#.to_string(), None, "invalid-idl"),
             (
                 "idl-missing-program-id",
                 minimal_idl_fields(""),
@@ -2605,4 +2624,40 @@ fn minimal_idl_fields(program_id: &str) -> String {
 
 fn minimal_idl_fields_body() -> &'static str {
     "\"version\":\"1.0.0\",\"name\":\"demo\",\"instructions\":[],\"accounts\":[],\"types\":[],\"events\":[],\"errors\":[]"
+}
+
+fn untagged_instructions_idl() -> String {
+    json!({
+        "address": "11111111111111111111111111111111",
+        "name": "untagged_instructions_fixture", "version": "0.1.0",
+        "instructions": [
+            {"accounts": [], "args": [], "name": "memo", "docs": ["arete.instruction_untagged=true"]},
+            {"accounts": [], "args": [], "name": "trimmed", "docs": ["  arete.instruction_untagged=true\n"]},
+            {"accounts": [], "args": [], "name": "explicit", "discriminator": [9], "docs": ["arete.instruction_untagged=true"]},
+            {"accounts": [], "args": [], "name": "enumTag", "discriminant": {"type":"u32", "value":2}, "docs": ["arete.instruction_untagged=true"]},
+            {"accounts": [], "args": [], "name": "unmarked"},
+            {"accounts": [], "args": [], "name": "falseMarker", "docs": ["arete.instruction_untagged=false"]}
+        ]
+    }).to_string()
+}
+
+fn codama_prefixed_strings_idl(endian: &str, encoding: &str) -> String {
+    json!({
+        "kind": "rootNode",
+        "program": {
+            "kind": "programNode", "name": "prefixed_strings",
+            "publicKey": "11111111111111111111111111111111", "version": "0.1.0",
+            "instructions": [],
+            "definedTypes": [{"kind":"definedTypeNode", "name":"Seeds", "type": {
+                "kind":"structTypeNode", "fields": (["u32", "u64"].map(|format| json!({
+                    "kind":"structFieldTypeNode", "name":format, "type":{
+                        "kind":"sizePrefixTypeNode",
+                        "type":{"kind":"stringTypeNode", "encoding":encoding},
+                        "prefix":{"kind":"numberTypeNode", "format":format, "endian":endian}
+                    }
+                })))
+            }}]
+        }
+    })
+    .to_string()
 }

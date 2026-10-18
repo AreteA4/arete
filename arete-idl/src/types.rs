@@ -733,19 +733,20 @@ impl IdlSpec {
                 .iter()
                 .any(|field| idl_type_uses_remainder(&field.type_))
         };
+        let layout_uses = |layout: &IdlTypeDefKind| match layout {
+            IdlTypeDefKind::Struct { fields, .. } => field_uses(fields),
+            IdlTypeDefKind::TupleStruct { fields, .. } => {
+                fields.iter().any(idl_type_uses_remainder)
+            }
+            IdlTypeDefKind::Enum { variants, .. } => variants.iter().any(|variant| {
+                variant.fields.iter().any(|field| match field {
+                    IdlEnumVariantField::Named(field) => idl_type_uses_remainder(&field.type_),
+                    IdlEnumVariantField::Tuple(inner) => idl_type_uses_remainder(inner),
+                })
+            }),
+        };
         for type_def in &self.types {
-            let uses = match &type_def.type_def {
-                IdlTypeDefKind::Struct { fields, .. } => field_uses(fields),
-                IdlTypeDefKind::TupleStruct { fields, .. } => {
-                    fields.iter().any(idl_type_uses_remainder)
-                }
-                IdlTypeDefKind::Enum { variants, .. } => variants.iter().any(|variant| {
-                    variant.fields.iter().any(|field| match field {
-                        IdlEnumVariantField::Named(field) => idl_type_uses_remainder(&field.type_),
-                        IdlEnumVariantField::Tuple(inner) => idl_type_uses_remainder(inner),
-                    })
-                }),
-            };
+            let uses = layout_uses(&type_def.type_def);
             if uses {
                 return Err(format!(
                     "type '{}': {REST_BYTES_TYPE} and {REST_UTF8_TYPE} are allowed only as the type of an instruction's last argument",
@@ -762,8 +763,8 @@ impl IdlSpec {
             }
         }
         for account in &self.accounts {
-            if let Some(IdlTypeDefKind::Struct { fields, .. }) = &account.type_def {
-                if field_uses(fields) {
+            if let Some(layout) = &account.type_def {
+                if layout_uses(layout) {
                     return Err(format!(
                         "account '{}': {REST_BYTES_TYPE} and {REST_UTF8_TYPE} are allowed only as the type of an instruction's last argument",
                         account.name

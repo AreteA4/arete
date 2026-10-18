@@ -30,7 +30,7 @@ pub(crate) fn err(
     ProtocolContractError::new(code, path, message)
 }
 
-/// Reject floats anywhere in a document. Contracts carry integer base units
+/// Reject floats and unsafe integers anywhere in a document. Contracts carry integer base units
 /// as decimal strings and small counts as safe JSON integers only.
 pub(crate) fn reject_floats(value: &Value, path: &str) -> ProtocolResult<()> {
     match value {
@@ -40,6 +40,18 @@ pub(crate) fn reject_floats(value: &Value, path: &str) -> ProtocolResult<()> {
                     "float-not-allowed",
                     path,
                     "floating-point numbers are not allowed",
+                ));
+            }
+            const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+            if number.as_u64().is_some_and(|n| n > MAX_SAFE_INTEGER)
+                || number
+                    .as_i64()
+                    .is_some_and(|n| n < -(MAX_SAFE_INTEGER as i64))
+            {
+                return Err(err(
+                    "unsafe-json-integer",
+                    path,
+                    "integer exceeds the safe JSON range",
                 ));
             }
             Ok(())

@@ -259,3 +259,37 @@ fn fee_adjustment_is_additive() {
     assert_eq!(restored.hash().unwrap(), plain.hash().unwrap());
     assert_ne!(capped.hash().unwrap(), plain.hash().unwrap());
 }
+
+#[test]
+fn direct_resource_values_reject_unsafe_integers_before_hashing() {
+    use serde_json::json;
+    let resource = |value| {
+        json!({
+            "schema": "arete.protocol-resource/v1", "name": "example",
+            "schemaSha256": "a".repeat(64), "value": value
+        })
+    };
+    for number in [
+        json!(9_007_199_254_740_992u64),
+        json!(9_007_199_254_740_993u64),
+        json!(u64::MAX),
+        json!(-9_007_199_254_740_992i64),
+        json!(i64::MIN),
+    ] {
+        let value = resource(json!({"nested": [number]}));
+        let direct = validate_protocol_resource_value(&value).unwrap_err();
+        assert_eq!(direct.code, "unsafe-json-integer");
+        assert_eq!(direct.path, "/value/nested/0");
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert_eq!(parse_contract_json(&bytes).unwrap_err().code, direct.code);
+    }
+    for number in [
+        json!(9_007_199_254_740_991u64),
+        json!(-9_007_199_254_740_991i64),
+    ] {
+        validate_protocol_resource_value(&resource(number))
+            .unwrap()
+            .hash()
+            .unwrap();
+    }
+}
