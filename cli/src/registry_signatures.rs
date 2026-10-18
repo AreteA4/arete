@@ -219,13 +219,12 @@ impl KeySet {
     /// signed CLI release or an explicit operator-managed trust file.
     fn merge(&mut self, other: KeySet) {
         for (key_id, key) in other.keys {
-            match self.keys.get_mut(&key_id) {
-                Some(existing) => {
-                    if existing.key == key.key && existing.retired_at.is_none() {
-                        existing.retired_at = key.retired_at;
-                    }
-                }
-                None => {}
+            if let Some(existing) = self
+                .keys
+                .get_mut(&key_id)
+                .filter(|existing| existing.key == key.key && existing.retired_at.is_none())
+            {
+                existing.retired_at = key.retired_at;
             }
         }
         if self.problem.is_none() {
