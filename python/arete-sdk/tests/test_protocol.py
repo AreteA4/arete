@@ -1136,3 +1136,84 @@ async def test_live_rows_clear_on_key_changes_and_removal(parked_reconnects):
         assert all(s.live is None or s.live["totalDeposit"] == ("11" if s.instance["accounts"].get("presale") == "P1" else "22") for s in seen)
     finally:
         await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("context_entry", [False, True])
+@pytest.mark.parametrize("read_completed", [False, True])
+async def test_cancelled_startup_callers_leave_no_unclaimed_handle(monkeypatch, context_entry, read_completed):
+    client, _ = make_client(lambda _request: httpx.Response(500))
+    entered = asyncio.Event()
+    read_cancelled = asyncio.Event()
+    handle = client.instance_handle("inst_1")
+
+    async def read(*args, **kwargs):
+        entered.set()
+        if read_completed:
+            # Cancel after the read completes but before its waiter resumes.
+            asyncio.get_running_loop().call_soon(caller.cancel)
+            return instance_detail(3, "P1")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            read_cancelled.set()
+
+    monkeypatch.setattr(client, "get_instance", read)
+
+    async def enter():
+        if context_entry:
+            async with handle:
+                pytest.fail("cancelled context entry returned a handle")
+        else:
+            await handle
+            pytest.fail("cancelled await returned a handle")
+
+    caller = asyncio.create_task(enter())
+    await entered.wait()
+    if not read_completed:
+        caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(caller, 1)
+    assert handle.closed
+    assert not client._handles
+    assert not handle._tasks
+    assert handle._starting is None
+    assert handle._startup_waiters == 0
+    if not read_completed:
+        assert read_cancelled.is_set()
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_one_startup_waiter_keeps_the_other_alive(monkeypatch, parked_reconnects):
+    route, _ = handle_route("")
+    client, _ = make_client(route)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def read(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+        return instance_detail(3, "P1")
+
+    monkeypatch.setattr(client, "get_instance", read)
+    handle = client.instance_handle("inst_1")
+    first = asyncio.create_task(handle.start())
+    await entered.wait()
+    second = asyncio.create_task(handle.start())
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert not handle.closed
+    assert not second.done()
+    release.set()
+    assert await asyncio.wait_for(second, 1) is handle
+    assert calls == 1
+    assert handle._startup_waiters == 0
+    assert handle in client._handles
+    assert handle.current.instance["revision"] == 3
+    await client.aclose()

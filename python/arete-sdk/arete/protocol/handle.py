@@ -91,6 +91,8 @@ class ProtocolInstanceHandle:
         self._live_task: Optional["asyncio.Task[Any]"] = None
         self._live_rows: Optional[AsyncIterator[Any]] = None
         self._starting: Optional["asyncio.Task[ProtocolInstanceHandle]"] = None
+        self._startup_waiters = 0
+        self._startup_claimed = False
         self._started = False
         self._closed = False
 
@@ -169,15 +171,35 @@ class ProtocolInstanceHandle:
         await self.aclose()
 
     async def start(self) -> "ProtocolInstanceHandle":
-        """Read the instance and start following it; idempotent."""
+        """Read the instance and start following it; idempotent.
+
+        Canceling the last startup caller closes an unclaimed handle.
+        Other callers already waiting for the same startup are unaffected.
+        """
         if self._closed:
             raise AreteError("the instance handle is closed", "INVALID_STATE")
         if self._started:
+            self._startup_claimed = True
             return self
         if self._starting is None:
             self._client._handles.add(self)
             self._starting = asyncio.ensure_future(self._start())
-        return await asyncio.shield(self._starting)
+        self._startup_waiters += 1
+        cancelled = False
+        try:
+            handle = await asyncio.shield(self._starting)
+            self._startup_claimed = True
+            return handle
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            self._startup_waiters -= 1
+            # The shield protects other waiting callers, not an abandoned
+            # startup. A completed first read is not ownership until a caller
+            # actually receives the handle.
+            if cancelled and self._startup_waiters == 0 and not self._startup_claimed:
+                await self.aclose()
 
     async def _start(self) -> "ProtocolInstanceHandle":
         try:
