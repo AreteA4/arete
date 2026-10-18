@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Staging end-to-end driver for owner-private program and stack installs
-# (advisor plan 005). Runs the real `a4` CLI against a staging registry with
+# Runs the real `a4` CLI against a staging registry with
 # task-specific credentials supplied only through the environment; it refuses
 # to run when any required variable is missing and never prints credentials.
 #

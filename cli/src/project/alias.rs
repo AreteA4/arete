@@ -257,7 +257,7 @@ mod tests {
         let cases: &[(&str, &str)] = &[
             ("ore", "ore"),
             ("My-Program", "my-program"),
-            ("Plan004_Shared", "plan004-shared"),
+            ("Pkg004_Shared", "pkg004-shared"),
             ("upr_AbC123-xyz_9", "upr-abc123-xyz-9"),
             ("UPR_ONLYCAPS", "upr-onlycaps"),
             ("demo.stack/one", "demo-stack-one"),

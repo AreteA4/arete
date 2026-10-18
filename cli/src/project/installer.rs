@@ -5234,7 +5234,7 @@ output_dir = "./generated/typescript"
         let sandbox = RegistrySandbox::new(
             vec![(
                 200,
-                program_resolution("plan004-shared", "Plan004-Shared", "0.1.0", 'c'),
+                program_resolution("pkg004-shared", "Pkg004-Shared", "0.1.0", 'c'),
             )],
             true,
         );
@@ -5243,7 +5243,7 @@ output_dir = "./generated/typescript"
         std::env::set_current_dir(sandbox.dir.path()).unwrap();
         let result = install_without_saving(
             DependencyKind::Program,
-            "Plan004-Shared",
+            "Pkg004-Shared",
             NoSaveDependencyOptions {
                 alias: None,
                 target: Some(InstallTarget::TypeScript),
@@ -5260,8 +5260,8 @@ output_dir = "./generated/typescript"
             .request_line
             .starts_with(&format!("POST {RESOLVE_PATH} ")));
         let dependency = request_dependency(&request);
-        assert_eq!(dependency["package"], "Plan004-Shared");
-        assert_eq!(dependency["alias"], "plan004-shared");
+        assert_eq!(dependency["package"], "Pkg004-Shared");
+        assert_eq!(dependency["alias"], "pkg004-shared");
         assert!(output.is_dir());
         assert!(
             !sandbox.dir.path().join("arete.toml").exists(),
@@ -5275,21 +5275,21 @@ output_dir = "./generated/typescript"
             vec![
                 (
                     200,
-                    program_resolution("plan004-shared", "plan004-shared", "0.1.0", 'd'),
+                    program_resolution("pkg004-shared", "pkg004-shared", "0.1.0", 'd'),
                 ),
                 (
                     200,
-                    program_resolution("plan004-shared", "plan004-shared", "0.1.0", 'd'),
+                    program_resolution("pkg004-shared", "pkg004-shared", "0.1.0", 'd'),
                 ),
                 // Reinstall: the server honors the lock even though 0.1.1 exists.
                 (
                     200,
-                    program_resolution("plan004-shared", "plan004-shared", "0.1.0", 'd'),
+                    program_resolution("pkg004-shared", "pkg004-shared", "0.1.0", 'd'),
                 ),
                 // Explicit update: unlocked request selects the newer revision.
                 (
                     200,
-                    program_resolution("plan004-shared", "plan004-shared", "0.1.1", 'e'),
+                    program_resolution("pkg004-shared", "pkg004-shared", "0.1.1", 'e'),
                 ),
             ],
             true,
@@ -5298,7 +5298,7 @@ output_dir = "./generated/typescript"
         add_and_install(
             &manifest,
             DependencyKind::Program,
-            "plan004-shared",
+            "pkg004-shared",
             AddDependencyOptions::default(),
         )
         .unwrap();
@@ -5320,7 +5320,7 @@ output_dir = "./generated/typescript"
             InstallOptions {
                 update: Some(UpdateSelection {
                     kind: Some(DependencyKind::Program),
-                    alias: Some("plan004-shared"),
+                    alias: Some("pkg004-shared"),
                 }),
                 ..InstallOptions::default()
             },
@@ -5345,7 +5345,7 @@ output_dir = "./generated/typescript"
         // The stack path already rejected a program without an exact release.
         // A direct program install pins the same hosted identity into the
         // generated SDK and arete.lock, so it must reject the same shapes.
-        let package = "Plan004-Program";
+        let package = "Pkg004-Program";
         let alias = super::super::alias::derive_local_alias(package);
         for (label, mutate) in [
             (
@@ -5450,7 +5450,7 @@ output_dir = "./generated/typescript"
         // Duplicate detection is keyed on the package, not the alias, so
         // --alias cannot smuggle a second copy of a dependency into the
         // project under a different local name.
-        let package = "Plan004-Shared";
+        let package = "Pkg004-Shared";
         let declared_alias = super::super::alias::derive_local_alias(package);
         let sandbox = RegistrySandbox::new(
             vec![
@@ -5508,8 +5508,8 @@ output_dir = "./generated/typescript"
         // not a legal identifier in every generated language. Whatever the
         // outcome, reinstalling must never leave the project with two entries
         // for the same package.
-        let package = "Plan004-Shared";
-        let legacy_alias = "Plan004-Shared";
+        let package = "Pkg004-Shared";
+        let legacy_alias = "Pkg004-Shared";
         let derived = super::super::alias::derive_local_alias(package);
         assert!(
             super::super::alias::validate_local_alias(legacy_alias, DependencyKind::Program)
@@ -5550,7 +5550,7 @@ output_dir = "./generated/typescript"
 
     #[test]
     fn unknown_and_cross_owner_not_found_are_identical_and_never_fall_back() {
-        let messages = ["Plan004-Shared", "Does-Not_Exist"].map(|package| {
+        let messages = ["Pkg004-Shared", "Does-Not_Exist"].map(|package| {
             let alias = super::super::alias::derive_local_alias(package);
             let sandbox = RegistrySandbox::new(vec![(404, not_found(&alias, package))], true);
             let manifest = sandbox.project();
@@ -5600,7 +5600,7 @@ output_dir = "./generated/typescript"
         let error = add_and_install(
             &manifest,
             DependencyKind::Program,
-            "Plan004-Shared",
+            "Pkg004-Shared",
             AddDependencyOptions::default(),
         )
         .expect_err("401 must fail");
@@ -5615,9 +5615,9 @@ output_dir = "./generated/typescript"
     fn lock_integrity_failures_do_not_float_to_latest() {
         let sandbox = RegistrySandbox::new(
             vec![
-                (200, program_resolution("plan004-shared", "plan004-shared", "0.1.0", 'f')),
-                (200, program_resolution("plan004-shared", "plan004-shared", "0.1.0", 'f')),
-                (409, json!({"error": "Dependency 'plan004-shared': locked package release hash does not exist for this package"}).to_string()),
+                (200, program_resolution("pkg004-shared", "pkg004-shared", "0.1.0", 'f')),
+                (200, program_resolution("pkg004-shared", "pkg004-shared", "0.1.0", 'f')),
+                (409, json!({"error": "Dependency 'pkg004-shared': locked package release hash does not exist for this package"}).to_string()),
             ],
             true,
         );
@@ -5625,7 +5625,7 @@ output_dir = "./generated/typescript"
         add_and_install(
             &manifest,
             DependencyKind::Program,
-            "plan004-shared",
+            "pkg004-shared",
             AddDependencyOptions::default(),
         )
         .unwrap();
@@ -6664,7 +6664,7 @@ version = "^1.0.0"
             let error = add_and_install(
                 &manifest,
                 DependencyKind::Program,
-                "plan004-shared",
+                "pkg004-shared",
                 AddDependencyOptions {
                     alias: Some(alias.into()),
                     ..AddDependencyOptions::default()
