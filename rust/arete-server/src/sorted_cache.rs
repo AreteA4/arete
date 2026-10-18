@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 use std::sync::Arc;
+
+use crate::row_scope::ScopeField;
 
 /// A sortable key that combines the sort value with entity key for stable ordering.
 /// Uses (sort_value, entity_key) tuple to ensure deterministic ordering even when
@@ -259,6 +261,10 @@ pub struct SortedViewCache {
     cache_dirty: bool,
     /// Stands in for an entity while it is merged in place.
     placeholder: SharedEntity,
+    /// Set for a view of a row-scoped entity: rows are kept, and bounded,
+    /// per scope instead of in the fields above (see
+    /// [`Self::partition_by_scope`]).
+    partitions: Option<Box<ScopePartitions>>,
 }
 
 impl SortedViewCache {
@@ -272,6 +278,7 @@ impl SortedViewCache {
             keys_cache: Vec::new(),
             cache_dirty: true,
             placeholder: SharedEntity::new(Value::Null),
+            partitions: None,
         }
     }
 
@@ -280,11 +287,108 @@ impl SortedViewCache {
     }
 
     pub fn len(&self) -> usize {
-        self.entities.len()
+        match &self.partitions {
+            Some(partitions) => partitions.len(),
+            None => self.entities.len(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entities.is_empty()
+        self.len() == 0
+    }
+
+    /// Keep this view's rows per scope, for a row-scoped entity.
+    ///
+    /// Each scope's rows (and the public rows, whose scope is empty) form a
+    /// partition in the view's order, bounded on its own: a bound of
+    /// `max_entries` keeps the top `max_entries` rows **of each scope**, so a
+    /// session reading its scopes and the public rows gets full windows no
+    /// matter how many rows other scopes have. A global bound would hand the
+    /// top of the order to the busiest scopes and leave the rest with short
+    /// pages.
+    ///
+    /// The partitions together can hold `max_entries` rows per scope, so
+    /// their number is capped at `max_partitions` (the public partition is
+    /// not counted). Creating one more evicts the scope written least
+    /// recently, whole; its rows return as they next update, like rows
+    /// evicted from the bottom of an unscoped view. Evictions are counted
+    /// (see [`Self::take_scope_partition_evictions`]).
+    ///
+    /// Readers pick the partitions a session may read with
+    /// [`Self::iter_ordered_in_scopes`]; [`Self::iter_ordered`] merges them
+    /// all. Positions reported by [`Self::upsert`] and [`Self::remove`] are
+    /// within the row's partition. Rows already held are moved into their
+    /// partitions.
+    pub fn partition_by_scope(&mut self, field: ScopeField, max_partitions: usize) {
+        let rows = match self.partitions.take() {
+            Some(partitions) => partitions.into_rows(),
+            None => {
+                let rows = self.ordered_entities();
+                self.sorted.clear();
+                self.entities.clear();
+                self.keys_cache.clear();
+                self.cache_dirty = true;
+                rows
+            }
+        };
+        self.partitions = Some(Box::new(ScopePartitions {
+            field,
+            max_partitions: max_partitions.max(1),
+            view_id: self.view_id.clone(),
+            sort_field: self.sort_field.clone(),
+            order: self.order,
+            parts: HashMap::new(),
+            key_partition: HashMap::new(),
+            clock: 0,
+            evictions: 0,
+        }));
+        for (key, entity) in rows {
+            self.put(key, entity);
+        }
+    }
+
+    /// Whether rows are kept per scope (see [`Self::partition_by_scope`]).
+    pub fn is_scope_partitioned(&self) -> bool {
+        self.partitions.is_some()
+    }
+
+    /// The number of scope partitions held, the public one included.
+    pub fn scope_partition_count(&self) -> usize {
+        self.partitions
+            .as_ref()
+            .map_or(0, |partitions| partitions.parts.len())
+    }
+
+    /// Scope partitions evicted at the cap since the last call.
+    pub fn take_scope_partition_evictions(&mut self) -> u64 {
+        self.partitions
+            .as_mut()
+            .map_or(0, |partitions| std::mem::take(&mut partitions.evictions))
+    }
+
+    /// The rows one session may read, in order: the public rows and the rows
+    /// of `scopes`, without visiting any other scope's rows. A view that is
+    /// not scope-partitioned yields every row.
+    pub fn iter_ordered_in_scopes<'a>(
+        &'a self,
+        scopes: &'a BTreeSet<String>,
+    ) -> impl Iterator<Item = (&'a str, &'a SharedEntity)> + 'a {
+        let iter: Box<dyn Iterator<Item = (&'a str, &'a SharedEntity)> + 'a> =
+            match &self.partitions {
+                Some(partitions) => Box::new(MergedOrder::new(
+                    std::iter::once("")
+                        .chain(
+                            scopes
+                                .iter()
+                                .map(String::as_str)
+                                .filter(|scope| !scope.is_empty()),
+                        )
+                        .filter_map(|scope| partitions.parts.get(scope))
+                        .map(|partition| partition.cache.iter_ranked()),
+                )),
+                None => Box::new(self.iter_ordered()),
+            };
+        iter
     }
 
     /// Insert or update an entity, returns the position where it was inserted
@@ -297,6 +401,9 @@ impl SortedViewCache {
     /// same upsert without it.
     pub fn upsert(&mut self, entity_key: String, entity: impl Into<SharedEntity>) -> UpsertResult {
         let entity = entity.into();
+        if let Some(partitions) = self.partitions.as_deref_mut() {
+            return partitions.upsert(entity_key, entity);
+        }
         let sort_value = self.extract_sort_value(&entity);
         let moved = self.put_with_sort_value(Cow::Borrowed(&entity_key), entity, sort_value);
         let position = self.find_position(&entity_key);
@@ -309,6 +416,10 @@ impl SortedViewCache {
     /// [`Self::upsert`] without reporting where the entity landed.
     pub fn put(&mut self, entity_key: String, entity: impl Into<SharedEntity>) {
         let entity = entity.into();
+        if let Some(partitions) = self.partitions.as_deref_mut() {
+            partitions.put(entity_key, entity);
+            return;
+        }
         let sort_value = self.extract_sort_value(&entity);
         self.put_with_sort_value(Cow::Owned(entity_key), entity, sort_value);
     }
@@ -373,6 +484,9 @@ impl SortedViewCache {
         entity: &E,
         max_entries: usize,
     ) -> bool {
+        if let Some(partitions) = &self.partitions {
+            return partitions.would_keep(entity_key, entity, max_entries);
+        }
         self.keeps(entity_key, || self.extract_sort_value(entity), max_entries)
             .0
     }
@@ -429,6 +543,9 @@ impl SortedViewCache {
         entity: &SharedEntity,
         max_entries: usize,
     ) -> bool {
+        if let Some(partitions) = self.partitions.as_deref_mut() {
+            return partitions.upsert_if_kept(entity_key, entity, max_entries);
+        }
         let (kept, sort_value) =
             self.keeps(entity_key, || self.extract_sort_value(entity), max_entries);
         if !kept {
@@ -448,12 +565,22 @@ impl SortedViewCache {
     /// the inserts that caused it. The ordered-keys cache is truncated in place
     /// when it is current, so trimming does not force a full rebuild.
     pub fn trim_to_max_entries(&mut self, max_entries: usize) -> usize {
+        if let Some(partitions) = self.partitions.as_deref_mut() {
+            return partitions.trim(max_entries);
+        }
+        self.trim_evicting(max_entries, |_| {})
+    }
+
+    /// [`Self::trim_to_max_entries`] for an unpartitioned cache, handing each
+    /// evicted key to `evicted`.
+    fn trim_evicting(&mut self, max_entries: usize, mut on_evicted: impl FnMut(String)) -> usize {
         let mut evicted = 0;
         while self.sorted.len() > max_entries {
             let Some((sort_key, ())) = self.sorted.pop_last() else {
                 break;
             };
             self.entities.remove(&sort_key.entity_key);
+            on_evicted(sort_key.entity_key);
             evicted += 1;
         }
         if evicted > 0 && !self.cache_dirty {
@@ -521,6 +648,11 @@ impl SortedViewCache {
 
     /// Remove an entity, returns the position it was at
     pub fn clear(&mut self) {
+        if let Some(partitions) = self.partitions.as_deref_mut() {
+            partitions.parts.clear();
+            partitions.key_partition.clear();
+            return;
+        }
         self.sorted.clear();
         self.entities.clear();
         self.cache_dirty = true;
@@ -530,6 +662,9 @@ impl SortedViewCache {
     /// Finding the position walks the order up to it; [`Self::remove_key`]
     /// removes without it.
     pub fn remove(&mut self, entity_key: &str) -> Option<usize> {
+        if let Some(partitions) = self.partitions.as_deref_mut() {
+            return partitions.remove(entity_key);
+        }
         let (sort_key, _) = self.entities.get(entity_key)?;
         let position = self.find_position_by_sort_key(sort_key);
         self.remove_key(entity_key);
@@ -538,6 +673,9 @@ impl SortedViewCache {
 
     /// Remove an entity, returning whether the cache held it.
     pub fn remove_key(&mut self, entity_key: &str) -> bool {
+        if let Some(partitions) = self.partitions.as_deref_mut() {
+            return partitions.remove_key(entity_key);
+        }
         let Some((sort_key, _)) = self.entities.remove(entity_key) else {
             return false;
         };
@@ -548,6 +686,9 @@ impl SortedViewCache {
 
     /// Get entity by key
     pub fn get(&self, entity_key: &str) -> Option<&SharedEntity> {
+        if let Some(partitions) = &self.partitions {
+            return partitions.get(entity_key);
+        }
         self.entities.get(entity_key).map(|(_, v)| v)
     }
 
@@ -556,6 +697,13 @@ impl SortedViewCache {
     /// The other readers walk the order itself, so only this one pays for
     /// copying every key after a change.
     pub fn ordered_keys(&mut self) -> &[String] {
+        if self.partitions.is_some() {
+            self.keys_cache = self
+                .iter_ordered()
+                .map(|(key, _)| key.to_string())
+                .collect();
+            return &self.keys_cache;
+        }
         if self.cache_dirty {
             self.rebuild_keys_cache();
         }
@@ -574,11 +722,28 @@ impl SortedViewCache {
     /// Every entity in sort order, borrowed: a window read walks only as far
     /// as it reads, `skip` included.
     pub fn iter_ordered(&self) -> impl Iterator<Item = (&str, &SharedEntity)> + '_ {
-        self.sorted.keys().filter_map(|sort_key| {
+        let iter: Box<dyn Iterator<Item = (&str, &SharedEntity)> + '_> = match &self.partitions {
+            Some(partitions) => Box::new(MergedOrder::new(
+                partitions
+                    .parts
+                    .values()
+                    .map(|partition| partition.cache.iter_ranked()),
+            )),
+            None => Box::new(
+                self.iter_ranked()
+                    .map(|(sort_key, entity)| (sort_key.entity_key.as_str(), entity)),
+            ),
+        };
+        iter
+    }
+
+    /// An unpartitioned cache's rows with their sort keys, in order.
+    fn iter_ranked(&self) -> RankedRows<'_> {
+        Box::new(self.sorted.keys().filter_map(|sort_key| {
             self.entities
                 .get(&sort_key.entity_key)
-                .map(|(_, entity)| (sort_key.entity_key.as_str(), entity))
-        })
+                .map(|(_, entity)| (sort_key, entity))
+        }))
     }
 
     /// Copies of every entity in deterministic sort order.
@@ -604,31 +769,31 @@ impl SortedViewCache {
         skip: usize,
         take: usize,
     ) -> Vec<ViewDelta> {
-        let new_window_keys: Vec<&String> = self
-            .sorted
-            .keys()
-            .map(|sort_key| &sort_key.entity_key)
+        let new_window_keys: Vec<&str> = self
+            .iter_ordered()
+            .map(|(key, _)| key)
             .skip(skip)
             .take(take)
             .collect();
 
-        let old_set: std::collections::HashSet<&String> = old_window_keys.iter().collect();
-        let new_set: std::collections::HashSet<&String> = new_window_keys.iter().cloned().collect();
+        let old_set: std::collections::HashSet<&str> =
+            old_window_keys.iter().map(String::as_str).collect();
+        let new_set: std::collections::HashSet<&str> = new_window_keys.iter().copied().collect();
 
         let mut deltas = Vec::new();
 
         // Removed from window
         for key in old_set.difference(&new_set) {
             deltas.push(ViewDelta::Remove {
-                key: (*key).clone(),
+                key: (*key).to_string(),
             });
         }
 
         // Added to window
         for key in new_set.difference(&old_set) {
-            if let Some((_, entity)) = self.entities.get(*key) {
+            if let Some(entity) = self.get(key) {
                 deltas.push(ViewDelta::Add {
-                    key: (*key).clone(),
+                    key: (*key).to_string(),
                     entity: entity.to_value(),
                 });
             }
@@ -659,6 +824,318 @@ impl SortedViewCache {
     fn rebuild_keys_cache(&mut self) {
         self.keys_cache = self.sorted.keys().map(|sk| sk.entity_key.clone()).collect();
         self.cache_dirty = false;
+    }
+}
+
+/// One partition's rows with their sort keys, in its order.
+type RankedRows<'a> = Box<dyn Iterator<Item = (&'a SortKey, &'a SharedEntity)> + 'a>;
+
+/// The rows of a scope-partitioned view (see
+/// [`SortedViewCache::partition_by_scope`]).
+#[derive(Debug)]
+struct ScopePartitions {
+    field: ScopeField,
+    max_partitions: usize,
+    view_id: String,
+    sort_field: Vec<String>,
+    order: SortOrder,
+    /// Scope id (`""` for public rows) -> that scope's rows.
+    parts: HashMap<String, Partition>,
+    /// Entity key -> the partition holding it.
+    key_partition: HashMap<String, String>,
+    /// Advances on every write; orders partitions for eviction.
+    clock: u64,
+    /// Partitions evicted at the cap, not yet taken.
+    evictions: u64,
+}
+
+#[derive(Debug)]
+struct Partition {
+    cache: SortedViewCache,
+    last_write: u64,
+}
+
+impl ScopePartitions {
+    fn len(&self) -> usize {
+        self.parts
+            .values()
+            .map(|partition| partition.cache.len())
+            .sum()
+    }
+
+    fn into_rows(self) -> Vec<(String, SharedEntity)> {
+        let mut rows = Vec::new();
+        for (_, mut partition) in self.parts {
+            rows.extend(partition.cache.ordered_entities());
+        }
+        rows
+    }
+
+    fn get(&self, entity_key: &str) -> Option<&SharedEntity> {
+        let scope = self.key_partition.get(entity_key)?;
+        self.parts.get(scope)?.cache.get(entity_key)
+    }
+
+    /// The partition `entity` belongs in, created (evicting at the cap) if
+    /// needed, after taking `entity_key` out of any other partition. `None`
+    /// for a row whose scope is invalid: it is taken out and kept nowhere.
+    fn route<E: EntityFields + ?Sized>(&mut self, entity_key: &str, entity: &E) -> Option<String> {
+        let scope = self.field.scope_of(entity);
+        let Some(partition) = scope.partition() else {
+            self.remove(entity_key);
+            return None;
+        };
+        if self
+            .key_partition
+            .get(entity_key)
+            .is_some_and(|held| held != partition)
+        {
+            self.remove(entity_key);
+        }
+        self.clock += 1;
+        if !self.parts.contains_key(partition) {
+            if !partition.is_empty() {
+                self.make_room();
+            }
+            self.parts.insert(
+                partition.to_string(),
+                Partition {
+                    cache: SortedViewCache::new(
+                        self.view_id.clone(),
+                        self.sort_field.clone(),
+                        self.order,
+                    ),
+                    last_write: self.clock,
+                },
+            );
+        }
+        if let Some(held) = self.parts.get_mut(partition) {
+            held.last_write = self.clock;
+        }
+        Some(partition.to_string())
+    }
+
+    /// Evict the scope written least recently while the scoped partitions
+    /// are at the cap. The public partition is never evicted.
+    fn make_room(&mut self) {
+        while self.parts.keys().filter(|scope| !scope.is_empty()).count() >= self.max_partitions {
+            let Some(oldest) = self
+                .parts
+                .iter()
+                .filter(|(scope, _)| !scope.is_empty())
+                .min_by_key(|(_, partition)| partition.last_write)
+                .map(|(scope, _)| scope.clone())
+            else {
+                return;
+            };
+            if let Some(partition) = self.parts.remove(&oldest) {
+                for (key, _) in partition.cache.iter_ordered() {
+                    self.key_partition.remove(key);
+                }
+            }
+            self.evictions += 1;
+            tracing::debug!(
+                view_id = %self.view_id,
+                max_partitions = self.max_partitions,
+                "Evicted a scope partition at the cap"
+            );
+        }
+    }
+
+    /// Record where `entity_key` now lives, or drop its partition if the
+    /// write left it empty.
+    fn settle(&mut self, entity_key: &str, partition: &str) {
+        match self.parts.get(partition) {
+            Some(held) if held.cache.get(entity_key).is_some() => {
+                self.key_partition
+                    .insert(entity_key.to_string(), partition.to_string());
+            }
+            Some(held) if held.cache.is_empty() => {
+                self.parts.remove(partition);
+            }
+            _ => {}
+        }
+    }
+
+    fn upsert(&mut self, entity_key: String, entity: SharedEntity) -> UpsertResult {
+        let Some(partition) = self.route(&entity_key, &entity) else {
+            return UpsertResult::Inserted {
+                position: usize::MAX,
+            };
+        };
+        let result = match self.parts.get_mut(&partition) {
+            Some(held) => held.cache.upsert(entity_key.clone(), entity),
+            None => {
+                return UpsertResult::Inserted {
+                    position: usize::MAX,
+                }
+            }
+        };
+        self.settle(&entity_key, &partition);
+        result
+    }
+
+    fn put(&mut self, entity_key: String, entity: SharedEntity) {
+        let Some(partition) = self.route(&entity_key, &entity) else {
+            return;
+        };
+        if let Some(held) = self.parts.get_mut(&partition) {
+            held.cache.put(entity_key.clone(), entity);
+        }
+        self.settle(&entity_key, &partition);
+    }
+
+    fn would_keep<E: EntityFields + ?Sized>(
+        &self,
+        entity_key: &str,
+        entity: &E,
+        max_entries: usize,
+    ) -> bool {
+        match self.field.scope_of(entity).partition() {
+            None => false,
+            Some(partition) => self
+                .parts
+                .get(partition)
+                .is_none_or(|held| held.cache.would_keep(entity_key, entity, max_entries)),
+        }
+    }
+
+    fn upsert_if_kept(
+        &mut self,
+        entity_key: &str,
+        entity: &SharedEntity,
+        max_entries: usize,
+    ) -> bool {
+        if !self.would_keep(entity_key, entity, max_entries) {
+            // It leaves any other partition all the same: its scope moved.
+            if self
+                .key_partition
+                .get(entity_key)
+                .is_some_and(|held| Some(held.as_str()) != self.field.scope_of(entity).partition())
+            {
+                self.remove(entity_key);
+            }
+            return false;
+        }
+        let Some(partition) = self.route(entity_key, entity) else {
+            return false;
+        };
+        let mut evicted = Vec::new();
+        if let Some(held) = self.parts.get_mut(&partition) {
+            held.cache.put(entity_key.to_string(), entity.clone());
+            held.cache
+                .trim_evicting(max_entries, |key| evicted.push(key));
+        }
+        for key in evicted {
+            self.key_partition.remove(&key);
+        }
+        self.settle(entity_key, &partition);
+        self.key_partition.contains_key(entity_key)
+    }
+
+    fn trim(&mut self, max_entries: usize) -> usize {
+        let mut evicted = Vec::new();
+        for partition in self.parts.values_mut() {
+            partition
+                .cache
+                .trim_evicting(max_entries, |key| evicted.push(key));
+        }
+        for key in &evicted {
+            self.key_partition.remove(key);
+        }
+        evicted.len()
+    }
+
+    fn remove_key(&mut self, entity_key: &str) -> bool {
+        let Some(partition) = self.key_partition.remove(entity_key) else {
+            return false;
+        };
+        let Some(held) = self.parts.get_mut(&partition) else {
+            return false;
+        };
+        let removed = held.cache.remove_key(entity_key);
+        if held.cache.is_empty() {
+            self.parts.remove(&partition);
+        }
+        removed
+    }
+
+    fn remove(&mut self, entity_key: &str) -> Option<usize> {
+        let partition = self.key_partition.remove(entity_key)?;
+        let held = self.parts.get_mut(&partition)?;
+        let position = held.cache.remove(entity_key);
+        if held.cache.is_empty() {
+            self.parts.remove(&partition);
+        }
+        position
+    }
+}
+
+/// Partitions' rows merged into the view's order. Partitions share the
+/// view's sort field and direction and hold disjoint keys, so their sort keys
+/// order them exactly as one cache would.
+struct MergedOrder<'a> {
+    sources: Vec<RankedRows<'a>>,
+    heads: BinaryHeap<Head<'a>>,
+}
+
+struct Head<'a> {
+    sort_key: &'a SortKey,
+    entity: &'a SharedEntity,
+    source: usize,
+}
+
+impl PartialEq for Head<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.sort_key == other.sort_key
+    }
+}
+
+impl Eq for Head<'_> {}
+
+impl PartialOrd for Head<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Head<'_> {
+    /// Reversed: the heap pops the first row in the view's order.
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.sort_key.cmp(self.sort_key)
+    }
+}
+
+impl<'a> MergedOrder<'a> {
+    fn new(sources: impl IntoIterator<Item = RankedRows<'a>>) -> Self {
+        let mut sources: Vec<RankedRows<'a>> = sources.into_iter().collect();
+        let mut heads = BinaryHeap::with_capacity(sources.len());
+        for (source, rows) in sources.iter_mut().enumerate() {
+            if let Some((sort_key, entity)) = rows.next() {
+                heads.push(Head {
+                    sort_key,
+                    entity,
+                    source,
+                });
+            }
+        }
+        Self { sources, heads }
+    }
+}
+
+impl<'a> Iterator for MergedOrder<'a> {
+    type Item = (&'a str, &'a SharedEntity);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let head = self.heads.pop()?;
+        if let Some((sort_key, entity)) = self.sources[head.source].next() {
+            self.heads.push(Head {
+                sort_key,
+                entity,
+                source: head.source,
+            });
+        }
+        Some((head.sort_key.entity_key.as_str(), head.entity))
     }
 }
 
@@ -1568,5 +2045,109 @@ mod tests {
                 assert_eq!(held, reference, "step {step}");
             }
         }
+    }
+
+    fn scoped_cache(max_partitions: usize) -> SortedViewCache {
+        let mut cache =
+            SortedViewCache::new("Thing/top".into(), vec!["amount".into()], SortOrder::Desc);
+        cache.partition_by_scope(ScopeField::new("scope"), max_partitions);
+        cache
+    }
+
+    fn row(scope: &str, amount: i64) -> SharedEntity {
+        SharedEntity::new(json!({"scope": scope, "amount": amount}))
+    }
+
+    fn scopes(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    fn keys_in<'a>(cache: &'a SortedViewCache, readable: &'a BTreeSet<String>) -> Vec<&'a str> {
+        cache
+            .iter_ordered_in_scopes(readable)
+            .map(|(key, _)| key)
+            .collect()
+    }
+
+    #[test]
+    fn each_scope_keeps_its_own_top_rows() {
+        let mut cache = scoped_cache(16);
+        // B outranks A everywhere; one global bound of 5 would keep only B.
+        for index in 0..10 {
+            cache.upsert_if_kept(&format!("a{index}"), &row("A", index), 5);
+            cache.upsert_if_kept(&format!("b{index}"), &row("B", 100 + index), 5);
+        }
+        cache.upsert_if_kept("p", &row("", 6), 5);
+        assert_eq!(cache.len(), 11);
+        assert_eq!(cache.scope_partition_count(), 3);
+        assert_eq!(
+            keys_in(&cache, &scopes(&["A"])),
+            ["a9", "a8", "a7", "a6", "p", "a5"]
+        );
+        assert_eq!(keys_in(&cache, &scopes(&[])), ["p"]);
+        // The whole order merges every partition.
+        let all: Vec<&str> = cache.iter_ordered().map(|(key, _)| key).collect();
+        assert_eq!(all[..2], ["b9", "b8"]);
+        assert_eq!(all.len(), 11);
+    }
+
+    #[test]
+    fn a_row_follows_its_scope_between_partitions() {
+        let mut cache = scoped_cache(16);
+        cache.upsert_if_kept("k", &row("", 1), 10);
+        assert_eq!(keys_in(&cache, &scopes(&[])), ["k"]);
+        cache.upsert_if_kept("k", &row("A", 2), 10);
+        assert!(keys_in(&cache, &scopes(&[])).is_empty());
+        assert_eq!(keys_in(&cache, &scopes(&["A"])), ["k"]);
+        assert_eq!(cache.get("k").unwrap().field("scope"), Some(&json!("A")));
+        // An invalid scope keeps the row nowhere.
+        cache.upsert_if_kept(
+            "k",
+            &SharedEntity::new(json!({"scope": 7, "amount": 3})),
+            10,
+        );
+        assert!(cache.get("k").is_none());
+        assert!(cache.is_empty());
+        assert_eq!(
+            cache.scope_partition_count(),
+            0,
+            "empty partitions are dropped"
+        );
+        cache.put("k".into(), row("B", 4));
+        assert!(cache.remove_key("k"));
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn the_scope_written_least_recently_is_evicted_at_the_cap() {
+        let mut cache = scoped_cache(2);
+        cache.upsert_if_kept("p", &row("", 1), 10);
+        cache.upsert_if_kept("a", &row("A", 1), 10);
+        cache.upsert_if_kept("b", &row("B", 1), 10);
+        cache.upsert_if_kept("a2", &row("A", 2), 10);
+        assert_eq!(cache.take_scope_partition_evictions(), 0);
+        // C needs room: B was written least recently. Public never counts.
+        cache.upsert_if_kept("c", &row("C", 1), 10);
+        assert_eq!(cache.take_scope_partition_evictions(), 1);
+        assert_eq!(cache.take_scope_partition_evictions(), 0);
+        assert!(cache.get("b").is_none());
+        assert_eq!(
+            keys_in(&cache, &scopes(&["A", "B", "C"])),
+            ["a2", "a", "c", "p"]
+        );
+        assert_eq!(cache.scope_partition_count(), 3);
+    }
+
+    #[test]
+    fn partitioning_moves_rows_already_held() {
+        let mut cache =
+            SortedViewCache::new("Thing/top".into(), vec!["amount".into()], SortOrder::Desc);
+        cache.put("a".into(), row("A", 1));
+        cache.put("b".into(), row("B", 2));
+        cache.partition_by_scope(ScopeField::new("scope"), 8);
+        assert_eq!(keys_in(&cache, &scopes(&["A"])), ["a"]);
+        assert_eq!(cache.ordered_keys(), ["b", "a"]);
+        assert_eq!(cache.trim_to_max_entries(0), 2);
+        assert!(cache.is_empty());
     }
 }

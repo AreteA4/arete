@@ -757,7 +757,16 @@ mod tests {
             .args(["clippy", "--quiet", "--offline", "--manifest-path"])
             .arg(base.join("Cargo.toml"))
             .args(["--", "-D", "warnings"])
-            .env("CARGO_TARGET_DIR", base.join("target"))
+            .env(
+                "CARGO_TARGET_DIR",
+                std::env::var_os("CARGO_TARGET_DIR").unwrap_or_else(|| {
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .parent()
+                        .expect("interpreter crate lives in the repo root")
+                        .join("target")
+                        .into_os_string()
+                }),
+            )
             .output()
             .expect("cargo clippy must be available for the doc comment check");
         let _ = std::fs::remove_dir_all(&base);

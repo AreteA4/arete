@@ -1,3 +1,4 @@
+use crate::http::fork;
 use crate::http::transactions::{self, TransactionState};
 use crate::{
     config::{RuntimePlan, TransactionConfig},
@@ -34,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::websocket::auth::{AuthDecision, AuthDeny, ConnectionAuthRequest, WebSocketAuthPlugin};
-use arete_auth::SCOPE_READ;
+use arete_auth::{SCOPE_FORK_READ, SCOPE_READ};
 
 use crate::token_discovery::{OwnerTokenAccountsProvider, TokenDiscoveryError};
 use arete_solana_contracts::{Contextual, OwnerTokenAccountsRequest, ReadContext, ReadOptions};
@@ -95,6 +96,8 @@ pub struct HttpHealthServer {
     solana_gateway_usage_observer: Option<Arc<dyn SolanaGatewayUsageObserver>>,
     solana_gateway_target_id: Option<String>,
     program_read_binding_target_id: Option<String>,
+    /// Read RPC used instead of the process environment; set only by tests.
+    read_rpc_url: Option<String>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<crate::metrics::Metrics>>,
 }
@@ -114,9 +117,16 @@ impl HttpHealthServer {
             solana_gateway_usage_observer: None,
             solana_gateway_target_id: None,
             program_read_binding_target_id: None,
+            read_rpc_url: None,
             #[cfg(feature = "otel")]
             metrics: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_read_rpc_url(mut self, rpc_url: impl Into<String>) -> Self {
+        self.read_rpc_url = Some(rpc_url.into());
+        self
     }
 
     pub fn with_health_monitor(mut self, monitor: HealthMonitor) -> Self {
@@ -219,7 +229,7 @@ impl HttpHealthServer {
             health_monitor: Arc::new(self.health_monitor),
             snapshot_runtime: self.snapshot_runtime,
             runtime_plan: self.runtime_plan,
-            rpc_url: Arc::new(resolve_rpc_url()),
+            rpc_url: Arc::new(self.read_rpc_url.or_else(resolve_rpc_url)),
             rpc_client: Client::builder().build()?,
             program_runtime_catalog: Arc::new(self.program_runtime_catalog),
             auth_plugin: Arc::new(self.auth_plugin),
@@ -476,6 +486,51 @@ async fn handle_request_inner(
                 },
             )
             .await)
+        }
+        _ if runtime_plan.chain_reads && path == fork::FORK_RPC_PATH => {
+            if req.method() != Method::POST {
+                return Ok(error_response(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "The fork endpoint accepts POST only",
+                ));
+            }
+            let auth_context = match authorize_http_request(
+                remote_addr,
+                &req,
+                auth_plugin.as_ref().as_ref(),
+                &limit_state,
+                Some(SCOPE_FORK_READ),
+                true,
+                solana_gateway_target_id.as_deref(),
+            )
+            .await
+            {
+                Ok(context) => context,
+                Err(response) => return Ok(response),
+            };
+            let body = match fork::read_body(req).await {
+                Ok(body) => body,
+                Err(response) => return Ok(response),
+            };
+            let payload = fork::parse_payload(&body);
+            // A batch forwards up to one upstream call per entry, so it is charged per entry.
+            // `authorize_http_request` already charged the first.
+            if let Some(context) = auth_context.as_ref() {
+                if let Err(deny) =
+                    enforce_http_limits_weighted(context, &limit_state, payload.weight() - 1)
+                {
+                    return Ok(auth_deny_response(&deny));
+                }
+            }
+            let services = fork::ForkServices {
+                rpc_url: rpc_url.as_ref().as_deref(),
+                client: &rpc_client,
+                auth_context: auth_context.as_ref(),
+                usage_observer: solana_gateway_usage_observer.as_ref(),
+                target_id: solana_gateway_target_id.as_deref(),
+                max_response_bytes: fork::MAX_FORK_RESPONSE_BYTES,
+            };
+            Ok(fork::execute(payload, &services).await)
         }
         _ if path.starts_with("/v1/releases/") => {
             if !runtime_plan.program_reads {
@@ -914,9 +969,22 @@ fn enforce_http_limits(
     context: &crate::websocket::auth::AuthContext,
     limit_state: &HttpLimitState,
 ) -> std::result::Result<(), Box<AuthDeny>> {
+    enforce_http_limits_weighted(context, limit_state, 1)
+}
+
+/// Charge `weight` requests against the session's per-minute HTTP limit, all or nothing.
+fn enforce_http_limits_weighted(
+    context: &crate::websocket::auth::AuthContext,
+    limit_state: &HttpLimitState,
+    weight: usize,
+) -> std::result::Result<(), Box<AuthDeny>> {
     let Some(limit) = context.limits.max_http_requests_per_minute else {
         return Ok(());
     };
+    if weight == 0 {
+        return Ok(());
+    }
+    let weight = u32::try_from(weight).unwrap_or(u32::MAX);
 
     let now_bucket = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -931,13 +999,13 @@ fn enforce_http_limits(
     if entry.0 != now_bucket {
         *entry = (now_bucket, 0);
     }
-    if entry.1 >= limit {
+    if entry.1.saturating_add(weight) > limit {
         return Err(Box::new(AuthDeny::rate_limited(
             Duration::from_secs(60),
             "http reads",
         )));
     }
-    entry.1 += 1;
+    entry.1 += weight;
     Ok(())
 }
 
@@ -2332,6 +2400,7 @@ mod tests {
             consumer_key: None,
             policy_version: None,
             account_limits: arete_auth::Limits::default(),
+            row_scopes: None,
         }
     }
 
@@ -2615,5 +2684,147 @@ mod tests {
         assert_eq!(body, r#"{"error":{"code":"ACCOUNT_DECODE_FAILED"}}"#);
         assert!(!body.contains("private diagnostic"));
         assert!(!body.contains("decoder"));
+    }
+
+    /// Maps a bearer token to a gateway session carrying exactly the scopes it names.
+    struct ScopeTokenPlugin;
+
+    #[async_trait::async_trait]
+    impl WebSocketAuthPlugin for ScopeTokenPlugin {
+        async fn authorize(&self, request: &ConnectionAuthRequest) -> AuthDecision {
+            let Some(scope) = request.bearer_token() else {
+                return AuthDecision::Deny(AuthDeny::token_missing());
+            };
+            let mut claims =
+                arete_auth::SessionClaims::solana_gateway_builder("issuer", "user:1", "gateway-1")
+                    .with_scope(scope.replace('+', " "))
+                    .with_metering_key("account:1")
+                    .build();
+            if scope.contains("limited") {
+                claims.scope = SCOPE_FORK_READ.to_string();
+                claims.limits = Some(arete_auth::Limits {
+                    max_http_requests_per_minute: Some(3),
+                    ..Default::default()
+                });
+            }
+            AuthDecision::Allow(crate::websocket::auth::AuthContext::from_claims(claims))
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    async fn start_gateway(rpc_url: &str) -> (String, CancellationToken) {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let shutdown = CancellationToken::new();
+        let server = HttpHealthServer::new(addr)
+            .with_runtime_plan(RuntimePlan::solana_gateway())
+            .with_auth_plugin(Arc::new(ScopeTokenPlugin))
+            .with_solana_gateway_target("gateway-1")
+            .with_read_rpc_url(rpc_url)
+            .with_shutdown(shutdown.clone());
+        tokio::spawn(server.start());
+        for _ in 0..100 {
+            if tokio::net::TcpStream::connect(addr).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        (format!("http://{addr}"), shutdown)
+    }
+
+    #[tokio::test]
+    async fn the_fork_route_requires_the_exact_fork_read_scope() {
+        let rpc = crate::http::fork::tests::mock_rpc(crate::http::fork::tests::result_responder(
+            json!(77),
+        ))
+        .await;
+        let (base, shutdown) = start_gateway(&rpc.url).await;
+        let client = Client::new();
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "getSlot" });
+        let post = |token: Option<&str>| {
+            let mut request = client.post(format!("{base}/rpc/v1/fork")).json(&body);
+            if let Some(token) = token {
+                request = request.bearer_auth(token);
+            }
+            request.send()
+        };
+
+        let missing = post(None).await.unwrap();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+        for scope in [
+            "read",
+            "read+transaction:inspect+transaction:send",
+            "fork:read-extra",
+        ] {
+            let denied = post(Some(scope)).await.unwrap();
+            assert_eq!(denied.status(), StatusCode::FORBIDDEN, "{scope}");
+            let value: Value = denied.json().await.unwrap();
+            assert_eq!(value["code"], "insufficient_scope");
+        }
+        assert!(rpc.requests.lock().unwrap().is_empty());
+
+        let allowed = post(Some("fork:read")).await.unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
+        let value: Value = allowed.json().await.unwrap();
+        assert_eq!(value, json!({ "jsonrpc": "2.0", "id": 1, "result": 77 }));
+
+        // fork:read does not open the chain-read routes.
+        let chain = client
+            .get(format!("{base}/chain/clock"))
+            .bearer_auth("fork:read")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(chain.status(), StatusCode::FORBIDDEN);
+
+        let get = client
+            .get(format!("{base}/rpc/v1/fork"))
+            .bearer_auth("fork:read")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(get.status(), StatusCode::METHOD_NOT_ALLOWED);
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn a_fork_batch_is_charged_per_entry() {
+        let rpc = crate::http::fork::tests::mock_rpc(crate::http::fork::tests::result_responder(
+            json!(1),
+        ))
+        .await;
+        let (base, shutdown) = start_gateway(&rpc.url).await;
+        let client = Client::new();
+        let call = |id: u64| json!({ "jsonrpc": "2.0", "id": id, "method": "getSlot" });
+        let batch = json!([call(1), call(2), call(3), call(4)]);
+
+        let refused = client
+            .post(format!("{base}/rpc/v1/fork"))
+            .bearer_auth("limited")
+            .json(&batch)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(rpc.requests.lock().unwrap().is_empty());
+
+        let within = client
+            .post(format!("{base}/rpc/v1/fork"))
+            .bearer_auth("limited")
+            .json(&json!([call(1), call(2)]))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(within.status(), StatusCode::OK);
+        assert_eq!(rpc.requests.lock().unwrap().len(), 2);
+        shutdown.cancel();
     }
 }

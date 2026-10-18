@@ -656,7 +656,7 @@ mod tests {
         })];
 
         let compiled_paths = HashMap::new();
-        let mut ctx = MetricsContext::new(0, &mut registers, &compiled_paths, None, None, 0);
+        let ctx = MetricsContext::new(0, &mut registers, &compiled_paths, None, None, 0);
 
         assert_eq!(ctx.get::<u64>("total_volume"), Some(1000));
         assert_eq!(ctx.get::<u64>("metrics.count"), Some(5));
@@ -707,6 +707,7 @@ mod tests {
     #[test]
     fn test_enhanced_field_descriptor_api() {
         // Define a struct representing our entity
+        #[expect(dead_code, reason = "fields describe the metric schema")]
         struct TradingMetrics {
             total_volume: u64,
             trade_count: u64,
@@ -786,6 +787,7 @@ mod tests {
     #[test]
     fn test_enhanced_api_with_different_types() {
         // Test with different field types
+        #[expect(dead_code, reason = "fields describe the metric schema")]
         struct PriceMetrics {
             average_price: f64,
             volume: u64,
@@ -823,6 +825,7 @@ mod tests {
     #[test]
     fn test_field_ref_api() {
         // Define a struct to represent our entity
+        #[expect(dead_code, reason = "fields describe the metric schema")]
         struct TradingMetrics {
             total_volume: u64,
             trade_count: u64,
@@ -835,6 +838,7 @@ mod tests {
             trade_count: 0,
             last_price: 0.0,
         };
+        let _ = &entity;
 
         let mut registers = vec![json!({
             "total_volume": 1000,
@@ -888,10 +892,12 @@ mod tests {
     #[test]
     fn test_field_ref_with_nested_struct() {
         // Test with nested fields
+        #[expect(dead_code, reason = "fields describe the metric schema")]
         struct Metrics {
             reserves: Reserves,
         }
 
+        #[expect(dead_code, reason = "fields describe the metric schema")]
         struct Reserves {
             last_price: f64,
         }
@@ -899,6 +905,7 @@ mod tests {
         let entity = Metrics {
             reserves: Reserves { last_price: 0.0 },
         };
+        let _ = &entity;
 
         let mut registers = vec![json!({
             "reserves": {
@@ -925,6 +932,7 @@ mod tests {
     #[test]
     fn test_enhanced_api_field_initialization() {
         // Test that increment/sum works when field doesn't exist yet
+        #[expect(dead_code, reason = "fields describe the metric schema")]
         struct WhaleMetrics {
             whale_trade_count: u64,
             total_whale_volume: u64,
@@ -964,6 +972,7 @@ mod tests {
     #[test]
     fn test_legacy_field_ref_initialization() {
         // Test legacy field ref API that increment_ref works when field doesn't exist yet
+        #[expect(dead_code, reason = "fields describe the metric schema")]
         struct Metrics {
             whale_trade_count: u64,
         }
@@ -971,6 +980,7 @@ mod tests {
         let entity = Metrics {
             whale_trade_count: 0,
         };
+        let _ = &entity;
 
         let mut registers = vec![json!({})];
         let compiled_paths = HashMap::new();

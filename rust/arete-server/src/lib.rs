@@ -46,6 +46,7 @@ pub mod metrics;
 pub mod mutation_batch;
 pub mod program_runtime;
 pub mod projector;
+pub mod row_scope;
 pub mod runtime;
 pub mod shared_entity;
 pub mod snapshot;
@@ -57,7 +58,7 @@ pub mod websocket;
 
 pub use arete_auth::{
     AsyncVerifier, KeyLoader, Limits, SolanaGatewayAuthorization, SolanaGatewayAuthorizationError,
-    SolanaGatewayScope, TargetKind, TokenVerifier, VerifyingKey, SCOPE_READ,
+    SolanaGatewayScope, TargetKind, TokenVerifier, VerifyingKey, SCOPE_FORK_READ, SCOPE_READ,
     SCOPE_TRANSACTION_INSPECT, SCOPE_TRANSACTION_SEND, SOLANA_GATEWAY_AUDIENCE,
 };
 pub use bus::{BusManager, BusMessage, StateUpdate};
@@ -79,6 +80,7 @@ pub use program_runtime::{
     ProgramRuntimeCatalog, ProgramRuntimeDefinition, ProgramSpecHash,
 };
 pub use projector::{EntityResync, Projector};
+pub use row_scope::{RowScope, ScopeField, DEFAULT_MAX_SCOPE_PARTITIONS};
 pub use runtime::{ConnectionServer, Runtime, RuntimeHandle};
 pub use shared_entity::{EntityFields, SharedEntity};
 pub use snapshot::{SnapshotConfig, SnapshotService};
@@ -585,6 +587,7 @@ impl ServerBuilder {
         let (view_index, materialized_registry) =
             Self::build_view_index_and_registry(self.views, self.materialized_views, &self.spec);
 
+        view_index.validate_scope_projections()?;
         #[cfg(feature = "otel")]
         let mut runtime = Runtime::new(self.config, view_index, self.metrics);
         #[cfg(not(feature = "otel"))]
@@ -652,6 +655,17 @@ impl ServerBuilder {
                     )
                 })
                 .collect::<std::collections::HashMap<_, _>>();
+
+            // Row scoping comes with the entity spec, so a scoped entity is
+            // never served without it.
+            for entity_spec in &spec.entity_specs {
+                if let Some(path) = entity_spec.scope_field.as_deref() {
+                    index.set_entity_scope(
+                        entity_spec.state_name.clone(),
+                        row_scope::ScopeField::new(path),
+                    );
+                }
+            }
 
             for entity_name in spec.bytecode.entities.keys() {
                 let wire_format = entity_wire_formats
@@ -929,5 +943,78 @@ mod tests {
             .expect("state view should exist")
             .is_derived());
         assert_eq!(index.by_export("OreBoard").len(), 3);
+    }
+
+    #[test]
+    fn an_entity_specs_scope_field_scopes_every_view_of_the_entity() {
+        use arete_interpreter::ast::{
+            FieldPath, IdentitySpec, SortOrder, TypedStreamSpec, ViewDef, ViewOutput, ViewSource,
+            ViewTransform,
+        };
+
+        let identity = IdentitySpec {
+            primary_keys: vec!["id.address".to_string()],
+            lookup_indexes: Vec::new(),
+        };
+        let scoped = TypedStreamSpec::<serde_json::Value>::new(
+            "Round".to_string(),
+            identity.clone(),
+            Vec::new(),
+        );
+        let plain =
+            TypedStreamSpec::<serde_json::Value>::new("Board".to_string(), identity, Vec::new());
+        let mut scoped_spec = scoped.to_serializable();
+        scoped_spec.scope_field = Some("meta.scope".to_string());
+        let plain_spec = plain.to_serializable();
+        let bytecode = arete_interpreter::compiler::MultiEntityBytecode::new()
+            .add_entity("Round".to_string(), scoped, 1)
+            .add_entity("Board".to_string(), plain, 1)
+            .build();
+        // A derived view whose id does not name its entity.
+        let top = ViewDef {
+            id: "Leaders/top".to_string(),
+            source: ViewSource::Entity {
+                name: "Round".to_string(),
+            },
+            pipeline: vec![ViewTransform::Sort {
+                key: FieldPath::new(&["amount"]),
+                order: SortOrder::Desc,
+            }],
+            output: ViewOutput::Collection,
+        };
+        let spec = Some(
+            Spec::new(bytecode, "Program111")
+                .with_entity_specs(vec![scoped_spec, plain_spec])
+                .with_views(vec![top]),
+        );
+
+        let (index, _) = ServerBuilder::build_view_index_and_registry(None, None, &spec);
+        for view in ["Round/list", "Round/state", "Round/append", "Leaders/top"] {
+            assert_eq!(
+                index
+                    .scope_field_for_view(view)
+                    .map(|field| field.path().to_vec()),
+                Some(vec!["meta".to_string(), "scope".to_string()]),
+                "{view}"
+            );
+        }
+        assert!(index.scope_field_for_view("Board/list").is_none());
+        // A custom projection cannot strip the scope, including when its
+        // field is nested. Reject it at build time, before serving any data.
+        let mut custom = index.get_view("Round/list").unwrap().clone();
+        custom.id = "Round/custom".into();
+        custom.projection.fields = Some(vec!["amount".into()]);
+        let mut invalid = ViewIndex::new();
+        invalid.set_entity_scope("Round", row_scope::ScopeField::new("meta.scope"));
+        invalid.add_spec(custom.clone());
+        assert!(ServerBuilder::new().views(invalid).build().is_err());
+        custom.projection.fields = Some(vec!["amount".into(), "meta".into()]);
+        let mut valid = ViewIndex::new();
+        valid.set_entity_scope("Round", row_scope::ScopeField::new("meta.scope"));
+        valid.add_spec(custom);
+        assert!(ServerBuilder::new().views(valid).build().is_ok());
+        let caches = index.sorted_caches();
+        let caches = caches.try_read().unwrap();
+        assert!(caches.get("Leaders/top").unwrap().is_scope_partitioned());
     }
 }

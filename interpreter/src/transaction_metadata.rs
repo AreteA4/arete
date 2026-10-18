@@ -245,6 +245,7 @@ mod execution_tests {
                         key: 0,
                         default: json!({}),
                         dest: 2,
+                        dedup_route: None,
                     },
                     OpCode::LoadEventField {
                         path: crate::ast::FieldPath::new(&["data"]),

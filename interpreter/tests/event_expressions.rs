@@ -155,6 +155,7 @@ fn candle_spec_keyed(key: SerializableFieldMapping) -> TypedStreamSpec<Value> {
         computed_field_specs: vec![],
         content_hash: None,
         views: vec![],
+        scope_field: None,
     })
 }
 

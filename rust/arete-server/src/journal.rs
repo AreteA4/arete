@@ -173,6 +173,8 @@ impl std::fmt::Display for Cursor {
 /// re-projection of current state.
 #[derive(Clone, Debug)]
 pub struct JournalRecord {
+    /// Effective scope when published. Absent in legacy journals.
+    pub row_scope: Option<crate::row_scope::RowScope>,
     pub offset: u64,
     pub key: String,
     pub payload: Arc<Bytes>,
@@ -182,7 +184,13 @@ pub struct JournalRecord {
 
 impl JournalRecord {
     fn charged_bytes(&self) -> u64 {
-        self.payload.len() as u64 + self.key.len() as u64 + RECORD_OVERHEAD_BYTES
+        self.payload.len() as u64
+            + self.key.len() as u64
+            + RECORD_OVERHEAD_BYTES
+            + match &self.row_scope {
+                Some(crate::row_scope::RowScope::Scoped(scope)) => scope.len() as u64,
+                _ => 0,
+            }
     }
 }
 
@@ -257,6 +265,8 @@ impl ReplayError {
 /// up in a profile.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PersistedRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_scope: Option<crate::row_scope::RowScope>,
     pub offset: u64,
     pub key: String,
     #[serde(with = "frame_text")]
@@ -435,7 +445,19 @@ impl EventJournal {
         key: &str,
         build_frame: impl FnOnce(u64) -> Result<Arc<Bytes>, E>,
     ) -> Result<Option<(u64, Arc<Bytes>)>, E> {
-        self.append_with_at(view_id, key, unix_now(), build_frame)
+        self.append_scoped_with(view_id, key, None, build_frame)
+            .await
+    }
+
+    /// Append with the effective row scope captured at publication time.
+    pub async fn append_scoped_with<E>(
+        &self,
+        view_id: &str,
+        key: &str,
+        row_scope: Option<crate::row_scope::RowScope>,
+        build_frame: impl FnOnce(u64) -> Result<Arc<Bytes>, E>,
+    ) -> Result<Option<(u64, Arc<Bytes>)>, E> {
+        self.append_with_at(view_id, key, row_scope, unix_now(), build_frame)
             .await
     }
 
@@ -443,6 +465,7 @@ impl EventJournal {
         &self,
         view_id: &str,
         key: &str,
+        row_scope: Option<crate::row_scope::RowScope>,
         now: i64,
         build_frame: impl FnOnce(u64) -> Result<Arc<Bytes>, E>,
     ) -> Result<Option<(u64, Arc<Bytes>)>, E> {
@@ -470,6 +493,7 @@ impl EventJournal {
 
         journal.next_offset += 1;
         let record = JournalRecord {
+            row_scope,
             offset,
             key: key.to_string(),
             payload: payload.clone(),
@@ -621,6 +645,7 @@ impl EventJournal {
                                 .records
                                 .iter()
                                 .map(|record| PersistedRecord {
+                                    row_scope: record.row_scope.clone(),
                                     offset: record.offset,
                                     key: record.key.clone(),
                                     payload: record.payload.clone(),
@@ -672,6 +697,7 @@ impl EventJournal {
                 .records
                 .into_iter()
                 .map(|record| JournalRecord {
+                    row_scope: record.row_scope,
                     offset: record.offset,
                     key: record.key,
                     payload: record.payload,
@@ -982,13 +1008,13 @@ mod tests {
         let now = unix_now();
 
         journal
-            .append_with_at("Trade/append", "old", now - 600, |_| {
+            .append_with_at("Trade/append", "old", None, now - 600, |_| {
                 Ok::<_, std::convert::Infallible>(frame("x"))
             })
             .await
             .unwrap();
         journal
-            .append_with_at("Trade/append", "fresh", now, |_| {
+            .append_with_at("Trade/append", "fresh", None, now, |_| {
                 Ok::<_, std::convert::Infallible>(frame("x"))
             })
             .await
@@ -1030,6 +1056,7 @@ mod tests {
     #[test]
     fn persisted_frames_round_trip_as_text_not_byte_arrays() {
         let record = PersistedRecord {
+            row_scope: None,
             offset: 1,
             key: "pool".to_string(),
             payload: Arc::new(Bytes::from_static(br#"{"data":{"amount":5}}"#)),
@@ -1194,5 +1221,56 @@ mod tests {
         let journal = EventJournal::new(config(100, 3_600));
         assert_eq!(append(&journal, "Quiet/append", "pool1", "first").await, 0);
         assert_eq!(journal.window("Quiet/append").await.earliest, 0);
+    }
+}
+
+#[cfg(test)]
+mod scope_retention_tests {
+    use super::*;
+    use crate::row_scope::RowScope;
+
+    #[tokio::test]
+    async fn effective_scope_survives_retention_and_snapshot_restore() {
+        let journal = EventJournal::new(JournalConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        for scope in [RowScope::Scoped("B".into()), RowScope::Public] {
+            journal
+                .append_scoped_with("Row/append", "row", Some(scope), |_| {
+                    Ok::<_, std::convert::Infallible>(Arc::new(Bytes::from_static(
+                        br#"{"data":{"value":1}}"#,
+                    )))
+                })
+                .await
+                .unwrap();
+        }
+        let dump = journal.dump().await;
+        let serialized = serde_json::to_vec(&dump).unwrap();
+        let restored = EventJournal::new(JournalConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        restored
+            .hydrate(serde_json::from_slice(&serialized).unwrap(), true)
+            .await;
+        let window = restored.window("Row/append").await;
+        let records = restored
+            .replay_after(
+                "Row/append",
+                Some(&Cursor {
+                    epoch: window.epoch,
+                    offset: 0,
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].row_scope, Some(RowScope::Public));
+        let dump = restored.dump().await;
+        assert_eq!(
+            dump.views["Row/append"].records[0].row_scope,
+            Some(RowScope::Scoped("B".into()))
+        );
     }
 }

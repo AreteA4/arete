@@ -1592,6 +1592,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         };
 
         let output = compile_serializable_spec(spec, "Plan".to_string(), None)
@@ -1648,6 +1649,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         };
 
         let output = compile_serializable_spec(spec, "Plan".to_string(), None)
@@ -2148,6 +2150,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         }
     }
 
@@ -2864,7 +2867,11 @@ mod tests {
             .args(command)
             .args(["--quiet", "--offline", "--manifest-path"])
             .arg(&manifest_path)
-            .env("CARGO_TARGET_DIR", base.join("target"));
+            .env(
+                "CARGO_TARGET_DIR",
+                std::env::var_os("CARGO_TARGET_DIR")
+                    .unwrap_or_else(|| repo_root.join("target").into_os_string()),
+            );
         if !rustc_args.is_empty() {
             cargo.arg("--").args(rustc_args);
         }

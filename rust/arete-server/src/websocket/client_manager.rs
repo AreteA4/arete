@@ -1278,6 +1278,40 @@ impl ClientManager {
         }
     }
 
+    /// Give an active subscription a new cancellation token, cancelling the
+    /// one it had, without releasing its registration or admission: its
+    /// delivery stops and the caller may attach a new one under the same ID.
+    /// Returns `false` when the client or subscription is gone.
+    pub async fn replace_client_subscription_token(
+        &self,
+        client_id: Uuid,
+        subscription_id: &str,
+        cancel_token: CancellationToken,
+    ) -> bool {
+        let Some(lifecycle) = self
+            .clients
+            .get(&client_id)
+            .map(|client| client.admission_lifecycle.clone())
+        else {
+            return false;
+        };
+        let _lifecycle = lifecycle.lock().await;
+        let Some(subscriptions) = self.clients.get(&client_id).and_then(|client| {
+            Arc::ptr_eq(&client.admission_lifecycle, &lifecycle)
+                .then(|| client.subscriptions.clone())
+        }) else {
+            return false;
+        };
+        let mut subscriptions = subscriptions.write().await;
+        match subscriptions.get_mut(subscription_id) {
+            Some(token) => {
+                std::mem::replace(token, cancel_token).cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
     pub async fn cancel_all_client_subscriptions(&self, client_id: Uuid) {
         let Some(lifecycle) = self
             .clients
@@ -1456,7 +1490,7 @@ impl ClientManager {
 
         if let Some(ctx) = auth_context {
             // Admit the token against previously observed account policy and
-            // count legacy tokens so legacy compatibility can eventually be retired.
+            // count legacy tokens so legacy support can be retired once none remain.
             if ctx.is_legacy_policy() {
                 let legacy_policy_token = self.account_policies.record_legacy_token();
                 debug!(legacy_policy_token, "legacy policy token admitted");
@@ -1814,6 +1848,7 @@ mod tests {
             consumer_key: None,
             policy_version: None,
             account_limits: Limits::default(),
+            row_scopes: None,
         }
     }
 
@@ -1847,6 +1882,7 @@ mod tests {
             consumer_key: Some(consumer.to_string()),
             policy_version: Some(policy_version),
             account_limits,
+            row_scopes: None,
         }
     }
 

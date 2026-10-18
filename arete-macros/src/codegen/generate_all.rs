@@ -1,6 +1,6 @@
 //! Unified code generation from SerializableStreamSpec.
 //!
-//! This module provides code generation utilities. Note: The unified
+//! This module provides code generation utilities. Note: the unified
 //! `generate_all_from_spec` function is kept for reference but is currently
 //! unused; nothing in this crate expands `#[ast_spec]`.
 

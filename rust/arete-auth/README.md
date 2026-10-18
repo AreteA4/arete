@@ -94,7 +94,9 @@ let authorization = SolanaGatewayAuthorization::try_from_context(
 ```
 
 The only gateway scopes are the exact whitespace-delimited values `read`,
-`transaction:inspect`, and `transaction:send`; no scope implies another.
+`transaction:inspect`, `transaction:send`, and `fork:read`; no scope implies
+another. `fork:read` authorizes only the read-only fork JSON-RPC endpoint
+(`POST /rpc/v1/fork`).
 Legacy deployment claims and their audience remain unchanged.
 
 ### Key Management

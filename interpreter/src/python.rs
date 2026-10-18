@@ -4530,6 +4530,10 @@ pub fn python_module_name(value: &str) -> String {
     output
 }
 
+fn is_python_keyword(value: &str) -> bool {
+    python_ident::is_keyword(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4570,6 +4574,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         }
     }
 
@@ -6845,8 +6850,4 @@ print("ok")
             "u64-prefixed vec arg should reach the generated schema:\n{programs}"
         );
     }
-}
-
-fn is_python_keyword(value: &str) -> bool {
-    python_ident::is_keyword(value)
 }

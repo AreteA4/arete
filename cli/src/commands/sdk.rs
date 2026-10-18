@@ -6083,6 +6083,7 @@ fn generate_typescript_composition_sdk(
         live_releases: source.composition_live_releases(),
         live_module_imports: live_module_imports.clone(),
         program_module_imports: program_module_imports.clone(),
+        protocol_module_imports: BTreeMap::new(),
         program_entry_imports: program_modules
             .iter()
             .map(|program| {

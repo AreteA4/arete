@@ -1,8 +1,8 @@
 use thiserror::Error;
 
 use crate::{
-    AuthContext, KeyClass, Limits, TargetKind, SCOPE_READ, SCOPE_TRANSACTION_INSPECT,
-    SCOPE_TRANSACTION_SEND, SOLANA_GATEWAY_AUDIENCE,
+    AuthContext, KeyClass, Limits, TargetKind, SCOPE_FORK_READ, SCOPE_READ,
+    SCOPE_TRANSACTION_INSPECT, SCOPE_TRANSACTION_SEND, SOLANA_GATEWAY_AUDIENCE,
 };
 
 /// One exact permission understood by the Solana gateway.
@@ -11,6 +11,7 @@ pub enum SolanaGatewayScope {
     Read,
     TransactionInspect,
     TransactionSend,
+    ForkRead,
 }
 
 impl SolanaGatewayScope {
@@ -19,6 +20,7 @@ impl SolanaGatewayScope {
             Self::Read => SCOPE_READ,
             Self::TransactionInspect => SCOPE_TRANSACTION_INSPECT,
             Self::TransactionSend => SCOPE_TRANSACTION_SEND,
+            Self::ForkRead => SCOPE_FORK_READ,
         }
     }
 }
@@ -264,6 +266,39 @@ mod tests {
                 required: SolanaGatewayScope::TransactionSend
             }
         );
+    }
+
+    #[test]
+    fn fork_read_and_read_do_not_imply_each_other() {
+        let fork = context(SCOPE_FORK_READ);
+        SolanaGatewayAuthorization::try_from_context(
+            &fork,
+            TARGET_ID,
+            SolanaGatewayScope::ForkRead,
+        )
+        .unwrap();
+        for scope in [
+            SolanaGatewayScope::Read,
+            SolanaGatewayScope::TransactionInspect,
+            SolanaGatewayScope::TransactionSend,
+        ] {
+            assert_eq!(
+                SolanaGatewayAuthorization::try_from_context(&fork, TARGET_ID, scope).unwrap_err(),
+                SolanaGatewayAuthorizationError::MissingScope { required: scope }
+            );
+        }
+        assert_eq!(
+            SolanaGatewayAuthorization::try_from_context(
+                &context(SCOPE_READ),
+                TARGET_ID,
+                SolanaGatewayScope::ForkRead,
+            )
+            .unwrap_err(),
+            SolanaGatewayAuthorizationError::MissingScope {
+                required: SolanaGatewayScope::ForkRead
+            }
+        );
+        assert_eq!(SolanaGatewayScope::ForkRead.as_str(), "fork:read");
     }
 
     #[test]

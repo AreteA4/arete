@@ -33,6 +33,7 @@ pub struct VmMetrics {
     pub pending_queue_memory_bytes: Gauge<i64>,
     pub pending_queue_oldest_age: Histogram<f64>,
     pub state_table_evictions: Counter<u64>,
+    pub pda_reverse_lookup_evictions: Counter<u64>,
     pub state_table_at_capacity_events: Counter<u64>,
     pub cleanup_pending_removed: Counter<u64>,
     pub cleanup_temporal_removed: Counter<u64>,
@@ -113,6 +114,10 @@ impl VmMetrics {
                 .u64_counter("arete.vm.state_table.evictions")
                 .with_description("State table LRU evictions")
                 .init(),
+            pda_reverse_lookup_evictions: meter
+                .u64_counter("arete.vm.pda_reverse_lookup.evictions")
+                .with_description("PDA reverse lookup entries evicted at capacity")
+                .init(),
             state_table_at_capacity_events: meter
                 .u64_counter("arete.vm.state_table.at_capacity_events")
                 .with_description("State table at capacity events")
@@ -180,6 +185,23 @@ pub fn record_state_table_eviction(count: u64, entity: &str) {
 #[cfg(not(feature = "otel"))]
 #[inline]
 pub fn record_state_table_eviction(_count: u64, _entity: &str) {}
+
+/// Entries one PDA reverse lookup table evicted at capacity. Labels are the
+/// entity and the lookup's name, both fixed by the stack.
+#[cfg(feature = "otel")]
+pub fn record_pda_reverse_lookup_eviction(count: u64, entity: &str, lookup_name: &str) {
+    get_vm_metrics().pda_reverse_lookup_evictions.add(
+        count,
+        &[
+            KeyValue::new("entity", entity.to_string()),
+            KeyValue::new("lookup", lookup_name.to_string()),
+        ],
+    );
+}
+
+#[cfg(not(feature = "otel"))]
+#[inline]
+pub fn record_pda_reverse_lookup_eviction(_count: u64, _entity: &str, _lookup_name: &str) {}
 
 #[cfg(feature = "otel")]
 pub fn record_state_table_at_capacity(entity: &str) {

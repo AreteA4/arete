@@ -453,9 +453,9 @@ fn simple_idl_base_type(name: &str) -> (BaseType, Option<IntegerKind>) {
     let base_type = match name {
         "f32" | "f64" => BaseType::Float,
         "bool" => BaseType::Boolean,
-        "string" | "String" => BaseType::String,
+        "string" | "String" | "rest_utf8" => BaseType::String,
         "publicKey" | "pubkey" | "Pubkey" => BaseType::Pubkey,
-        "bytes" => BaseType::Binary,
+        "bytes" | "rest_bytes" => BaseType::Binary,
         _ => BaseType::Object,
     };
     (base_type, None)

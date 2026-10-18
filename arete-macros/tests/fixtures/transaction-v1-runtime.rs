@@ -211,6 +211,7 @@ fn bytecode() -> vm::compiler::MultiEntityBytecode {
                     key: 0,
                     default: json!({}),
                     dest: 2,
+                    dedup_route: None,
                 },
                 OpCode::LoadEventField {
                     path: vm::ast::FieldPath::new(&["data", "value"]),

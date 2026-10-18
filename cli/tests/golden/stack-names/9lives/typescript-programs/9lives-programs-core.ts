@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { programAccountRead, createInstructionHandler, type ErrorMetadata, buildInstruction, PROGRAM_OPERATION_EXTENSIONS, instructionOperation, createPreparedInstruction } from '@usearete/sdk';
+import { programAccountRead, createInstructionHandler, type ErrorMetadata, buildInstruction, PROGRAM_OPERATION_EXTENSIONS, instructionOperation, createPreparedInstruction } from '@usearete/sdk/program';
 
 export interface Vault {
   authority: string;
@@ -55,7 +55,7 @@ export const depositInstruction = createInstructionHandler<DepositParams, Deposi
 export const VAULT = {
   name: 'vault',
   programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
-  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:b7bfff77d19f1146dcc7c16239f8bbcc2b743c6b6caa9d3541891aef2696ecce',
+  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:63cdab8806d81b8181c94f78ddd31ef7df2bbf751a149880505b226e4cd884f4',
   programSpecHash: 'arete:h1:program-spec:sha256:82d33b756cb10907d6585bdc2e1e02170b1286819e317bbe5311de01901b22ba',
   idlContentHash: 'arete:h1:idl-content:sha256:85aefcaba918c8b89b2b25ef683a17be27b36c86eaf5be939303f62af74ea044',
   normalizedIdlHash: 'arete:h1:idl-normalized:sha256:3de7188f6a21b4dfc7ca7e7db7b0730d692e33c56ec4985495382e73e0fd3140',
@@ -80,6 +80,17 @@ export const VAULT = {
         }),
         },
       };
+    },
+  },
+} as const;
+
+/** Instruction shapes for 'vault', by IDL instruction name: argument and account names, and which accounts may be left out */
+export const VAULT_INSTRUCTION_SHAPES = {
+  deposit: {
+    args: ['amount'],
+    accounts: {
+      authority: { optional: false, derive: null },
+      vault: { optional: false, derive: null },
     },
   },
 } as const;

@@ -56,6 +56,7 @@ fn managed_solana_generated_program_models_compile_and_preserve_payloads() {
         computed_field_specs: vec![],
         content_hash: None,
         views: vec![],
+        scope_field: None,
     });
     let mut legacy_entity = stack_spec.entities[0].clone();
     legacy_entity.idl = Some(spec.idls[0].clone());

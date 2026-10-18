@@ -828,7 +828,7 @@ async fn admit(
     if let Some(context) = auth {
         if context.is_legacy_policy() {
             // Legacy tokens keep the old subject-keyed buckets and inflight
-            // accounting exactly; count them so legacy compatibility can eventually be retired.
+            // accounting exactly; count them so legacy support can be retired once none remain.
             let legacy_policy_token = state.account_policies.record_legacy_token();
             tracing::debug!(legacy_policy_token, "legacy policy token admitted");
             check_bucket(

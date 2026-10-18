@@ -154,6 +154,25 @@ impl SocketIssueMessage {
         issue
     }
 
+    /// The session's row scopes changed on a token refresh and this
+    /// subscription could not be resnapshotted in place (a replayable tape, or
+    /// a failed re-attach). It has stopped; the registration stays until the
+    /// client unsubscribes.
+    pub fn subscription_rescoped(subscription_id: String) -> Self {
+        let mut issue = Self::protocol(
+            Some(subscription_id),
+            "subscription-rescoped",
+            "the session's row scopes changed and this subscription has stopped".to_string(),
+        );
+        issue.retryable = true;
+        issue.suggested_action = Some(
+            "unsubscribe, then resubscribe (from your last cursor for a replayable view) to receive the rows the new scopes cover"
+                .to_string(),
+        );
+        issue.fatal = true;
+        issue
+    }
+
     /// A non-replayable append subscription cannot reconstruct records lost
     /// after falling behind its bounded live bus.
     pub fn append_subscription_lagged(subscription_id: String, skipped: u64) -> Self {

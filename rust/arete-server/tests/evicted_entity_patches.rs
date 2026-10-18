@@ -459,6 +459,7 @@ fn pool_bytecode() -> MultiEntityBytecode {
         computed_field_specs: vec![],
         content_hash: None,
         views: vec![],
+        scope_field: None,
     });
     MultiEntityBytecode::from_single("Pool".to_string(), spec, 0)
 }

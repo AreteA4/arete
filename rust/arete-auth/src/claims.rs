@@ -146,6 +146,13 @@ pub struct SessionClaims {
     /// Aggregate account limits within a runtime/quota backend (v2 policy claim)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_limits: Option<Limits>,
+    /// Row scopes this session may read (row scoping). A row of a scoped
+    /// entity is delivered only when its scope is empty or listed here. Set
+    /// by the issuer from data it trusts, never from a client request.
+    /// Absent on tokens that predate it, which then see only public rows of
+    /// scoped entities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_scopes: Option<Vec<String>>,
 }
 
 /// Maximum accepted byte length for a v2 policy identity.
@@ -306,6 +313,7 @@ pub struct SessionClaimsBuilder {
     consumer_key: Option<String>,
     policy_version: Option<u32>,
     account_limits: Option<Limits>,
+    row_scopes: Option<Vec<String>>,
 }
 
 impl SessionClaimsBuilder {
@@ -341,6 +349,7 @@ impl SessionClaimsBuilder {
             consumer_key: None,
             policy_version: None,
             account_limits: None,
+            row_scopes: None,
         }
     }
 
@@ -468,6 +477,15 @@ impl SessionClaimsBuilder {
         self
     }
 
+    /// Set the row scopes this session may read (row scoping).
+    pub fn with_row_scopes(
+        mut self,
+        row_scopes: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.row_scopes = Some(row_scopes.into_iter().map(Into::into).collect());
+        self
+    }
+
     pub fn build(self) -> SessionClaims {
         SessionClaims {
             iss: self.iss,
@@ -494,6 +512,7 @@ impl SessionClaimsBuilder {
             consumer_key: self.consumer_key,
             policy_version: self.policy_version,
             account_limits: self.account_limits,
+            row_scopes: self.row_scopes,
         }
     }
 }
@@ -545,6 +564,9 @@ pub struct AuthContext {
     pub policy_version: Option<u32>,
     /// Aggregate account limits, defaulted when the token carries none
     pub account_limits: Limits,
+    /// Row scopes this session may read; `None` when the token carries none
+    /// (see [`SessionClaims::row_scopes`])
+    pub row_scopes: Option<Vec<String>>,
 }
 
 impl AuthContext {
@@ -603,6 +625,7 @@ impl AuthContext {
             consumer_key: claims.consumer_key,
             policy_version: claims.policy_version,
             account_limits: claims.account_limits.unwrap_or_default(),
+            row_scopes: claims.row_scopes,
         }
     }
 }
@@ -623,6 +646,26 @@ mod tests {
         assert!(context.has_scope("transaction:inspect"));
         assert!(!context.has_scope("transaction:send"));
         assert!(!context.has_scope("transaction"));
+    }
+
+    #[test]
+    fn row_scopes_round_trip_and_stay_absent_when_unset() {
+        let plain = SessionClaims::builder("issuer", "subject", "audience").build();
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("row_scopes").is_none(), "{json}");
+        assert_eq!(AuthContext::from_claims(plain).row_scopes, None);
+
+        let scoped = SessionClaims::builder("issuer", "subject", "audience")
+            .with_scope("read")
+            .with_row_scopes(["abcdefghij"])
+            .build();
+        let json = serde_json::to_value(&scoped).unwrap();
+        assert_eq!(json["row_scopes"], serde_json::json!(["abcdefghij"]));
+        // `scope` keeps carrying permission words; row scopes are separate.
+        assert_eq!(json["scope"], "read");
+        let parsed: SessionClaims = serde_json::from_value(json).unwrap();
+        let context = AuthContext::from_claims(parsed);
+        assert_eq!(context.row_scopes, Some(vec!["abcdefghij".to_string()]));
     }
 
     #[test]

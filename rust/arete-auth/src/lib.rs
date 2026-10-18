@@ -52,6 +52,12 @@ pub const SCOPE_TRANSACTION_INSPECT: &str = "transaction:inspect";
 /// Exact scope for transaction submission.
 pub const SCOPE_TRANSACTION_SEND: &str = "transaction:send";
 
+/// Exact scope for the read-only fork JSON-RPC endpoint (`POST /rpc/v1/fork`).
+///
+/// Independent from [`SCOPE_READ`]: a fork session may forward a bounded,
+/// allowlisted set of read methods to the gateway's read RPC, and nothing else.
+pub const SCOPE_FORK_READ: &str = "fork:read";
+
 /// Default session token TTL in seconds (5 minutes)
 pub const DEFAULT_SESSION_TTL_SECONDS: u64 = 300;
 

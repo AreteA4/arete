@@ -6,6 +6,10 @@ use tracing;
 
 pub type Register = usize;
 
+/// Register holding a write guard's result (see [`OpCode::SkipUnless`]). Kept
+/// clear of the registers mappings, keys and captures use.
+const GUARD_REG: Register = 30;
+
 fn stop_field_path(target_path: &str) -> String {
     format!("__stop:{}", target_path)
 }
@@ -26,7 +30,7 @@ struct HandlerSegment {
 fn route_field(resolution: &KeyResolutionStrategy) -> Option<FieldPath> {
     let field = match resolution {
         KeyResolutionStrategy::Embedded { primary_field }
-        | KeyResolutionStrategy::Lookup { primary_field }
+        | KeyResolutionStrategy::Lookup { primary_field, .. }
         | KeyResolutionStrategy::Computed { primary_field, .. } => primary_field,
         KeyResolutionStrategy::TemporalLookup { lookup_field, .. } => lookup_field,
     };
@@ -89,6 +93,44 @@ fn merge_handler_opcodes(existing: &mut Vec<OpCode>, new: &[OpCode]) {
     merged.extend(existing_teardown);
 
     *existing = merged;
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// The write guard over the mappings of one handler to `field`: `None` when
+/// any of them is unguarded (or none maps it), else their guards joined with
+/// `||`.
+fn index_guard<S>(mappings: &[TypedFieldMapping<S>], field: &str) -> Option<ComputedExpr> {
+    let mut guards = mappings
+        .iter()
+        .filter(|mapping| mapping.target_path == field)
+        .map(
+            |mapping| match mapping.condition.as_ref()?.parsed.as_ref()? {
+                ParsedCondition::Guard { expr } => Some(expr.clone()),
+                _ => None,
+            },
+        )
+        .collect::<Option<Vec<_>>>()?
+        .into_iter();
+    let first = guards.next()?;
+    Some(guards.fold(first, |left, right| ComputedExpr::Binary {
+        op: BinaryOp::Or,
+        left: Box::new(left),
+        right: Box::new(right),
+    }))
+}
+
+/// The lookup index a handler declares it resolves through, if any.
+fn declared_index(resolution: &KeyResolutionStrategy) -> Option<&str> {
+    match resolution {
+        KeyResolutionStrategy::Lookup {
+            index_name: Some(index_name),
+            ..
+        } => Some(index_name),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -154,6 +196,13 @@ pub enum OpCode {
         key: Register,
         default: Value,
         dest: Register,
+        /// The declared route (lookup index) of this handler. A duplicate
+        /// instruction is detected per route when set, so a second route of
+        /// the same instruction to the same row is not skipped. `None` for
+        /// every handler without a declared lookup, which keeps the
+        /// row-and-event-type deduplication.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dedup_route: Option<String>,
     },
     UpdateState {
         state_id: u32,
@@ -228,6 +277,10 @@ pub enum OpCode {
         index_name: String,
         lookup_value: Register,
         dest: Register,
+        /// A declared lookup: consult only `index_name`, directly or after
+        /// PDA reverse lookups, never the entity's other lookup indexes.
+        #[serde(skip_serializing_if = "is_false")]
+        strict: bool,
     },
     /// Sum a numeric value to a field (accumulator)
     SetFieldSum {
@@ -322,6 +375,36 @@ pub enum OpCode {
     UpdatePdaReverseLookup {
         state_id: u32,
         lookup_name: String,
+        pda_address: Register,
+        primary_key: Register,
+    },
+    /// Skip the next `count` opcodes unless `predicate` holds exactly `true`.
+    ///
+    /// Emitted only for write-gating guards (`ParsedCondition::Guard`): the
+    /// guard is evaluated into `predicate` and the guarded mapping's opcodes
+    /// follow, so a `false`, `null` or failed guard leaves the row untouched.
+    SkipUnless {
+        predicate: Register,
+        count: usize,
+    },
+    /// Remember the fields `paths` of this instruction for the transaction's
+    /// sibling registrations, then complete the registrations waiting for an
+    /// instruction of this type (see [`SiblingSelector`]).
+    CaptureSibling {
+        state_id: u32,
+        paths: Vec<FieldPath>,
+    },
+    /// Register PDA mappings read partly or wholly from sibling instructions
+    /// of `sibling.instruction_type` in the same transaction. The fields read
+    /// from this instruction are in `pda_address` / `primary_key`; the ones
+    /// read from a sibling are paths. Siblings that have not arrived yet are
+    /// registered when they do.
+    RegisterPdaFromSibling {
+        state_id: u32,
+        lookup_name: String,
+        sibling: SiblingSelector,
+        pda_field: FieldPath,
+        seed_field: FieldPath,
         pda_address: Register,
         primary_key: Register,
     },
@@ -846,6 +929,25 @@ impl<S> TypedCompiler<S> {
             }
         }
 
+        // Sibling registrations read fields of other instructions in the
+        // transaction: each such instruction captures them first thing, in a
+        // segment of its own, before any of its handlers resolve keys through
+        // the registrations it completes.
+        for (event_type, paths) in self.sibling_capture_paths() {
+            let event_segments = segments.entry(event_type).or_default();
+            event_segments.insert(
+                0,
+                HandlerSegment {
+                    key_identity: None,
+                    route_field: None,
+                    ops: vec![OpCode::CaptureSibling {
+                        state_id: self.state_id,
+                        paths,
+                    }],
+                },
+            );
+        }
+
         let handlers: HashMap<String, Vec<OpCode>> = segments
             .into_iter()
             .map(|(event_type, event_segments)| {
@@ -876,6 +978,38 @@ impl<S> TypedCompiler<S> {
         }
     }
 
+    /// The sibling instruction types this entity's registrations read, each
+    /// with the fields read from it, in a deterministic order.
+    fn sibling_capture_paths(&self) -> Vec<(String, Vec<FieldPath>)> {
+        let mut captures: std::collections::BTreeMap<String, Vec<FieldPath>> =
+            std::collections::BTreeMap::new();
+        for hook in &self.spec.instruction_hooks {
+            for action in &hook.actions {
+                let HookAction::RegisterPdaMapping {
+                    pda_field,
+                    seed_field,
+                    sibling: Some(sibling),
+                    ..
+                } = action
+                else {
+                    continue;
+                };
+                let paths = captures
+                    .entry(sibling.instruction_type.clone())
+                    .or_default();
+                for (from_sibling, path) in [
+                    (sibling.pda_from_sibling, pda_field),
+                    (sibling.seed_from_sibling, seed_field),
+                ] {
+                    if from_sibling && !paths.iter().any(|known| known.segments == path.segments) {
+                        paths.push(path.clone());
+                    }
+                }
+            }
+        }
+        captures.into_iter().collect()
+    }
+
     /// Canonical encoding of the opcodes that resolve a handler's key. Two
     /// handlers for the same event may share one state read/write only when
     /// these are identical.
@@ -903,6 +1037,7 @@ impl<S> TypedCompiler<S> {
         } else if self.find_lookup_index_for_field(lookup_by).is_some() {
             Some(KeyResolutionStrategy::Lookup {
                 primary_field: lookup_by.clone(),
+                index_name: None,
             })
         } else {
             None
@@ -925,6 +1060,7 @@ impl<S> TypedCompiler<S> {
             key: key_reg,
             default: serde_json::json!({}),
             dest: state_reg,
+            dedup_route: None,
         });
         ops.push(OpCode::UpdateState {
             state_id: self.state_id,
@@ -986,6 +1122,7 @@ impl<S> TypedCompiler<S> {
             key: key_reg,
             default: serde_json::json!({}),
             dest: state_reg,
+            dedup_route: None,
         });
 
         ops.push(OpCode::UpdateState {
@@ -1026,6 +1163,8 @@ impl<S> TypedCompiler<S> {
             key: key_reg,
             default: serde_json::json!({}),
             dest: state_reg,
+            dedup_route: declared_index(&spec.key_resolution)
+                .map(|index| format!("{index}:{:?}", spec.key_resolution)),
         });
 
         // Index updates must come AFTER ReadOrInitState so the state table exists.
@@ -1106,6 +1245,46 @@ impl<S> TypedCompiler<S> {
         state_reg: Register,
         key_reg: Register,
     ) -> Vec<OpCode> {
+        let guard = mapping
+            .condition
+            .as_ref()
+            .and_then(|condition| condition.parsed.as_ref())
+            .and_then(|parsed| match parsed {
+                ParsedCondition::Guard { expr } => Some(expr),
+                _ => None,
+            });
+        let Some(guard) = guard else {
+            return self.compile_mapping_ops(
+                mapping,
+                mapping.condition.as_ref(),
+                state_reg,
+                key_reg,
+            );
+        };
+        // A guarded mapping is the unconditional mapping, skipped as a whole
+        // unless the guard over the incoming update is true.
+        let inner = self.compile_mapping_ops(mapping, None, state_reg, key_reg);
+        let mut ops = Vec::with_capacity(inner.len() + 2);
+        ops.push(OpCode::EvaluateEventExpr {
+            expr: guard.clone(),
+            transform: None,
+            dest: GUARD_REG,
+        });
+        ops.push(OpCode::SkipUnless {
+            predicate: GUARD_REG,
+            count: inner.len(),
+        });
+        ops.extend(inner);
+        ops
+    }
+
+    fn compile_mapping_ops(
+        &self,
+        mapping: &TypedFieldMapping<S>,
+        condition: Option<&ConditionExpr>,
+        state_reg: Register,
+        key_reg: Register,
+    ) -> Vec<OpCode> {
         let mut ops = Vec::new();
         let temp_reg = 10;
 
@@ -1156,9 +1335,7 @@ impl<S> TypedCompiler<S> {
                     mapping.population
                 );
             }
-            let (condition_field, condition_op, condition_value) = mapping
-                .condition
-                .as_ref()
+            let (condition_field, condition_op, condition_value) = condition
                 .and_then(|cond| cond.parsed.as_ref())
                 .and_then(|parsed| match parsed {
                     ParsedCondition::Comparison { field, op, value } => {
@@ -1168,6 +1345,8 @@ impl<S> TypedCompiler<S> {
                         tracing::warn!("Logical conditions not yet supported for #[map] when");
                         None
                     }
+                    // compile_mapping evaluates guards before this point.
+                    ParsedCondition::Guard { .. } => None,
                 })
                 .unwrap_or((None, None, None));
 
@@ -1185,7 +1364,7 @@ impl<S> TypedCompiler<S> {
             return ops;
         }
 
-        if let Some(condition) = &mapping.condition {
+        if let Some(condition) = condition {
             if let Some(parsed) = &condition.parsed {
                 match parsed {
                     ParsedCondition::Comparison {
@@ -1226,6 +1405,8 @@ impl<S> TypedCompiler<S> {
                     ParsedCondition::Logical { .. } => {
                         tracing::warn!("Logical conditions not yet supported for #[map]");
                     }
+                    // compile_mapping evaluates guards before this point.
+                    ParsedCondition::Guard { .. } => {}
                 }
             }
         }
@@ -1504,6 +1685,19 @@ impl<S> TypedCompiler<S> {
                 let expr = self
                     .find_primary_key_expr(mappings)
                     .expect("checked by the guard");
+                // A write guard on the key mapping gates the key too: when it
+                // fails the key stays null and the update writes no row.
+                if let Some(guard) = self.find_primary_key_guard(mappings) {
+                    ops.push(OpCode::EvaluateEventExpr {
+                        expr: guard,
+                        transform: None,
+                        dest: GUARD_REG,
+                    });
+                    ops.push(OpCode::SkipUnless {
+                        predicate: GUARD_REG,
+                        count: 1,
+                    });
+                }
                 // The key is the value the mapping writes to the primary key
                 // field, transform included; a null key stays null, so the
                 // event writes no row.
@@ -1582,7 +1776,10 @@ impl<S> TypedCompiler<S> {
                     });
                 }
             }
-            KeyResolutionStrategy::Lookup { primary_field } => {
+            KeyResolutionStrategy::Lookup {
+                primary_field,
+                index_name: declared,
+            } => {
                 let lookup_reg = 15;
                 let result_reg = 17;
 
@@ -1607,15 +1804,22 @@ impl<S> TypedCompiler<S> {
                     dest: lookup_reg,
                 });
 
-                let index_name = self.find_lookup_index_for_lookup_field(primary_field, mappings);
-                let effective_index_name =
-                    index_name.unwrap_or_else(|| "default_pda_lookup".to_string());
+                // A declared index is used as is, and strictly; otherwise
+                // the index is inferred from the field names, and the
+                // runtime falls back to the entity's other indexes.
+                let effective_index_name = match declared {
+                    Some(declared) => declared.clone(),
+                    None => self
+                        .find_lookup_index_for_lookup_field(primary_field, mappings)
+                        .unwrap_or_else(|| "default_pda_lookup".to_string()),
+                };
 
                 ops.push(OpCode::LookupIndex {
                     state_id: self.state_id,
                     index_name: effective_index_name,
                     lookup_value: lookup_reg,
                     dest: result_reg,
+                    strict: declared.is_some(),
                 });
                 ops.push(OpCode::CopyRegister {
                     source: result_reg,
@@ -1709,6 +1913,23 @@ impl<S> TypedCompiler<S> {
                 Some(expr.clone())
             }
             _ => None,
+        })
+    }
+
+    /// The write guard of the expression mapping that sets the primary key,
+    /// if it has one.
+    fn find_primary_key_guard(&self, mappings: &[TypedFieldMapping<S>]) -> Option<ComputedExpr> {
+        let primary_key = self.spec.identity.primary_keys.first()?;
+        mappings.iter().find_map(|mapping| {
+            if mapping.target_path != *primary_key
+                || !matches!(mapping.source, MappingSource::FromExpr { .. })
+            {
+                return None;
+            }
+            match mapping.condition.as_ref()?.parsed.as_ref()? {
+                ParsedCondition::Guard { expr } => Some(expr.clone()),
+                _ => None,
+            }
         })
     }
 
@@ -1909,6 +2130,15 @@ impl<S> TypedCompiler<S> {
         None
     }
 
+    /// Whether a handler of this entity declares it resolves through
+    /// `index_name` (a declared, strict lookup).
+    fn declares_index(&self, index_name: &str) -> bool {
+        self.spec
+            .handlers
+            .iter()
+            .any(|handler| declared_index(&handler.key_resolution) == Some(index_name))
+    }
+
     /// Find lookup index for a Lookup key resolution by checking if there's a mapping
     /// from the primary_field to a lookup index field.
     fn find_lookup_index_for_lookup_field(
@@ -1978,6 +2208,7 @@ impl<S> TypedCompiler<S> {
                 .next_back()
                 .unwrap_or(&lookup_index.field_name);
 
+            let start = ops.len();
             match resolution {
                 KeyResolutionStrategy::Embedded { primary_field: _ } => {
                     // For Embedded handlers, find the mapping that targets this lookup index field
@@ -1992,11 +2223,29 @@ impl<S> TypedCompiler<S> {
                         FieldPath::new(&[source_field])
                     };
 
-                    ops.push(OpCode::LoadEventField {
-                        path: load_path,
-                        dest: lookup_reg,
-                        default: None,
-                    });
+                    if let Some(mapping) = mappings
+                        .iter()
+                        .find(|m| m.target_path == lookup_index.field_name)
+                    {
+                        let value_ops = self.compile_mapping_source(&mapping.source, lookup_reg);
+                        if value_ops.is_empty() {
+                            continue;
+                        }
+                        ops.extend(value_ops);
+                        if let Some(transform) = &mapping.transform {
+                            ops.push(OpCode::Transform {
+                                source: lookup_reg,
+                                dest: lookup_reg,
+                                transformation: transform.clone(),
+                            });
+                        }
+                    } else {
+                        ops.push(OpCode::LoadEventField {
+                            path: load_path,
+                            dest: lookup_reg,
+                            default: None,
+                        });
+                    }
 
                     if let Some(temporal_field_name) = &lookup_index.temporal_field {
                         let timestamp_reg = 18;
@@ -2045,28 +2294,26 @@ impl<S> TypedCompiler<S> {
                         });
                     }
                 }
-                KeyResolutionStrategy::Lookup { primary_field } => {
-                    // For Lookup handlers, check if there's a mapping that targets this lookup index field
-                    // If so, the lookup value is the same as the primary_field used for key resolution
-                    let has_mapping_to_lookup_field = mappings
+                KeyResolutionStrategy::Lookup { .. } => {
+                    if let Some(mapping) = mappings
                         .iter()
-                        .any(|m| m.target_path == lookup_index.field_name);
-
-                    if has_mapping_to_lookup_field {
-                        // Load the lookup value from the event using the primary_field path
-                        // (this is the same value used for key resolution)
-                        let path_segments: Vec<&str> =
-                            primary_field.segments.iter().map(|s| s.as_str()).collect();
-                        ops.push(OpCode::LoadEventField {
-                            path: FieldPath::new(&path_segments),
-                            dest: lookup_reg,
-                            default: None,
-                        });
-
-                        let index_name = format!("{}_lookup_index", source_field);
+                        .find(|m| m.target_path == lookup_index.field_name)
+                    {
+                        let value_ops = self.compile_mapping_source(&mapping.source, lookup_reg);
+                        if value_ops.is_empty() {
+                            continue;
+                        }
+                        ops.extend(value_ops);
+                        if let Some(transform) = &mapping.transform {
+                            ops.push(OpCode::Transform {
+                                source: lookup_reg,
+                                dest: lookup_reg,
+                                transformation: transform.clone(),
+                            });
+                        }
                         ops.push(OpCode::UpdateLookupIndex {
                             state_id: self.state_id,
-                            index_name,
+                            index_name: format!("{}_lookup_index", source_field),
                             lookup_value: lookup_reg,
                             primary_key: key_reg,
                         });
@@ -2075,6 +2322,28 @@ impl<S> TypedCompiler<S> {
                 KeyResolutionStrategy::Computed { .. }
                 | KeyResolutionStrategy::TemporalLookup { .. } => {
                     // Computed and TemporalLookup handlers don't populate lookup indexes
+                }
+            }
+            // Every declared index follows its field's write guard, regardless
+            // of how this handler resolved the row.
+            let index_name = format!("{}_lookup_index", source_field);
+            if self.declares_index(&index_name) {
+                if let Some(guard) = index_guard(mappings, &lookup_index.field_name) {
+                    let count = ops.len() - start;
+                    ops.splice(
+                        start..start,
+                        [
+                            OpCode::EvaluateEventExpr {
+                                expr: guard,
+                                transform: None,
+                                dest: GUARD_REG,
+                            },
+                            OpCode::SkipUnless {
+                                predicate: GUARD_REG,
+                                count,
+                            },
+                        ],
+                    );
                 }
             }
         }
@@ -2182,33 +2451,84 @@ impl<S> TypedCompiler<S> {
                         });
                     }
                 }
-                HookAction::RegisterPdaMapping { .. } => {
-                    if let HookAction::RegisterPdaMapping {
-                        pda_field,
-                        seed_field,
-                        lookup_name,
-                    } = action
-                    {
-                        let pda_reg = 11;
-                        let seed_reg = 12;
+                HookAction::RegisterPdaMapping {
+                    pda_field,
+                    seed_field,
+                    lookup_name,
+                    sibling,
+                    seed_expr,
+                    guard,
+                } => {
+                    let pda_reg = 11;
+                    let seed_reg = 12;
+                    let mut registration = Vec::new();
+                    let pda_from_sibling = sibling
+                        .as_ref()
+                        .is_some_and(|sibling| sibling.pda_from_sibling);
+                    let seed_from_sibling = sibling
+                        .as_ref()
+                        .is_some_and(|sibling| sibling.seed_from_sibling);
 
-                        ops.push(OpCode::LoadEventField {
+                    // Fields read from this instruction are loaded now; a
+                    // sibling's come from its capture.
+                    registration.push(if pda_from_sibling {
+                        OpCode::LoadConstant {
+                            value: Value::Null,
+                            dest: pda_reg,
+                        }
+                    } else {
+                        OpCode::LoadEventField {
                             path: pda_field.clone(),
                             dest: pda_reg,
                             default: None,
-                        });
-                        ops.push(OpCode::LoadEventField {
+                        }
+                    });
+                    registration.push(match (seed_from_sibling, seed_expr) {
+                        (true, _) => OpCode::LoadConstant {
+                            value: Value::Null,
+                            dest: seed_reg,
+                        },
+                        (false, Some(expr)) => OpCode::EvaluateEventExpr {
+                            expr: expr.clone(),
+                            transform: None,
+                            dest: seed_reg,
+                        },
+                        (false, None) => OpCode::LoadEventField {
                             path: seed_field.clone(),
                             dest: seed_reg,
                             default: None,
-                        });
-                        ops.push(OpCode::UpdatePdaReverseLookup {
+                        },
+                    });
+                    registration.push(match sibling {
+                        None => OpCode::UpdatePdaReverseLookup {
                             state_id: self.state_id,
                             lookup_name: lookup_name.clone(),
                             pda_address: pda_reg,
                             primary_key: seed_reg,
+                        },
+                        Some(sibling) => OpCode::RegisterPdaFromSibling {
+                            state_id: self.state_id,
+                            lookup_name: lookup_name.clone(),
+                            sibling: sibling.clone(),
+                            pda_field: pda_field.clone(),
+                            seed_field: seed_field.clone(),
+                            pda_address: pda_reg,
+                            primary_key: seed_reg,
+                        },
+                    });
+
+                    if let Some(guard) = guard {
+                        ops.push(OpCode::EvaluateEventExpr {
+                            expr: guard.clone(),
+                            transform: None,
+                            dest: GUARD_REG,
+                        });
+                        ops.push(OpCode::SkipUnless {
+                            predicate: GUARD_REG,
+                            count: registration.len(),
                         });
                     }
+                    ops.extend(registration);
                 }
             }
         }
@@ -2248,6 +2568,22 @@ impl<S> TypedCompiler<S> {
                     value: value_reg,
                 }]
             }
+            ParsedCondition::Guard { expr } => vec![
+                OpCode::EvaluateEventExpr {
+                    expr: expr.clone(),
+                    transform: None,
+                    dest: GUARD_REG,
+                },
+                OpCode::SkipUnless {
+                    predicate: GUARD_REG,
+                    count: 1,
+                },
+                OpCode::SetField {
+                    object: state_reg,
+                    path: target_field.to_string(),
+                    value: value_reg,
+                },
+            ],
         }
     }
 
@@ -2279,6 +2615,21 @@ impl<S> TypedCompiler<S> {
                     path: target_field.to_string(),
                 }]
             }
+            ParsedCondition::Guard { expr } => vec![
+                OpCode::EvaluateEventExpr {
+                    expr: expr.clone(),
+                    transform: None,
+                    dest: GUARD_REG,
+                },
+                OpCode::SkipUnless {
+                    predicate: GUARD_REG,
+                    count: 1,
+                },
+                OpCode::SetFieldIncrement {
+                    object: state_reg,
+                    path: target_field.to_string(),
+                },
+            ],
         }
     }
 }
@@ -2340,6 +2691,7 @@ mod tests {
                 },
                 key_resolution: KeyResolutionStrategy::Lookup {
                     primary_field: FieldPath::new(&["__account_address"]),
+                    index_name: None,
                 },
                 mappings: vec![
                     mapping(
@@ -2365,6 +2717,9 @@ mod tests {
                     pda_field: FieldPath::new(&["accounts", "bonding_curve"]),
                     seed_field: FieldPath::new(&["accounts", "mint"]),
                     lookup_name: "default_pda_lookup".to_string(),
+                    sibling: None,
+                    seed_expr: None,
+                    guard: None,
                 }],
                 lookup_by: None,
             }],
@@ -2373,6 +2728,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         })
     }
 
@@ -2447,6 +2803,7 @@ mod tests {
                     source: source("pump::BondingCurveState", true),
                     key_resolution: KeyResolutionStrategy::Lookup {
                         primary_field: FieldPath::new(&["__account_address"]),
+                        index_name: None,
                     },
                     mappings: [
                         vec![mapping(
@@ -2464,6 +2821,7 @@ mod tests {
                     source: source("pump::RoundState", true),
                     key_resolution: KeyResolutionStrategy::Lookup {
                         primary_field: FieldPath::new(&["round"]),
+                        index_name: None,
                     },
                     mappings: timestamped(),
                     conditions: vec![],
@@ -2539,6 +2897,9 @@ mod tests {
                     pda_field: FieldPath::new(&["accounts", "bonding_curve"]),
                     seed_field: FieldPath::new(&["accounts", "user"]),
                     lookup_name: "default_pda_lookup".to_string(),
+                    sibling: None,
+                    seed_expr: None,
+                    guard: None,
                 }],
                 lookup_by: None,
             }],
@@ -2547,6 +2908,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         })
     }
 
@@ -2677,6 +3039,7 @@ mod tests {
                 },
                 key_resolution: KeyResolutionStrategy::Lookup {
                     primary_field: FieldPath::new(&["__account_address"]),
+                    index_name: None,
                 },
                 mappings: vec![mapping(
                     "state.expires_at",
@@ -2695,6 +3058,9 @@ mod tests {
                     pda_field: FieldPath::new(&["accounts", "entropyVar"]),
                     seed_field: FieldPath::new(&["accounts", "round"]),
                     lookup_name: "default_pda_lookup".to_string(),
+                    sibling: None,
+                    seed_expr: None,
+                    guard: None,
                 }],
                 lookup_by: None,
             }],
@@ -2703,6 +3069,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         })
     }
 
@@ -2744,6 +3111,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         })
     }
 
@@ -2811,6 +3179,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         })
     }
 
@@ -2889,6 +3258,7 @@ mod tests {
                 computed_field_specs: vec![],
                 content_hash: None,
                 views: vec![],
+                scope_field: None,
             });
         let bytecode = MultiEntityBytecode::from_single("Pool".to_string(), spec, 0);
         let context = crate::vm::UpdateContext::with_timestamp(7, "sig-7".to_string(), 1_234_567);
@@ -3602,6 +3972,7 @@ mod tests {
             computed_field_specs: vec![],
             content_hash: None,
             views: vec![],
+            scope_field: None,
         })
     }
 
@@ -3892,6 +4263,7 @@ mod tests {
         spec.handlers.swap(0, 1);
         spec.handlers[1].key_resolution = KeyResolutionStrategy::Lookup {
             primary_field: FieldPath::new(&["accounts", "source_pda"]),
+            index_name: None,
         };
         spec.handlers[1].mappings.remove(0);
         add_owner_index(&mut spec);
@@ -3901,6 +4273,9 @@ mod tests {
                 pda_field: FieldPath::new(&["accounts", "source_pda"]),
                 seed_field: FieldPath::new(&["accounts", "owner"]),
                 lookup_name: "default_pda_lookup".to_string(),
+                sibling: None,
+                seed_expr: None,
+                guard: None,
             }],
             lookup_by: None,
         });
@@ -3997,6 +4372,7 @@ mod tests {
                 computed_field_specs: vec![],
                 content_hash: None,
                 views: vec![],
+                scope_field: None,
             });
         let bytecode = MultiEntityBytecode::from_single("Game".to_string(), spec, 0);
         let mut vm = VmContext::new();

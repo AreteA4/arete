@@ -376,6 +376,59 @@ fn typescript_composition_keeps_independent_program_reads() {
         .contains("export const JURASSIC_SDK"));
 }
 
+#[test]
+fn typescript_composition_session_carries_protocol_clients() {
+    let program = program();
+    let live = adapted_live(&program, "LiveState", "live_pda");
+    let lives = vec![("live".to_string(), live.clone())];
+    let manifest = compose_stack_manifest_v2(
+        "Jurassic",
+        std::slice::from_ref(&program),
+        vec![("live".to_string(), &live)],
+        Vec::new(),
+    )
+    .unwrap();
+
+    let without =
+        compile_typescript_composition(std::slice::from_ref(&program), &lives, &manifest, None)
+            .unwrap();
+    assert!(!without.session_definition.contains("protocols"));
+
+    let config = TypeScriptCompositionConfig {
+        protocol_module_imports: BTreeMap::from([(
+            "tokenRaise".to_string(),
+            "./protocols/token-raise/token-raise.js".to_string(),
+        )]),
+        ..TypeScriptCompositionConfig::default()
+    };
+    let with = compile_typescript_composition(
+        std::slice::from_ref(&program),
+        &lives,
+        &manifest,
+        Some(config),
+    )
+    .unwrap();
+    assert!(with
+        .session_definition
+        .contains("import TokenRaiseProtocol from './protocols/token-raise/token-raise.js';"));
+    assert!(with
+        .session_definition
+        .contains("  protocols: {\n    tokenRaise: TokenRaiseProtocol,\n  },"));
+    // Everything else is what a composition without protocols generates.
+    assert_eq!(
+        with.session_definition
+            .replace(
+                "import TokenRaiseProtocol from './protocols/token-raise/token-raise.js';",
+                ""
+            )
+            .replace(
+                "\n  protocols: {\n    tokenRaise: TokenRaiseProtocol,\n  },",
+                ""
+            ),
+        without.session_definition
+    );
+}
+
 const ORE_WS: &str = "wss://ore.stack.arete.run";
 
 fn ore_manifest_hash(manifest: &StackManifestArtifactV2) -> String {

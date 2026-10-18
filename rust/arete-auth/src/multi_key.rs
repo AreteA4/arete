@@ -496,10 +496,8 @@ mod tests {
     async fn test_invalid_signature_with_multiple_keys() {
         // Create two different key pairs
         let key1_signing = SigningKey::generate();
-        let key1_verifying = key1_signing.verifying_key();
 
         let key2_signing = SigningKey::generate();
-        let _key2_verifying = key2_signing.verifying_key();
 
         let signer = TokenSigner::new(key1_signing, "test-issuer");
 

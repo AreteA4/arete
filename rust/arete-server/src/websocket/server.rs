@@ -1,6 +1,7 @@
 use crate::bus::{BusManager, BusMessage, StateUpdate};
 use crate::cache::{cmp_seq, EntityCache, SnapshotBatchConfig};
 use crate::compression::maybe_compress;
+use crate::row_scope::{session_row_scopes, RowFilter};
 use crate::shared_entity::{lookup, EntityFields, SharedEntity};
 use crate::view::{ViewIndex, ViewSpec};
 use crate::websocket::admission::{WebSocketAdmissionProvider, WebSocketConnectionPermit};
@@ -497,6 +498,18 @@ struct SubscriptionContext {
     /// Cancelled when the server stops; every session ends through its normal
     /// cleanup path rather than being dropped mid-flight.
     shutdown: CancellationToken,
+    /// The connection's row-scope generation. A token refresh that changes
+    /// the session's row scopes bumps it under the write lock before it
+    /// resnapshots, which stops every subscription task still delivering on
+    /// the old scopes (see [`RowFilter::hold`]).
+    row_scope_lock: Arc<tokio::sync::RwLock<u64>>,
+    /// Set on one subscription's copy of the context when its view is
+    /// row-scoped: which rows that subscription may receive.
+    row_filter: Option<RowFilter>,
+    /// Set while re-attaching a subscription after its session's row scopes
+    /// changed: it sends no second `subscribed` frame, and its snapshot
+    /// replaces what the client holds.
+    resnapshot: bool,
 }
 
 pub struct WebSocketServer {
@@ -745,6 +758,9 @@ impl ConnectionAcceptor {
             delivery: self.delivery.clone(),
             metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
+            row_scope_lock: Arc::new(tokio::sync::RwLock::new(0)),
+            row_filter: None,
+            resnapshot: false,
         };
         handle_connection(stream, context, remote_addr, self.auth_plugin.clone()).await
     }
@@ -1057,6 +1073,7 @@ async fn handle_connection(
                 }
 
                 let view = subscription.query.view.clone();
+                let original = subscription.clone();
                 if let Err(error) = attach_client_to_bus(&context, subscription, cancel_token).await
                 {
                     context
@@ -1096,6 +1113,7 @@ async fn handle_connection(
                     ActiveSubscription {
                         view: view.clone(),
                         metrics_metering_key: metering_key.clone(),
+                        subscription: original,
                     },
                 );
                 context
@@ -1123,6 +1141,8 @@ async fn handle_connection(
             }
             ClientMessage::Ping => debug!("Received ping from client {}", client_id),
             ClientMessage::RefreshAuth(request) => {
+                let row_scopes_before =
+                    session_row_scopes(context.client_manager.get_auth_context(client_id).as_ref());
                 handle_refresh_auth(client_id, &request, &context.client_manager, &auth_plugin)
                     .await;
                 // A successful refresh replaces the verified context. Keep
@@ -1133,6 +1153,9 @@ async fn handle_connection(
                     (usage_identity, deployment_id) =
                         usage_identity_from_context(Some(&current_auth));
                     metering_key = usage_identity.metering_key.clone();
+                    if session_row_scopes(Some(&current_auth)) != row_scopes_before {
+                        rescope_subscriptions(&context, &active_subscriptions).await;
+                    }
                 }
             }
         }
@@ -1183,6 +1206,81 @@ struct ActiveSubscription {
     /// Attribute set used for the active-gauge increment. It is immutable
     /// even if a later token refresh moves usage to another billing account.
     metrics_metering_key: Option<String>,
+    /// The subscription as requested, to re-attach it when the session's row
+    /// scopes change.
+    subscription: Subscription,
+}
+
+/// Re-deliver every row-scoped subscription after a token refresh changed the
+/// session's row scopes.
+///
+/// The generation bump comes first, under the write lock, so no task still
+/// running on the old scopes can send once it is done: each send holds the
+/// read lock and checks its generation. Each subscription then re-attaches
+/// with the new scopes: its snapshot is authoritative, so the client drops
+/// rows it may no longer see and receives the ones it now may. A replayable
+/// tape cannot be resnapshotted without resending records the consumer
+/// already has, so it stops with a retryable `subscription-rescoped` issue
+/// and the consumer resubscribes from its cursor.
+async fn rescope_subscriptions(
+    context: &SubscriptionContext,
+    active_subscriptions: &HashMap<String, ActiveSubscription>,
+) {
+    *context.row_scope_lock.write().await += 1;
+    for (subscription_id, active) in active_subscriptions {
+        if context
+            .view_index
+            .scope_field_for_view(&active.view)
+            .is_none()
+        {
+            continue;
+        }
+        let cancel_token = CancellationToken::new();
+        if !context
+            .client_manager
+            .replace_client_subscription_token(
+                context.client_id,
+                subscription_id,
+                cancel_token.clone(),
+            )
+            .await
+        {
+            continue;
+        }
+        let replayable = context.journal.as_ref().is_some_and(|journal| {
+            journal.is_enabled()
+                && context
+                    .view_index
+                    .get_view(&active.view)
+                    .is_some_and(|spec| spec.mode == Mode::Append)
+        });
+        if replayable {
+            let _ = send_control_frame(
+                context,
+                &SocketIssueMessage::subscription_rescoped(subscription_id.clone()),
+                &active.view,
+            );
+            continue;
+        }
+        let mut subscription = active.subscription.clone();
+        subscription.snapshot.enabled = true;
+        let mut resnapshot = context.clone();
+        resnapshot.resnapshot = true;
+        match attach_client_to_bus(&resnapshot, subscription, cancel_token).await {
+            Ok(()) => context.metrics.subscription_resnapshot(&active.view),
+            Err(error) => {
+                warn!(
+                    "Subscription {} could not be resnapshotted for new row scopes: {error:#}",
+                    subscription_id
+                );
+                let _ = send_control_frame(
+                    context,
+                    &SocketIssueMessage::subscription_rescoped(subscription_id.clone()),
+                    &active.view,
+                );
+            }
+        }
+    }
 }
 
 async fn handle_unsubscribe(
@@ -1270,6 +1368,16 @@ enum SnapshotPurpose {
 }
 
 impl SnapshotPurpose {
+    /// The purpose of a subscription's first snapshot: a resnapshot after
+    /// its row scopes changed replaces what the client holds, like recovery.
+    fn first(context: &SubscriptionContext) -> Self {
+        if context.resnapshot {
+            Self::Recovery
+        } else {
+            Self::Initial
+        }
+    }
+
     fn authoritative(self, subscription: &Subscription) -> bool {
         match self {
             Self::Initial => subscription.query.after.is_none(),
@@ -1406,6 +1514,7 @@ async fn send_snapshot_batches(
         let json = serde_json::to_vec(&frame)?;
         let payload = maybe_compress(&json);
         let bytes = payload.as_bytes().len() as u64;
+        let _held = hold_row_scopes_async(context).await?;
         context
             .client_manager
             .send_compressed_async(context.client_id, payload)
@@ -1451,6 +1560,35 @@ fn extract_sort_config(view_spec: &ViewSpec) -> Option<SortConfig> {
     })
 }
 
+/// Hold a row-scoped subscription's right to send on the row scopes it
+/// attached with, for one send: an error once a refresh changed them (see
+/// [`RowFilter::try_hold`]). Nothing to hold for other subscriptions.
+fn hold_row_scopes(
+    context: &SubscriptionContext,
+) -> Result<Option<tokio::sync::RwLockReadGuard<'_, u64>>> {
+    match context.row_filter.as_ref() {
+        None => Ok(None),
+        Some(filter) => filter
+            .try_hold()
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("the session's row scopes changed")),
+    }
+}
+
+/// [`hold_row_scopes`] for a send that awaits.
+async fn hold_row_scopes_async(
+    context: &SubscriptionContext,
+) -> Result<Option<tokio::sync::RwLockReadGuard<'_, u64>>> {
+    match context.row_filter.as_ref() {
+        None => Ok(None),
+        Some(filter) => filter
+            .hold()
+            .await
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("the session's row scopes changed")),
+    }
+}
+
 fn send_control_frame<T: Serialize>(
     context: &SubscriptionContext,
     frame: &T,
@@ -1458,6 +1596,7 @@ fn send_control_frame<T: Serialize>(
 ) -> Result<()> {
     let json = serde_json::to_vec(frame)?;
     let bytes = json.len();
+    let _held = hold_row_scopes(context)?;
     context
         .client_manager
         .send_to_client(context.client_id, Arc::new(Bytes::from(json)))
@@ -1535,6 +1674,30 @@ async fn attach_client_to_bus(
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("unknown view: {}", subscription.query.view))?;
 
+    // A row-scoped view delivers only the rows this session's verified token
+    // covers. The scopes are read here, once, from the token the connection
+    // holds now; a refresh that changes them re-attaches the subscription.
+    let mut scoped_context;
+    let context = match context.view_index.scope_field_for_view(&view_spec.id) {
+        Some(field) => {
+            let generation = *context.row_scope_lock.read().await;
+            scoped_context = context.clone();
+            scoped_context.row_filter = Some(RowFilter::new(
+                field.clone(),
+                session_row_scopes(
+                    context
+                        .client_manager
+                        .get_auth_context(context.client_id)
+                        .as_ref(),
+                ),
+                context.row_scope_lock.clone(),
+                generation,
+            ));
+            &scoped_context
+        }
+        None => context,
+    };
+
     if view_spec.mode == Mode::State && !view_spec.is_derived() && subscription.query.key.is_none()
     {
         return Err(anyhow::anyhow!("state subscriptions require query.key"));
@@ -1582,9 +1745,18 @@ async fn attach_state_subscription(
     let query = subscription.query.clone();
     let cache = context.entity_cache.clone();
     let view_spec_for_snapshot = view_spec.clone();
+    let row_filter = context.row_filter.clone();
     let (mut receiver, mut seen, initial) =
         subscribe_state_then_snapshot(&context.bus_manager, &view_id, &key, move || async move {
-            load_query_entities(&cache, None, &view_spec_for_snapshot, &query, false).await
+            load_query_entities(
+                &cache,
+                None,
+                &view_spec_for_snapshot,
+                &query,
+                row_filter.as_ref(),
+                false,
+            )
+            .await
         })
         .await;
 
@@ -1593,7 +1765,9 @@ async fn attach_state_subscription(
         snapshot_entities.truncate(limit);
     }
     enforce_snapshot_limit(context, snapshot_entities.len())?;
-    send_subscribed_frame(context, &subscription, &view_spec)?;
+    if !context.resnapshot {
+        send_subscribed_frame(context, &subscription, &view_spec)?;
+    }
     // The client holds the entity only if the snapshot actually carried it.
     // A disabled snapshot, or one `snapshotLimit` cut to nothing, leaves it
     // without a copy, so its first change must be a full `upsert`: a patch
@@ -1614,7 +1788,7 @@ async fn attach_state_subscription(
             &subscription,
             &snapshot_entities,
             &view_spec,
-            SnapshotPurpose::Initial,
+            SnapshotPurpose::first(context),
             &context.entity_cache.snapshot_config(),
         )
         .await?;
@@ -1709,6 +1883,30 @@ async fn attach_state_subscription(
                             .get_shared(&view_spec_task.id, &key)
                             .await
                         else {
+                            // A patch that moves the row out of this
+                            // session's row scopes ends its membership.
+                            if member
+                                && task_context.row_filter.as_ref().is_some_and(|filter| {
+                                    source_frame_data(&payload)
+                                        .is_some_and(|data| filter.denies_frame_data(&data))
+                                })
+                            {
+                                member = false;
+                                synced = None;
+                                touched = Value::Null;
+                                if send_membership_frame(
+                                    &task_context,
+                                    &subscription_id,
+                                    &view_spec_task,
+                                    "remove",
+                                    &key,
+                                    Value::Null,
+                                    metadata.seq,
+                                ).is_err() {
+                                    break;
+                                }
+                                continue;
+                            }
                             // A copy of a replaced entity takes no patch: it
                             // waits for the whole entity to replace it.
                             if member && !replaced {
@@ -1724,8 +1922,13 @@ async fn attach_state_subscription(
                             }
                             continue;
                         };
-                        let selected =
-                            select_query_entities(vec![(key.clone(), cached)], &query, true, false);
+                        let selected = select_query_entities(
+                            vec![(key.clone(), cached)],
+                            &query,
+                            task_context.row_filter.as_ref(),
+                            true,
+                            false,
+                        );
                         let is_member = !selected.is_empty();
                         let caught_up = !std::mem::take(&mut behind);
                         let replace = std::mem::take(&mut replaced);
@@ -1857,7 +2060,9 @@ async fn attach_collection_subscription(
         snapshot_entities.truncate(limit);
     }
     enforce_snapshot_limit(context, snapshot_entities.len())?;
-    send_subscribed_frame(context, &subscription, &view_spec)?;
+    if !context.resnapshot {
+        send_subscribed_frame(context, &subscription, &view_spec)?;
+    }
     // Window members the client was never sent: everything past a
     // `snapshotLimit` cut, or the whole window when the snapshot is disabled.
     // They stay in the window (take/skip positions still count them) but the
@@ -1872,13 +2077,14 @@ async fn attach_collection_subscription(
         .skip(delivered_rows)
         .map(|(key, _)| key.clone())
         .collect();
+    let mut sent_whole = SentWhole::default();
     if subscription.snapshot.enabled {
         send_snapshot_batches(
             context,
             &subscription,
             &snapshot_entities,
             &view_spec,
-            SnapshotPurpose::Initial,
+            SnapshotPurpose::first(context),
             &context.entity_cache.snapshot_config(),
         )
         .await?;
@@ -1938,6 +2144,7 @@ async fn attach_collection_subscription(
                             sorted_caches,
                             &view_spec_task,
                             &query,
+                            task_context.row_filter.as_ref(),
                             false,
                         ).await;
                         if emit_coalesced_collection_delta(
@@ -2008,6 +2215,7 @@ async fn attach_collection_subscription(
                                         // Recovery replaces the whole live
                                         // membership, untruncated.
                                         undelivered.clear();
+                                        sent_whole.clear();
                                         pending.clear();
                                         pending_updates = 0;
                                         task_context.metrics.subscription_resnapshot(&view_id);
@@ -2049,6 +2257,7 @@ async fn attach_collection_subscription(
                             sorted_caches,
                             &view_spec_task,
                             &query,
+                            task_context.row_filter.as_ref(),
                             false,
                         ).await;
                         if emit_collection_delta(
@@ -2060,6 +2269,7 @@ async fn attach_collection_subscription(
                             &envelope,
                             &metadata,
                             &mut undelivered,
+                            &mut sent_whole,
                         ).is_err() {
                             task_context.metrics.delivery_stopped(&view_id, "send-failed");
                             break;
@@ -2089,8 +2299,17 @@ async fn subscribe_collection_then_snapshot(
         .then(|| context.view_index.sorted_caches());
     let view_spec = view_spec.clone();
     let query = query.clone();
+    let row_filter = context.row_filter.clone();
     subscribe_list_then_snapshot(&context.bus_manager, source_view_id, move || async move {
-        load_query_entities(&cache, sorted_caches, &view_spec, &query, false).await
+        load_query_entities(
+            &cache,
+            sorted_caches,
+            &view_spec,
+            &query,
+            row_filter.as_ref(),
+            false,
+        )
+        .await
     })
     .await
 }
@@ -2288,6 +2507,11 @@ async fn attach_journal_subscription(
                 }
                 drain_available(&mut receiver, &mut pending, &mut lagged);
                 if journal_record_matches(&task_query, &record)
+                    && frame_in_row_scopes(
+                        task_context.row_filter.as_ref(),
+                        record.row_scope.as_ref(),
+                        &record.payload,
+                    )
                     && send_scoped_source_payload_async(
                         &task_context,
                         &task_subscription_id,
@@ -2466,7 +2690,33 @@ async fn forward_live_frame(
     if !live_frame_matches(query, &envelope.key, &envelope.payload) {
         return true;
     }
+    if !frame_in_row_scopes(
+        context.row_filter.as_ref(),
+        envelope.row_scope.as_ref(),
+        &envelope.payload,
+    ) {
+        return true;
+    }
     send_scoped_source_payload(context, subscription_id, view_id, envelope.payload.clone()).is_ok()
+}
+
+/// Check the scope frozen with a retained or queued frame. Legacy records
+/// may prove scope from an explicit field, but never from today's row state.
+fn frame_in_row_scopes(
+    filter: Option<&RowFilter>,
+    scope: Option<&crate::row_scope::RowScope>,
+    payload: &[u8],
+) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+    if let Some(scope) = scope {
+        return filter.allows_scope(scope);
+    }
+    source_frame_data(payload)
+        .as_ref()
+        .and_then(|data| filter.field().scope_in(data))
+        .is_some_and(|scope| filter.allows_scope(&scope))
 }
 
 fn report_replay_gap(
@@ -2540,6 +2790,7 @@ async fn send_scoped_source_payload_async(
     let json = SourceFields::scoped(&payload, subscription_id)?;
     let compressed = maybe_compress(&json);
     let bytes = compressed.as_bytes().len();
+    let _held = hold_row_scopes_async(context).await?;
     context
         .client_manager
         .send_compressed_async(context.client_id, compressed)
@@ -2703,6 +2954,7 @@ fn send_scoped_source_payload(
         subscription_id,
     )?));
     let bytes = encoded.len();
+    let _held = hold_row_scopes(context)?;
     context
         .client_manager
         .send_to_client(context.client_id, encoded)
@@ -2790,6 +3042,7 @@ fn send_membership_json(
 ) -> Result<()> {
     let encoded = Arc::new(Bytes::from(json));
     let bytes = encoded.len();
+    let _held = hold_row_scopes(context)?;
     context
         .client_manager
         .send_to_client(context.client_id, encoded)
@@ -2817,6 +3070,7 @@ fn emit_collection_delta(
     envelope: &BusMessage,
     metadata: &SourceFrameMetadata,
     undelivered: &mut HashSet<String>,
+    sent_whole: &mut SentWhole,
 ) -> Result<()> {
     let current_keys: HashSet<&str> = current.iter().map(|(key, _)| key.as_str()).collect();
     let next_set: HashSet<&str> = next.iter().map(|(key, _)| key.as_str()).collect();
@@ -2827,6 +3081,7 @@ fn emit_collection_delta(
         .map(|(key, _)| key.as_str())
         .filter(|key| !next_set.contains(key))
     {
+        sent_whole.forget(key);
         // A key the client was never sent has nothing to remove.
         if undelivered.remove(key) {
             continue;
@@ -2857,13 +3112,31 @@ fn emit_collection_delta(
             &metadata.op,
         ) {
             MemberAction::Skip => {}
-            MemberAction::ForwardPatch => send_scoped_source_payload(
-                context,
-                subscription_id,
-                &view_spec.id,
-                envelope.payload.clone(),
-            )?,
+            MemberAction::ForwardPatch => {
+                // The upsert that brought the key into the window may already
+                // carry this patch: it was read from the cache, which folds
+                // a mutation in before its frame reaches this task.
+                if sent_whole.covers(key, || {
+                    source_frame_data(&envelope.payload)
+                        .and_then(|data| data.get("_version").cloned())
+                }) {
+                    continue;
+                }
+                send_scoped_source_payload(
+                    context,
+                    subscription_id,
+                    &view_spec.id,
+                    envelope.payload.clone(),
+                )?
+            }
             MemberAction::Upsert => {
+                let held = in_window && !undelivered.contains(key);
+                // A derived view sends the mutated key whole every time; the
+                // client already holds this exact version.
+                if held && sent_whole.holds(key, data.version()) {
+                    continue;
+                }
+                sent_whole.sent(key, data.version());
                 let seq = metadata
                     .seq
                     .as_deref()
@@ -2882,6 +3155,84 @@ fn emit_collection_delta(
         }
     }
     Ok(())
+}
+
+/// The `_version` of each entity a list subscriber was last sent whole (an
+/// upsert), so a source patch the upsert already carried is not sent again.
+///
+/// A list subscriber sends a key entering its window as the cached entity,
+/// read when the subscriber handles the key's first mutation. The projector
+/// folds a mutation into the cache before the subscriber handles its frame,
+/// so when one key changes twice in quick succession (an entity created by
+/// one instruction and completed by the next in the same transaction), the
+/// upsert already holds the second change, and forwarding the second patch
+/// as well repeats it. Versions are `<epoch>:<counter>`; a patch whose
+/// version is not newer than the one sent whole is skipped.
+///
+/// Forgetting an entry only means a redundant patch may be forwarded, which
+/// clients ignore by version, so the map is capped rather than kept exact.
+#[derive(Default)]
+struct SentWhole(HashMap<String, Value>);
+
+impl SentWhole {
+    /// Entries kept per subscription; beyond it the map starts over.
+    const MAX_ENTRIES: usize = 4096;
+
+    fn sent(&mut self, key: &str, version: Option<&Value>) {
+        match version {
+            Some(version) => {
+                if self.0.len() >= Self::MAX_ENTRIES && !self.0.contains_key(key) {
+                    self.0.clear();
+                }
+                self.0.insert(key.to_string(), version.clone());
+            }
+            None => {
+                self.0.remove(key);
+            }
+        }
+    }
+
+    fn forget(&mut self, key: &str) {
+        self.0.remove(key);
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    /// Whether the client holds exactly `version` of `key`.
+    fn holds(&self, key: &str, version: Option<&Value>) -> bool {
+        version.is_some() && self.0.get(key) == version
+    }
+
+    /// Whether the entity sent whole for `key` already carries a patch whose
+    /// version `patch_version` reads. Reads the patch only when `key` was
+    /// sent whole. A newer patch (or one without a comparable version) ends
+    /// the entry: the client then holds more than what was sent whole.
+    fn covers(&mut self, key: &str, patch_version: impl FnOnce() -> Option<Value>) -> bool {
+        let Some(sent) = self.0.get(key) else {
+            return false;
+        };
+        let covered = match (
+            version_parts(sent),
+            patch_version().as_ref().and_then(version_parts),
+        ) {
+            (Some((sent_epoch, sent_counter)), Some((epoch, counter))) => {
+                epoch == sent_epoch && counter <= sent_counter
+            }
+            _ => false,
+        };
+        if !covered {
+            self.0.remove(key);
+        }
+        covered
+    }
+}
+
+/// `(epoch, counter)` of a `_version` (`<epoch>:<counter>`).
+fn version_parts(version: &Value) -> Option<(String, u64)> {
+    let (epoch, counter) = version.as_str()?.rsplit_once(':')?;
+    Some((epoch.to_string(), counter.parse().ok()?))
 }
 
 /// Emit the net effect of every source mutation seen during one coalescing
@@ -3087,6 +3438,7 @@ async fn load_query_entities(
     >,
     view_spec: &ViewSpec,
     query: &SubscriptionQuery,
+    row_filter: Option<&RowFilter>,
     apply_snapshot_limit: bool,
 ) -> Vec<(String, SharedEntity)> {
     // Rows share their fields with the caches; nothing here copies an entity.
@@ -3103,10 +3455,19 @@ async fn load_query_entities(
         // reaches: rows past it are neither visited nor shared.
         let caches = sorted_caches.read().await;
         if let Some(cache) = caches.get(&view_spec.id) {
+            // A row-scoped view keeps its rows per scope: read only the
+            // partitions this session may see, so its window is as full as
+            // its own rows allow.
+            let no_scopes = std::collections::BTreeSet::new();
+            let rows: Box<dyn Iterator<Item = (&str, &SharedEntity)> + '_> = match row_filter {
+                Some(filter) => Box::new(cache.iter_ordered_in_scopes(filter.scopes())),
+                None if cache.is_scope_partitioned() => {
+                    Box::new(cache.iter_ordered_in_scopes(&no_scopes))
+                }
+                None => Box::new(cache.iter_ordered()),
+            };
             return select_window(
-                cache
-                    .iter_ordered()
-                    .filter(|(key, data)| query_matches_entity(&query, key, *data))
+                rows.filter(|(key, data)| query_matches_entity(&query, key, *data, row_filter))
                     .map(|(key, data)| (key.to_string(), data.clone())),
                 &query,
                 apply_snapshot_limit,
@@ -3140,16 +3501,23 @@ async fn load_query_entities(
     } else {
         (entity_cache.get_all_shared(&view_spec.id).await, false)
     };
-    select_query_entities(entities, &query, preordered, apply_snapshot_limit)
+    select_query_entities(
+        entities,
+        &query,
+        row_filter,
+        preordered,
+        apply_snapshot_limit,
+    )
 }
 
 fn select_query_entities<E: EntityFields>(
     mut entities: Vec<(String, E)>,
     query: &SubscriptionQuery,
+    row_filter: Option<&RowFilter>,
     preordered: bool,
     apply_snapshot_limit: bool,
 ) -> Vec<(String, E)> {
-    entities.retain(|(key, data)| query_matches_entity(query, key, data));
+    entities.retain(|(key, data)| query_matches_entity(query, key, data, row_filter));
     if !preordered {
         entities.sort_by(|left, right| {
             let left_seq = left.1.field("_seq").and_then(Value::as_str).unwrap_or("");
@@ -3183,11 +3551,19 @@ fn select_window<E>(
     rows.skip(skip).take(take).collect()
 }
 
+/// Whether a whole row belongs to the subscription: in its row scopes (when
+/// the view is row-scoped), then its key, `partition`, `after` and `filters`.
+/// The client-supplied predicates only narrow; none of them can admit a row
+/// the row filter refuses.
 fn query_matches_entity<E: EntityFields + ?Sized>(
     query: &SubscriptionQuery,
     key: &str,
     data: &E,
+    row_filter: Option<&RowFilter>,
 ) -> bool {
+    if row_filter.is_some_and(|filter| !filter.allows(data)) {
+        return false;
+    }
     if !query.matches_key(key) {
         return false;
     }
@@ -3483,6 +3859,31 @@ mod tests {
     }
 
     #[test]
+    fn a_patch_the_whole_entity_already_carried_is_not_sent_again() {
+        let mut sent = SentWhole::default();
+        sent.sent("k", Some(&json!("e1:5")));
+        // Older or equal patches were folded into what was sent.
+        assert!(sent.covers("k", || Some(json!("e1:4"))));
+        assert!(sent.covers("k", || Some(json!("e1:5"))));
+        assert!(sent.holds("k", Some(&json!("e1:5"))));
+        // A newer one is forwarded and ends the entry.
+        assert!(!sent.covers("k", || Some(json!("e1:6"))));
+        assert!(!sent.covers("k", || Some(json!("e1:3"))));
+        // Another epoch or no version is never taken as covered.
+        sent.sent("k", Some(&json!("e1:5")));
+        assert!(!sent.covers("k", || Some(json!("e2:1"))));
+        sent.sent("k", Some(&json!("e1:5")));
+        assert!(!sent.covers("k", || None));
+        // A key never sent whole reads no patch.
+        assert!(!sent.covers("other", || panic!("read only for keys sent whole")));
+        // An unversioned upsert leaves nothing to compare against.
+        sent.sent("k", Some(&json!("e1:5")));
+        sent.sent("k", None);
+        assert!(!sent.holds("k", None));
+        assert!(!sent.covers("k", || Some(json!("e1:1"))));
+    }
+
+    #[test]
     fn a_key_entering_the_window_gets_the_whole_entity() {
         // "5" has no local state for the subscriber to merge a patch into.
         let plan = plan_window(&["4", "3"], &["5", "4", "3"], "5", false, "patch");
@@ -3547,6 +3948,7 @@ mod tests {
 
     fn list_message(key: &str, op: &str, seq: &str) -> Arc<BusMessage> {
         Arc::new(BusMessage {
+            row_scope: None,
             key: key.to_string(),
             entity: "Thing/list".to_string(),
             payload: Arc::new(Bytes::from(
@@ -3841,11 +4243,13 @@ mod tests {
             &query,
             "one",
             &json!({"state": {"status": "open"}, "metrics": {"count": 2}}),
+            None,
         ));
         assert!(!query_matches_entity(
             &query,
             "one",
             &json!({"state": {"status": "open"}, "metrics": {"count": "2"}}),
+            None,
         ));
     }
 
@@ -3869,11 +4273,12 @@ mod tests {
             skip: Some(2),
             ..first.clone()
         };
-        let first_keys: Vec<_> = select_query_entities(entities.clone(), &first, false, false)
-            .into_iter()
-            .map(|(key, _)| key)
-            .collect();
-        let second_keys: Vec<_> = select_query_entities(entities, &second, false, false)
+        let first_keys: Vec<_> =
+            select_query_entities(entities.clone(), &first, None, false, false)
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect();
+        let second_keys: Vec<_> = select_query_entities(entities, &second, None, false, false)
             .into_iter()
             .map(|(key, _)| key)
             .collect();
@@ -3925,6 +4330,7 @@ mod tests {
         bus.publish_list(
             view,
             Arc::new(BusMessage {
+                row_scope: None,
                 key: "one".to_string(),
                 entity: view.to_string(),
                 payload: Arc::new(Bytes::from_static(br#"{"op":"patch"}"#)),
@@ -4013,6 +4419,7 @@ mod tests {
                                 Some(caches.clone()),
                                 &spec,
                                 &query,
+                                None,
                                 apply_snapshot_limit,
                             )
                             .await;
@@ -4023,6 +4430,7 @@ mod tests {
                             let expected = select_query_entities(
                                 whole.clone(),
                                 &expected_query,
+                                None,
                                 true,
                                 apply_snapshot_limit,
                             );
@@ -4059,7 +4467,8 @@ mod tests {
             view: spec.id.clone(),
             ..Default::default()
         };
-        let rows = load_query_entities(&cache, Some(caches.clone()), &spec, &query, false).await;
+        let rows =
+            load_query_entities(&cache, Some(caches.clone()), &spec, &query, None, false).await;
         assert_eq!(
             rows.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
             ["6", "5", "4", "3", "2", "1"]
@@ -4073,27 +4482,29 @@ mod tests {
         query.skip = Some(1);
         query.take = Some(3);
         query.snapshot_limit = Some(1);
-        let rows = load_query_entities(&cache, Some(caches.clone()), &spec, &query, false).await;
+        let rows =
+            load_query_entities(&cache, Some(caches.clone()), &spec, &query, None, false).await;
         assert_eq!(
             rows.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
             ["4", "3", "2"]
         );
         assert_eq!(
-            load_query_entities(&cache, Some(caches.clone()), &spec, &query, true)
+            load_query_entities(&cache, Some(caches.clone()), &spec, &query, None, true)
                 .await
                 .len(),
             1
         );
         query.skip = None;
         query.after = Some("20:0".into());
-        let rows = load_query_entities(&cache, Some(caches.clone()), &spec, &query, false).await;
+        let rows =
+            load_query_entities(&cache, Some(caches.clone()), &spec, &query, None, false).await;
         assert_eq!(
             rows.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
             ["3", "4", "5"]
         );
         query.filters.insert("owner".into(), json!("bob"));
         assert!(
-            load_query_entities(&cache, Some(caches), &spec, &query, false)
+            load_query_entities(&cache, Some(caches), &spec, &query, None, false)
                 .await
                 .is_empty()
         );
@@ -4121,8 +4532,8 @@ mod tests {
             snapshot_limit: Some(1),
             ..Default::default()
         };
-        let live = load_query_entities(&cache, None, &list_spec(), &query, false).await;
-        let snapshot = load_query_entities(&cache, None, &list_spec(), &query, true).await;
+        let live = load_query_entities(&cache, None, &list_spec(), &query, None, false).await;
+        let snapshot = load_query_entities(&cache, None, &list_spec(), &query, None, true).await;
         assert_eq!(live.len(), 3);
         assert_eq!(snapshot.len(), 1);
     }
@@ -4269,6 +4680,7 @@ mod tests {
 
     fn bus_message(key: &str) -> Arc<BusMessage> {
         Arc::new(BusMessage {
+            row_scope: None,
             key: key.to_string(),
             entity: "Trade/append".to_string(),
             payload: Arc::new(Bytes::from_static(b"{}")),
@@ -5759,6 +6171,64 @@ mod tests {
             socket.close(None).await.ok();
         }
 
+        /// A key created and completed by two mutations of one batch (an
+        /// activity row and the instruction joined to it) enters a list as one
+        /// upsert carrying both, read from the cache once both are folded in.
+        /// The second mutation's patch is in that upsert, so it is not
+        /// forwarded again; the key's next change is.
+        // One worker, and a projector the cooperative budget cannot interrupt:
+        // the whole batch is published before the subscriber runs.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn a_key_entering_a_list_is_not_sent_the_patch_its_upsert_carries() {
+            let harness = Harness::start(WebSocketDeliveryConfig::default()).await;
+            seed(&harness).await;
+            let mut socket = harness
+                .subscribe(json!({"view": "Thing/list"}), false)
+                .await;
+
+            let slot = harness
+                .slot
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut creation = Mutation {
+                export: "Thing".to_string(),
+                key: json!("n"),
+                patch: json!({"name": "thing-n"}),
+                append: vec![],
+            };
+            creation.mark_created();
+            let joined = Mutation {
+                export: "Thing".to_string(),
+                key: json!("n"),
+                patch: json!({"flag": true}),
+                append: vec![],
+            };
+            harness
+                .tx
+                .send(MutationBatch::with_slot_context(
+                    vec![creation, joined].into_iter().collect(),
+                    SlotContext::new(slot, 0),
+                ))
+                .await
+                .unwrap();
+
+            let upsert = next_frame(&mut socket).await;
+            assert_eq!(upsert["key"], "n");
+            assert_eq!(upsert["op"], "upsert", "unexpected frame: {upsert}");
+            assert_eq!(upsert["data"]["name"], "thing-n");
+            assert_eq!(upsert["data"]["flag"], true);
+            let (_, sent) = version_of(&upsert["data"]);
+
+            // The next frame is the key's next change, not the joined patch.
+            harness.patch("n", json!({"count": 9})).await;
+            let patch = next_frame(&mut socket).await;
+            assert_eq!(patch["key"], "n");
+            assert_eq!(patch["op"], "patch", "unexpected frame: {patch}");
+            assert_eq!(patch["data"]["count"], 9, "unexpected frame: {patch}");
+            let (_, patched) = version_of(&patch["data"]);
+            assert!(patched > sent, "{patched} after {sent}");
+            socket.close(None).await.ok();
+        }
+
         /// Eviction from the server's bounded cache is not a change to the
         /// entity: a client holding it keeps getting its patches, never a
         /// `remove`, and the whole entity replaces its copy when it returns.
@@ -6179,5 +6649,49 @@ mod tests {
             assert_eq!(active.get("account:1"), Some(&0));
             assert_eq!(active.get("account:2"), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod retained_scope_regressions {
+    use super::*;
+    use crate::row_scope::{RowScope, ScopeField};
+
+    #[test]
+    fn sparse_private_frames_never_inherit_a_later_public_scope() {
+        let public = RowFilter::new(
+            ScopeField::new("meta.scope"),
+            Default::default(),
+            Arc::new(tokio::sync::RwLock::new(0)),
+            0,
+        );
+        let entitled = RowFilter::new(
+            ScopeField::new("meta.scope"),
+            ["B".to_string()].into_iter().collect(),
+            Arc::new(tokio::sync::RwLock::new(0)),
+            0,
+        );
+        let patch = br#"{"data":{"secret":"private-at-the-time"}}"#;
+        let original_scope = RowScope::Scoped("B".into());
+        assert!(!frame_in_row_scopes(
+            Some(&public),
+            Some(&original_scope),
+            patch
+        ));
+        assert!(frame_in_row_scopes(
+            Some(&entitled),
+            Some(&original_scope),
+            patch
+        ));
+        // The public transition itself is delivered, without relabeling old frames.
+        assert!(frame_in_row_scopes(
+            Some(&public),
+            Some(&RowScope::Public),
+            br#"{"data":{"meta":{"scope":null}}}"#
+        ));
+        // Legacy sparse records have no proof of membership: fail closed.
+        assert!(!frame_in_row_scopes(Some(&public), None, patch));
+        assert!(!frame_in_row_scopes(Some(&entitled), None, patch));
+        assert!(frame_in_row_scopes(None, None, patch));
     }
 }

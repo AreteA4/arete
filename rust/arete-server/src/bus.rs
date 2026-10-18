@@ -6,6 +6,8 @@ use tokio::sync::{broadcast, watch, RwLock};
 /// Message sent through the event bus
 #[derive(Debug, Clone)]
 pub struct BusMessage {
+    /// Effective scope at publication; never recomputed from later row state.
+    pub row_scope: Option<crate::row_scope::RowScope>,
     pub key: String,
     pub entity: String,
     pub payload: Arc<Bytes>,

@@ -217,6 +217,7 @@ fn token_account_spec() -> TypedStreamSpec<Value> {
         }],
         content_hash: None,
         views: vec![],
+        scope_field: None,
     })
 }
 
