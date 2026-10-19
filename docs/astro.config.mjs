@@ -65,6 +65,7 @@ export default defineConfig({
         {
           label: "Start Here",
           items: [
+            { label: "Get started", link: "/" },
             { slug: "getting-started/what-is-arete" },
             { slug: "using-stacks/quickstart" },
             { slug: "integrating-protocols/overview" },
