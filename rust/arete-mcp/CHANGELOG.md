@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.42.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.41.2...arete-mcp-v0.42.0) (2026-10-18)
+
+
+### Features
+
+* **mcp:** add protocol tools and cloud dev environments ([08fa666](https://github.com/AreteA4/arete/commit/08fa666d9dd78f5192573d571cd5b820f6f781ba))
+* **mcp:** add protocol tools and cloud dev environments ([6e4f398](https://github.com/AreteA4/arete/commit/6e4f398309d9adaf5645d48b6d9445a44941905a))
+
+
+### Bug Fixes
+
+* **mcp:** preserve wallets and correct dev tool summaries ([88fb592](https://github.com/AreteA4/arete/commit/88fb592fca97fa2f1f6cf4f17bd0f04fc8c2170c))
+* **mcp:** reject invalid wallet destinations without retrying ([9a7735a](https://github.com/AreteA4/arete/commit/9a7735ac118d0074c4413316f8306983a4bbe750))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-solana-contracts bumped from 0.2.0 to 0.3.0
+
 ## [0.41.2](https://github.com/AreteA4/arete/compare/arete-mcp-v0.41.1...arete-mcp-v0.41.2) (2026-10-13)
 
 

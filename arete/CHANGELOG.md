@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.42.0](https://github.com/AreteA4/arete/compare/arete-v0.41.2...arete-v0.42.0) (2026-10-18)
+
+
+### Features
+
+* **interpreter:** declared lookups, write guards and entitled row scoping ([d02bf89](https://github.com/AreteA4/arete/commit/d02bf893432aba64d5e4305fbf416df7af83486a))
+* **interpreter:** enforce declared lookups guards and entitled row scopes ([bfa961a](https://github.com/AreteA4/arete/commit/bfa961a599d94f3a81f750190a51b3c242de7762))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.41.2 to 0.42.0
+    * arete-macros bumped from 0.41.2 to 0.42.0
+    * arete-server bumped from 0.41.2 to 0.42.0
+
 ## [0.41.2](https://github.com/AreteA4/arete/compare/arete-v0.41.1...arete-v0.41.2) (2026-10-13)
 
 

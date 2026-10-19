@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0](https://github.com/AreteA4/arete/compare/arete-artifacts-v0.4.0...arete-artifacts-v0.5.0) (2026-10-18)
+
+
+### Features
+
+* **hash:** add protocol artifact contracts and native builtin identities ([6eb21da](https://github.com/AreteA4/arete/commit/6eb21da937fc1a617112be4f0ca8898611a5f44c))
+* **hash:** add protocol artifact contracts and native builtin identities ([34a802b](https://github.com/AreteA4/arete/commit/34a802be4c35ee7c78d057aae15072586aa23b02))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-hash bumped from 0.5.3 to 0.6.0
+    * arete-idl bumped from 0.8.0 to 0.9.0
+
 ## [0.4.0](https://github.com/AreteA4/arete/compare/arete-artifacts-v0.3.6...arete-artifacts-v0.4.0) (2026-10-12)
 
 

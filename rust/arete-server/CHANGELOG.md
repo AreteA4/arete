@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.42.0](https://github.com/AreteA4/arete/compare/arete-server-v0.41.2...arete-server-v0.42.0) (2026-10-18)
+
+
+### Features
+
+* **interpreter:** declared lookups, write guards and entitled row scoping ([d02bf89](https://github.com/AreteA4/arete/commit/d02bf893432aba64d5e4305fbf416df7af83486a))
+* **interpreter:** enforce declared lookups guards and entitled row scopes ([bfa961a](https://github.com/AreteA4/arete/commit/bfa961a599d94f3a81f750190a51b3c242de7762))
+
+
+### Bug Fixes
+
+* **runtime:** preserve row entitlements and guarded lookup state ([216c5c8](https://github.com/AreteA4/arete/commit/216c5c86e4ab6142032e754535c899687540ea52))
+* **runtime:** retain append scope and distinguish pathless siblings ([43a861a](https://github.com/AreteA4/arete/commit/43a861ad1318f6e019fc1e2a73554e5e4b99173c))
+* **server:** recognize nested scope parent replacements ([087fef0](https://github.com/AreteA4/arete/commit/087fef00a26916dc7d2d2a793c6f2e34b57b4e2e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-solana-contracts bumped from 0.2.0 to 0.3.0
+    * arete-interpreter bumped from 0.41.2 to 0.42.0
+    * arete-hash bumped from 0.5.3 to 0.6.0
+    * arete-auth bumped from 0.5.0 to 0.6.0
+
 ## [0.41.2](https://github.com/AreteA4/arete/compare/arete-server-v0.41.1...arete-server-v0.41.2) (2026-10-13)
 
 

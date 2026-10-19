@@ -6,6 +6,19 @@
 
 * add strict hosted-private Program Release V3 identity and shared vectors
 
+## [0.7.0](https://github.com/AreteA4/arete/compare/arete-hash-npm-v0.6.1...arete-hash-npm-v0.7.0) (2026-10-18)
+
+
+### Features
+
+* **hash:** add protocol artifact contracts and native builtin identities ([6eb21da](https://github.com/AreteA4/arete/commit/6eb21da937fc1a617112be4f0ca8898611a5f44c))
+* **hash:** add protocol artifact contracts and native builtin identities ([34a802b](https://github.com/AreteA4/arete/commit/34a802be4c35ee7c78d057aae15072586aa23b02))
+
+
+### Bug Fixes
+
+* **hash:** align IDL layouts and reject unsafe contract values ([8ed312f](https://github.com/AreteA4/arete/commit/8ed312f282d9f3419cb097b71a14aff961d11e55))
+
 ## [0.6.1](https://github.com/AreteA4/arete/compare/arete-hash-npm-v0.6.0...arete-hash-npm-v0.6.1) (2026-10-06)
 
 

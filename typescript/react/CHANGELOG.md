@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.42.0](https://github.com/AreteA4/arete/compare/arete-react-v0.41.2...arete-react-v0.42.0) (2026-10-18)
+
+
+### Features
+
+* **sdk:** add protocol clients across TypeScript React Rust and Python ([789f609](https://github.com/AreteA4/arete/commit/789f60907648de63668fa82a951d602444e44f77))
+* **sdk:** protocol clients for TypeScript, React, Rust and Python ([e96c35c](https://github.com/AreteA4/arete/commit/e96c35c3bea7f2e960e958e41623e012b0a135af))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.41.2 to ^0.42.0
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.41.2 to ^0.42.0
+
 ## [0.41.2](https://github.com/AreteA4/arete/compare/arete-react-v0.41.1...arete-react-v0.41.2) (2026-10-13)
 
 

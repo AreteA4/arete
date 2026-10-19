@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+## [0.42.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.41.2...a4-cli-v0.42.0) (2026-10-18)
+
+
+### Features
+
+* **cli:** add protocol commands and cloud development UI ([9a25b6a](https://github.com/AreteA4/arete/commit/9a25b6a08574b59e4521b2250b9909fecc6d9f9e))
+* **cli:** add protocol commands and cloud development UI ([582218c](https://github.com/AreteA4/arete/commit/582218c5a41bfe56b78bc9d802abd4fb352e86f2))
+* **hash:** add protocol artifact contracts and native builtin identities ([6eb21da](https://github.com/AreteA4/arete/commit/6eb21da937fc1a617112be4f0ca8898611a5f44c))
+* **interpreter:** declared lookups, write guards and entitled row scoping ([d02bf89](https://github.com/AreteA4/arete/commit/d02bf893432aba64d5e4305fbf416df7af83486a))
+* **sdk:** add protocol clients across TypeScript React Rust and Python ([789f609](https://github.com/AreteA4/arete/commit/789f60907648de63668fa82a951d602444e44f77))
+* **sdk:** protocol clients for TypeScript, React, Rust and Python ([e96c35c](https://github.com/AreteA4/arete/commit/e96c35c3bea7f2e960e958e41623e012b0a135af))
+
+
+### Bug Fixes
+
+* **cli:** box staged artifacts as live metadata grows ([977fdce](https://github.com/AreteA4/arete/commit/977fdcecc281c3abb4febad72ba6a5bb9d3f007e))
+* **cli:** default protocol imports in runtime composition config ([5f5fb13](https://github.com/AreteA4/arete/commit/5f5fb13c5d12c23edde9b2aa5ce1c436f3daf50b))
+* **cli:** isolate production reuse and harden dev lifecycle ([103f96b](https://github.com/AreteA4/arete/commit/103f96bde586ac86d49b92a47cd06dc412d1bb7c))
+* **idl:** keep length-prefixed string consumers compatible ([03a9470](https://github.com/AreteA4/arete/commit/03a94708aeea7e663b2d7cae44d9db45a081d0f5))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.41.2 to 0.42.0
+    * arete-artifacts bumped from 0.4.0 to 0.5.0
+    * arete-idl bumped from 0.8.0 to 0.9.0
+    * arete-hash bumped from 0.5.3 to 0.6.0
+    * arete-mcp bumped from 0.41.2 to 0.42.0
+    * arete-solana-contracts bumped from 0.2.0 to 0.3.0
+  * build-dependencies
+    * arete-hash bumped from 0.5.3 to 0.6.0
+
 ## [0.41.2](https://github.com/AreteA4/arete/compare/a4-cli-v0.41.1...a4-cli-v0.41.2) (2026-10-13)
 
 

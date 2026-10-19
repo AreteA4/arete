@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-solana-contracts-v0.2.0...arete-solana-contracts-v0.3.0) (2026-10-18)
+
+
+### Features
+
+* **sdk:** add protocol clients across TypeScript React Rust and Python ([789f609](https://github.com/AreteA4/arete/commit/789f60907648de63668fa82a951d602444e44f77))
+* **sdk:** protocol clients for TypeScript, React, Rust and Python ([e96c35c](https://github.com/AreteA4/arete/commit/e96c35c3bea7f2e960e958e41623e012b0a135af))
+
+
+### Bug Fixes
+
+* **sdk:** isolate live handles capture files and metadata proofs ([8d4a3e8](https://github.com/AreteA4/arete/commit/8d4a3e898fa500b81ebe7275bcbd4e46cf363923))
+
 ## [0.2.0](https://github.com/AreteA4/arete/compare/arete-solana-contracts-v0.1.0...arete-solana-contracts-v0.2.0) (2026-10-05)
 
 
