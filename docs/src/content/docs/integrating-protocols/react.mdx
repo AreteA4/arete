@@ -34,7 +34,7 @@ function InstancePanel({ client, instanceId, wallet }: {
   const { instance, isLoading, error } = useProtocolInstance(
     client, instanceId, { wallet },
   );
-  const { data: steps } = useAllowedSteps(
+  const { data: steps, isLoading: stepsLoading, error: stepsError } = useAllowedSteps(
     client, { instance: instanceId, wallet }, { refreshOnEvents: true },
   );
 
@@ -42,9 +42,11 @@ function InstancePanel({ client, instanceId, wallet }: {
   if (isLoading) return <p>Loading instance…</p>;
   return <section>
     <p>State: {instance?.state}</p>
-    <ul>{steps?.map((step) => <li key={step.step}>
-      {step.step}: {step.allowed ? "available" : step.reason}
-    </li>)}</ul>
+    {stepsError ? <p role="alert">Could not load actions: {stepsError.message}</p>
+      : stepsLoading ? <p>Loading actions…</p>
+      : <ul>{steps?.map((step) => <li key={step.step}>
+          {step.step}: {step.allowed ? "available" : step.reason}
+        </li>)}</ul>}
   </section>;
 }
 ```
