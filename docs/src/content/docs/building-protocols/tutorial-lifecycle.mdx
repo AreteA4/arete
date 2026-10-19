@@ -1,0 +1,130 @@
+---
+title: Add a deadline and test the lifecycle
+description: Extend the tip jar with a timed state, exercise two wallets, and verify both successful and expired outcomes.
+---
+
+Extend [your first protocol](/using-stacks/quickstart/) to give each instance a
+deadline. You will test role rejection, successful closure, and expiration,
+then connect the same state and actions to an application.
+
+This remains a teaching example using transfers between wallets. Expiration
+closes the Arete workflow; it does not recover money from the recipient.
+
+## 1. Declare the deadline
+
+In `protocol.ts`, change `params` to:
+
+```ts
+params: { amount: "u64", deadline: "unixTimestamp" },
+```
+
+Add `deadline` to the `open` step's arguments and check that it is in the future:
+
+```ts
+args: { recipient: "pubkey", amount: "u64", deadline: "unixTimestamp" },
+guards: {
+  amount_zero: "args.amount > 0",
+  deadline_not_future: "args.deadline > now",
+},
+```
+
+Creation retains the deadline as an instance parameter. Replace
+`machines.instance` with:
+
+```ts
+instance: {
+  initial: "open",
+  states: {
+    open: "recorded",
+    closed: { kind: "recorded", terminal: true },
+    expired: { kind: "derived", terminal: true },
+  },
+  derive: [{
+    from: ["open"],
+    to: "expired",
+    when: "now >= params.deadline",
+    at: "params.deadline",
+  }],
+},
+```
+
+Keep the `close` step's existing authority, guards, transition, and transfer.
+Add a guard so preparation also checks the deadline immediately:
+
+```ts
+deadline_passed: "now < params.deadline",
+```
+
+The derived state makes expiry visible even without someone calling `close`.
+The guard checks the boundary when the step is prepared.
+
+## 2. Check and deploy into the fork
+
+```sh
+npx arete-protocol check
+a4 dev up --open
+```
+
+If `a4 dev up` is already watching, save the file and wait for the new
+deployment to become active instead of starting a second session. Use
+`a4 dev status` to inspect the environment's clock. Choose a Unix timestamp
+in seconds at least an hour ahead of that clock, and use its decimal string
+as `<deadline>` below.
+
+## 3. Test the successful path
+
+Create or inspect `creator` and `recipient` with `a4 dev wallet <name>`.
+Open a fresh instance:
+
+```sh
+a4 dev step open --wallet creator --args '{"recipient":"<recipient-pubkey>","amount":"1000000","deadline":"<deadline>"}'
+```
+
+With the returned id, try `close` as creator and expect rejection, then close
+as recipient:
+
+```sh
+a4 dev step close --wallet creator --instance <instance-id> --args '{"amount":"1000000"}'
+a4 dev step close --wallet recipient --instance <instance-id> --args '{"amount":"1000000"}'
+a4 dev instance <instance-id> --wallet recipient
+```
+
+The first command exits non-zero by design. The second completes, and the
+instance becomes `closed`. A repeat is rejected with `instance_terminal`.
+Follow `a4 stream --dev --instance <instance-id>` to inspect activity.
+
+## 4. Test expiration
+
+Open another instance with the same future deadline and copy its id. Advance
+the environment past that deadline:
+
+```sh
+a4 dev warp +2h
+a4 dev instance <second-instance-id> --wallet recipient
+a4 protocol actions --dev --wallet recipient --instance <second-instance-id>
+```
+
+Use a larger warp if your deadline was more than two hours away. The time
+transition is processed asynchronously; re-read until the instance is
+`expired`. Its steps then report `instance_terminal`. A prepare at the time
+boundary can instead reject with `deadline_passed` before the derived state
+has been recorded. Your UI should handle both outcomes.
+
+Changing the fork's clock affects every protocol in that environment. Use a
+separate environment when another experiment needs its original clock.
+
+## 5. Build the interface
+
+Use the [generated dev client](/development/application/) from the local
+build. Display the instance state with `useProtocolInstance`, and use
+`useAllowedSteps` with the connected wallet to explain why closure is unavailable.
+Keep preparation's rejection handling even when a button was enabled.
+
+The same view should show three meaningful outcomes: open and actionable for
+the recipient, closed after confirmation, or expired after the deadline.
+See the [React guide](/integrating-protocols/react/) for the hooks and
+[execution guide](/integrating-protocols/execution/) for signing and submission.
+
+For repeatable tests, save checkpoints before changing chain state and use
+[step replay](/development/testing/). Recompute deadlines when replaying after
+the environment clock has advanced.

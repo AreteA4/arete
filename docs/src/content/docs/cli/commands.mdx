@@ -1137,11 +1137,12 @@ What happens at activation depends on the protocol:
   deployments at trust tier `unreviewed`. While the server's template check is
   `pending`, activation waits until the server has the program specs the
   templates target (step 2 pushes the project's own).
-- **Protocols with handler code** can't run until an operator reviews the
+- **Production protocols with handler code** can't run until an operator reviews the
   release. The command creates the deployment, prints the release hash to
   share with the operator, and exits 0 with status `review-required`. The
-  operator reviews the release and activates the deployment; owners never
-  activate handler code themselves.
+  operator reviews the exact release; rerun deployment after review to attempt
+  activation. Private cloud dev deployments can run handlers without review;
+  that exception does not apply to this production command.
 - **Public deployments** can only be created by an operator. Self-serve
   deployments are always private.
 

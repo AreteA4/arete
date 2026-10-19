@@ -7,6 +7,24 @@ The `arete-a4-sdk` crate is the Rust client for generated Program SDKs and
 stacks. It mirrors the core TypeScript model with native Rust idioms: generated
 structs, builder chains, and `Stream` implementations.
 
+## Protocol clients
+
+Use `a4 install protocol <package> --rust` for a package whose descriptor
+verifies Rust. Its generated README gives the crate import, typed steps,
+rejection codes, and client construction. Protocol clients support instances,
+participants, wallet actions, metadata, event streams, submission tracking,
+and execution receipts.
+
+`actions(ProtocolWalletActionsRequest::new(wallet))` discovers the wallet's
+create steps and related instances. Handle the typed prepare result, sign the
+returned transactions locally without rebuilding messages, submit, and follow
+the execution id. Receipt verification uses `verify_receipt` and
+`verify_receipt_on_chain`.
+
+[Protocol integration](/integrating-protocols/overview/) ·
+[Execution lifecycle](/integrating-protocols/execution/) ·
+[Protocol reference](/reference/protocols/)
+
 ## Install the runtime
 
 ```toml

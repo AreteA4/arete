@@ -5,8 +5,9 @@
 > output instead. Copy commands exactly; do not paraphrase them.
 
 Arete is operated through the `a4` CLI. Use it for setup, authentication,
-catalog discovery, exact descriptors, project dependencies, SDK generation,
-live-data inspection, and hosted lifecycle commands. Do not recreate its HTTP
+protocol authoring and integration, cloud dev environments, catalog discovery,
+exact descriptors, project dependencies, SDK generation, live-data inspection,
+and hosted lifecycle commands. Do not recreate its HTTP
 requests from documentation.
 
 For a new project, start with the complete bootstrap page:
@@ -31,6 +32,24 @@ or restart the host, then run `a4 doctor --json` again.
 
 Follow the exact `fix` reported for a required doctor failure. Use current
 `a4 <command> --help` output when a command surface differs from this guide.
+
+## Protocols and cloud development
+
+For new authoring, follow https://docs.arete.run/using-stacks/quickstart/.
+`a4 protocol init` scaffolds the definition; `a4 dev up` builds and deploys it
+into a persistent cloud mainnet fork. `a4 dev step`, `a4 protocol actions --dev`,
+and `a4 stream --dev` exercise and inspect that deployment. Private dev handlers
+can iterate without review; production handlers require review.
+
+For integration, search with `a4 protocol search`, inspect `a4 protocol show
+<slug>` and `a4 explore protocol <package>`, then install the exact advertised
+package with `a4 install protocol <package> --ts`. See
+https://docs.arete.run/integrating-protocols/overview/.
+
+Cloud environments and deployment require account access beyond restricted
+agent discovery signup. Use only configured credentials; never request a human
+secret. Production deployment (`a4 protocol deploy`), package publication, public
+listing, and execution are distinct actions requiring the user's authorization.
 
 ## Work from intent
 

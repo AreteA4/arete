@@ -13,6 +13,24 @@ The Python SDK follows the same conceptual model as TypeScript and Rust:
 generated programs, generated stacks, typed account reads, live views, shared
 chain reads, local wallet signing, and application sessions.
 
+## Protocol clients
+
+The repository includes protocol clients and generation through
+`a4 install protocol <package> --python`. Select Python only when the exact
+package descriptor verifies it, and account for the publication status above.
+The generated README describes its imports, typed step methods, and rejection
+codes.
+
+Clients expose instances, participants, wallet action discovery, metadata,
+events, intent tracking, and receipts. Use `await client.actions(wallet)` for
+wallet actions; receipt helpers are `verify_receipt` and
+`verify_receipt_on_chain`. Preserve the prepared transactions when signing
+locally and track the existing execution after submission.
+
+[Protocol integration](/integrating-protocols/overview/) ·
+[Execution lifecycle](/integrating-protocols/execution/) ·
+[Protocol reference](/reference/protocols/)
+
 ## Install for development
 
 From the repository checkout:

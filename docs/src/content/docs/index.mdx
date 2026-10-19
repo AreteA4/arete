@@ -1,160 +1,86 @@
 ---
 title: Arete
-description: Go from a question about Solana to a working, fully typed application, with your agent doing the legwork.
+description: Build Solana protocols, develop against a persistent mainnet fork, and connect applications and agents through generated clients.
 ---
 
 import { Card, CardGrid } from "@astrojs/starlight/components";
 import CopyPrompt from "../../components/CopyPrompt.astro";
-import Workflow from "../../components/Workflow.astro";
 
-# From an on-chain question to a working Solana app
+# Build a protocol. Run it. Put it in your app.
 
-Arete is a toolkit for building on Solana **with an AI agent**. You describe
-what you want to know or build. Your agent finds the right on-chain programs,
-checks live data to confirm it has what you need, and installs ready-made,
-fully typed code into your project.
-
-You can start with nothing but a question. You don't need to know a program ID,
-an account layout, a view name, or an endpoint first. Finding those is the
-agent's job.
+Arete lets you compose Solana programs into a protocol with defined steps,
+permissions, and lifecycle. Write the definition in TypeScript, try it against
+a persistent mainnet fork, and use the generated client from an app or agent.
+Wallets sign locally; the underlying Solana programs execute the transactions.
 
 <CardGrid>
-  <Card title="Explore with your agent" icon="star">
-    Ask what is happening on-chain. Your agent finds the programs and live data
-    that can answer, connects to them, and reports back. No code required.
+  <Card title="Build your first protocol" icon="laptop">
+    Start a tip jar, run its steps with dev wallets, and watch its state change.
 
-    [Ask your first question →](/agent-skills/explore-on-chain/)
+    [Start building →](/using-stacks/quickstart/)
   </Card>
+  <Card title="Integrate an existing protocol" icon="puzzle">
+    Install a published protocol and connect to its deployment with your own key.
 
-  <Card title="Build with a program" icon="laptop">
-    Already know which program you need? Install its generated SDK and get
-    typed reads, address helpers, and transaction building from day one.
-
-    [Use a Program SDK →](/using-programs/overview/)
+    [Build an integration →](/integrating-protocols/overview/)
   </Card>
 </CardGrid>
 
-## Explore, shape, ship
+## Define what your product does
 
-<Workflow steps={[
-  {
-    title: "Explore",
-    description: "Ask a question and look at real, live data"
-  },
-  {
-    title: "Shape",
-    description: "Pick the data your app needs, or define it"
-  },
-  {
-    title: "Ship",
-    description: "Install it as typed code and build"
-  }
-]} />
+A raise has contributors, a deadline, and different outcomes. A deal has
+counterparties and a settlement step. These are more than individual
+transactions: they have instances, participants, permissions, and state.
 
-1. **Explore.** Your agent searches the Arete catalog for programs and live
-   views that match what you asked, then connects and looks at real data. It
-   does this through MCP, the standard way agents plug into outside tools.
-2. **Shape.** If an existing view already has the data your app needs, use it.
-   If the catalog doesn't have one, define a focused view that does.
-3. **Ship.** Your choices are written to `arete.toml`, pinned to exact versions
-   in `arete.lock`, and turned into generated code with stable types your app
-   can build on.
+An **Arete Protocol** describes that workflow. Its steps compose instructions
+from installed programs, check guards, and declare who signs. Its lifecycle
+can respond to confirmed activity, chain state, and time. Generated clients
+expose those steps and their typed arguments, current state, and events.
 
-[Follow the complete journey →](/getting-started/from-question-to-app/)
+[Understand protocols →](/getting-started/what-is-arete/)
 
-## Start with one prompt
+## Develop against real programs
 
-Open your project in a coding agent and paste this:
+`a4 dev up` runs your protocol in a cloud dev environment: a persistent fork
+of mainnet hosted for your account. Fund test wallets, advance time, inspect
+activity, save checkpoints, and replay steps. Your local app and coding agent
+use the protocol API against that environment while you edit.
+
+There is no local validator to install. The CLI, dev UI, and wallet keys stay
+on your machine. Dev-environment SOL has no mainnet value.
+
+[Develop and test →](/cli/local-development/)
+
+## Connect an app or agent
+
+Install a protocol to get its generated client, including the stacks and
+programs it depends on. An app can discover what a wallet can do, prepare a
+step, ask the wallet to sign, submit it, and follow the outcome. React hooks
+follow instances, participants, and available actions. MCP gives agents the
+same protocol workflow.
+
+[Application integration →](/integrating-protocols/overview/) ·
+[Protocols for agents →](/agent-skills/protocols/)
+
+## Start with your coding agent
 
 <CopyPrompt>
 Read https://docs.arete.run/agent.md and follow it to set up Arete in this
-project. Verify the setup, and simply explain what Arete is capable of.
+project. Verify the setup, and explain how protocols and cloud dev environments
+fit together. Do not deploy to production or submit transactions during setup.
 </CopyPrompt>
 
-That one page tells the agent everything it needs: how to install the `a4`
-command-line tool, set up your project, check that everything works, and find
-its way around the catalog. Behind the scenes, `a4 init` installs the Arete
-skills and connects both MCP servers for whichever agent you're using.
+Then follow [Build your first protocol](/using-stacks/quickstart/). Cloud dev
+environments require an account with the appropriate access; the restricted
+agent signup used by the setup guide does not grant owner deployment access.
 
-[See the manual equivalent →](/using-stacks/quickstart/)
+## Extend with programs and live data
 
-## Programs are the foundation
+Program SDKs provide account readers, address helpers, and instruction builders.
+Live views arrange chain data for your application; stacks bundle those views
+with their programs. Use them within a protocol or independently when your
+application only needs reads, transactions, or subscriptions.
 
-A Solana **program** is an app that lives on-chain. Other chains call these
-smart contracts. For every program it supports, Arete generates a **Program
-SDK**: code your app (or your agent) uses to read that program's data and send
-it transactions, without anyone decoding bytes by hand.
-
-What's inside depends on the program and the language you pick, but the layout
-is always the same:
-
-| Surface | What it gives you |
-| --- | --- |
-| **Accounts** | The program's on-chain data as typed objects, matched to the exact release you installed |
-| **PDAs and addresses** | The addresses the program uses, worked out for you instead of copied seed logic |
-| **Raw instructions** | Low-level builders that mirror the program's own interface one-to-one |
-| **Operations and flows** | Higher-level actions shaped like what your app does, including ones that span several instructions or transactions |
-| **Transactions** | Local signing, inspection before sending, submission, confirmation, and clear outcomes when something fails |
-| **Chain** | General Solana reads for anything outside the program's own accounts |
-
-[Understand Program SDKs →](/using-programs/overview/)
-
-## Add live views where they help
-
-A program's accounts are the raw material. A **live view** is that data
-arranged the way an app wants to read it, and kept current as the chain
-changes: open positions, active rounds, rankings, totals, filtered activity. A
-view can draw on one program or several. Views are optional. Add them when
-reading accounts one by one stops being enough.
-
-A **stack** is the installable bundle: a set of live views plus the Program
-SDKs they depend on. Your app installs the stack. How those views are grouped
-or hosted behind the scenes is not something it needs to know.
-
-[Programs, views, and stacks →](/concepts/programs-views-stacks/)
-
-## Typed all the way into your application
-
-Everything you install, stacks and standalone programs alike, comes together in
-one session object inside your app. Each package lists the languages it has
-been verified for, so choose from TypeScript, React, Rust, or Python
-accordingly.
-
-<CardGrid>
-  <Card title="TypeScript" icon="seti:typescript">
-    Combine programs and stacks, read accounts, watch views, and run prepared
-    operations.
-
-    [TypeScript SDK →](/sdks/typescript/)
-  </Card>
-  <Card title="React" icon="seti:react">
-    Typed hooks for reads, views, and mutations, with loading and recovery
-    states you can see and handle.
-
-    [React SDK →](/sdks/react/)
-  </Card>
-  <Card title="Rust" icon="seti:rust">
-    Build native services, bots, and high-performance data workflows with an
-    async Rust API.
-
-    [Rust SDK →](/sdks/rust/)
-  </Card>
-  <Card title="Python" icon="seti:python">
-    Build scripts, services, bots, and data workflows with a typed async Python
-    API.
-
-    [Python SDK →](/sdks/python/)
-  </Card>
-</CardGrid>
-
-## Exact, inspectable dependencies
-
-`arete.toml` lists what your project wants to use. `arete.lock` records exactly
-what `a4 install` resolved that to: the precise program, stack, artifact, and
-generated-package identities. Between them, anyone (or any agent) can rebuild
-the same project later.
-
-Generated files are stamped with where they came from. When something needs to
-change, regenerate them instead of editing them by hand.
-
-[Project dependencies →](/building-stacks/configuration/) · [CLI reference →](/cli/commands/)
+[Program SDKs →](/using-programs/overview/) ·
+[Live views →](/using-stacks/connect/) ·
+[Custom live data →](/building-stacks/workflow/)

@@ -20,6 +20,21 @@ If you're building a React application, use the [React SDK](/sdks/react/) instea
 
 ---
 
+## Protocol clients
+
+Install with `a4 install protocol <package> --ts` and read the generated README
+for its import. Use `createProtocolClient` on its own, or register a definition
+under `createSession({ protocols: { alias: definition } }, options)` to access
+`session.protocols.alias` with its connected stack and program dependencies.
+
+Protocol clients expose typed step preparation, wallet actions, instances,
+participants, metadata, event streams, execution outcomes, and receipts. They
+use the protocol API independently of the stack's WebSocket connection.
+
+[Integration guide](/integrating-protocols/overview/) ·
+[Prepare, sign, and submit](/integrating-protocols/execution/) ·
+[Protocol API reference](/reference/protocols/)
+
 ## Installation
 
 ```bash

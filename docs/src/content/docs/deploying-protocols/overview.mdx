@@ -1,0 +1,107 @@
+---
+title: Deploy and publish a protocol
+description: Take a tested protocol to a private production deployment, update generated clients, and understand publication and public listing.
+---
+
+Deploy to production after testing the protocol and its application in a
+[cloud dev environment](/cli/local-development/). Production deployments use
+mainnet: their transactions can move real assets when signed and submitted.
+Deploying the protocol is separate from executing its steps.
+
+## Prepare the release
+
+Check the definition, dependencies, and handlers. Test permitted and rejected
+actions, time boundaries, repeat calls, and partial transaction outcomes.
+
+```sh
+npx arete-protocol check
+npx arete-protocol build
+a4 protocol deploy --dry-run
+```
+
+Choose resource values and a fee policy. Configure them with flags or the
+project's `arete.toml`:
+
+```toml
+[protocol]
+slug = "my-protocol"
+name = "My Protocol"
+fee_policy = "fee-policy.json"
+
+[protocol.resources]
+launchDefaults = "launch-defaults.json"
+```
+
+Only declare resources your spec actually uses. Fee policy and resource
+schemas are checked at deployment. Hosted platform fees apply alongside the
+protocol's declared fee policy; do not assume the zero-fee dev default is a
+production fee exemption.
+
+## Deploy privately
+
+```sh
+a4 protocol deploy
+```
+
+The command builds, registers any required local-IDL programs, uploads the
+release, creates or reuses a private deployment, and attempts activation.
+Identical uploads reuse their release identity. Use `--no-activate` to leave
+the deployment disabled, or `--json` to inspect the returned status.
+
+- Template-only releases can activate privately at trust tier `unreviewed`
+  once their checks and dependencies are ready.
+- Production handler releases require review. The command can return
+  `review-required` after creating a deployment; this is not an active release.
+- Self-serve `a4 protocol deploy` creates private deployments. Making a
+  deployment public is a separate operation involving Arete.
+
+Private dev environments permit handler iteration without review. That
+exception does not carry over to production. See
+[review and trust](/deploying-protocols/trust/).
+
+## Verify the application dependency
+
+When your project installs its own protocol, deployment tries to update the
+client to the newly deployed version. If a registry package is not available
+yet, it can generate from the deployed build and leave `local_build` marked
+in the lockfile. Read the deploy result; do not assume activation implies a
+published install.
+
+After the package is available:
+
+```sh
+a4 update protocol <alias>
+a4 install --check
+```
+
+Read the generated descriptor and README to confirm the deployment, release,
+step access, and targets. Commit the manifest and lockfile according to your
+project's dependency workflow. Use `a4 install --locked` to reproduce the
+published resolution; it cannot restore a package that has never been published.
+
+A replacement release does not automatically migrate old instances. Plan
+client rollout and how existing instances finish on their original deployment.
+
+## Deployment, package, and listing
+
+These are separate milestones:
+
+- **Active deployment:** the protocol can execute for callers with access.
+- **Published package:** an exact client dependency can be installed.
+- **Public listing:** a callable package appears in protocol search.
+
+Publication does not make a private deployment public. To request discovery
+for an eligible public deployment:
+
+```sh
+a4 protocol request-listing
+a4 protocol listing-status
+```
+
+Listing eligibility checks include deployment access, public dependencies,
+fee policy, and account standing. A self-serve private deployment will first
+need Arete to make it public. Read the listing result and resolve the named
+requirement instead of assuming deployment automatically lists the protocol.
+
+[CLI deployment reference](/cli/commands/#a4-protocol-deploy-dir) ·
+[Listing reference](/cli/commands/#a4-protocol-request-listing)

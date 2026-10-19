@@ -1,5 +1,6 @@
 ---
-title: Develop with a4 dev and cloud dev environments
+title: Cloud dev environments
+description: Run protocols and Solana apps against a persistent mainnet fork with local wallets, a dev UI, live data, and repeatable experiments.
 sidebar:
   order: 3
 ---
@@ -23,9 +24,14 @@ signed transactions leave.
 | The chain   | A fork of mainnet. Its SOL is worthless: fund any account with `a4 dev fund`. Its blockhashes are synthetic, so nothing signed for it can land on mainnet.                                                                                                                                                                                                        |
 | Freshness   | **Untouched accounts follow mainnet; touched accounts are yours.** An account is read from mainnet the first time the environment needs it. Accounts you wrote (funded, sent transactions to, set by a scenario) stay as you left them. `a4 dev rebase` refetches every account you never wrote, `a4 dev pin` keeps one as it is, `a4 dev follow` keeps one live. |
 | Persistence | An environment keeps its state. It sleeps when nobody has used it for a while (or on `a4 dev sleep`), and the next RPC call, `a4 dev up` or `a4 dev wake` wakes it with its state; its clock then jumps to mainnet's.                                                                                                                                             |
-| Checkpoints | A checkpoint is a saved copy of the whole state. Restore one into the environment, or branch a new environment from it.                                                                                                                                                                                                                                           |
+| Checkpoints | A checkpoint saves the fork's chain state. It does not version your source or published packages. Restore one into the environment, or branch a new environment from it.                                                                                                                                                                                          |
 | Retention   | A sleeping environment is kept for your plan's retention period (`a4 dev list --json` shows it as `idleRetentionDays`), then deleted with its checkpoints.                                                                                                                                                                                                        |
 | Usage       | Environments count against your plan: how many you have, their active hours, storage (state and checkpoints), RPC requests and sends per minute, and the mainnet reads they make. `a4 dev list` shows the limits and your usage.                                                                                                                                  |
+
+For a guided first run, follow [Build your first protocol](/using-stacks/quickstart/).
+For application integration and repeatable experiments, see
+[Connect your app](/development/application/) and [Testing](/development/testing/).
+This page is the detailed environment and command guide.
 
 ## Requirements
 
@@ -110,12 +116,12 @@ moves to it. Once the new deployment is active, the previous one is
 disabled, so at most one is active; `a4 dev status` lists them. A failed
 build or deploy is reported and the previous deployment keeps running.
 
-**Handler code is reviewed.** A release with handlers (`handlers/`) runs
-only after Arete reviews it, in a dev environment too. Until then activation
-answers `protocol-review-required`: `a4 dev up` says so and keeps the
-deployment it created, and the next `a4 dev up` (or rebuild) of the same
-release activates it once it is reviewed. Template-only protocols activate
-at once.
+**Private dev handlers can run without review.** A handler release bound to
+this private environment can activate at trust tier `unreviewed`. This lets
+you iterate on `handlers/` through the same rebuild loop as templates.
+Production handler releases still require review of their exact release hash;
+running in a dev environment does not approve a production deployment.
+See [review and trust](/deploying-protocols/trust/).
 
 Ctrl-C (or `a4 dev down` from another terminal) stops what runs locally:
 the RPC endpoint and the dev UI. The environment keeps its state and sleeps

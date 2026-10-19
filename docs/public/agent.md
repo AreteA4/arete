@@ -31,11 +31,31 @@ Any summary of this page must keep these commands verbatim, and the Capabilities
 - If new skills or MCP tools are not visible, ask the user to restart the agent
   host, then run `a4 doctor --summary --json` again.
 - To tell the user what Arete can do, use the Capabilities list below: Arete
-  is for Solana programs and data. The vocabulary adds the catalog's
+  is for building and running Solana protocols, with programs and live data as supporting capabilities. The vocabulary adds the catalog's
   categories as examples. The `AGENTS.md` or `CLAUDE.md` that `a4 init`
   writes has the same summary.
 
 Never read, print, or copy credential files or keys. Never put a key in source.
+
+## Protocol workflows
+
+For new protocol authoring, read https://docs.arete.run/using-stacks/quickstart/
+and https://docs.arete.run/building-protocols/definition/. Use `a4 protocol init`
+for the scaffold, then `a4 dev up` for the cloud environment. For an existing
+published protocol, use `a4 protocol search`, `a4 protocol show <slug>`, inspect
+the package descriptor, and `a4 install protocol <package> --ts`.
+
+Protocol execution through MCP is documented at
+https://docs.arete.run/agent-skills/protocols/. Use `dev: true` for the project's
+dev deployment. Preparation, signing, submission, and production deployment
+remain distinct authorized actions. Private dev handlers can run without review;
+production handler releases require review.
+
+Cloud environments and owner deployments require the appropriate account access.
+The restricted agent signup above does not grant that access. If the project
+lacks owner credentials, explain the requirement and continue only with work
+its existing access allows. Do not request a human secret or claim discovery
+signup enabled deployment.
 
 ## Fast path for one-off questions
 
@@ -60,6 +80,10 @@ Take `<category>` from the vocabulary:
 
 Arete can:
 
+- compose Solana programs into protocols with typed steps, guards, roles, instance and participant lifecycle, reactions, metadata, and events;
+- develop protocols in persistent cloud mainnet forks with local wallets, a dev UI, checkpoints, branches, time control, scenarios, and replay;
+- install protocol clients for apps, and let agents discover wallet actions, prepare steps, inspect transactions, sign locally, submit, and track outcomes;
+- deploy protocols, with production handler review and separate package publication and public listing;
 - discover relevant programs and stacks from intent through the public catalog;
 - read deployed live views once with `a4 get` (or MCP `read_view`), or follow them with MCP or `a4 stream`;
 - generate typed TypeScript, React, Rust, or Python SDKs when supported;
@@ -136,12 +160,14 @@ bindings, and install command; do not invent missing delivery.
 | `arete-stack-authoring` | Custom read models and portable artifacts            |
 | `arete-deploy`          | Only explicitly authorized publication or deployment |
 
-Use MCP for exploration and generated SDKs for shipped code. Answer live reads
+Use MCP for agent exploration and protocol execution, and generated SDKs for
+shipped application code. Answer live reads
 with provenance (stack and view). If no suitable view exists, explain the gap.
 Do not construct endpoints.
 
 ### Install capabilities
 
+    a4 install protocol <package> --ts
     a4 install program <slug> --ts
     a4 install stack <slug> --ts
     a4 install --locked

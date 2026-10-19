@@ -1,0 +1,93 @@
+---
+title: Protocol API and authoring reference
+description: Find protocol authoring entry points, generated client methods, React hooks, build commands, and cross-language interfaces.
+---
+
+Use this page to locate protocol interfaces after following the
+[authoring](/building-protocols/definition/) or
+[integration](/integrating-protocols/overview/) guide. Exact installed types
+and the generated README describe the release your application actually calls.
+
+## Authoring package
+
+`@usearete/protocol` exports `defineProtocol`, `ix`, and `builtins` for
+protocol definitions; `wirePreparedOperation`, `PrepareInputV1`, and
+`ProtocolContextV1` for handlers; and validators and types for public artifacts.
+`@usearete/protocol/testing` supplies `runHandler` and replay contexts.
+
+Definition fields include `programs`, `stacks`, `params`, `resources`, `roles`,
+`reads`, `machines`, `steps`, `metadata`, `reactions`, `events`, and `stack`.
+Use the package's TypeScript declarations for each nested schema and
+[the package reference](https://github.com/AreteA4/arete/tree/main/typescript/protocol).
+Do not copy identity hashes from a sample instead of importing installed modules.
+
+```sh
+npx arete-protocol check [protocol.ts]
+npx arete-protocol build [protocol.ts] --out .arete/protocol
+```
+
+Brackets indicate optional arguments, not literal shell syntax. `--server-release`
+selects server release derivation when needed for comparing release identities.
+Normal development uses `a4 dev up`; production uses `a4 protocol deploy`.
+
+## TypeScript protocol client
+
+`createProtocolClient(definition, options)` creates a standalone client.
+`createSession({ protocols: { alias: definition } }, options)` includes it in
+an application session.
+
+| Surface                                                       | Purpose                                                          |
+| ------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `steps.<name>.prepare(input, options?)`                       | Prepare a typed step or return a typed rejection                 |
+| `actions({ wallet, instance?, cursor?, limit? })`             | Wallet actions and related instances                             |
+| `allowedSteps({ instance, wallet })`                          | Step availability for one instance                               |
+| `instances.list(filter?)`, `instances.get(id, options?)`      | Canonical instance reads                                         |
+| `instances.use(id, options?)`                                 | Reactive instance handle with optional live row                  |
+| `participants.get({ instance, wallet })`                      | Canonical participant read                                       |
+| `submit(intent, signedTransactions)`                          | Submit exact wallet-signed transactions                          |
+| `intents.get(executionId)`                                    | Read execution outcome                                           |
+| `events(instanceId, options)`                                 | Resumable instance event stream                                  |
+| `metadata.instance(id)`, `metadata.participant(input)`        | Metadata handles and wallet proof messages                       |
+| `squads.proposer()`, `addProposer(input)`, `status(multisig)` | Multisig proposer onboarding                                     |
+| `getReceipt(signature)`, `getReceiptKeys()`                   | Receipt and verification keys                                    |
+| `stacks`, `programs`                                          | Included definitions, or connected dependencies inside a session |
+| `close()`                                                     | Release the client's owned resources                             |
+
+Secret-key clients expose client-callable steps; publishable-key clients are
+typed for public steps. Runtime access and authority checks still apply.
+Amounts use `ProtocolInteger` decimal strings. Prepare returns the discriminated
+`ProtocolPrepareResult`: check `ok` before reading `intent` and `transactions`.
+
+## React hooks
+
+| Hook                                              | Purpose                                                        |
+| ------------------------------------------------- | -------------------------------------------------------------- |
+| `useProtocolInstance(client, id, options?)`       | Canonical instance, optional live row, loading, error, refresh |
+| `useWalletActions(client, input, options?)`       | Wallet action discovery                                        |
+| `useAllowedSteps(client, input, options?)`        | Availability for one instance and wallet                       |
+| `useProtocolParticipant(client, input, options?)` | Participant state                                              |
+| `useProtocolEvents(client, id, options)`          | Event subscription with unmount cleanup                        |
+
+[React integration](/integrating-protocols/react/) explains stable client
+ownership and event-driven refresh.
+
+## Rust and Python
+
+Install verified targets with `a4 install protocol <package> --rust` or
+`--python`. Generated clients expose the same concepts with language-specific
+names and typed step arguments. Read their generated README for construction,
+imports, steps, rejection types, and event payloads.
+
+Wallet action discovery uses `actions` in each language. Receipt helpers use
+`verify_receipt` and `verify_receipt_on_chain` in Rust and Python.
+Python's repository implementation is available for development; check its
+[publication status](/sdks/python/) before selecting it for distribution.
+
+## CLI and MCP
+
+[Protocol CLI commands](/cli/commands/#a4-protocol-init-dir) cover init, deploy,
+actions, search, show, and listing requests.
+[Dev commands](/cli/local-development/) cover environments, wallets, steps,
+streaming, replay, and debugging.
+[Protocol MCP tools](/agent-skills/protocols/) cover discovery, actions,
+prepare, submit, intent tracking, and receipts, with an optional local signer.

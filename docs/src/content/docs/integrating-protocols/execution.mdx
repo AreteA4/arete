@@ -1,0 +1,90 @@
+---
+title: Execute and track a step
+description: Discover wallet actions, prepare typed steps, inspect and sign transactions, submit exact bytes, and handle execution outcomes.
+---
+
+A protocol action has separate discovery, preparation, signing, submission,
+and confirmation phases. Keep these visible in your interface so users know
+what they are approving and whether the action actually completed.
+
+## Discover what the wallet can do
+
+```ts
+const actions = await client.actions({ wallet });
+const steps = await client.allowedSteps({ instance: instanceId, wallet });
+```
+
+`actions` returns create steps and a page of instances related to the wallet
+as creator, participant, or role holder. Each step reports whether it is
+allowed, a rejection reason when it is not, and typed arguments. Pass
+`nextCursor` back as `cursor` to page the instances.
+
+`argsDependent` identifies checks that need arguments before they can be
+resolved. Discovery helps explain your UI; preparation remains authoritative.
+
+## Prepare with the generated signature
+
+For a scaffold tip jar, a secret-key client prepares `open` like this:
+
+```ts
+const prepared = await client.steps.open.prepare({
+  wallet,
+  recipient,
+  amount: "1000000",
+}, { transactionFormat: "v0" });
+
+if (!prepared.ok) {
+  console.log(prepared.rejection);
+  return;
+}
+```
+
+This fragment belongs in an async function; `open` and its arguments are
+specific to the scaffold. Other protocols have their own generated signatures.
+An instance or participant step also takes `instance`.
+
+A rejection is a normal result, including guard failures, access failures,
+`instance_terminal`, and `participant_terminal`. Re-read actions after a
+state rejection instead of repeatedly preparing the same action.
+
+A successful result contains `intent`, including `executionId`, fees,
+required signers, and expiry, plus ordered `transactions` with
+`transactionBase64`. Reuse an explicit `idempotencyKey` in prepare options
+when retrying the same preparation request.
+
+## Inspect and sign
+
+Decode the exact transactions using your wallet library. Show the invoked
+programs, transfers, accounts, fees, and simulation results your application
+can establish before asking for a signature. The MCP prepare tool also
+provides a transaction summary; its balance changes require a simulation RPC.
+
+Have the designated wallet sign every transaction, preserving signatures
+already present. Do not rebuild messages, replace their blockhash, reorder
+transactions, or discard platform signatures. Only signing the prepared
+messages preserves the intent's commitment to the exact bytes.
+
+The wallet adapter is application-specific. After signing, serialize the
+transactions back to bytes or base64 strings in their original order.
+
+## Submit and follow the outcome
+
+```ts
+const outcome = await client.submit(prepared.intent, signedTransactions);
+const latest = await client.intents.get(prepared.intent.executionId);
+```
+
+Here `signedTransactions` is the ordered output from your wallet-signing
+code. Submit before the intent expires. A submitted action may still be
+pending, partially completed, chain-failed, or of unknown submission status;
+only report success when its outcome is `completed`.
+
+If the response is pending or the connection is lost, query the existing
+execution id. Do not prepare and submit a replacement just because the
+response was slow. A multi-transaction step may partially complete; it is not
+a single atomic transaction. Inspect its per-transaction outcomes before
+choosing any recovery action.
+
+After completion, re-read the instance and participant and update available
+actions. Read [execution receipts](/deploying-protocols/trust/#execution-receipts)
+when you need verifiable evidence of an attested transaction.

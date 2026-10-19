@@ -1,0 +1,94 @@
+---
+title: Integrate an existing protocol
+description: Discover a callable protocol, install its generated client, and connect from a browser, server, or application session.
+---
+
+Install a published protocol to use its steps, state, and events in your app.
+An available public protocol already has a deployment: you do not deploy a
+copy into your account just to call it.
+
+## Find a callable package
+
+```sh
+a4 protocol search
+a4 protocol search "<intent>"
+a4 protocol show <slug>
+a4 explore protocol <package>
+```
+
+Listings describe callable Arete Protocols, including steps, access, trust,
+and the exact package reference to install. Search and show need no API key.
+Curated knowledge about external Solana protocols is a separate discovery
+surface; a knowledge entry does not imply an executable Arete Protocol exists.
+
+Inspect the listing and package descriptor. Use the advertised install command
+and a supported target rather than assuming a particular example is public.
+
+## Install the client
+
+```sh
+a4 init -y
+a4 install protocol <package>@=<version> --ts
+```
+
+Use the exact package and version from discovery. The installer records the
+dependency in `arete.toml`, pins it in `arete.lock`, and generates the client
+plus its stack and program dependencies. Read the generated `README.md` for
+the import path, step signatures, access, and rejection codes.
+
+## Create a client
+
+This example uses placeholder names: replace the import with the generated
+module for your installed protocol.
+
+```ts
+import { createProtocolClient } from "@usearete/sdk";
+import PROTOCOL from "./generated/typescript/protocols/my-protocol/my-protocol.js";
+
+// Browser: an origin-bound publishable key from your account.
+const client = createProtocolClient(PROTOCOL, {
+  auth: { publishableKey },
+});
+
+const actions = await client.actions({ wallet });
+const instances = await client.instances.list({ limit: 20 });
+```
+
+Use a secret-key client on your backend for `secret` steps. In a server or
+local script, omitting auth options uses the supported environment or CLI
+login credential resolution. The API still checks your account's access.
+Never embed a secret key in a browser.
+
+A public step permits preparation with a publishable-key session. It still
+requires its declared wallet authority to sign. `create` and role steps
+default to `secret`; inspect the installed step declarations.
+
+## Compose a session
+
+```ts
+import { createSession } from "@usearete/sdk";
+
+const session = await createSession(
+  { protocols: { myProtocol: PROTOCOL } },
+  { auth: { publishableKey } },
+);
+const client = session.protocols.myProtocol;
+```
+
+The protocol's dependencies are promoted into `session.stacks` and
+`session.programs`, alongside other installed dependencies. A standalone
+protocol client exposes stack definitions; a session supplies the connected
+stack clients. Use a session when the app needs live data as well as protocol
+API reads. Close the client or session when its owner is done with it.
+
+## Choose the next task
+
+- [Execute a step](/integrating-protocols/execution/): discover, prepare,
+  inspect, sign, submit, and follow the outcome.
+- [Build a React UI](/integrating-protocols/react/): instances, participants,
+  and wallet actions.
+- [Events and backend integration](/integrating-protocols/events/): streams,
+  metadata, webhooks, and Squads onboarding.
+- [Use an agent](/agent-skills/protocols/): the same protocol flow through MCP.
+- [Develop your own protocol](/development/application/): connect to your
+  private dev deployment instead of a published one.

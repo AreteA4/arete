@@ -2,7 +2,7 @@
 
 Author, check and build Arete Protocols: declarative protocol specs with
 instance and participant state machines, guarded steps, reactions and named
-events, plus the reviewed handler escape hatch.
+events, plus custom handlers for dynamic instruction construction.
 
 The package contains:
 
@@ -55,10 +55,10 @@ field is omitted when the list is empty.
 A step that a template can't express may name a **handler**. Handlers are
 the escape hatch, and they are deliberately narrow:
 
-- Handlers run only after human review. A release runs on a protocol host
-  only when its bundle hash matches and a review signature over the release
-  hash verifies against review keys the host trusts
-  (`verifyReleaseReview` checks the same signature).
+- Production handlers run only after human review of the exact release.
+  Private deployments bound to a cloud dev environment can run handlers
+  without review so authors can iterate. Review of a dev release is still
+  required before that handler release can run in production.
 - A handler reaches data **only** through the typed `ctx`: Solana account
   reads, token accounts by owner, and stack views. It has no network,
   filesystem, clock, randomness, environment or secrets. Every `ctx` call is
@@ -74,16 +74,16 @@ use of `fetch`, `WebSocket`, `process`, `eval`, `new Function`, dynamic
 `import()`, `require` and Node built-ins so you learn early what review and
 the host will refuse.
 
-Running untrusted, self-service handler code (WASM or another isolation
-sandbox) is deferred; until then every handler is reviewed.
+The source checker is not a security boundary. Use the hosted private dev
+environment for iteration; production handler execution remains review-gated.
 
 Deployments carry a **trust tier** (`TrustTier`):
 
-- `reviewed`: a reviewer signed the release. Required for any release with
-  handlers and for every public deployment.
-- `unreviewed`: no review. Only a template-only release on a private
-  deployment may run at this tier, so no author code runs unreviewed. A hosted
-  service may let the owner activate such a deployment without an operator.
+- `reviewed`: a reviewer signed the exact release. Production handler
+  releases require verified review.
+- `unreviewed`: no review backs this revision. Template-only releases may run
+  at this tier under the hosted service's access and listing rules. Handlers
+  may run unreviewed only in private cloud dev-environment deployments.
 
 A review document always attests `reviewed`; `unreviewed` is the absence of a
 review, so `validateProtocolReleaseReview` rejects it.
@@ -336,8 +336,9 @@ ARETE_HANDLER_HOST_TOKEN=… arete-protocol serve-handlers \
   [--listen 127.0.0.1:0] [--token-file <path>] [--timeout-ms 10000]
 ```
 
-`a4 dev` starts this for you when a protocol has handlers. It runs only
-reviewed handler bundles: a release whose review signature doesn't verify
+This is a standalone loopback tool, separate from `a4 dev up`, which uses
+cloud dev environments and hosted handler execution. The standalone tool runs
+only reviewed handler bundles: a release whose review signature doesn't verify
 against a `--review-key` is refused. Handlers run with the same ABI, the same
 `ctx` methods and the same result validation as on a hosted protocol host.
 
