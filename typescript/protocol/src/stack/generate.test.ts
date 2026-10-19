@@ -52,7 +52,12 @@ describe("generateStackSource: interim profile", () => {
       programs: { meteoraPresale: { registry: "meteora-presale", version: "=1.1.0" } },
     });
     const golden = JSON.parse(readFileSync(resolve(here, "testdata/token-raise.protocol-stack-source.json"), "utf8"));
-    expect(generated).toEqual(golden);
+    // Golden files are also historical hash vectors; their recorded package
+    // version stays fixed. The current generator identity is checked below.
+    expect(generated).toEqual({
+      ...golden,
+      generator: { ...golden.generator, version: PACKAGE_VERSION },
+    });
     expect(validateContract("protocol-stack-source", generated)).toMatch(/^arete:h1:protocol-stack-source:sha256:/);
   });
 
@@ -118,7 +123,11 @@ describe("generateStackSource: full profile", () => {
 
   it("matches the token-raise golden file", () => {
     const golden = JSON.parse(readFileSync(resolve(here, "testdata/token-raise.full.protocol-stack-source.json"), "utf8"));
-    expect(full).toEqual(golden);
+    // Preserve the historical vector while checking this release's generator.
+    expect(full).toEqual({
+      ...golden,
+      generator: { ...golden.generator, version: PACKAGE_VERSION },
+    });
     expect(full.profile).toBe("full");
     expect(validateContract("protocol-stack-source", full)).toMatch(/^arete:h1:protocol-stack-source:sha256:/);
   });
