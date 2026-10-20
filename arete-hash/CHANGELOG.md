@@ -10,6 +10,14 @@
   `catalog-bundle`, `catalog-publication-set`) with shared Rust/TypeScript
   vectors; no existing identity changes
 
+## [0.6.1](https://github.com/AreteA4/arete/compare/arete-hash-v0.6.0...arete-hash-v0.6.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **protocol:** allow builtin program stack activity ([751d5a7](https://github.com/AreteA4/arete/commit/751d5a73979d92bc74153011d6da7eb47959ba4a))
+* **protocol:** allow declared builtin programs in stack activity ([221d0ea](https://github.com/AreteA4/arete/commit/221d0ea3327552c443752baa5b7d871493d554f0))
+
 ## [0.6.0](https://github.com/AreteA4/arete/compare/arete-hash-v0.5.3...arete-hash-v0.6.0) (2026-10-18)
 
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.42.2](https://github.com/AreteA4/arete/compare/arete-v0.42.1...arete-v0.42.2) (2026-10-20)
+
+
+### Bug Fixes
+
+* **arete:** advance linked releases for builtin activity contracts ([0d68e53](https://github.com/AreteA4/arete/commit/0d68e53adf45fd1cccafc29f7bb988366517d65f))
+* **arete:** advance linked releases for builtin activity contracts ([3a20981](https://github.com/AreteA4/arete/commit/3a20981606e1af35f7380b86b293a8e353284da5))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.42.1 to 0.42.2
+    * arete-macros bumped from 0.42.1 to 0.42.2
+    * arete-server bumped from 0.42.1 to 0.42.2
+
 ## [0.42.1](https://github.com/AreteA4/arete/compare/arete-v0.42.0...arete-v0.42.1) (2026-10-20)
 
 
