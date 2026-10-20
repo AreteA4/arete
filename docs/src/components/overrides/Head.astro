@@ -48,6 +48,23 @@ const jsonLd = {
 <meta name="color-scheme" content="light dark" />
 <meta name="theme-color" content="#f3efe4" />
 <meta name="is-agentic-site-type" content="documentation" />
+{/* ThemeProvider swaps the 16/32 icons to match the active theme. */}
+<link
+  data-favicon="32"
+  rel="icon"
+  type="image/png"
+  sizes="32x32"
+  href="/favicon-light-32x32.png"
+/>
+<link
+  data-favicon="16"
+  rel="icon"
+  type="image/png"
+  sizes="16x16"
+  href="/favicon-light-16x16.png"
+/>
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+<link rel="manifest" href="/site.webmanifest" />
 <meta property="og:image" content={`${site}/og.png`} />
 <meta name="twitter:image" content={`${site}/og.png`} />
 <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />

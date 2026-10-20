@@ -25,6 +25,11 @@
     const theme = readCookie() || readStorage() || "light";
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
+    for (const size of ["16", "32"]) {
+      document
+        .querySelector(`link[data-favicon="${size}"]`)
+        ?.setAttribute("href", `/favicon-${theme}-${size}x${size}.png`);
+    }
 
     return {
       updatePickers() {},
