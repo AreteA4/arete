@@ -4,7 +4,7 @@
     "kind": "program-spec",
     "hash": "arete:h1:program-spec:sha256:79425ade85e0a9614e3f5b9b43e32db349266dc2edd7e7840a4e17b4621b9e86"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:b1a708cb39a5c5a577fde6d96256e2bc3f88e5811466c955319e038e19326114",
+  "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}",
   "extensions": null,
   "artifacts": [
     "pyproject.toml",
