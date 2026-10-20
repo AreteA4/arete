@@ -40,7 +40,7 @@ use crate::project::manifest::InstallTarget;
 use crate::project::runtime::{lockstep_version, ZOD_RANGE};
 
 /// The `@usearete/protocol` range a new project depends on.
-pub const PROTOCOL_PACKAGE_RANGE: &str = "^0.1.0";
+pub const PROTOCOL_PACKAGE_RANGE: &str = "^0.2.0"; // x-release-please-version
 
 /// The registry package init installs the System Program from.
 pub const SYSTEM_PROGRAM_PACKAGE: &str = "system-program";
@@ -694,6 +694,18 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(root.join("package.json")).unwrap())
                 .unwrap();
         assert_eq!(package["name"], "tip-jar");
+        let protocol_manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../typescript/protocol/package.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            package["dependencies"]["@usearete/protocol"],
+            format!("^{}", protocol_manifest["version"].as_str().unwrap()),
+            "scaffolds must use the protocol package's released version range",
+        );
         for dependency in ["@usearete/protocol", "@usearete/sdk", "zod"] {
             assert!(
                 package["dependencies"][dependency].is_string(),
