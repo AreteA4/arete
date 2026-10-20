@@ -1,0 +1,107 @@
+---
+title: Repeat experiments and debug failures
+description: Test protocol rules with dev wallets, control fork state and time, replay steps, and inspect transactions without mainnet funds.
+---
+
+Use a cloud dev environment to test both successful actions and expected
+rejections. Its chain state persists between sessions, so decide what each
+experiment starts from before comparing results.
+
+## Exercise roles and state
+
+Run the same step with the permitted wallet and an unrelated wallet. Test
+missing requirements, argument boundaries, deadlines, repeated execution, and
+terminal states. `a4 dev step` returns a non-zero exit status unless the step
+completes, including expected guard rejections.
+
+```sh
+a4 dev wallet creator
+a4 dev wallet recipient
+a4 protocol actions --dev --wallet recipient
+a4 dev instance <instance-id> --wallet recipient
+```
+
+Use state and rejection codes for assertions rather than parsing human error
+messages. The [lifecycle tutorial](/building-protocols/tutorial-lifecycle/)
+walks through a complete two-wallet experiment.
+
+## Control the chain inputs
+
+```sh
+a4 dev fund recipient 100
+a4 dev fund recipient --mint <mint> --amount 5000000
+a4 dev warp +2h
+a4 dev pause
+a4 dev resume
+```
+
+Funding sets the balance; it is not an incremental transfer. Warping moves
+time forward. Pause the clock when comparing time-sensitive behavior, and
+remember that waking a sleeping environment moves its clock to mainnet's.
+
+Untouched accounts are read from mainnet when needed. Locally written accounts
+stay yours. Use `a4 dev rebase` to refresh untouched, unpinned accounts,
+`pin` to hold a specific account, or `follow` for an account that should
+refresh each block. Checkpoint or branch before making changes you need to undo.
+
+## Checkpoint, restore, and branch
+
+```sh
+a4 dev checkpoint before-experiment
+a4 dev checkpoint --list
+a4 dev branch before-experiment alternate --use
+```
+
+A branch creates another environment from the saved fork state and counts
+against your environment and storage limits. Run `a4 dev up` after switching
+to deploy the project there.
+
+`a4 dev restore before-experiment` replaces the selected environment's chain
+state with the checkpoint. It undoes later chain writes. A checkpoint is not a
+backup of your source tree, local wallet files, or published packages. Treat
+protocol deployments and workflow records separately: re-read status and
+create the instances needed for the next test instead of assuming restored
+instance ids are reusable.
+
+## Replay protocol steps
+
+`a4 dev step` appends to `.arete/dev/history.jsonl`. Replay that history, or
+write a small step document:
+
+```json
+{
+  "schema": "arete.dev-replay/v1",
+  "steps": [
+    { "step": "open", "wallet": "creator", "args": { "recipient": "<pubkey>", "amount": "1000000" } },
+    { "step": "close", "wallet": "recipient", "instance": "@0", "args": { "amount": "1000000" } }
+  ]
+}
+```
+
+```sh
+a4 dev replay steps.json
+```
+
+`@0` uses the instance created by the first entry. Replay maps original
+history ids to newly created ids and stops at the first unsuccessful step.
+History entries that did not complete are skipped unless `--include-failed`
+is supplied. Replay results go to `.arete/dev/replays.jsonl`.
+
+These are new executions against the current environment, not playback of
+old outcomes. Start from suitable balances and account state. Update time
+arguments if the current clock has passed them.
+
+## Inspect transactions and reproduce bugs
+
+`a4 dev preview @transaction.txt` simulates a base64 transaction without
+committing it and reports logs, compute usage, and touched accounts before
+and after. `a4 dev repro <signature> -o repro.json` exports the transaction
+and the account state it read for a bug reproduction.
+
+A scenario (`a4 dev scenario scenario.json`) changes declared program account
+fields and checks expectations at relative slots. Unknown layouts or values
+that cannot be encoded exactly are refused before writes.
+
+See [scenarios, previews, and repro exports](/cli/local-development/#scenarios-previews-and-repro-exports)
+for the document format. For handler construction independent of chain execution,
+use [recorded provider-call tests](/building-protocols/handlers/#keep-construction-reproducible).

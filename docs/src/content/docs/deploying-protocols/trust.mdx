@@ -1,0 +1,81 @@
+---
+title: Review, trust, and receipts
+description: Understand release review, private dev handlers, wallet authority, protocol enforcement, fees, and verifiable execution receipts.
+---
+
+A protocol's trust information tells you what evidence exists for the release
+you call. Check the deployment and release identity as well as the step's
+transactions before relying on it.
+
+## Reviewed and unreviewed releases
+
+A review covers an exact release hash. A deployment running as `reviewed`
+has review evidence; `unreviewed` means no such review backs that revision.
+Listings show the trust label and a review hash when applicable.
+
+Template-only releases contain declarative instructions rather than a handler
+bundle and may run unreviewed under the hosted service's access and listing
+rules. Production handlers require verified review. Private deployments bound
+to cloud dev environments may run unreviewed handlers so authors can iterate.
+
+Changing the spec or handler changes the release. Review of a previous version
+does not approve the replacement. A dev deployment's ability to run code does
+not grant production approval or public listing.
+
+## Wallets authorize transactions
+
+Your application or agent receives prepared transactions for inspection and
+local signing. Arete does not receive the user's wallet private key. The
+optional MCP signer holds a key locally and enforces its configured policy.
+
+A publishable key identifies permitted browser access; it is not a wallet
+signature. Secret-key access can prepare restricted steps but still does not
+replace their declared signing authority. Multisig proposals still need the
+multisig's approval and execution process.
+
+## Programs enforce asset rules
+
+Guards and state machines govern calls through Arete. They do not add new
+on-chain restrictions to an underlying program. Users can interact directly
+with those programs. Choose program permissions, escrow, and ownership rules
+that enforce the product's asset requirements on-chain.
+
+Protocol data can attribute direct activity where declared mappings and
+registered accounts support it. Do not assume an arbitrary transfer is an
+attested protocol execution. Review is evidence about a release, not a
+blanket guarantee about the underlying programs or external integrations.
+
+## Fees and prepared intent
+
+The prepared intent identifies the deployment and revision, messages, signers,
+expiry, and applicable fees. Hosted platform policy applies alongside the
+protocol fee policy. Inspect the amounts and recipients before signing.
+
+The submit path checks the signed messages against the prepared ones.
+Preserve existing signatures, transaction order, and exact messages. A signed
+transaction is still subject to chain execution and can fail or expire.
+
+## Execution receipts
+
+Completed attested transactions can have a signed execution receipt with the
+release and deployment identity, review and trust evidence, step and instance,
+message and intent hashes, attestation key, and fees. The protocol client
+fetches it by transaction signature:
+
+```ts
+const receipt = await client.getReceipt(signature);
+const keys = await client.getReceiptKeys();
+```
+
+`verifyReceipt(receipt, keys)` verifies the receipt signature offline.
+`verifyReceiptOnChain(receipt, transaction)` independently checks its claims
+against the fetched transaction, including the message hash and attestation.
+The latter needs the actual transaction from a suitable RPC. A missing receipt
+is reported as `protocol-receipt-not-found`.
+
+MCP's `protocol_receipt` reports `signatureCheck` and whether `onChain` was
+checked. Without an RPC, offline verification does not establish an independent
+on-chain check. Rust and Python expose the corresponding snake-case helpers.
+
+[Agent receipt workflow](/agent-skills/protocols/#receipts) ·
+[Execution and recovery](/integrating-protocols/execution/)

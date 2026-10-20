@@ -18,21 +18,23 @@ export default defineConfig({
         starlightLlmsTxt({
           projectName: "Arete",
           description:
-            "Arete is an agent-first Solana application toolkit. Discover programs and live views, explore on-chain state through MCP, and install typed SDKs for reads, transactions, flows, and real-time data.",
+            "Arete is a platform for building and running Solana protocols. Compose programs into workflows, develop in persistent mainnet forks, and integrate generated clients into applications and agents.",
           promote: [
             "getting-started/what-is-arete",
             "using-stacks/quickstart",
-            "agent-skills/explore-on-chain",
-            "getting-started/from-question-to-app",
-            "concepts/programs-views-stacks",
-            "concepts/program-versioning",
+            "concepts/protocols",
+            "building-protocols/definition",
+            "building-protocols/lifecycle",
+            "cli/local-development",
+            "development/application",
+            "integrating-protocols/overview",
+            "integrating-protocols/execution",
+            "integrating-protocols/react",
+            "deploying-protocols/overview",
+            "deploying-protocols/trust",
+            "agent-skills/protocols",
+            "reference/protocols",
             "using-programs/overview",
-            "using-programs/program-reads",
-            "using-programs/chain-reads",
-            "agent-skills/overview",
-            "agent-skills/mcp",
-            "sdks/typescript",
-            "sdks/react",
           ],
         }),
       ],
@@ -58,109 +60,128 @@ export default defineConfig({
         Search: "./src/components/overrides/Search.astro",
         PageTitle: "./src/components/overrides/PageTitle.astro",
       },
-      // Autogenerate sidebar from directory structure
-      // Contributors only need to add frontmatter to control ordering
+      // Keep existing slugs stable; navigation follows the protocol workflow.
       sidebar: [
         {
           label: "Start Here",
           items: [
+            { label: "Get started", link: "/" },
             { slug: "getting-started/what-is-arete" },
             { slug: "using-stacks/quickstart" },
-            { slug: "agent-skills/explore-on-chain" },
+            { slug: "integrating-protocols/overview" },
+            { slug: "concepts/protocols" },
             { slug: "getting-started/from-question-to-app" },
             { slug: "getting-started/open-source-and-hosted" },
           ],
         },
         {
-          label: "Core Concepts",
+          label: "Build Protocols",
+          items: [
+            { slug: "building-protocols/definition" },
+            { slug: "building-protocols/lifecycle" },
+            { slug: "building-protocols/handlers" },
+            { slug: "building-protocols/automation" },
+            { slug: "building-protocols/tutorial-lifecycle" },
+          ],
+        },
+        {
+          label: "Develop and Test",
+          items: [
+            { slug: "cli/local-development" },
+            { slug: "development/application" },
+            { slug: "development/testing" },
+          ],
+        },
+        {
+          label: "Integrate Protocols",
+          items: [
+            { slug: "integrating-protocols/execution" },
+            { slug: "integrating-protocols/react" },
+            { slug: "integrating-protocols/events" },
+            { slug: "agent-skills/protocols" },
+          ],
+        },
+        {
+          label: "Deploy and Publish",
+          items: [
+            { slug: "deploying-protocols/overview" },
+            { slug: "deploying-protocols/trust" },
+          ],
+        },
+        {
+          label: "Programs and Live Data",
           items: [
             { slug: "concepts/programs-views-stacks" },
             { slug: "concepts/program-versioning" },
-            { slug: "using-stacks/how-it-works" },
-            { slug: "building-stacks/configuration" },
-          ],
-        },
-        {
-          label: "Programs",
-          items: [
-            { slug: "using-programs/overview" },
-            { slug: "using-programs/program-reads" },
-            { slug: "using-programs/chain-reads" },
-            { slug: "using-stacks/transactions" },
-          ],
-        },
-        {
-          label: "Live Views",
-          items: [
-            { slug: "using-stacks/connect" },
-            { slug: "using-stacks/filtering-feeds" },
-          ],
-        },
-        {
-          label: "Agents",
-          items: [
-            { slug: "agent-skills/overview" },
-            { slug: "agent-skills/explore" },
-            { slug: "agent-skills/mcp" },
-            { slug: "agent-skills/protocols" },
-            { slug: "agent-skills/prompts" },
-            { slug: "agent-skills/setup" },
-            { slug: "agent-skills/setup-tools" },
-            { slug: "agent-skills/tutorial-ore-dashboard" },
-          ],
-        },
-        {
-          label: "Create Live Data",
-          items: [
-            { slug: "building-stacks/workflow" },
-            { slug: "building-stacks/stack-definitions" },
-            { slug: "building-stacks/installation" },
-            { slug: "building-stacks/your-first-stack" },
             {
-              label: "Rust DSL",
+              label: "Programs",
               items: [
-                { slug: "building-stacks/rust-dsl/overview" },
-                { slug: "building-stacks/rust-dsl/macros" },
-                { slug: "building-stacks/rust-dsl/strategies" },
-                { slug: "building-stacks/rust-dsl/resolvers" },
+                { slug: "using-programs/overview" },
+                { slug: "using-programs/program-reads" },
+                { slug: "using-programs/chain-reads" },
+                { slug: "using-stacks/transactions" },
+              ],
+            },
+            {
+              label: "Live Views",
+              items: [
+                { slug: "using-stacks/how-it-works" },
+                { slug: "using-stacks/connect" },
+                { slug: "using-stacks/filtering-feeds" },
+              ],
+            },
+            {
+              label: "Create Live Data",
+              items: [
+                { slug: "building-stacks/workflow" },
+                { slug: "building-stacks/configuration" },
+                { slug: "building-stacks/stack-definitions" },
+                { slug: "building-stacks/installation" },
+                { slug: "building-stacks/your-first-stack" },
+                {
+                  label: "Rust DSL",
+                  autogenerate: { directory: "building-stacks/rust-dsl" },
+                },
               ],
             },
           ],
         },
-
         {
-          label: "SDK Reference",
+          label: "Reference",
           items: [
-            { slug: "using-stacks/installation" },
+            { slug: "reference/protocols" },
             {
-              label: "TypeScript",
-              link: "/sdks/typescript/",
+              label: "SDKs",
+              items: [
+                { slug: "using-stacks/installation" },
+                { slug: "sdks/typescript" },
+                { slug: "sdks/react" },
+                { slug: "sdks/rust" },
+                { slug: "sdks/python" },
+                { slug: "sdks/validation" },
+              ],
             },
             {
-              label: "React",
-              link: "/sdks/react/",
+              label: "Agents and Discovery",
+              items: [
+                { slug: "agent-skills/overview" },
+                { slug: "agent-skills/explore" },
+                { slug: "agent-skills/explore-on-chain" },
+                { slug: "agent-skills/mcp" },
+                { slug: "agent-skills/prompts" },
+                { slug: "agent-skills/setup" },
+                { slug: "agent-skills/setup-tools" },
+                { slug: "agent-skills/tutorial-ore-dashboard" },
+              ],
             },
+            { slug: "cli/commands" },
+            { slug: "cli/idl" },
+            { slug: "reference/api-problems" },
             {
-              label: "Rust",
-              link: "/sdks/rust/",
-            },
-            {
-              label: "Python",
-              link: "/sdks/python/",
-            },
-            {
-              label: "Schema Validation",
-              link: "/sdks/validation/",
+              label: "Self-host a Stack Server",
+              autogenerate: { directory: "a4-server" },
             },
           ],
-        },
-        {
-          label: "CLI",
-          autogenerate: { directory: "cli" },
-        },
-        {
-          label: "Self-hosting",
-          autogenerate: { directory: "a4-server" },
         },
       ],
       // Enable search when content is ready

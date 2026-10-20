@@ -1,0 +1,82 @@
+---
+title: Build a protocol interface with React
+description: Follow instances, participants, events, and wallet action availability with the protocol hooks in @usearete/react.
+---
+
+Use protocol hooks to display workflow state and explain which actions a
+connected wallet can perform. They accept a protocol client directly, including
+one from `session.protocols`.
+
+## Install and keep the client stable
+
+```sh
+npm install @usearete/react @usearete/sdk zod
+```
+
+Create your client or session outside the render cycle, or memoize it for its
+authentication and deployment inputs. Close it when its owner is disposed.
+A changing client identity causes hooks to start new reads and subscriptions.
+
+## Follow an instance
+
+```tsx
+import {
+  useAllowedSteps,
+  useProtocolInstance,
+  type AnyProtocolClient,
+} from "@usearete/react";
+
+function InstancePanel({ client, instanceId, wallet }: {
+  client: AnyProtocolClient;
+  instanceId: string;
+  wallet: string;
+}) {
+  const { instance, isLoading, error } = useProtocolInstance(
+    client, instanceId, { wallet },
+  );
+  const { data: steps, isLoading: stepsLoading, error: stepsError } = useAllowedSteps(
+    client, { instance: instanceId, wallet }, { refreshOnEvents: true },
+  );
+
+  if (error) return <p>{error.message}</p>;
+  if (isLoading) return <p>Loading instance…</p>;
+  return <section>
+    <p>State: {instance?.state}</p>
+    {stepsError ? <p role="alert">Could not load actions: {stepsError.message}</p>
+      : stepsLoading ? <p>Loading actions…</p>
+      : <ul>{steps?.map((step) => <li key={step.step}>
+          {step.step}: {step.allowed ? "available" : step.reason}
+        </li>)}</ul>}
+  </section>;
+}
+```
+
+`useProtocolInstance` refreshes canonical state when instance stream events
+arrive and closes its handle on unmount. Its `live` result contains the
+protocol stack's row when the client belongs to a session with that stack
+connected; it can otherwise be undefined.
+
+## Discover wallet actions
+
+`useWalletActions(client, { wallet, instance?, cursor?, limit? })` returns
+create steps and the wallet's related instances with typed arguments and
+availability. Follow `data.nextCursor` for another page. For a single-instance
+query, `refreshOnEvents: true` refreshes when that instance's events arrive.
+
+A missing wallet or instance disables the hooks that require it. Reads expose
+loading and error states; do not render a failed read as “no available actions.”
+
+## Participants and events
+
+`useProtocolParticipant(client, { instance, wallet }, options)` reads that
+wallet's participant state. `useProtocolEvents(client, instanceId, { onEvent,
+onError })` follows events while mounted. Use `refreshOnEvents` on participant
+and allowed-step reads when the UI needs automatic re-reading.
+
+These hooks read and subscribe. For mutations, use the generated client's
+[prepare/sign/submit flow](/integrating-protocols/execution/) in your event
+handler. An enabled button is not a guarantee that preparation will pass.
+Handle rejection, wallet cancellation, pending execution, and chain failure.
+
+[React SDK reference →](/sdks/react/) ·
+[Connect a frontend to the dev environment →](/development/application/)

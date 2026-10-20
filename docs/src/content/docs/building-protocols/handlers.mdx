@@ -1,0 +1,72 @@
+---
+title: Custom handlers
+description: Use a handler for dynamic instruction construction, test recorded reads, and understand development and production review requirements.
+---
+
+Use an instruction template whenever it can express a step. A handler is a
+TypeScript function for construction that needs additional logic or reads.
+It returns instructions for the declared programs; it does not sign or submit.
+
+## Inputs and allowed reads
+
+A handler receives `PrepareInputV1` and `ProtocolContextV1` from
+`@usearete/protocol`. Use the typed `ctx` methods for Solana accounts, token
+accounts by owner, and stack views. Those reads are recorded for replay.
+
+Import instruction builders from the same `@programs/<alias>` modules the
+protocol declares. Convert the built instructions into the wire result with
+`wirePreparedOperation`:
+
+```ts
+import {
+  wirePreparedOperation,
+  type PrepareInputV1,
+  type ProtocolContextV1,
+} from "@usearete/protocol";
+
+// `instructions` below is built using an installed program SDK.
+// This fragment shows the return boundary inside your handler.
+return wirePreparedOperation([{ name: "myStep", instructions }], {
+  programs: ["myProgram"],
+  input,
+});
+```
+
+Declare the function on the step with `handler`, its `export` name, and the
+`programs` aliases it may invoke. The build bundles the function with the release.
+
+Handlers cannot return signers, fees, memos, or compiled transaction messages.
+The platform validates the result and builds the final transactions.
+Undeclared programs or signer identities are refused.
+
+## Keep construction reproducible
+
+Handlers use `ctx` rather than arbitrary network access. They cannot depend
+on filesystem access, environment variables, wall-clock time, randomness, or
+secrets. The build checks source for unsupported APIs; that check provides
+feedback and is not itself an execution sandbox.
+
+Replay recorded provider calls in tests:
+
+```ts
+import { runHandler } from "@usearete/protocol/testing";
+
+const operation = await runHandler(myHandler, input, recordedCalls);
+```
+
+The replay checks the ordered methods and canonical arguments. Divergent or
+unused calls fail, helping you detect changes in construction behavior.
+
+## Iterate in a private dev environment
+
+Private deployments bound to a cloud dev environment can run handler releases
+without review. `a4 dev up` watches `handlers/`, rebuilds, and deploys into
+that environment. Use dev wallets and inspect the exact transactions before
+moving to production.
+
+Production handler releases require a verified review of the exact release.
+A dev deployment does not grant production approval. Changing the bundle
+changes the release identity and requires review of that new release.
+
+[Review and trust →](/deploying-protocols/trust/) ·
+[Protocol definition reference →](/reference/protocols/)

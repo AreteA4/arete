@@ -1,0 +1,137 @@
+---
+title: Define a protocol
+description: Author protocol.ts with installed programs, typed instruction templates, parameters, and a generated live data model.
+---
+
+Write `protocol.ts` to describe your workflow. Start with the
+[first protocol tutorial](/using-stacks/quickstart/) so you have installed
+programs, configuration, and an environment in which to run it.
+
+## Use installed programs
+
+Install the TypeScript SDK for each program your protocol uses:
+
+```sh
+a4 install program <package> --ts
+a4 install program ./idl/my_program.json --as my-program --ts
+```
+
+The installer maps `@programs/*` in `tsconfig.json`. Import the installed
+module and register it under a stable alias in `programs`. The module carries
+its program identity and instruction shapes; you do not need to copy hashes
+or restate the IDL.
+
+This is a complete minimal definition using the scaffold's System Program:
+
+```ts
+import system from "@programs/system";
+import { defineProtocol, ix } from "@usearete/protocol";
+
+export default defineProtocol({
+  name: "payment",
+  version: "0.1.0",
+  programs: { system },
+  params: { amount: "u64" },
+  instanceVisibility: "account",
+  machines: {
+    instance: {
+      initial: "paid",
+      states: { paid: { kind: "recorded", terminal: true } },
+    },
+  },
+  steps: {
+    pay: {
+      scope: "create",
+      authority: "creator",
+      args: { recipient: "pubkey", amount: "u64" },
+      guards: { amount_zero: "args.amount > 0" },
+      build: [
+        ix(system, "transfer", {
+          args: { lamports: "args.amount" },
+          accounts: {
+            fundingAccount: "wallet",
+            recipientAccount: "args.recipient",
+          },
+        }),
+      ],
+    },
+  },
+});
+```
+
+`args` describes what a caller supplies to a step. `params` describes values
+retained by an instance; create-step arguments with those names supply the
+instance parameters. Use decimal strings for integer values at API boundaries.
+
+## Instruction templates
+
+`ix` takes an installed program, its IDL instruction name, and expressions for
+arguments and accounts. Expressions such as `args.amount`, `wallet`, and
+`instance.accounts.vault` are resolved when preparing the step.
+
+Instruction, argument, and account names come from the installed IDL.
+TypeScript catches unknown names and missing required values. Derivable or
+optional accounts can be omitted when the generated instruction shape permits
+it. The build checks templates again, including plain JavaScript input.
+
+A template can contain several instructions. For IDLs with trailing accounts,
+add `remainingAccounts` in the required order:
+
+```ts
+remainingAccounts: [
+  { pubkey: "instance.accounts.quoteVault", isWritable: true },
+  { pubkey: "params.quoteMint" },
+],
+```
+
+Remaining accounts cannot be signers. Use a [handler](/building-protocols/handlers/)
+when dynamic construction cannot be expressed with templates.
+
+## Bind accounts and roles
+
+The create step's `bind` records identities that later steps use. The scaffold
+keeps the creator and names a recipient role:
+
+```ts
+bind: {
+  accounts: { creator: "wallet" },
+  roles: { recipient: "args.recipient" },
+},
+```
+
+Later expressions use `instance.accounts.creator` and
+`instance.roles.recipient`. Declare the role under `roles` as the scaffold does.
+An `ephemeral` declaration names fresh accounts needed during construction;
+protocol code does not return or store their private keys.
+
+## Include the data your app needs
+
+The protocol's generated stack provides instance and participant views and can
+track the activity declared in `stack.activity`. The scaffold demonstrates
+mapping its `open` and `close` transfers into activity with an instance account,
+wallet account, and amount argument.
+
+Choose those mappings to match the program's real account relationships. A
+shared wallet is not an instance-owned account: the tip-jar scaffold tracks
+its Arete executions rather than treating every transfer to that wallet as
+protocol activity. Do not assume every direct program interaction can be
+attributed to an instance.
+
+For additional joined or computed data, author
+[custom live views](/building-stacks/workflow/) and run them
+[alongside your protocol](/cli/local-development/#your-own-stacks).
+
+## Check and build
+
+```sh
+npx arete-protocol check
+npx arete-protocol build
+```
+
+The build writes the canonical spec, optional handler bundle, and generated
+stack source to `.arete/protocol/`. Installed program identities are checked
+against `arete.lock`; after changing a dependency, run `a4 install` or update
+it, then rebuild. Do not edit the generated artifacts.
+
+Continue with [steps and lifecycle](/building-protocols/lifecycle/) and
+[automation and data](/building-protocols/automation/).

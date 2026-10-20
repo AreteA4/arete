@@ -1,0 +1,69 @@
+---
+title: Protocol concepts
+description: Understand protocols, instances, participants, releases, deployments, and generated clients before authoring or integrating.
+---
+
+A protocol turns individual program instructions into a workflow an app can
+understand. A raise, for example, has a creator, contributors, a deadline, and
+different steps before and after its outcome.
+
+## Definition, instance, and participant
+
+The **definition** describes steps and rules. An **instance** is one running
+occurrence with its own parameters, accounts, roles, and state. A
+**participant** represents a wallet within it, optionally with a separate
+state machine. One participant may have claimed while another is still eligible.
+
+Steps have one of three scopes: `create` makes an instance, `instance` acts on
+an existing instance, and `participant` acts for a wallet within an instance.
+Guards check conditions. Authority identifies the required signer or role.
+Access determines which client credentials may prepare a wallet step.
+
+[Steps and lifecycle →](/building-protocols/lifecycle/)
+
+## Release and deployment
+
+A **release** is immutable protocol behavior, identified by a content hash.
+Changing the spec or handler code creates a different release. A review is
+evidence about that exact release.
+
+A **deployment** selects a release, resource versions, a fee policy, and access
+settings. An environment-bound dev deployment uses the fork's chain; a
+production deployment uses mainnet. A deployment's id identifies what a client
+calls. A new dev release creates a new deployment rather than changing the old
+release in place.
+
+Changing a protocol does not automatically migrate existing instances into
+its replacement deployment. Plan how old instances finish before switching
+an application's dependency.
+
+[Deploy and publish →](/deploying-protocols/overview/)
+
+## Package and generated client
+
+A protocol **package** is what an integrator installs. Its descriptor pins the
+release and deployment and includes its stack and program dependencies.
+`arete.toml` records the requested dependency; `arete.lock` pins its resolution.
+
+The generated client exposes steps, instances, participants, metadata, and
+events. Inside a session, the protocol's stacks and programs are also available
+through the session's shared `stacks` and `programs` surfaces.
+
+During development, `a4 dev up` generates the client from the local build and
+targets the dev deployment. This is marked `local_build`; it is different from
+an install pinned to a published package.
+
+[Connect your application in development →](/development/application/)
+
+## Workflow state and live data
+
+The protocol API reports canonical instance and participant state, available
+steps, and execution outcomes. The generated stack supplies live views of
+instances, participants, and configured activity. Additional views can join
+or aggregate program data for screens and dashboards.
+
+Use protocol state to drive workflow decisions and live views to display the
+data your interface needs. A connected protocol client can expose both, but a
+live row is not a substitute for preparing a step and handling its result.
+
+[Programs, views, and stacks →](/concepts/programs-views-stacks/)

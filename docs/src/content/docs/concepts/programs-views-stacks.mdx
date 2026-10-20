@@ -1,15 +1,16 @@
 ---
 title: Programs, Views, and Stacks
-description: Arete's two building blocks, Program SDKs and live views, the stacks that group them, and how they come together in your application.
+description: The programs, live views, and stacks that protocols compose, and how to use them independently in an application.
 ---
 
-Arete has two building blocks: Program SDKs and live views. Stacks group them.
-Keeping the three apart in your head makes both the catalog and the generated
-code much easier to follow.
+[Arete Protocols](/concepts/protocols/) compose program instructions, workflow
+rules, and live data into an interface apps and agents can call. This page
+explains the underlying pieces, which are also useful independently.
 
-In short: a **program** is the on-chain app, a **view** is its data arranged
-the way your app wants it, and a **stack** groups views with the Program SDKs
-they use, as one package you install.
+A **program** is the on-chain app, a **view** is data arranged for your
+interface, and a **stack** groups selected views with the Program SDKs they
+use. A protocol adds instances, participants, steps, and lifecycle above
+those pieces.
 
 ## 1. Programs are the base unit
 

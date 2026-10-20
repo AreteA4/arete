@@ -7,6 +7,22 @@ sidebar:
 
 `@usearete/react` adds provider-managed connections and React hooks to the framework-agnostic [`@usearete/sdk`](/sdks/typescript/) client.
 
+## Protocol hooks
+
+Protocol hooks accept a protocol client directly, including a member of
+`session.protocols`. `useProtocolInstance` follows canonical instance state
+and the optional connected live row. `useWalletActions` and `useAllowedSteps`
+report wallet-specific availability and rejection reasons.
+`useProtocolParticipant` reads participant state, and `useProtocolEvents`
+subscribes while mounted. Keep the client stable and close it when its owner
+is disposed.
+
+These hooks read and subscribe; call the generated client's prepare/sign/submit
+flow for mutations. A permitted action can still be rejected during prepare.
+See [Build a protocol interface with React](/integrating-protocols/react/) for
+a complete component and [Protocol API reference](/reference/protocols/) for
+hook signatures.
+
 ## Install
 
 ```bash

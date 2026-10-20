@@ -1,0 +1,78 @@
+---
+title: Events, metadata, and backend integration
+description: Follow instance events, verify webhook deliveries, update declared metadata, and onboard a Squads proposer.
+---
+
+Use events to keep an application current and trigger your own backend work.
+Use canonical reads with your credentials to fetch the details needed by that
+work, rather than assuming an event contains the full instance.
+
+## Follow an instance
+
+```ts
+const subscription = client.events(instanceId, {
+  onEvent(event) {
+    console.log(event);
+  },
+  onError(error) {
+    console.error(error);
+  },
+});
+// When this view or worker is disposed:
+subscription.close();
+```
+
+The client reconnects and resumes after the last event id. You can supply
+`lastEventId` when starting a subscription. Treat a stream event as a reason
+to refresh the affected state; a displayed live row is not an execution result.
+
+React users can use `useProtocolEvents` or the
+[instance hooks](/integrating-protocols/react/).
+
+## Receive named emissions through webhooks
+
+A protocol's `emit` reactions publish named events. Configure an endpoint
+subscription for the required event names with the protocol owner. Webhooks
+are signed POST deliveries; process only verified requests.
+
+```ts
+import { verifyWebhook } from "@usearete/sdk";
+
+const rawBody = await request.text();
+const verified = verifyWebhook(webhookSecret, rawBody, request.headers);
+```
+
+Verify the raw bytes before parsing or reserializing them. The verifier checks
+signature and timestamp tolerance (five minutes by default). Keep the endpoint
+secret on your server. Use the stable delivery `verified.id` to deduplicate
+retries. Payloads carry identifiers and state; read further details with your
+own authenticated client.
+
+Generated protocol modules also export a typed webhook verifier. See their
+`README.md` for the exact generated name. Deliveries can retry: make downstream
+work idempotent. Your backend owns notifications, email, and external business
+logic.
+
+## Update declared metadata
+
+```ts
+const metadata = client.metadata.instance(instanceId);
+const current = await metadata.get();
+```
+
+Use `metadata.update(patch)` only for fields your credentials may write.
+A participant-writer update also takes a wallet proof; construct the exact
+message using the handle's `proofMessage`, sign it, and pass `walletProof` in
+the update options. Inspect generated schemas for writable fields and types.
+Metadata is off-chain application data, separate from transaction settlement.
+
+## Onboard Squads when required
+
+For protocols with multisig administration, `client.squads.proposer()` reports
+your account's proposer. `addProposer` builds an unsigned proposal transaction
+to add it, and `status(multisig)` checks whether it is an Initiate-only member.
+Use the returned transaction with the multisig's normal signing process.
+
+Arete can propose the declared admin action; it does not vote or execute the
+multisig proposal. Handle missing-proposer events as an onboarding requirement,
+not as evidence that the admin step completed.

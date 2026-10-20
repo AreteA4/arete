@@ -1,8 +1,8 @@
 # Arete
 
-An agent-first Solana application toolkit: discover programs and live views,
-explore on-chain state through MCP, and generate typed SDKs for reads,
-transactions, flows, and real-time data.
+Build and run Solana protocols: compose programs into workflows with typed
+steps, permissions, and lifecycle; develop in persistent cloud mainnet forks;
+and connect applications and agents through generated clients.
 
 [![CI](https://github.com/AreteA4/arete/actions/workflows/ci.yml/badge.svg)](https://github.com/AreteA4/arete/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0%2FMIT-blue.svg)](#license)
@@ -20,6 +20,7 @@ transactions, flows, and real-time data.
 | arete-idl | Rust | crates.io | IDL parsing and type system |
 | arete-hash | Rust | crates.io | Typed artifact identity and canonical hashing protocol |
 | arete-artifacts | Rust | crates.io | Versioned public artifact schemas and legacy normalization |
+| @usearete/protocol | TypeScript | npm | Protocol authoring, contracts, handler ABI, and build tooling |
 | @usearete/hash | TypeScript | npm | TypeScript implementation of the artifact identity protocol |
 | @usearete/sdk | TypeScript | npm | Pure TypeScript SDK (framework-agnostic) |
 | @usearete/react | TypeScript | npm | React SDK with hooks |
@@ -29,23 +30,38 @@ transactions, flows, and real-time data.
 
 ## Product model
 
-Programs are the foundation. A generated Program SDK can provide typed account
-reads, PDA derivation, instruction construction, application operations,
-multi-step flows, and safe transaction execution. Live views add maintained,
-application-shaped state over one or more programs. Stacks package selected
-views and Program SDKs into an installable application composition.
+A protocol composes Solana programs into typed steps with guards, authority,
+instance and participant lifecycle, metadata, and events. Applications install
+a protocol client; agents use the same workflow through MCP. Cloud dev
+environments provide a persistent mainnet fork for developing and exercising
+the protocol before an explicit production deployment.
 
-```text
-Intent
-  → catalog and exact descriptors
-  → MCP exploration or generated SDK installation
-  → program reads, chain reads, live views, and transactions
-```
+Program SDKs provide account reads and instruction builders. Live views maintain
+application-shaped data, and stacks package those views with their programs.
+These capabilities support protocols and remain available independently.
 
 See [docs.arete.run](https://docs.arete.run) for the complete product and SDK
 documentation.
 
-## Quick start
+## Build a protocol
+
+```bash
+a4 protocol init my-protocol
+cd my-protocol
+npm install
+a4 dev up
+```
+
+Requires the `a4` CLI, Node.js 22.13+, and an Arete account with cloud
+dev-environment access. The CLI, dev UI, and wallet keys stay local; the
+protocol runs against a hosted mainnet fork. Use `a4 dev step` to exercise it.
+Private dev handlers can run without review; production handlers require review.
+
+Start with [Build your first protocol](docs/src/content/docs/using-stacks/quickstart.mdx),
+or [integrate an existing protocol](docs/src/content/docs/integrating-protocols/overview.mdx).
+Program SDKs and live views remain available independently.
+
+## CLI setup and standalone capabilities
 
 ### CLI
 
@@ -79,8 +95,9 @@ See [cli/README.md](cli/README.md) for the full command surface.
 `a4 init` configures the local Arete MCP server. An agent can search the
 catalog and knowledge layer, inspect exact view schemas, connect to a deployed
 stack, subscribe to a bounded live view, and query its local cache while
-answering a question. Use MCP for investigation; use generated SDKs in shipped
-application code.
+answering a question. MCP also exposes protocol action discovery, preparation, submission, and
+receipts, with an optional policy-bound local signer. Use generated SDKs in
+shipped application code.
 
 Hosted knowledge and connections may require `a4 auth signup` or
 `a4 auth login --key <key>`.
@@ -350,6 +367,12 @@ arete/
 ```
 
 ## Documentation
+
+- [Build your first protocol](docs/src/content/docs/using-stacks/quickstart.mdx)
+- [Protocol concepts](docs/src/content/docs/concepts/protocols.mdx)
+- [Cloud dev environments](docs/src/content/docs/cli/local-development.mdx)
+- [Integrate a protocol](docs/src/content/docs/integrating-protocols/overview.mdx)
+- [Deploy and publish](docs/src/content/docs/deploying-protocols/overview.mdx)
 
 - [What is Arete?](docs/src/content/docs/getting-started/what-is-arete.mdx)
 - [From Question to Application](docs/src/content/docs/getting-started/from-question-to-app.mdx)

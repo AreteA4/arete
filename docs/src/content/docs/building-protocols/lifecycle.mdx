@@ -1,0 +1,112 @@
+---
+title: Steps, permissions, and lifecycle
+description: Define instance and participant state, guarded steps, wallet roles, access, and terminal outcomes.
+---
+
+A protocol describes when an action makes sense and who may perform it. A
+raise can be open for contributions while one wallet has already reached a
+per-wallet limit; an instance's state and a participant's state answer
+separate questions.
+
+## Step scope
+
+- `create` starts an instance. The caller supplies the creation arguments.
+- `instance` acts on an existing instance, such as closing a deal.
+- `participant` acts for a wallet in an instance, such as contributing or claiming.
+
+The client supplies an instance id for the latter two scopes. Steps declare
+their arguments with schemas; shorthand such as `{ amount: "u64" }` makes
+the argument required. Amounts, public keys, and timestamps are strings with
+formats such as `u64`, `pubkey`, and `unixTimestamp`.
+
+## Guards explain rejection
+
+A guard's name is the rejection code. Its expression must be true:
+
+```ts
+guards: {
+  amount_zero: "args.amount > 0",
+  not_open: 'instance.state == "open"',
+},
+```
+
+Use stable codes your app can translate into helpful text. Conditions can use
+arguments, parameters, declared reads, and current protocol state. They are
+checked on prepare. Wallet action discovery cannot finish checks that depend
+on arguments the caller has not supplied; it reports these in `argsDependent`.
+
+An action shown as allowed may still fail preparation if state changes or
+argument-dependent checks fail. Treat rejection as a normal product outcome.
+
+## Authority and access are separate
+
+**Authority** identifies the signer: the creator, a participant, or a bound
+role such as the scaffold's recipient. Roles are declared in `roles` and
+bound to wallets by the create step.
+
+```ts
+authority: { kind: "role", role: "recipient" },
+```
+
+**Access** determines which credentials may prepare a wallet step. `public`
+allows a publishable-key client; `secret` requires a secret-key session.
+Create and role steps default to `secret`; other wallet steps default to
+`public`. Declare access explicitly when it is important to your interface.
+
+A publishable key does not authorize signing, and a secret key does not replace
+the required wallet's signature. Keeper and Squads proposal steps are not
+ordinary client-callable wallet steps.
+
+## Recorded and derived state
+
+Declare machines under `machines.instance` and optionally
+`machines.participant`. Each has an initial state and named states.
+
+A **recorded** state changes through declared transitions. A **derived** state
+is evaluated from conditions, such as a deadline or chain account field.
+A time-based rule can declare `at` as well as `when` so it is evaluated when
+the deadline arrives.
+
+```ts
+instance: {
+  initial: "open",
+  states: {
+    open: "recorded",
+    expired: { kind: "derived", terminal: true },
+    closed: { kind: "recorded", terminal: true },
+  },
+  derive: [{
+    from: ["open"],
+    to: "expired",
+    when: "now >= params.deadline",
+    at: "params.deadline",
+  }],
+},
+```
+
+A step can declare `transitions: [{ from: ["open"], to: "closed" }]`.
+Preparing or signing it does not itself mean the transition completed: follow
+the execution outcome and read the instance again.
+
+## Terminal states
+
+A terminal instance rejects all further instance and participant steps with
+`instance_terminal`. A terminal participant rejects that wallet's participant
+steps with `participant_terminal`; it does not close instance steps.
+Both include `detail.state`. A participant step may explicitly declare a
+transition from that terminal participant state, including an allowed self-loop.
+
+Design the machine around the actions people still need. For example, marking
+an entire failed raise terminal would also close its participant refund steps.
+Keep the instance open for refunds if that is part of your workflow, and make
+the participant terminal after refunding.
+
+## Test the rules, including failures
+
+Check the right wallet, wrong wallet, before and after deadlines, repeated
+steps, and terminal states. [Extend the tip jar](/building-protocols/tutorial-lifecycle/)
+for an example using two roles and a clock-controlled outcome.
+
+Protocol guards govern the Arete API. They do not prevent someone calling the
+underlying program directly. Use programs whose on-chain permissions and asset
+rules support your intended product.

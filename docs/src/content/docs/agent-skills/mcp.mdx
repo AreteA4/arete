@@ -2,21 +2,21 @@
 title: MCP Servers
 sidebar:
   order: 5
-description: Connect AI tools to the Arete documentation and stream MCP servers.
+description: Connect agents to protocol actions, cloud dev environments, live data, and documentation through the Arete MCP servers.
 ---
 
 Arete ships **two** MCP servers. They serve different purposes and can be run together.
 
 :::tip[Looking for the agent workflow?]
-Start with [Explore On-chain with MCP](/agent-skills/explore-on-chain/) for the
-question → discovery → connection → bounded query flow. This page is the exact
-server and tool reference.
+Start with [Protocols for agents](/agent-skills/protocols/) for wallet actions
+and execution, or [Explore on-chain](/agent-skills/explore-on-chain/) for data
+investigation. This page is the server and tool reference.
 :::
 
-| Server                                 | Transport                           | What it gives your agent                                                                     |
-| -------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------- |
-| [Documentation](#documentation-server) | HTTP (`https://docs.arete.run/mcp`) | Search and read these docs without scraping                                                  |
-| [Stream](#stream-server)               | stdio (`a4 mcp`)                    | Registry discovery, the curated knowledge layer, and live entity data, inside the agent loop |
+| Server                                 | Transport                           | What it gives your agent                                                                      |
+| -------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------- |
+| [Documentation](#documentation-server) | HTTP (`https://docs.arete.run/mcp`) | Search and read these docs without scraping                                                   |
+| [Stream](#stream-server)               | stdio (`a4 mcp`)                    | Protocol actions and execution, cloud dev tools, registry discovery, knowledge, and live data |
 
 `a4 init` writes both servers, named `arete` (stream) and `arete-docs` (documentation), into the MCP config of every coding agent it detects. Run it once per project (or `a4 init --global` for your user) and skip the manual snippets below; `a4 doctor` reports drift as `agents.<id>.mcp` and `a4 doctor --fix` rewrites them.
 
@@ -26,8 +26,13 @@ a4 doctor --json
 ```
 
 Neither server replaces SDK generation (`a4 install`) or the generated Program
-SDK transaction surface. Use MCP to investigate; use generated dependencies in
-shipped application code.
+SDK transaction surface. MCP supports agent investigation and protocol execution;
+use generated dependencies in shipped application code.
+
+The [protocol tool guide](/agent-skills/protocols/) covers prepare, submit,
+intent tracking, receipts, and the optional local signer.
+[Environment tools](/cli/local-development/#agents-mcp) control fork state and
+target protocol calls at the project's dev deployment with `dev: true`.
 
 ---
 

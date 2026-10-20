@@ -1,0 +1,83 @@
+---
+title: Reactions, metadata, and live data
+description: Respond to protocol state, emit events, add metadata and resources, and expose activity to applications.
+---
+
+A protocol can progress when time passes or observed state changes, even when
+an application is not making a request. Reactions connect those changes to
+specific supported actions.
+
+## Triggers and actions
+
+Reaction triggers are `at`, `when`, `onTransition`, and `onConfirmed`.
+Actions are `emit`, `runKeeperStep`, and `proposeSquads`.
+
+The tip jar emits a named event when its state becomes closed:
+
+```ts
+reactions: [{
+  id: "announceClosed",
+  trigger: {
+    kind: "onTransition",
+    machine: "instance",
+    from: [],
+    to: ["closed"],
+  },
+  action: { kind: "emit", event: "tipJar.closed" },
+}],
+events: { "tipJar.closed": "instance" },
+```
+
+A keeper step must satisfy the supported permissionless constraints. An admin
+step proposed to Squads still needs the team's multisig process: Arete's
+proposer does not vote or execute on behalf of members. Configure and test
+those capabilities before relying on unattended execution.
+
+An `emit` names an event, not a destination. Applications can follow instance
+events or receive subscribed named emissions through signed webhooks. Custom
+business logic and end-user notifications run in your own application.
+
+[Events and backend integration →](/integrating-protocols/events/)
+
+## Metadata belongs beside chain state
+
+Metadata adds application information such as a title or milestone evidence.
+Declare schemas and writers for instance or participant metadata. Metadata is
+not an on-chain balance or proof of settlement.
+
+Clients use `client.metadata.instance(id)` or
+`client.metadata.participant({ instance, wallet })`. Updates are JSON merge
+patches: `null` removes a field. Participant-writer updates require a wallet
+proof; the client can produce the message to sign with `proofMessage`.
+Only fields declared filterable support metadata filters when listing instances.
+
+## Resources are deployment inputs
+
+A resource is a schema-checked document the protocol declares, such as shared
+launch defaults. Publish a value when deploying using
+`--resource <name>=<file>` or `[protocol.resources]` in `arete.toml`.
+Deployments select resource versions, keeping those inputs explicit alongside
+the release and fee policy.
+
+A resource is configuration, not a secret store. Handler code has no general
+secret-access capability.
+
+## Generated and custom views
+
+The generated protocol stack exposes instances, participants, and configured
+activity. Inspect it with `a4 stream --dev`, or follow one instance:
+
+```sh
+a4 stream --dev --instance <instance-id>
+```
+
+Declare activity mappings against real instructions and account relationships.
+Where supported by those mappings, direct program activity can be attributed
+to registered instance accounts. A signature or memo alone should not make
+unrelated activity part of an instance.
+
+Add custom stacks for richer data, such as aggregates or joined accounts.
+`a4 dev up` watches and deploys
+[your project's stacks](/cli/local-development/#your-own-stacks) into the same
+environment. Use canonical protocol reads and prepare results for workflow
+decisions, and live views for your interface's data presentation.

@@ -5,9 +5,11 @@ description: How your agent, the a4 CLI, skills, the catalog, generated SDKs, an
 
 import CopyPrompt from "../../../components/CopyPrompt.astro";
 
-Arete is built so that an agent can take you from a product question to exact,
-generated application code, without guessing at program schemas or
-infrastructure along the way. This page explains who does what.
+Arete gives agents tools to author and exercise protocols, develop against
+cloud mainnet forks, and integrate generated clients. Programs and live views
+supply the instructions and data those workflows need. This page explains
+setup and the supporting skills; [Protocols for agents](/agent-skills/protocols/)
+covers wallet actions and execution.
 
 ## Start with one URL
 
@@ -26,14 +28,14 @@ CLI's current output guide the agent.
 
 ## The agent workflow
 
-```text
-Understand intent
-  → search the catalog
-  → inspect exact descriptors
-  → explore live views through MCP
-  → install programs and stacks
-  → build against generated types
-```
+For a new protocol: define the steps and lifecycle, run `a4 dev up`, test
+with dev wallets, and connect the app to its generated client. Production
+deployment is a separate authorized action. For an existing protocol: search
+listings, inspect the descriptor, install its client, and integrate its actions.
+
+[Author a protocol](/using-stacks/quickstart/) ·
+[Integrate a protocol](/integrating-protocols/overview/) ·
+[Use MCP protocol tools](/agent-skills/protocols/)
 
 You bring the goals and the authority to approve things. The agent handles
 discovery, exact schema lookup, dependency generation, and the repetitive
@@ -95,11 +97,12 @@ program names, view names, or endpoints.
 
 ## Generated SDKs for shipped code
 
-MCP is for exploring. It is not the API your production application should
-call. Once a program or view becomes part of the product, the agent adds it as a
+MCP supports agent exploration and protocol execution. Your production
+application should call generated SDKs directly. Once a program or view becomes part of the product, the agent adds it as a
 dependency and works from generated types:
 
 ```bash
+a4 install protocol <package> --ts
 a4 install program <slug> --ts
 a4 install stack <slug> --ts
 ```
