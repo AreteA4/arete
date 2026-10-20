@@ -507,3 +507,20 @@ describe("generateStackSource: direct activity", () => {
     });
   }
 });
+
+
+it("generates activity for a builtin System transfer without a synthetic ProgramSpec pin", () => {
+  const copy = structuredClone(spec);
+  copy.programs.system = { kind: "builtin", builtin: "system" };
+  copy.stack.instanceAccounts = {};
+  copy.stack.instanceFields = {};
+  copy.stack.activity = [{ step: "contribute", program: "system", instruction: "transfer", instanceAccount: "destination", walletAccount: "source", amountArg: "lamports" }];
+  const valid = validateProtocolSpec(copy);
+  const generated = generateStackSource(valid, { programs: { system: { idl: "./idl/system.idl.json" } } });
+  expect(generated.stackSource.programs).toEqual({ system: {source: {idl: "./idl/system.idl.json"}, program_id: "11111111111111111111111111111111"} });
+  copy.stack.activity[0]!.program = "missing";
+  expect(() => validateProtocolSpec(copy)).toThrow(/not declared/);
+  copy.stack.activity[0]!.program = "system";
+  copy.reads.systemAccount = {kind: "account", program: "system", account: "Account", address: "wallet", optional: false};
+  expect(() => validateProtocolSpec(copy)).toThrow(/has no ProgramSpec/);
+});

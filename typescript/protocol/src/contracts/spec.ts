@@ -997,7 +997,7 @@ function checkStackSurface(spec: ProtocolSpecV1): void {
     if (!has(spec.steps, activity.step)) {
       err("unknown-step", `${path}/step`, `step '${activity.step}' is not declared`);
     }
-    requireProgramSpec(spec, activity.program, `${path}/program`);
+    specProgram(spec, activity.program, `${path}/program`);
   });
 }
 
