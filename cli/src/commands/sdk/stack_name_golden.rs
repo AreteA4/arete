@@ -351,8 +351,11 @@ const RELEASE_VERSION_PLACEHOLDER: &str = "{{ARETE_VERSION}}";
 const OUTPUT_TREE_HASH_PLACEHOLDER: &str = "{{SDK_OUTPUT_TREE_HASH}}";
 
 fn without_versioned_tree_hash(path: &str, contents: String) -> String {
-    let versioned = path.starts_with("rust/") || path.starts_with("python/");
-    if !versioned || !path.ends_with("sdk-manifest.json") {
+    let sdk_path = path.strip_prefix("generated/").unwrap_or(path);
+    let versioned = sdk_path.starts_with("rust/") || sdk_path.starts_with("python/");
+    if !versioned
+        || !(path.ends_with("sdk-manifest.json") || path.ends_with("sdk-provenance.masked.json"))
+    {
         return contents;
     }
     let key = "\"sdkOutputTreeHash\": \"";

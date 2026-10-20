@@ -11908,5 +11908,9 @@ pub(crate) fn compare_golden_tree(
     golden_dir: &Path,
     generated: BTreeMap<String, String>,
 ) {
-    stack_name_golden::compare_with_golden(name, golden_dir, generated);
+    stack_name_golden::compare_with_golden(
+        name,
+        golden_dir,
+        stack_name_golden::without_release_version(generated),
+    );
 }

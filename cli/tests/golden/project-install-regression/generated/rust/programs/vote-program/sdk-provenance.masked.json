@@ -25,5 +25,5 @@
     "target": "rust"
   },
   "schemaVersion": 2,
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:5e5f4c156ad09586c9c413f56020de38298d43e4d224e677e51724100cea6ab4"
+  "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}"
 }

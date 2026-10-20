@@ -25,5 +25,5 @@
     "target": "python"
   },
   "schemaVersion": 2,
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:b1a708cb39a5c5a577fde6d96256e2bc3f88e5811466c955319e038e19326114"
+  "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}"
 }
