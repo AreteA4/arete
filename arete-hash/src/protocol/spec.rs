@@ -1580,7 +1580,7 @@ fn check_stack_surface(spec: &ProtocolSpecV1) -> ProtocolResult<()> {
                 format!("step '{}' is not declared", activity.step),
             ));
         }
-        require_program_spec(spec, &activity.program, &format!("{path}/program"))?;
+        spec_program(spec, &activity.program, &format!("{path}/program"))?;
     }
     Ok(())
 }

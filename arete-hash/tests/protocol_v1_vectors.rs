@@ -293,3 +293,37 @@ fn direct_resource_values_reject_unsafe_integers_before_hashing() {
             .unwrap();
     }
 }
+
+#[test]
+fn builtin_activity_is_valid_but_builtin_account_decoding_is_not() {
+    let mut value = document(&corpus(), "tokenRaise");
+    value["programs"]["system"] = serde_json::json!({"kind":"builtin", "builtin":"system"});
+    value["stack"] = serde_json::json!({
+        "instanceAccounts": {}, "instanceFields": {},
+        "activity": [{"step":"contribute", "program":"system", "instruction":"transfer", "instanceAccount":"destination", "walletAccount":"source", "amountArg":"lamports"}]
+    });
+    let spec = validate_protocol_spec_value(&value).unwrap();
+    let mut options = StackSourceOptions::default();
+    options.programs.insert(
+        "system".into(),
+        StackProgramSource::Idl {
+            idl: "./idl/system.idl.json".into(),
+        },
+    );
+    let generated = generate_stack_source(&spec, &options).unwrap();
+    assert_eq!(
+        generated.stack_source["programs"]["system"]["program_id"],
+        "11111111111111111111111111111111"
+    );
+    value["stack"]["activity"][0]["program"] = "missing".into();
+    assert_eq!(
+        validate_protocol_spec_value(&value).unwrap_err().code,
+        "unknown-program"
+    );
+    value["stack"]["activity"][0]["program"] = "system".into();
+    value["reads"]["systemAccount"] = serde_json::json!({"kind":"account", "program":"system", "account":"Account", "address":"wallet", "optional": false});
+    assert_eq!(
+        validate_protocol_spec_value(&value).unwrap_err().code,
+        "unknown-program"
+    );
+}
