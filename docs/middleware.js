@@ -28,7 +28,7 @@ import {
 
 export const config = {
   matcher: [
-    "/((?!_astro|api|ingest|a4/|openapi\\.json|\\.well-known|.*\\.(?:css|js|mjs|map|svg|png|jpg|jpeg|gif|webp|json|xml|ico|md|txt|woff|woff2|sh|ps1)$).*)",
+    "/((?!_astro|api|ingest|a4/|openapi\\.json|\\.well-known|.*\\.(?:css|js|mjs|map|svg|png|jpg|jpeg|gif|webp|json|webmanifest|xml|ico|md|txt|woff|woff2|sh|ps1)$).*)",
   ],
 };
 

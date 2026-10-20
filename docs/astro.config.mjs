@@ -39,6 +39,7 @@ export default defineConfig({
         }),
       ],
       title: "Arete",
+      favicon: "/favicon.ico",
       social: [
         {
           icon: "github",

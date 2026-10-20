@@ -113,6 +113,11 @@
       "content",
       theme === "dark" ? "#17130e" : "#f3efe4",
     );
+    for (const size of ["16", "32"]) {
+      document
+        .querySelector(`link[data-favicon="${size}"]`)
+        ?.setAttribute("href", `/favicon-${theme}-${size}x${size}.png`);
+    }
     document
       .querySelectorAll<HTMLButtonElement>("[data-theme-toggle]")
       .forEach((button) => {
