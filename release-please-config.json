@@ -86,6 +86,10 @@
         {
           "type": "generic",
           "path": "src/version.ts"
+        },
+        {
+          "type": "generic",
+          "path": "/cli/src/commands/protocol/init.rs"
         }
       ]
     },
