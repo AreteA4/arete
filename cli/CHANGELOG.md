@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## [0.42.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.42.0...a4-cli-v0.42.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **cli:** scaffold the released protocol package version ([cce88d9](https://github.com/AreteA4/arete/commit/cce88d9457254fd96a132bcf317e0de95d002534))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.42.0 to 0.42.1
+    * arete-mcp bumped from 0.42.0 to 0.42.1
+
 ## [0.42.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.41.2...a4-cli-v0.42.0) (2026-10-18)
 
 
