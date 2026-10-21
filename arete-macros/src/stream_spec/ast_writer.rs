@@ -234,6 +234,14 @@ pub fn build_ast(
             }
         })
         .collect();
+    // The runtime evaluates specs in this order: each must follow the
+    // computed fields it reads.
+    let computed_field_specs: Vec<ComputedFieldSpec> =
+        crate::codegen::computed::order_computed_specs(&computed_field_specs)
+            .map_err(|message| syn::Error::new(proc_macro2::Span::call_site(), message))?
+            .into_iter()
+            .cloned()
+            .collect();
 
     let resolver_specs = build_resolver_specs(resolve_specs)?;
 

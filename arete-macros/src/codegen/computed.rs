@@ -5,7 +5,6 @@
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use std::collections::{HashMap, HashSet};
 
 use crate::ast::{BinaryOp, ComputedExpr, ComputedFieldSpec, UnaryOp};
 
@@ -62,94 +61,110 @@ fn generate_json_array_sum(inner: TokenStream) -> TokenStream {
     }
 }
 
-/// Extract field dependencies from a computed expression.
-/// Returns a set of field names (without section prefix) that this expression depends on.
-fn extract_field_dependencies(expr: &ComputedExpr, section: &str) -> HashSet<String> {
-    let mut deps = HashSet::new();
-    extract_deps_recursive(expr, section, &mut deps);
-    deps
-}
-
-fn extract_deps_recursive(expr: &ComputedExpr, section: &str, deps: &mut HashSet<String>) {
+/// Every field path a computed expression reads. Literal values are data,
+/// not code, so nothing inside them is a read.
+fn collect_field_refs(expr: &ComputedExpr, paths: &mut Vec<String>) {
     match expr {
-        ComputedExpr::FieldRef { path } => {
-            // Check if this field is in the same section
-            let parts: Vec<&str> = path.split('.').collect();
-            if parts.len() >= 2 && parts[0] == section {
-                deps.insert(parts[1].to_string());
-            }
-        }
-        ComputedExpr::UnwrapOr { expr, .. } => {
-            extract_deps_recursive(expr, section, deps);
-        }
+        ComputedExpr::FieldRef { path } => paths.push(path.clone()),
+        ComputedExpr::UnwrapOr { expr, .. }
+        | ComputedExpr::Cast { expr, .. }
+        | ComputedExpr::Paren { expr }
+        | ComputedExpr::Slice { expr, .. }
+        | ComputedExpr::Index { expr, .. }
+        | ComputedExpr::Unary { expr, .. }
+        | ComputedExpr::JsonToBytes { expr }
+        | ComputedExpr::Keccak256 { expr }
+        | ComputedExpr::Some { value: expr }
+        | ComputedExpr::U64FromLeBytes { bytes: expr }
+        | ComputedExpr::U64FromBeBytes { bytes: expr }
+        | ComputedExpr::Closure { body: expr, .. } => collect_field_refs(expr, paths),
         ComputedExpr::Binary { left, right, .. } => {
-            extract_deps_recursive(left, section, deps);
-            extract_deps_recursive(right, section, deps);
+            collect_field_refs(left, paths);
+            collect_field_refs(right, paths);
         }
-        ComputedExpr::Cast { expr, .. } => {
-            extract_deps_recursive(expr, section, deps);
-        }
-        ComputedExpr::MethodCall { expr, args, .. } => {
-            extract_deps_recursive(expr, section, deps);
-            for arg in args {
-                extract_deps_recursive(arg, section, deps);
-            }
-        }
-        ComputedExpr::ResolverComputed { args, .. } => {
-            for arg in args {
-                extract_deps_recursive(arg, section, deps);
-            }
-        }
-        ComputedExpr::Paren { expr } => {
-            extract_deps_recursive(expr, section, deps);
-        }
-        ComputedExpr::Literal { .. } => {}
-        // New variants
-        ComputedExpr::Var { .. } => {}
         ComputedExpr::Let { value, body, .. } => {
-            extract_deps_recursive(value, section, deps);
-            extract_deps_recursive(body, section, deps);
+            collect_field_refs(value, paths);
+            collect_field_refs(body, paths);
         }
         ComputedExpr::If {
             condition,
             then_branch,
             else_branch,
         } => {
-            extract_deps_recursive(condition, section, deps);
-            extract_deps_recursive(then_branch, section, deps);
-            extract_deps_recursive(else_branch, section, deps);
+            collect_field_refs(condition, paths);
+            collect_field_refs(then_branch, paths);
+            collect_field_refs(else_branch, paths);
         }
-        ComputedExpr::None => {}
-        ComputedExpr::Some { value } => {
-            extract_deps_recursive(value, section, deps);
+        ComputedExpr::MethodCall { expr, args, .. } => {
+            collect_field_refs(expr, paths);
+            args.iter().for_each(|arg| collect_field_refs(arg, paths));
         }
-        ComputedExpr::Slice { expr, .. } => {
-            extract_deps_recursive(expr, section, deps);
+        ComputedExpr::ResolverComputed { args, .. } => {
+            args.iter().for_each(|arg| collect_field_refs(arg, paths));
         }
-        ComputedExpr::Index { expr, .. } => {
-            extract_deps_recursive(expr, section, deps);
-        }
-        ComputedExpr::U64FromLeBytes { bytes } => {
-            extract_deps_recursive(bytes, section, deps);
-        }
-        ComputedExpr::U64FromBeBytes { bytes } => {
-            extract_deps_recursive(bytes, section, deps);
-        }
-        ComputedExpr::ByteArray { .. } => {}
-        ComputedExpr::Closure { body, .. } => {
-            extract_deps_recursive(body, section, deps);
-        }
-        ComputedExpr::Unary { expr, .. } => {
-            extract_deps_recursive(expr, section, deps);
-        }
-        ComputedExpr::JsonToBytes { expr } => {
-            extract_deps_recursive(expr, section, deps);
-        }
-        ComputedExpr::ContextSlot | ComputedExpr::ContextTimestamp => {}
-        ComputedExpr::Keccak256 { expr } => {
-            extract_deps_recursive(expr, section, deps);
-        }
+        ComputedExpr::Literal { .. }
+        | ComputedExpr::Var { .. }
+        | ComputedExpr::None
+        | ComputedExpr::ByteArray { .. }
+        | ComputedExpr::ContextSlot
+        | ComputedExpr::ContextTimestamp => {}
     }
+}
+
+/// Order computed fields so each runs after every computed field it reads,
+/// across sections: the runtime evaluates them in this order, once per
+/// update. Fields with no dependency between them keep declaration order. A
+/// field that reads itself, directly or through others, is an error: it
+/// would read the previous update's value. Matches the Stack Source
+/// compiler.
+pub fn order_computed_specs(
+    specs: &[ComputedFieldSpec],
+) -> Result<Vec<&ComputedFieldSpec>, String> {
+    let reads = |path: &str, target: &str| {
+        path == target
+            || path
+                .strip_prefix(target)
+                .is_some_and(|rest| rest.starts_with('.'))
+            || target
+                .strip_prefix(path)
+                .is_some_and(|rest| rest.starts_with('.'))
+    };
+    let dependencies = specs
+        .iter()
+        .map(|spec| {
+            let mut paths = Vec::new();
+            collect_field_refs(&spec.expression, &mut paths);
+            specs
+                .iter()
+                .enumerate()
+                .filter(|(_, other)| paths.iter().any(|path| reads(path, &other.target_path)))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut placed = vec![false; specs.len()];
+    let mut order = Vec::with_capacity(specs.len());
+    while order.len() < specs.len() {
+        let next = (0..specs.len()).find(|&index| {
+            !placed[index]
+                && dependencies[index]
+                    .iter()
+                    .all(|&dependency| placed[dependency])
+        });
+        let Some(next) = next else {
+            let cycle = (0..specs.len())
+                .filter(|&index| !placed[index])
+                .map(|index| format!("'{}'", specs[index].target_path))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "computed fields {cycle} depend on themselves; a computed field cannot read its own value"
+            ));
+        };
+        placed[next] = true;
+        order.push(&specs[next]);
+    }
+    Ok(order)
 }
 
 fn contains_resolver_computed(expr: &ComputedExpr) -> bool {
@@ -195,68 +210,6 @@ fn contains_resolver_computed(expr: &ComputedExpr) -> bool {
     }
 }
 
-/// Topologically sort computed fields by dependencies within a section.
-fn sort_by_dependencies<'a>(
-    fields: &[&'a ComputedFieldSpec],
-    section: &str,
-) -> Vec<&'a ComputedFieldSpec> {
-    // Build field name to spec mapping
-    let mut name_to_spec: HashMap<String, &ComputedFieldSpec> = HashMap::new();
-    let mut field_deps: HashMap<String, HashSet<String>> = HashMap::new();
-
-    for spec in fields {
-        let field_name = spec
-            .target_path
-            .split('.')
-            .next_back()
-            .unwrap_or(&spec.target_path)
-            .to_string();
-        name_to_spec.insert(field_name.clone(), *spec);
-        let deps = extract_field_dependencies(&spec.expression, section);
-        field_deps.insert(field_name, deps);
-    }
-
-    // Topological sort using Kahn's algorithm
-    let mut result: Vec<&ComputedFieldSpec> = Vec::new();
-    let mut remaining: HashSet<String> = name_to_spec.keys().cloned().collect();
-
-    // Keep iterating until all fields are sorted
-    while !remaining.is_empty() {
-        let mut ready: Vec<String> = Vec::new();
-
-        for name in &remaining {
-            let deps = field_deps.get(name).unwrap();
-            // A field is ready if all its dependencies that are computed fields have been processed
-            let computed_deps: HashSet<_> = deps
-                .intersection(&name_to_spec.keys().cloned().collect())
-                .cloned()
-                .collect();
-            if computed_deps.iter().all(|d| !remaining.contains(d)) {
-                ready.push(name.clone());
-            }
-        }
-
-        if ready.is_empty() && !remaining.is_empty() {
-            // Circular dependency or dependency on non-existent field - just add remaining fields
-            for name in &remaining {
-                if let Some(spec) = name_to_spec.get(name) {
-                    result.push(*spec);
-                }
-            }
-            break;
-        }
-
-        for name in ready {
-            remaining.remove(&name);
-            if let Some(spec) = name_to_spec.get(&name) {
-                result.push(*spec);
-            }
-        }
-    }
-
-    result
-}
-
 /// Generate computed field evaluator from computed field specs.
 pub fn generate_computed_evaluator(computed_field_specs: &[ComputedFieldSpec]) -> TokenStream {
     if computed_field_specs.is_empty() {
@@ -277,44 +230,30 @@ pub fn generate_computed_evaluator(computed_field_specs: &[ComputedFieldSpec]) -
         };
     }
 
-    // Group computed fields by section
-    let mut fields_by_section: HashMap<String, Vec<&ComputedFieldSpec>> = HashMap::new();
-
-    for spec in computed_field_specs {
-        let parts: Vec<&str> = spec.target_path.split('.').collect();
-        if parts.len() >= 2 {
-            let section = parts[0].to_string();
-            fields_by_section.entry(section).or_default().push(spec);
-        }
-    }
-
-    let section_evals: Vec<TokenStream> = fields_by_section.iter().map(|(section, fields)| {
-        let section_str = section.as_str();
-
-        // Sort fields by dependencies to ensure correct evaluation order
-        let sorted_fields = sort_by_dependencies(fields, section);
-
-        // Generate compute-and-write statements for each field in dependency order
-        // Each field is computed and immediately written, so dependent fields can read the updated value
-        let field_evals: Vec<TokenStream> = sorted_fields.iter().map(|spec| {
-            let field_name = spec.target_path.split('.').next_back().unwrap_or(&spec.target_path).to_string();
+    // One statement per field, in dependency order: each is computed and
+    // written before any field that reads it.
+    let ordered = match order_computed_specs(computed_field_specs) {
+        Ok(ordered) => ordered,
+        Err(message) => return quote! { compile_error!(#message); },
+    };
+    let field_evals: Vec<TokenStream> = ordered
+        .iter()
+        .filter_map(|spec| {
+            let (section, field_name) = spec.target_path.split_once('.')?;
+            let field_name = field_name.rsplit('.').next().unwrap_or(field_name);
             let expr_code = generate_computed_expr_code(&spec.expression);
-
-            quote! {
-                // Compute and immediately write this field so dependent fields can use it
-                let computed_value = { #expr_code };
-                if let Some(section_value) = state.get_mut(#section_str) {
-                    if let Some(section_obj) = section_value.as_object_mut() {
-                        section_obj.insert(#field_name.to_string(), arete::runtime::serde_json::to_value(computed_value)?);
+            Some(quote! {
+                {
+                    let computed_value = { #expr_code };
+                    if let Some(section_value) = state.get_mut(#section) {
+                        if let Some(section_obj) = section_value.as_object_mut() {
+                            section_obj.insert(#field_name.to_string(), arete::runtime::serde_json::to_value(computed_value)?);
+                        }
                     }
                 }
-            }
-        }).collect();
-
-        quote! {
-            #(#field_evals)*
-        }
-    }).collect();
+            })
+        })
+        .collect();
 
     // Generate the list of computed field paths for the helper function
     let computed_paths: Vec<String> = computed_field_specs
@@ -330,7 +269,7 @@ pub fn generate_computed_evaluator(computed_field_specs: &[ComputedFieldSpec]) -
             __context_slot: Option<u64>,
             __context_timestamp: i64,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            #(#section_evals)*
+            #(#field_evals)*
             Ok(())
         }
 
@@ -810,10 +749,13 @@ pub fn generate_computed_expr_code_with_cache(
                 if let ComputedExpr::Closure { param, body } = &args[0] {
                     let param_ident = format_ident!("{}", param);
                     // Check if the closure body references any computed fields in this section
-                    let body_deps = extract_field_dependencies(body, section);
-                    let has_computed_deps: std::collections::HashSet<String> = body_deps
-                        .intersection(&computed_field_names.iter().cloned().collect())
-                        .cloned()
+                    let mut body_paths = Vec::new();
+                    collect_field_refs(body, &mut body_paths);
+                    let has_computed_deps: Vec<&str> = body_paths
+                        .iter()
+                        .filter_map(|path| path.strip_prefix(section)?.strip_prefix('.'))
+                        .filter_map(|rest| rest.split('.').next())
+                        .filter(|name| computed_field_names.iter().any(|field| field == name))
                         .collect();
 
                     // Closures in .map() return Option, so use option-safe code generation
@@ -1143,5 +1085,88 @@ fn generate_computed_expr_code_with_cache_option_safe(
             _ => quote! { 0.0_f64 },
         },
         _ => generate_option_safe_expr_code(expr),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(target_path: &str, expression: serde_json::Value) -> ComputedFieldSpec {
+        ComputedFieldSpec {
+            target_path: target_path.to_string(),
+            expression: serde_json::from_value(expression).unwrap(),
+            result_type: "f64".to_string(),
+        }
+    }
+
+    fn field(path: &str) -> serde_json::Value {
+        serde_json::json!({"FieldRef": {"path": path}})
+    }
+
+    fn sum(left: serde_json::Value, right: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"Binary": {"op": "Add", "left": left, "right": right}})
+    }
+
+    #[test]
+    fn computed_specs_follow_their_dependencies_across_sections() {
+        let specs = [
+            spec("rates.apr", field("market.utilization")),
+            spec(
+                "summary.total",
+                sum(field("rates.apr"), field("market.utilization")),
+            ),
+            spec("market.utilization", field("state.borrowed")),
+            spec("state.other", field("state.borrowed")),
+        ];
+        let order = order_computed_specs(&specs)
+            .unwrap()
+            .into_iter()
+            .map(|spec| spec.target_path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            [
+                "market.utilization",
+                "rates.apr",
+                "summary.total",
+                "state.other"
+            ]
+        );
+    }
+
+    #[test]
+    fn computed_specs_in_dependency_order_keep_declaration_order() {
+        let specs = [
+            spec("b.second", field("state.x")),
+            spec("a.first", field("b.second")),
+        ];
+        let order = order_computed_specs(&specs).unwrap();
+        assert_eq!(order[0].target_path, "b.second");
+        assert_eq!(order[1].target_path, "a.first");
+    }
+
+    #[test]
+    fn computed_specs_cannot_read_themselves() {
+        let looped = [spec("a.x", field("a.y")), spec("a.y", field("a.x"))];
+        let error = order_computed_specs(&looped).unwrap_err();
+        assert!(
+            error.contains("'a.x'") && error.contains("'a.y'"),
+            "{error}"
+        );
+        let own = [spec(
+            "a.count",
+            sum(
+                field("a.count"),
+                serde_json::json!({"Literal": {"value": 1}}),
+            ),
+        )];
+        assert!(order_computed_specs(&own).is_err());
+        // A literal shaped like a reference reads nothing.
+        let literal = [spec(
+            "a.shape",
+            serde_json::json!({"Literal": {"value": {"FieldRef": {"path": "a.shape"}}}}),
+        )];
+        assert!(order_computed_specs(&literal).is_ok());
     }
 }
