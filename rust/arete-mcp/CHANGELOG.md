@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.43.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.42.2...arete-mcp-v0.43.0) (2026-10-21)
+
+
+### Bug Fixes
+
+* **cli:** report dev step progress and expiry ([22517d5](https://github.com/AreteA4/arete/commit/22517d5b71db921f697dd2bf95dccc32b86d0dc6))
+* **cli:** show progress while dev steps settle ([7b4e48f](https://github.com/AreteA4/arete/commit/7b4e48f38602288c89cb42fe22eb113ff2ddd1c8))
+
 ## [0.42.2](https://github.com/AreteA4/arete/compare/arete-mcp-v0.42.1...arete-mcp-v0.42.2) (2026-10-20)
 
 

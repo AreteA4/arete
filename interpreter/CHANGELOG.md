@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.43.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.42.2...arete-interpreter-v0.43.0) (2026-10-21)
+
+
+### Features
+
+* **interpreter,macros:** array paths, exp/ln/pow, exact numeric semantics, dependency-ordered computed fields ([c119f01](https://github.com/AreteA4/arete/commit/c119f01e377e9670a3f8c6de16ba60593c514d4f))
+* **interpreter:** add exp, ln and pow to computed expressions ([9dbab93](https://github.com/AreteA4/arete/commit/9dbab93ea77f1a0aba88eb931d9162c438e7fff2))
+* **interpreter:** index arrays with numeric segments in computed field paths ([459e639](https://github.com/AreteA4/arete/commit/459e6390f8138a82abd3fa53ee49811ea25c2588))
+
+
+### Bug Fixes
+
+* **interpreter:** compare integers and floats without rounding ([9a6062c](https://github.com/AreteA4/arete/commit/9a6062cae20d19cc1663ea49d81b822aac9a8344))
+* **interpreter:** compare numbers by value in computed == and != ([ddb5652](https://github.com/AreteA4/arete/commit/ddb56521bcc8eec245db5123cb5edfbad0940a18))
+* **interpreter:** never wrap integer arithmetic in computed fields ([532dda9](https://github.com/AreteA4/arete/commit/532dda9c36a2094598d59f450f9f100ca2db04a6))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.42.2 to 0.43.0
+
 ## [0.42.2](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.42.1...arete-interpreter-v0.42.2) (2026-10-20)
 
 

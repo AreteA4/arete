@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.43.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.42.2...arete-macros-v0.43.0) (2026-10-21)
+
+
+### Features
+
+* **interpreter,macros:** array paths, exp/ln/pow, exact numeric semantics, dependency-ordered computed fields ([c119f01](https://github.com/AreteA4/arete/commit/c119f01e377e9670a3f8c6de16ba60593c514d4f))
+
+
+### Bug Fixes
+
+* **macros:** evaluate the generated computed hook in dependency order ([998729d](https://github.com/AreteA4/arete/commit/998729d5a0b6cdf4eef8a5fc44cd894d7d18681e))
+* **macros:** order Rust DSL computed fields by dependency ([c1bd191](https://github.com/AreteA4/arete/commit/c1bd191f3537234a0e2faecc660b28d11de9bac2))
+
 ## [0.42.2](https://github.com/AreteA4/arete/compare/arete-macros-v0.42.1...arete-macros-v0.42.2) (2026-10-20)
 
 
