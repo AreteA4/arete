@@ -219,6 +219,18 @@ struct Events {
     log: LogSink,
 }
 
+impl crate::commands::protocol::local_programs::Progress for Events {
+    fn step(&self, message: &str) {
+        self.emit("program", message, json!({}));
+    }
+    fn success(&self, message: &str) {
+        self.emit("program", message, json!({}));
+    }
+    fn info(&self, message: &str) {
+        self.emit("program", message, json!({}));
+    }
+}
+
 impl Events {
     fn emit(&self, event: &str, human: &str, mut fields: Value) {
         self.log
@@ -387,6 +399,33 @@ struct Session<'a> {
     /// for.
     sdk_generated_for: Option<(String, String)>,
     ui: DevUi,
+}
+
+async fn admit_local_programs(
+    root: PathBuf,
+    origin: String,
+    key: String,
+    slug: String,
+    progress: Events,
+) -> Result<bool> {
+    // Construct and drop blocking HTTP clients on the worker, not Tokio.
+    tokio::task::spawn_blocking(move || {
+        let client = crate::api_client::ApiClient::with_base_url(&origin).with_api_key(key);
+        let published = crate::commands::protocol::local_programs::publish(
+            &client,
+            &root,
+            &crate::commands::protocol::local_programs::PublishOptions {
+                slug: &slug,
+                dry_run: false,
+                record: true,
+                wait: Duration::from_secs(180),
+            },
+            &progress,
+        )?;
+        Ok(published.lock_changed)
+    })
+    .await
+    .context("Local program admission worker failed")?
 }
 
 /// Run `a4 dev up` until Ctrl-C or SIGTERM (`a4 dev down`).
@@ -654,7 +693,29 @@ impl Session<'_> {
     /// `arete-protocol build`, reported to the dev UI.
     async fn build(&mut self, changed: &[String]) -> Result<()> {
         self.ui.build_started(changed);
-        match run_build(&self.config.project_root, &self.events.log).await {
+        let result = async {
+            run_build(&self.config.project_root, &self.events.log).await?;
+            if self.config.deploy {
+                let build = super::deploy::read_build(&self.project.root.join(BUILD_DIR))?;
+                let slug = self
+                    .config
+                    .settings
+                    .slug
+                    .clone()
+                    .unwrap_or_else(|| super::deploy::slug_from_name(&build.spec.name));
+                let root = self.config.project_root.clone();
+                let origin = self.config.api.origin().to_string();
+                let key = self.config.api.key().to_string();
+                let progress = self.events.clone();
+                let changed = admit_local_programs(root, origin, key, slug, progress).await?;
+                if changed {
+                    run_build(&self.config.project_root, &self.events.log).await?;
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        match result {
             Ok(()) => {
                 self.ui.build_succeeded(&self.project.root.join(BUILD_DIR));
                 Ok(())
@@ -1115,6 +1176,58 @@ async fn terminated(_: &mut ()) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn dev_admission_records_the_exact_release_before_the_next_build() {
+        use crate::api_client::test_support::MockServer;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tip-jar");
+        crate::commands::protocol::init::scaffold(&crate::commands::protocol::init::InitArgs {
+            dir: root.clone(),
+            local_idl: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let lock = crate::project::ProjectLock::load(root.join("arete.lock")).unwrap();
+        let spec = lock.dependencies[0].program_spec_hash.clone().unwrap();
+        let release = format!("arete:h1:program-release:sha256:{}", "a".repeat(64));
+        let owned = json!({"schema":"arete.user-program-list/v1","items":[{
+            "schema":"arete.user-program/v1","userProgramId":format!("upr_{}","a".repeat(32)),
+            "programId":"11111111111111111111111111111111","programSpecHash":spec,
+            "alias":"tip-jar-system","lifecycleState":"active","admissionState":"ready","visibility":"private",
+            "programReleaseHash":release,"programReadBindingId":format!("prb_{}","b".repeat(32)),"operationalStatus":"unverified",
+            "health":{"status":"unverified","assessedAt":null,"schemaRelevantAttempts":0,"schemaFailureRateBasisPoints":0},
+            "eventCursor":"uev_AAAAAAAAAAE","diagnosticCodes":[],"idempotent":false
+        }],"nextCursor":null});
+        let server = MockServer::json_sequence(vec![(200, owned.to_string()), (200, "[]".into())]);
+        let progress = Events {
+            json: false,
+            log: LogSink::open(&dir.path().join("test.log"), "test", false).unwrap(),
+        };
+        let changed = admit_local_programs(
+            root.clone(),
+            server.base_url().into(),
+            "a4_sk_test".into(),
+            "tip-jar".into(),
+            progress,
+        )
+        .await
+        .unwrap();
+        assert!(changed);
+        let lock = crate::project::ProjectLock::load(root.join("arete.lock")).unwrap();
+        assert_eq!(
+            lock.dependencies[0].program_release_hash.as_deref(),
+            Some(release.as_str())
+        );
+        let generated = std::fs::read_dir(root.join("generated/typescript/programs/system"))
+            .unwrap()
+            .map(|p| std::fs::read_to_string(p.unwrap().path()).unwrap_or_default())
+            .collect::<String>();
+        assert!(generated.contains(&release));
+        let request = server.request();
+        assert!(request.request_line.starts_with("GET /api/programs"));
+        assert_eq!(request.header("authorization"), Some("Bearer a4_sk_test"));
+    }
+
     use super::*;
 
     #[test]

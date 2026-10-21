@@ -132,8 +132,7 @@ environment, with everything you left in it.
 ### Fee policy and resources
 
 Every deployment names a fee policy. `a4 dev` uses, in order:
-`--fee-policy <file>`, `[protocol].fee_policy` in `arete.toml`, or a policy
-that charges nothing:
+`--fee-policy <file>`, `[protocol].fee_policy` in `arete.toml`, or an empty author policy:
 
 ```json
 { "schema": "arete.protocol-fee-policy/v1", "steps": {} }
@@ -148,6 +147,11 @@ Resources the spec declares need a value, as for `a4 protocol deploy`:
 `--resource <name>=<file>` or `[protocol.resources]`. Each new deployment
 publishes a version of each. These are the same `[protocol]` settings
 `a4 protocol deploy` reads (`slug`, `name`, `fee_policy`, `resources`).
+
+Arete includes any applicable platform fee in the prepared transaction, also
+on a cloud dev environment. Applications display the actual prepared fee before
+signing. Unsupported fee classification does not prevent an otherwise valid
+operation from running; there is no Arete fee when it cannot be assessed safely.
 
 ## The local RPC endpoint
 

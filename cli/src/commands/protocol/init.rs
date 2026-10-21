@@ -12,13 +12,10 @@
 //!   the generated program module imports), `tsconfig.json`, `.gitignore`
 //!   and `README.md`.
 //!
-//! When the registry can't install it (no network, no API key, or a registry
-//! without the package), init warns and installs the System Program's
-//! `transfer` instruction from a local IDL instead (`idl/system.idl.json`,
-//! as `--local-idl` does). The protocol is the same either way: the local IDL
-//! uses the registry program's instruction, account and argument names.
-//! `a4 protocol deploy` pushes a local-IDL program to the account as a
-//! private program before it uploads the release.
+//! The default requires the registry's reviewed System Program package. A
+//! registry failure is actionable, not permission to substitute a different
+//! program identity. `--local-idl` explicitly opts into offline scaffolding;
+//! hosted execution still requires admission of that release.
 //!
 //! Generated clients are committed, as `a4 install` expects (`a4 install
 //! --check` compares them with `arete.lock`), so `.gitignore` leaves
@@ -339,6 +336,10 @@ Add a program: `a4 install program <registry package> --ts`, or put its IDL
 in `idl/` and run `a4 install program ./idl/<name>.json --as <alias> --ts`,
 then import it from `@programs/<alias>`.
 
+Arete includes any applicable fee in the prepared transaction. The app should
+display that fee before signing. `close` accepts an amount chosen by its caller;
+returning funds does not automatically make it an exempt refund.
+
 ## Deploy
 
 ```sh
@@ -462,26 +463,17 @@ fn scaffold_with(
         written.push(".gitignore".into());
     }
 
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     let system_program = if args.no_install {
         None
     } else if args.local_idl {
         Some(SystemProgramSource::LocalIdl)
     } else {
-        match registry_install(&absolute) {
-            Ok(()) => Some(SystemProgramSource::Registry),
-            Err(error) => {
-                warnings.push(format!(
-                    "Could not install the System Program from the registry package \
-                     {SYSTEM_PROGRAM_PACKAGE} ({error:#}). Installed its transfer instruction \
-                     from {SYSTEM_IDL_PATH} instead; `a4 protocol deploy` pushes that program to \
-                     your account as a private program. Once the registry has the package, \
-                     remove [dependencies.programs.{SYSTEM_ALIAS}] and run \
-                     `a4 install program {SYSTEM_PROGRAM_PACKAGE} --as {SYSTEM_ALIAS} --ts` to switch."
-                ));
-                Some(SystemProgramSource::LocalIdl)
-            }
-        }
+        registry_install(&absolute).with_context(|| format!(
+            "Could not install the reviewed {SYSTEM_PROGRAM_PACKAGE} registry package. Fix the registry/authentication error and run `a4 install program {SYSTEM_PROGRAM_PACKAGE} --as {SYSTEM_ALIAS} --ts` in {}. No local IDL was substituted. For intentional offline scaffolding in a new directory, use `a4 protocol init --local-idl`; hosted execution still requires admission",
+            absolute.display()
+        ))?;
+        Some(SystemProgramSource::Registry)
     };
     if system_program == Some(SystemProgramSource::LocalIdl) {
         write_new(dir, SYSTEM_IDL_PATH, SYSTEM_IDL)?;
@@ -616,22 +608,19 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("tip-jar");
-        // The fallback install: the registry is never contacted in tests.
+        // Explicit offline scaffold: the registry is never contacted in tests.
         let outcome = scaffold_with(
             &InitArgs {
                 dir: root.clone(),
+                local_idl: true,
                 ..InitArgs::default()
             },
-            |_| bail!("offline"),
+            |_| panic!("explicit local IDL must not contact the registry"),
         )
         .unwrap();
         assert!(outcome.installed);
         assert_eq!(outcome.system_program, Some(SystemProgramSource::LocalIdl));
-        assert!(
-            outcome.warnings[0].contains("offline"),
-            "{:?}",
-            outcome.warnings
-        );
+        assert!(outcome.warnings.is_empty());
         assert!(root
             .join("generated/typescript/programs/system/index.ts")
             .is_file());
@@ -770,6 +759,28 @@ mod tests {
         assert!(!outcome.written.iter().any(|file| file == SYSTEM_IDL_PATH));
         let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
         assert!(readme.contains("registry's `system-program` package"));
+    }
+
+    #[test]
+    fn registry_failure_never_substitutes_a_local_program_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tip-jar");
+        let error = scaffold_with(
+            &InitArgs {
+                dir: root.clone(),
+                ..InitArgs::default()
+            },
+            |_| bail!("registry unavailable"),
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("registry unavailable"), "{message}");
+        assert!(
+            message.contains("a4 install program system-program"),
+            "{message}"
+        );
+        assert!(!root.join(SYSTEM_IDL_PATH).exists());
+        assert!(!root.join("arete.lock").exists());
     }
 
     #[test]
