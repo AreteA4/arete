@@ -11,7 +11,7 @@ use lru::LruCache;
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::borrow::{Borrow, Cow};
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -7558,10 +7558,10 @@ impl VmContext {
             }
 
             // Comparison operations
-            BinaryOp::Gt => self.comparison_op(left, right, |a, b| a > b, |a, b| a > b),
-            BinaryOp::Lt => self.comparison_op(left, right, |a, b| a < b, |a, b| a < b),
-            BinaryOp::Gte => self.comparison_op(left, right, |a, b| a >= b, |a, b| a >= b),
-            BinaryOp::Lte => self.comparison_op(left, right, |a, b| a <= b, |a, b| a <= b),
+            BinaryOp::Gt => self.comparison_op(left, right, Ordering::is_gt),
+            BinaryOp::Lt => self.comparison_op(left, right, Ordering::is_lt),
+            BinaryOp::Gte => self.comparison_op(left, right, Ordering::is_ge),
+            BinaryOp::Lte => self.comparison_op(left, right, Ordering::is_le),
             BinaryOp::Eq => Ok(json!(values_equal(left, right))),
             BinaryOp::Ne => Ok(json!(!values_equal(left, right))),
 
@@ -7653,25 +7653,15 @@ impl VmContext {
         .into())
     }
 
-    /// Helper for comparison operations
-    fn comparison_op<F1, F2>(
+    /// Helper for ordered comparisons: numbers compare exactly by value.
+    fn comparison_op(
         &self,
         left: &Value,
         right: &Value,
-        int_cmp: F1,
-        float_cmp: F2,
-    ) -> Result<Value>
-    where
-        F1: Fn(i128, i128) -> bool,
-        F2: Fn(f64, f64) -> bool,
-    {
-        if let (Some(a), Some(b)) = (json_integer(left), json_integer(right)) {
-            return Ok(json!(int_cmp(a, b)));
-        }
-
-        // Try f64
-        if let (Some(a), Some(b)) = (left.as_f64(), right.as_f64()) {
-            return Ok(json!(float_cmp(a, b)));
+        holds: fn(Ordering) -> bool,
+    ) -> Result<Value> {
+        if let Some(ordering) = compare_numbers(left, right) {
+            return Ok(json!(holds(ordering)));
         }
 
         // If either is null, comparison returns false
@@ -8182,12 +8172,51 @@ fn integer_json(value: i128) -> Option<Value> {
 /// Everything else compares structurally.
 fn values_equal(left: &Value, right: &Value) -> bool {
     match (left, right) {
-        (Value::Number(a), Value::Number(b)) => match (json_integer(left), json_integer(right)) {
-            (Some(a), Some(b)) => a == b,
-            _ => a.as_f64() == b.as_f64(),
-        },
+        (Value::Number(_), Value::Number(_)) => {
+            compare_numbers(left, right) == Some(Ordering::Equal)
+        }
         _ => left == right,
     }
+}
+
+/// Order two JSON numbers exactly. An integer is never rounded to compare
+/// it with a float: `9007199254740993` is greater than `9007199254740992.0`,
+/// although both round to the same `f64`. `None` unless both are numbers.
+fn compare_numbers(left: &Value, right: &Value) -> Option<Ordering> {
+    match (json_integer(left), json_integer(right)) {
+        (Some(a), Some(b)) => Some(a.cmp(&b)),
+        (Some(a), None) => Some(compare_integer_float(a, right.as_f64()?)?),
+        (None, Some(b)) => Some(compare_integer_float(b, left.as_f64()?)?.reverse()),
+        (None, None) => left.as_f64()?.partial_cmp(&right.as_f64()?),
+    }
+}
+
+/// `integer` against `float` without rounding the integer.
+fn compare_integer_float(integer: i128, float: f64) -> Option<Ordering> {
+    // Every i128 lies in [-2^127, 2^127).
+    const BOUND: f64 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0;
+    if float.is_nan() {
+        return None;
+    }
+    if float >= BOUND {
+        return Some(Ordering::Less);
+    }
+    if float < -BOUND {
+        return Some(Ordering::Greater);
+    }
+    // The whole part of a float in range is exact as an i128; the fraction
+    // breaks a tie.
+    let whole = float.trunc();
+    Some(integer.cmp(&(whole as i128)).then_with(|| {
+        let fraction = float - whole;
+        if fraction > 0.0 {
+            Ordering::Less
+        } else if fraction < 0.0 {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
+    }))
 }
 
 #[cfg(test)]
@@ -9197,6 +9226,69 @@ mod tests {
         );
         assert_eq!(binary(BinaryOp::Eq, json!("1"), json!(1)), json!(false));
         assert_eq!(binary(BinaryOp::Eq, json!([1]), json!([1])), json!(true));
+    }
+
+    #[test]
+    fn computed_comparisons_never_round_integers_against_floats() {
+        // 2^53 + 1 rounds to 2^53 as an f64.
+        let above = json!(9_007_199_254_740_993_u64);
+        let float = json!(9_007_199_254_740_992.0);
+        assert_eq!(
+            binary(BinaryOp::Eq, above.clone(), float.clone()),
+            json!(false)
+        );
+        assert_eq!(
+            binary(BinaryOp::Ne, above.clone(), float.clone()),
+            json!(true)
+        );
+        assert_eq!(
+            binary(BinaryOp::Gt, above.clone(), float.clone()),
+            json!(true)
+        );
+        assert_eq!(
+            binary(BinaryOp::Lt, float.clone(), above.clone()),
+            json!(true)
+        );
+        assert_eq!(
+            binary(
+                BinaryOp::Eq,
+                json!(9_007_199_254_740_992_u64),
+                float.clone()
+            ),
+            json!(true)
+        );
+        // The integer limits against the floats they round to.
+        assert_eq!(
+            binary(BinaryOp::Eq, json!(u64::MAX), json!(u64::MAX as f64)),
+            json!(false)
+        );
+        assert_eq!(
+            binary(BinaryOp::Lt, json!(u64::MAX), json!(u64::MAX as f64)),
+            json!(true)
+        );
+        assert_eq!(
+            binary(BinaryOp::Eq, json!(i64::MIN), json!(i64::MIN as f64)),
+            json!(true)
+        );
+        assert_eq!(
+            binary(BinaryOp::Gt, json!(i64::MAX), json!(i64::MAX as f64)),
+            json!(false)
+        );
+        // Fractions break ties, on both sides of zero.
+        assert_eq!(binary(BinaryOp::Lt, json!(2), json!(2.5)), json!(true));
+        assert_eq!(binary(BinaryOp::Gt, json!(-2), json!(-2.5)), json!(true));
+        assert_eq!(binary(BinaryOp::Gte, json!(-3), json!(-2.5)), json!(false));
+        // Floats far outside the integer range.
+        assert_eq!(
+            binary(BinaryOp::Lt, json!(u64::MAX), json!(1e300)),
+            json!(true)
+        );
+        assert_eq!(
+            binary(BinaryOp::Gt, json!(i64::MIN), json!(-1e300)),
+            json!(true)
+        );
+        // Null still orders as false.
+        assert_eq!(binary(BinaryOp::Lt, Value::Null, json!(1)), json!(false));
     }
 
     #[test]
