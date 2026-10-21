@@ -37,7 +37,9 @@ pub mod watch;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use arete_mcp::dev::{parse_replay, DevClient, DevProject, ReplayOptions, StepRequest};
+use arete_mcp::dev::{
+    parse_replay, DevClient, DevProject, ReplayOptions, StepProgress, StepRequest,
+};
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use serde_json::{json, Value};
@@ -487,7 +489,25 @@ pub fn run(command: DevCommands, json: bool) -> Result<()> {
                 wallet: args.wallet,
                 result: None,
             };
-            let result = client.step(&request).await.map_err(env::explain)?;
+            let started = std::time::Instant::now();
+            let work = client.step_with_progress(&request, |phase| {
+                eprintln!("{}", step_progress_message(phase));
+            });
+            tokio::pin!(work);
+            let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(5));
+            heartbeat.tick().await; // the first tick is immediate
+            let result = loop {
+                tokio::select! {
+                    result = &mut work => break result.map_err(env::explain)?,
+                    _ = heartbeat.tick() => eprintln!(
+                        "Still waiting ({}s). Do not resubmit while this execution is pending.",
+                        started.elapsed().as_secs()
+                    ),
+                }
+            };
+            if let Some(message) = step_outcome_message(&result) {
+                eprintln!("{message}");
+            }
             print(json, &result, || print_step(&result));
             if result["state"] != "completed" {
                 std::process::exit(1);
@@ -583,6 +603,42 @@ fn print(json: bool, value: &Value, human: impl FnOnce()) {
     } else {
         human();
     }
+}
+
+fn step_progress_message(phase: StepProgress<'_>) -> String {
+    match phase {
+        StepProgress::Preparing => "Preparing and simulating step…".into(),
+        StepProgress::Signing => "Signing with dev wallet…".into(),
+        StepProgress::Submitting { execution_id } => {
+            format!("Submitting execution {execution_id}…")
+        }
+        StepProgress::Confirming { execution_id } => {
+            format!("Waiting for confirmation of {execution_id}…")
+        }
+    }
+}
+
+#[cfg(test)]
+mod step_progress_tests {
+    use super::*;
+
+    #[test]
+    fn expiry_is_not_presented_as_a_successful_payment() {
+        let message = step_outcome_message(&json!({"state": "expired"})).unwrap();
+        assert!(message.contains("not a completed payment"));
+        assert!(message.contains("inspect"));
+        assert!(step_outcome_message(&json!({"state": "completed"})).is_none());
+        assert!(step_progress_message(StepProgress::Submitting {
+            execution_id: "public-id"
+        })
+        .contains("public-id"));
+    }
+}
+
+fn step_outcome_message(result: &Value) -> Option<&'static str> {
+    (result["state"] == "expired").then_some(
+        "Execution expired before confirmation. This is not a completed payment; inspect its transaction status before trying again."
+    )
 }
 
 fn print_step(result: &Value) {

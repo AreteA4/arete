@@ -394,6 +394,12 @@ recorded (`.arete/dev/deploy.json`); `a4 dev up` need not be running.
 | `a4 dev replay <file> [--include-failed]`                          | runs steps again in order and stops at the first that doesn't complete; see below                                                                                                                                                                                                                                                                                                                                                       |
 | `a4 dev sdk [--ts\|--rust\|--python]`                              | regenerates the protocol's installed client from the local build now                                                                                                                                                                                                                                                                                                                                                                    |
 
+`a4 dev step` reports preparation, signing, submission and confirmation on
+stderr, with a waiting message every five seconds. With `--json`, stdout
+still contains only the final JSON result. An `expired` result is a failed
+attempt, not a completed payment. While an execution is pending, inspect its
+status rather than submitting the step again.
+
 Every `a4 dev step` is appended to `.arete/dev/history.jsonl`. `a4 dev
 replay` takes that file, a JSON array of steps, or:
 

@@ -894,6 +894,15 @@ impl std::fmt::Display for NotSubmitted {
     }
 }
 
+/// Public phase of a dev protocol step. No signing material is exposed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepProgress<'a> {
+    Preparing,
+    Signing,
+    Submitting { execution_id: &'a str },
+    Confirming { execution_id: &'a str },
+}
+
 /// A prepare a guard (or access rule) refused.
 #[derive(Debug, Clone)]
 pub struct Rejection {
@@ -1305,7 +1314,17 @@ impl DevClient {
     /// `history.jsonl`. A guard rejection is a result (`rejected`), not an
     /// error.
     pub async fn step(&self, request: &StepRequest) -> Result<Value> {
-        let result = self.run_step(request).await?;
+        self.step_with_progress(request, |_| {}).await
+    }
+
+    /// Like [`Self::step`], with phase notifications for interactive clients.
+    /// Notifications contain only public execution ids, never tokens or bytes.
+    pub async fn step_with_progress(
+        &self,
+        request: &StepRequest,
+        mut progress: impl FnMut(StepProgress<'_>),
+    ) -> Result<Value> {
+        let result = self.run_step_with_progress(request, &mut progress).await?;
         append_line(
             &self.project.history_path(),
             &step_record(STEP_RECORD_SCHEMA, request, &result),
@@ -1315,6 +1334,15 @@ impl DevClient {
 
     /// [`Self::step`] without recording it.
     async fn run_step(&self, request: &StepRequest) -> Result<Value> {
+        self.run_step_with_progress(request, &mut |_| {}).await
+    }
+
+    async fn run_step_with_progress(
+        &self,
+        request: &StepRequest,
+        progress: &mut impl FnMut(StepProgress<'_>),
+    ) -> Result<Value> {
+        progress(StepProgress::Preparing);
         let wallet = self.wallet(&request.wallet).await?;
         let identity = json!({ "name": wallet.name, "pubkey": wallet.pubkey() });
         let prepared = match self.prepare_step(request, &wallet.pubkey()).await? {
@@ -1323,13 +1351,14 @@ impl DevClient {
             }
             PreparedStep::Ready(prepared) => prepared,
         };
+        progress(StepProgress::Signing);
         let mut signed = Vec::with_capacity(prepared.transactions.len());
         for bytes in &prepared.transactions {
             signed.push(
                 base64::engine::general_purpose::STANDARD.encode(wallet.sign_transaction(bytes)?),
             );
         }
-        self.submit_prepared(&prepared, &request.step, signed, identity)
+        self.submit_prepared_with_progress(&prepared, &request.step, signed, identity, progress)
             .await
     }
 
@@ -1403,8 +1432,21 @@ impl DevClient {
         signed: Vec<String>,
         wallet: Value,
     ) -> Result<Value> {
+        self.submit_prepared_with_progress(prepared, step, signed, wallet, &mut |_| {})
+            .await
+    }
+
+    async fn submit_prepared_with_progress(
+        &self,
+        prepared: &Prepared,
+        step: &str,
+        signed: Vec<String>,
+        wallet: Value,
+        progress: &mut impl FnMut(StepProgress<'_>),
+    ) -> Result<Value> {
         let api = self.api();
         let execution_id = &prepared.execution_id;
+        progress(StepProgress::Submitting { execution_id });
         let submitted = api
             .submit(&prepared.token, execution_id, &signed)
             .await
@@ -1413,6 +1455,7 @@ impl DevClient {
                     step: step.to_string(),
                 })
             })?;
+        progress(StepProgress::Confirming { execution_id });
         let waited = api
             .wait_intent(&prepared.token, execution_id, submitted, INTENT_TIMEOUT)
             .await?;
@@ -1942,6 +1985,42 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
+    }
+
+    #[tokio::test]
+    async fn step_progress_reports_real_phases_and_rejections_never_reach_signing() {
+        let (origin, _) = mock_runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let client = mock_client(dir.path(), &origin);
+        let mut phases = Vec::new();
+        let result = client
+            .step_with_progress(&parse_replay(r#"{"step":"open"}"#).unwrap()[0], |phase| {
+                phases.push(format!("{phase:?}"))
+            })
+            .await
+            .unwrap();
+        assert_eq!(result["state"], "completed");
+        assert_eq!(
+            phases,
+            [
+                "Preparing",
+                "Signing",
+                "Submitting { execution_id: \"e-1\" }",
+                "Confirming { execution_id: \"e-1\" }"
+            ]
+        );
+        assert_eq!(lines(&client.project.history_path()).len(), 1);
+        phases.clear();
+        let result = client
+            .step_with_progress(
+                &parse_replay(r#"{"step":"close","instance":"new-1"}"#).unwrap()[0],
+                |phase| phases.push(format!("{phase:?}")),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["state"], "rejected");
+        assert_eq!(phases, ["Preparing"]);
+        assert_eq!(lines(&client.project.history_path()).len(), 2);
     }
 
     #[tokio::test]
