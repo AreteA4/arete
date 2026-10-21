@@ -11,7 +11,7 @@ use lru::LruCache;
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::borrow::{Borrow, Cow};
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -7501,12 +7501,21 @@ impl VmContext {
     }
 
     /// Get a field value from state by path (e.g., "section.field" or just "field")
+    /// Read a dotted path. A numeric segment indexes an array
+    /// (`curve.points.3.rate`); anything missing or out of range is null.
     fn get_field_from_state(&self, state: &Value, path: &str) -> Result<Value> {
         let segments: Vec<&str> = path.split('.').collect();
         let mut current = state;
 
         for segment in segments {
-            match current.get(segment) {
+            let next = match current {
+                Value::Array(items) => segment
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| items.get(index)),
+                _ => current.get(segment),
+            };
+            match next {
                 Some(v) => current = v,
                 None => return Ok(Value::Null),
             }
@@ -7519,9 +7528,9 @@ impl VmContext {
     fn apply_binary_op(&self, op: &BinaryOp, left: &Value, right: &Value) -> Result<Value> {
         match op {
             // Arithmetic operations
-            BinaryOp::Add => self.numeric_op(left, right, |a, b| a + b, |a, b| a + b),
-            BinaryOp::Sub => self.numeric_op(left, right, |a, b| a - b, |a, b| a - b),
-            BinaryOp::Mul => self.numeric_op(left, right, |a, b| a * b, |a, b| a * b),
+            BinaryOp::Add => self.numeric_op(left, right, i128::checked_add, |a, b| a + b),
+            BinaryOp::Sub => self.numeric_op(left, right, i128::checked_sub, |a, b| a - b),
+            BinaryOp::Mul => self.numeric_op(left, right, i128::checked_mul, |a, b| a * b),
             BinaryOp::Div => {
                 // Check for division by zero
                 if let Some(r) = right.as_i64() {
@@ -7534,7 +7543,7 @@ impl VmContext {
                         return Err("Division by zero".into());
                     }
                 }
-                self.numeric_op(left, right, |a, b| a / b, |a, b| a / b)
+                self.numeric_op(left, right, i128::checked_div, |a, b| a / b)
             }
             BinaryOp::Mod => {
                 // Modulo - only for integers
@@ -7549,12 +7558,12 @@ impl VmContext {
             }
 
             // Comparison operations
-            BinaryOp::Gt => self.comparison_op(left, right, |a, b| a > b, |a, b| a > b),
-            BinaryOp::Lt => self.comparison_op(left, right, |a, b| a < b, |a, b| a < b),
-            BinaryOp::Gte => self.comparison_op(left, right, |a, b| a >= b, |a, b| a >= b),
-            BinaryOp::Lte => self.comparison_op(left, right, |a, b| a <= b, |a, b| a <= b),
-            BinaryOp::Eq => Ok(json!(left == right)),
-            BinaryOp::Ne => Ok(json!(left != right)),
+            BinaryOp::Gt => self.comparison_op(left, right, Ordering::is_gt),
+            BinaryOp::Lt => self.comparison_op(left, right, Ordering::is_lt),
+            BinaryOp::Gte => self.comparison_op(left, right, Ordering::is_ge),
+            BinaryOp::Lte => self.comparison_op(left, right, Ordering::is_le),
+            BinaryOp::Eq => Ok(json!(values_equal(left, right))),
+            BinaryOp::Ne => Ok(json!(!values_equal(left, right))),
 
             // Logical operations
             BinaryOp::And => {
@@ -7607,7 +7616,9 @@ impl VmContext {
         }
     }
 
-    /// Helper for numeric operations that can work on integers or floats
+    /// Helper for numeric operations that can work on integers or floats.
+    /// Two integers (any mix of `i64` and `u64`) give an integer, or an error
+    /// when the result does not fit either: it never wraps.
     fn numeric_op<F1, F2>(
         &self,
         left: &Value,
@@ -7616,18 +7627,13 @@ impl VmContext {
         float_op: F2,
     ) -> Result<Value>
     where
-        F1: Fn(i64, i64) -> i64,
+        F1: Fn(i128, i128) -> Option<i128>,
         F2: Fn(f64, f64) -> f64,
     {
-        // Try i64 first
-        if let (Some(a), Some(b)) = (left.as_i64(), right.as_i64()) {
-            return Ok(json!(int_op(a, b)));
-        }
-
-        // Try u64
-        if let (Some(a), Some(b)) = (left.as_u64(), right.as_u64()) {
-            // For u64, we need to be careful with underflow in subtraction
-            return Ok(json!(int_op(a as i64, b as i64)));
+        if let (Some(a), Some(b)) = (json_integer(left), json_integer(right)) {
+            return int_op(a, b).and_then(integer_json).ok_or_else(|| {
+                format!("Integer overflow computing {:?} and {:?}", left, right).into()
+            });
         }
 
         // Try f64
@@ -7647,31 +7653,15 @@ impl VmContext {
         .into())
     }
 
-    /// Helper for comparison operations
-    fn comparison_op<F1, F2>(
+    /// Helper for ordered comparisons: numbers compare exactly by value.
+    fn comparison_op(
         &self,
         left: &Value,
         right: &Value,
-        int_cmp: F1,
-        float_cmp: F2,
-    ) -> Result<Value>
-    where
-        F1: Fn(i64, i64) -> bool,
-        F2: Fn(f64, f64) -> bool,
-    {
-        // Try i64 first
-        if let (Some(a), Some(b)) = (left.as_i64(), right.as_i64()) {
-            return Ok(json!(int_cmp(a, b)));
-        }
-
-        // Try u64
-        if let (Some(a), Some(b)) = (left.as_u64(), right.as_u64()) {
-            return Ok(json!(int_cmp(a as i64, b as i64)));
-        }
-
-        // Try f64
-        if let (Some(a), Some(b)) = (left.as_f64(), right.as_f64()) {
-            return Ok(json!(float_cmp(a, b)));
+        holds: fn(Ordering) -> bool,
+    ) -> Result<Value> {
+        if let Some(ordering) = compare_numbers(left, right) {
+            return Ok(json!(holds(ordering)));
         }
 
         // If either is null, comparison returns false
@@ -7797,8 +7787,8 @@ impl VmContext {
                 }
             }
             "abs" => {
-                if let Some(n) = value.as_i64() {
-                    Ok(json!(n.abs()))
+                if let Some(n) = json_integer(value) {
+                    integer_json(n.abs()).ok_or_else(|| "abs() integer overflow".into())
                 } else if let Some(n) = value.as_f64() {
                     Ok(json!(n.abs()))
                 } else {
@@ -7958,8 +7948,8 @@ impl VmContext {
                     return Err("min() requires an argument".into());
                 }
                 let other = &args[0];
-                if let (Some(a), Some(b)) = (value.as_i64(), other.as_i64()) {
-                    Ok(json!(a.min(b)))
+                if let (Some(a), Some(b)) = (json_integer(value), json_integer(other)) {
+                    Ok(integer_json(a.min(b)).unwrap_or(Value::Null))
                 } else if let (Some(a), Some(b)) = (value.as_f64(), other.as_f64()) {
                     Ok(json!(a.min(b)))
                 } else {
@@ -7971,13 +7961,39 @@ impl VmContext {
                     return Err("max() requires an argument".into());
                 }
                 let other = &args[0];
-                if let (Some(a), Some(b)) = (value.as_i64(), other.as_i64()) {
-                    Ok(json!(a.max(b)))
+                if let (Some(a), Some(b)) = (json_integer(value), json_integer(other)) {
+                    Ok(integer_json(a.max(b)).unwrap_or(Value::Null))
                 } else if let (Some(a), Some(b)) = (value.as_f64(), other.as_f64()) {
                     Ok(json!(a.max(b)))
                 } else {
                     Err(format!("Cannot call max() on {:?} and {:?}", value, other).into())
                 }
+            }
+            // Float math for rates and growth (`exp(apr) - 1` is the APY of a
+            // continuously compounded APR). Null in gives null; a result that
+            // is not a finite number is an error.
+            "exp" | "ln" | "pow" => {
+                let arity = if method == "pow" { 1 } else { 0 };
+                if args.len() != arity {
+                    return Err(format!("{method}() takes {arity} argument(s)").into());
+                }
+                if value.is_null() || args.iter().any(Value::is_null) {
+                    return Ok(Value::Null);
+                }
+                let number = |value: &Value| {
+                    value
+                        .as_f64()
+                        .ok_or_else(|| format!("Cannot call {method}() on {value:?}"))
+                };
+                let x = number(value)?;
+                let result = match method {
+                    "exp" => x.exp(),
+                    "ln" => x.ln(),
+                    _ => x.powf(number(&args[0])?),
+                };
+                serde_json::Number::from_f64(result)
+                    .map(Value::Number)
+                    .ok_or_else(|| format!("{method}() result is not finite").into())
             }
             "saturating_add" => {
                 if args.is_empty() {
@@ -8133,6 +8149,74 @@ impl crate::resolvers::ReverseLookupUpdater for VmContext {
                 Vec::new()
             })
     }
+}
+
+/// A JSON integer widened so every `i64` and `u64` fits.
+fn json_integer(value: &Value) -> Option<i128> {
+    value
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| value.as_u64().map(i128::from))
+}
+
+/// An integer result as JSON, when it fits an `i64` or a `u64`.
+fn integer_json(value: i128) -> Option<Value> {
+    i64::try_from(value)
+        .map(Value::from)
+        .or_else(|_| u64::try_from(value).map(Value::from))
+        .ok()
+}
+
+/// `==` for computed expressions: numbers compare by value, so `0` equals
+/// `0.0` (artifacts serialise an integral float literal as an integer).
+/// Everything else compares structurally.
+fn values_equal(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(_), Value::Number(_)) => {
+            compare_numbers(left, right) == Some(Ordering::Equal)
+        }
+        _ => left == right,
+    }
+}
+
+/// Order two JSON numbers exactly. An integer is never rounded to compare
+/// it with a float: `9007199254740993` is greater than `9007199254740992.0`,
+/// although both round to the same `f64`. `None` unless both are numbers.
+fn compare_numbers(left: &Value, right: &Value) -> Option<Ordering> {
+    match (json_integer(left), json_integer(right)) {
+        (Some(a), Some(b)) => Some(a.cmp(&b)),
+        (Some(a), None) => Some(compare_integer_float(a, right.as_f64()?)?),
+        (None, Some(b)) => Some(compare_integer_float(b, left.as_f64()?)?.reverse()),
+        (None, None) => left.as_f64()?.partial_cmp(&right.as_f64()?),
+    }
+}
+
+/// `integer` against `float` without rounding the integer.
+fn compare_integer_float(integer: i128, float: f64) -> Option<Ordering> {
+    // Every i128 lies in [-2^127, 2^127).
+    const BOUND: f64 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0;
+    if float.is_nan() {
+        return None;
+    }
+    if float >= BOUND {
+        return Some(Ordering::Less);
+    }
+    if float < -BOUND {
+        return Some(Ordering::Greater);
+    }
+    // The whole part of a float in range is exact as an i128; the fraction
+    // breaks a tie.
+    let whole = float.trunc();
+    Some(integer.cmp(&(whole as i128)).then_with(|| {
+        let fraction = float - whole;
+        if fraction > 0.0 {
+            Ordering::Less
+        } else if fraction < 0.0 {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
+    }))
 }
 
 #[cfg(test)]
@@ -9106,6 +9190,204 @@ mod tests {
         assert_eq!(vm.apply_cast(&json!("2.5"), "f64").unwrap(), json!(2.5));
         assert!(vm.apply_cast(&json!([1]), "f64").is_err());
         assert_eq!(vm.apply_cast(&Value::Null, "bool").unwrap(), json!(false));
+    }
+
+    fn literal(value: Value) -> Box<ComputedExpr> {
+        Box::new(ComputedExpr::Literal { value })
+    }
+
+    fn binary(op: BinaryOp, left: Value, right: Value) -> Value {
+        VmContext::new()
+            .evaluate_computed_expr(
+                &ComputedExpr::Binary {
+                    op,
+                    left: literal(left),
+                    right: literal(right),
+                },
+                &json!({}),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn computed_equality_compares_numbers_by_value() {
+        // An artifact stores the literal `0.0` as `0`; a float field must
+        // still equal it.
+        assert_eq!(binary(BinaryOp::Eq, json!(0.0), json!(0)), json!(true));
+        assert_eq!(binary(BinaryOp::Ne, json!(0.0), json!(0)), json!(false));
+        assert_eq!(binary(BinaryOp::Eq, json!(1.5), json!(1)), json!(false));
+        assert_eq!(
+            binary(BinaryOp::Eq, json!(u64::MAX), json!(u64::MAX)),
+            json!(true)
+        );
+        assert_eq!(
+            binary(BinaryOp::Eq, json!(u64::MAX), json!(-1)),
+            json!(false)
+        );
+        assert_eq!(binary(BinaryOp::Eq, json!("1"), json!(1)), json!(false));
+        assert_eq!(binary(BinaryOp::Eq, json!([1]), json!([1])), json!(true));
+    }
+
+    #[test]
+    fn computed_comparisons_never_round_integers_against_floats() {
+        // 2^53 + 1 rounds to 2^53 as an f64.
+        let above = json!(9_007_199_254_740_993_u64);
+        let float = json!(9_007_199_254_740_992.0);
+        assert_eq!(
+            binary(BinaryOp::Eq, above.clone(), float.clone()),
+            json!(false)
+        );
+        assert_eq!(
+            binary(BinaryOp::Ne, above.clone(), float.clone()),
+            json!(true)
+        );
+        assert_eq!(
+            binary(BinaryOp::Gt, above.clone(), float.clone()),
+            json!(true)
+        );
+        assert_eq!(
+            binary(BinaryOp::Lt, float.clone(), above.clone()),
+            json!(true)
+        );
+        assert_eq!(
+            binary(
+                BinaryOp::Eq,
+                json!(9_007_199_254_740_992_u64),
+                float.clone()
+            ),
+            json!(true)
+        );
+        // The integer limits against the floats they round to.
+        assert_eq!(
+            binary(BinaryOp::Eq, json!(u64::MAX), json!(u64::MAX as f64)),
+            json!(false)
+        );
+        assert_eq!(
+            binary(BinaryOp::Lt, json!(u64::MAX), json!(u64::MAX as f64)),
+            json!(true)
+        );
+        assert_eq!(
+            binary(BinaryOp::Eq, json!(i64::MIN), json!(i64::MIN as f64)),
+            json!(true)
+        );
+        assert_eq!(
+            binary(BinaryOp::Gt, json!(i64::MAX), json!(i64::MAX as f64)),
+            json!(false)
+        );
+        // Fractions break ties, on both sides of zero.
+        assert_eq!(binary(BinaryOp::Lt, json!(2), json!(2.5)), json!(true));
+        assert_eq!(binary(BinaryOp::Gt, json!(-2), json!(-2.5)), json!(true));
+        assert_eq!(binary(BinaryOp::Gte, json!(-3), json!(-2.5)), json!(false));
+        // Floats far outside the integer range.
+        assert_eq!(
+            binary(BinaryOp::Lt, json!(u64::MAX), json!(1e300)),
+            json!(true)
+        );
+        assert_eq!(
+            binary(BinaryOp::Gt, json!(i64::MIN), json!(-1e300)),
+            json!(true)
+        );
+        // Null still orders as false.
+        assert_eq!(binary(BinaryOp::Lt, Value::Null, json!(1)), json!(false));
+    }
+
+    #[test]
+    fn computed_integer_arithmetic_is_checked_across_i64_and_u64() {
+        let big = json!(u64::MAX - 1);
+        assert_eq!(
+            binary(BinaryOp::Add, big.clone(), json!(1)),
+            json!(u64::MAX)
+        );
+        assert_eq!(binary(BinaryOp::Sub, json!(1_u64), json!(2_u64)), json!(-1));
+        assert_eq!(binary(BinaryOp::Gt, big.clone(), json!(1)), json!(true));
+        assert_eq!(binary(BinaryOp::Lt, json!(-1), big.clone()), json!(true));
+        assert_eq!(
+            binary(BinaryOp::Div, json!(u64::MAX), json!(u64::MAX)),
+            json!(1)
+        );
+        // Overflow is an error (the field keeps its value), never a wrap or
+        // a panic.
+        for (op, left, right) in [
+            (BinaryOp::Add, json!(u64::MAX), json!(1)),
+            (
+                BinaryOp::Mul,
+                json!(4_294_967_296_u64),
+                json!(4_294_967_296_u64),
+            ),
+            (BinaryOp::Sub, json!(i64::MIN), json!(u64::MAX)),
+        ] {
+            let result = VmContext::new().evaluate_computed_expr(
+                &ComputedExpr::Binary {
+                    op,
+                    left: literal(left),
+                    right: literal(right),
+                },
+                &json!({}),
+            );
+            assert!(result.is_err(), "{result:?}");
+        }
+        // Floats are unchanged.
+        assert_eq!(
+            binary(BinaryOp::Mul, json!(4294967296.0), json!(4294967296.0)),
+            json!(18446744073709551616.0)
+        );
+    }
+
+    #[test]
+    fn computed_field_paths_index_arrays_with_numeric_segments() {
+        let vm = VmContext::new();
+        let state = json!({
+            "config": {"curve": {"points": [
+                {"utilization": 0, "rate": 100},
+                {"utilization": 8000, "rate": 900},
+            ]}},
+        });
+        let read = |path: &str| {
+            vm.evaluate_computed_expr(
+                &ComputedExpr::FieldRef {
+                    path: path.to_string(),
+                },
+                &state,
+            )
+            .unwrap()
+        };
+        assert_eq!(read("config.curve.points.1.rate"), json!(900));
+        assert_eq!(
+            read("config.curve.points.0"),
+            json!({"utilization": 0, "rate": 100})
+        );
+        assert_eq!(read("config.curve.points.2.rate"), Value::Null);
+        assert_eq!(read("config.curve.points.x"), Value::Null);
+        assert_eq!(read("config.curve.0"), Value::Null);
+    }
+
+    #[test]
+    fn computed_float_math_methods() {
+        let call = |method: &str, value: Value, args: Vec<Value>| {
+            VmContext::new().evaluate_computed_expr(
+                &ComputedExpr::MethodCall {
+                    expr: literal(value),
+                    method: method.to_string(),
+                    args: args.into_iter().map(|value| *literal(value)).collect(),
+                },
+                &json!({}),
+            )
+        };
+        let float = |result: Result<Value>| result.unwrap().as_f64().unwrap();
+        assert!((float(call("exp", json!(0.05), vec![])) - 0.05_f64.exp()).abs() < 1e-15);
+        assert_eq!(float(call("exp", json!(0), vec![])), 1.0);
+        assert!((float(call("ln", json!(std::f64::consts::E), vec![])) - 1.0).abs() < 1e-15);
+        assert_eq!(float(call("pow", json!(2), vec![json!(10)])), 1024.0);
+        assert_eq!(float(call("pow", json!(4.0), vec![json!(0.5)])), 2.0);
+        assert_eq!(call("exp", Value::Null, vec![]).unwrap(), Value::Null);
+        assert_eq!(
+            call("pow", json!(2), vec![Value::Null]).unwrap(),
+            Value::Null
+        );
+        assert!(call("ln", json!(0), vec![]).is_err());
+        assert!(call("exp", json!(1000), vec![]).is_err());
+        assert!(call("pow", json!(2), vec![]).is_err());
+        assert!(call("exp", json!("1"), vec![]).is_err());
     }
 
     #[test]

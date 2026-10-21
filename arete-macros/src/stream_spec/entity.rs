@@ -13,7 +13,7 @@
 //! 3. Generate handler code via `codegen::generate_handlers_from_specs`
 //! 4. Return AST for unified stack file writing
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use quote::{format_ident, quote};
 use syn::spanned::Spanned;
@@ -50,10 +50,7 @@ pub struct ProcessEntityResult {
 }
 
 use super::ast_writer::build_and_write_ast;
-use super::computed::{
-    extract_field_references_from_section, extract_section_references, parse_computed_expression,
-    qualify_field_refs,
-};
+use super::computed::{extract_section_references, parse_computed_expression, qualify_field_refs};
 use super::handlers::{
     convert_event_to_map_attributes, determine_event_instruction, extract_account_type_from_field,
 };
@@ -709,7 +706,19 @@ pub fn process_entity_struct_with_idl(
     // Generate computed fields evaluation function if there are any computed fields
     // This function will be called after aggregations complete to evaluate derived fields
     let computed_fields_hook = if !computed_fields.is_empty() {
-        generate_computed_fields_hook(&computed_fields, &all_section_names)
+        // Evaluate in the stream spec's dependency order so the Rust hook and
+        // the VM agree.
+        let ordered_computed_fields: Vec<_> = ast
+            .computed_field_specs
+            .iter()
+            .filter_map(|spec| {
+                computed_fields
+                    .iter()
+                    .find(|(target_path, _, _)| *target_path == spec.target_path)
+                    .cloned()
+            })
+            .collect();
+        generate_computed_fields_hook(&ordered_computed_fields, &all_section_names)
     } else {
         // Generate a no-op function even when there are no computed fields
         // so the evaluator callback can still reference it
@@ -916,139 +925,54 @@ pub fn process_map_attribute(
 // ============================================================================
 
 /// Generate the computed fields evaluation hook.
+///
+/// `computed_fields` must already be in evaluation order (every field after
+/// the computed fields it reads), the same order as the stream spec's
+/// `computed_field_specs`. Each value is written back to the state before the
+/// next field runs, so later fields read it whichever section they are in.
 fn generate_computed_fields_hook(
     computed_fields: &[(String, proc_macro2::TokenStream, Type)],
     all_section_names: &HashSet<String>,
 ) -> proc_macro2::TokenStream {
-    // Group computed fields by section
-    let mut fields_by_section: HashMap<String, Vec<(String, proc_macro2::TokenStream, Type)>> =
-        HashMap::new();
-
-    for (target_field, expression, field_type) in computed_fields {
-        // Extract section name from target_field (format: "section.field")
-        let parts: Vec<&str> = target_field.split('.').collect();
-        if parts.len() == 2 {
-            let section = parts[0].to_string();
-            let field = parts[1].to_string();
-            fields_by_section.entry(section.clone()).or_default().push((
-                field.clone(),
-                expression.clone(),
-                field_type.clone(),
-            ));
-        }
-    }
-
-    // Analyze expressions to determine which sections they reference
-    // Use the all_section_names collected earlier to properly identify cross-section references
-    let mut section_dependencies: HashMap<String, HashSet<String>> = HashMap::new();
-    for (section, fields) in &fields_by_section {
-        let mut deps = HashSet::new();
-        for (_field_name, expression, _field_type) in fields {
-            let referenced_sections = extract_section_references(expression);
-
-            // Filter to only include references that are:
-            // 1. NOT the current section (same-section references don't need special handling)
-            // 2. ACTUALLY known section names (not method names like unwrap_or, max, etc.)
-            let valid_refs: HashSet<String> = referenced_sections
-                .into_iter()
-                .filter(|ref_name| {
-                    let is_known = all_section_names.contains(ref_name);
-                    let is_not_current = ref_name != section;
-                    is_known && is_not_current
-                })
-                .collect();
-
-            deps.extend(valid_refs);
-        }
-        section_dependencies.insert(section.clone(), deps);
-    }
-
-    // First, collect ALL struct definitions that we need (from all sections' dependencies)
-    let mut all_struct_defs: Vec<proc_macro2::TokenStream> = Vec::new();
-    let mut generated_structs: HashSet<String> = HashSet::new();
-
-    for (section, fields) in &fields_by_section {
-        let deps = section_dependencies
-            .get(section)
-            .cloned()
-            .unwrap_or_default();
-
-        for dep_section in &deps {
-            // Only generate struct once per dependency section
-            if generated_structs.contains(dep_section) {
-                continue;
+    // Only `section.field` targets are evaluated here.
+    let section_fields: Vec<(String, String, &proc_macro2::TokenStream)> = computed_fields
+        .iter()
+        .filter_map(|(target_field, expression, _field_type)| {
+            match target_field.split('.').collect::<Vec<_>>().as_slice() {
+                [section, field] => Some((section.to_string(), field.to_string(), expression)),
+                _ => None,
             }
-            generated_structs.insert(dep_section.clone());
+        })
+        .collect();
 
-            let section_struct_ident = format_ident!("{}Section", dep_section);
-
-            // Collect all fields accessed from this section across ALL expressions
-            let mut section_fields = HashSet::new();
-            for (_field_name, expression, _field_type) in fields {
-                let field_refs = extract_field_references_from_section(expression, dep_section);
-                section_fields.extend(field_refs);
-            }
-
-            // Generate struct definition for this section
-            let field_defs: Vec<_> = section_fields
-                .iter()
-                .map(|field| {
-                    let field_ident = format_ident!("{}", field);
-                    quote! {
-                        pub #field_ident: Option<u64>
-                    }
-                })
-                .collect();
-
-            // Generate field extraction in constructor
-            let field_extractors: Vec<_> = section_fields
-                .iter()
-                .map(|field| {
-                    let field_ident = format_ident!("{}", field);
-                    let field_str = field.as_str();
-                    quote! {
-                        #field_ident: obj.get(#field_str)
-                            .and_then(|v| arete::runtime::serde_json::from_value(v.clone()).ok())
-                    }
-                })
-                .collect();
-
-            all_struct_defs.push(quote! {
-                // Helper struct for cross-section field access
-                #[allow(dead_code)]
-                struct #section_struct_ident {
-                    #(#field_defs),*
-                }
-
-                impl #section_struct_ident {
-                    fn from_object(obj: &arete::runtime::serde_json::Map<String, arete::runtime::serde_json::Value>) -> Self {
-                        Self {
-                            #(#field_extractors),*
-                        }
-                    }
-                }
-            });
-        }
+    let mut computed_names_by_section: HashMap<String, Vec<String>> = HashMap::new();
+    for (section, field, _expression) in &section_fields {
+        computed_names_by_section
+            .entry(section.clone())
+            .or_default()
+            .push(field.clone());
     }
 
-    // Now generate the evaluation functions
-    let eval_functions: Vec<_> = fields_by_section.iter().map(|(section, fields)| {
-        let _section_ident = format_ident!("{}", section);
-        let eval_fn_name = format_ident!("evaluate_computed_fields_{}", section);
+    // Other sections a section's expressions read. A section is skipped while
+    // any of them is missing from the state, leaving its computed fields unset.
+    let mut section_dependencies: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for (section, _field, expression) in &section_fields {
+        section_dependencies
+            .entry(section.clone())
+            .or_default()
+            .extend(
+                extract_section_references(expression)
+                    .into_iter()
+                    .filter(|name| all_section_names.contains(name) && name != section),
+            );
+    }
 
-        // Get dependencies for this section
-        let deps = section_dependencies.get(section).cloned().unwrap_or_default();
-
-        let section_str = section.as_str();
-
-        // Collect all computed field names in this section for cache tracking
-        let computed_field_names: Vec<String> = fields.iter().map(|(field_name, _expression, _field_type)| {
-            field_name.clone()
-        }).collect();
-
-        let field_evaluations: Vec<_> = fields.iter().map(|(field_name, expression, field_type)| {
+    let field_evaluations: Vec<_> = section_fields
+        .iter()
+        .map(|(section, field_name, expression)| {
+            let section_str = section.as_str();
             let field_str = field_name.as_str();
-            let field_ident = format_ident!("{}", field_name);
+            let computed_field_names = &computed_names_by_section[section];
 
             // Parse the expression into an AST and generate evaluation code
             // This transforms expressions like `round_snapshot.slot_hash.to_bytes()` into
@@ -1056,129 +980,51 @@ fn generate_computed_fields_hook(
             let parsed_expr = parse_computed_expression(expression);
             // Qualify the expression with the section prefix for unqualified field refs
             let qualified_expr = qualify_field_refs(parsed_expr, section);
-            // Use cache-aware code generation for intra-section dependencies
-            let expr_code = crate::codegen::generate_computed_expr_code_with_cache(&qualified_expr, section_str, &computed_field_names);
+            let expr_code = crate::codegen::generate_computed_expr_code_with_cache(
+                &qualified_expr,
+                section_str,
+                computed_field_names,
+            );
 
-            quote! {
-                // Evaluate: #field_name
-                let computed_value = {
-                    // state is the full entity JSON state (for cross-section references)
-                    let state = &section_parent_state;
-                    #expr_code
+            let evaluation = quote! {
+                let serialized_value = match state.get(#section_str).and_then(|v| v.as_object()) {
+                    Some(computed_cache) => {
+                        // state is the full entity JSON state (for cross-section references)
+                        let state: &arete::runtime::serde_json::Value = &*state;
+                        let computed_value = { #expr_code };
+                        Some(arete::runtime::serde_json::to_value(&computed_value)?)
+                    }
+                    None => None,
                 };
-                let serialized_value = arete::runtime::serde_json::to_value(&computed_value)?;
-                // Update cache so dependent fields can read this value
-                computed_cache.insert(#field_str.to_string(), serialized_value.clone());
-                section_obj.insert(#field_str.to_string(), serialized_value);
-
-                let #field_ident: #field_type = section_obj
-                    .get(#field_str)
-                    .and_then(|v| arete::runtime::serde_json::from_value(v.clone()).ok());
-            }
-        }).collect();
-
-        // Generate function parameters for cross-section dependencies
-        let cross_section_params: Vec<_> = deps.iter().map(|dep_section| {
-            let dep_section_ident = format_ident!("{}", dep_section);
-            let section_struct_ident = format_ident!("{}Section", dep_section);
-            quote! {
-                #dep_section_ident: &#section_struct_ident
-            }
-        }).collect();
-
-        quote! {
-            #[allow(clippy::too_many_arguments)]
-            fn #eval_fn_name(
-                section_obj: &mut arete::runtime::serde_json::Map<String, arete::runtime::serde_json::Value>,
-                section_parent_state: &arete::runtime::serde_json::Value,
-                __context_slot: Option<u64>,
-                __context_timestamp: i64,
-                #(#cross_section_params),*
-            ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-                // Initialize cache with current section values for intra-section computed field dependencies
-                let mut computed_cache: std::collections::HashMap<String, arete::runtime::serde_json::Value> = std::collections::HashMap::new();
-                for (key, value) in section_obj.iter() {
-                    computed_cache.insert(key.clone(), value.clone());
+                if let Some(serialized_value) = serialized_value {
+                    if let Some(section_obj) = state.get_mut(#section_str).and_then(|v| v.as_object_mut()) {
+                        section_obj.insert(#field_str.to_string(), serialized_value);
+                    }
                 }
+            };
 
-                // Evaluate computed fields (they read from cache for intra-section dependencies)
-                #(#field_evaluations)*
-
-                Ok(())
-            }
-        }
-    }).collect();
-
-    // Generate the main hook function that applies to state after handlers execute
-    // We need to extract cross-section data BEFORE getting mutable borrow of target section
-    // to avoid borrow checker issues
-    let eval_calls: Vec<_> = fields_by_section.keys().map(|section| {
-        let section_str = section.as_str();
-        let eval_fn_name = format_ident!("evaluate_computed_fields_{}", section);
-        let deps = section_dependencies.get(section).cloned().unwrap_or_default();
-
-        // Generate pre-extraction of cross-section data
-        // These return Option so we can gracefully skip evaluation if a dependency doesn't exist yet
-        let dep_extractions: Vec<_> = deps.iter().map(|dep_section| {
-            // Use a unique variable name to avoid shadowing issues
-            let dep_section_ident = format_ident!("{}_section", dep_section);
-            let dep_section_str = dep_section.as_str();
-            let section_struct_ident = format_ident!("{}Section", dep_section);
-            quote! {
-                let #dep_section_ident = state
-                    .get(#dep_section_str)
-                    .and_then(|v| v.as_object())
-                    .map(|obj| #section_struct_ident::from_object(obj));
-            }
-        }).collect();
-
-        if dep_extractions.is_empty() {
-            quote! {
-                let state_snapshot = state.clone();
-
-                if let Some(section_value) = state.get_mut(#section_str) {
-                    if let Some(section_obj) = section_value.as_object_mut() {
-                        #eval_fn_name(section_obj, &state_snapshot, __context_slot, __context_timestamp)?;
+            let deps = &section_dependencies[section];
+            if deps.is_empty() {
+                quote! { { #evaluation } }
+            } else {
+                let dep_checks = deps.iter().map(|dep| {
+                    let dep_str = dep.as_str();
+                    quote! { state.get(#dep_str).and_then(|v| v.as_object()).is_some() }
+                });
+                quote! {
+                    if #(#dep_checks)&&* {
+                        #evaluation
+                    } else {
+                        arete::runtime::tracing::trace!(
+                            "Skipping computed field '{}.{}' (dependencies not available)",
+                            #section_str,
+                            #field_str
+                        );
                     }
                 }
             }
-        } else {
-            // Has cross-section dependencies - extract first, then compute
-            // If ANY dependency is missing, skip evaluation (the computed fields will remain None)
-            let dep_param_names: Vec<_> = deps.iter().map(|dep| format_ident!("{}_section", dep)).collect();
-            let dep_checks: Vec<_> = deps.iter().map(|dep| {
-                let dep_ident = format_ident!("{}_section", dep);
-                quote! { #dep_ident.is_some() }
-            }).collect();
-            let dep_unwraps: Vec<_> = deps.iter().map(|dep| {
-                // Use consistent variable naming
-                let dep_ident = format_ident!("{}_section", dep);
-                quote! { let #dep_ident = #dep_ident.unwrap(); }
-            }).collect();
-            quote! {
-                // Clone the state for immutable reference during computation
-                let state_snapshot = state.clone();
-
-                // Extract cross-section data first (immutable borrow)
-                #(#dep_extractions)*
-
-                // Only evaluate if ALL cross-section dependencies exist
-                // If any dependency is missing, skip evaluation (computed fields stay None)
-                if #(#dep_checks)&&* {
-                    #(#dep_unwraps)*
-
-                    // Now get mutable borrow of target section and compute
-                    if let Some(section_value) = state.get_mut(#section_str) {
-                        if let Some(section_obj) = section_value.as_object_mut() {
-                            #eval_fn_name(section_obj, &state_snapshot, __context_slot, __context_timestamp, #(&#dep_param_names),*)?;
-                        }
-                    }
-                } else {
-                    arete::runtime::tracing::trace!("Skipping computed fields for section '{}' (dependencies not available)", #section_str);
-                }
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
     // Generate the list of computed field paths as string literals
     let computed_field_path_strs: Vec<&str> = computed_fields
@@ -1187,12 +1033,6 @@ fn generate_computed_fields_hook(
         .collect();
 
     quote! {
-        // Helper structs for cross-section field access (generated by macro)
-        #(#all_struct_defs)*
-
-        // Computed field evaluation functions (generated by macro)
-        #(#eval_functions)*
-
         /// Evaluate all computed fields for the entity state
         /// This should be called after aggregations complete but before hooks run
         pub fn evaluate_computed_fields(
@@ -1200,7 +1040,7 @@ fn generate_computed_fields_hook(
             __context_slot: Option<u64>,
             __context_timestamp: i64,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            #(#eval_calls)*
+            #(#field_evaluations)*
             Ok(())
         }
 

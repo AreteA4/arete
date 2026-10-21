@@ -263,50 +263,6 @@ fn extract_section_references_recursive(
     }
 }
 
-/// Extract all field references from a section in an expression.
-///
-/// Returns field names that are accessed from a specific section.
-pub fn extract_field_references_from_section(
-    expression: &proc_macro2::TokenStream,
-    section_name: &str,
-) -> HashSet<String> {
-    let mut fields = HashSet::new();
-    extract_field_references_recursive(expression, section_name, &mut fields);
-    fields
-}
-
-/// Recursive helper to extract field references from a section, handling nested groups.
-fn extract_field_references_recursive(
-    expression: &proc_macro2::TokenStream,
-    section_name: &str,
-    fields: &mut HashSet<String>,
-) {
-    let tokens: Vec<TokenTree> = expression.clone().into_iter().collect();
-
-    // Look for patterns like: section_name "." field_name
-    let mut i = 0;
-    while i < tokens.len() {
-        match &tokens[i] {
-            TokenTree::Ident(ident) if *ident == section_name => {
-                // Match: section_name "." field_name
-                if let (Some(TokenTree::Punct(punct)), Some(TokenTree::Ident(field_ident))) =
-                    (tokens.get(i + 1), tokens.get(i + 2))
-                {
-                    if punct.as_char() == '.' {
-                        fields.insert(field_ident.to_string());
-                    }
-                }
-            }
-            TokenTree::Group(group) => {
-                // Recursively search inside groups (parentheses, brackets, braces)
-                extract_field_references_recursive(&group.stream(), section_name, fields);
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-}
-
 // ============================================================================
 // Recursive Descent Expression Parser
 // ============================================================================
