@@ -59,3 +59,56 @@ fn main() {
         source,
     );
 }
+
+#[test]
+fn generated_computed_hook_evaluates_in_dependency_order() {
+    let source = r#"use arete_macros::arete;
+
+#[arete]
+mod stream {
+    use arete::macros::Stream;
+    use serde::{Deserialize, Serialize};
+
+    #[entity(name = "Thing")]
+    struct Thing {
+        pub summary: Summary,
+        pub totals: Totals,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Stream)]
+    pub struct Summary {
+        // Reads a computed field from a section declared after this one.
+        #[computed(totals.doubled.map(|d| d + 1))]
+        pub headline: Option<u64>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Stream)]
+    pub struct Totals {
+        pub base: Option<u64>,
+        // Reads a computed field declared after it in the same section.
+        #[computed(sum.map(|s| s * 2))]
+        pub doubled: Option<u64>,
+        #[computed(base.map(|b| b + 10))]
+        pub sum: Option<u64>,
+    }
+}
+
+fn main() {
+    let mut state = arete::runtime::serde_json::json!({
+        "summary": {},
+        "totals": { "base": 5 },
+    });
+
+    stream::thing::evaluate_computed_fields(&mut state, None, 0).unwrap();
+
+    assert_eq!(state["totals"]["sum"], 15);
+    assert_eq!(state["totals"]["doubled"], 30);
+    assert_eq!(state["summary"]["headline"], 31);
+}
+"#;
+
+    run_binary_success(
+        "generated_computed_hook_evaluates_in_dependency_order",
+        source,
+    );
+}
