@@ -7519,9 +7519,9 @@ impl VmContext {
     fn apply_binary_op(&self, op: &BinaryOp, left: &Value, right: &Value) -> Result<Value> {
         match op {
             // Arithmetic operations
-            BinaryOp::Add => self.numeric_op(left, right, |a, b| a + b, |a, b| a + b),
-            BinaryOp::Sub => self.numeric_op(left, right, |a, b| a - b, |a, b| a - b),
-            BinaryOp::Mul => self.numeric_op(left, right, |a, b| a * b, |a, b| a * b),
+            BinaryOp::Add => self.numeric_op(left, right, i128::checked_add, |a, b| a + b),
+            BinaryOp::Sub => self.numeric_op(left, right, i128::checked_sub, |a, b| a - b),
+            BinaryOp::Mul => self.numeric_op(left, right, i128::checked_mul, |a, b| a * b),
             BinaryOp::Div => {
                 // Check for division by zero
                 if let Some(r) = right.as_i64() {
@@ -7534,7 +7534,7 @@ impl VmContext {
                         return Err("Division by zero".into());
                     }
                 }
-                self.numeric_op(left, right, |a, b| a / b, |a, b| a / b)
+                self.numeric_op(left, right, i128::checked_div, |a, b| a / b)
             }
             BinaryOp::Mod => {
                 // Modulo - only for integers
@@ -7607,7 +7607,9 @@ impl VmContext {
         }
     }
 
-    /// Helper for numeric operations that can work on integers or floats
+    /// Helper for numeric operations that can work on integers or floats.
+    /// Two integers (any mix of `i64` and `u64`) give an integer, or an error
+    /// when the result does not fit either: it never wraps.
     fn numeric_op<F1, F2>(
         &self,
         left: &Value,
@@ -7616,18 +7618,13 @@ impl VmContext {
         float_op: F2,
     ) -> Result<Value>
     where
-        F1: Fn(i64, i64) -> i64,
+        F1: Fn(i128, i128) -> Option<i128>,
         F2: Fn(f64, f64) -> f64,
     {
-        // Try i64 first
-        if let (Some(a), Some(b)) = (left.as_i64(), right.as_i64()) {
-            return Ok(json!(int_op(a, b)));
-        }
-
-        // Try u64
-        if let (Some(a), Some(b)) = (left.as_u64(), right.as_u64()) {
-            // For u64, we need to be careful with underflow in subtraction
-            return Ok(json!(int_op(a as i64, b as i64)));
+        if let (Some(a), Some(b)) = (json_integer(left), json_integer(right)) {
+            return int_op(a, b).and_then(integer_json).ok_or_else(|| {
+                format!("Integer overflow computing {:?} and {:?}", left, right).into()
+            });
         }
 
         // Try f64
@@ -7656,17 +7653,11 @@ impl VmContext {
         float_cmp: F2,
     ) -> Result<Value>
     where
-        F1: Fn(i64, i64) -> bool,
+        F1: Fn(i128, i128) -> bool,
         F2: Fn(f64, f64) -> bool,
     {
-        // Try i64 first
-        if let (Some(a), Some(b)) = (left.as_i64(), right.as_i64()) {
+        if let (Some(a), Some(b)) = (json_integer(left), json_integer(right)) {
             return Ok(json!(int_cmp(a, b)));
-        }
-
-        // Try u64
-        if let (Some(a), Some(b)) = (left.as_u64(), right.as_u64()) {
-            return Ok(json!(int_cmp(a as i64, b as i64)));
         }
 
         // Try f64
@@ -7797,8 +7788,8 @@ impl VmContext {
                 }
             }
             "abs" => {
-                if let Some(n) = value.as_i64() {
-                    Ok(json!(n.abs()))
+                if let Some(n) = json_integer(value) {
+                    integer_json(n.abs()).ok_or_else(|| "abs() integer overflow".into())
                 } else if let Some(n) = value.as_f64() {
                     Ok(json!(n.abs()))
                 } else {
@@ -7958,8 +7949,8 @@ impl VmContext {
                     return Err("min() requires an argument".into());
                 }
                 let other = &args[0];
-                if let (Some(a), Some(b)) = (value.as_i64(), other.as_i64()) {
-                    Ok(json!(a.min(b)))
+                if let (Some(a), Some(b)) = (json_integer(value), json_integer(other)) {
+                    Ok(integer_json(a.min(b)).unwrap_or(Value::Null))
                 } else if let (Some(a), Some(b)) = (value.as_f64(), other.as_f64()) {
                     Ok(json!(a.min(b)))
                 } else {
@@ -7971,8 +7962,8 @@ impl VmContext {
                     return Err("max() requires an argument".into());
                 }
                 let other = &args[0];
-                if let (Some(a), Some(b)) = (value.as_i64(), other.as_i64()) {
-                    Ok(json!(a.max(b)))
+                if let (Some(a), Some(b)) = (json_integer(value), json_integer(other)) {
+                    Ok(integer_json(a.max(b)).unwrap_or(Value::Null))
                 } else if let (Some(a), Some(b)) = (value.as_f64(), other.as_f64()) {
                     Ok(json!(a.max(b)))
                 } else {
@@ -8141,6 +8132,14 @@ fn json_integer(value: &Value) -> Option<i128> {
         .as_i64()
         .map(i128::from)
         .or_else(|| value.as_u64().map(i128::from))
+}
+
+/// An integer result as JSON, when it fits an `i64` or a `u64`.
+fn integer_json(value: i128) -> Option<Value> {
+    i64::try_from(value)
+        .map(Value::from)
+        .or_else(|_| u64::try_from(value).map(Value::from))
+        .ok()
 }
 
 /// `==` for computed expressions: numbers compare by value, so `0` equals
@@ -9163,6 +9162,48 @@ mod tests {
         );
         assert_eq!(binary(BinaryOp::Eq, json!("1"), json!(1)), json!(false));
         assert_eq!(binary(BinaryOp::Eq, json!([1]), json!([1])), json!(true));
+    }
+
+    #[test]
+    fn computed_integer_arithmetic_is_checked_across_i64_and_u64() {
+        let big = json!(u64::MAX - 1);
+        assert_eq!(
+            binary(BinaryOp::Add, big.clone(), json!(1)),
+            json!(u64::MAX)
+        );
+        assert_eq!(binary(BinaryOp::Sub, json!(1_u64), json!(2_u64)), json!(-1));
+        assert_eq!(binary(BinaryOp::Gt, big.clone(), json!(1)), json!(true));
+        assert_eq!(binary(BinaryOp::Lt, json!(-1), big.clone()), json!(true));
+        assert_eq!(
+            binary(BinaryOp::Div, json!(u64::MAX), json!(u64::MAX)),
+            json!(1)
+        );
+        // Overflow is an error (the field keeps its value), never a wrap or
+        // a panic.
+        for (op, left, right) in [
+            (BinaryOp::Add, json!(u64::MAX), json!(1)),
+            (
+                BinaryOp::Mul,
+                json!(4_294_967_296_u64),
+                json!(4_294_967_296_u64),
+            ),
+            (BinaryOp::Sub, json!(i64::MIN), json!(u64::MAX)),
+        ] {
+            let result = VmContext::new().evaluate_computed_expr(
+                &ComputedExpr::Binary {
+                    op,
+                    left: literal(left),
+                    right: literal(right),
+                },
+                &json!({}),
+            );
+            assert!(result.is_err(), "{result:?}");
+        }
+        // Floats are unchanged.
+        assert_eq!(
+            binary(BinaryOp::Mul, json!(4294967296.0), json!(4294967296.0)),
+            json!(18446744073709551616.0)
+        );
     }
 
     #[test]
