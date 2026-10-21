@@ -7501,12 +7501,21 @@ impl VmContext {
     }
 
     /// Get a field value from state by path (e.g., "section.field" or just "field")
+    /// Read a dotted path. A numeric segment indexes an array
+    /// (`curve.points.3.rate`); anything missing or out of range is null.
     fn get_field_from_state(&self, state: &Value, path: &str) -> Result<Value> {
         let segments: Vec<&str> = path.split('.').collect();
         let mut current = state;
 
         for segment in segments {
-            match current.get(segment) {
+            let next = match current {
+                Value::Array(items) => segment
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| items.get(index)),
+                _ => current.get(segment),
+            };
+            match next {
                 Some(v) => current = v,
                 None => return Ok(Value::Null),
             }
@@ -9204,6 +9213,34 @@ mod tests {
             binary(BinaryOp::Mul, json!(4294967296.0), json!(4294967296.0)),
             json!(18446744073709551616.0)
         );
+    }
+
+    #[test]
+    fn computed_field_paths_index_arrays_with_numeric_segments() {
+        let vm = VmContext::new();
+        let state = json!({
+            "config": {"curve": {"points": [
+                {"utilization": 0, "rate": 100},
+                {"utilization": 8000, "rate": 900},
+            ]}},
+        });
+        let read = |path: &str| {
+            vm.evaluate_computed_expr(
+                &ComputedExpr::FieldRef {
+                    path: path.to_string(),
+                },
+                &state,
+            )
+            .unwrap()
+        };
+        assert_eq!(read("config.curve.points.1.rate"), json!(900));
+        assert_eq!(
+            read("config.curve.points.0"),
+            json!({"utilization": 0, "rate": 100})
+        );
+        assert_eq!(read("config.curve.points.2.rate"), Value::Null);
+        assert_eq!(read("config.curve.points.x"), Value::Null);
+        assert_eq!(read("config.curve.0"), Value::Null);
     }
 
     #[test]
