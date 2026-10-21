@@ -7553,8 +7553,8 @@ impl VmContext {
             BinaryOp::Lt => self.comparison_op(left, right, |a, b| a < b, |a, b| a < b),
             BinaryOp::Gte => self.comparison_op(left, right, |a, b| a >= b, |a, b| a >= b),
             BinaryOp::Lte => self.comparison_op(left, right, |a, b| a <= b, |a, b| a <= b),
-            BinaryOp::Eq => Ok(json!(left == right)),
-            BinaryOp::Ne => Ok(json!(left != right)),
+            BinaryOp::Eq => Ok(json!(values_equal(left, right))),
+            BinaryOp::Ne => Ok(json!(!values_equal(left, right))),
 
             // Logical operations
             BinaryOp::And => {
@@ -8132,6 +8132,27 @@ impl crate::resolvers::ReverseLookupUpdater for VmContext {
                 tracing::error!("Failed to flush pending updates: {}", e);
                 Vec::new()
             })
+    }
+}
+
+/// A JSON integer widened so every `i64` and `u64` fits.
+fn json_integer(value: &Value) -> Option<i128> {
+    value
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| value.as_u64().map(i128::from))
+}
+
+/// `==` for computed expressions: numbers compare by value, so `0` equals
+/// `0.0` (artifacts serialise an integral float literal as an integer).
+/// Everything else compares structurally.
+fn values_equal(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(a), Value::Number(b)) => match (json_integer(left), json_integer(right)) {
+            (Some(a), Some(b)) => a == b,
+            _ => a.as_f64() == b.as_f64(),
+        },
+        _ => left == right,
     }
 }
 
@@ -9106,6 +9127,42 @@ mod tests {
         assert_eq!(vm.apply_cast(&json!("2.5"), "f64").unwrap(), json!(2.5));
         assert!(vm.apply_cast(&json!([1]), "f64").is_err());
         assert_eq!(vm.apply_cast(&Value::Null, "bool").unwrap(), json!(false));
+    }
+
+    fn literal(value: Value) -> Box<ComputedExpr> {
+        Box::new(ComputedExpr::Literal { value })
+    }
+
+    fn binary(op: BinaryOp, left: Value, right: Value) -> Value {
+        VmContext::new()
+            .evaluate_computed_expr(
+                &ComputedExpr::Binary {
+                    op,
+                    left: literal(left),
+                    right: literal(right),
+                },
+                &json!({}),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn computed_equality_compares_numbers_by_value() {
+        // An artifact stores the literal `0.0` as `0`; a float field must
+        // still equal it.
+        assert_eq!(binary(BinaryOp::Eq, json!(0.0), json!(0)), json!(true));
+        assert_eq!(binary(BinaryOp::Ne, json!(0.0), json!(0)), json!(false));
+        assert_eq!(binary(BinaryOp::Eq, json!(1.5), json!(1)), json!(false));
+        assert_eq!(
+            binary(BinaryOp::Eq, json!(u64::MAX), json!(u64::MAX)),
+            json!(true)
+        );
+        assert_eq!(
+            binary(BinaryOp::Eq, json!(u64::MAX), json!(-1)),
+            json!(false)
+        );
+        assert_eq!(binary(BinaryOp::Eq, json!("1"), json!(1)), json!(false));
+        assert_eq!(binary(BinaryOp::Eq, json!([1]), json!([1])), json!(true));
     }
 
     #[test]
