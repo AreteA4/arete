@@ -7979,6 +7979,32 @@ impl VmContext {
                     Err(format!("Cannot call max() on {:?} and {:?}", value, other).into())
                 }
             }
+            // Float math for rates and growth (`exp(apr) - 1` is the APY of a
+            // continuously compounded APR). Null in gives null; a result that
+            // is not a finite number is an error.
+            "exp" | "ln" | "pow" => {
+                let arity = if method == "pow" { 1 } else { 0 };
+                if args.len() != arity {
+                    return Err(format!("{method}() takes {arity} argument(s)").into());
+                }
+                if value.is_null() || args.iter().any(Value::is_null) {
+                    return Ok(Value::Null);
+                }
+                let number = |value: &Value| {
+                    value
+                        .as_f64()
+                        .ok_or_else(|| format!("Cannot call {method}() on {value:?}"))
+                };
+                let x = number(value)?;
+                let result = match method {
+                    "exp" => x.exp(),
+                    "ln" => x.ln(),
+                    _ => x.powf(number(&args[0])?),
+                };
+                serde_json::Number::from_f64(result)
+                    .map(Value::Number)
+                    .ok_or_else(|| format!("{method}() result is not finite").into())
+            }
             "saturating_add" => {
                 if args.is_empty() {
                     return Err("saturating_add() requires an argument".into());
@@ -9241,6 +9267,35 @@ mod tests {
         assert_eq!(read("config.curve.points.2.rate"), Value::Null);
         assert_eq!(read("config.curve.points.x"), Value::Null);
         assert_eq!(read("config.curve.0"), Value::Null);
+    }
+
+    #[test]
+    fn computed_float_math_methods() {
+        let call = |method: &str, value: Value, args: Vec<Value>| {
+            VmContext::new().evaluate_computed_expr(
+                &ComputedExpr::MethodCall {
+                    expr: literal(value),
+                    method: method.to_string(),
+                    args: args.into_iter().map(|value| *literal(value)).collect(),
+                },
+                &json!({}),
+            )
+        };
+        let float = |result: Result<Value>| result.unwrap().as_f64().unwrap();
+        assert!((float(call("exp", json!(0.05), vec![])) - 0.05_f64.exp()).abs() < 1e-15);
+        assert_eq!(float(call("exp", json!(0), vec![])), 1.0);
+        assert!((float(call("ln", json!(std::f64::consts::E), vec![])) - 1.0).abs() < 1e-15);
+        assert_eq!(float(call("pow", json!(2), vec![json!(10)])), 1024.0);
+        assert_eq!(float(call("pow", json!(4.0), vec![json!(0.5)])), 2.0);
+        assert_eq!(call("exp", Value::Null, vec![]).unwrap(), Value::Null);
+        assert_eq!(
+            call("pow", json!(2), vec![Value::Null]).unwrap(),
+            Value::Null
+        );
+        assert!(call("ln", json!(0), vec![]).is_err());
+        assert!(call("exp", json!(1000), vec![]).is_err());
+        assert!(call("pow", json!(2), vec![]).is_err());
+        assert!(call("exp", json!("1"), vec![]).is_err());
     }
 
     #[test]
