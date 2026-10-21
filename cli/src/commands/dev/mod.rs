@@ -37,7 +37,9 @@ pub mod watch;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use arete_mcp::dev::{parse_replay, DevClient, DevProject, ReplayOptions, StepRequest};
+use arete_mcp::dev::{
+    parse_replay, DevClient, DevProject, ReplayOptions, StepProgress, StepRequest,
+};
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use serde_json::{json, Value};
@@ -487,8 +489,11 @@ pub fn run(command: DevCommands, json: bool) -> Result<()> {
                 wallet: args.wallet,
                 result: None,
             };
-            let result = client.step(&request).await.map_err(env::explain)?;
-            print(json, &result, || print_step(&result));
+            let work = client.step_with_progress(&request, |phase| {
+                eprintln!("{}", step_progress_message(phase));
+            });
+            let result =
+                finish_step(work, json, &mut std::io::stdout(), &mut std::io::stderr()).await?;
             if result["state"] != "completed" {
                 std::process::exit(1);
             }
@@ -583,6 +588,176 @@ fn print(json: bool, value: &Value, human: impl FnOnce()) {
     } else {
         human();
     }
+}
+
+/// Await and print exactly one step outcome. Keep the timer and output
+/// routing together so JSON output cannot be contaminated by heartbeats.
+async fn finish_step(
+    work: impl std::future::Future<Output = Result<Value>>,
+    json: bool,
+    stdout: &mut impl std::io::Write,
+    stderr: &mut impl std::io::Write,
+) -> Result<Value> {
+    let started = tokio::time::Instant::now();
+    let period = std::time::Duration::from_secs(5);
+    let mut heartbeat = tokio::time::interval_at(started + period, period);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tokio::pin!(work);
+    let result = loop {
+        tokio::select! {
+            // If completion and a tick become ready together, stop first.
+            biased;
+            result = &mut work => break result.map_err(env::explain)?,
+            _ = heartbeat.tick() => writeln!(
+                stderr,
+                "Still waiting ({}s). Do not resubmit while this execution is pending.",
+                started.elapsed().as_secs()
+            )?,
+        }
+    };
+    if let Some(message) = step_outcome_message(&result) {
+        writeln!(stderr, "{message}")?;
+    }
+    if json {
+        serde_json::to_writer(&mut *stdout, &result)?;
+        writeln!(stdout)?;
+    } else {
+        print_step(&result);
+    }
+    Ok(result)
+}
+
+fn step_progress_message(phase: StepProgress<'_>) -> String {
+    match phase {
+        StepProgress::Preparing => "Preparing and simulating step…".into(),
+        StepProgress::Signing => "Signing with dev wallet…".into(),
+        StepProgress::Submitting { execution_id } => {
+            format!("Submitting execution {execution_id}…")
+        }
+        StepProgress::Confirming { execution_id } => {
+            format!("Waiting for confirmation of {execution_id}…")
+        }
+    }
+}
+
+#[cfg(test)]
+mod step_progress_tests {
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct Output(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Output {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl std::io::Write for Output {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_step_heartbeats_go_only_to_stderr_until_one_json_result() {
+        let stdout = Output::default();
+        let stderr = Output::default();
+        let (mut out, mut err) = (stdout.clone(), stderr.clone());
+        let task = tokio::spawn(async move {
+            finish_step(
+                async {
+                    tokio::time::sleep(std::time::Duration::from_secs(12)).await;
+                    Ok(json!({"state": "completed", "executionId": "e-1"}))
+                },
+                true,
+                &mut out,
+                &mut err,
+            )
+            .await
+            .unwrap()
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(4)).await;
+        tokio::task::yield_now().await;
+        assert!(stderr.text().is_empty(), "no immediate or early heartbeat");
+        assert!(stdout.text().is_empty(), "no result before completion");
+        for elapsed in [5, 10] {
+            tokio::time::advance(std::time::Duration::from_secs(if elapsed == 5 {
+                1
+            } else {
+                5
+            }))
+            .await;
+            tokio::task::yield_now().await;
+            assert!(stderr
+                .text()
+                .contains(&format!("Still waiting ({elapsed}s)")));
+            assert!(
+                stdout.text().is_empty(),
+                "progress must not reach JSON stdout"
+            );
+        }
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        let result = task.await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&stdout.text()).unwrap(),
+            result
+        );
+        assert_eq!(stdout.text().lines().count(), 1);
+        let finished = stderr.text();
+        assert_eq!(finished.lines().count(), 2);
+        tokio::time::advance(std::time::Duration::from_secs(20)).await;
+        assert_eq!(stderr.text(), finished, "no heartbeat after completion");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn completion_at_a_tick_wins_and_expiry_stays_out_of_json_stdout() {
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        let result = finish_step(
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                Ok(json!({"state": "expired"}))
+            },
+            true,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await
+        .unwrap();
+        let err = String::from_utf8(stderr).unwrap();
+        assert!(
+            !err.contains("Still waiting"),
+            "completion must win at the tick boundary"
+        );
+        assert!(err.contains("Execution expired before confirmation"));
+        let out = String::from_utf8(stdout).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&out).unwrap(), result);
+        assert_eq!(out.lines().count(), 1);
+    }
+
+    #[test]
+    fn expiry_is_not_presented_as_a_successful_payment() {
+        let message = step_outcome_message(&json!({"state": "expired"})).unwrap();
+        assert!(message.contains("not a completed payment"));
+        assert!(message.contains("inspect"));
+        assert!(step_outcome_message(&json!({"state": "completed"})).is_none());
+        assert!(step_progress_message(StepProgress::Submitting {
+            execution_id: "public-id"
+        })
+        .contains("public-id"));
+    }
+}
+
+fn step_outcome_message(result: &Value) -> Option<&'static str> {
+    (result["state"] == "expired").then_some(
+        "Execution expired before confirmation. This is not a completed payment; inspect its transaction status before trying again."
+    )
 }
 
 fn print_step(result: &Value) {
