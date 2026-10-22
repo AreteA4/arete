@@ -1,7 +1,6 @@
 {
   "name": "@usearete/automations",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.43.0",
   "type": "module",
   "description": "Server-side automation of Arete Protocol steps on a user's behalf, with pluggable signers and a signing policy",
   "main": "./dist/index.cjs",

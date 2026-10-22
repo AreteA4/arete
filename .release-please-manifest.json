@@ -11,6 +11,7 @@
   "typescript/protocol": "0.2.1",
   "typescript/adapters/kit": "0.43.0",
   "typescript/adapters/web3js": "0.43.0",
+  "typescript/automations": "0.43.0",
   "packages/arete": "0.43.0",
   "packages/mcp": "0.43.0",
   "python/arete-sdk": "0.43.0",

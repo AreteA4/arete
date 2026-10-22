@@ -5,11 +5,14 @@ step needs the user's signature, a backend prepares it, checks it against a
 signing policy and the user's consent, signs it with a delegated signer, and
 submits it. Arete never holds a key; the signer runs in your backend.
 
-> **Status:** complete, not yet published. Start with
-> [Automating steps for users](docs/automating-steps.md), the
-> [consent UX guide](docs/consent-ux.md) and the
-> [threat model](docs/threat-model.md); `examples/token-raise/` is a
-> complete backend.
+```bash
+npm install @usearete/automations @usearete/sdk
+```
+
+Start with [Automating steps for users](docs/automating-steps.md), the
+[consent UX guide](docs/consent-ux.md) and the
+[threat model](docs/threat-model.md); `examples/token-raise/` is a complete
+backend.
 
 ## Use the least powerful mechanism
 
