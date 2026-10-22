@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.2](https://github.com/AreteA4/arete/compare/arete-artifacts-v0.5.1...arete-artifacts-v0.5.2) (2026-10-22)
+
+
+### Bug Fixes
+
+* exclude injected runtime legs from protocol activity ([56e3baa](https://github.com/AreteA4/arete/commit/56e3baa2d3235ae4e4ce0279b5f3e7b85745dfff))
+* scope protocol activity joins to attested operation instructions ([119048b](https://github.com/AreteA4/arete/commit/119048bf5caefdfcef5e097d443a5a6f80ab0473))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-hash bumped from 0.6.1 to 0.6.2
+
 ## [0.5.1](https://github.com/AreteA4/arete/compare/arete-artifacts-v0.5.0...arete-artifacts-v0.5.1) (2026-10-20)
 
 
