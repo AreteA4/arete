@@ -249,18 +249,28 @@ export interface AutomationStore {
 export type { DeliveryJob, StepJob };
 
 /** An append-view cursor `{epoch}:{offset}` as numbers, or `null` when it is not one. */
-export function parseCursor(cursor: string): [bigint, bigint] | null {
-  const match = /^(\d+):(\d+)$/.exec(cursor);
-  return match ? [BigInt(match[1]!), BigInt(match[2]!)] : null;
+export function parseCursor(cursor: string): { epoch: string; offset: bigint } | null {
+  // The epoch is opaque (the server uses a UUID per tape lifetime); the
+  // offset follows the last colon.
+  const at = cursor.lastIndexOf(':');
+  const epoch = cursor.slice(0, at);
+  const offset = cursor.slice(at + 1);
+  if (at <= 0 || !/^\d+$/.test(offset)) return null;
+  return { epoch, offset: BigInt(offset) };
 }
 
-/** Whether `next` is after `current` (any cursor is after an unreadable one). */
+/**
+ * Whether `next` moves past `current`. Offsets are compared within an
+ * epoch; a different epoch is a new tape lifetime, which cannot be ordered
+ * against the old one, so it always moves on. Any cursor is after an
+ * unreadable one.
+ */
 export function cursorAfter(next: string, current: string | null): boolean {
   const order = parseCursor(next);
   if (!order) throw new TypeError(`'${next}' is not an {epoch}:{offset} cursor`);
   const stored = current === null ? null : parseCursor(current);
-  if (!stored) return true;
-  return order[0] > stored[0] || (order[0] === stored[0] && order[1] > stored[1]);
+  if (!stored || stored.epoch !== order.epoch) return true;
+  return order.offset > stored.offset;
 }
 
 export class StoreDeploymentError extends Error {

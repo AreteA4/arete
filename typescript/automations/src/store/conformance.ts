@@ -446,13 +446,22 @@ export function runStoreConformance(
       await store.sources.putCursor('tape', '1:4', T0);
       await store.sources.putCursor('tape', '1:9', T0);
       expect(await store.sources.cursor('tape')).toBe('1:9');
-      // A slow replica never moves the cursor back.
+      // A slow replica never moves the cursor back within an epoch.
       await store.sources.putCursor('tape', '1:5', T0);
-      await store.sources.putCursor('tape', '0:99', T0);
       expect(await store.sources.cursor('tape')).toBe('1:9');
       await store.sources.putCursor('tape', '1:10', T0);
+      expect(await store.sources.cursor('tape')).toBe('1:10');
+      // A new epoch is a new tape lifetime: it always moves on.
       await store.sources.putCursor('tape', '2:0', T0);
       expect(await store.sources.cursor('tape')).toBe('2:0');
+      // Real epochs are UUIDs; offsets compare within one, and a new epoch moves on.
+      const epoch = '0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b';
+      await store.sources.putCursor('uuid-tape', `${epoch}:4210`, T0);
+      await store.sources.putCursor('uuid-tape', `${epoch}:4209`, T0);
+      expect(await store.sources.cursor('uuid-tape')).toBe(`${epoch}:4210`);
+      await store.sources.putCursor('uuid-tape', `${epoch}:4300`, T0);
+      await store.sources.putCursor('uuid-tape', '7d1e0b2a-0000-4000-8000-000000000000:0', T0);
+      expect(await store.sources.cursor('uuid-tape')).toBe('7d1e0b2a-0000-4000-8000-000000000000:0');
     });
 
     it('holds a source lease for one holder until it lapses or is released', async () => {

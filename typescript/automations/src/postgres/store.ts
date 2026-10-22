@@ -635,14 +635,14 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
         await ready();
         const order = parseCursor(cursor);
         if (!order) throw new TypeError(`'${cursor}' is not an {epoch}:{offset} cursor`);
-        // Only forward, atomically: a slow replica never rewinds the source.
+        // Only forward within an epoch, atomically; a new epoch always moves on.
         await executor.query(
           `INSERT INTO ${s}.source_cursors (source, cursor, updated_at) VALUES ($1, $2, $3)
            ON CONFLICT (source) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at
-           WHERE ${s}.source_cursors.cursor !~ '^[0-9]+:[0-9]+$'
-              OR (split_part(${s}.source_cursors.cursor, ':', 1)::numeric, split_part(${s}.source_cursors.cursor, ':', 2)::numeric)
-                 < ($4::numeric, $5::numeric)`,
-          [source, cursor, now, order[0].toString(), order[1].toString()],
+           WHERE ${s}.source_cursors.cursor !~ ':[0-9]+$'
+              OR regexp_replace(${s}.source_cursors.cursor, ':[0-9]+$', '') <> $4
+              OR substring(${s}.source_cursors.cursor from ':([0-9]+)$')::numeric < $5::numeric`,
+          [source, cursor, now, order.epoch, order.offset.toString()],
         );
       },
       async acquireLease(source, holder, until, now) {
