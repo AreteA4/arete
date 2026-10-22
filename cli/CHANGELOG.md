@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## [0.44.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.43.0...a4-cli-v0.44.0) (2026-10-22)
+
+
+### Features
+
+* **automations:** run automations under a4 dev ([5b72067](https://github.com/AreteA4/arete/commit/5b72067e8491d452c830b68108825aca425e1b50))
+* **automations:** run automations under a4 dev ([f2f7545](https://github.com/AreteA4/arete/commit/f2f7545d3658af9002205f8005f0dadf053b42c2))
+* **automations:** target dev environments, then mainnet ([64292e6](https://github.com/AreteA4/arete/commit/64292e62804674b74c42e6fc07ebeab4f255804b))
+* **automations:** target dev environments, then mainnet ([49aa2c5](https://github.com/AreteA4/arete/commit/49aa2c57870db74f86bcd9ac7982a9df62809152))
+
+
+### Bug Fixes
+
+* **automations:** a4 dev runner follows session changes, saves on shutdown, guards its control port ([1e1dd5a](https://github.com/AreteA4/arete/commit/1e1dd5a438f86d931afbf97344e5268c07b402c3))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.43.0 to 0.44.0
+    * arete-mcp bumped from 0.43.0 to 0.44.0
+
 ## [0.43.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.42.2...a4-cli-v0.43.0) (2026-10-21)
 
 

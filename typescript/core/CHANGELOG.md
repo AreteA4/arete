@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.44.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.43.0...arete-typescript-v0.44.0) (2026-10-22)
+
+
+### Features
+
+* **automations:** target dev environments, then mainnet ([64292e6](https://github.com/AreteA4/arete/commit/64292e62804674b74c42e6fc07ebeab4f255804b))
+* **automations:** target dev environments, then mainnet ([49aa2c5](https://github.com/AreteA4/arete/commit/49aa2c57870db74f86bcd9ac7982a9df62809152))
+
 ## [0.43.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.42.2...arete-typescript-v0.43.0) (2026-10-21)
 
 

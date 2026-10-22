@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.44.0](https://github.com/AreteA4/arete/compare/arete-python-v0.43.0...arete-python-v0.44.0) (2026-10-22)
+
+
+### Miscellaneous Chores
+
+* **arete-python:** Synchronize arete versions
+
 ## [0.43.0](https://github.com/AreteA4/arete/compare/arete-python-v0.42.2...arete-python-v0.43.0) (2026-10-21)
 
 
