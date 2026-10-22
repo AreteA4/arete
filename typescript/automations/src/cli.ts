@@ -13,16 +13,20 @@ Usage:
 
 The schema defaults to ${DEFAULT_SCHEMA}.`;
 
+/** An option's value; throws when the option is given without one. */
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : undefined;
+  if (index < 0) return undefined;
+  const value = args[index + 1];
+  if (value === undefined || value.startsWith('--')) throw new Error(`${name} needs a value`);
+  return value;
 }
 
 /** Run the CLI; returns the exit code. */
 export function main(args: string[], out: { log(text: string): void; error(text: string): void } = console): number {
   const [command] = args;
-  const schema = option(args, '--schema') ?? DEFAULT_SCHEMA;
   try {
+    const schema = option(args, '--schema') ?? DEFAULT_SCHEMA;
     if (command === 'migrations') {
       const dir = option(args, '--out');
       if (!dir) throw new Error('migrations needs --out <dir>');

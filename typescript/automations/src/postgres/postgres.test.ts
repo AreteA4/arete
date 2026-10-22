@@ -34,7 +34,7 @@ async function migratedStore() {
 
 afterAll(async () => {
   if (!url) return;
-  for (const schema of schemas) await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+  for (const schema of schemas) await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
   for (const role of roles) await pool.query(`DROP ROLE IF EXISTS ${role}`);
   await pool.end();
 });
@@ -85,6 +85,22 @@ suite('postgresStore: migrations', () => {
     expect(await store.jobs.list()).toEqual([]);
   });
 
+  it('accepts a reserved word as the schema name', async () => {
+    schemas.push('user');
+    await pool.query('DROP SCHEMA IF EXISTS "user" CASCADE');
+    const store = postgresStore(pool, { schema: 'user' });
+    await store.migrate();
+    expect(await store.deliveries.accept({ id: 'd', name: 'n', source: 'dispatch', payload: {}, receivedAt: 0 }, 0)).toBe(true);
+    const files = migrationFiles('select');
+    expect(files[0]!.sql).toContain('CREATE TABLE "select".jobs');
+  });
+
+  it('binds a schema to one deployment across store instances', async () => {
+    const store = await migratedStore();
+    await store.bindDeployment('dep-a');
+    await expect(postgresStore(pool, { schema: store.schema }).bindDeployment('dep-b')).rejects.toThrow('belongs to deployment dep-a');
+  });
+
   it('exports SQL files that bring a schema to the same version', async () => {
     const schema = freshSchema();
     const files = migrationFiles(schema);
@@ -119,6 +135,93 @@ suite('postgresStore: migrations', () => {
 });
 
 suite('postgresStore: transactions and concurrency', () => {
+  it('runs multi-statement operations inside the caller transaction', async () => {
+    const store = await migratedStore();
+    await store.consent.put(storedGrant(ALICE, 0));
+    await store.deliveries.accept({ id: 'd', name: 'n', source: 'dispatch', payload: {}, receivedAt: 0 }, 0);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const inTransaction = store.using(client);
+      expect(await inTransaction.consent.revoke({ wallet: ALICE, deploymentId: DEPLOYMENT, now: 1 })).toBe(1);
+      expect((await inTransaction.jobs.claimNext({ worker: 'w', leaseMs: 1000, now: 1 }))?.id).toBe('d');
+      expect(await inTransaction.jobs.completeDelivery('d', 'w', [], 2)).toBe(true);
+      // A client passed straight in is used the same way, not connected again.
+      const direct = postgresStore(client, { schema: store.schema });
+      expect(await direct.consent.revoke({ wallet: ALICE, deploymentId: DEPLOYMENT, now: 3 })).toBe(0);
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+    expect((await store.consent.list({ wallet: ALICE }))[0]!.revokedAt).toBeNull();
+    expect((await store.jobs.get('d'))?.state).toBe('queued');
+  });
+
+  it("keeps the caller's transaction usable after a lost claim race", async () => {
+    const store = await migratedStore();
+    await store.deliveries.accept({ id: 'd', name: 'n', source: 'dispatch', payload: {}, receivedAt: 0 }, 0);
+    await store.jobs.claimNext({ worker: 'seed', leaseMs: 1000, now: 0 });
+    await store.jobs.completeDelivery(
+      'd',
+      'seed',
+      ['a', 'b'].map((step) => ({ id: `d:${step}:${ALICE}`, deploymentId: DEPLOYMENT, request: { step, wallet: ALICE, args: {} } })),
+      0,
+    );
+    const first = await pool.connect();
+    const second = await pool.connect();
+    try {
+      await first.query('BEGIN');
+      await second.query('BEGIN');
+      expect((await store.using(first).jobs.claimNext({ worker: 'w1', leaseMs: 60_000, now: 1 }))?.id).toBe(`d:a:${ALICE}`);
+      // The second transaction cannot see the first claim yet, races into the unique index, and must lose cleanly.
+      const racing = store.using(second).jobs.claimNext({ worker: 'w2', leaseMs: 60_000, now: 1 });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await first.query('COMMIT');
+      expect(await racing).toBeNull();
+      expect((await second.query('SELECT 1 AS ok')).rows).toEqual([{ ok: 1 }]);
+      await second.query('COMMIT');
+    } finally {
+      first.release();
+      second.release();
+    }
+  });
+
+  it('round-trips a saved intent exactly, nested nulls included', async () => {
+    const store = await migratedStore();
+    await store.deliveries.accept({ id: 'd', name: 'n', source: 'dispatch', payload: {}, receivedAt: 0 }, 0);
+    await store.jobs.claimNext({ worker: 'seed', leaseMs: 1000, now: 0 });
+    await store.jobs.completeDelivery('d', 'seed', [{ id: 's', deploymentId: DEPLOYMENT, request: { step: 'x', wallet: ALICE, args: {} } }], 0);
+    await store.jobs.claimNext({ worker: 'w', leaseMs: 60_000, now: 1 });
+    const intent = {
+      executionId: 'e',
+      participantId: null,
+      fees: null,
+      signers: [{ class: 'wallet', pubkey: ALICE, name: null }],
+      transactions: [{ index: 0, messageSha256: 'ab', signers: [ALICE] }],
+    };
+    await store.jobs.transition('s', {
+      worker: 'w',
+      from: 'running',
+      to: 'signed',
+      now: 2,
+      keepLease: { until: 60_000 },
+      progress: { intent: intent as never, signed: ['AAAA'], signatures: [null] },
+    });
+    let job = (await store.jobs.get('s')) as unknown as { progress: Record<string, unknown> };
+    expect(job.progress).toEqual({ generation: 0, intent, signed: ['AAAA'], signatures: [null] });
+    // Clearing fields removes just those fields.
+    await store.jobs.transition('s', {
+      worker: 'w',
+      from: 'signed',
+      to: 'running',
+      now: 3,
+      keepLease: { until: 60_000 },
+      progress: { generation: 1, intent: undefined, signed: undefined },
+    });
+    job = (await store.jobs.get('s')) as unknown as { progress: Record<string, unknown> };
+    expect(job.progress).toEqual({ generation: 1, signatures: [null] });
+  });
+
   it('writes inside the caller transaction and rolls back with it', async () => {
     const store = await migratedStore();
     const client = await pool.connect();
