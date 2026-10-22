@@ -22,6 +22,7 @@ import {
   normalizeConsent,
   SOL,
   stepOutflows,
+  transactionOutflows,
 } from '../consent/consent';
 import { decodeBase58, encodeBase58 } from '../policy/encoding';
 import type { Cluster, Refusal, SignerPolicy } from '../policy/policy';
@@ -393,6 +394,55 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   // Step jobs
   // -------------------------------------------------------------------------
 
+  /**
+   * The ledger after a chain failure, per transaction: one that landed
+   * successfully keeps everything it moved; one that failed counts the fee
+   * it was charged (all its SOL when the fee cannot be read); one that never
+   * landed counts nothing.
+   */
+  const failedLedger = async (
+    job: StepJob,
+    state: ProtocolIntentState,
+  ): Promise<NonNullable<Parameters<AutomationStore['jobs']['transition']>[1]['ledger']>> => {
+    const saved = job.progress.outflows;
+    if (!saved) {
+      // Signed before outflows were saved per transaction: if any transaction
+      // landed, keep every entry; otherwise keep the fees, or all the SOL.
+      if (state.transactions.some((transaction) => transaction.signature !== null && !transaction.error)) return {};
+      const fees = await chargedFees(state.transactions.map((transaction) => transaction.signature));
+      return fees === null
+        ? { void: true, keepAssets: [SOL] }
+        : {
+            void: true,
+            record:
+              fees > 0n ? [{ wallet: job.request.wallet, deploymentId: job.deploymentId, asset: SOL, amount: fees.toString() }] : [],
+          };
+    }
+    const spent = new Map<string, bigint>();
+    const add = (asset: string, amount: bigint) => {
+      if (amount > 0n) spent.set(asset, (spent.get(asset) ?? 0n) + amount);
+    };
+    for (const transaction of state.transactions) {
+      const amounts = saved.find((entry) => entry.index === transaction.index)?.amounts ?? {};
+      if (transaction.signature === null) continue;
+      if (!transaction.error) {
+        for (const [asset, amount] of Object.entries(amounts)) add(asset, BigInt(amount));
+        continue;
+      }
+      const fee = await chargedFees([transaction.signature]);
+      add(SOL, fee ?? BigInt(amounts[SOL] ?? '0'));
+    }
+    return {
+      void: true,
+      record: [...spent].map(([asset, amount]) => ({
+        wallet: job.request.wallet,
+        deploymentId: job.deploymentId,
+        asset,
+        amount: amount.toString(),
+      })),
+    };
+  };
+
   /** The fees the landed transactions paid, from the chain; `null` when one cannot be read. */
   const chargedFees = async (signatures: readonly (string | null)[]): Promise<bigint | null> => {
     let total = 0n;
@@ -661,7 +711,11 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       if (tampered) return refuse(job, tampered);
       // Recorded with the signed bytes, before submit, so a crash cannot let a
       // step escape its window; voided if the intent never lands.
-      const saved = await advance(job, 'signed', { format, intent, prepared: baseline, signed }, {
+      const perTransaction = transactionOutflows(summary).map(({ index, amounts }) => ({
+        index,
+        amounts: Object.fromEntries([...amounts].map(([asset, amount]) => [asset, amount.toString()])),
+      }));
+      const saved = await advance(job, 'signed', { format, intent, prepared: baseline, signed, outflows: perTransaction }, {
         record: [...outflows].map(([asset, amount]) => ({
           wallet,
           deploymentId: job.deploymentId,
@@ -704,15 +758,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
             case 'completed':
               return finish(job, 'completed', { code: 'completed' }, { ...job.progress, signatures });
             case 'chain_failed': {
-              // If any transaction of the intent landed successfully, its
-              // outflows really left the wallet, and the ledger cannot tell
-              // them apart from the failed ones: keep every entry. Otherwise
-              // the transfers rolled back and only the fees were charged: keep
-              // exactly the fees, or all the SOL when they cannot be read.
-              const landedOne = state.transactions.some(
-                (transaction) => transaction.signature !== null && !transaction.error,
-              );
-              const fees = landedOne ? null : await chargedFees(signatures);
+              const ledger = await failedLedger(job, state);
               return finish(
                 job,
                 'chain_failed',
@@ -721,17 +767,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
                   detail: state.transactions.filter((transaction) => transaction.error).map(({ index, error }) => ({ index, error })),
                 },
                 { ...job.progress, signatures },
-                landedOne
-                  ? {}
-                  : fees === null
-                  ? { void: true, keepAssets: [SOL] }
-                  : {
-                      void: true,
-                      record:
-                        fees > 0n
-                          ? [{ wallet: job.request.wallet, deploymentId: job.deploymentId, asset: SOL, amount: fees.toString() }]
-                          : [],
-                    },
+                ledger,
               );
             }
             case 'rejected':

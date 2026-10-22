@@ -380,7 +380,9 @@ describe('consent at run time', () => {
     expect(await h.store.ledger.spent({ wallet: ALICE, deploymentId: DEPLOYMENT, asset: SOL, since: 0 })).toBe(1_010_000n);
   });
 
-  it('keeps every outflow when part of a failed intent landed', async () => {
+  it('accounts a partly landed intent per transaction', async () => {
+    // Two transactions, each moving 1,000,000 lamports plus a 5,000 fee. The
+    // first lands; the second fails on chain and is charged its fee only.
     const transferring: Simulator = {
       async call(method, params) {
         if (method === 'getTransaction') return { meta: { fee: 5000 } };
@@ -398,16 +400,18 @@ describe('consent at run time', () => {
     );
     await h.store.consent.put(
       storedGrant(ALICE, h.clock.now(), {
-        limits: { perExecution: { [SOL]: '1005000' }, perWindow: { [SOL]: { amount: '1010000', windowMs: 86_400_000 } } },
+        limits: { perExecution: { [SOL]: '2010000' }, perWindow: { [SOL]: { amount: '3100000', windowMs: 86_400_000 } } },
       }),
     );
     onDeposit(h);
     await h.automations.dispatch('deposit', { wallet: ALICE }, { id: 'a' });
     await h.automations.drain();
+    // The landed transfer and the failed one's fee stay; the failed transfer is released.
+    expect(await h.store.ledger.spent({ wallet: ALICE, deploymentId: DEPLOYMENT, asset: SOL, since: 0 })).toBe(1_010_000n);
     await h.automations.dispatch('deposit', { wallet: ALICE }, { id: 'b' });
     await h.automations.drain();
-    expect(h.outcomes.map((outcome) => outcome.code)).toEqual(['chain_failed', 'consent_window']);
-    expect(await h.store.ledger.spent({ wallet: ALICE, deploymentId: DEPLOYMENT, asset: SOL, since: 0 })).toBe(1_005_000n);
+    expect(h.outcomes.map((outcome) => outcome.code)).toEqual(['chain_failed', 'completed']);
+    expect(await h.store.ledger.spent({ wallet: ALICE, deploymentId: DEPLOYMENT, asset: SOL, since: 0 })).toBe(3_020_000n);
   });
 
   it('gives a handler the effective grant per wallet for an instance', async () => {
