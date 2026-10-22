@@ -381,6 +381,7 @@ export function runStoreConformance(
         value: { best: 'a' },
         generation: 1,
         pending: null,
+        observed: null,
         version: 1,
         updatedAt: T0,
       });
@@ -399,6 +400,22 @@ export function runStoreConformance(
         payload: { best: 'a' },
         receivedAt: T0,
       });
+    });
+
+    it('gives different sources and keys different delivery ids', async () => {
+      const store = await createStore();
+      const deliver = (source: string, key: string) =>
+        store.sources.advance({
+          source,
+          key,
+          expectedVersion: null,
+          next: { hash: 'a', value: 1, pending: null },
+          deliver: { name: source, payload: key },
+          now: T0,
+        });
+      await deliver('rates:wallet', 'alice');
+      await deliver('rates', 'wallet:alice');
+      expect((await store.jobs.list({ kind: 'delivery' })).length).toBe(2);
     });
 
     it('lets one of several concurrent writers advance a source key', async () => {
@@ -442,6 +459,56 @@ export function runStoreConformance(
       expect(await store.sources.acquireLease('s', 'w1', T0 + 400, T0 + 202)).toBe(false);
       await store.sources.releaseLease('s', 'w2');
       expect(await store.sources.acquireLease('s', 'w1', T0 + 400, T0 + 203)).toBe(true);
+    });
+
+    it('keeps the ledger entries of the assets a void keeps', async () => {
+      const store = await createStore();
+      await seedSteps(store, 'd1', [step('d1', 'alice')]);
+      const job = await store.jobs.claimNext({ worker: 'w1', leaseMs: LEASE, now: T0 });
+      await store.jobs.transition(job!.id, {
+        worker: 'w1',
+        from: 'running',
+        to: 'signed',
+        now: T0,
+        keepLease: { until: T0 + LEASE },
+        ledger: {
+          record: [
+            { wallet: 'alice', deploymentId: 'dep-1', asset: 'SOL', amount: '5000' },
+            { wallet: 'alice', deploymentId: 'dep-1', asset: 'mint', amount: '7' },
+          ],
+        },
+      });
+      await store.jobs.transition(job!.id, {
+        worker: 'w1',
+        from: 'signed',
+        to: 'chain_failed',
+        now: T0 + 1,
+        ledger: { void: true, keepAssets: ['SOL'] },
+      });
+      const spent = (asset: string) => store.ledger.spent({ wallet: 'alice', deploymentId: 'dep-1', asset, since: 0 });
+      expect(await spent('SOL')).toBe(5000n);
+      expect(await spent('mint')).toBe(0n);
+    });
+
+    it('belongs to one deployment', async () => {
+      const store = await createStore();
+      await store.bindDeployment('dep-1');
+      await store.bindDeployment('dep-1');
+      let refused = false;
+      try {
+        await store.bindDeployment('dep-2');
+      } catch {
+        refused = true;
+      }
+      expect(refused).toBe(true);
+    });
+
+    it('treats a pruned delivery id whose job remains as a duplicate', async () => {
+      const store = await createStore();
+      await store.deliveries.accept(delivery('d1'), T0);
+      expect(await store.deliveries.prune(T0 + 1)).toBe(1);
+      expect(await store.deliveries.accept(delivery('d1'), T0 + 2)).toBe(false);
+      expect((await store.jobs.list({ kind: 'delivery' })).length).toBe(1);
     });
 
     it('prunes old deliveries and finished jobs only', async () => {

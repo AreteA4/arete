@@ -16,8 +16,8 @@ import {
   TERMINAL_DELIVERY_STATES,
   TERMINAL_STEP_STATES,
 } from '../runtime/types';
-import type { AutomationStore, ConsentGrant, LedgerEntry, SourceState } from '../store/store';
-import { DEFAULT_SCHEMA, LATEST_SCHEMA_VERSION, MIGRATIONS, validSchema } from './migrations';
+import { type AutomationStore, type ConsentGrant, type LedgerEntry, type SourceState, StoreDeploymentError } from '../store/store';
+import { DEFAULT_SCHEMA, LATEST_SCHEMA_VERSION, MIGRATIONS, quoted, validSchema } from './migrations';
 
 /** What the store needs from a `pg` Pool or Client (or anything with the same `query`). */
 export interface PgQueryable {
@@ -32,6 +32,11 @@ export interface PgPoolLike extends PgQueryable {
 export interface PostgresStoreOptions {
   /** Defaults to `arete_automation`. */
   readonly schema?: string;
+}
+
+interface InternalOptions extends PostgresStoreOptions {
+  /** Treat the executor as a client in the caller's transaction. */
+  readonly client?: boolean;
 }
 
 export interface PostgresStore extends AutomationStore {
@@ -72,8 +77,12 @@ const UNDEFINED_TABLE = '42P01';
 const ACTIVE = `('${ACTIVE_STEP_STATES.join("', '")}')`;
 const FINISHED = `('${[...TERMINAL_STEP_STATES, ...TERMINAL_DELIVERY_STATES].join("', '")}')`;
 
+/**
+ * A pool hands out clients. Clients have `connect()` too (to open their
+ * connection), so a pool is recognized by its pool counters.
+ */
 function isPool(executor: PgQueryable): executor is PgPoolLike {
-  return typeof (executor as Partial<PgPoolLike>).connect === 'function';
+  return typeof (executor as Partial<PgPoolLike>).connect === 'function' && 'totalCount' in executor;
 }
 
 function code(error: unknown): string | undefined {
@@ -83,6 +92,17 @@ function code(error: unknown): string | undefined {
 /** JSON for a jsonb parameter: undefined fields become null so a merge can clear them. */
 function json(value: unknown): string {
   return JSON.stringify(value, (_key, item) => (item === undefined ? null : typeof item === 'bigint' ? item.toString() : item));
+}
+
+/** Progress fields given as undefined or null are cleared; the rest are merged. */
+function clearedKeys(progress: object): string[] {
+  return Object.entries(progress)
+    .filter(([, value]) => value === undefined || value === null)
+    .map(([key]) => key);
+}
+
+function progressPatch(progress: object): object {
+  return Object.fromEntries(Object.entries(progress).filter(([, value]) => value !== undefined && value !== null));
 }
 
 const num = (value: unknown): number => Number(value);
@@ -125,18 +145,21 @@ function rowToSource(row: any): SourceState {
     value: row.value,
     generation: num(row.generation),
     pending: row.pending ?? null,
+    observed: row.observed ?? null,
     version: num(row.version),
     updatedAt: num(row.updated_at),
   };
 }
 
 export function postgresStore(executor: PgQueryable, options: PostgresStoreOptions = {}): PostgresStore {
-  const s = validSchema(options.schema ?? DEFAULT_SCHEMA);
+  const internal = options as InternalOptions;
+  const name = validSchema(options.schema ?? DEFAULT_SCHEMA);
+  const s = quoted(name);
   let checked: Promise<void> | null = null;
 
   /** Run `fn` atomically: a transaction on a pool, a savepoint on a client. */
   const atomic = async <T>(fn: (db: PgQueryable) => Promise<T>): Promise<T> => {
-    if (isPool(executor)) {
+    if (!internal.client && isPool(executor)) {
       const client = await executor.connect();
       try {
         await client.query('BEGIN');
@@ -174,7 +197,7 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
 
   const checkVersion = async () => {
     const found = await schemaVersion();
-    if (found < LATEST_SCHEMA_VERSION) throw new SchemaVersionError(found, LATEST_SCHEMA_VERSION, s);
+    if (found < LATEST_SCHEMA_VERSION) throw new SchemaVersionError(found, LATEST_SCHEMA_VERSION, name);
   };
 
   /** Every operation waits for one successful version check. */
@@ -192,16 +215,18 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
       [delivery.id, now],
     );
     if (inserted.rowCount !== 1) return false;
-    await db.query(
+    // The delivery id may have been pruned while its job remains: a duplicate.
+    const job = await db.query(
       `INSERT INTO ${s}.jobs (id, kind, state, data, not_before, created_at, updated_at)
-       VALUES ($1, 'delivery', 'queued', $2::jsonb, $3, $3, $3)`,
+       VALUES ($1, 'delivery', 'queued', $2::jsonb, $3, $3, $3)
+       ON CONFLICT (id) DO NOTHING`,
       [delivery.id, json({ delivery }), now],
     );
-    return true;
+    return job.rowCount === 1;
   };
 
-  const claimOnce = async ({ worker, leaseMs, now }: { worker: string; leaseMs: number; now: number }) => {
-    const { rows } = await executor.query(
+  const claimOnce = async (db: PgQueryable, { worker, leaseMs, now }: { worker: string; leaseMs: number; now: number }) => {
+    const { rows } = await db.query(
       `WITH candidate AS (
          SELECT j.id FROM ${s}.jobs j
          WHERE j.not_before <= $1
@@ -228,14 +253,24 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
   };
 
   const store: PostgresStore = {
-    schema: s,
+    schema: name,
     schemaVersion,
     checkVersion,
-    using: (client) => postgresStore(client, { schema: s }),
+    using: (client) => postgresStore(client, { schema: name, client: true } as PostgresStoreOptions),
+
+    async bindDeployment(deploymentId) {
+      await ready();
+      await executor.query(`INSERT INTO ${s}.meta (key, value) VALUES ('deployment', $1) ON CONFLICT (key) DO NOTHING`, [
+        deploymentId,
+      ]);
+      const { rows } = await executor.query(`SELECT value FROM ${s}.meta WHERE key = 'deployment'`);
+      const bound = rows[0]?.value as string;
+      if (bound !== deploymentId) throw new StoreDeploymentError(bound, deploymentId);
+    },
 
     async migrate() {
       return atomic(async (db) => {
-        await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`@usearete/automations:${s}`]);
+        await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`@usearete/automations:${name}`]);
         await db.query(`CREATE SCHEMA IF NOT EXISTS ${s}`);
         await db.query(
           `CREATE TABLE IF NOT EXISTS ${s}.schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -276,7 +311,9 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
         // unique index refuses the second, which then looks again.
         for (let attempt = 0; attempt < 10; attempt += 1) {
           try {
-            return await claimOnce(input);
+            // In its own transaction (a savepoint inside a caller's), so a lost
+            // race never leaves the caller's transaction aborted.
+            return await atomic((db) => claimOnce(db, input));
           } catch (error) {
             if (code(error) !== UNIQUE_VIOLATION) throw error;
           }
@@ -297,7 +334,7 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
                  attempts = coalesce($8::integer, attempts),
                  outcome = CASE WHEN $9::boolean THEN $10::jsonb ELSE outcome END,
                  data = CASE WHEN $11::jsonb IS NULL THEN data
-                   ELSE jsonb_set(data, '{progress}', jsonb_strip_nulls(coalesce(data->'progress', '{}'::jsonb) || $11::jsonb)) END
+                   ELSE jsonb_set(data, '{progress}', (coalesce(data->'progress', '{}'::jsonb) || $11::jsonb) - $12::text[]) END
                WHERE id = $1 AND state = $2 AND lease_worker = $3`,
               [
                 id,
@@ -310,12 +347,17 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
                 input.attempts ?? null,
                 input.outcome !== undefined,
                 input.outcome === undefined || input.outcome === null ? null : json(input.outcome),
-                input.progress ? json(input.progress) : null,
+                input.progress ? json(progressPatch(input.progress)) : null,
+                input.progress ? clearedKeys(input.progress) : [],
               ],
             );
             if (result.rowCount !== 1) return false;
             if (input.ledger?.void) {
-              await db.query(`UPDATE ${s}.ledger SET voided_at = $2 WHERE job_id = $1 AND voided_at IS NULL`, [id, input.now]);
+              await db.query(
+                `UPDATE ${s}.ledger SET voided_at = $2
+                 WHERE job_id = $1 AND voided_at IS NULL AND NOT (asset = ANY ($3::text[]))`,
+                [id, input.now, [...(input.ledger.keepAssets ?? [])]],
+              );
             }
             for (const entry of input.ledger?.record ?? []) {
               await db.query(
@@ -503,21 +545,21 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
             let row: any;
             if (expectedVersion === null) {
               const inserted = await db.query(
-                `INSERT INTO ${s}.source_state (source, key, hash, value, generation, pending, version, updated_at)
-                 VALUES ($1, $2, $3, $4::jsonb, 1, $5::jsonb, 1, $6)
+                `INSERT INTO ${s}.source_state (source, key, hash, value, generation, pending, observed, version, updated_at)
+                 VALUES ($1, $2, $3, $4::jsonb, 1, $5::jsonb, $7, 1, $6)
                  ON CONFLICT (source, key) DO NOTHING
                  RETURNING *`,
-                [source, key, next.hash, json(next.value), next.pending ? json(next.pending) : null, now],
+                [source, key, next.hash, json(next.value), next.pending ? json(next.pending) : null, now, next.observed ?? null],
               );
               row = inserted.rows[0];
             } else {
               const updated = await db.query(
                 `UPDATE ${s}.source_state SET
                    generation = generation + CASE WHEN hash = $3 THEN 0 ELSE 1 END,
-                   hash = $3, value = $4::jsonb, pending = $5::jsonb, version = version + 1, updated_at = $6
+                   hash = $3, value = $4::jsonb, pending = $5::jsonb, observed = $8, version = version + 1, updated_at = $6
                  WHERE source = $1 AND key = $2 AND version = $7
                  RETURNING *`,
-                [source, key, next.hash, json(next.value), next.pending ? json(next.pending) : null, now, expectedVersion],
+                [source, key, next.hash, json(next.value), next.pending ? json(next.pending) : null, now, expectedVersion, next.observed ?? null],
               );
               row = updated.rows[0];
             }
@@ -527,7 +569,7 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
               await acceptIn(
                 db,
                 {
-                  id: `view:${source}:${key}:${state.generation}`,
+                  id: `view:${encodeURIComponent(source)}:${encodeURIComponent(key)}:${state.generation}`,
                   name: deliver.name,
                   source: 'view',
                   payload: deliver.payload,

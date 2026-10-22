@@ -78,6 +78,8 @@ export interface SourceState {
   readonly generation: number;
   /** A new value waiting out `stableFor`, if any. */
   readonly pending: { readonly hash: string; readonly value: unknown; readonly since: number } | null;
+  /** The newest observation order written (a decimal integer), or `null`. */
+  readonly observed: string | null;
   /** Increments with every write; compare-and-set reads it. */
   readonly version: number;
   readonly updatedAt: number;
@@ -88,10 +90,11 @@ export interface SourceAdvance {
   readonly key: string;
   /** The version read; `null` when there was no state yet. The write fails if it moved. */
   readonly expectedVersion: number | null;
-  readonly next: Pick<SourceState, 'hash' | 'value' | 'pending'>;
+  readonly next: Pick<SourceState, 'hash' | 'value' | 'pending'> & { readonly observed?: string | null };
   /**
    * Accept a delivery in the same atomic step, with id
-   * `view:${source}:${key}:${generation}` (the generation after the write).
+   * `view:${encodeURIComponent(source)}:${encodeURIComponent(key)}:${generation}`
+   * (the generation after the write).
    */
   readonly deliver?: { readonly name: string; readonly payload: unknown };
   readonly now: number;
@@ -127,11 +130,13 @@ export interface TransitionInput {
   readonly attempts?: number;
   /**
    * Ledger changes made in the same atomic step as the transition:
-   * `record` adds entries for this job, `void` voids every entry of it.
+   * `record` adds entries for this job, `void` voids its entries except
+   * those for `keepAssets`.
    */
   readonly ledger?: {
     readonly record?: readonly Omit<LedgerEntry, 'jobId' | 'recordedAt' | 'voidedAt'>[];
     readonly void?: boolean;
+    readonly keepAssets?: readonly string[];
   };
 }
 
@@ -152,10 +157,17 @@ export interface TransitionInput {
  * these; a custom store must pass it.
  */
 export interface AutomationStore {
+  /**
+   * Tie the store to one deployment. The first call records it; a call for
+   * another deployment throws `StoreDeploymentError`. Use a separate store
+   * (for Postgres, a separate schema) per deployment.
+   */
+  bindDeployment(deploymentId: string): Promise<void>;
   readonly deliveries: {
     /**
      * Record the delivery and queue its delivery job, atomically. `false`
-     * when a delivery with this id was already accepted.
+     * when a delivery with this id was already accepted, or its job still
+     * exists after the delivery id was pruned.
      */
     accept(delivery: Delivery, now: number): Promise<boolean>;
     /** Forget accepted delivery ids older than `before`; returns how many. */
@@ -230,3 +242,10 @@ export interface AutomationStore {
 }
 
 export type { DeliveryJob, StepJob };
+
+export class StoreDeploymentError extends Error {
+  constructor(bound: string, requested: string) {
+    super(`this store belongs to deployment ${bound}, not ${requested}; use one store per deployment`);
+    this.name = 'StoreDeploymentError';
+  }
+}

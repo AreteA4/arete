@@ -55,8 +55,8 @@ describe('the consent message', () => {
         `Per run: 50000000 base units of ${USDC}`,
         'Per run: 10000 lamports of SOL',
         'Per 30d: 25000 lamports of SOL',
-        'Setting amount: "50000000"',
-        'Setting weekday: "fri"',
+        'Setting "amount": "50000000"',
+        'Setting "weekday": "fri"',
         'Expires At: 2027-01-01T00:00:00.000Z',
         '',
         'Nothing else may leave your wallet through these steps. You can revoke this at any time without signing.',
@@ -80,6 +80,20 @@ describe('the consent message', () => {
     expect(consentMessage('app.example', a, '3yZe7d7bqA1kxH3cMSGvJv', 0)).toBe(
       consentMessage('app.example', b, '3yZe7d7bqA1kxH3cMSGvJv', 0),
     );
+  });
+
+  it('cannot be made to say the same thing for different settings', () => {
+    const message = (params: Record<string, unknown>) =>
+      consentMessage('app.example', normalizeConsent(fields({ params })), '3yZe7d7bqA1kxH3cMSGvJv', 0);
+    expect(message({ a: 1, b: 2 })).not.toBe(message({ 'a: 1\nSetting b': 2 }));
+    expect(message({ 'a: 1\nSetting b': 2 })).toContain('Setting "a: 1\\nSetting b": 2');
+  });
+
+  it('keeps a snapshot of the settings, not the caller objects', () => {
+    const params = { schedule: { weekday: 'fri' } };
+    const normalized = normalizeConsent(fields({ params }));
+    params.schedule.weekday = 'sat';
+    expect(normalized.params).toEqual({ schedule: { weekday: 'fri' } });
   });
 
   it('says so when nothing may leave the wallet', () => {
@@ -178,6 +192,20 @@ describe('granting consent', () => {
     await expect(
       h.automations.consent.grant({ ...past, nonce: old.nonce, issuedAt: old.issuedAt, signature: ed25519.sign(old.bytes, ALICE_SEED) }),
     ).rejects.toMatchObject({ code: 'expired' });
+  });
+
+  it('still reports a stored grant when the signer cannot report its delegation', async () => {
+    const h = consentHarness({
+      signer: {
+        ...keypairSigner(ALICE_SEED),
+        delegationStatus: async () => {
+          throw new Error('provider unavailable');
+        },
+      },
+    });
+    const { result } = await signAndGrant(h);
+    expect(result.warnings).toEqual(['the keypair signer could not report its delegation: provider unavailable']);
+    expect(await h.automations.consent.list({ wallet: ALICE })).toHaveLength(1);
   });
 
   it('needs a domain and the right deployment', async () => {
@@ -306,6 +334,36 @@ describe('consent at run time', () => {
     await h.automations.dispatch('deposit', {}, { id: 'd' });
     await h.automations.drain();
     expect(h.outcomes.map((outcome) => outcome.code)).toEqual(['expired', 'completed', 'consent_window', 'completed']);
+  });
+
+  it('keeps the fee of a transaction that failed on chain in the window', async () => {
+    const h = harness({ script: () => ['submitting', 'chain_failed'] }, { consent: { domain: 'app.example' } });
+    await h.store.consent.put(
+      storedGrant(ALICE, h.clock.now(), {
+        limits: { perExecution: { [SOL]: '5000' }, perWindow: { [SOL]: { amount: '10000', windowMs: 86_400_000 } } },
+      }),
+    );
+    onDeposit(h);
+    for (const id of ['a', 'b', 'c']) {
+      await h.automations.dispatch('deposit', { wallet: ALICE }, { id });
+      await h.automations.drain();
+    }
+    expect(h.outcomes.map((outcome) => outcome.code)).toEqual(['chain_failed', 'chain_failed', 'consent_window']);
+  });
+
+  it('gives a handler the effective grant per wallet for an instance', async () => {
+    const h = consentHarness();
+    await h.store.consent.put(storedGrant(ALICE, h.clock.now(), { params: { amount: 'every instance' } }));
+    await h.store.consent.put(storedGrant(ALICE, h.clock.now(), { instanceId: 'inst-1', params: { amount: 'this instance' } }));
+    await h.store.consent.put(storedGrant(BOB, h.clock.now(), { params: { amount: 'bob' } }));
+    let seen: unknown;
+    h.automations.on('look', async (_payload, ctx) => {
+      seen = (await ctx.consents.list({ step: 'deposit', instanceId: 'inst-1' })).map((grant) => [grant.wallet, grant.params.amount]).sort();
+      return [];
+    });
+    await h.automations.dispatch('look', {}, { id: 'l' });
+    await h.automations.drain();
+    expect(seen).toEqual([[ALICE, 'this instance'], [BOB, 'bob']].sort());
   });
 
   it('gives handlers the consenting wallets and their settings', async () => {

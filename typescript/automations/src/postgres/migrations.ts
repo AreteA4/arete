@@ -7,7 +7,7 @@
 export interface Migration {
   readonly version: number;
   readonly name: string;
-  /** The SQL, for the given schema. */
+  /** The SQL, for the given schema (already quoted). */
   sql(schema: string): string;
 }
 
@@ -18,6 +18,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 1,
     name: 'initial',
     sql: (s) => `
+CREATE TABLE ${s}.meta (
+  key text PRIMARY KEY,
+  value text NOT NULL
+);
+
 CREATE TABLE ${s}.deliveries (
   id text PRIMARY KEY,
   accepted_at bigint NOT NULL
@@ -96,6 +101,7 @@ CREATE TABLE ${s}.source_state (
   value jsonb,
   generation integer NOT NULL,
   pending jsonb,
+  observed text,
   version integer NOT NULL,
   updated_at bigint NOT NULL,
   PRIMARY KEY (source, key)
@@ -119,12 +125,17 @@ CREATE TABLE ${s}.source_leases (
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
 export const DEFAULT_SCHEMA = 'arete_automation';
 
-/** A schema name used unquoted in SQL: lower case, digits and underscores. */
+/** A schema name: lower case letters, digits and underscores. */
 export function validSchema(schema: string): string {
   if (!/^[a-z_][a-z0-9_]{0,62}$/.test(schema)) {
     throw new TypeError(`'${schema}' is not a valid schema name (lower case letters, digits and underscores)`);
   }
   return schema;
+}
+
+/** A valid name as a quoted identifier, so reserved words (`user`, `select`) work too. */
+export function quoted(name: string): string {
+  return `"${name}"`;
 }
 
 /**
@@ -133,7 +144,7 @@ export function validSchema(schema: string): string {
  * schema if needed and records its version, as `migrate()` does.
  */
 export function migrationFiles(schema: string = DEFAULT_SCHEMA): Array<{ name: string; sql: string }> {
-  const s = validSchema(schema);
+  const s = quoted(validSchema(schema));
   return MIGRATIONS.map((migration) => ({
     name: `${String(migration.version).padStart(4, '0')}_${migration.name}.sql`,
     sql: [
@@ -152,8 +163,9 @@ export function migrationFiles(schema: string = DEFAULT_SCHEMA): Array<{ name: s
  * that owns the schema, after migrating.
  */
 export function runtimeRoleGrants(role: string, schema: string = DEFAULT_SCHEMA): string {
-  const s = validSchema(schema);
+  const s = quoted(validSchema(schema));
   if (!/^[a-z_][a-z0-9_]{0,62}$/.test(role)) throw new TypeError(`'${role}' is not a valid role name`);
+  role = quoted(role);
   return [
     `GRANT USAGE ON SCHEMA ${s} TO ${role};`,
     `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${s} TO ${role};`,
