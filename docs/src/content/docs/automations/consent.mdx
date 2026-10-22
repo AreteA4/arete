@@ -89,8 +89,9 @@ signing. A step over a limit ends `refused`, with a reason naming the limit.
 
 Spending is recorded the moment a step is signed, and only one step per
 wallet runs at a time, so even many workers cannot overspend a window. If a
-transaction never lands, its spending is released; if it fails on chain, only
-the fee it was charged still counts.
+transaction never lands, its spending is released. If it fails on chain, only
+the fee it was charged still counts when the RPC can return that fee; when it
+cannot, the transaction's full estimated SOL outflow stays counted.
 
 ## Revoking
 
