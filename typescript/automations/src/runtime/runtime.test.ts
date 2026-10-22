@@ -295,7 +295,10 @@ describe('the step pipeline', () => {
     // What a signer bundled in another entry point throws: same brand, different class.
     class ForeignRefusal extends Error {
       readonly rule = 'provider_policy' as const;
-      readonly [Symbol.for('@usearete/automations/SignerRefusal')] = true;
+      constructor(message: string) {
+        super(message);
+        Object.assign(this, { [Symbol.for('@usearete/automations/SignerRefusal')]: true });
+      }
     }
     const declining: ProtocolSigner = {
       ...walletsSigner(),
