@@ -178,6 +178,8 @@ await store.migrate();                        // once, from a deploy step, with 
   database is behind refuses to run (`SchemaVersionError`).
 - Use two roles: one that migrates, and a runtime role limited to rows.
   `npx arete-automations grants --role app_runtime` prints its grants.
+- A `pg.Pool` is detected; for another pool adapter pass
+  `postgresStore(pool, { executor: 'pool' })`.
 - Pass a client instead of a pool to write inside your own transaction, for
   example a consent grant with the user record:
   `store.using(client).consent.put(grant)`.

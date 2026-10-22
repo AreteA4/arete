@@ -157,6 +157,16 @@ suite('postgresStore: transactions and concurrency', () => {
     expect((await store.jobs.get('d'))?.state).toBe('queued');
   });
 
+  it("runs a pool adapter without counters in pool mode when asked", async () => {
+    // Implements PgPoolLike, but has no totalCount.
+    const adapter = { query: pool.query.bind(pool), connect: () => pool.connect() };
+    const store = postgresStore(adapter, { schema: freshSchema(), executor: 'pool' });
+    await store.migrate();
+    expect(await store.deliveries.accept({ id: 'd', name: 'n', source: 'dispatch', payload: {}, receivedAt: 0 }, 0)).toBe(true);
+    expect((await store.jobs.claimNext({ worker: 'w', leaseMs: 1000, now: 1 }))?.id).toBe('d');
+    expect(() => postgresStore({ query: pool.query.bind(pool) }, { executor: 'pool' })).toThrow('connect()');
+  });
+
   it('queues concurrent operations on one client', async () => {
     const store = await migratedStore();
     const client = await pool.connect();
