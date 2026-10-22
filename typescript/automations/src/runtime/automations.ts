@@ -10,6 +10,7 @@ import type {
   ProtocolStepAvailability,
   ProtocolTransactionFormat,
   ProtocolTypeMap,
+  RichUpdate,
 } from '@usearete/sdk';
 
 import { ed25519 } from '@noble/curves/ed25519';
@@ -974,24 +975,51 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
         }
       }
     };
-    const initial = await within(attempt, source.view.get());
-    if (initial === ENDED || !attempt.active) return;
-    rows = initial;
-    for (const [key, value, observed] of source.signals(initial)) {
+    // Open the watcher first: its subscription starts now and queues events.
+    // get() then waits for that same subscription's snapshot, so what is
+    // queued when it resolves is the watcher's own snapshot (and any change
+    // before it), with keys. That is the baseline; an aggregate is never
+    // evaluated on a half-loaded view.
+    const iterator = source.view.watchRich({ withSnapshot: true })[Symbol.asyncIterator]();
+    attempt.iterator = iterator;
+    const ready = await within(attempt, source.view.get());
+    if (ready === ENDED || !attempt.active) return;
+    const apply = (update: RichUpdate<unknown>) => {
+      if (update.type === 'created') rowsByKey.set(update.key, update.data);
+      else if (update.type === 'updated') rowsByKey.set(update.key, update.after);
+      else rowsByKey.delete(update.key);
+    };
+    const QUEUE_EMPTY = Symbol('queue empty');
+    let carried: Promise<IteratorResult<RichUpdate<unknown>>> | null = null;
+    for (;;) {
+      const next = iterator.next();
+      // A queued event resolves before a timer can fire; an empty queue leaves
+      // `next` pending, to be carried into the live loop.
+      const first = await within(
+        attempt,
+        Promise.race([next, new Promise<typeof QUEUE_EMPTY>((resolve) => setTimeout(() => resolve(QUEUE_EMPTY), 0))]),
+      );
+      if (first === ENDED || !attempt.active) return;
+      if (first === QUEUE_EMPTY) {
+        carried = next;
+        break;
+      }
+      if (first.done) return;
+      apply(first.value);
+    }
+    rows = [...rowsByKey.values()];
+    for (const [key, value, observed] of source.signals(rows)) {
       if (!attempt.active) return;
       if (source.rowSignal) latest.set(key, [value, observed]);
       await evaluate(key, value, observed);
     }
-    if (!attempt.active) return;
-    const iterator = source.view.watchRich({ withSnapshot: true })[Symbol.asyncIterator]();
-    attempt.iterator = iterator;
-    // The stream replays the snapshot first; an aggregate waits for it to
-    // complete so it never evaluates a half-loaded view.
-    let replaying = !source.rowSignal;
     while (attempt.active) {
-      const next = await within(attempt, iterator.next());
+      const next = await within(attempt, carried ?? iterator.next());
+      carried = null;
       if (next === ENDED || next.done || !attempt.active) return;
       const update = next.value;
+      apply(update);
+      rows = [...rowsByKey.values()];
       if (source.rowSignal) {
         if (update.type !== 'created' && update.type !== 'updated') continue;
         const signal = source.rowSignal(update.type === 'created' ? update.data : update.after);
@@ -1000,14 +1028,6 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
         await evaluate(signal[0], signal[1], signal[2]);
         continue;
       }
-      if (update.type === 'created') rowsByKey.set(update.key, update.data);
-      else if (update.type === 'updated') rowsByKey.set(update.key, update.after);
-      else rowsByKey.delete(update.key);
-      if (replaying) {
-        if (update.type === 'created' && rowsByKey.size < initial.length) continue;
-        replaying = false;
-      }
-      rows = [...rowsByKey.values()];
       for (const [key, value, observed] of source.signals(rows)) {
         if (!attempt.active) return;
         await evaluate(key, value, observed);
