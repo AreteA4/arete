@@ -227,8 +227,12 @@ export interface AutomationStore {
      * state, or `null` when another writer got there first.
      */
     advance(input: SourceAdvance): Promise<SourceState | null>;
-    /** The last cursor an append-view source recorded. */
+    /** The furthest cursor an append-view source recorded. */
     cursor(source: string): Promise<string | null>;
+    /**
+     * Record a cursor if it is after the stored one (see `cursorAfter`), so a
+     * slow replica can never move a source back. Atomic.
+     */
     putCursor(source: string, cursor: string, now: number): Promise<void>;
     /** Hold a source exclusively until `until`. `false` while another holder's lease runs. */
     acquireLease(source: string, holder: string, until: number, now: number): Promise<boolean>;
@@ -242,6 +246,21 @@ export interface AutomationStore {
 }
 
 export type { DeliveryJob, StepJob };
+
+/** An append-view cursor `{epoch}:{offset}` as numbers, or `null` when it is not one. */
+export function parseCursor(cursor: string): [bigint, bigint] | null {
+  const match = /^(\d+):(\d+)$/.exec(cursor);
+  return match ? [BigInt(match[1]!), BigInt(match[2]!)] : null;
+}
+
+/** Whether `next` is after `current` (any cursor is after an unreadable one). */
+export function cursorAfter(next: string, current: string | null): boolean {
+  const order = parseCursor(next);
+  if (!order) throw new TypeError(`'${next}' is not an {epoch}:{offset} cursor`);
+  const stored = current === null ? null : parseCursor(current);
+  if (!stored) return true;
+  return order[0] > stored[0] || (order[0] === stored[0] && order[1] > stored[1]);
+}
 
 export class StoreDeploymentError extends Error {
   constructor(bound: string, requested: string) {

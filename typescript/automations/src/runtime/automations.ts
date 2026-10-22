@@ -704,9 +704,15 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
             case 'completed':
               return finish(job, 'completed', { code: 'completed' }, { ...job.progress, signatures });
             case 'chain_failed': {
-              // The transfers rolled back but the fees were charged: the window
-              // keeps exactly the fees, or all the SOL when they cannot be read.
-              const fees = await chargedFees(signatures);
+              // If any transaction of the intent landed successfully, its
+              // outflows really left the wallet, and the ledger cannot tell
+              // them apart from the failed ones: keep every entry. Otherwise
+              // the transfers rolled back and only the fees were charged: keep
+              // exactly the fees, or all the SOL when they cannot be read.
+              const landedOne = state.transactions.some(
+                (transaction) => transaction.signature !== null && !transaction.error,
+              );
+              const fees = landedOne ? null : await chargedFees(signatures);
               return finish(
                 job,
                 'chain_failed',
@@ -715,7 +721,9 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
                   detail: state.transactions.filter((transaction) => transaction.error).map(({ index, error }) => ({ index, error })),
                 },
                 { ...job.progress, signatures },
-                fees === null
+                landedOne
+                  ? {}
+                  : fees === null
                   ? { void: true, keepAssets: [SOL] }
                   : {
                       void: true,
@@ -975,38 +983,68 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
         }
       }
     };
-    // Open the watcher first: its subscription starts now and queues events.
-    // get() then waits for that same subscription's snapshot, so what is
-    // queued when it resolves is the watcher's own snapshot (and any change
-    // before it), with keys. That is the baseline; an aggregate is never
-    // evaluated on a half-loaded view.
+    // Read the stream into a local, unbounded queue from the moment it opens:
+    // the SDK's own buffer is bounded and drops list updates silently.
     const iterator = source.view.watchRich({ withSnapshot: true })[Symbol.asyncIterator]();
     attempt.iterator = iterator;
-    const ready = await within(attempt, source.view.get());
-    if (ready === ENDED || !attempt.active) return;
-    const apply = (update: RichUpdate<unknown>) => {
-      if (update.type === 'created') rowsByKey.set(update.key, update.data);
-      else if (update.type === 'updated') rowsByKey.set(update.key, update.after);
-      else rowsByKey.delete(update.key);
-    };
-    const QUEUE_EMPTY = Symbol('queue empty');
-    let carried: Promise<IteratorResult<RichUpdate<unknown>>> | null = null;
-    for (;;) {
-      const next = iterator.next();
-      // A queued event resolves before a timer can fire; an empty queue leaves
-      // `next` pending, to be carried into the live loop.
-      const first = await within(
-        attempt,
-        Promise.race([next, new Promise<typeof QUEUE_EMPTY>((resolve) => setTimeout(() => resolve(QUEUE_EMPTY), 0))]),
-      );
-      if (first === ENDED || !attempt.active) return;
-      if (first === QUEUE_EMPTY) {
-        carried = next;
-        break;
+    const queued: RichUpdate<unknown>[] = [];
+    const waiter: { wake: (() => void) | null } = { wake: null };
+    let finished = false;
+    let failure: unknown = null;
+    void (async () => {
+      try {
+        for (;;) {
+          const next = await within(attempt, iterator.next());
+          if (next === ENDED || next.done) break;
+          queued.push(next.value);
+          waiter.wake?.();
+        }
+      } catch (error) {
+        failure = error;
+      } finally {
+        finished = true;
+        waiter.wake?.();
       }
-      if (first.done) return;
-      apply(first.value);
-    }
+    })();
+    const take = async (): Promise<RichUpdate<unknown> | null> => {
+      while (queued.length === 0 && !finished) {
+        await new Promise<void>((resolve) => {
+          waiter.wake = resolve;
+        });
+        waiter.wake = null;
+      }
+      const update = queued.shift();
+      if (update !== undefined) return update;
+      if (failure !== null) throw failure;
+      return null;
+    };
+    // Seed from the complete current rows: a query that is already open
+    // replays nothing on a new stream, so the stream alone cannot be the
+    // baseline.
+    const snapshot = await within(attempt, source.view.get());
+    if (snapshot === ENDED || !attempt.active) return;
+    const rowKeys = new Map<string, string>();
+    for (const row of snapshot) rowsByKey.set(source.rowKey(row), row);
+    /** Apply an update; the row it leaves, or `undefined` for a removal. */
+    const apply = (update: RichUpdate<unknown>): unknown => {
+      if (update.type === 'created' || update.type === 'updated') {
+        const row = update.type === 'created' ? update.data : update.after;
+        const key = source.rowKey(row);
+        rowKeys.set(update.key, key);
+        rowsByKey.set(key, row);
+        return row;
+      }
+      const key = update.lastKnown !== undefined ? source.rowKey(update.lastKnown) : rowKeys.get(update.key);
+      if (key !== undefined) rowsByKey.delete(key);
+      rowKeys.delete(update.key);
+      return undefined;
+    };
+    // Let the reader drain what the stream already delivered (buffered
+    // events resolve as microtasks, before this timer), then apply it in order
+    // without evaluating: it is already reflected in the snapshot, and
+    // replaying it leaves every row at its latest value.
+    if ((await within(attempt, new Promise<void>((resolve) => setTimeout(resolve, 0)))) === ENDED) return;
+    while (queued.length > 0) apply(queued.shift()!);
     rows = [...rowsByKey.values()];
     for (const [key, value, observed] of source.signals(rows)) {
       if (!attempt.active) return;
@@ -1014,15 +1052,13 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       await evaluate(key, value, observed);
     }
     while (attempt.active) {
-      const next = await within(attempt, carried ?? iterator.next());
-      carried = null;
-      if (next === ENDED || next.done || !attempt.active) return;
-      const update = next.value;
-      apply(update);
+      const update = await take();
+      if (update === null || !attempt.active) return;
+      const row = apply(update);
       rows = [...rowsByKey.values()];
       if (source.rowSignal) {
-        if (update.type !== 'created' && update.type !== 'updated') continue;
-        const signal = source.rowSignal(update.type === 'created' ? update.data : update.after);
+        if (row === undefined) continue;
+        const signal = source.rowSignal(row);
         if (!signal) continue;
         latest.set(signal[0], [signal[1], signal[2]]);
         await evaluate(signal[0], signal[1], signal[2]);

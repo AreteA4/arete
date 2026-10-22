@@ -36,8 +36,8 @@ import type { AutomationStore } from '../store/store';
 
 /** The parts of a list view a source reads. A `TypedListView` is one. */
 export interface ListViewLike<T> {
+  /** The complete current rows (the source seeds from these). */
   get(): Promise<T[]>;
-  getSync(): T[] | undefined;
   watchRich(options?: { withSnapshot?: boolean }): AsyncIterable<RichUpdate<T>>;
 }
 
@@ -69,6 +69,8 @@ function observedOrder(value: Observed): bigint | null {
 
 /** One signal for the whole view (for example: which market pays best). */
 export interface AggregateSourceOptions<T, V> extends SourceOptionsBase<V> {
+  /** A row's identity in the view (its id), so updates and removals find the row. */
+  readonly key: (row: T) => string;
   /** The signal, as JSON. */
   readonly derive: (rows: readonly T[]) => V;
   /** How recent the rows are (a slot, a sequence); an older observation is ignored. */
@@ -90,6 +92,8 @@ export interface ListSource<T = any, V = any> {
   readonly kind: 'list';
   readonly name: string;
   readonly view: ListViewLike<T>;
+  /** A row's identity in the view. */
+  readonly rowKey: (row: T) => string;
   readonly stableForMs: number;
   readonly changed: (previous: V | undefined, next: V) => boolean;
   /** The keys, values and observation orders the rows give. */
@@ -139,10 +143,11 @@ function common<V>(options: SourceOptionsBase<V>) {
 
 /** A source with one signal for the whole list view, under the key `all`. */
 export function fromView<T, V>(view: ListViewLike<T>, options: AggregateSourceOptions<T, V>): ListSource<T, V> {
-  const { derive, observedAt } = options;
+  const { derive, observedAt, key } = options;
   return {
     kind: 'list',
     view,
+    rowKey: key,
     ...common(options),
     signals: (rows) => [[AGGREGATE_KEY, derive(rows), observedOrder(observedAt?.(rows))]],
     rowSignal: null,
@@ -157,6 +162,7 @@ export function fromViewRows<T, V>(view: ListViewLike<T>, options: RowSourceOpti
   return {
     kind: 'list',
     view,
+    rowKey: key,
     ...common(options),
     signals: (rows) => rows.map(rowSignal).filter((entry): entry is [string, V, bigint | null] => entry !== undefined),
     rowSignal,

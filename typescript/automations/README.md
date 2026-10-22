@@ -134,6 +134,7 @@ import { fromView, fromViewRows } from '@usearete/automations';
 
 const bestRate = fromView(client.views['jupiter-lend-rates'].markets.list, {
   name: 'bestRateChanged',
+  key: (market) => market.id,                                    // a row's identity in the view
   derive: (markets) => pickBest(markets, { minEdgeBps: 25 }),   // hysteresis lives in derive
   changed: (previous, next) => previous !== undefined && previous !== next,
   stableFor: '2m',                                               // a new value must hold 2 minutes
@@ -148,7 +149,7 @@ export async function GET() { await automations.poll(bestRate); } // serverless 
 `fromViewRows(view, { name, key, derive, filter })` keeps one signal per
 row, for example "this wallet's position crossed below a health of 1.15".
 `fromAppendView(view, { name })` dispatches one trigger per appended row and
-resumes from its stored cursor.
+resumes from its stored cursor, which only ever moves forward.
 
 Exactly once comes from the store: each key's last stable value is
 advanced by compare-and-set and the delivery is accepted in the same step.

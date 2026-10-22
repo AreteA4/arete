@@ -87,6 +87,7 @@ export interface IntentRecord {
   script: ProtocolIntentStatus[];
   reads: number;
   submitted: string[] | null;
+  partial: boolean;
 }
 
 export interface PrepareCall {
@@ -98,6 +99,8 @@ export interface PrepareCall {
 export interface FakeProtocolOptions {
   /** States after submit, per prepare generation (by idempotency key suffix). */
   script?: (key: string) => ProtocolIntentStatus[];
+  /** Report a chain failure as partial: an earlier transaction of the intent landed successfully. */
+  partialFailure?: (key: string) => boolean;
   /** Step availability per (step, wallet). Defaults to allowed. */
   allowed?: (step: string, wallet: string) => ProtocolStepAvailability;
   /** Runs inside prepare, before it answers. */
@@ -154,6 +157,7 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
         script: options.script?.(key) ?? ['submitting', 'completed'],
         reads: 0,
         submitted: null,
+        partial: options.partialFailure?.(key) ?? false,
       };
       intents.set(executionId, record);
       byKey.set(key, executionId);
@@ -174,7 +178,13 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
     return {
       executionId: record.intent.executionId,
       state,
-      transactions: [{ index: 0, signature, state, ...(state === 'chain_failed' ? { error: 'custom program error: 0x1' } : {}) }],
+      transactions:
+        state === 'chain_failed' && record.partial
+          ? [
+              { index: 0, signature, state: 'confirmed' },
+              { index: 1, signature: '2wPartial', state, error: 'custom program error: 0x1' },
+            ]
+          : [{ index: 0, signature, state, ...(state === 'chain_failed' ? { error: 'custom program error: 0x1' } : {}) }],
     };
   };
 

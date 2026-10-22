@@ -45,6 +45,8 @@ export class FakeListView<T> implements ListViewLike<T> {
   readonly rows = new Map<string, T>();
   private feeds = new Set<Feed<RichUpdate<T>>>();
   subscriptions = 0;
+  /** Whether a new stream replays the current rows (an already-open query does not). */
+  replay = true;
 
   constructor(private readonly keyOf: (row: T) => string) {}
 
@@ -64,7 +66,7 @@ export class FakeListView<T> implements ListViewLike<T> {
     this.subscriptions += 1;
     const feed: Feed<RichUpdate<T>> = new Feed(() => this.feeds.delete(feed));
     this.feeds.add(feed);
-    for (const [key, data] of this.rows) feed.push({ type: 'created', key, data });
+    if (this.replay) for (const [key, data] of this.rows) feed.push({ type: 'created', key, data });
     return { [Symbol.asyncIterator]: () => feed };
   }
 
