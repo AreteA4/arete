@@ -115,7 +115,8 @@ Every step ends in one of these states, reported to `onOutcome`:
 | `failed`       | It kept failing before signing (for example the protocol API was unreachable)       |
 
 `onRefused` and `onRejected` receive just those outcomes. Each outcome
-carries the step, wallet, instance, a `code` and a readable `reason`.
+carries the step, wallet, instance and a `code`. A readable `reason` is
+optional; fall back to `code` when it is missing.
 
 ## Crashes and retries
 
