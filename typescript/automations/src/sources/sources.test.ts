@@ -57,6 +57,7 @@ const markets = () => new FakeListView<Market>((market) => market.id);
 const rateSource = (view: FakeListView<Market>, extra: { stableFor?: '2m' } = {}) =>
   fromView(view, {
     name: 'bestRateChanged',
+    key: (market) => market.id,
     derive: bestMarket,
     changed: (previous, next) => previous !== undefined && previous !== next,
     ...extra,
@@ -237,6 +238,7 @@ describe('robust list-view sources', () => {
     const view = new FakeListView<Market & { slot: number }>((market) => market.id);
     const source = fromView(view, {
       name: 'best',
+      key: (market) => market.id,
       derive: bestMarket,
       observedAt: (rows) => Math.max(...rows.map((row) => row.slot)),
       changed: (previous, next) => previous !== undefined && previous !== next,
@@ -280,7 +282,7 @@ describe('robust list-view sources', () => {
     expect((await deliveries(store)).map((delivery) => (delivery.payload as ViewTrigger).value)).toEqual(['b', 'a']);
   });
 
-  it("takes the baseline from the watcher's own snapshot, not an earlier read", async () => {
+  it('applies what the stream delivered during the first read before evaluating', async () => {
     const { store, make } = setup();
     const view = markets();
     view.set({ id: 'a', apyBps: 500 }, { id: 'b', apyBps: 600 });
@@ -291,6 +293,24 @@ describe('robust list-view sources', () => {
     await handle.stop();
     expect(await deliveries(store)).toEqual([]);
     expect((await store.sources.get('bestRateChanged', 'all'))?.value).toBe('b');
+  });
+
+  it('seeds from the complete rows when the query is already open', async () => {
+    const { store, make } = setup();
+    const view = markets();
+    view.set({ id: 'a', apyBps: 500 }, { id: 'b', apyBps: 600 });
+    // An open query replays nothing to a new stream (and a large one would overflow its buffer).
+    view.replay = false;
+    const handle = make('r').source(rateSource(view));
+    await settle();
+    view.set({ id: 'c', apyBps: 100 }); // a newcomer that never leads
+    await settle();
+    view.set({ id: 'a', apyBps: 650 });
+    await settle();
+    await handle.stop();
+    // b led from the start; only a overtaking it is a change.
+    expect((await deliveries(store)).map((delivery) => (delivery.payload as ViewTrigger).value)).toEqual(['a']);
+    expect((await store.sources.get('bestRateChanged', 'all'))?.generation).toBe(2);
   });
 
   it('retries a pending value whose promotion failed', async () => {
