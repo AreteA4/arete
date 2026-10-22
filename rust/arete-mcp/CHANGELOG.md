@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.44.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.43.0...arete-mcp-v0.44.0) (2026-10-22)
+
+
+### Features
+
+* **automations:** signing policy in TypeScript with shared vectors ([83497fb](https://github.com/AreteA4/arete/commit/83497fb68a4b1ed442027d9a330d9b462258d67d))
+* **automations:** signing policy in TypeScript with shared vectors ([37f3919](https://github.com/AreteA4/arete/commit/37f39193f50776e22e82971f7be1ab48b9e86eed))
+* **automations:** target dev environments, then mainnet ([64292e6](https://github.com/AreteA4/arete/commit/64292e62804674b74c42e6fc07ebeab4f255804b))
+* **automations:** target dev environments, then mainnet ([49aa2c5](https://github.com/AreteA4/arete/commit/49aa2c57870db74f86bcd9ac7982a9df62809152))
+
 ## [0.43.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.42.2...arete-mcp-v0.43.0) (2026-10-21)
 
 
