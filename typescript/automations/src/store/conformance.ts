@@ -361,6 +361,35 @@ export function runStoreConformance(
       expect((await store.ledger.list({ wallet: 'alice' }))[0]!.voidedAt).toBe(T0 + 20);
     });
 
+    it('keeps the ledger entries of the assets a void keeps', async () => {
+      const store = await createStore();
+      await seedSteps(store, 'd1', [step('d1', 'alice')]);
+      const job = await store.jobs.claimNext({ worker: 'w1', leaseMs: LEASE, now: T0 });
+      await store.jobs.transition(job!.id, {
+        worker: 'w1',
+        from: 'running',
+        to: 'signed',
+        now: T0,
+        keepLease: { until: T0 + LEASE },
+        ledger: {
+          record: [
+            { wallet: 'alice', deploymentId: 'dep-1', asset: 'SOL', amount: '5000' },
+            { wallet: 'alice', deploymentId: 'dep-1', asset: 'mint', amount: '7' },
+          ],
+        },
+      });
+      await store.jobs.transition(job!.id, {
+        worker: 'w1',
+        from: 'signed',
+        to: 'chain_failed',
+        now: T0 + 1,
+        ledger: { void: true, keepAssets: ['SOL'] },
+      });
+      const spent = (asset: string) => store.ledger.spent({ wallet: 'alice', deploymentId: 'dep-1', asset, since: 0 });
+      expect(await spent('SOL')).toBe(5000n);
+      expect(await spent('mint')).toBe(0n);
+    });
+
     it('belongs to one deployment', async () => {
       const store = await createStore();
       await store.bindDeployment('dep-1');

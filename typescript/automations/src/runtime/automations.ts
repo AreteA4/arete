@@ -19,6 +19,7 @@ import {
   ConsentError,
   consentMessage,
   normalizeConsent,
+  SOL,
   stepOutflows,
 } from '../consent/consent';
 import { decodeBase58, encodeBase58 } from '../policy/encoding';
@@ -419,8 +420,10 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       outcome: JobOutcome,
       progress: StepJob['progress'] | undefined = undefined,
     ) => {
-      // Spending only counts against a window when the intent landed.
+      // Spending counts against a window only when the intent landed. A
+      // transaction that failed on chain still paid its fee, so its SOL stays.
       const landed = state === 'completed';
+      const voiding = state === 'chain_failed' ? { void: true, keepAssets: [SOL] } : { void: true };
       const moved = await store.jobs.transition(job.id, {
         worker,
         from: job.state,
@@ -428,7 +431,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
         now: clock.now(),
         outcome,
         ...(progress ? { progress } : {}),
-        ...(landed ? {} : { ledger: { void: true } }),
+        ...(landed ? {} : { ledger: voiding }),
       });
       if (!moved) throw new LostLease();
       await notify(outcomeOf(progress ? { ...job, progress: { ...job.progress, ...progress } } : job, state, outcome));
@@ -776,9 +779,16 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
               ...(query.step !== undefined ? { step: query.step } : {}),
               now: clock.now(),
             });
-            return query.instanceId === undefined
-              ? grants
-              : grants.filter((grant) => grant.instanceId === null || grant.instanceId === query.instanceId);
+            if (query.instanceId === undefined) return grants;
+            // One effective grant per wallet: the instance's own grant wins over
+            // one for every instance, as consent checks choose at run time.
+            const effective = new Map<string, ConsentGrant>();
+            for (const grant of grants) {
+              if (grant.instanceId !== null && grant.instanceId !== query.instanceId) continue;
+              const current = effective.get(grant.wallet);
+              if (!current || (current.instanceId === null && grant.instanceId !== null)) effective.set(grant.wallet, grant);
+            }
+            return [...effective.values()];
           },
         },
         step(step, request, stepOptions = {}) {
@@ -903,7 +913,14 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       };
       await store.consent.put(grant);
       const warnings: string[] = [];
-      const status = signer.delegationStatus ? await signer.delegationStatus(normalized.wallet) : undefined;
+      let status: Awaited<ReturnType<NonNullable<ProtocolSigner['delegationStatus']>>> | undefined;
+      try {
+        status = signer.delegationStatus ? await signer.delegationStatus(normalized.wallet) : undefined;
+      } catch (error) {
+        // The grant is stored; a provider outage must not report it as failed.
+        warnings.push(`the ${signer.kind} signer could not report its delegation: ${String((error as Error)?.message ?? error)}`);
+        return { grant, warnings };
+      }
       if (!status) {
         warnings.push(`the ${signer.kind} signer cannot report whether a provider policy bounds what it signs`);
       } else {

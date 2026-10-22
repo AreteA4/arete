@@ -96,11 +96,13 @@ export interface TransitionInput {
   readonly attempts?: number;
   /**
    * Ledger changes made in the same atomic step as the transition:
-   * `record` adds entries for this job, `void` voids every entry of it.
+   * `record` adds entries for this job, `void` voids its entries except
+   * those for `keepAssets`.
    */
   readonly ledger?: {
     readonly record?: readonly Omit<LedgerEntry, 'jobId' | 'recordedAt' | 'voidedAt'>[];
     readonly void?: boolean;
+    readonly keepAssets?: readonly string[];
   };
 }
 

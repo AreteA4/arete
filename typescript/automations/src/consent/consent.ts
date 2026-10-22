@@ -133,9 +133,11 @@ export function normalizeConsent(fields: ConsentFields): NormalizedConsent {
       return [asset('limits.perWindow', key), { amount: amountText(`limits.perWindow.${key}.amount`, value.amount), windowMs }];
     }),
   );
-  const params = { ...(fields.params ?? {}) };
+  // A deep snapshot: the grant stores exactly what the message states, even
+  // if the caller changes its objects while the grant is verified.
+  let params: Record<string, unknown>;
   try {
-    canonicalizeJson(params);
+    params = JSON.parse(canonicalizeJson(fields.params ?? {})) as Record<string, unknown>;
   } catch (error) {
     throw new ConsentError('invalid_fields', `params must be JSON: ${(error as Error).message}`);
   }
@@ -175,7 +177,7 @@ function amountLine(key: string, amount: string): string {
  * Steps: <steps, sorted, comma-separated>
  * Per run: <amount> lamports of SOL | <amount> base units of <mint>   (one line per asset, sorted)
  * Per <window>: <amount> ...                                          (one line per asset, sorted)
- * Setting <key>: <RFC 8785 JSON of the value>                         (one line per key, sorted)
+ * Setting <key as a JSON string>: <RFC 8785 JSON of the value>       (one line per key, sorted)
  * Expires At: <ISO 8601 UTC>
  *
  * Nothing else may leave your wallet through these steps. You can revoke this at any time without signing.
@@ -211,7 +213,8 @@ export function consentMessage(domain: string, consent: NormalizedConsent, nonce
     ),
     ...Object.keys(consent.params)
       .sort()
-      .map((key) => `Setting ${key}: ${canonicalizeJson(consent.params[key])}`),
+      // Keys are JSON strings, so no key can end its line and forge another.
+      .map((key) => `Setting ${JSON.stringify(key)}: ${canonicalizeJson(consent.params[key])}`),
     `Expires At: ${new Date(consent.expiresAt).toISOString()}`,
     '',
     'Nothing else may leave your wallet through these steps. You can revoke this at any time without signing.',

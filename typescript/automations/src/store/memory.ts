@@ -140,7 +140,9 @@ export function memoryStore(): AutomationStore {
         jobs.set(id, next);
         if (input.ledger?.void) {
           for (const [index, entry] of ledger.entries()) {
-            if (entry.jobId === id && entry.voidedAt === null) ledger[index] = { ...entry, voidedAt: input.now };
+            if (entry.jobId === id && entry.voidedAt === null && !input.ledger.keepAssets?.includes(entry.asset)) {
+              ledger[index] = { ...entry, voidedAt: input.now };
+            }
           }
         }
         for (const entry of input.ledger?.record ?? []) {
