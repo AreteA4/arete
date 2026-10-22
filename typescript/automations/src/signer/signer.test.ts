@@ -131,6 +131,21 @@ describe('checkSignedTransactions', () => {
     expect(refusal?.reason).toContain("signature 0 of transaction 0, which is not the wallet's");
   });
 
+  it('refuses the same message and signatures under another encoding', async () => {
+    const transactions = [coSigned('v0')];
+    const { intent, transactions: input } = setup('v0', transactions);
+    const [signed] = await keypairSigner(SEED).signTransactions({ wallet: WALLET, intent, transactions: input });
+    // Two signatures, with the count written as a two-byte compact-u16 (0x82 0x00).
+    const bytes = decodeBase64(signed!)!;
+    const reencoded = new Uint8Array(bytes.length + 1);
+    reencoded.set([0x82, 0x00]);
+    reencoded.set(bytes.subarray(1), 2);
+    expect(decodeTransaction(reencoded).signatures).toHaveLength(2);
+    expect(
+      checkSignedTransactions({ wallet: WALLET, intent, prepared: input, signed: [encodeBase64(reencoded)] }),
+    ).toEqual({ rule: 'signer_modified', reason: "the signer changed bytes of transaction 0 outside the wallet's signature" });
+  });
+
   it('refuses a missing, foreign or corrupted wallet signature', async () => {
     const { intent, transactions } = setup('v1');
     const unsigned = [transactions[0]!.transactionBase64];
@@ -163,6 +178,17 @@ describe('checkPreparedAgainstIntent', () => {
     const other = prepared([wire(deposit([{ program: 2, accounts: [], data: [9] }]), 'v1')]);
     expect(checkPreparedAgainstIntent({ wallet: WALLET, format: 'v1', intent, transactions: other })?.rule).toBe(
       'intent_mismatch',
+    );
+  });
+
+  it('refuses legacy bytes for a v0 intent', () => {
+    const legacy = Uint8Array.from(wire(deposit(), 'v0'));
+    // Drop the v0 prefix byte and the trailing lookup-table count: the same message as legacy.
+    const bytes = new Uint8Array([...legacy.subarray(0, 65), ...legacy.subarray(66, legacy.length - 1)]);
+    expect(decodeTransaction(bytes).version).toBeNull();
+    const intent = intentFor(WALLET, 'v0', [bytes]);
+    expect(checkPreparedAgainstIntent({ wallet: WALLET, format: 'v0', intent, transactions: prepared([bytes]) })?.rule).toBe(
+      'transaction_format',
     );
   });
 

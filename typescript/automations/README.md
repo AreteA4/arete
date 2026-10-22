@@ -88,7 +88,8 @@ const policy = definePolicy({
   maxTokenAmounts: { [USDC]: '5000000000' }, // base units; a mint without a cap may not leave
 });
 
-checkTarget(policy, DEPLOYMENT_ID, 'mainnet');           // before preparing; null when allowed
+const target = checkTarget(policy, DEPLOYMENT_ID, 'mainnet');      // before preparing; null when allowed
+if (target) throw new Error(`${target.rule}: ${target.reason}`);
 
 const summary = await summarizePrepared(prepared, wallet, rpcSimulator(RPC_URL));
 const refusal = checkPrepared(policy, { deploymentId: DEPLOYMENT_ID, prepared, summary, simulates: true });

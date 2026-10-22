@@ -78,6 +78,16 @@ describe('rpcSimulator', () => {
     );
   });
 
+  it('gives up on an RPC that does not answer in time', async () => {
+    const hanging = ((_url: string, init: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      })) as unknown as typeof fetch;
+    await expect(rpcSimulator('https://rpc.example', { fetch: hanging, timeoutMs: 20 }).call('getSlot', [])).rejects.toThrow(
+      'did not answer getSlot within 20ms',
+    );
+  });
+
   it('rejects invalid JSON and unreachable endpoints', async () => {
     await expect(
       rpcSimulator('https://rpc.example', { fetch: fakeFetch('<html>') }).call('getSlot', []),
