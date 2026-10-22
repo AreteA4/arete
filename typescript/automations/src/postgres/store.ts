@@ -104,6 +104,48 @@ function progressPatch(progress: object): object {
   return Object.fromEntries(Object.entries(progress).filter(([, value]) => value !== undefined && value !== null));
 }
 
+/**
+ * Operations queued per client. A client runs one statement at a time, but
+ * two operations sharing it would interleave: one's savepoint release would
+ * also release the other's, and a statement could land inside another
+ * operation's savepoint and roll back with it. So operations on one client
+ * run one after another, across every store built over that client.
+ */
+const clientQueues = new WeakMap<object, Promise<void>>();
+
+function onClient<R>(client: object, operation: () => Promise<R>): Promise<R> {
+  const previous = clientQueues.get(client) ?? Promise.resolve();
+  const run = previous.then(operation, operation);
+  clientQueues.set(
+    client,
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return run;
+}
+
+/** `store` with each operation queued on `client`. */
+function queuedOn(client: object, store: PostgresStore): PostgresStore {
+  const wrap = <T extends object>(section: T): T =>
+    Object.fromEntries(
+      Object.entries(section).map(([name, value]) => [
+        name,
+        typeof value === 'function' ? (...args: unknown[]) => onClient(client, () => value(...args)) : value,
+      ]),
+    ) as T;
+  return {
+    ...wrap(store),
+    using: store.using,
+    deliveries: wrap(store.deliveries),
+    jobs: wrap(store.jobs),
+    consent: wrap(store.consent),
+    sources: wrap(store.sources),
+    ledger: wrap(store.ledger),
+  };
+}
+
 const num = (value: unknown): number => Number(value);
 const numOrNull = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value));
 
@@ -152,13 +194,14 @@ function rowToSource(row: any): SourceState {
 
 export function postgresStore(executor: PgQueryable, options: PostgresStoreOptions = {}): PostgresStore {
   const internal = options as InternalOptions;
+  const clientMode = internal.client === true || !isPool(executor);
   const name = validSchema(options.schema ?? DEFAULT_SCHEMA);
   const s = quoted(name);
   let checked: Promise<void> | null = null;
 
   /** Run `fn` atomically: a transaction on a pool, a savepoint on a client. */
   const atomic = async <T>(fn: (db: PgQueryable) => Promise<T>): Promise<T> => {
-    if (!internal.client && isPool(executor)) {
+    if (!clientMode) {
       const client = await executor.connect();
       try {
         await client.query('BEGIN');
@@ -361,7 +404,7 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
               await db.query(
                 `INSERT INTO ${s}.ledger (job_id, wallet, deployment_id, asset, amount, recorded_at)
                  VALUES ($1, $2, $3, $4, $5::numeric, $6)`,
-                [id, entry.wallet, entry.deploymentId, entry.asset, entry.amount, input.now],
+                [id, entry.wallet, entry.deploymentId, entry.asset, entry.amount, entry.recordedAt ?? input.now],
               );
             }
             return true;
@@ -646,5 +689,5 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
       },
     },
   };
-  return store;
+  return clientMode ? queuedOn(executor, store) : store;
 }

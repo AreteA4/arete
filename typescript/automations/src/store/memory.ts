@@ -153,7 +153,7 @@ export function memoryStore(): AutomationStore {
           }
         }
         for (const entry of input.ledger?.record ?? []) {
-          ledger.push({ ...clone(entry), jobId: id, recordedAt: input.now, voidedAt: null });
+          ledger.push({ ...clone(entry), jobId: id, recordedAt: entry.recordedAt ?? input.now, voidedAt: null });
         }
         return true;
       },

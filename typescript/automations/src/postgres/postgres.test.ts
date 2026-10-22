@@ -157,6 +157,29 @@ suite('postgresStore: transactions and concurrency', () => {
     expect((await store.jobs.get('d'))?.state).toBe('queued');
   });
 
+  it('queues concurrent operations on one client', async () => {
+    const store = await migratedStore();
+    const client = await pool.connect();
+    const accept = (id: string) => ({ id, name: 'n', source: 'dispatch' as const, payload: {}, receivedAt: 0 });
+    try {
+      await client.query('BEGIN');
+      // Two store objects over the same client, and several operations at once.
+      const first = store.using(client);
+      const second = store.using(client);
+      const results = await Promise.all([
+        first.deliveries.accept(accept('d1'), 0),
+        second.deliveries.accept(accept('d2'), 0),
+        first.deliveries.accept(accept('d3'), 0),
+        second.consent.revoke({ wallet: ALICE, deploymentId: DEPLOYMENT, now: 0 }),
+      ]);
+      expect(results).toEqual([true, true, true, 0]);
+      await client.query('COMMIT');
+    } finally {
+      client.release();
+    }
+    expect((await store.jobs.list({ kind: 'delivery' })).map((job) => job.id).sort()).toEqual(['d1', 'd2', 'd3']);
+  });
+
   it("keeps the caller's transaction usable after a lost claim race", async () => {
     const store = await migratedStore();
     await store.deliveries.accept({ id: 'd', name: 'n', source: 'dispatch', payload: {}, receivedAt: 0 }, 0);
