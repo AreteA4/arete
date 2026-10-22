@@ -5,8 +5,9 @@ step needs the user's signature, a backend prepares it, checks it against a
 signing policy and the user's consent, signs it with a delegated signer, and
 submits it. Arete never holds a key; the signer runs in your backend.
 
-> **Status:** in development and not yet published. This first part is the
-> signing policy. The runtime, signer adapters, consent and stores follow.
+> **Status:** in development and not yet published. The signing policy,
+> signers and runtime are here; signed consent proofs, spending windows, the
+> Postgres store and the Privy adapter follow.
 
 ## Use the least powerful mechanism
 
@@ -18,6 +19,58 @@ Reach for delegated signing only when nothing simpler works:
 | The money is committed now | Deposit straight into the pot or escrow |
 | A fixed recurring payment from a wallet the user keeps using | An on-chain allowance |
 | The user's signature is needed each time, and the wallet is where their funds already live | Delegated signing under consent (this package) |
+
+## The runtime
+
+```ts
+import { createAutomations, definePolicy, memoryStore, rpcSimulator, scheduleSlot } from '@usearete/automations';
+
+const automations = createAutomations({
+  client,                       // a secret-key protocol client
+  signer,                       // a ProtocolSigner
+  policy: definePolicy({ ... }),
+  simulator: rpcSimulator(RPC_URL),
+  store: memoryStore(),         // tests and development only
+  cluster: 'mainnet',
+});
+
+// A protocol event: read state, return the steps to run. Handlers never prepare.
+automations.on('round.settled', async (event, ctx) => {
+  const player = await lookUpPlayer(event);
+  return [ctx.step('claimAndEnter', { wallet: player.wallet, instance: event.instanceId })];
+});
+
+// Webhooks: verified, accepted once, answered straight away.
+export const POST = automations.webhookHandler({ secret: process.env.ARETE_WEBHOOK_SECRET! });
+
+// Cron: your scheduler dispatches; the slot id makes a double fire a no-op.
+await automations.dispatch('weeklyBuy', {}, { id: scheduleSlot('weekly-buy', 'week') });
+
+automations.start();            // a long-running worker, or `await automations.drain()` per request
+```
+
+Each trigger becomes a **delivery job** that runs its handler. Each step
+request the handler returns becomes a **step job** (`${deliveryId}:${step}:${wallet}`, plus
+`:${instance}` for a step on an instance),
+so rerunning a handler never doubles a step. A step job:
+
+1. is skipped without an active consent grant (`no_consent`) or inside its
+   `cooldown`;
+2. is rejected when `allowedSteps` or prepare says no (a normal outcome);
+3. is prepared with idempotency key `${jobId}:${generation}` in the
+   negotiated format, checked against the intent, simulated and checked
+   against the policy (`refused(<rule>)`);
+4. re-checks consent, is signed, and the signed bytes are checked and saved
+   before submit;
+5. is tracked to `completed`, `chain_failed`, or `expired` (prepared once
+   more with a new key). An intent in `submitted_unknown` is read again
+   later and never resubmitted blind.
+
+Only one step job per wallet runs at a time, from claim until it settles.
+After a crash, a job that had signed reads its intent before doing anything
+else. `onOutcome`, `onRefused` and `onRejected` report final states.
+
+A store must pass `runStoreConformance` from `@usearete/automations/testing`.
 
 ## The signing policy
 
