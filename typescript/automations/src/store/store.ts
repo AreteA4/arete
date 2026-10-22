@@ -127,11 +127,13 @@ export interface TransitionInput {
   readonly attempts?: number;
   /**
    * Ledger changes made in the same atomic step as the transition:
-   * `record` adds entries for this job, `void` voids every entry of it.
+   * `record` adds entries for this job, `void` voids its entries except
+   * those for `keepAssets`.
    */
   readonly ledger?: {
     readonly record?: readonly Omit<LedgerEntry, 'jobId' | 'recordedAt' | 'voidedAt'>[];
     readonly void?: boolean;
+    readonly keepAssets?: readonly string[];
   };
 }
 
@@ -152,10 +154,17 @@ export interface TransitionInput {
  * these; a custom store must pass it.
  */
 export interface AutomationStore {
+  /**
+   * Tie the store to one deployment. The first call records it; a call for
+   * another deployment throws `StoreDeploymentError`. Use a separate store
+   * (for Postgres, a separate schema) per deployment.
+   */
+  bindDeployment(deploymentId: string): Promise<void>;
   readonly deliveries: {
     /**
      * Record the delivery and queue its delivery job, atomically. `false`
-     * when a delivery with this id was already accepted.
+     * when a delivery with this id was already accepted, or its job still
+     * exists after the delivery id was pruned.
      */
     accept(delivery: Delivery, now: number): Promise<boolean>;
     /** Forget accepted delivery ids older than `before`; returns how many. */
@@ -230,3 +239,10 @@ export interface AutomationStore {
 }
 
 export type { DeliveryJob, StepJob };
+
+export class StoreDeploymentError extends Error {
+  constructor(bound: string, requested: string) {
+    super(`this store belongs to deployment ${bound}, not ${requested}; use one store per deployment`);
+    this.name = 'StoreDeploymentError';
+  }
+}
