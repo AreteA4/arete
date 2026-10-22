@@ -446,6 +446,13 @@ export function runStoreConformance(
       await store.sources.putCursor('tape', '1:4', T0);
       await store.sources.putCursor('tape', '1:9', T0);
       expect(await store.sources.cursor('tape')).toBe('1:9');
+      // A slow replica never moves the cursor back.
+      await store.sources.putCursor('tape', '1:5', T0);
+      await store.sources.putCursor('tape', '0:99', T0);
+      expect(await store.sources.cursor('tape')).toBe('1:9');
+      await store.sources.putCursor('tape', '1:10', T0);
+      await store.sources.putCursor('tape', '2:0', T0);
+      expect(await store.sources.cursor('tape')).toBe('2:0');
     });
 
     it('holds a source lease for one holder until it lapses or is released', async () => {

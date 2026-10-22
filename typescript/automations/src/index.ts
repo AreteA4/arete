@@ -74,6 +74,7 @@ export type {
   TriggerSource,
 } from './runtime/types';
 export { memoryStore } from './store/memory';
+export { cursorAfter, parseCursor, StoreDeploymentError } from './store/store';
 export type {
   AutomationStore,
   ClaimInput,

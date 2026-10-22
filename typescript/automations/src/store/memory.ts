@@ -13,7 +13,7 @@ import {
   TERMINAL_DELIVERY_STATES,
   TERMINAL_STEP_STATES,
 } from '../runtime/types';
-import { type AutomationStore, type ConsentGrant, type LedgerEntry, type NewStepJob, type SourceState, StoreDeploymentError, type TransitionInput } from './store';
+import { type AutomationStore, type ConsentGrant, type LedgerEntry, type NewStepJob, type SourceState, StoreDeploymentError, type TransitionInput, cursorAfter } from './store';
 
 function isActiveStep(job: Job): boolean {
   return job.kind === 'step' && (ACTIVE_STEP_STATES as readonly string[]).includes(job.state);
@@ -325,7 +325,7 @@ export function memoryStore(): AutomationStore {
         return cursors.get(source) ?? null;
       },
       async putCursor(source, cursor) {
-        cursors.set(source, cursor);
+        if (cursorAfter(cursor, cursors.get(source) ?? null)) cursors.set(source, cursor);
       },
       async acquireLease(source, holder, until, now) {
         const lease = sourceLeases.get(source);
