@@ -13,7 +13,7 @@ import { memoryStore, memoryStoreState } from '../store/memory';
 import { fakeProtocol } from '../test-support/fake-protocol';
 import { ALICE, harness, storedGrant } from '../test-support/harness';
 import { type PumpClient, type SignedDelivery, signDelivery, startEventPump } from './events';
-import { loadDefinition, runDev } from './runner';
+import { devStackConnector, loadDefinition, runDev } from './runner';
 import { devWalletsSigner, readDevWallets } from './signer';
 
 const SECRET = 'whsec_dev';
@@ -197,6 +197,24 @@ describe('dev wallets', () => {
   });
 });
 
+describe('the dev stack connector', () => {
+  it('waits for the environment’s stack instead of reading published data', async () => {
+    let session: Record<string, unknown> | null = { deploymentId: 'dep' };
+    const lines: string[] = [];
+    const connect = devStackConnector(() => session as never, 'key', (line) => lines.push(line), 2000);
+    const stack = { name: 'vault', endpoints: {} } as never;
+    setTimeout(() => {
+      session = { deploymentId: 'dep', stack: 'other', stackWsUrl: 'ws://127.0.0.1:1', sessionEndpoint: 'http://127.0.0.1:1' };
+    }, 600);
+    // The environment's stack is another one: published data, said once.
+    await connect(stack).catch(() => undefined);
+    expect(lines).toEqual([
+      "waiting for the dev environment's stack before connecting vault",
+      "stack vault is not in the dev environment; its sources read the published stack's data",
+    ]);
+  });
+});
+
 describe('loading the entry', () => {
   it('takes the default export and refuses a module without a definition', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dev-entry-'));
@@ -261,19 +279,33 @@ describe('runDev', () => {
     }
     expect(seen, lines.join('\n')).toEqual(['41']);
 
-    const response = await fetch(`http://127.0.0.1:${runner.port}/consent`, {
-      method: 'POST',
-      body: JSON.stringify({ wallet: 'alice', steps: ['rebalance'], limits: { perExecution: { SOL: '5000' } } }),
-    });
+    const { port, token } = JSON.parse(readFileSync(join(devDir, 'automations', 'runner.json'), 'utf8')) as {
+      port: number;
+      token: string;
+    };
+    expect(port).toBe(runner.port);
+    const control = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(`http://127.0.0.1:${port}/consent`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...headers },
+        body: JSON.stringify(body),
+      });
+    const consent = { wallet: 'alice', steps: ['rebalance'], limits: { perExecution: { SOL: '5000' } } };
+    // Only `a4 dev consent`: the token, JSON, and no browser origin.
+    expect((await control(consent, { authorization: 'Bearer wrong' })).status).toBe(401);
+    expect((await control(consent, { origin: 'https://evil.example' })).status).toBe(403);
+    expect((await control(consent, { 'content-type': 'text/plain' })).status).toBe(415);
+
+    const response = await control(consent);
     const body = (await response.json()) as { grant: { wallet: string; steps: string[] } };
     expect(response.status).toBe(200);
     expect(body.grant).toMatchObject({ wallet: alice, steps: ['rebalance'] });
-    const unknown = await fetch(`http://127.0.0.1:${runner.port}/consent`, {
-      method: 'POST',
-      body: JSON.stringify({ wallet: 'bob', steps: ['rebalance'] }),
-    });
-    expect(unknown.status).toBe(400);
-    expect(JSON.parse(readFileSync(join(devDir, 'automations', 'runner.json'), 'utf8')).port).toBe(runner.port);
+    expect((await control({ wallet: 'bob', steps: ['rebalance'] })).status).toBe(400);
+    // Revoking one instance leaves the deployment-wide grant.
+    const scoped = (await (await control({ wallet: 'alice', steps: [], instanceId: 'inst-9', revoke: true })).json()) as {
+      revoked: number;
+    };
+    expect(scoped.revoked).toBe(0);
 
     await runner.stop();
     const saved = deserialize(readFileSync(join(devDir, 'automations', 'store.bin'))) as { grants: { wallet: string }[] };

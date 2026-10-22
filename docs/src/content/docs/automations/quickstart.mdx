@@ -130,6 +130,9 @@ const client = createProtocolClient(TOKEN_RAISE_PROTOCOL, {
   auth: { secretKey: process.env.ARETE_SECRET_KEY! },
 });
 
+const store = postgresStore(new pg.Pool({ connectionString: process.env.DATABASE_URL }));
+await store.migrate(); // never automatic: run it from a deploy step
+
 const automations = createAutomations({
   client,
   signer, // your wallet provider's signer, for example Privy
@@ -139,7 +142,7 @@ const automations = createAutomations({
     clusters: ["mainnet"], // mainnet is allowed only when listed
   }),
   simulator: rpcSimulator(process.env.RPC_URL!),
-  store: postgresStore(new pg.Pool({ connectionString: process.env.DATABASE_URL })),
+  store,
   consent: { domain: "app.example" },
   onOutcome: (outcome) => notifyUser(outcome),
 });

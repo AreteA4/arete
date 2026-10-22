@@ -199,6 +199,8 @@ pub struct Runner {
     child: Option<Child>,
     /// The exit was reported; wait for a change before starting again.
     exited: bool,
+    /// The deployment and stack the session named when last seen.
+    target: Option<(Option<String>, Option<String>)>,
 }
 
 impl Runner {
@@ -213,6 +215,32 @@ impl Runner {
             watched,
             child: None,
             exited: false,
+            target: None,
+        }
+    }
+
+    /// Restart when the session's deployment or stack changes: the runner
+    /// reads them once, so a redeploy to a new deployment, or a stack found
+    /// after it started, needs a fresh runner (in forward mode too, where no
+    /// generated client changes).
+    pub async fn follow_target(&mut self, deployment: Option<&str>, stack: Option<&str>) {
+        let next = (deployment.map(str::to_string), stack.map(str::to_string));
+        let previous = self.target.replace(next.clone());
+        let Some(previous) = previous else {
+            return;
+        };
+        // The runner waits for the first deployment itself.
+        if previous == next || previous.0.is_none() && next.1.is_none() {
+            return;
+        }
+        (self.emit)(
+            "automations-reload",
+            "The deployment or its stack changed; restarting the automations",
+            json!({ "deploymentId": next.0, "stack": next.1 }),
+        );
+        self.stop().await;
+        if let Err(error) = self.start() {
+            self.report_failure(&error);
         }
     }
 
@@ -371,8 +399,9 @@ impl Runner {
     }
 }
 
-/// The running runner's control port, from `.arete/dev/automations/runner.json`.
-pub fn control_port(root: &Path) -> Result<u16> {
+/// The running runner's control port and token, from
+/// `.arete/dev/automations/runner.json` (mode 0600).
+pub fn control(root: &Path) -> Result<(u16, String)> {
     let path = state_dir(root).join("runner.json");
     let runner: Value = std::fs::read(&path)
         .ok()
@@ -382,10 +411,15 @@ pub fn control_port(root: &Path) -> Result<u16> {
     if !super::runtime::pid_alive(pid) {
         bail!("The automations are not running: set [dev.automations] in arete.toml and run `a4 dev up`");
     }
-    runner["port"]
+    let port = runner["port"]
         .as_u64()
         .and_then(|port| u16::try_from(port).ok())
-        .context("runner.json has no port")
+        .context("runner.json has no port")?;
+    let token = runner["token"]
+        .as_str()
+        .context("runner.json has no token")?
+        .to_string();
+    Ok((port, token))
 }
 
 #[cfg(test)]
@@ -481,6 +515,42 @@ mod tests {
         let first = webhook_secret(dir.path()).unwrap();
         assert!(first.starts_with("whsec_dev_") && first.len() == "whsec_dev_".len() + 64);
         assert_eq!(webhook_secret(dir.path()).unwrap(), first);
+    }
+
+    #[tokio::test]
+    async fn restarts_when_the_deployment_or_stack_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("automations.ts"), "1").unwrap();
+        let config = AutomationsConfig {
+            entry: Some("automations.ts".into()),
+            command: Some(vec!["sh".into(), "-c".into(), "sleep 30".into()]),
+            ..Default::default()
+        };
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = events.clone();
+        let emit: Emit = std::sync::Arc::new(move |event: &str, _: &str, _: Value| {
+            sink.lock().unwrap().push(event.to_string());
+        });
+        let mut runner = Runner::new(config, dir.path(), "a4_sk_test", emit);
+        runner.start().unwrap();
+        let reloads = || {
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| *e == "automations-reload")
+                .count()
+        };
+        // Waiting for the first deployment, then the deployment appearing: no restart.
+        runner.follow_target(None, None).await;
+        runner.follow_target(Some("d-1"), None).await;
+        runner.follow_target(Some("d-1"), None).await;
+        assert_eq!(reloads(), 0);
+        // The stack found, then a redeploy: one restart each.
+        runner.follow_target(Some("d-1"), Some("wss://s1")).await;
+        runner.follow_target(Some("d-2"), Some("wss://s1")).await;
+        assert_eq!(reloads(), 2);
+        runner.stop().await;
     }
 
     #[tokio::test]

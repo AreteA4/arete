@@ -1023,6 +1023,12 @@ impl Session<'_> {
                 _ = tick.tick() => {}
             }
             if let Some(runner) = &mut self.automations {
+                runner
+                    .follow_target(
+                        self.deploy_state.deployment_id.as_deref(),
+                        self.stack.as_ref().map(|(_, url)| url.as_str()),
+                    )
+                    .await;
                 runner.poll(watching).await;
             }
             let found = self.find_stack().await;

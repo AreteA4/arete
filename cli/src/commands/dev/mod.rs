@@ -918,13 +918,14 @@ fn consent_request(args: &ConsentArgs, now_ms: u128) -> Result<Value> {
 /// automations `a4 dev up` runs.
 fn consent(args: ConsentArgs, json: bool) -> Result<()> {
     let root = project_root(&args.project)?;
-    let port = automations::control_port(&root)?;
+    let (port, token) = automations::control(&root)?;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis();
     let request = consent_request(&args, now_ms)?;
     let response = reqwest::blocking::Client::new()
         .post(format!("http://127.0.0.1:{port}/consent"))
+        .bearer_auth(token)
         .json(&request)
         .send()
         .context("Could not reach the automations `a4 dev up` runs")?;

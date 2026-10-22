@@ -18,6 +18,7 @@
  * handlers or the generated client change.
  */
 
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join, resolve } from 'node:path';
@@ -138,20 +139,42 @@ export async function loadDefinition(entry: string): Promise<AutomationsDefiniti
   return definition;
 }
 
-/** Stacks of the dev environment connect to it, with session tokens minted from the API key. */
-export function devStackConnector(session: DevSessionFile & { deploymentId: string }, apiKey: string, log: Log): StackConnector {
+/** How long `connect` waits for the dev environment's stack to be found. */
+const STACK_WAIT_MS = 20_000;
+
+/**
+ * Stacks of the dev environment connect to it, with session tokens minted
+ * from the API key. The session is read at each connect, and a connect made
+ * before `a4 dev up` has found the environment's stack waits for it, so a
+ * stack still starting is not mistaken for one the environment lacks. (`a4
+ * dev up` also restarts the runner when the deployment or stack changes.)
+ */
+export function devStackConnector(
+  readCurrent: () => DevSessionFile | null,
+  apiKey: string,
+  log: Log,
+  waitMs = STACK_WAIT_MS,
+): StackConnector {
   const warned = new Set<string>();
   return async (stack) => {
-    if (session.stack && session.stackWsUrl && stack.name === session.stack) {
-      const url = session.stackWsUrl;
+    let session = readCurrent();
+    if (!session?.stack) {
+      log(`waiting for the dev environment's stack before connecting ${stack.name}`);
+      for (let waited = 0; waited < waitMs && !session?.stack; waited += 500) {
+        await sleep(500);
+        session = readCurrent();
+      }
+    }
+    if (session?.stack && session.stackWsUrl && session.deploymentId && stack.name === session.stack) {
+      const { stackWsUrl: url, sessionEndpoint, deploymentId } = session;
       return Arete.connect(stack, {
         url,
         auth: {
           getToken: async () => {
-            const response = await fetch(session.sessionEndpoint, {
+            const response = await fetch(sessionEndpoint, {
               method: 'POST',
               headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-              body: JSON.stringify({ websocket_url: url, protocolDeploymentId: session.deploymentId }),
+              body: JSON.stringify({ websocket_url: url, protocolDeploymentId: deploymentId }),
             });
             if (!response.ok) throw new Error(`minting a stack session failed: HTTP ${response.status}`);
             const body = (await response.json()) as { token: string; expires_at?: number };
@@ -290,7 +313,10 @@ export async function runDev(
       onOutcome: (outcome) => log(describe(outcome)),
       onError: (error, context) => log(`error (${context.phase}${context.jobId ? ` ${context.jobId}` : ''}): ${(error as Error)?.message ?? error}`),
     });
-    await running.use(definition as AutomationsDefinition<any>, { connect: devStackConnector(session, config.apiKey, log) });
+    const sessionPath = join(devDir, 'session.json');
+    await running.use(definition as AutomationsDefinition<any>, {
+      connect: devStackConnector(() => readJson<DevSessionFile | null>(sessionPath, null), config.apiKey, log),
+    });
     running.start({ pollInterval: '1s' });
     automations = running;
     pumpClient = client as unknown as PumpClient;
@@ -329,9 +355,12 @@ export async function runDev(
     }
   }, 1000);
 
-  const server = await startControl(config.port, automations, pumpClient.deploymentId, join(devDir, 'wallets'), log);
+  // `a4 dev consent` reads the token from runner.json (mode 0600); a web page
+  // that reaches the loopback port cannot.
+  const token = randomBytes(32).toString('hex');
+  const server = await startControl(config.port, token, automations, pumpClient.deploymentId, join(devDir, 'wallets'), log);
   const port = (server.address() as { port: number }).port;
-  writeFileSync(join(stateDir, 'runner.json'), JSON.stringify({ pid: process.pid, port }), { mode: 0o600 });
+  writeFileSync(join(stateDir, 'runner.json'), JSON.stringify({ pid: process.pid, port, token }), { mode: 0o600 });
   log(
     automations
       ? `running ${config.entry} against deployment ${session.deploymentId}`
@@ -341,12 +370,23 @@ export async function runDev(
   return {
     port,
     async stop() {
-      clearInterval(persist);
+      // `a4 dev up` kills the runner 5s after SIGTERM: save first, let the
+      // workers wind down for at most 3s (saving as they go), save again.
       pump.stop();
-      await new Promise<void>((done) => server.close(() => done()));
-      await automations?.stop();
-      saveStore();
-      saveCursors();
+      server.closeAllConnections();
+      server.close();
+      const save = () => {
+        try {
+          saveStore();
+          saveCursors();
+        } catch (error) {
+          log(`could not save the automations state: ${(error as Error).message}`);
+        }
+      };
+      save();
+      await Promise.race([automations?.stop(), sleep(3000)]);
+      clearInterval(persist);
+      save();
     },
   };
 }
@@ -367,6 +407,7 @@ interface ConsentRequest {
 
 async function startControl(
   port: number,
+  token: string,
   automations: Automations | null,
   deploymentId: string,
   walletsDir: string,
@@ -385,6 +426,14 @@ async function startControl(
     try {
       if (req.method === 'GET' && req.url === '/health') return json(res, 200, { ok: true, handlers: automations !== null });
       if (req.method !== 'POST' || req.url !== '/consent') return json(res, 404, { error: 'not-found' });
+      // Only `a4 dev consent`: no browser origin, JSON only, and the token.
+      if (req.headers.origin !== undefined) return json(res, 403, { error: 'forbidden' });
+      if (!req.headers['content-type']?.startsWith('application/json')) return json(res, 415, { error: 'json-only' });
+      const expected = Buffer.from(`Bearer ${token}`);
+      const given = Buffer.from(req.headers.authorization ?? '');
+      if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+        return json(res, 401, { error: 'unauthorized' });
+      }
       if (!automations) return json(res, 409, { error: 'forwarding only: consent lives in your app' });
       const request = await readBody(req);
       const wallets = readDevWallets(walletsDir);
@@ -392,7 +441,11 @@ async function startControl(
       if (!signer) return json(res, 400, { error: `${request.wallet} is not a dev wallet (a4 dev wallet <name> creates one)` });
       const wallet = signer.publicKey;
       if (request.revoke) {
-        const revoked = await automations.consent.revoke({ wallet, ...(request.steps.length ? { steps: request.steps } : {}) });
+        const revoked = await automations.consent.revoke({
+          wallet,
+          ...(request.steps.length ? { steps: request.steps } : {}),
+          ...(request.instanceId ? { instanceId: request.instanceId } : {}),
+        });
         log(`revoked ${revoked} consent grant(s) of ${wallet}`);
         return json(res, 200, { wallet, revoked });
       }
