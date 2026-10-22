@@ -697,6 +697,9 @@ pub struct SiblingSelector {
     /// instruction.
     #[serde(default, skip_serializing_if = "is_false")]
     pub seed_from_sibling: bool,
+    /// Exact predicates over captured sibling fields, including runtime context.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub required_fields: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 fn is_false(value: &bool) -> bool {

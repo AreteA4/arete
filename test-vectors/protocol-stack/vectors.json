@@ -1069,6 +1069,23 @@
         }
       },
       "error": "the full profile routes all activity through one instance account; stack.activity names presaleAccount, presale"
+    },
+    {
+      "name": "token-raise.operation-boundaries.full",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "options": {
+        "profile": "full",
+        "attestation": "Attest1111111111111111111111111111111111111",
+        "deploymentShortId": "raise1",
+        "programs": {
+          "meteoraPresale": {
+            "idl": "./idl/meteora-presale.idl.json"
+          }
+        },
+        "operationBoundaries": true
+      },
+      "output": "token-raise.operation-boundaries.full.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:d82e0770e88b2691d8f03afc269f63f9a88a74a5e4fc015c5bc4618069acb29e"
     }
   ]
 }

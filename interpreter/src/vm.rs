@@ -1391,6 +1391,14 @@ pub struct PendingSiblingRegistration {
 impl PendingSiblingRegistration {
     /// The PDA and seed this registration maps for one sibling instruction.
     fn pair_with(&self, sibling: &SiblingInstruction) -> (Value, Value) {
+        if self
+            .sibling
+            .required_fields
+            .iter()
+            .any(|(path, expected)| sibling.values.get(path) != Some(expected))
+        {
+            return (Value::Null, Value::Null);
+        }
         let read = |from_sibling: bool, path: &FieldPath, own: &Value| {
             if from_sibling {
                 sibling

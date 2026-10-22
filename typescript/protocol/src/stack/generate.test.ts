@@ -524,3 +524,22 @@ it("generates activity for a builtin System transfer without a synthetic Program
   copy.reads.systemAccount = {kind: "account", program: "system", account: "Account", address: "wallet", optional: false};
   expect(() => validateProtocolSpec(copy)).toThrow(/has no ProgramSpec/);
 });
+
+describe("operation-boundary activity evidence", () => {
+  it("gates amounts, wallets, recipients and registrations on the pinned attestation", () => {
+    const full = generateStackSource(spec, { ...FULL, operationBoundaries: true });
+    const expected = `__protocol_activity_attestation == "${ATTESTATION}"`;
+    const activity = entities(full).ProtocolActivity!.fields;
+    for (const field of ["amount", "wallet", "activity_account"]) {
+      expect(activity[field]).toMatchObject({ guard: expected });
+    }
+    const instance = entities(full).ProtocolInstance!;
+    for (const registration of (instance.register_from ?? []) as Record<string, unknown>[]) {
+      expect(registration.sibling_where).toEqual({ __protocol_activity_attestation: ATTESTATION });
+    }
+    const amounts = (instance.fields.activity as { fields: Record<string, unknown> }).fields;
+    expect(amounts.contribute_protocol_amount).toMatchObject({ guard: expected });
+    expect(amounts.contribute_amount).toMatchObject({ aggregate: { guard: '__protocol_attestation == "" || __protocol_activity_attestation != ""' } });
+    expect(JSON.stringify(full.stackSource)).not.toContain("4nLQhqBL");
+  });
+});
