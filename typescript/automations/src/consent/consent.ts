@@ -238,10 +238,19 @@ function parse(value: string | null | undefined): bigint | null {
  */
 export function stepOutflows(summary: PreparedSummary): Map<string, bigint> {
   const out = new Map<string, bigint>();
-  const add = (key: string, amount: bigint) => {
-    if (amount > 0n) out.set(key, (out.get(key) ?? 0n) + amount);
-  };
-  for (const transaction of summary.transactions) {
+  for (const { amounts } of transactionOutflows(summary)) {
+    for (const [asset, amount] of amounts) out.set(asset, (out.get(asset) ?? 0n) + amount);
+  }
+  return out;
+}
+
+/** {@link stepOutflows}, per transaction, so a partly landed intent can be accounted exactly. */
+export function transactionOutflows(summary: PreparedSummary): Array<{ index: number; amounts: Map<string, bigint> }> {
+  return summary.transactions.map((transaction) => {
+    const out = new Map<string, bigint>();
+    const add = (key: string, amount: bigint) => {
+      if (amount > 0n) out.set(key, (out.get(key) ?? 0n) + amount);
+    };
     const effect = transaction.signerEffect;
     const tokens = effect.tokens ?? [];
     const lamports = parse(effect.solLamports) ?? 0n;
@@ -253,6 +262,6 @@ export function stepOutflows(summary: PreparedSummary): Map<string, bigint> {
     for (const token of tokens) {
       if (!isNativeMint(token.mint)) add(token.mint, -(parse(token.amount) ?? 0n));
     }
-  }
-  return out;
+    return { index: transaction.index, amounts: out };
+  });
 }

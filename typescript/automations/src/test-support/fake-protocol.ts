@@ -147,17 +147,21 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
         keys: [wallet, VAULT, options.program ?? PROGRAM],
         instructions: [{ program: 2, accounts: [0, 1], data: [1, ...keyBytes] }],
       };
-      const bytes = wire(message, format);
+      const partial = options.partialFailure?.(key) ?? false;
+      const all = [wire(message, format)];
+      if (partial) {
+        all.push(wire({ ...message, instructions: [{ program: 2, accounts: [0, 1], data: [2, ...keyBytes] }] }, format));
+      }
       executions += 1;
       const executionId = `exec-${executions}`;
-      const intent = intentFor(wallet, format, [bytes], { executionId, step });
+      const intent = intentFor(wallet, format, all, { executionId, step });
       const record: IntentRecord = {
         intent,
-        transactions: [{ index: 0, transactionBase64: encodeBase64(bytes) }],
+        transactions: all.map((bytes, index) => ({ index, transactionBase64: encodeBase64(bytes) })),
         script: options.script?.(key) ?? ['submitting', 'completed'],
         reads: 0,
         submitted: null,
-        partial: options.partialFailure?.(key) ?? false,
+        partial,
       };
       intents.set(executionId, record);
       byKey.set(key, executionId);
@@ -171,10 +175,11 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
       state = record.script[Math.min(record.reads, record.script.length - 1)]!;
       record.reads += 1;
     }
-    const signature =
+    const signatureOf = (index: number) =>
       record.submitted && state !== 'expired'
-        ? encodeBase58(decodeTransaction(decodeBase64(record.submitted[0]!)!).signatures[0]!)
+        ? encodeBase58(decodeTransaction(decodeBase64(record.submitted[index]!)!).signatures[0]!)
         : null;
+    const signature = signatureOf(0);
     return {
       executionId: record.intent.executionId,
       state,
@@ -182,7 +187,7 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
         state === 'chain_failed' && record.partial
           ? [
               { index: 0, signature, state: 'confirmed' },
-              { index: 1, signature: '2wPartial', state, error: 'custom program error: 0x1' },
+              { index: 1, signature: signatureOf(1), state, error: 'custom program error: 0x1' },
             ]
           : [{ index: 0, signature, state, ...(state === 'chain_failed' ? { error: 'custom program error: 0x1' } : {}) }],
     };
