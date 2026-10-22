@@ -306,8 +306,21 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   // Accepting triggers
   // -------------------------------------------------------------------------
 
-  const accept = (delivery: Omit<Delivery, 'receivedAt'>) =>
-    store.deliveries.accept({ ...delivery, receivedAt: clock.now() }, clock.now());
+  // One store serves one deployment; claims and delivery ids are not scoped
+  // by deployment, so the store refuses a second one.
+  let binding: Promise<void> | null = null;
+  const bound = () => {
+    binding ??= store.bindDeployment(client.deploymentId).catch((error: unknown) => {
+      binding = null;
+      throw error;
+    });
+    return binding;
+  };
+
+  const accept = async (delivery: Omit<Delivery, 'receivedAt'>) => {
+    await bound();
+    return store.deliveries.accept({ ...delivery, receivedAt: clock.now() }, clock.now());
+  };
 
   const acceptWebhook = async (
     body: string | Uint8Array,
@@ -328,7 +341,12 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       throw error;
     }
     const payload = verified.payload as unknown;
-    if (!isRecord(payload) || typeof payload.event !== 'string' || typeof payload.instanceId !== 'string') {
+    if (
+      !isRecord(payload) ||
+      typeof payload.event !== 'string' ||
+      typeof payload.instanceId !== 'string' ||
+      (typeof payload.id !== 'string' && typeof payload.id !== 'number')
+    ) {
       return { status: 400, body: { error: 'invalid-payload' } };
     }
     if (payload.deploymentId !== client.deploymentId) {
@@ -347,7 +365,11 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       occurredAt: typeof payload.occurredAt === 'string' ? payload.occurredAt : '',
       source: 'webhook',
     };
-    const accepted = await accept({ id: `webhook:${verified.id}`, name: payload.event, source: 'webhook', payload: event });
+    // The id comes from the signed body: the delivery-id header is not covered
+    // by the signature, so a replay under a new header id would otherwise
+    // run again.
+    const id = `webhook:${encodeURIComponent(String(payload.deploymentId))}:${encodeURIComponent(String(payload.id))}`;
+    const accepted = await accept({ id, name: payload.event, source: 'webhook', payload: event });
     return { status: 200, body: { accepted, duplicate: !accepted } };
   };
 
@@ -384,417 +406,437 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     }
   };
 
-  /** Move `job` to a final state and release it. */
-  const finish = async (
-    job: StepJob,
-    state: StepJobState,
-    outcome: JobOutcome,
-    progress: StepJob['progress'] | undefined = undefined,
-  ) => {
-    // Spending only counts against a window when the intent landed.
-    const landed = state === 'completed';
-    const moved = await store.jobs.transition(job.id, {
-      worker,
-      from: job.state,
-      to: state,
-      now: clock.now(),
-      outcome,
-      ...(progress ? { progress } : {}),
-      ...(landed ? {} : { ledger: { void: true } }),
-    });
-    if (!moved) throw new LostLease();
-    await notify(outcomeOf(progress ? { ...job, progress: { ...job.progress, ...progress } } : job, state, outcome));
-  };
+  /**
+   * The runners for one claim. `worker` here is the claim's own holder
+   * token, so a lapsed claim's late writes can never touch the job after
+   * another claim (even in this process) took it over.
+   */
+  const forClaim = (worker: string) => {
+    /** Move `job` to a final state and release it. */
+    const finish = async (
+      job: StepJob,
+      state: StepJobState,
+      outcome: JobOutcome,
+      progress: StepJob['progress'] | undefined = undefined,
+    ) => {
+      // Spending only counts against a window when the intent landed.
+      const landed = state === 'completed';
+      const moved = await store.jobs.transition(job.id, {
+        worker,
+        from: job.state,
+        to: state,
+        now: clock.now(),
+        outcome,
+        ...(progress ? { progress } : {}),
+        ...(landed ? {} : { ledger: { void: true } }),
+      });
+      if (!moved) throw new LostLease();
+      await notify(outcomeOf(progress ? { ...job, progress: { ...job.progress, ...progress } } : job, state, outcome));
+    };
 
-  /** Move `job` to another active state, keeping the lease. */
-  const advance = async (
-    job: StepJob,
-    state: StepJobState,
-    progress?: Partial<StepJob['progress']>,
-    ledger?: NonNullable<Parameters<AutomationStore['jobs']['transition']>[1]['ledger']>,
-  ): Promise<StepJob> => {
-    const moved = await store.jobs.transition(job.id, {
-      worker,
-      from: job.state,
-      to: state,
-      now: clock.now(),
-      keepLease: leaseUntil(),
-      ...(progress ? { progress } : {}),
-      ...(ledger ? { ledger } : {}),
-    });
-    if (!moved) throw new LostLease();
-    return { ...job, state, progress: { ...job.progress, ...progress } };
-  };
+    /** Move `job` to another active state, keeping the lease. */
+    const advance = async (
+      job: StepJob,
+      state: StepJobState,
+      progress?: Partial<StepJob['progress']>,
+      ledger?: NonNullable<Parameters<AutomationStore['jobs']['transition']>[1]['ledger']>,
+    ): Promise<StepJob> => {
+      const moved = await store.jobs.transition(job.id, {
+        worker,
+        from: job.state,
+        to: state,
+        now: clock.now(),
+        keepLease: leaseUntil(),
+        ...(progress ? { progress } : {}),
+        ...(ledger ? { ledger } : {}),
+      });
+      if (!moved) throw new LostLease();
+      return { ...job, state, progress: { ...job.progress, ...progress } };
+    };
 
-  /** Release `job` in its current state, to be claimed again later. */
-  const park = async (job: StepJob, delayMs: number, attempts = job.attempts) => {
-    const moved = await store.jobs.transition(job.id, {
-      worker,
-      from: job.state,
-      to: job.state,
-      now: clock.now(),
-      notBefore: clock.now() + delayMs,
-      attempts,
-    });
-    if (!moved) throw new LostLease();
-  };
+    /** Release `job` in its current state, to be claimed again later. */
+    const park = async (job: StepJob, delayMs: number, attempts = job.attempts) => {
+      const moved = await store.jobs.transition(job.id, {
+        worker,
+        from: job.state,
+        to: job.state,
+        now: clock.now(),
+        notBefore: clock.now() + delayMs,
+        attempts,
+      });
+      if (!moved) throw new LostLease();
+    };
 
-  const refuse = (job: StepJob, refusal: Refusal) =>
-    finish(job, 'refused', { code: refusal.rule, reason: refusal.reason });
+    const refuse = (job: StepJob, refusal: Refusal) =>
+      finish(job, 'refused', { code: refusal.rule, reason: refusal.reason });
 
-  /** The active grant for a job; instance-scoped grants end with their instance. */
-  const consentFor = async (job: StepJob): Promise<ConsentGrant | null> => {
-    const grant = await store.consent.find({
-      wallet: job.request.wallet,
-      deploymentId: job.deploymentId,
-      step: job.request.step,
-      instanceId: job.request.instance ?? null,
-      now: clock.now(),
-    });
-    if (grant?.instanceId && client.instances) {
-      const instance = await client.instances.get(grant.instanceId);
-      if (instance.terminal) {
-        await store.consent.revoke({
-          wallet: grant.wallet,
-          deploymentId: grant.deploymentId,
-          instanceId: grant.instanceId,
-          now: clock.now(),
-        });
-        return consentFor(job);
+    /** The active grant for a job; instance-scoped grants end with their instance. */
+    const consentFor = async (job: StepJob): Promise<ConsentGrant | null> => {
+      const grant = await store.consent.find({
+        wallet: job.request.wallet,
+        deploymentId: job.deploymentId,
+        step: job.request.step,
+        instanceId: job.request.instance ?? null,
+        now: clock.now(),
+      });
+      if (grant?.instanceId && client.instances) {
+        const instance = await client.instances.get(grant.instanceId);
+        if (instance.terminal) {
+          await store.consent.revoke({
+            wallet: grant.wallet,
+            deploymentId: grant.deploymentId,
+            instanceId: grant.instanceId,
+            now: clock.now(),
+          });
+          return consentFor(job);
+        }
       }
-    }
-    return grant;
-  };
+      return grant;
+    };
 
-  /** The grant's limits against what this step moves, and the window spent so far. */
-  const checkLimits = async (job: StepJob, grant: ConsentGrant, outflows: Map<string, bigint>): Promise<Refusal | null> => {
-    for (const [asset, amount] of outflows) {
-      const limit = grant.limits.perExecution[asset];
-      if (limit === undefined) {
-        return {
-          rule: 'consent_limit',
-          reason: `the step moves ${amount} of ${asset} out of the wallet, and the consent sets no per-run limit for it`,
-        };
-      }
-      if (amount > BigInt(limit)) {
-        return {
-          rule: 'consent_limit',
-          reason: `the step moves ${amount} of ${asset} out of the wallet, over the consent's per-run limit of ${limit}`,
-        };
-      }
-      const window = grant.limits.perWindow[asset];
-      if (window) {
-        const spent = await store.ledger.spent({
-          wallet: job.request.wallet,
-          deploymentId: job.deploymentId,
-          asset,
-          since: clock.now() - window.windowMs,
-        });
-        if (spent + amount > BigInt(window.amount)) {
+    /** The grant's limits against what this step moves, and the window spent so far. */
+    const checkLimits = async (job: StepJob, grant: ConsentGrant, outflows: Map<string, bigint>): Promise<Refusal | null> => {
+      for (const [asset, amount] of outflows) {
+        const limit = grant.limits.perExecution[asset];
+        if (limit === undefined) {
           return {
-            rule: 'consent_window',
-            reason: `the step moves ${amount} of ${asset}; with ${spent} already moved in the window that exceeds the consent's limit of ${window.amount}`,
+            rule: 'consent_limit',
+            reason: `the step moves ${amount} of ${asset} out of the wallet, and the consent sets no per-run limit for it`,
           };
         }
+        if (amount > BigInt(limit)) {
+          return {
+            rule: 'consent_limit',
+            reason: `the step moves ${amount} of ${asset} out of the wallet, over the consent's per-run limit of ${limit}`,
+          };
+        }
+        const window = grant.limits.perWindow[asset];
+        if (window) {
+          const spent = await store.ledger.spent({
+            wallet: job.request.wallet,
+            deploymentId: job.deploymentId,
+            asset,
+            since: clock.now() - window.windowMs,
+          });
+          if (spent + amount > BigInt(window.amount)) {
+            return {
+              rule: 'consent_window',
+              reason: `the step moves ${amount} of ${asset}; with ${spent} already moved in the window that exceeds the consent's limit of ${window.amount}`,
+            };
+          }
+        }
       }
-    }
-    return null;
-  };
+      return null;
+    };
 
-  /** Prepare, check, sign and submit a `running` step job. */
-  const attempt = async (job: StepJob): Promise<void> => {
-    const { request } = job;
-    const wallet = request.wallet;
-    if (!(await consentFor(job))) {
-      return finish(job, 'skipped', { code: 'no_consent', reason: `no active consent for ${request.step}` });
-    }
-    if (request.cooldownMs !== undefined) {
-      const last = await store.jobs.lastCompleted({ wallet, deploymentId: job.deploymentId, step: request.step });
-      if (last !== null && clock.now() - last < request.cooldownMs) {
-        return finish(job, 'skipped', {
-          code: 'cooldown',
-          reason: `${request.step} completed for this wallet ${Math.round((clock.now() - last) / 1000)}s ago`,
+    /** Prepare, check, sign and submit a `running` step job. */
+    const attempt = async (job: StepJob): Promise<void> => {
+      const { request } = job;
+      const wallet = request.wallet;
+      if (!(await consentFor(job))) {
+        return finish(job, 'skipped', { code: 'no_consent', reason: `no active consent for ${request.step}` });
+      }
+      if (request.cooldownMs !== undefined) {
+        const last = await store.jobs.lastCompleted({ wallet, deploymentId: job.deploymentId, step: request.step });
+        if (last !== null && clock.now() - last < request.cooldownMs) {
+          return finish(job, 'skipped', {
+            code: 'cooldown',
+            reason: `${request.step} completed for this wallet ${Math.round((clock.now() - last) / 1000)}s ago`,
+          });
+        }
+      }
+      const target = checkTarget(policy, job.deploymentId, cluster);
+      if (target) return refuse(job, target);
+      if (request.instance !== undefined) {
+        const availability = (await client.allowedSteps({ instance: request.instance, wallet })).find(
+          (entry) => entry.step === request.step,
+        );
+        if (!availability) {
+          return finish(job, 'rejected', { code: 'step_not_available', reason: `${request.step} is not a step of this instance` });
+        }
+        if (!availability.allowed) {
+          return finish(job, 'rejected', {
+            code: availability.reason ?? 'not_allowed',
+            ...(availability.detail !== undefined ? { detail: availability.detail } : {}),
+          });
+        }
+      }
+      const format = negotiateTransactionFormat(signer.supportedTransactionFormats, formats);
+      if (format === null) {
+        return refuse(job, {
+          rule: 'transaction_format',
+          reason: `the ${signer.kind} signer supports ${signer.supportedTransactionFormats.join(', ')}, the deployment ${formats.join(', ')}`,
         });
       }
-    }
-    const target = checkTarget(policy, job.deploymentId, cluster);
-    if (target) return refuse(job, target);
-    if (request.instance !== undefined) {
-      const availability = (await client.allowedSteps({ instance: request.instance, wallet })).find(
-        (entry) => entry.step === request.step,
+      if (!(await signer.canSign(wallet))) {
+        return refuse(job, { rule: 'signer_unavailable', reason: `the ${signer.kind} signer cannot sign for ${wallet}` });
+      }
+      const stepClient = (client.steps as Record<string, PreparableStep | undefined>)[request.step];
+      if (!stepClient) {
+        return finish(job, 'rejected', { code: 'step_not_client_callable', reason: `${request.step} cannot be prepared by this client` });
+      }
+      const result = await stepClient.prepare(
+        { ...request.args, wallet, ...(request.instance !== undefined ? { instance: request.instance } : {}) },
+        { transactionFormat: format, idempotencyKey: `${job.id}:${job.progress.generation}` },
       );
-      if (!availability) {
-        return finish(job, 'rejected', { code: 'step_not_available', reason: `${request.step} is not a step of this instance` });
-      }
-      if (!availability.allowed) {
+      if (!result.ok) {
         return finish(job, 'rejected', {
-          code: availability.reason ?? 'not_allowed',
-          ...(availability.detail !== undefined ? { detail: availability.detail } : {}),
+          code: result.rejection.rejected,
+          ...(result.rejection.detail !== undefined ? { detail: result.rejection.detail } : {}),
         });
       }
-    }
-    const format = negotiateTransactionFormat(signer.supportedTransactionFormats, formats);
-    if (format === null) {
-      return refuse(job, {
-        rule: 'transaction_format',
-        reason: `the ${signer.kind} signer supports ${signer.supportedTransactionFormats.join(', ')}, the deployment ${formats.join(', ')}`,
-      });
-    }
-    if (!(await signer.canSign(wallet))) {
-      return refuse(job, { rule: 'signer_unavailable', reason: `the ${signer.kind} signer cannot sign for ${wallet}` });
-    }
-    const stepClient = (client.steps as Record<string, PreparableStep | undefined>)[request.step];
-    if (!stepClient) {
-      return finish(job, 'rejected', { code: 'step_not_client_callable', reason: `${request.step} cannot be prepared by this client` });
-    }
-    const result = await stepClient.prepare(
-      { ...request.args, wallet, ...(request.instance !== undefined ? { instance: request.instance } : {}) },
-      { transactionFormat: format, idempotencyKey: `${job.id}:${job.progress.generation}` },
-    );
-    if (!result.ok) {
-      return finish(job, 'rejected', {
-        code: result.rejection.rejected,
-        ...(result.rejection.detail !== undefined ? { detail: result.rejection.detail } : {}),
-      });
-    }
-    const { intent, transactions } = result;
-    const mismatch = checkPreparedAgainstIntent({ wallet, intent, transactions, format });
-    if (mismatch) return refuse(job, mismatch);
-    const summary = await summarizePrepared({ intent, transactions }, wallet, simulator);
-    const refusal = checkPrepared(policy, {
-      deploymentId: job.deploymentId,
-      prepared: { intent, transactions },
-      summary,
-      simulates: true,
-    });
-    if (refusal) return refuse(job, refusal);
-    if (!(await store.jobs.renew(job.id, worker, leaseUntil().until))) throw new LostLease();
-    // Consent can be revoked or changed while the step was prepared and simulated.
-    const grant = await consentFor(job);
-    if (!grant) {
-      return finish(job, 'skipped', { code: 'no_consent', reason: 'consent was revoked before signing' });
-    }
-    const outflows = stepOutflows(summary);
-    const overLimit = await checkLimits(job, grant, outflows);
-    if (overLimit) return refuse(job, overLimit);
-    let signed: string[];
-    try {
-      signed = await signer.signTransactions({ wallet, intent, transactions });
-    } catch (error) {
-      if (error instanceof SignerRefusal) return refuse(job, { rule: error.rule, reason: error.message });
-      throw error;
-    }
-    const tampered = checkSignedTransactions({ wallet, intent, prepared: transactions, signed });
-    if (tampered) return refuse(job, tampered);
-    // Recorded with the signed bytes, before submit, so a crash cannot let a
-    // step escape its window; voided if the intent never lands.
-    const saved = await advance(job, 'signed', { format, intent, prepared: transactions, signed }, {
-      record: [...outflows].map(([asset, amount]) => ({
-        wallet,
+      const { intent, transactions } = result;
+      const mismatch = checkPreparedAgainstIntent({ wallet, intent, transactions, format });
+      if (mismatch) return refuse(job, mismatch);
+      const summary = await summarizePrepared({ intent, transactions }, wallet, simulator);
+      const refusal = checkPrepared(policy, {
         deploymentId: job.deploymentId,
-        asset,
-        amount: amount.toString(),
-      })),
-    });
-    return submit(saved);
-  };
-
-  /** Submit a `signed` job's saved transactions, then track the intent. */
-  const submit = async (job: StepJob): Promise<void> => {
-    let state: ProtocolIntentState;
-    try {
-      state = await client.submit(job.progress.intent!, job.progress.signed!);
-    } catch (error) {
-      // The API may have accepted it; the next claim reads the intent first.
-      report(error, { jobId: job.id, phase: 'submit' });
-      return park(job, backoff(job.attempts + 1), job.attempts + 1);
-    }
-    return track(await advance(job, 'submitted'), state);
-  };
-
-  /** Follow a submitted intent until it settles or this claim's time is up. */
-  const track = async (initial: StepJob, first?: ProtocolIntentState): Promise<void> => {
-    let job = initial;
-    const deadline = clock.now() + trackForMs;
-    let state = first;
-    for (;;) {
-      if (state === undefined) {
-        try {
-          state = await client.intents.get(job.progress.intent!.executionId);
-        } catch (error) {
-          report(error, { jobId: job.id, phase: 'intent' });
-        }
+        prepared: { intent, transactions },
+        summary,
+        simulates: true,
+      });
+      if (refusal) return refuse(job, refusal);
+      if (!(await store.jobs.renew(job.id, worker, leaseUntil().until))) throw new LostLease();
+      // Consent can be revoked or changed while the step was prepared and simulated.
+      const grant = await consentFor(job);
+      if (!grant) {
+        return finish(job, 'skipped', { code: 'no_consent', reason: 'consent was revoked before signing' });
       }
-      if (state !== undefined) {
-        const signatures = state.transactions.map((transaction) => transaction.signature);
-        switch (state.state) {
-          case 'completed':
-            return finish(job, 'completed', { code: 'completed' }, { ...job.progress, signatures });
-          case 'chain_failed':
-            return finish(
-              job,
-              'chain_failed',
-              {
-                code: 'chain_failed',
-                detail: state.transactions.filter((transaction) => transaction.error).map(({ index, error }) => ({ index, error })),
-              },
-              { ...job.progress, signatures },
-            );
-          case 'rejected':
-            return finish(job, 'rejected', { code: 'intent_rejected' }, { ...job.progress, signatures });
-          case 'expired':
-            return prepareAgain(job);
-          case 'prepared':
-            // Not submitted yet: submit the saved bytes (never signs again).
-            if (job.state === 'signed') return submit(job);
-            break;
-          case 'submitted_unknown':
-            if (job.state !== 'submitted_unknown') job = await advance(job, 'submitted_unknown', { signatures });
-            break;
-          default:
-            if (job.state === 'signed') job = await advance(job, 'submitted', { signatures });
-        }
+      const outflows = stepOutflows(summary);
+      const overLimit = await checkLimits(job, grant, outflows);
+      if (overLimit) return refuse(job, overLimit);
+      // The signer gets copies; the checks below compare against a baseline it never had.
+      const baseline = transactions.map(({ index, transactionBase64 }) => ({ index, transactionBase64 }));
+      let signed: string[];
+      try {
+        signed = await signer.signTransactions({
+          wallet,
+          intent: structuredClone(intent),
+          transactions: baseline.map((transaction) => ({ ...transaction })),
+        });
+      } catch (error) {
+        if (error instanceof SignerRefusal) return refuse(job, { rule: error.rule, reason: error.message });
+        throw error;
       }
-      if (clock.now() + trackIntervalMs > deadline) {
+      const tampered = checkSignedTransactions({ wallet, intent, prepared: baseline, signed: [...signed] });
+      if (tampered) return refuse(job, tampered);
+      // Recorded with the signed bytes, before submit, so a crash cannot let a
+      // step escape its window; voided if the intent never lands.
+      const saved = await advance(job, 'signed', { format, intent, prepared: baseline, signed }, {
+        record: [...outflows].map(([asset, amount]) => ({
+          wallet,
+          deploymentId: job.deploymentId,
+          asset,
+          amount: amount.toString(),
+        })),
+      });
+      return submit(saved);
+    };
+
+    /** Submit a `signed` job's saved transactions, then track the intent. */
+    const submit = async (job: StepJob): Promise<void> => {
+      let state: ProtocolIntentState;
+      try {
+        state = await client.submit(job.progress.intent!, job.progress.signed!);
+      } catch (error) {
+        // The API may have accepted it; the next claim reads the intent first.
+        report(error, { jobId: job.id, phase: 'submit' });
         return park(job, backoff(job.attempts + 1), job.attempts + 1);
       }
-      await clock.sleep(trackIntervalMs);
-      if (!(await store.jobs.renew(job.id, worker, leaseUntil().until))) throw new LostLease();
-      state = undefined;
-    }
-  };
-
-  /** An expired intent is prepared again once, with a new idempotency key. */
-  const prepareAgain = async (job: StepJob): Promise<void> => {
-    if (job.progress.generation >= 1) {
-      return finish(job, 'expired', { code: 'expired', reason: 'the intent expired again after preparing it a second time' });
-    }
-    const fresh = await advance(
-      job,
-      'running',
-      { generation: job.progress.generation + 1, intent: undefined, prepared: undefined, signed: undefined, signatures: undefined },
-      { void: true },
-    );
-    return attempt(fresh);
-  };
-
-  /** A job that had signed: read the intent before doing anything else. */
-  const reconcile = async (job: StepJob): Promise<void> => {
-    let state: ProtocolIntentState;
-    try {
-      state = await client.intents.get(job.progress.intent!.executionId);
-    } catch (error) {
-      report(error, { jobId: job.id, phase: 'reconcile' });
-      return park(job, backoff(job.attempts + 1), job.attempts + 1);
-    }
-    return track(job, state);
-  };
-
-  const runStep = async (job: StepJob) => {
-    try {
-      if (job.state === 'running') {
-        // A lapsed claim before signing starts over: prepare is idempotent.
-        await attempt(job);
-      } else {
-        await reconcile(job);
-      }
-    } catch (error) {
-      if (error instanceof LostLease) return;
-      report(error, { jobId: job.id, phase: job.state });
-      const current = await store.jobs.get(job.id);
-      if (!current || current.kind !== 'step' || current.lease?.worker !== worker) return;
-      const attempts = current.attempts + 1;
-      if (current.state === 'running') {
-        if (attempts >= maxAttempts) {
-          await finish(current, 'failed', { code: 'error', reason: message(error) }).catch(() => undefined);
-        } else {
-          // Nothing was signed: let other jobs of the wallet run meanwhile.
-          await store.jobs.transition(current.id, {
-            worker,
-            from: 'running',
-            to: 'queued',
-            now: clock.now(),
-            notBefore: clock.now() + backoff(attempts),
-            attempts,
-          });
-        }
-      } else {
-        // Signed or later: never fail blind; read the intent next time.
-        await park(current, backoff(attempts), attempts).catch(() => undefined);
-      }
-    }
-  };
-
-  // -------------------------------------------------------------------------
-  // Delivery jobs
-  // -------------------------------------------------------------------------
-
-  const runDelivery = async (job: DeliveryJob) => {
-    const { delivery } = job;
-    const handler = handlers.get(delivery.name);
-    const ctx: HandlerContext<TTypes> = {
-      client,
-      trigger: { name: delivery.name, id: delivery.id, source: delivery.source, receivedAt: delivery.receivedAt },
-      consents: {
-        async list(query = {}) {
-          const grants = await store.consent.active({
-            deploymentId: client.deploymentId,
-            ...(query.step !== undefined ? { step: query.step } : {}),
-            now: clock.now(),
-          });
-          return query.instanceId === undefined
-            ? grants
-            : grants.filter((grant) => grant.instanceId === null || grant.instanceId === query.instanceId);
-        },
-      },
-      step(step, request, stepOptions = {}) {
-        return {
-          step,
-          wallet: request.wallet,
-          ...(request.instance !== undefined ? { instance: request.instance } : {}),
-          args: { ...(request.args ?? {}) },
-          ...(stepOptions.cooldown !== undefined ? { cooldownMs: durationMs(stepOptions.cooldown) } : {}),
-        };
-      },
+      return track(await advance(job, 'submitted'), state);
     };
-    try {
-      const requests = handler ? ((await handler(delivery.payload, ctx)) ?? []) : [];
-      const steps = new Map<string, NewStepJob>();
-      for (const request of requests) {
-        if (typeof request?.step !== 'string' || typeof request.wallet !== 'string' || request.wallet === '') {
-          throw new TypeError(`handler for ${delivery.name} returned a step request without a step or wallet`);
+
+    /** Follow a submitted intent until it settles or this claim's time is up. */
+    const track = async (initial: StepJob, first?: ProtocolIntentState): Promise<void> => {
+      let job = initial;
+      const deadline = clock.now() + trackForMs;
+      let state = first;
+      for (;;) {
+        if (state === undefined) {
+          try {
+            state = await client.intents.get(job.progress.intent!.executionId);
+          } catch (error) {
+            report(error, { jobId: job.id, phase: 'intent' });
+          }
         }
-        const id = stepJobId(delivery.id, request);
-        if (!steps.has(id)) steps.set(id, { id, deploymentId: client.deploymentId, request });
+        if (state !== undefined) {
+          const signatures = state.transactions.map((transaction) => transaction.signature);
+          switch (state.state) {
+            case 'completed':
+              return finish(job, 'completed', { code: 'completed' }, { ...job.progress, signatures });
+            case 'chain_failed':
+              return finish(
+                job,
+                'chain_failed',
+                {
+                  code: 'chain_failed',
+                  detail: state.transactions.filter((transaction) => transaction.error).map(({ index, error }) => ({ index, error })),
+                },
+                { ...job.progress, signatures },
+              );
+            case 'rejected':
+              return finish(job, 'rejected', { code: 'intent_rejected' }, { ...job.progress, signatures });
+            case 'expired':
+              return prepareAgain(job);
+            case 'prepared':
+              // Not submitted yet: submit the saved bytes (never signs again).
+              if (job.state === 'signed') return submit(job);
+              break;
+            case 'submitted_unknown':
+              if (job.state !== 'submitted_unknown') job = await advance(job, 'submitted_unknown', { signatures });
+              break;
+            default:
+              if (job.state === 'signed') job = await advance(job, 'submitted', { signatures });
+          }
+        }
+        if (clock.now() + trackIntervalMs > deadline) {
+          return park(job, backoff(job.attempts + 1), job.attempts + 1);
+        }
+        await clock.sleep(trackIntervalMs);
+        if (!(await store.jobs.renew(job.id, worker, leaseUntil().until))) throw new LostLease();
+        state = undefined;
       }
-      if (!(await store.jobs.completeDelivery(job.id, worker, [...steps.values()], clock.now()))) {
-        throw new LostLease();
+    };
+
+    /** An expired intent is prepared again once, with a new idempotency key. */
+    const prepareAgain = async (job: StepJob): Promise<void> => {
+      if (job.progress.generation >= 1) {
+        return finish(job, 'expired', { code: 'expired', reason: 'the intent expired again after preparing it a second time' });
       }
-    } catch (error) {
-      if (error instanceof LostLease) return;
-      report(error, { jobId: job.id, phase: 'handler' });
-      const attempts = job.attempts + 1;
-      await store.jobs.transition(job.id, {
-        worker,
-        from: 'running',
-        to: attempts >= maxAttempts ? 'failed' : 'queued',
-        now: clock.now(),
-        attempts,
-        notBefore: clock.now() + backoff(attempts),
-        ...(attempts >= maxAttempts ? { outcome: { code: 'handler_failed', reason: message(error) } } : {}),
-      });
-    }
+      const fresh = await advance(
+        job,
+        'running',
+        { generation: job.progress.generation + 1, intent: undefined, prepared: undefined, signed: undefined, signatures: undefined },
+        { void: true },
+      );
+      return attempt(fresh);
+    };
+
+    /** A job that had signed: read the intent before doing anything else. */
+    const reconcile = async (job: StepJob): Promise<void> => {
+      let state: ProtocolIntentState;
+      try {
+        state = await client.intents.get(job.progress.intent!.executionId);
+      } catch (error) {
+        report(error, { jobId: job.id, phase: 'reconcile' });
+        return park(job, backoff(job.attempts + 1), job.attempts + 1);
+      }
+      return track(job, state);
+    };
+
+    const runStep = async (job: StepJob) => {
+      try {
+        if (job.state === 'running') {
+          // A lapsed claim before signing starts over: prepare is idempotent.
+          await attempt(job);
+        } else {
+          await reconcile(job);
+        }
+      } catch (error) {
+        if (error instanceof LostLease) return;
+        report(error, { jobId: job.id, phase: job.state });
+        const current = await store.jobs.get(job.id);
+        if (!current || current.kind !== 'step' || current.lease?.worker !== worker) return;
+        const attempts = current.attempts + 1;
+        if (current.state === 'running') {
+          if (attempts >= maxAttempts) {
+            await finish(current, 'failed', { code: 'error', reason: message(error) }).catch(() => undefined);
+          } else {
+            // Nothing was signed: let other jobs of the wallet run meanwhile.
+            await store.jobs.transition(current.id, {
+              worker,
+              from: 'running',
+              to: 'queued',
+              now: clock.now(),
+              notBefore: clock.now() + backoff(attempts),
+              attempts,
+            });
+          }
+        } else {
+          // Signed or later: never fail blind; read the intent next time.
+          await park(current, backoff(attempts), attempts).catch(() => undefined);
+        }
+      }
+    };
+
+    // -------------------------------------------------------------------------
+    // Delivery jobs
+    // -------------------------------------------------------------------------
+
+    const runDelivery = async (job: DeliveryJob) => {
+      const { delivery } = job;
+      const handler = handlers.get(delivery.name);
+      const ctx: HandlerContext<TTypes> = {
+        client,
+        trigger: { name: delivery.name, id: delivery.id, source: delivery.source, receivedAt: delivery.receivedAt },
+        consents: {
+          async list(query = {}) {
+            const grants = await store.consent.active({
+              deploymentId: client.deploymentId,
+              ...(query.step !== undefined ? { step: query.step } : {}),
+              now: clock.now(),
+            });
+            return query.instanceId === undefined
+              ? grants
+              : grants.filter((grant) => grant.instanceId === null || grant.instanceId === query.instanceId);
+          },
+        },
+        step(step, request, stepOptions = {}) {
+          return {
+            step,
+            wallet: request.wallet,
+            ...(request.instance !== undefined ? { instance: request.instance } : {}),
+            args: { ...(request.args ?? {}) },
+            ...(stepOptions.cooldown !== undefined ? { cooldownMs: durationMs(stepOptions.cooldown) } : {}),
+          };
+        },
+      };
+      try {
+        const requests = handler ? ((await handler(delivery.payload, ctx)) ?? []) : [];
+        const steps = new Map<string, NewStepJob>();
+        for (const request of requests) {
+          if (typeof request?.step !== 'string' || typeof request.wallet !== 'string' || request.wallet === '') {
+            throw new TypeError(`handler for ${delivery.name} returned a step request without a step or wallet`);
+          }
+          const id = stepJobId(delivery.id, request);
+          if (!steps.has(id)) steps.set(id, { id, deploymentId: client.deploymentId, request });
+        }
+        if (!(await store.jobs.completeDelivery(job.id, worker, [...steps.values()], clock.now()))) {
+          throw new LostLease();
+        }
+      } catch (error) {
+        if (error instanceof LostLease) return;
+        report(error, { jobId: job.id, phase: 'handler' });
+        const attempts = job.attempts + 1;
+        await store.jobs.transition(job.id, {
+          worker,
+          from: 'running',
+          to: attempts >= maxAttempts ? 'failed' : 'queued',
+          now: clock.now(),
+          attempts,
+          notBefore: clock.now() + backoff(attempts),
+          ...(attempts >= maxAttempts ? { outcome: { code: 'handler_failed', reason: message(error) } } : {}),
+        });
+      }
+    };
+
+    return { runStep, runDelivery };
   };
 
   // -------------------------------------------------------------------------
   // Workers
   // -------------------------------------------------------------------------
 
+  let claims = 0;
   const runOnce = async () => {
-    const job: Job | null = await store.jobs.claimNext({ worker, leaseMs, now: clock.now() });
+    await bound();
+    claims += 1;
+    const holder = `${worker}#${claims}`;
+    const job: Job | null = await store.jobs.claimNext({ worker: holder, leaseMs, now: clock.now() });
     if (!job) return false;
-    if (job.kind === 'delivery') await runDelivery(job);
-    else await runStep(job);
+    const runner = forClaim(holder);
+    if (job.kind === 'delivery') await runner.runDelivery(job);
+    else await runner.runStep(job);
     return true;
   };
 
@@ -810,6 +852,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
 
   const consent: ConsentApi = {
     async proofMessage(fields) {
+      await bound();
       const normalized = normalizeConsent(fields);
       if (normalized.deploymentId !== client.deploymentId) {
         throw new ConsentError('invalid_fields', `consent is for ${normalized.deploymentId}, this client runs ${client.deploymentId}`);
@@ -823,6 +866,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       return { message, bytes: new TextEncoder().encode(message), nonce, issuedAt };
     },
     async grant(input) {
+      await bound();
       const now = clock.now();
       const normalized = normalizeConsent(input);
       if (normalized.deploymentId !== client.deploymentId) {
@@ -870,10 +914,12 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       }
       return { grant, warnings };
     },
-    revoke(input) {
+    async revoke(input) {
+      await bound();
       return store.consent.revoke({ ...input, deploymentId: client.deploymentId, now: clock.now() });
     },
-    list(input) {
+    async list(input) {
+      await bound();
       return store.consent.list(input);
     },
   };
@@ -914,7 +960,22 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     },
     follow(instanceId, followOptions = {}) {
       if (!client.events) throw new Error('this client cannot follow event streams');
-      return client.events(instanceId, {
+      let stopped = false;
+      let queue: Promise<void> = Promise.resolve();
+      // The stream moves past an event before its handler runs, so an event
+      // whose accept fails is retried here, in order, until it is stored.
+      const acceptUntilStored = async (delivery: Omit<Delivery, 'receivedAt'>) => {
+        for (let failures = 0; !stopped && !followOptions.signal?.aborted; failures += 1) {
+          try {
+            await accept(delivery);
+            return;
+          } catch (error) {
+            report(error, { phase: 'stream' });
+            await clock.sleep(Math.min(1000 * 2 ** failures, 30_000));
+          }
+        }
+      };
+      const subscription = client.events(instanceId, {
         ...(followOptions.lastEventId !== undefined ? { lastEventId: followOptions.lastEventId } : {}),
         ...(followOptions.signal ? { signal: followOptions.signal } : {}),
         onEvent(streamEvent) {
@@ -930,14 +991,30 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
             occurredAt: data.at,
             source: 'stream',
           };
-          accept({ id: `stream:${data.instanceId}:${data.id}`, name: streamEvent.event, source: 'stream', payload: event }).catch(
-            (error) => report(error, { phase: 'stream' }),
-          );
+          const delivery = {
+            id: `stream:${encodeURIComponent(data.instanceId)}:${data.id}`,
+            name: streamEvent.event,
+            source: 'stream' as const,
+            payload: event,
+          };
+          queue = queue.then(() => acceptUntilStored(delivery));
         },
         onError(error) {
           report(error, { phase: 'stream' });
         },
       });
+      return {
+        get lastEventId() {
+          return subscription.lastEventId;
+        },
+        get closed() {
+          return subscription.closed;
+        },
+        close() {
+          stopped = true;
+          subscription.close();
+        },
+      };
     },
     runOnce,
     async drain(drainOptions = {}) {

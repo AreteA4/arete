@@ -120,10 +120,17 @@ export interface TransitionInput {
  * these; a custom store must pass it.
  */
 export interface AutomationStore {
+  /**
+   * Tie the store to one deployment. The first call records it; a call for
+   * another deployment throws `StoreDeploymentError`. Use a separate store
+   * (for Postgres, a separate schema) per deployment.
+   */
+  bindDeployment(deploymentId: string): Promise<void>;
   readonly deliveries: {
     /**
      * Record the delivery and queue its delivery job, atomically. `false`
-     * when a delivery with this id was already accepted.
+     * when a delivery with this id was already accepted, or its job still
+     * exists after the delivery id was pruned.
      */
     accept(delivery: Delivery, now: number): Promise<boolean>;
     /** Forget accepted delivery ids older than `before`; returns how many. */
@@ -183,3 +190,10 @@ export interface AutomationStore {
 }
 
 export type { DeliveryJob, StepJob };
+
+export class StoreDeploymentError extends Error {
+  constructor(bound: string, requested: string) {
+    super(`this store belongs to deployment ${bound}, not ${requested}; use one store per deployment`);
+    this.name = 'StoreDeploymentError';
+  }
+}

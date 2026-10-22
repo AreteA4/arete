@@ -104,6 +104,8 @@ export interface FakeProtocolOptions {
   onPrepare?: (call: PrepareCall) => void | Promise<void>;
   /** Decide what submit does: accept, throw before accepting, or accept then throw (a lost response). */
   submitMode?: (call: number) => 'accept' | 'fail-before' | 'fail-after';
+  /** Runs inside submit, before it answers. */
+  onSubmit?: (call: number) => void | Promise<void>;
   /** Reject prepare with this code. */
   rejectPrepare?: (step: string) => string | undefined;
   /** The program the prepared transactions invoke. */
@@ -190,6 +192,7 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
       const executionId = typeof intent === 'string' ? intent : intent.executionId;
       const record = intents.get(executionId);
       if (!record) throw new Error(`no intent ${executionId}`);
+      await options.onSubmit?.(submitCalls.length + 1);
       const mode = options.submitMode?.(submitCalls.length + 1) ?? 'accept';
       if (mode === 'fail-before') {
         submitCalls.push({ executionId, signed: [] });

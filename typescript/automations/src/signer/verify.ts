@@ -90,8 +90,7 @@ export function checkPreparedAgainstIntent(input: {
         reason: `prepared transaction ${committed.index} is not the message the intent committed to`,
       };
     }
-    const isV1 = read.decoded.version === 1;
-    if (isV1 !== (format === 'v1')) {
+    if (read.decoded.version !== (format === 'v1' ? 1 : 0)) {
       return {
         rule: 'transaction_format',
         reason: `prepared transaction ${committed.index} is not a ${format} transaction`,
@@ -110,6 +109,10 @@ export function checkPreparedAgainstIntent(input: {
 /**
  * Whether `signed` is `prepared` with only the wallet's signature slot
  * filled, by the wallet. `null` when it is.
+ *
+ * `prepared` is the baseline: pass a copy the signer never had, because a
+ * signer that can change the objects it was given could change the
+ * baseline too.
  */
 export function checkSignedTransactions(input: {
   readonly wallet: string;
@@ -150,6 +153,21 @@ export function checkSignedTransactions(input: {
           reason: `the signer changed signature ${other} of transaction ${index}, which is not the wallet's`,
         };
       }
+    }
+    // Nothing but the wallet's 64 signature bytes may differ, so the same
+    // message and signatures under another encoding are refused too.
+    const at = after.decoded.signatureOffset + 64 * slot;
+    const beforeSlot = signerSlot(before.decoded, wallet);
+    if (
+      after.bytes.length !== before.bytes.length ||
+      before.decoded.signatureOffset + 64 * beforeSlot !== at ||
+      !sameBytes(after.bytes.subarray(0, at), before.bytes.subarray(0, at)) ||
+      !sameBytes(after.bytes.subarray(at + 64), before.bytes.subarray(at + 64))
+    ) {
+      return {
+        rule: 'signer_modified',
+        reason: `the signer changed bytes of transaction ${index} outside the wallet's signature`,
+      };
     }
     const message = after.bytes.subarray(after.decoded.message.start, after.decoded.message.end);
     const signature = after.decoded.signatures[slot]!;

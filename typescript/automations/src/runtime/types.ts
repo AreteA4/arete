@@ -125,6 +125,6 @@ export type Job = DeliveryJob | StepJob;
  * wallet on several instances.
  */
 export function stepJobId(deliveryId: string, request: Pick<StepRequest, 'step' | 'wallet' | 'instance'>): string {
-  const base = `${deliveryId}:${request.step}:${request.wallet}`;
-  return request.instance === undefined ? base : `${base}:${request.instance}`;
+  const base = `${deliveryId}:${encodeURIComponent(request.step)}:${request.wallet}`;
+  return request.instance === undefined ? base : `${base}:${encodeURIComponent(request.instance)}`;
 }
