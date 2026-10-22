@@ -51,12 +51,28 @@ export interface DelegationStatus {
  * provider's own policy refused the transaction. The job ends `refused`
  * with this rule instead of being retried.
  */
+const REFUSAL_BRAND = Symbol.for('@usearete/automations/SignerRefusal');
+
 export class SignerRefusal extends Error {
   readonly rule: 'provider_policy' | 'signer_unavailable';
+  /** Recognised across entry points: each bundle has its own copy of this class. */
+  readonly [REFUSAL_BRAND] = true;
 
   constructor(message: string, rule: 'provider_policy' | 'signer_unavailable' = 'provider_policy') {
     super(message);
     this.name = 'SignerRefusal';
     this.rule = rule;
   }
+}
+
+/**
+ * Whether `error` is a {@link SignerRefusal}, including one thrown by a
+ * signer from another entry point (`@usearete/automations/privy` is a
+ * separate bundle, so `instanceof` would miss it).
+ */
+export function isSignerRefusal(error: unknown): error is SignerRefusal {
+  return (
+    error instanceof SignerRefusal ||
+    (typeof error === 'object' && error !== null && (error as Record<symbol, unknown>)[REFUSAL_BRAND] === true)
+  );
 }

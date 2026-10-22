@@ -325,6 +325,19 @@ describe('robust list-view sources', () => {
     expect((await deliveries(store)).map((delivery) => (delivery.payload as ViewTrigger).value)).toEqual(['a']);
   });
 
+  it('evaluates a reconnect snapshot as a whole', async () => {
+    const { store, make } = setup();
+    const view = markets();
+    view.set({ id: 'a', apyBps: 400 }, { id: 'b', apyBps: 600 });
+    const handle = make('r').source(rateSource(view));
+    await settle();
+    // While disconnected, b left and c arrived and leads; a was never best.
+    view.reconnect({ id: 'a', apyBps: 500 }, { id: 'c', apyBps: 700 });
+    await settle();
+    await handle.stop();
+    expect((await deliveries(store)).map((delivery) => (delivery.payload as ViewTrigger).value)).toEqual(['c']);
+  });
+
   it('never fires a pending change of a row that stopped passing the filter', async () => {
     const { store, make, clock } = setup();
     const view = new FakeListView<Position & { watched: boolean }>((position) => position.owner);
