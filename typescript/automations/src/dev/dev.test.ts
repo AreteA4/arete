@@ -333,6 +333,18 @@ describe('runDev', () => {
     expect(JSON.parse(readFileSync(join(devDir, 'automations', 'cursors.json'), 'utf8'))).toEqual({ 'inst-1': 'cursor-41' });
   });
 
+  it('refuses a client generated for another deployment than the session’s', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dev-project-'));
+    mkdirSync(join(root, '.arete', 'dev'), { recursive: true });
+    writeFileSync(join(root, '.arete', 'dev', 'session.json'), JSON.stringify({ rpcUrl: 'http://127.0.0.1:1', deploymentId: 'dep-new' }));
+    writeFileSync(join(root, 'a.mjs'), "export default { kind: 'automations', protocol: { name: 'p', deployment: {} }, setup() {} };\n");
+    await expect(
+      runDev({ root, entry: 'a.mjs', apiKey: 'k', webhookSecret: SECRET, port: 0 }, () => undefined, {
+        createClient: () => ({ deploymentId: 'dep-old', definition: { name: 'p', deployment: { deploymentId: 'dep-old', environment: 'dev' } } }),
+      }),
+    ).rejects.toThrow(/names deployment dep-old, but the dev environment runs dep-new; run `a4 dev sdk`/);
+  });
+
   it('refuses the published client: a4 dev never targets mainnet', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dev-project-'));
     mkdirSync(join(root, '.arete', 'dev'), { recursive: true });

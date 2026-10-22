@@ -294,8 +294,14 @@ export async function runDev(
           'a4 dev runs automations against the dev environment only: `a4 dev sdk` generates its client.',
       );
     }
+    // A stale client would run the workers and the event pump against the
+    // old deployment. a4 dev up restarts the runner once the client is
+    // regenerated (it watches the generated client).
     if (client.deploymentId !== session.deploymentId) {
-      log(`the generated client names deployment ${client.deploymentId}, but the dev environment runs ${session.deploymentId}; a4 dev regenerates it after a deploy`);
+      throw new Error(
+        `the generated client names deployment ${client.deploymentId}, but the dev environment runs ${session.deploymentId}; ` +
+          'run `a4 dev sdk` to regenerate it',
+      );
     }
 
     // One store per deployment: a redeploy to a new deployment starts afresh

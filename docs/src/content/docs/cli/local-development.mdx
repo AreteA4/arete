@@ -504,7 +504,9 @@ and `tsx` for TypeScript, in the project) with:
 
 Its output is printed as `automations │ ...` lines, with every outcome. It
 restarts when a file in the entry's directory (or the entry itself, at the
-project root), a `watch` path or the generated client changes.
+project root), a `watch` path or the generated client changes. The client must
+name the environment's current deployment: after a redeploy without a new
+client (`--no-sdk`), the automations stop until `a4 dev sdk` regenerates it.
 
 To run your own server instead (its webhook route and consent routes), set
 `forward` to its webhook URL. `a4 dev up` then only delivers the signed
