@@ -88,6 +88,8 @@ export interface StepProgress {
   readonly signed?: readonly string[];
   /** Transaction signatures once the intent has them. */
   readonly signatures?: readonly (string | null)[];
+  /** What each transaction moves out of the wallet (decimal amounts per asset), saved at signing. */
+  readonly outflows?: readonly { readonly index: number; readonly amounts: Readonly<Record<string, string>> }[];
 }
 
 interface JobBase {
