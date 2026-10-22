@@ -432,6 +432,9 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       const fee = await chargedFees([transaction.signature]);
       add(SOL, fee ?? BigInt(amounts[SOL] ?? '0'));
     }
+    // The rebuilt entries keep the signing time, so a late failure check
+    // cannot restart the window for spending that is already ageing out.
+    const recordedAt = job.progress.signedAt;
     return {
       void: true,
       record: [...spent].map(([asset, amount]) => ({
@@ -439,6 +442,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
         deploymentId: job.deploymentId,
         asset,
         amount: amount.toString(),
+        ...(recordedAt !== undefined ? { recordedAt } : {}),
       })),
     };
   };
@@ -715,7 +719,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
         index,
         amounts: Object.fromEntries([...amounts].map(([asset, amount]) => [asset, amount.toString()])),
       }));
-      const saved = await advance(job, 'signed', { format, intent, prepared: baseline, signed, outflows: perTransaction }, {
+      const saved = await advance(job, 'signed', { format, intent, prepared: baseline, signed, outflows: perTransaction, signedAt: clock.now() }, {
         record: [...outflows].map(([asset, amount]) => ({
           wallet,
           deploymentId: job.deploymentId,
