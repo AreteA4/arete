@@ -324,7 +324,7 @@ fn read_manifest(root: &Path) -> Result<Option<toml::Value>> {
     match std::fs::read_to_string(&path) {
         Ok(text) => toml::from_str(&text)
             .map(Some)
-            .with_context(|| format!("Invalid {}", path.display())),
+            .map_err(|error| anyhow!("Invalid {}: {error}", path.display())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).with_context(|| format!("Failed to read {}", path.display())),
     }

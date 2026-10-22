@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -70,7 +70,7 @@ impl AutomationsConfig {
                 return Err(error).with_context(|| format!("Failed to read {}", path.display()))
             }
         };
-        Self::parse(&source, root).with_context(|| format!("Invalid {}", path.display()))
+        Self::parse(&source, root).map_err(|error| anyhow!("Invalid {}: {error:#}", path.display()))
     }
 
     fn parse(source: &str, root: &Path) -> Result<Option<Self>> {
@@ -470,6 +470,23 @@ mod tests {
         ] {
             assert!(parse(bad, dir.path()).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_load_error_says_what_is_wrong() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("arete.toml"),
+            "[dev.automations]\nentry = \"automations.ts\"\n",
+        )
+        .unwrap();
+        // The top-level message is all `a4` prints, so it carries the cause.
+        let error = AutomationsConfig::load(dir.path()).unwrap_err().to_string();
+        assert!(error.starts_with("Invalid "), "{error}");
+        assert!(
+            error.contains("entry `automations.ts` is not a file"),
+            "{error}"
+        );
     }
 
     #[test]

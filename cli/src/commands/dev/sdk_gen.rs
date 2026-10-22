@@ -22,7 +22,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use arete_mcp::dev::DevProject;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -102,7 +102,7 @@ pub fn configured_targets(root: &Path) -> Result<Vec<InstallTarget>> {
             return Err(error).with_context(|| format!("Failed to read {}", path.display()))
         }
     };
-    parse_targets(&source).with_context(|| format!("Invalid {}", path.display()))
+    parse_targets(&source).map_err(|error| anyhow!("Invalid {}: {error:#}", path.display()))
 }
 
 fn parse_targets(source: &str) -> Result<Vec<InstallTarget>> {
