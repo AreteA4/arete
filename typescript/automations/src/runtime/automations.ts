@@ -1149,8 +1149,9 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     // replaying it leaves every row at its latest value.
     if ((await within(attempt, new Promise<void>((resolve) => setTimeout(resolve, 0)))) === ENDED) return;
     while (queued.length > 0) apply(queued.shift()!);
-    // The snapshot already reflects those removals.
-    unmatchedRemoval = false;
+    // A removal that arrived after the snapshot was read may name a row only
+    // the snapshot holds.
+    if (unmatchedRemoval && !(await reconcileRemoval())) return;
     rows = [...rowsByKey.values()];
     for (const [key, value, observed] of source.signals(rows)) {
       if (!attempt.active) return;
