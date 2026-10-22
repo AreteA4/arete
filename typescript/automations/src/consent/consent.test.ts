@@ -437,7 +437,8 @@ describe('consent at run time', () => {
     );
     await h.store.consent.put(
       storedGrant(ALICE, h.clock.now(), {
-        limits: { perExecution: { [SOL]: '2010000' }, perWindow: { [SOL]: { amount: '2100000', windowMs: 3_600_000 } } },
+        // Room for the first step's 2,010,000, but not for its kept 1,010,000 plus another 1,005,000.
+        limits: { perExecution: { [SOL]: '2010000' }, perWindow: { [SOL]: { amount: '2012000', windowMs: 3_600_000 } } },
       }),
     );
     onDeposit(h);
