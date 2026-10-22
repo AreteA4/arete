@@ -17,6 +17,12 @@
  * A value that changed and changed back while no replica was watching is
  * not seen: list and state views hold current state, not history.
  *
+ * Replicas whose views lag each other can still disagree about the order of
+ * values: one stores B while another, behind, still sees A. Give the source
+ * `observedAt` (for example the slot a row was updated at) so an older
+ * observation never replaces a newer one, or run it on one replica
+ * (`exclusive`).
+ *
  * A trigger means "go and look", not the truth: handlers read live state
  * before returning steps, and every step is checked again before signing.
  */
@@ -53,10 +59,20 @@ interface SourceOptionsBase<V> {
   readonly stableFor?: Duration;
 }
 
+type Observed = number | bigint | null | undefined;
+
+function observedOrder(value: Observed): bigint | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) throw new RangeError('observedAt must be an integer');
+  return BigInt(value);
+}
+
 /** One signal for the whole view (for example: which market pays best). */
 export interface AggregateSourceOptions<T, V> extends SourceOptionsBase<V> {
   /** The signal, as JSON. */
   readonly derive: (rows: readonly T[]) => V;
+  /** How recent the rows are (a slot, a sequence); an older observation is ignored. */
+  readonly observedAt?: (rows: readonly T[]) => Observed;
 }
 
 /** One signal per row, kept separately (for example: is this position's health low). */
@@ -66,6 +82,8 @@ export interface RowSourceOptions<T, V> extends SourceOptionsBase<V> {
   readonly derive: (row: T) => V;
   /** Rows to watch; others are ignored. */
   readonly filter?: (row: T) => boolean;
+  /** How recent the row is (a slot, a sequence); an older observation is ignored. */
+  readonly observedAt?: (row: T) => Observed;
 }
 
 export interface ListSource<T = any, V = any> {
@@ -74,10 +92,10 @@ export interface ListSource<T = any, V = any> {
   readonly view: ListViewLike<T>;
   readonly stableForMs: number;
   readonly changed: (previous: V | undefined, next: V) => boolean;
-  /** The keys and values the rows give. */
-  readonly signals: (rows: readonly T[]) => Array<[string, V]>;
-  /** The key and value one changed row gives, or `null` for an aggregate (re-read every row). */
-  readonly rowSignal: ((row: T) => [string, V] | undefined) | null;
+  /** The keys, values and observation orders the rows give. */
+  readonly signals: (rows: readonly T[]) => Array<[string, V, bigint | null]>;
+  /** The key, value and order one changed row gives, or `null` for an aggregate (re-read every row). */
+  readonly rowSignal: ((row: T) => [string, V, bigint | null] | undefined) | null;
 }
 
 export interface AppendSource<T = any> {
@@ -121,25 +139,26 @@ function common<V>(options: SourceOptionsBase<V>) {
 
 /** A source with one signal for the whole list view, under the key `all`. */
 export function fromView<T, V>(view: ListViewLike<T>, options: AggregateSourceOptions<T, V>): ListSource<T, V> {
-  const { derive } = options;
+  const { derive, observedAt } = options;
   return {
     kind: 'list',
     view,
     ...common(options),
-    signals: (rows) => [[AGGREGATE_KEY, derive(rows)]],
+    signals: (rows) => [[AGGREGATE_KEY, derive(rows), observedOrder(observedAt?.(rows))]],
     rowSignal: null,
   };
 }
 
 /** A source with one signal per row of a list view, keyed by `key(row)`. */
 export function fromViewRows<T, V>(view: ListViewLike<T>, options: RowSourceOptions<T, V>): ListSource<T, V> {
-  const { key, derive, filter } = options;
-  const rowSignal = (row: T): [string, V] | undefined => (filter && !filter(row) ? undefined : [key(row), derive(row)]);
+  const { key, derive, filter, observedAt } = options;
+  const rowSignal = (row: T): [string, V, bigint | null] | undefined =>
+    filter && !filter(row) ? undefined : [key(row), derive(row), observedOrder(observedAt?.(row))];
   return {
     kind: 'list',
     view,
     ...common(options),
-    signals: (rows) => rows.map(rowSignal).filter((entry): entry is [string, V] => entry !== undefined),
+    signals: (rows) => rows.map(rowSignal).filter((entry): entry is [string, V, bigint | null] => entry !== undefined),
     rowSignal,
   };
 }
@@ -153,7 +172,7 @@ export function fromAppendView<T>(
   return { kind: 'append', name: options.name, view, ...(options.filter ? { filter: options.filter } : {}) };
 }
 
-export type Evaluation = 'same' | 'pending' | 'changed' | 'delivered' | 'contended';
+export type Evaluation = 'same' | 'pending' | 'changed' | 'delivered' | 'stale' | 'contended';
 
 /**
  * Compare a key's new value with its stored state and move it on by
@@ -166,15 +185,30 @@ export async function evaluateSignal<V>(
   source: ListSource<unknown, V>,
   key: string,
   value: V,
+  observed: bigint | null = null,
 ): Promise<Evaluation> {
   const json = value === undefined ? null : value;
   const hash = canonicalJsonSha256(json);
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const now = clock.now();
     const state = await store.sources.get(source.name, key);
+    const stored = state?.observed === null || state?.observed === undefined ? null : BigInt(state.observed);
+    // A lagging reader must not move the key back to an older value.
+    if (observed !== null && stored !== null && observed < stored) return 'stale';
+    const order = observed === null ? stored : stored === null || observed > stored ? observed : stored;
     const expectedVersion = state?.version ?? null;
-    const write = (next: { hash: string; value: unknown; pending: { hash: string; value: unknown; since: number } | null }, deliver?: { name: string; payload: unknown }) =>
-      store.sources.advance({ source: source.name, key, expectedVersion, next, now, ...(deliver ? { deliver } : {}) });
+    const write = (
+      next: { hash: string; value: unknown; pending: { hash: string; value: unknown; since: number } | null },
+      deliver?: { name: string; payload: unknown },
+    ) =>
+      store.sources.advance({
+        source: source.name,
+        key,
+        expectedVersion,
+        next: { ...next, observed: order === null ? null : order.toString() },
+        now,
+        ...(deliver ? { deliver } : {}),
+      });
     if (state && state.hash === hash) {
       if (state.pending === null) return 'same';
       // The value went back to the stable one before the new one held.

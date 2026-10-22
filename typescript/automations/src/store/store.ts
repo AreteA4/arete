@@ -78,6 +78,8 @@ export interface SourceState {
   readonly generation: number;
   /** A new value waiting out `stableFor`, if any. */
   readonly pending: { readonly hash: string; readonly value: unknown; readonly since: number } | null;
+  /** The newest observation order written (a decimal integer), or `null`. */
+  readonly observed: string | null;
   /** Increments with every write; compare-and-set reads it. */
   readonly version: number;
   readonly updatedAt: number;
@@ -88,10 +90,11 @@ export interface SourceAdvance {
   readonly key: string;
   /** The version read; `null` when there was no state yet. The write fails if it moved. */
   readonly expectedVersion: number | null;
-  readonly next: Pick<SourceState, 'hash' | 'value' | 'pending'>;
+  readonly next: Pick<SourceState, 'hash' | 'value' | 'pending'> & { readonly observed?: string | null };
   /**
    * Accept a delivery in the same atomic step, with id
-   * `view:${source}:${key}:${generation}` (the generation after the write).
+   * `view:${encodeURIComponent(source)}:${encodeURIComponent(key)}:${generation}`
+   * (the generation after the write).
    */
   readonly deliver?: { readonly name: string; readonly payload: unknown };
   readonly now: number;

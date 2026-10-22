@@ -871,14 +871,30 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   // View sources
   // -------------------------------------------------------------------------
 
-  interface SourceRun {
-    stopped: boolean;
+  const ENDED = Symbol('ended');
+
+  /** One watch attempt: its iterator, and a promise that settles when it ends. */
+  interface WatchAttempt {
+    active: boolean;
     iterator?: AsyncIterator<unknown>;
+    ended: Promise<typeof ENDED>;
+    end: () => void;
   }
 
-  const closeIterator = async (run: SourceRun) => {
-    const iterator = run.iterator;
-    run.iterator = undefined;
+  const newAttempt = (): WatchAttempt => {
+    let end = () => undefined as void;
+    const ended = new Promise<typeof ENDED>((resolve) => {
+      end = () => resolve(ENDED);
+    });
+    return { active: true, ended, end };
+  };
+
+  /** Close an attempt: no further work of it runs, and its stream is closed. */
+  const closeAttempt = async (attempt: WatchAttempt) => {
+    attempt.active = false;
+    attempt.end();
+    const iterator = attempt.iterator;
+    attempt.iterator = undefined;
     try {
       await iterator?.return?.();
     } catch {
@@ -886,107 +902,168 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     }
   };
 
-  const watchList = async (source: ListSource, run: SourceRun) => {
-    const latest = new Map<string, unknown>();
+  /** `promise`, unless the attempt ends first. */
+  const within = <T>(attempt: WatchAttempt, promise: Promise<T>): Promise<T | typeof ENDED> =>
+    Promise.race([promise, attempt.ended]);
+
+  const watchList = async (source: ListSource, attempt: WatchAttempt) => {
+    // Signals are evaluated against the rows as of each event, in order.
+    const latest = new Map<string, [unknown, bigint | null]>();
+    const rowsByKey = new Map<string, unknown>();
+    let rows: readonly unknown[] = [];
     const waiting = new Set<string>();
-    const current = (key: string): unknown =>
-      source.rowSignal
-        ? latest.get(key)
-        : source.signals(source.view.getSync() ?? []).find(([candidate]) => candidate === key)?.[1];
-    const evaluate = async (key: string, value: unknown): Promise<void> => {
-      const result = await evaluateSignal(store, clock, source, key, value);
+    const current = (key: string): [unknown, bigint | null] | undefined => {
+      if (source.rowSignal) return latest.get(key);
+      const signal = source.signals(rows).find(([candidate]) => candidate === key);
+      return signal ? [signal[1], signal[2]] : undefined;
+    };
+    const evaluate = async (key: string, value: unknown, observed: bigint | null): Promise<void> => {
+      const result = await evaluateSignal(store, clock, source, key, value, observed);
       if (result === 'pending' && !waiting.has(key)) {
         waiting.add(key);
-        void clock.sleep(source.stableForMs).then(async () => {
-          waiting.delete(key);
-          if (run.stopped) return;
-          const value = current(key);
-          if (value !== undefined) await evaluate(key, value).catch((error) => report(error, { phase: 'source' }));
-        });
+        void clock.sleep(source.stableForMs).then(() => settle(key));
       }
     };
-    for (const [key, value] of source.signals(await source.view.get())) {
-      if (source.rowSignal) latest.set(key, value);
-      await evaluate(key, value);
+    // A pending value is promoted when its timer fires; a failed write is
+    // retried until it lands or the attempt ends.
+    const settle = async (key: string) => {
+      waiting.delete(key);
+      for (let failures = 0; attempt.active; failures += 1) {
+        const signal = current(key);
+        if (!signal) return;
+        try {
+          await evaluate(key, signal[0], signal[1]);
+          return;
+        } catch (error) {
+          report(error, { phase: 'source' });
+          if ((await within(attempt, clock.sleep(backoff(failures + 1)))) === ENDED) return;
+        }
+      }
+    };
+    const initial = await within(attempt, source.view.get());
+    if (initial === ENDED || !attempt.active) return;
+    rows = initial;
+    for (const [key, value, observed] of source.signals(initial)) {
+      if (!attempt.active) return;
+      if (source.rowSignal) latest.set(key, [value, observed]);
+      await evaluate(key, value, observed);
     }
+    if (!attempt.active) return;
     const iterator = source.view.watchRich({ withSnapshot: true })[Symbol.asyncIterator]();
-    run.iterator = iterator;
-    while (!run.stopped) {
-      const next = await iterator.next();
-      if (next.done) return;
+    attempt.iterator = iterator;
+    // The stream replays the snapshot first; an aggregate waits for it to
+    // complete so it never evaluates a half-loaded view.
+    let replaying = !source.rowSignal;
+    while (attempt.active) {
+      const next = await within(attempt, iterator.next());
+      if (next === ENDED || next.done || !attempt.active) return;
       const update = next.value;
       if (source.rowSignal) {
         if (update.type !== 'created' && update.type !== 'updated') continue;
         const signal = source.rowSignal(update.type === 'created' ? update.data : update.after);
         if (!signal) continue;
-        latest.set(signal[0], signal[1]);
-        await evaluate(signal[0], signal[1]);
-      } else {
-        const rows = source.view.getSync();
-        if (!rows) continue;
-        for (const [key, value] of source.signals(rows)) await evaluate(key, value);
+        latest.set(signal[0], [signal[1], signal[2]]);
+        await evaluate(signal[0], signal[1], signal[2]);
+        continue;
+      }
+      if (update.type === 'created') rowsByKey.set(update.key, update.data);
+      else if (update.type === 'updated') rowsByKey.set(update.key, update.after);
+      else rowsByKey.delete(update.key);
+      if (replaying) {
+        if (update.type === 'created' && rowsByKey.size < initial.length) continue;
+        replaying = false;
+      }
+      rows = [...rowsByKey.values()];
+      for (const [key, value, observed] of source.signals(rows)) {
+        if (!attempt.active) return;
+        await evaluate(key, value, observed);
       }
     }
   };
 
-  const watchAppend = async (source: AppendSource, run: SourceRun) => {
-    const cursor = await store.sources.cursor(source.name);
+  const watchAppend = async (source: AppendSource, attempt: WatchAttempt) => {
+    const cursor = await within(attempt, store.sources.cursor(source.name));
+    if (cursor === ENDED || !attempt.active) return;
     const iterator = source.view.watch(cursor ? { after: cursor } : {})[Symbol.asyncIterator]();
-    run.iterator = iterator;
-    while (!run.stopped) {
-      const next = await iterator.next();
-      if (next.done) return;
+    attempt.iterator = iterator;
+    while (attempt.active) {
+      const next = await within(attempt, iterator.next());
+      if (next === ENDED || next.done || !attempt.active) return;
       const update = next.value;
       if (update.type !== 'upsert') continue;
       if (!update.cursor) throw new Error(`${source.name}: the view is not an append view (its updates carry no cursor)`);
       if (!source.filter || source.filter(update.data)) {
         const payload: AppendTrigger = { source: source.name, cursor: update.cursor, row: update.data };
-        await accept({ id: `view:${source.name}:${update.cursor}`, name: source.name, source: 'view', payload });
+        await accept({
+          id: `view:${encodeURIComponent(source.name)}:${update.cursor}`,
+          name: source.name,
+          source: 'view',
+          payload,
+        });
       }
       await store.sources.putCursor(source.name, update.cursor, clock.now());
     }
   };
 
   const startSource = (source: ViewSource, sourceOptions: { exclusive?: boolean } = {}): SourceHandle => {
-    const run: SourceRun = { stopped: false };
+    let stopped = false;
+    const stopping = newAttempt();
+    let attempt: WatchAttempt | null = null;
     let holding = !sourceOptions.exclusive;
+    const pause = (ms: number) => within(stopping, clock.sleep(ms));
+    const acquire = async () => {
+      try {
+        return await store.sources.acquireLease(source.name, worker, clock.now() + leaseMs, clock.now());
+      } catch (error) {
+        report(error, { phase: 'source' });
+        return false;
+      }
+    };
     const keepLease = async () => {
-      while (!run.stopped && holding) {
-        await clock.sleep(Math.max(1, Math.floor(leaseMs / 3)));
-        if (run.stopped) return;
-        holding = await store.sources.acquireLease(source.name, worker, clock.now() + leaseMs, clock.now());
-        if (!holding) await closeIterator(run);
+      while (!stopped && holding) {
+        if ((await pause(Math.max(1, Math.floor(leaseMs / 3)))) === ENDED) return;
+        holding = await acquire();
+        if (!holding && attempt) await closeAttempt(attempt);
       }
     };
     const loop = (async () => {
       let failures = 0;
-      while (!run.stopped) {
+      while (!stopped) {
         if (sourceOptions.exclusive && !holding) {
-          holding = await store.sources.acquireLease(source.name, worker, clock.now() + leaseMs, clock.now());
+          holding = await acquire();
           if (!holding) {
-            await clock.sleep(Math.max(1, Math.floor(leaseMs / 2)));
+            await pause(Math.max(1, Math.floor(leaseMs / 2)));
             continue;
           }
           void keepLease();
         }
+        const current = newAttempt();
+        attempt = current;
         try {
-          if (source.kind === 'list') await watchList(source, run);
-          else await watchAppend(source, run);
+          await bound();
+          if (source.kind === 'list') await watchList(source, current);
+          else await watchAppend(source, current);
           failures = 0;
         } catch (error) {
-          if (run.stopped) break;
-          report(error, { phase: 'source' });
-          failures += 1;
+          if (!stopped) {
+            report(error, { phase: 'source' });
+            failures += 1;
+          }
+        } finally {
+          await closeAttempt(current);
         }
-        if (!run.stopped) await clock.sleep(failures > 0 ? backoff(failures) : Math.min(reconcileMs, 1000));
+        if (!stopped) await pause(failures > 0 ? backoff(failures) : Math.min(reconcileMs, 1000));
       }
     })();
     return {
       async stop() {
-        run.stopped = true;
-        await closeIterator(run);
-        if (sourceOptions.exclusive) await store.sources.releaseLease(source.name, worker);
-        void loop;
+        stopped = true;
+        stopping.end();
+        if (attempt) await closeAttempt(attempt);
+        await loop;
+        if (sourceOptions.exclusive) {
+          await store.sources.releaseLease(source.name, worker).catch((error: unknown) => report(error, { phase: 'source' }));
+        }
       },
     };
   };
@@ -1174,10 +1251,11 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     source: startSource,
     async poll(source) {
       if (source.kind !== 'list') throw new TypeError('only list-view sources can be polled');
+      await bound();
       let delivered = 0;
       let pending = 0;
-      for (const [key, value] of source.signals(await source.view.get())) {
-        const result = await evaluateSignal(store, clock, source, key, value);
+      for (const [key, value, observed] of source.signals(await source.view.get())) {
+        const result = await evaluateSignal(store, clock, source, key, value, observed);
         if (result === 'delivered') delivered += 1;
         if (result === 'pending') pending += 1;
       }

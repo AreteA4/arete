@@ -381,6 +381,7 @@ export function runStoreConformance(
         value: { best: 'a' },
         generation: 1,
         pending: null,
+        observed: null,
         version: 1,
         updatedAt: T0,
       });
@@ -399,6 +400,22 @@ export function runStoreConformance(
         payload: { best: 'a' },
         receivedAt: T0,
       });
+    });
+
+    it('gives different sources and keys different delivery ids', async () => {
+      const store = await createStore();
+      const deliver = (source: string, key: string) =>
+        store.sources.advance({
+          source,
+          key,
+          expectedVersion: null,
+          next: { hash: 'a', value: 1, pending: null },
+          deliver: { name: source, payload: key },
+          now: T0,
+        });
+      await deliver('rates:wallet', 'alice');
+      await deliver('rates', 'wallet:alice');
+      expect((await store.jobs.list({ kind: 'delivery' })).length).toBe(2);
     });
 
     it('lets one of several concurrent writers advance a source key', async () => {

@@ -231,6 +231,156 @@ describe('list-view sources', () => {
   });
 });
 
+describe('robust list-view sources', () => {
+  it('ignores an observation older than the one stored', async () => {
+    const { store, make } = setup();
+    const view = new FakeListView<Market & { slot: number }>((market) => market.id);
+    const source = fromView(view, {
+      name: 'best',
+      derive: bestMarket,
+      observedAt: (rows) => Math.max(...rows.map((row) => row.slot)),
+      changed: (previous, next) => previous !== undefined && previous !== next,
+    });
+    const poller = make('p');
+    view.set({ id: 'a', apyBps: 500, slot: 10 }, { id: 'b', apyBps: 400, slot: 10 });
+    await poller.poll(source);
+    view.set({ id: 'b', apyBps: 600, slot: 12 });
+    await poller.poll(source); // B, at slot 12
+    // A replica that is behind still sees A at slot 11.
+    const lagging = new FakeListView<Market & { slot: number }>((market) => market.id);
+    lagging.set({ id: 'a', apyBps: 500, slot: 11 }, { id: 'b', apyBps: 400, slot: 10 });
+    await poller.poll({ ...source, view: lagging });
+    await poller.poll(source); // B again, nothing new
+    expect((await deliveries(store)).map((delivery) => (delivery.payload as ViewTrigger).value)).toEqual(['b']);
+  });
+
+  it('evaluates queued aggregate updates in order', async () => {
+    const { store, make } = setup();
+    let slow = false;
+    const slowStore: AutomationStore = {
+      ...store,
+      sources: {
+        ...store.sources,
+        advance: async (input) => {
+          if (slow) await new Promise((resolve) => setTimeout(resolve, 10));
+          return store.sources.advance(input);
+        },
+      },
+    };
+    const view = markets();
+    view.set({ id: 'a', apyBps: 500 }, { id: 'b', apyBps: 400 });
+    const handle = setup(slowStore).make('r').source(rateSource(view));
+    void make;
+    await settle();
+    slow = true;
+    view.set({ id: 'b', apyBps: 600 }); // B leads...
+    view.set({ id: 'b', apyBps: 400 }); // ...then A again, before the first write lands
+    await settle(40);
+    await handle.stop();
+    expect((await deliveries(store)).map((delivery) => (delivery.payload as ViewTrigger).value)).toEqual(['b', 'a']);
+  });
+
+  it('retries a pending value whose promotion failed', async () => {
+    const { store, clock } = setup();
+    let failNext = false;
+    const flaky: AutomationStore = {
+      ...store,
+      sources: {
+        ...store.sources,
+        advance: async (input) => {
+          if (failNext) {
+            failNext = false;
+            throw new Error('database restarting');
+          }
+          return store.sources.advance(input);
+        },
+      },
+    };
+    const view = markets();
+    view.set({ id: 'a', apyBps: 500 }, { id: 'b', apyBps: 400 });
+    const handle = setup(flaky, clock).make('r').source(rateSource(view, { stableFor: '2m' }));
+    await settle();
+    await clock.advance(120_000);
+    view.set({ id: 'b', apyBps: 900 });
+    await settle();
+    failNext = true;
+    await clock.advance(120_000); // the promotion fails...
+    await clock.advance(60_000); // ...and is retried
+    await handle.stop();
+    expect((await deliveries(store)).map((delivery) => (delivery.payload as ViewTrigger).value)).toEqual(['b']);
+  });
+
+  it('opens nothing after stop, even while the first read is loading', async () => {
+    const { store, make } = setup();
+    const view = markets();
+    let release: (rows: Market[]) => void = () => undefined;
+    view.get = () => new Promise<Market[]>((resolve) => (release = resolve));
+    const handle = make('r').source(rateSource(view));
+    await settle();
+    await handle.stop();
+    release([{ id: 'a', apyBps: 1 }]);
+    await settle();
+    expect(view.subscriptions).toBe(0);
+    expect(await store.sources.get('bestRateChanged', 'all')).toBeNull();
+  });
+
+  it('keeps an exclusive source alive through lease errors', async () => {
+    const { store, clock } = setup();
+    let failures = 1;
+    const flaky: AutomationStore = {
+      ...store,
+      sources: {
+        ...store.sources,
+        acquireLease: async (...args) => {
+          if (failures > 0) {
+            failures -= 1;
+            throw new Error('database restarting');
+          }
+          return store.sources.acquireLease(...args);
+        },
+      },
+    };
+    const view = markets();
+    view.set({ id: 'a', apyBps: 1 });
+    const handle = setup(flaky, clock).make('r').source(rateSource(view), { exclusive: true });
+    await settle();
+    await clock.advance(15_000);
+    expect(view.open).toBe(1);
+    await handle.stop();
+    expect(view.open).toBe(0);
+  });
+
+  it('closes a failed watch before starting the next', async () => {
+    const { store, clock } = setup();
+    let failNext = false;
+    const flaky: AutomationStore = {
+      ...store,
+      sources: {
+        ...store.sources,
+        advance: async (input) => {
+          if (failNext) {
+            failNext = false;
+            throw new Error('database restarting');
+          }
+          return store.sources.advance(input);
+        },
+      },
+    };
+    const view = markets();
+    view.set({ id: 'a', apyBps: 500 }, { id: 'b', apyBps: 400 });
+    const handle = setup(flaky, clock).make('r').source(rateSource(view));
+    await settle();
+    failNext = true;
+    view.set({ id: 'b', apyBps: 600 });
+    await settle();
+    await clock.advance(20_000);
+    expect(view.subscriptions).toBe(2);
+    expect(view.open).toBe(1);
+    await handle.stop();
+    expect((await deliveries(store)).map((delivery) => (delivery.payload as ViewTrigger).value)).toEqual(['b']);
+  });
+});
+
 describe('append-view sources', () => {
   it('resumes from its cursor with no gaps or repeats', async () => {
     const { store, make } = setup();

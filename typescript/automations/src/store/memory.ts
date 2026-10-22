@@ -302,6 +302,7 @@ export function memoryStore(): AutomationStore {
           value: clone(next.value),
           generation,
           pending: next.pending ? clone(next.pending) : null,
+          observed: next.observed ?? null,
           version: (current?.version ?? 0) + 1,
           updatedAt: now,
         };
@@ -309,7 +310,7 @@ export function memoryStore(): AutomationStore {
         if (deliver) {
           acceptNow(
             {
-              id: `view:${source}:${key}:${generation}`,
+              id: `view:${encodeURIComponent(source)}:${encodeURIComponent(key)}:${generation}`,
               name: deliver.name,
               source: 'view',
               payload: clone(deliver.payload),
