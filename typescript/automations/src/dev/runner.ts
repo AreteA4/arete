@@ -21,7 +21,8 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { deserialize, serialize } from 'node:v8';
 
@@ -109,18 +110,38 @@ async function readSession(root: string, log: Log): Promise<DevSessionFile & { d
   }
 }
 
-/** Import the definition module; TypeScript through tsx when it is installed. */
+type TsImport = (specifier: string, parent: string) => Promise<Record<string, unknown>>;
+
+/**
+ * tsx's `tsImport`, from the project that holds `entry`: resolved from the
+ * entry's directory, since a package manager that keeps each package's
+ * dependencies apart (pnpm) does not let this package see the project's
+ * tsx. `undefined` without tsx: Node's own type stripping (22.18+, 23.6+)
+ * is the fallback.
+ */
+export async function projectTsImport(entry: string): Promise<TsImport | undefined> {
+  let manifestPath: string;
+  try {
+    manifestPath = createRequire(entry).resolve('tsx/package.json');
+  } catch {
+    return undefined;
+  }
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+    exports?: Record<string, { import?: string | { default?: string } }>;
+  };
+  const target = manifest.exports?.['./esm/api']?.import;
+  const file = typeof target === 'string' ? target : target?.default;
+  if (!file) return undefined;
+  const api = (await import(pathToFileURL(join(dirname(manifestPath), file)).href)) as { tsImport?: TsImport };
+  return api.tsImport;
+}
+
+/** Import the definition module; TypeScript through the project's tsx when it is installed. */
 export async function loadDefinition(entry: string): Promise<AutomationsDefinition> {
   const url = pathToFileURL(entry).href;
   let module: Record<string, unknown>;
   if (/\.[cm]?tsx?$/.test(entry)) {
-    let tsImport: ((specifier: string, parent: string) => Promise<Record<string, unknown>>) | undefined;
-    try {
-      const tsx = 'tsx/esm/api';
-      ({ tsImport } = (await import(tsx)) as { tsImport: typeof tsImport });
-    } catch {
-      // Without tsx, Node's own type stripping (22.18+, 23.6+) is the fallback.
-    }
+    const tsImport = await projectTsImport(entry);
     try {
       module = tsImport ? await tsImport(url, import.meta.url) : ((await import(url)) as Record<string, unknown>);
     } catch (error) {
@@ -132,8 +153,11 @@ export async function loadDefinition(entry: string): Promise<AutomationsDefiniti
   } else {
     module = (await import(url)) as Record<string, unknown>;
   }
-  const definition = module.default ?? module.automations;
-  if (!isAutomationsDefinition(definition)) {
+  // In a project without `"type": "module"` tsx loads the entry as
+  // CommonJS, so its default export arrives one level down.
+  const nested = (module.default as { default?: unknown } | undefined)?.default;
+  const definition = [module.default, nested, module.automations].find(isAutomationsDefinition);
+  if (!definition) {
     throw new Error(`${entry} must export its defineAutomations(...) as the default export`);
   }
   return definition;

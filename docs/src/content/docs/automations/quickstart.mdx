@@ -116,7 +116,12 @@ If it is `refused`, the reason names the policy rule or limit that stopped it.
 
 ## Run the same handlers in production
 
-Your backend builds the runtime and uses the definition:
+Your backend builds the runtime and uses the definition. It keeps its state
+in Postgres:
+
+```bash
+npm install pg
+```
 
 ```ts
 import { createProtocolClient } from "@usearete/sdk";

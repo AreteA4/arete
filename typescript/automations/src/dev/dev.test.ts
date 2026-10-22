@@ -13,7 +13,7 @@ import { memoryStore, memoryStoreState } from '../store/memory';
 import { fakeProtocol } from '../test-support/fake-protocol';
 import { ALICE, harness, storedGrant } from '../test-support/harness';
 import { type PumpClient, type SignedDelivery, signDelivery, startEventPump } from './events';
-import { devStackConnector, loadDefinition, runDev } from './runner';
+import { devStackConnector, loadDefinition, projectTsImport, runDev } from './runner';
 import { devWalletsSigner, readDevWallets } from './signer';
 
 const SECRET = 'whsec_dev';
@@ -216,6 +216,26 @@ describe('the dev stack connector', () => {
 });
 
 describe('loading the entry', () => {
+  it("uses the tsx of the entry's project, which this package cannot see under pnpm", async () => {
+    const project = mkdtempSync(join(tmpdir(), 'dev-tsx-'));
+    const api = join(project, 'node_modules', 'tsx', 'dist', 'esm', 'api');
+    mkdirSync(api, { recursive: true });
+    writeFileSync(
+      join(project, 'node_modules', 'tsx', 'package.json'),
+      JSON.stringify({ name: 'tsx', exports: { './package.json': './package.json', './esm/api': { import: { default: './dist/esm/api/index.mjs' } } } }),
+    );
+    // A stand-in tsImport that marks what it loaded, shaped as tsx returns a
+    // CommonJS entry (a project without "type": "module").
+    writeFileSync(
+      join(api, 'index.mjs'),
+      "export const tsImport = async (url) => ({ default: { default: { kind: 'automations', protocol: { name: 'via-tsx', url }, setup() {} } } });\n",
+    );
+    const entry = join(project, 'automations.ts');
+    writeFileSync(entry, 'export default {};\n');
+    expect((await loadDefinition(entry)).protocol).toMatchObject({ name: 'via-tsx' });
+    expect(await projectTsImport(join(mkdtempSync(join(tmpdir(), 'dev-none-')), 'a.ts'))).toBeUndefined();
+  });
+
   it('takes the default export and refuses a module without a definition', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dev-entry-'));
     const good = join(dir, 'good.mjs');
