@@ -1,0 +1,2564 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "programsInvoked": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": false,
+          "reason": "no RPC URL is configured to simulate the transactions, so the signer's balance changes are unknown"
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD",
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "known": false
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": null,
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "without a simulator"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": false,
+          "reason": "no RPC URL is configured to simulate the transactions, so the signer's balance changes are unknown"
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD",
+              "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "known": false
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [
+              {
+                "inner": false,
+                "instruction": "approve",
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "reason": "delegates tokens the signer controls"
+              }
+            ],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": null,
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEEAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwEDAwECAAkEAQAAAAAAAAA="
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "top-level approve without a simulator"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "11111111111111111111111111111111"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": true,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": "-0.010005",
+          "solLamports": "-10005000",
+          "tokens": []
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "11111111111111111111111111111111",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "0",
+              "innerInstructionsChecked": true,
+              "known": true,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.010005",
+              "solLamports": "-10005000",
+              "tokens": [],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 1989995000,
+                "owner": "11111111111111111111111111111111"
+              },
+              "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 10000000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQwCAAAAgJaYAAAAAAA="
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "a SOL transfer"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": true,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": "-0.000005",
+          "solLamports": "-5000",
+          "tokens": [
+            {
+              "amount": "-600",
+              "mint": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9"
+            }
+          ]
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD",
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "0",
+              "innerInstructionsChecked": true,
+              "known": true,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.000005",
+              "solLamports": "-5000",
+              "tokens": [
+                {
+                  "amount": "-600",
+                  "mint": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9"
+                }
+              ],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAZABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA1gCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "a token outflow"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": true,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": "-0.000005",
+          "solLamports": "-5000",
+          "tokens": [
+            {
+              "amount": "500",
+              "mint": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9"
+            }
+          ]
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD",
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "0",
+              "innerInstructionsChecked": true,
+              "known": true,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.000005",
+              "solLamports": "-5000",
+              "tokens": [
+                {
+                  "amount": "500",
+                  "mint": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9"
+                }
+              ],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAdwFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "a token inflow"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": true,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": "-0.000005",
+          "solLamports": "-5000",
+          "tokens": [
+            {
+              "amount": "-500",
+              "mint": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9"
+            }
+          ]
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD",
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "0",
+              "innerInstructionsChecked": true,
+              "known": true,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.000005",
+              "solLamports": "-5000",
+              "tokens": [
+                {
+                  "amount": "-500",
+                  "mint": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9"
+                }
+              ],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAfQBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA/QBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "a token account handed to another owner"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": true,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": "-0.000005",
+          "solLamports": "-5000",
+          "tokens": [
+            {
+              "amount": "-1000000",
+              "mint": "So11111111111111111111111111111111111111112"
+            }
+          ]
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "3AQTaduKvYWFTu1ExZSQK1hQp5jSZ2yEt4KzsASAufKd",
+              "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "0",
+              "innerInstructionsChecked": true,
+              "known": true,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.000005",
+              "solLamports": "-5000",
+              "tokens": [
+                {
+                  "amount": "-1000000",
+                  "mint": "So11111111111111111111111111111111111111112"
+                }
+              ],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "3AQTaduKvYWFTu1ExZSQK1hQp5jSZ2yEt4KzsASAufKd": {
+              "data": [
+                "BpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAUBCDwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 3039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "3AQTaduKvYWFTu1ExZSQK1hQp5jSZ2yEt4KzsASAufKd": {
+                "data": [
+                  "BpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEC"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "wrapped SOL spent"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": true,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": "-0.001005",
+          "solLamports": "-1005000",
+          "tokens": [
+            {
+              "amount": "1000000",
+              "mint": "So11111111111111111111111111111111111111112"
+            }
+          ]
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "3AQTaduKvYWFTu1ExZSQK1hQp5jSZ2yEt4KzsASAufKd",
+              "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "0",
+              "innerInstructionsChecked": true,
+              "known": true,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.001005",
+              "solLamports": "-1005000",
+              "tokens": [
+                {
+                  "amount": "1000000",
+                  "mint": "So11111111111111111111111111111111111111112"
+                }
+              ],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "3AQTaduKvYWFTu1ExZSQK1hQp5jSZ2yEt4KzsASAufKd": {
+              "data": [
+                "BpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "3AQTaduKvYWFTu1ExZSQK1hQp5jSZ2yEt4KzsASAufKd": {
+                "data": [
+                  "BpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAUBCDwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 3039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 1998995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEC"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "SOL wrapped"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": true,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": "-0.000005",
+          "solLamports": "-5000",
+          "tokens": [
+            {
+              "amount": "-500",
+              "mint": "So11111111111111111111111111111111111111112"
+            }
+          ]
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "3AQTaduKvYWFTu1ExZSQK1hQp5jSZ2yEt4KzsASAufKd",
+              "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "2039280",
+              "innerInstructionsChecked": true,
+              "known": true,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.000005",
+              "solLamports": "-5000",
+              "tokens": [
+                {
+                  "amount": "-500",
+                  "mint": "So11111111111111111111111111111111111111112"
+                }
+              ],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "3AQTaduKvYWFTu1ExZSQK1hQp5jSZ2yEt4KzsASAufKd": {
+              "data": [
+                "BpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAfQBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039780,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              },
+              "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039780,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEEAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwEDAwECAAEJ"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "a wrapped SOL account closed to another wallet"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": false,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": "-0.000005",
+          "solLamports": "-5000",
+          "tokens": []
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8"
+            ],
+            "accountsWrittenComplete": false,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "lookupTables": [
+              {
+                "readonlyEntries": 0,
+                "table": "4NwnA4HWZurKyXWNowJwYmb9CwX4gBKzwQKov1ExMf8M",
+                "writableEntries": 1
+              }
+            ],
+            "programs": [
+              {
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": null,
+              "innerInstructionsChecked": true,
+              "known": false,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.000005",
+              "solLamports": "-5000",
+              "tokens": [],
+              "unresolvedLookupTables": [
+                "4NwnA4HWZurKyXWNowJwYmb9CwX4gBKzwQKov1ExMf8M"
+              ]
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [
+              {
+                "addressIndex": 0,
+                "table": "4NwnA4HWZurKyXWNowJwYmb9CwX4gBKzwQKov1ExMf8M"
+              }
+            ],
+            "unsafeInstructions": [],
+            "version": "v0"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQABAwEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQIDAwEAAQkBMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIBAAA="
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "a close of an unresolved lookup-table account"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": true,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": "-0.000005",
+          "solLamports": "-5000",
+          "tokens": []
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "548jb4wcUtpbNS1TAva8TXJmeXd5QpCCXUzNVogwpzMR",
+              "5ByKsfsdfVR3ecWU3XDy3GrJ8r3UkwZqeJKgcZn9Kezq"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "lookupTables": [
+              {
+                "readonlyEntries": 1,
+                "table": "4NwnA4HWZurKyXWNowJwYmb9CwX4gBKzwQKov1ExMf8M",
+                "writableEntries": 2
+              }
+            ],
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "0",
+              "innerInstructionsChecked": true,
+              "known": true,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.000005",
+              "solLamports": "-5000",
+              "tokens": [],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "v0"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "4NwnA4HWZurKyXWNowJwYmb9CwX4gBKzwQKov1ExMf8M": {
+              "data": [
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PD09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4=",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1,
+              "owner": "AddressLookupTab1e1111111111111111111111111"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            },
+            "548jb4wcUtpbNS1TAva8TXJmeXd5QpCCXUzNVogwpzMR": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 10,
+              "owner": "11111111111111111111111111111111"
+            },
+            "5ByKsfsdfVR3ecWU3XDy3GrJ8r3UkwZqeJKgcZn9Kezq": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 20,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              },
+              "548jb4wcUtpbNS1TAva8TXJmeXd5QpCCXUzNVogwpzMR": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 15,
+                "owner": "11111111111111111111111111111111"
+              },
+              "5ByKsfsdfVR3ecWU3XDy3GrJ8r3UkwZqeJKgcZn9Kezq": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 20,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQABAgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwEBBAACAwQBAwEyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMgIAAgEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "lookup-table writes resolved"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": false,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": null,
+          "solLamports": null,
+          "tokens": []
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "7ktZK7a28phex41kcsct6YBHQt38MMezsoecq1UuiKFh",
+              "7porTR32j7zt69GG4AwoPQx3f3FL2RLpSDKGtPXWTeaQ",
+              "7tj9biW3KRJ7EEWmVUGigHiouCTXhV2dzcyvwma7Cyu7",
+              "7xeSk1y3uibLNKmGvmbdyAVa9MfjNYiTZ2eb19chxKDp",
+              "82ZjtKS4W1tZWR1nN4vZG3GLPWsw3cQH7SKF4XfJheYX",
+              "86V32cu56KBneWGHoNFUYv36dg68ig66fqyu7uhuSysE",
+              "8AQLAvN5gcV1nbWoEfaPqnorsqJLPjmvEFeZBHkWCKBw",
+              "8EKdKDq6GunEvgmJfxuK8fad7zWY4oTjnfKDEfo6weWe",
+              "8JEvTXJ6sD5U4n1p7GEERYMPN9ijjs9ZM4ysJ3qhgyqM",
+              "8NADbpm7TWNhCsGKYZZ9iR89cJvwQvqNuUeXMRtJSKA4",
+              "8S5Wk8E83ofvLxWpyrt51HturU995zXCTtKBQovuBeUm",
+              "8VzotRh8e6y9V3mLRACzJAfg6dMLm4D22HyqUByVvyoU",
+              "8Zv72jA9EQGNd91qrTXub3SSLnZYS7tqaheVXa26gK8B",
+              "8dqQB2d9phZbmEGMHkrpsvDCawmk7Baf97K9ax4hReSt",
+              "8hkhKL6AQzrpuKWrj4BkAnyxq6ywnFGUhWyoeL7JAymb",
+              "8mfzTdZB1JA43QmNAMWfTfkj5GC9TJxJFveThi9tvK6J",
+              "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR1",
+              "8uWakEVCBtkWKbGP2xAW3RJFZacYoSKwNjympUF6Qyji",
+              "8yRstXxCnC3jTgWtUFVRLJ51ojpkUW1kw9eRsrHhAK4R",
+              "93MB2qRDNVLxbmmPuYpLdAqn3u2x9ZhaVZK5wELHueP8",
+              "97GUB8tDxneBjs1uLr9Fv3cYJ4F9pdPQ3xyjzcNteyhq",
+              "9BBmKSMEZ5wQsxGQn9UBCvPJYDTMVh5DcNeQ3zRVQK2Y",
+              "9F74TjpF9PEe23WvDSo6VoA4nNfZAkm3AnK47NU69eMF",
+              "9K2Mc3HFjgXsA8mRek81nfvq2XskqpSrjByiAkWgtyfx",
+              "9NwekLkGKyq6JE1w63Sw5YhbGh5xWt8gHbeNE8ZHeJzf",
+              "9SrwteDGvH8KSKGSXLmrNRUMWrJABwpVr1K2HWbtPeKN",
+              "9WnF2wgHWaRYaQWwxe6mfJF7m1WMs1WKQQygLteV8ye5",
+              "9ahYBF9J6simiVmTPwRgxB1t1AiZY5C8xpeLQGh5tJxn",
+              "9ecqKYcJhB1zrb1xqEkcF3neFKvmD8sxXEJzTejgdeHV",
+              "9iY8Tr5KHUKDzgGUGY5XXvZQVV8xtCZn5dyeX2nHNycC",
+              "9nTRc9YKsmcT8mWyhqQSpoLAjeMAZGFbe3eJaQpt8Jvu",
+              "9rNikT1LU4ugGrmV98jN7g6vyoZNEKwRCTJxdnsUseFc",
+              "9vJ1tkUM4NCuQx1zaS4HQYshDxmZuPdEkrychAv5cyaK",
+              "9zDK33wMefW8Z3GW1jPChReTU7ymaTK4KGeGkYxgNJu2",
+              "A48cBMQNExoMh8X1T2i7zJRDiHByFWzssgJvow1H7eDj",
+              "A83uKesNqG6aqDmWtL33HBByxSQAvaghS5yasK3sryYS",
+              "AByCTxLPRZPoyK22KdMxa3xkCbcNbeNWzVeEvh6UcJs9",
+              "AFtVcFoQ1rh37QGXkvgsrvjWSkpaGi4LYuJtz595MeBr",
+              "AKonkZGQc9zGFVX3CE1o9oWGgv2mwmkA7JyZ3TBg6yWZ",
+              "APj5trjRCTHVPamYdXLiSgH2w5EycqRyfieD6qEGrJqG",
+              "ATeP3ACRnkaiXg244pfdjZ3oBETBHu7oE8JsADGsbe9y",
+              "AXZgBTfSP3swfmGZW7zZ2RpZRPfNxxocnXyXDbKULyUg",
+              "AbUyKm8SyMBAorX4wRKUKJbKfYsae2VSLweBGyN56JoP",
+              "AfQGU4bTZeUPwwmaNiePcBN5ui5nK6BFuMJqLMQfqe86",
+              "AjKZcN4U9wmd6325p1yJu48r9sHyz9s5TkyVPjTGaySo",
+              "AoErkfXUkF4rE8GbFKJEBvucQ2WBfDYu2Ae9T7VsLJmW",
+              "AsA9txzVLYN5NDX6gcd9UogNeBiPLHEiaaJoWVYU5e6D",
+              "Aw5T3GTVvqfJWJmc7ux4mgT8tLvb1LvY8yyTZsb4pyQv",
+              "AzzkBZvWX8xXeQ27ZDGz4ZDu8W8ngQcMhPe7dFdfaJjd",
+              "B4v3KsPX7SFknVGczWbuMRzfNfLzMUJBFoJmgdgGKe4L",
+              "B8qLUArXhjYyvaX8RovpeJmRcpZC2XyzpCyRk1is4yP3",
+              "BCkdcUKYJ2rD4fmds7FjwBYBrymPhbfpNce5oPmTpJhk",
+              "BGfvkmnYtL9SCm29JQafE4Jx78ybNfMdw2Jjrmp4Ze2T",
+              "BLbDu5FZUdSfLrGejhuaWw5iMJBo3j3TVRyPv9rfJyMA",
+              "BQWX3Nia4vjtUwXAB1EVoorUbTPzinjH3qe3yXuG4Jfs",
+              "BURpBgBafE37d2mfcJZR6gdEqccCPrR6cFJi2uwrodza",
+              "BYM7KyebFXLLm82B3btLPZQ15mpQ4v6vAeyN6HzTYyKH",
+              "BcGQUH7bqpdZuDGgUuDFgSAmKw2bjynjj4e29g34JJdz",
+              "BgBhcaacS7vo3JXBvCYAyJwXa6EoR3UZHUJgD45f3dxh",
+              "Bk6zkt3d2RE2BPmhMVs6GBiHpFT167ANqsyLGS8FnyHQ",
+              "Bp2HuBWdciXFKV2CnoC1Z4V44QfCmArCQHdzKpArYJc7",
+              "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp",
+              "BwrtBnSeoK7hbfXDfPqr8p2aYj5c7JDqX6yJSaG42yFX",
+              "C1nBL5ufPcQvjkmj6hAmRgoLntHonMuf5WdxVxJenJaE",
+              "C5hUUPNfyui9sr2EXzVgiZa733W1TRbUdvJcZLMFXdtw",
+              "C9cmcgqgaD1P1wGjyHpc1SLsHCiD8VHJCKyGciPrGyDe",
+              "CDY4kzJhAWJcA2XFQb9XJK7dXMvQoYy7kjdvg6ST2JYM",
+              "CHTMuHmhkobqJ7mkqtUSbBtPmX8cUcewK9JajUV3mds4",
+              "CMNf3bEiM6u4SD2GHBoMt4fA1gLp9gLksYyEnrXeWyBm",
+              "CRHxBthiwQCHaJGmiV8HAwRvFqZ1pk2aRxdtrEaFGJWU"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "0",
+              "innerInstructionsChecked": true,
+              "known": false,
+              "omittedAccounts": 7,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.000005",
+              "solLamports": "-5000",
+              "tokens": [],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAFIAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQFkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2hoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlqampqampqampqampqampqampqampqampqampqampqamtra2tra2tra2tra2tra2tra2tra2tra2tra2tra2trbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxtbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ub29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29wcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3R0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnd3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fH19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn5+fn5+fn5+fn5+fn5+fn5+fn5+fn5/f39/f39/f39/f39/f39/f39/f39/f39/f39/f39/f4CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiImJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqLi4uLi4uLi4uLi4uLi4uLi4uLi4uLi4uLi4uLi4uLi4yMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+PkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5iYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmampqampqampqampqampqampqampqampqampqampqampubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJydnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6en5+fn5+fn5+fn5+fn5+fn5+fn5+fn5+fn5+fn5+fn5+goKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKjo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6SkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWmpqampqampqampqampqampqampqampqampqampqampqenp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKipqampqampqampqampqampqampqampqampqampqampqSgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBRwIAAQEE"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "more written accounts than a simulation reports"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": false,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": null,
+          "solLamports": null,
+          "tokens": []
+        },
+        "simulationErrors": [
+          {
+            "dependsOnEarlierTransactions": true,
+            "err": {
+              "InstructionError": [
+                0,
+                {
+                  "Custom": 1
+                }
+              ]
+            },
+            "transaction": 0
+          }
+        ],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD",
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": []
+              }
+            ],
+            "serverSimulation": {
+              "index": 0,
+              "simulated": false
+            },
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": null,
+              "innerInstructionsChecked": false,
+              "known": false,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": null,
+              "solLamports": null,
+              "tokens": [],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": {
+                "InstructionError": [
+                  0,
+                  {
+                    "Custom": 1
+                  }
+                ]
+              },
+              "logsTail": [
+                "Program log: line 5",
+                "Program log: line 6",
+                "Program log: line 7",
+                "Program log: line 8",
+                "Program log: line 9",
+                "Program log: line 10",
+                "Program log: line 11",
+                "Program log: line 12",
+                "Program log: line 13",
+                "Program log: line 14",
+                "Program log: line 15",
+                "Program log: line 16",
+                "Program log: line 17",
+                "Program log: line 18",
+                "Program log: line 19",
+                "Program log: line 20",
+                "Program log: line 21",
+                "Program log: line 22",
+                "Program log: line 23",
+                "Program log: line 24"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {},
+            "err": {
+              "InstructionError": [
+                0,
+                {
+                  "Custom": 1
+                }
+              ]
+            },
+            "logs": [
+              "Program log: line 0",
+              "Program log: line 1",
+              "Program log: line 2",
+              "Program log: line 3",
+              "Program log: line 4",
+              "Program log: line 5",
+              "Program log: line 6",
+              "Program log: line 7",
+              "Program log: line 8",
+              "Program log: line 9",
+              "Program log: line 10",
+              "Program log: line 11",
+              "Program log: line 12",
+              "Program log: line 13",
+              "Program log: line 14",
+              "Program log: line 15",
+              "Program log: line 16",
+              "Program log: line 17",
+              "Program log: line 18",
+              "Program log: line 19",
+              "Program log: line 20",
+              "Program log: line 21",
+              "Program log: line 22",
+              "Program log: line 23",
+              "Program log: line 24"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "simulation": [
+            {
+              "index": 0,
+              "simulated": false
+            }
+          ],
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "a failed simulation"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": false,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": null,
+          "solLamports": null,
+          "tokens": []
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD",
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "error": "rpc_error",
+              "known": false
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "rpcError": "node is behind"
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "an RPC error"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": true,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": "-0.000005",
+          "solLamports": "-5000",
+          "tokens": []
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD",
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "0",
+              "innerInstructionsChecked": true,
+              "known": true,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.000005",
+              "solLamports": "-5000",
+              "tokens": [],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [
+              {
+                "inner": true,
+                "instruction": "approve",
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "reason": "delegates tokens the signer controls"
+              }
+            ],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [
+              {
+                "index": 0,
+                "instructions": [
+                  {
+                    "parsed": {
+                      "info": {
+                        "amount": "1",
+                        "delegate": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+                        "owner": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+                        "source": "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD"
+                      },
+                      "type": "approve"
+                    },
+                    "program": "spl-token",
+                    "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                  }
+                ]
+              }
+            ],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "an inner approve"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "11111111111111111111111111111111",
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": true,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": "-0.00001",
+          "solLamports": "-10000",
+          "tokens": [
+            {
+              "amount": "-600",
+              "mint": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9"
+            }
+          ]
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "11111111111111111111111111111111",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "0",
+              "innerInstructionsChecked": true,
+              "known": true,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.000005",
+              "solLamports": "-5000",
+              "tokens": [],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          },
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD",
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 1,
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "0",
+              "innerInstructionsChecked": true,
+              "known": true,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.000005",
+              "solLamports": "-5000",
+              "tokens": [
+                {
+                  "amount": "-600",
+                  "mint": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9"
+                }
+              ],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAZABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA1gCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              },
+              "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 10000000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQwCAAAAgJaYAAAAAAA="
+            },
+            {
+              "index": 1,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "two transactions"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": true,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": "-0.000005",
+          "solLamports": "-5000",
+          "tokens": [
+            {
+              "amount": "-600",
+              "mint": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9"
+            }
+          ]
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD",
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": [
+                  "program",
+                  "program:deposit"
+                ]
+              }
+            ],
+            "serverSimulation": {
+              "index": 0,
+              "unitsConsumed": "1200"
+            },
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "0",
+              "innerInstructionsChecked": true,
+              "known": true,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.000005",
+              "solLamports": "-5000",
+              "tokens": [
+                {
+                  "amount": "-600",
+                  "mint": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9"
+                }
+              ],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAZABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA1gCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "anatomy": [
+            {
+              "index": 0,
+              "instructions": [
+                {
+                  "kind": "deposit",
+                  "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                  "role": "program"
+                },
+                {
+                  "kind": "program",
+                  "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                  "role": "program"
+                },
+                {
+                  "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "role": "runtime"
+                }
+              ]
+            }
+          ],
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "simulation": [
+            {
+              "index": 0,
+              "unitsConsumed": "1200"
+            }
+          ],
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "anatomy roles and server simulation"
+    }
+  ],
+  "description": "The summary of a prepared step over a fixture chain (see README.md). `signerEffect.error` is normalized to \"rpc_error\".",
+  "version": 1
+}

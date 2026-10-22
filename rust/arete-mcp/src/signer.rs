@@ -213,41 +213,16 @@ fn read_keypair(path: &Path) -> Result<SigningKey> {
     Ok(key)
 }
 
-impl LocalSigner {
-    /// The signer from `ARETE_MCP_SIGNER_CONFIG`, else `~/.arete/mcp.toml`.
-    /// `Ok(None)` when neither has a `[signer]` table.
-    pub fn from_environment() -> Result<Option<Self>> {
-        let path = match std::env::var(ENV_SIGNER_CONFIG)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-        {
-            Some(path) => expand_home(path.trim()),
-            None => match dirs::home_dir() {
-                Some(home) => home.join(MCP_CONFIG_FILE),
-                None => return Ok(None),
-            },
-        };
-        match fs::read_to_string(&path) {
-            Ok(text) => Self::from_toml(&text),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if std::env::var(ENV_SIGNER_CONFIG).is_ok() {
-                    bail!("{ENV_SIGNER_CONFIG} names a file that does not exist");
-                }
-                Ok(None)
-            }
-            Err(error) => bail!("the MCP config cannot be read ({})", error.kind()),
-        }
+impl SignerPolicy {
+    /// A policy from the fields of a `[signer.policy]` table, as JSON. The
+    /// shared signer-policy test vectors use this form.
+    pub fn from_json(value: Value) -> Result<Self> {
+        let raw: RawPolicy = serde_json::from_value(value)
+            .map_err(|error| anyhow!("invalid signer policy: {error}"))?;
+        Self::from_raw(raw)
     }
 
-    /// Parse a config document; `Ok(None)` without a `[signer]` table.
-    pub fn from_toml(text: &str) -> Result<Option<Self>> {
-        let file: ConfigFile = toml::from_str(text)
-            .map_err(|error| anyhow!("invalid signer config: {}", error.message()))?;
-        let Some(raw) = file.signer else {
-            return Ok(None);
-        };
-        let key = read_keypair(&expand_home(&raw.keypair))?;
-        let policy = raw.policy;
+    fn from_raw(policy: RawPolicy) -> Result<Self> {
         if policy.deployments.is_empty() {
             bail!("signer.policy.deployments must list at least one deployment id");
         }
@@ -286,51 +261,30 @@ impl LocalSigner {
             }
             None => DEFAULT_CLUSTERS.iter().map(|c| c.to_string()).collect(),
         };
-        Ok(Some(Self {
-            key,
-            rpc_url: raw.rpc_url.filter(|url| !url.trim().is_empty()),
-            policy: SignerPolicy {
-                deployments: policy.deployments,
-                max_lamports_per_transaction,
-                programs: policy.programs,
-                max_token_amounts,
-                clusters,
-                clusters_listed,
-            },
-        }))
-    }
-
-    pub fn pubkey(&self) -> String {
-        bs58::encode(self.key.verifying_key().as_bytes()).into_string()
-    }
-
-    /// The policy, without the key, for tool output.
-    pub fn describe(&self) -> Value {
-        json!({
-            "pubkey": self.pubkey(),
-            "deployments": self.policy.deployments,
-            "maxSolPerTransaction": crate::prepared_summary::lamports_to_sol(self.policy.max_lamports_per_transaction as i128),
-            "programs": self.policy.programs,
-            "maxTokenAmounts": self.policy.max_token_amounts.as_ref().map(|caps| caps.iter().map(|(m, a)| (m.clone(), Value::String(a.to_string()))).collect::<serde_json::Map<_, _>>()),
-            "clusters": self.policy.clusters,
-            "simulates": self.rpc_url.is_some(),
+        Ok(Self {
+            deployments: policy.deployments,
+            max_lamports_per_transaction,
+            programs: policy.programs,
+            max_token_amounts,
+            clusters,
+            clusters_listed,
         })
     }
 
     /// Whether the deployment and cluster are allowed, before preparing.
     pub fn check_target(&self, deployment: &str, cluster: &str) -> Result<(), Refusal> {
-        if !self.policy.deployments.iter().any(|d| d == deployment) {
+        if !self.deployments.iter().any(|d| d == deployment) {
             return Err(Refusal::new(
                 "deployments",
                 format!("deployment {deployment} is not in the signer's deployments allow-list"),
             ));
         }
-        if !self.policy.clusters.iter().any(|c| c == cluster) {
+        if !self.clusters.iter().any(|c| c == cluster) {
             return Err(Refusal::new(
                 "clusters",
                 format!(
                     "the target cluster is {cluster}, which the signer's clusters ({}) do not include{}",
-                    self.policy.clusters.join(", "),
+                    self.clusters.join(", "),
                     if cluster == "mainnet" { "; mainnet must be listed explicitly" } else { "" }
                 ),
             ));
@@ -341,22 +295,20 @@ impl LocalSigner {
     /// Check a prepared step against the policy: the intent's deployment,
     /// every transaction's programs, the instructions that would hand over
     /// control of the signer's funds, and the simulated SOL and token
-    /// outflows of the signer in `summary`, per transaction.
+    /// outflows of the signer in `summary`, per transaction. `simulates`
+    /// says whether the summary came from a simulation at all.
     pub fn check_prepared(
         &self,
         deployment: &str,
         prepared: &Value,
         summary: &Value,
+        simulates: bool,
     ) -> Result<(), Refusal> {
         let intent_deployment = prepared["intent"]["deployment"]["deploymentId"]
             .as_str()
             .unwrap_or(deployment);
         if intent_deployment != deployment
-            || !self
-                .policy
-                .deployments
-                .iter()
-                .any(|d| d == intent_deployment)
+            || !self.deployments.iter().any(|d| d == intent_deployment)
         {
             return Err(Refusal::new(
                 "deployments",
@@ -369,7 +321,7 @@ impl LocalSigner {
             .unwrap_or_default();
         for transaction in &transactions {
             let index = &transaction["index"];
-            if let Some(allowed) = &self.policy.programs {
+            if let Some(allowed) = &self.programs {
                 for program in transaction["programs"].as_array().into_iter().flatten() {
                     let id = program["programId"].as_str().unwrap_or_default();
                     if !RUNTIME_PROGRAMS.contains(&id) && !allowed.iter().any(|p| p == id) {
@@ -403,7 +355,7 @@ impl LocalSigner {
                     && effect["solLamports"].is_string()
                 {
                     " (it closes a token account the simulation could not measure)".to_string()
-                } else if self.rpc_url.is_none() {
+                } else if !simulates {
                     " (set signer.rpcUrl)".to_string()
                 } else {
                     String::new()
@@ -439,14 +391,14 @@ impl LocalSigner {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0);
             let outflow = (closed - lamports - wrapped).max(0);
-            if outflow > self.policy.max_lamports_per_transaction as i128 {
+            if outflow > self.max_lamports_per_transaction as i128 {
                 return Err(Refusal::new(
                     "maxSolPerTransaction",
                     format!(
                         "transaction {index} moves {} SOL out of the signer (wrapped SOL and closed token accounts included), over the {} SOL cap",
                         crate::prepared_summary::lamports_to_sol(outflow),
                         crate::prepared_summary::lamports_to_sol(
-                            self.policy.max_lamports_per_transaction as i128
+                            self.max_lamports_per_transaction as i128
                         )
                     ),
                 ));
@@ -461,7 +413,7 @@ impl LocalSigner {
                     continue;
                 }
                 let outflow = amount.unsigned_abs();
-                let Some(caps) = &self.policy.max_token_amounts else {
+                let Some(caps) = &self.max_token_amounts else {
                     return Err(Refusal::new(
                         "maxTokenAmounts",
                         format!("transaction {index} moves {outflow} base units of {mint} out of the signer, and the policy sets no maxTokenAmounts, so no token may leave"),
@@ -485,6 +437,83 @@ impl LocalSigner {
             }
         }
         Ok(())
+    }
+}
+
+impl LocalSigner {
+    /// The signer from `ARETE_MCP_SIGNER_CONFIG`, else `~/.arete/mcp.toml`.
+    /// `Ok(None)` when neither has a `[signer]` table.
+    pub fn from_environment() -> Result<Option<Self>> {
+        let path = match std::env::var(ENV_SIGNER_CONFIG)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        {
+            Some(path) => expand_home(path.trim()),
+            None => match dirs::home_dir() {
+                Some(home) => home.join(MCP_CONFIG_FILE),
+                None => return Ok(None),
+            },
+        };
+        match fs::read_to_string(&path) {
+            Ok(text) => Self::from_toml(&text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if std::env::var(ENV_SIGNER_CONFIG).is_ok() {
+                    bail!("{ENV_SIGNER_CONFIG} names a file that does not exist");
+                }
+                Ok(None)
+            }
+            Err(error) => bail!("the MCP config cannot be read ({})", error.kind()),
+        }
+    }
+
+    /// Parse a config document; `Ok(None)` without a `[signer]` table.
+    pub fn from_toml(text: &str) -> Result<Option<Self>> {
+        let file: ConfigFile = toml::from_str(text)
+            .map_err(|error| anyhow!("invalid signer config: {}", error.message()))?;
+        let Some(raw) = file.signer else {
+            return Ok(None);
+        };
+        let key = read_keypair(&expand_home(&raw.keypair))?;
+        let policy = SignerPolicy::from_raw(raw.policy)?;
+        Ok(Some(Self {
+            key,
+            rpc_url: raw.rpc_url.filter(|url| !url.trim().is_empty()),
+            policy,
+        }))
+    }
+
+    pub fn pubkey(&self) -> String {
+        bs58::encode(self.key.verifying_key().as_bytes()).into_string()
+    }
+
+    /// The policy, without the key, for tool output.
+    pub fn describe(&self) -> Value {
+        json!({
+            "pubkey": self.pubkey(),
+            "deployments": self.policy.deployments,
+            "maxSolPerTransaction": crate::prepared_summary::lamports_to_sol(self.policy.max_lamports_per_transaction as i128),
+            "programs": self.policy.programs,
+            "maxTokenAmounts": self.policy.max_token_amounts.as_ref().map(|caps| caps.iter().map(|(m, a)| (m.clone(), Value::String(a.to_string()))).collect::<serde_json::Map<_, _>>()),
+            "clusters": self.policy.clusters,
+            "simulates": self.rpc_url.is_some(),
+        })
+    }
+
+    /// Whether the deployment and cluster are allowed, before preparing.
+    pub fn check_target(&self, deployment: &str, cluster: &str) -> Result<(), Refusal> {
+        self.policy.check_target(deployment, cluster)
+    }
+
+    /// Check a prepared step against the policy; see
+    /// [`SignerPolicy::check_prepared`].
+    pub fn check_prepared(
+        &self,
+        deployment: &str,
+        prepared: &Value,
+        summary: &Value,
+    ) -> Result<(), Refusal> {
+        self.policy
+            .check_prepared(deployment, prepared, summary, self.rpc_url.is_some())
     }
 
     /// Sign every prepared transaction (base64 wire) in the signer's slot.

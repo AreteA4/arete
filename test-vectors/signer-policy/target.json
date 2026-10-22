@@ -1,0 +1,131 @@
+{
+  "cases": [
+    {
+      "expect": null,
+      "input": {
+        "cluster": "devnet",
+        "deploymentId": "dep-1",
+        "policy": {
+          "clusters": [
+            "devnet"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.05"
+        }
+      },
+      "name": "an allowed deployment and cluster"
+    },
+    {
+      "expect": {
+        "reason": "deployment dep-2 is not in the signer's deployments allow-list",
+        "rule": "deployments"
+      },
+      "input": {
+        "cluster": "devnet",
+        "deploymentId": "dep-2",
+        "policy": {
+          "clusters": [
+            "devnet"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.05"
+        }
+      },
+      "name": "a deployment outside the allow-list"
+    },
+    {
+      "expect": {
+        "reason": "the target cluster is testnet, which the signer's clusters (devnet) do not include",
+        "rule": "clusters"
+      },
+      "input": {
+        "cluster": "testnet",
+        "deploymentId": "dep-1",
+        "policy": {
+          "clusters": [
+            "devnet"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.05"
+        }
+      },
+      "name": "a cluster outside the listed clusters"
+    },
+    {
+      "expect": {
+        "reason": "the target cluster is mainnet, which the signer's clusters (localnet, devnet, testnet) do not include; mainnet must be listed explicitly",
+        "rule": "clusters"
+      },
+      "input": {
+        "cluster": "mainnet",
+        "deploymentId": "dep-1",
+        "policy": {
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "1"
+        }
+      },
+      "name": "mainnet is excluded by default"
+    },
+    {
+      "expect": null,
+      "input": {
+        "cluster": "localnet",
+        "deploymentId": "dep-1",
+        "policy": {
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "1"
+        }
+      },
+      "name": "localnet is allowed by default"
+    },
+    {
+      "expect": null,
+      "input": {
+        "cluster": "mainnet",
+        "deploymentId": "dep-1",
+        "policy": {
+          "clusters": [
+            "mainnet"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.05"
+        }
+      },
+      "name": "mainnet when listed"
+    },
+    {
+      "expect": {
+        "reason": "the target cluster is mainnet, which the signer's clusters (devnet) do not include; mainnet must be listed explicitly",
+        "rule": "clusters"
+      },
+      "input": {
+        "cluster": "mainnet",
+        "deploymentId": "dep-1",
+        "policy": {
+          "clusters": [
+            "devnet"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.05"
+        }
+      },
+      "name": "mainnet when not listed"
+    }
+  ],
+  "description": "check_target: whether a deployment and cluster are allowed before preparing. `expect` is null or the refusal.",
+  "version": 1
+}

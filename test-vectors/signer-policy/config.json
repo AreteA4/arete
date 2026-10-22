@@ -1,0 +1,569 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "localnet",
+            "devnet",
+            "testnet"
+          ],
+          "clustersListed": false,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "1000000000",
+          "maxTokenAmounts": null,
+          "programs": null
+        }
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": "1"
+      },
+      "name": "minimal policy uses the default clusters"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "mainnet"
+          ],
+          "clustersListed": true,
+          "deployments": [
+            "d-1"
+          ],
+          "maxLamportsPerTransaction": "50000000",
+          "maxTokenAmounts": {
+            "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY": "1000"
+          },
+          "programs": [
+            "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+          ]
+        }
+      },
+      "input": {
+        "clusters": [
+          "mainnet"
+        ],
+        "deployments": [
+          "d-1"
+        ],
+        "maxSolPerTransaction": 0.05,
+        "maxTokenAmounts": {
+          "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY": "1000"
+        },
+        "programs": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ]
+      },
+      "name": "full policy"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "localnet",
+            "devnet",
+            "testnet"
+          ],
+          "clustersListed": false,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "100000000",
+          "maxTokenAmounts": null,
+          "programs": null
+        }
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": 0.1
+      },
+      "name": "float SOL converts without rounding"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "localnet",
+            "devnet",
+            "testnet"
+          ],
+          "clustersListed": false,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "1000000001",
+          "maxTokenAmounts": null,
+          "programs": null
+        }
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": "1.000000001"
+      },
+      "name": "nine decimals are allowed"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "localnet",
+            "devnet",
+            "testnet"
+          ],
+          "clustersListed": false,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "2000000000",
+          "maxTokenAmounts": null,
+          "programs": null
+        }
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": 2
+      },
+      "name": "integer SOL"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "localnet",
+            "devnet",
+            "testnet"
+          ],
+          "clustersListed": false,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "100",
+          "maxTokenAmounts": null,
+          "programs": null
+        }
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": 1e-7
+      },
+      "name": "a float SOL in exponent form"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "localnet",
+            "devnet",
+            "testnet"
+          ],
+          "clustersListed": false,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "0",
+          "maxTokenAmounts": null,
+          "programs": null
+        }
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": "0"
+      },
+      "name": "zero SOL"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "localnet",
+            "devnet",
+            "testnet"
+          ],
+          "clustersListed": false,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "500000000",
+          "maxTokenAmounts": null,
+          "programs": null
+        }
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": ".5"
+      },
+      "name": "a leading decimal point"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "localnet",
+            "devnet",
+            "testnet"
+          ],
+          "clustersListed": false,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "3000000000",
+          "maxTokenAmounts": null,
+          "programs": null
+        }
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": "3."
+      },
+      "name": "a trailing decimal point"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "localnet",
+            "devnet",
+            "testnet"
+          ],
+          "clustersListed": false,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "250000000",
+          "maxTokenAmounts": null,
+          "programs": null
+        }
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": " 0.25 "
+      },
+      "name": "whitespace around a SOL string"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "localnet",
+            "devnet",
+            "testnet"
+          ],
+          "clustersListed": false,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "1000000000",
+          "maxTokenAmounts": {
+            "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY": "42"
+          },
+          "programs": null
+        }
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": "1",
+        "maxTokenAmounts": {
+          "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY": 42
+        }
+      },
+      "name": "integer token caps"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "localnet"
+          ],
+          "clustersListed": true,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "1000000000",
+          "maxTokenAmounts": null,
+          "programs": null
+        }
+      },
+      "input": {
+        "clusters": [
+          "localnet"
+        ],
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": "1"
+      },
+      "name": "listing localnet only"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "localnet",
+            "devnet",
+            "testnet"
+          ],
+          "clustersListed": false,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "1000000000",
+          "maxTokenAmounts": null,
+          "programs": []
+        }
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": "1",
+        "programs": []
+      },
+      "name": "an empty programs list allows only runtime programs"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": "0.0000000001"
+      },
+      "name": "ten decimals are refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": "abc"
+      },
+      "name": "non-numeric SOL is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": -1
+      },
+      "name": "negative SOL is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": "."
+      },
+      "name": "a lone decimal point is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": "18446744074"
+      },
+      "name": "SOL that overflows lamports is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": true
+      },
+      "name": "a boolean SOL is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [],
+        "maxSolPerTransaction": 1
+      },
+      "name": "no deployments is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ]
+      },
+      "name": "missing maxSolPerTransaction is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "maxSolPerTransaction": 1
+      },
+      "name": "missing deployments is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "clusters": [
+          "moon"
+        ],
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": 1
+      },
+      "name": "an unknown cluster is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": 1,
+        "programs": [
+          "nope"
+        ]
+      },
+      "name": "a program that is not a pubkey is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": 1,
+        "maxTokenAmounts": {
+          "nope": "1"
+        }
+      },
+      "name": "a mint that is not a pubkey is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": 1,
+        "maxTokenAmounts": {
+          "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY": -1
+        }
+      },
+      "name": "a negative token cap is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": 1,
+        "maxTokenAmounts": {
+          "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY": "1e3"
+        }
+      },
+      "name": "a non-digit token cap is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": 1,
+        "maxTokenAmounts": {
+          "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY": ""
+        }
+      },
+      "name": "an empty token cap is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": 1,
+        "maxTokenAmounts": {
+          "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY": 1.5
+        }
+      },
+      "name": "a fractional token cap is refused"
+    },
+    {
+      "expect": {
+        "error": true
+      },
+      "input": {
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": 1,
+        "surprise": true
+      },
+      "name": "an unknown field is refused"
+    }
+  ],
+  "description": "Signer policy fields (as JSON) and the normalized policy, or an error.",
+  "version": 1
+}

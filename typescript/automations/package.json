@@ -1,0 +1,64 @@
+{
+  "name": "@usearete/automations",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Server-side automation of Arete Protocol steps on a user's behalf, with pluggable signers and a signing policy",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AreteA4/arete.git",
+    "directory": "typescript/automations"
+  },
+  "scripts": {
+    "build": "rollup -c",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "lint": "eslint src --ext .ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "arete",
+    "protocol",
+    "automation",
+    "solana"
+  ],
+  "author": "Arete Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@scure/base": "1.2.6"
+  },
+  "devDependencies": {
+    "@rollup/plugin-node-resolve": "16.0.3",
+    "@rollup/plugin-typescript": "11.1.6",
+    "@types/node": "22.20.1",
+    "@typescript-eslint/eslint-plugin": "8.71.2",
+    "@typescript-eslint/parser": "8.71.2",
+    "eslint": "8.57.1",
+    "rollup": "3.29.5",
+    "rollup-plugin-dts": "6.2.3",
+    "tslib": "2.8.1",
+    "typescript": "5.9.3",
+    "vitest": "1.6.1"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ]
+}

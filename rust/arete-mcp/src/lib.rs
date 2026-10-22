@@ -26,6 +26,8 @@ mod registry;
 pub mod sdk_reference;
 pub mod server;
 pub mod signer;
+#[cfg(test)]
+mod signer_vectors;
 pub mod stack_knowledge;
 mod subscriptions;
 
