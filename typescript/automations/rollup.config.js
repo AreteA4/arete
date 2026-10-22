@@ -2,7 +2,11 @@ import resolve from "@rollup/plugin-node-resolve";
 import typescript from "@rollup/plugin-typescript";
 import dts from "rollup-plugin-dts";
 
-const external = (id) => id.startsWith("@scure/") || id.startsWith("node:");
+const external = (id) =>
+  id.startsWith("@scure/") ||
+  id.startsWith("@noble/") ||
+  id.startsWith("@usearete/") ||
+  id.startsWith("node:");
 
 const library = (input, name) => [
   {
@@ -25,4 +29,4 @@ const library = (input, name) => [
   },
 ];
 
-export default [...library("src/index.ts", "index")];
+export default [...library("src/index.ts", "index"), ...library("src/keypair.ts", "keypair")];

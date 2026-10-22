@@ -53,6 +53,28 @@ if (refusal) throw new Error(`${refusal.rule}: ${refusal.reason}`);
 What a wallet provider can enforce on its side is narrower; see
 [docs/privy-policy-expressiveness.md](docs/privy-policy-expressiveness.md).
 
+## Signers
+
+A `ProtocolSigner` fills the wallet's signature slot of each prepared
+transaction and nothing else. The package does not trust it:
+
+- Before signing, `checkPreparedAgainstIntent` confirms the prepared bytes
+  are the ones the intent committed to (`messageSha256`), in the negotiated
+  format, with the wallet as a required signer.
+- After signing, `checkSignedTransactions` re-hashes every message against
+  the intent, confirms no other signature slot changed, and verifies the
+  wallet's signature. A signer that adds a compute-budget instruction or
+  re-encodes a transaction is refused as `signer_modified`.
+
+`negotiateTransactionFormat` picks the first format, in the deployment's
+order (`v1`, then `v0`), that the signer supports.
+
+```ts
+import { keypairSigner } from '@usearete/automations/keypair';
+
+const signer = keypairSigner(JSON.parse(readFileSync(DEV_WALLET, 'utf8'))); // dev and tests only
+```
+
 ## Development
 
 ```bash

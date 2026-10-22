@@ -71,13 +71,25 @@ export interface SignerPolicy {
   readonly clustersListed: boolean;
 }
 
+/**
+ * Why a step was not signed. The first six are the signing policy's rules;
+ * the rest are the runtime's checks around the signer.
+ */
 export type RefusalRule =
   | 'deployments'
   | 'clusters'
   | 'programs'
   | 'authority'
   | 'maxSolPerTransaction'
-  | 'maxTokenAmounts';
+  | 'maxTokenAmounts'
+  /** The prepared transactions are not what the intent committed to. */
+  | 'intent_mismatch'
+  /** The signer and the deployment share no transaction format, or the prepare used another. */
+  | 'transaction_format'
+  /** The signer changed a message, another signature, or the signers. */
+  | 'signer_modified'
+  /** The wallet's signature slot does not hold its valid signature. */
+  | 'signer_signature';
 
 /** A policy refusal: the rule and why. */
 export interface Refusal {
