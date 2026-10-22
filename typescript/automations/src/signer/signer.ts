@@ -4,6 +4,12 @@ import type {
   ProtocolTransactionFormat,
 } from '@usearete/sdk';
 
+/**
+ * What a signer is given. Hand it copies and keep your own snapshot of the
+ * prepared transactions for `checkSignedTransactions`: `readonly` is not
+ * enforced at run time, and a signer that changed the objects it was given
+ * could change a shared baseline too. The runtime does this.
+ */
 export interface SignTransactionsInput {
   /** The wallet whose signature slot to fill. */
   readonly wallet: string;
