@@ -1,0 +1,1904 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACAwE="
+      },
+      "name": "top level: SPL Token transfer"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "approve",
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "reason": "delegates tokens the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACBAE="
+      },
+      "name": "top level: SPL Token approve"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACBQE="
+      },
+      "name": "top level: SPL Token revoke"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "setAuthority",
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "reason": "changes an authority the signer holds"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACBgE="
+      },
+      "name": "top level: SPL Token setAuthority"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACBwE="
+      },
+      "name": "top level: SPL Token mintTo"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACCAE="
+      },
+      "name": "top level: SPL Token burn"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACCgE="
+      },
+      "name": "top level: SPL Token freezeAccount"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACDAE="
+      },
+      "name": "top level: SPL Token transferChecked"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "approveChecked",
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "reason": "delegates tokens the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACDQE="
+      },
+      "name": "top level: SPL Token approveChecked"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACDwE="
+      },
+      "name": "top level: SPL Token burnChecked"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACEQE="
+      },
+      "name": "top level: SPL Token syncNative"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACEgE="
+      },
+      "name": "top level: SPL Token initializeAccount3"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACFQE="
+      },
+      "name": "top level: SPL Token getAccountDataSize"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACFgE="
+      },
+      "name": "top level: SPL Token initializeImmutableOwner"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "initializeMintCloseAuthority",
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "reason": "is a token instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACGQE="
+      },
+      "name": "top level: SPL Token initializeMintCloseAuthority"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "tokenInstruction27",
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "reason": "is a token instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACGwE="
+      },
+      "name": "top level: SPL Token tokenInstruction27"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACHQE="
+      },
+      "name": "top level: SPL Token reallocate"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACHwE="
+      },
+      "name": "top level: SPL Token createNativeMint"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "withdrawExcessLamports",
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "reason": "moves lamports out of an account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACJgE="
+      },
+      "name": "top level: SPL Token withdrawExcessLamports"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "tokenInstruction40",
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "reason": "is a token instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACKAE="
+      },
+      "name": "top level: SPL Token tokenInstruction40"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "tokenInstruction255",
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "reason": "is a token instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQAC/wE="
+      },
+      "name": "top level: SPL Token tokenInstruction255"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACGgE="
+      },
+      "name": "top level: SPL Token transferCheckedWithFee"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "tokenInstruction26",
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "reason": "is a token instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACGgI="
+      },
+      "name": "top level: SPL Token other transfer-fee instruction"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "emptyInstruction",
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "reason": "is a token instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAA="
+      },
+      "name": "top level: SPL Token empty data"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACAwE="
+      },
+      "name": "top level: Token-2022 transfer"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "approve",
+            "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "reason": "delegates tokens the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACBAE="
+      },
+      "name": "top level: Token-2022 approve"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACBQE="
+      },
+      "name": "top level: Token-2022 revoke"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "setAuthority",
+            "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "reason": "changes an authority the signer holds"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACBgE="
+      },
+      "name": "top level: Token-2022 setAuthority"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACBwE="
+      },
+      "name": "top level: Token-2022 mintTo"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACCAE="
+      },
+      "name": "top level: Token-2022 burn"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACCgE="
+      },
+      "name": "top level: Token-2022 freezeAccount"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACDAE="
+      },
+      "name": "top level: Token-2022 transferChecked"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "approveChecked",
+            "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "reason": "delegates tokens the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACDQE="
+      },
+      "name": "top level: Token-2022 approveChecked"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACDwE="
+      },
+      "name": "top level: Token-2022 burnChecked"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACEQE="
+      },
+      "name": "top level: Token-2022 syncNative"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACEgE="
+      },
+      "name": "top level: Token-2022 initializeAccount3"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACFQE="
+      },
+      "name": "top level: Token-2022 getAccountDataSize"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACFgE="
+      },
+      "name": "top level: Token-2022 initializeImmutableOwner"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "initializeMintCloseAuthority",
+            "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "reason": "is a token instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACGQE="
+      },
+      "name": "top level: Token-2022 initializeMintCloseAuthority"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "tokenInstruction27",
+            "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "reason": "is a token instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACGwE="
+      },
+      "name": "top level: Token-2022 tokenInstruction27"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACHQE="
+      },
+      "name": "top level: Token-2022 reallocate"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACHwE="
+      },
+      "name": "top level: Token-2022 createNativeMint"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "withdrawExcessLamports",
+            "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "reason": "moves lamports out of an account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACJgE="
+      },
+      "name": "top level: Token-2022 withdrawExcessLamports"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "tokenInstruction40",
+            "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "reason": "is a token instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACKAE="
+      },
+      "name": "top level: Token-2022 tokenInstruction40"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "tokenInstruction255",
+            "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "reason": "is a token instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQAC/wE="
+      },
+      "name": "top level: Token-2022 tokenInstruction255"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACGgE="
+      },
+      "name": "top level: Token-2022 transferCheckedWithFee"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "tokenInstruction26",
+            "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "reason": "is a token instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQACGgI="
+      },
+      "name": "top level: Token-2022 other transfer-fee instruction"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "emptyInstruction",
+            "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "reason": "is a token instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAA="
+      },
+      "name": "top level: Token-2022 empty data"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQAAAAA"
+      },
+      "name": "top level: System createAccount"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "assign",
+            "programId": "11111111111111111111111111111111",
+            "reason": "changes the owner of an account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQBAAAA"
+      },
+      "name": "top level: System assign"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQCAAAA"
+      },
+      "name": "top level: System transfer"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQDAAAA"
+      },
+      "name": "top level: System createAccountWithSeed"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQEAAAA"
+      },
+      "name": "top level: System advanceNonce"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "withdrawFromNonce",
+            "programId": "11111111111111111111111111111111",
+            "reason": "moves lamports out of an account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQFAAAA"
+      },
+      "name": "top level: System withdrawFromNonce"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQGAAAA"
+      },
+      "name": "top level: System initializeNonce"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "authorizeNonce",
+            "programId": "11111111111111111111111111111111",
+            "reason": "changes a nonce authority the signer holds"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQHAAAA"
+      },
+      "name": "top level: System authorizeNonce"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "allocate",
+            "programId": "11111111111111111111111111111111",
+            "reason": "allocates data on the signer's account"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQIAAAA"
+      },
+      "name": "top level: System allocate"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQJAAAA"
+      },
+      "name": "top level: System allocateWithSeed"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "assignWithSeed",
+            "programId": "11111111111111111111111111111111",
+            "reason": "changes the owner of an account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQKAAAA"
+      },
+      "name": "top level: System assignWithSeed"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "transferWithSeed",
+            "programId": "11111111111111111111111111111111",
+            "reason": "moves lamports out of an account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQLAAAA"
+      },
+      "name": "top level: System transferWithSeed"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQMAAAA"
+      },
+      "name": "top level: System upgradeNonce"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "systemInstruction13",
+            "programId": "11111111111111111111111111111111",
+            "reason": "is a System instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQNAAAA"
+      },
+      "name": "top level: System systemInstruction13"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "emptyInstruction",
+            "programId": "11111111111111111111111111111111",
+            "reason": "is a System instruction the signer's policy cannot check"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQICAA=="
+      },
+      "name": "top level: System data too short for a tag"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQAAAAA"
+      },
+      "name": "top level: Stake instruction 0"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "authorize",
+            "programId": "Stake11111111111111111111111111111111111111",
+            "reason": "changes the authority or withdraws from a stake account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQBAAAA"
+      },
+      "name": "top level: Stake instruction 1"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQCAAAA"
+      },
+      "name": "top level: Stake instruction 2"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQDAAAA"
+      },
+      "name": "top level: Stake instruction 3"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "withdraw",
+            "programId": "Stake11111111111111111111111111111111111111",
+            "reason": "changes the authority or withdraws from a stake account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQEAAAA"
+      },
+      "name": "top level: Stake instruction 4"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQFAAAA"
+      },
+      "name": "top level: Stake instruction 5"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "setLockup",
+            "programId": "Stake11111111111111111111111111111111111111",
+            "reason": "changes the authority or withdraws from a stake account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQGAAAA"
+      },
+      "name": "top level: Stake instruction 6"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "merge",
+            "programId": "Stake11111111111111111111111111111111111111",
+            "reason": "changes the authority or withdraws from a stake account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQHAAAA"
+      },
+      "name": "top level: Stake instruction 7"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "authorizeWithSeed",
+            "programId": "Stake11111111111111111111111111111111111111",
+            "reason": "changes the authority or withdraws from a stake account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQIAAAA"
+      },
+      "name": "top level: Stake instruction 8"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQJAAAA"
+      },
+      "name": "top level: Stake instruction 9"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "authorizeChecked",
+            "programId": "Stake11111111111111111111111111111111111111",
+            "reason": "changes the authority or withdraws from a stake account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQKAAAA"
+      },
+      "name": "top level: Stake instruction 10"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "authorizeCheckedWithSeed",
+            "programId": "Stake11111111111111111111111111111111111111",
+            "reason": "changes the authority or withdraws from a stake account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQLAAAA"
+      },
+      "name": "top level: Stake instruction 11"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "setLockupChecked",
+            "programId": "Stake11111111111111111111111111111111111111",
+            "reason": "changes the authority or withdraws from a stake account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQMAAAA"
+      },
+      "name": "top level: Stake instruction 12"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQNAAAA"
+      },
+      "name": "top level: Stake instruction 13"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQOAAAA"
+      },
+      "name": "top level: Stake instruction 14"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQPAAAA"
+      },
+      "name": "top level: Stake instruction 15"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "stakeInstruction16",
+            "programId": "Stake11111111111111111111111111111111111111",
+            "reason": "changes the authority or withdraws from a stake account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQQAAAA"
+      },
+      "name": "top level: Stake instruction 16"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "upgradeableLoaderInstruction0",
+            "programId": "BPFLoaderUpgradeab1e11111111111111111111111",
+            "reason": "changes a program or buffer the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgKo9pFOiKGw4hAVPvdjrisAwrk9FsEk0sBTehAEgAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQAAAAA"
+      },
+      "name": "top level: Upgradeable loader instruction 0"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "upgradeableLoaderInstruction3",
+            "programId": "BPFLoaderUpgradeab1e11111111111111111111111",
+            "reason": "changes a program or buffer the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgKo9pFOiKGw4hAVPvdjrisAwrk9FsEk0sBTehAEgAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQDAAAA"
+      },
+      "name": "top level: Upgradeable loader instruction 3"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "upgradeableLoaderInstruction4",
+            "programId": "BPFLoaderUpgradeab1e11111111111111111111111",
+            "reason": "changes a program or buffer the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgKo9pFOiKGw4hAVPvdjrisAwrk9FsEk0sBTehAEgAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQEAAAA"
+      },
+      "name": "top level: Upgradeable loader instruction 4"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "upgradeableLoaderInstruction5",
+            "programId": "BPFLoaderUpgradeab1e11111111111111111111111",
+            "reason": "changes a program or buffer the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgKo9pFOiKGw4hAVPvdjrisAwrk9FsEk0sBTehAEgAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQFAAAA"
+      },
+      "name": "top level: Upgradeable loader instruction 5"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "emptyInstruction",
+            "programId": "BPFLoaderUpgradeab1e11111111111111111111111",
+            "reason": "changes a program or buffer the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgKo9pFOiKGw4hAVPvdjrisAwrk9FsEk0sBTehAEgAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAA="
+      },
+      "name": "top level: Upgradeable loader empty data"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAQEE"
+      },
+      "name": "top level: approve without the signer's accounts"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAigoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQEE"
+      },
+      "name": "top level: an unchecked program with the signer"
+    },
+    {
+      "expect": {
+        "closedToOthers": [
+          "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR"
+        ],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQABCQ=="
+      },
+      "name": "top level: closeAccount to another account"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAAABCQ=="
+      },
+      "name": "top level: closeAccount to the signer"
+    },
+    {
+      "expect": {
+        "closedToOthers": [
+          "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR"
+        ],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQABCQ=="
+      },
+      "name": "top level: Token-2022 closeAccount to another account"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgMBAQABBA=="
+      },
+      "name": "top level: approve by a wallet that does not sign"
+    },
+    {
+      "expect": {
+        "closedToOthers": [
+          "548jb4wcUtpbNS1TAva8TXJmeXd5QpCCXUzNVogwpzMR",
+          null
+        ],
+        "findings": []
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [
+          "548jb4wcUtpbNS1TAva8TXJmeXd5QpCCXUzNVogwpzMR",
+          null
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQABAwEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAgIDAwEAAQkCAwQBAAEJATIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyAgABAA=="
+      },
+      "name": "top level: closeAccount of lookup-table accounts"
+    },
+    {
+      "expect": {
+        "closedToOthers": [
+          "A"
+        ],
+        "findings": [
+          {
+            "inner": true,
+            "instruction": "approve",
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "reason": "delegates tokens the signer controls"
+          },
+          {
+            "inner": true,
+            "instruction": "assign",
+            "programId": "11111111111111111111111111111111",
+            "reason": "changes the owner of an account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "accountKeys": [],
+        "innerInstructions": [
+          {
+            "index": 0,
+            "instructions": [
+              {
+                "parsed": {
+                  "info": {
+                    "amount": "1",
+                    "delegate": "D",
+                    "owner": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+                    "source": "S"
+                  },
+                  "type": "approve"
+                },
+                "program": "spl-token",
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              {
+                "parsed": {
+                  "info": {
+                    "amount": "1",
+                    "authority": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+                    "destination": "T",
+                    "source": "S"
+                  },
+                  "type": "transfer"
+                },
+                "program": "spl-token",
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              {
+                "parsed": {
+                  "info": {
+                    "account": "S",
+                    "authority": "someone-else"
+                  },
+                  "type": "setAuthority"
+                },
+                "program": "spl-token",
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              {
+                "accounts": [
+                  "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+                ],
+                "data": "2UzHM",
+                "programId": "11111111111111111111111111111111"
+              },
+              {
+                "parsed": {
+                  "info": {
+                    "account": "A",
+                    "destination": "elsewhere",
+                    "owner": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+                  },
+                  "type": "closeAccount"
+                },
+                "program": "spl-token-2022",
+                "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+              }
+            ]
+          }
+        ],
+        "kind": "inner",
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "inner: parsed and partially decoded inner instructions"
+    },
+    {
+      "expect": {
+        "closedToOthers": [
+          null
+        ],
+        "findings": [
+          {
+            "inner": true,
+            "instruction": "assign",
+            "programId": "11111111111111111111111111111111",
+            "reason": "changes the owner of an account the signer controls"
+          },
+          {
+            "inner": true,
+            "instruction": "setAuthority",
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "reason": "changes an authority the signer holds"
+          }
+        ]
+      },
+      "input": {
+        "accountKeys": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+          "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+          "11111111111111111111111111111111",
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          null
+        ],
+        "innerInstructions": [
+          {
+            "index": 0,
+            "instructions": [
+              {
+                "accounts": [
+                  0,
+                  1
+                ],
+                "data": "2UzHM",
+                "programIdIndex": 2
+              },
+              {
+                "accounts": [
+                  1,
+                  0
+                ],
+                "data": "3xyZh",
+                "programIdIndex": 2
+              },
+              {
+                "accounts": [
+                  4,
+                  1,
+                  0
+                ],
+                "data": "A",
+                "programIdIndex": 3
+              },
+              {
+                "accounts": [
+                  4,
+                  0,
+                  0
+                ],
+                "data": "A",
+                "programIdIndex": 3
+              },
+              {
+                "accounts": [
+                  4,
+                  1,
+                  0
+                ],
+                "data": "TX",
+                "programIdIndex": 3
+              }
+            ]
+          },
+          {
+            "index": 1,
+            "instructions": [
+              {
+                "accounts": [
+                  0
+                ],
+                "data": "5",
+                "programIdIndex": 9
+              },
+              {
+                "accounts": [
+                  9,
+                  1
+                ],
+                "data": "5",
+                "programIdIndex": 3
+              }
+            ]
+          }
+        ],
+        "kind": "inner",
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "inner: compiled inner instructions resolved through account keys"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": true,
+            "instruction": "approve",
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "reason": "delegates tokens the signer controls"
+          },
+          {
+            "inner": true,
+            "instruction": "assign",
+            "programId": "11111111111111111111111111111111",
+            "reason": "changes the owner of an account the signer controls"
+          },
+          {
+            "inner": true,
+            "instruction": "withdraw",
+            "programId": "Stake11111111111111111111111111111111111111",
+            "reason": "changes the authority or withdraws from a stake account the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "accountKeys": [],
+        "innerInstructions": [
+          {
+            "index": 0,
+            "instructions": [
+              {
+                "parsed": {
+                  "info": {
+                    "owner": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+                  },
+                  "type": "approve"
+                },
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+              },
+              {
+                "parsed": {
+                  "info": {
+                    "nested": {
+                      "list": [
+                        "x"
+                      ]
+                    },
+                    "owner": "someone-else"
+                  },
+                  "type": "approve"
+                },
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              {
+                "parsed": {
+                  "info": {
+                    "owner": "x",
+                    "signers": [
+                      "y",
+                      "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+                    ]
+                  },
+                  "type": "approve"
+                },
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              {
+                "parsed": {
+                  "info": {
+                    "owner": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+                  }
+                },
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              {
+                "parsed": "approve",
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              {
+                "parsed": {
+                  "info": {
+                    "account": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+                    "owner": "P"
+                  },
+                  "type": "assign"
+                },
+                "programId": "11111111111111111111111111111111"
+              },
+              {
+                "parsed": {
+                  "info": {
+                    "withdrawAuthority": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+                  },
+                  "type": "withdraw"
+                },
+                "programId": "Stake11111111111111111111111111111111111111"
+              },
+              {
+                "parsed": {
+                  "info": {
+                    "account": "A",
+                    "destination": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+                    "owner": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+                  },
+                  "type": "closeAccount"
+                },
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              }
+            ]
+          }
+        ],
+        "kind": "inner",
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "inner: parsed instructions of other programs and without the signer"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": true,
+            "instruction": "emptyInstruction",
+            "programId": "11111111111111111111111111111111",
+            "reason": "is a System instruction the signer's policy cannot check"
+          },
+          {
+            "inner": true,
+            "instruction": "emptyInstruction",
+            "programId": "11111111111111111111111111111111",
+            "reason": "is a System instruction the signer's policy cannot check"
+          },
+          {
+            "inner": true,
+            "instruction": "upgradeableLoaderInstruction4",
+            "programId": "BPFLoaderUpgradeab1e11111111111111111111111",
+            "reason": "changes a program or buffer the signer controls"
+          }
+        ]
+      },
+      "input": {
+        "accountKeys": [],
+        "innerInstructions": [
+          {
+            "index": 0,
+            "instructions": [
+              {
+                "accounts": [
+                  "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+                ],
+                "data": "2UzHM"
+              },
+              {
+                "data": "2UzHM",
+                "programId": "11111111111111111111111111111111"
+              },
+              {
+                "accounts": [
+                  "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+                ],
+                "data": "0OIl",
+                "programId": "11111111111111111111111111111111"
+              },
+              {
+                "accounts": [
+                  "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+                  true
+                ],
+                "programId": "11111111111111111111111111111111"
+              },
+              {
+                "accounts": [
+                  {
+                    "pubkey": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+                  },
+                  "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+                ],
+                "data": "6vx8P",
+                "programId": "BPFLoaderUpgradeab1e11111111111111111111111"
+              }
+            ]
+          },
+          {
+            "index": 1
+          },
+          "not an object"
+        ],
+        "kind": "inner",
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "inner: inner instructions with missing or malformed fields"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": []
+      },
+      "input": {
+        "accountKeys": [],
+        "innerInstructions": null,
+        "kind": "inner",
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "inner: no inner instructions"
+    }
+  ],
+  "description": "Instructions that hand control of the signer's funds to someone else: top-level (from wire bytes) and inner (from a simulation).",
+  "version": 1
+}

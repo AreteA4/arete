@@ -329,10 +329,18 @@ impl DecodedTransaction {
 // ---------------------------------------------------------------------------
 
 /// A Solana JSON-RPC endpoint used to simulate prepared transactions.
+/// Answers an RPC call in place of the endpoint (tests only).
+#[cfg(test)]
+type RpcFixture = std::sync::Arc<dyn Fn(&str, &Value) -> Result<Value> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Rpc {
     http: reqwest::Client,
     url: String,
+    /// Answers calls in place of the endpoint, for tests that describe the
+    /// chain as a fixture.
+    #[cfg(test)]
+    fixture: Option<RpcFixture>,
 }
 
 impl std::fmt::Debug for Rpc {
@@ -346,10 +354,29 @@ impl Rpc {
         Self {
             http,
             url: url.to_string(),
+            #[cfg(test)]
+            fixture: None,
+        }
+    }
+
+    /// An RPC whose calls `answer` handles: `Ok(result)` or `Err` with the
+    /// JSON-RPC error message.
+    #[cfg(test)]
+    pub(crate) fn from_fixture(
+        answer: impl Fn(&str, &Value) -> Result<Value> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            url: String::new(),
+            fixture: Some(std::sync::Arc::new(answer)),
         }
     }
 
     async fn call(&self, method: &str, params: Value) -> Result<Value> {
+        #[cfg(test)]
+        if let Some(answer) = &self.fixture {
+            return answer(method, &params).map_err(|error| anyhow!("{method} failed: {error}"));
+        }
         let response: Value = self
             .http
             .post(&self.url)
