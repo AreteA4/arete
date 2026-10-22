@@ -376,6 +376,27 @@ describe('robust list-view sources', () => {
     expect((await deliveries(store)).map((delivery) => (delivery.payload as ViewTrigger).value)).toEqual(['a']);
   });
 
+  it('drops a seeded row removed while the source was starting', async () => {
+    const { store, make } = setup();
+    // The row leaves just after the snapshot is read, before the stream's
+    // queued updates are applied.
+    class LeavingView extends FakeListView<Market> {
+      override async get() {
+        const rows = await super.get();
+        this.remove('b', false);
+        return rows;
+      }
+    }
+    const view = new LeavingView((market) => market.id);
+    view.set({ id: 'a', apyBps: 500 }, { id: 'b', apyBps: 600 });
+    view.replay = false;
+    const handle = make('r').source(rateSource(view));
+    await settle();
+    await handle.stop();
+    // b is gone, so a is the best market from the start: one value, a.
+    expect((await store.sources.get('bestRateChanged', 'all'))?.value).toBe('a');
+  });
+
   it('never promotes a pending change of a seeded row removed without lastKnown', async () => {
     const { store, make, clock } = setup();
     const view = new FakeListView<Position>((position) => position.owner);
