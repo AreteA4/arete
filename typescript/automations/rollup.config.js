@@ -33,4 +33,14 @@ export default [
   ...library("src/index.ts", "index"),
   ...library("src/keypair.ts", "keypair"),
   ...library("src/testing.ts", "testing"),
+  ...library("src/postgres.ts", "postgres"),
+  {
+    input: "src/cli-bin.ts",
+    external,
+    plugins: [
+      resolve(),
+      typescript({ tsconfig: "./tsconfig.json", declaration: false, declarationMap: false }),
+    ],
+    output: { file: "dist/cli.js", format: "esm", sourcemap: false, banner: "#!/usr/bin/env node" },
+  },
 ];

@@ -95,8 +95,8 @@ export interface ViewTrigger<V = unknown> {
   /** The row key, or `all` for an aggregate source. */
   readonly key: string;
   readonly value: V;
-  /** The stable value before; `undefined` the first time the key is seen. */
-  readonly previous: V | undefined;
+  /** The stable value before; absent the first time the key is seen. */
+  readonly previous?: V;
 }
 
 /** The payload an append-view source dispatches, one per row. */
@@ -192,7 +192,7 @@ export async function evaluateSignal<V>(
     }
     const previous = state && state.hash !== NO_VALUE ? (state.value as V) : undefined;
     const fire = source.changed(previous, value);
-    const payload: ViewTrigger<V> = { source: source.name, key, value, previous };
+    const payload: ViewTrigger<V> = { source: source.name, key, value, ...(previous !== undefined ? { previous } : {}) };
     if (await write({ hash, value: json, pending: null }, fire ? { name: source.name, payload } : undefined)) {
       return fire ? 'delivered' : 'changed';
     }
