@@ -197,7 +197,8 @@ function minimum(...values: Array<bigint | undefined>): bigint | undefined {
  * expires. Programs from `policy.programs` (plus compute budget, memo and
  * associated token account programs) are allowed. System transfers and
  * token `TransferChecked` are allowed up to the smaller of the policy's and
- * the consent's per-run caps, per instruction; token accounts may be
+ * the consent's per-run caps, per instruction (wrapped SOL up to the SOL
+ * cap, as it counts as SOL); token accounts may be
  * closed only to the wallet itself. Everything else is denied, including
  * key export.
  */
@@ -245,6 +246,14 @@ export function privyPolicyFor(
       { field_source: 'solana_system_program_instruction', field: 'instructionName', operator: 'eq', value: 'Transfer' },
       { field_source: 'solana_system_program_instruction', field: 'Transfer.lamports', operator: 'lte', value: String(solCap ?? 0n) },
     ]),
+    // Wrapped SOL counts as SOL everywhere else, so its transfers share the SOL cap.
+    ...NATIVE_MINTS.map((mint) =>
+      rule(`Wrapped SOL (${mint}) transfers up to the per-run cap`, [
+        { field_source: 'solana_token_program_instruction', field: 'instructionName', operator: 'eq', value: 'TransferChecked' },
+        { field_source: 'solana_token_program_instruction', field: 'TransferChecked.mint', operator: 'eq', value: mint },
+        { field_source: 'solana_token_program_instruction', field: 'TransferChecked.amount', operator: 'lte', value: String(solCap ?? 0n) },
+      ]),
+    ),
     rule('Token accounts closed back to the wallet', [
       { field_source: 'solana_token_program_instruction', field: 'instructionName', operator: 'eq', value: 'CloseAccount' },
       { field_source: 'solana_token_program_instruction', field: 'CloseAccount.destination', operator: 'eq', value: consent.wallet },
@@ -255,6 +264,7 @@ export function privyPolicyFor(
   ];
   const mints = new Set([...(policy.maxTokenAmounts?.keys() ?? []), ...Object.keys(perRun).filter((key) => key !== SOL)]);
   for (const mint of [...mints].sort()) {
+    // Covered by the wrapped SOL rules above.
     if ((NATIVE_MINTS as readonly string[]).includes(mint)) continue;
     const cap = minimum(policy.maxTokenAmounts?.get(mint), perRun[mint] === undefined ? undefined : BigInt(perRun[mint]));
     // A mint missing from either side may not leave: the stricter side wins.
@@ -274,7 +284,7 @@ export function privyPolicyFor(
     'authority refusals in inner instructions (approvals or authority changes a program makes by CPI)',
     'transactions whose effect cannot be simulated: Privy policies do not read simulations',
     'consent per-window limits: Privy has no cumulative limits on Solana',
-    'wrapped SOL spent, and lamports of token accounts closed by CPI',
+    'wrapped SOL a protocol program spends by CPI, and lamports of token accounts closed by CPI',
     'steps with other top-level System or Token instructions (for example creating an account or syncNative to wrap SOL): Privy refuses them, and privySigner refuses them before asking',
   ];
   return {
