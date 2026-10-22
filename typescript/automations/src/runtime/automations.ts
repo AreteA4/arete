@@ -10,6 +10,7 @@ import type {
   ProtocolStepAvailability,
   ProtocolTransactionFormat,
   ProtocolTypeMap,
+  RichUpdate,
 } from '@usearete/sdk';
 
 import { ed25519 } from '@noble/curves/ed25519';
@@ -392,6 +393,27 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   // Step jobs
   // -------------------------------------------------------------------------
 
+  /** The fees the landed transactions paid, from the chain; `null` when one cannot be read. */
+  const chargedFees = async (signatures: readonly (string | null)[]): Promise<bigint | null> => {
+    let total = 0n;
+    for (const signature of signatures) {
+      if (signature === null) continue; // never landed, so never charged
+      try {
+        const transaction = await simulator.call('getTransaction', [
+          signature,
+          { encoding: 'json', commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+        ]);
+        const fee = (transaction as { meta?: { fee?: unknown } } | null)?.meta?.fee;
+        if (typeof fee !== 'number' || !Number.isSafeInteger(fee) || fee < 0) return null;
+        total += BigInt(fee);
+      } catch (error) {
+        report(error, { phase: 'fees' });
+        return null;
+      }
+    }
+    return total;
+  };
+
   const outcomeOf = (job: StepJob, state: StepJobState, outcome: JobOutcome): AutomationOutcome => ({
     jobId: job.id,
     deliveryId: job.deliveryId,
@@ -433,11 +455,11 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       state: StepJobState,
       outcome: JobOutcome,
       progress: StepJob['progress'] | undefined = undefined,
+      ledger: NonNullable<Parameters<AutomationStore['jobs']['transition']>[1]['ledger']> = { void: true },
     ) => {
-      // Spending counts against a window only when the intent landed. A
-      // transaction that failed on chain still paid its fee, so its SOL stays.
+      // Spending counts against a window only when the intent landed.
       const landed = state === 'completed';
-      const voiding = state === 'chain_failed' ? { void: true, keepAssets: [SOL] } : { void: true };
+      const voiding = ledger;
       const moved = await store.jobs.transition(job.id, {
         worker,
         from: job.state,
@@ -681,7 +703,10 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
           switch (state.state) {
             case 'completed':
               return finish(job, 'completed', { code: 'completed' }, { ...job.progress, signatures });
-            case 'chain_failed':
+            case 'chain_failed': {
+              // The transfers rolled back but the fees were charged: the window
+              // keeps exactly the fees, or all the SOL when they cannot be read.
+              const fees = await chargedFees(signatures);
               return finish(
                 job,
                 'chain_failed',
@@ -690,7 +715,17 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
                   detail: state.transactions.filter((transaction) => transaction.error).map(({ index, error }) => ({ index, error })),
                 },
                 { ...job.progress, signatures },
+                fees === null
+                  ? { void: true, keepAssets: [SOL] }
+                  : {
+                      void: true,
+                      record:
+                        fees > 0n
+                          ? [{ wallet: job.request.wallet, deploymentId: job.deploymentId, asset: SOL, amount: fees.toString() }]
+                          : [],
+                    },
               );
+            }
             case 'rejected':
               return finish(job, 'rejected', { code: 'intent_rejected' }, { ...job.progress, signatures });
             case 'expired':
@@ -940,24 +975,51 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
         }
       }
     };
-    const initial = await within(attempt, source.view.get());
-    if (initial === ENDED || !attempt.active) return;
-    rows = initial;
-    for (const [key, value, observed] of source.signals(initial)) {
+    // Open the watcher first: its subscription starts now and queues events.
+    // get() then waits for that same subscription's snapshot, so what is
+    // queued when it resolves is the watcher's own snapshot (and any change
+    // before it), with keys. That is the baseline; an aggregate is never
+    // evaluated on a half-loaded view.
+    const iterator = source.view.watchRich({ withSnapshot: true })[Symbol.asyncIterator]();
+    attempt.iterator = iterator;
+    const ready = await within(attempt, source.view.get());
+    if (ready === ENDED || !attempt.active) return;
+    const apply = (update: RichUpdate<unknown>) => {
+      if (update.type === 'created') rowsByKey.set(update.key, update.data);
+      else if (update.type === 'updated') rowsByKey.set(update.key, update.after);
+      else rowsByKey.delete(update.key);
+    };
+    const QUEUE_EMPTY = Symbol('queue empty');
+    let carried: Promise<IteratorResult<RichUpdate<unknown>>> | null = null;
+    for (;;) {
+      const next = iterator.next();
+      // A queued event resolves before a timer can fire; an empty queue leaves
+      // `next` pending, to be carried into the live loop.
+      const first = await within(
+        attempt,
+        Promise.race([next, new Promise<typeof QUEUE_EMPTY>((resolve) => setTimeout(() => resolve(QUEUE_EMPTY), 0))]),
+      );
+      if (first === ENDED || !attempt.active) return;
+      if (first === QUEUE_EMPTY) {
+        carried = next;
+        break;
+      }
+      if (first.done) return;
+      apply(first.value);
+    }
+    rows = [...rowsByKey.values()];
+    for (const [key, value, observed] of source.signals(rows)) {
       if (!attempt.active) return;
       if (source.rowSignal) latest.set(key, [value, observed]);
       await evaluate(key, value, observed);
     }
-    if (!attempt.active) return;
-    const iterator = source.view.watchRich({ withSnapshot: true })[Symbol.asyncIterator]();
-    attempt.iterator = iterator;
-    // The stream replays the snapshot first; an aggregate waits for it to
-    // complete so it never evaluates a half-loaded view.
-    let replaying = !source.rowSignal;
     while (attempt.active) {
-      const next = await within(attempt, iterator.next());
+      const next = await within(attempt, carried ?? iterator.next());
+      carried = null;
       if (next === ENDED || next.done || !attempt.active) return;
       const update = next.value;
+      apply(update);
+      rows = [...rowsByKey.values()];
       if (source.rowSignal) {
         if (update.type !== 'created' && update.type !== 'updated') continue;
         const signal = source.rowSignal(update.type === 'created' ? update.data : update.after);
@@ -966,14 +1028,6 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
         await evaluate(signal[0], signal[1], signal[2]);
         continue;
       }
-      if (update.type === 'created') rowsByKey.set(update.key, update.data);
-      else if (update.type === 'updated') rowsByKey.set(update.key, update.after);
-      else rowsByKey.delete(update.key);
-      if (replaying) {
-        if (update.type === 'created' && rowsByKey.size < initial.length) continue;
-        replaying = false;
-      }
-      rows = [...rowsByKey.values()];
       for (const [key, value, observed] of source.signals(rows)) {
         if (!attempt.active) return;
         await evaluate(key, value, observed);
