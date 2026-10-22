@@ -287,7 +287,10 @@ publish_package "$STAGING_DIR/typescript/react" "@usearete/react" "npm install .
 publish_package "$STAGING_DIR/typescript/adapters/kit" "@usearete/adapter-kit" "npm install ../../core --no-save --package-lock=false"
 publish_package "$STAGING_DIR/typescript/adapters/web3js" "@usearete/adapter-web3js" "npm install ../../core --no-save --package-lock=false"
 if [[ -n "$AUTOMATIONS" ]]; then
-  publish_package "$STAGING_DIR/typescript/automations" "@usearete/automations" "npm install ../core --no-save --package-lock=false"
+  # Staging drops dist, and the SDK is not rebuilt when it is already
+  # published: build it here so automations compiles against its types.
+  publish_package "$STAGING_DIR/typescript/automations" "@usearete/automations" \
+    "(cd ../core && npm ci && npm run build) && npm install ../core --no-save --package-lock=false"
 fi
 publish_package "$STAGING_DIR/packages/arete" "@usearete/a4"
 publish_package "$STAGING_DIR/packages/mcp" "@usearete/mcp"
