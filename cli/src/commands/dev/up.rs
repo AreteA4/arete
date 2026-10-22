@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::api::DevApi;
+use super::automations::{self, AutomationsConfig};
 use super::deploy::{run_build, DeployOutcome, DeploySettings, DeployState, Deployer, BUILD_DIR};
 use super::proxy::{self, RpcProxy};
 use super::runtime::{pid_alive, LogSink};
@@ -387,6 +388,8 @@ struct Session<'a> {
     /// for.
     sdk_generated_for: Option<(String, String)>,
     ui: DevUi,
+    /// `[dev.automations]`: the project's automations, restarted on changes.
+    automations: Option<automations::Runner>,
 }
 
 /// Run `a4 dev up` until Ctrl-C or SIGTERM (`a4 dev down`).
@@ -405,6 +408,7 @@ pub async fn run(config: UpConfig) -> Result<()> {
         json: config.json,
         log: LogSink::open(&project.dev_dir().join("a4.log"), "a4", false)?,
     };
+    let automations_config = AutomationsConfig::load(&config.project_root)?;
 
     // 1. The environment.
     let (view, outcome) = ensure_environment(
@@ -460,6 +464,7 @@ pub async fn run(config: UpConfig) -> Result<()> {
     ui.start_feeds(rpc.clone());
 
     let deploy_state = DeployState::load_for(&project.deploy_state_path(), &env.id);
+    let automation_events = events.clone();
     let mut session = Session {
         config: &config,
         project: project.clone(),
@@ -479,12 +484,26 @@ pub async fn run(config: UpConfig) -> Result<()> {
         stack_session_retry_at: 0,
         stack_looked_up: None,
         sdk_generated_for: None,
+        automations: automations_config.map(|automations_config| {
+            let events = automation_events;
+            automations::Runner::new(
+                automations_config,
+                &config.project_root,
+                config.api.key(),
+                Arc::new(move |event: &str, human: &str, fields: Value| {
+                    events.emit(event, human, fields)
+                }),
+            )
+        }),
         ui,
     };
     let result = match session.start(&token).await {
         Ok(()) => session.supervise().await,
         Err(error) => Err(error),
     };
+    if let Some(runner) = &mut session.automations {
+        runner.stop().await;
+    }
     let Session {
         events, ui, proxy, ..
     } = session;
@@ -994,11 +1013,17 @@ impl Session<'_> {
             watch::Snapshot::new()
         };
         let mut tick = tokio::time::interval(POLL);
+        if let Some(runner) = &mut self.automations {
+            runner.start_or_report();
+        }
         loop {
             tokio::select! {
                 _ = &mut ctrl_c => return Ok(()),
                 _ = terminated(&mut terminate) => return Ok(()),
                 _ = tick.tick() => {}
+            }
+            if let Some(runner) = &mut self.automations {
+                runner.poll(watching).await;
             }
             let found = self.find_stack().await;
             if self.refresh_stack_session(found).await || found {

@@ -5,7 +5,46 @@ opening the app. `refund` is a participant step: it needs the
 contributor's own signature, so this backend signs it for them with a key
 they delegated, inside a consent they signed.
 
-## Run it
+## Develop with `a4 dev`
+
+`automations.ts` holds the handlers. In the protocol's project, point
+`a4 dev up` at it:
+
+```toml
+# arete.toml
+[dev.automations]
+entry = "automations.ts"
+```
+
+```bash
+npm install --save-dev @usearete/automations tsx
+a4 dev up
+```
+
+`a4 dev up` deploys the protocol to your dev environment, a fork of
+mainnet, generates its client, and runs the automations against that
+deployment. It signs for the dev wallets, keeps jobs and consent under
+`.arete/dev/automations/`, forwards the environment's events as signed
+webhook deliveries, and restarts them when you save `automations.ts` or the
+client is regenerated. Opt a dev wallet in and let a raise fail:
+
+```bash
+a4 dev wallet alice                          # a funded dev wallet
+a4 dev consent alice --steps refund          # alice signs the consent
+a4 dev step contribute --instance <raise> --args '{"amount":"1000000"}' --wallet alice
+a4 dev warp +2d                              # past the raise's deadline
+```
+
+```text
+automations │ completed: refund for <alice's address> on <raise>: completed
+```
+
+To run the whole server below against the dev environment instead (the
+consent routes too), use `forward = "http://localhost:8787/arete/webhook"`
+and start `server.ts` with `ARETE_WEBHOOK_SECRET` set to the contents of
+`.arete/dev/automations/webhook-secret`.
+
+## Run it in production
 
 1. Install the protocol and point `token-raise.ts` at the generated module
    (it exports `TOKEN_RAISE_PROTOCOL`, which `server.ts` imports):

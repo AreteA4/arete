@@ -82,8 +82,12 @@ under a different delivery header. For Express, use
 `automations.expressWebhookHandler(...)` behind
 `express.raw({ type: "application/json" })`.
 
-To follow one instance instead, for example while developing, use its event
-stream:
+Under `a4 dev up`, events reach the same handlers as signed deliveries:
+[dev environments send no webhooks](/automations/quickstart/#run-it-with-a4-dev),
+so `a4 dev` follows the environment's instances and signs each event the way
+a production webhook is signed.
+
+To follow one instance yourself, use its event stream:
 
 ```ts
 const subscription = automations.follow(instanceId);
@@ -137,6 +141,21 @@ automations.on("bestRateChanged", async (trigger, ctx) => {
 
 automations.source(bestRate); // a long-running server
 ```
+
+In a definition (`defineAutomations`), open the stack with
+`automations.connect(stack)` rather than connecting it yourself: under
+`a4 dev` it connects to the dev environment's stack, and in production to the
+published one.
+
+```ts
+export default defineAutomations(PROTOCOL, async (automations) => {
+  const lending = await automations.connect(LENDING_STACK);
+  automations.source(fromView(lending.views.Market.list, { /* as above */ }));
+});
+```
+
+A stack that is not in the dev environment connects to its published data,
+and `a4 dev` says so when it starts.
 
 - `fromView` keeps one signal for the whole view (which market is best).
 - `fromViewRows` keeps one per row, for example "this wallet's position

@@ -1320,6 +1320,7 @@ a4 dev delete --yes
 | `a4 dev events`, `a4 dev token`                                       | lifecycle events; an environment token with the RPC URLs             |
 | `a4 dev step`, `a4 dev wallet`, `a4 dev instance`, `a4 dev replay`    | drive the protocol with local dev wallets                            |
 | `a4 dev sdk`, `a4 dev capture`                                        | the protocol client from the local build; a capture from an RPC node |
+| `a4 dev consent <wallet> --steps <a,b>`                               | opt a dev wallet in to the project's `[dev.automations]`             |
 
 Every environment command takes `--env <name|id>` (default `ARETE_DEV_ENV`,
 else the project's) and `--json`.

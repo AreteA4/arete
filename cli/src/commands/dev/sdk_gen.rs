@@ -84,6 +84,10 @@ struct DevConfig {
     #[serde(default)]
     #[serde(rename = "stacks")]
     _stacks: Vec<String>,
+    /// The automations `a4 dev up` runs (read by [`super::automations`]).
+    #[serde(default)]
+    #[serde(rename = "automations")]
+    _automations: Option<toml::Value>,
 }
 
 /// `[dev] sdk` from `<root>/arete.toml`: the targets of the client `a4 dev`
@@ -109,7 +113,7 @@ fn parse_targets(source: &str) -> Result<Vec<InstallTarget>> {
     let config: DevConfig = table
         .clone()
         .try_into()
-        .context("Invalid [dev] section (keys: sdk = [\"typescript\", \"rust\", \"python\"], stacks = [\"<path>.stack.yaml\"])")?;
+        .context("Invalid [dev] section (keys: sdk = [\"typescript\", \"rust\", \"python\"], stacks = [\"<path>.stack.yaml\"], [dev.automations])")?;
     let mut targets = config.sdk;
     targets.sort();
     targets.dedup();

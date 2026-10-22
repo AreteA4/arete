@@ -1,5 +1,7 @@
-// Automatic refunds for a token raise: when a raise fails, every contributor
-// who opted in is refunded without opening the app.
+// Automatic refunds for a token raise, in production: the definition in
+// automations.ts, with a real signer, Postgres, the webhook route and the
+// consent routes your app calls. `a4 dev up` runs automations.ts on its own
+// against the dev environment, or forwards events to this server.
 //
 //   SIGNER=keypair DEV_WALLET=~/.config/solana/dev.json ...   (a dev environment)
 //   SIGNER=privy PRIVY_APP_ID=... PRIVY_APP_SECRET=... PRIVY_AUTHORIZATION_KEY=... PRIVY_WALLETS='{"<address>":"<wallet id>"}'
@@ -26,6 +28,7 @@ import { keypairSigner } from '@usearete/automations/keypair';
 import { postgresStore } from '@usearete/automations/postgres';
 import { type PrivyClientLike, privySigner } from '@usearete/automations/privy';
 
+import definition from './automations';
 import { TOKEN_RAISE_PROTOCOL } from './token-raise';
 
 function env(name: string, fallback?: string): string {
@@ -72,12 +75,10 @@ async function main() {
   const automations = createAutomations({
     client,
     signer: await signerFromEnv(),
-    // A refund moves funds into the wallet; only the network fee leaves it.
     policy: definePolicy({
+      ...definition.policy!,
       deployments: [client.deploymentId],
       clusters: env('ALLOW_MAINNET', '') === '1' ? ['dev', 'mainnet'] : ['dev'],
-      programs: JSON.parse(env('PROGRAMS', '[]')) as string[],
-      maxSolPerTransaction: '0.001',
     }),
     // In a dev environment, simulate on the fork through `a4 dev up`'s local RPC.
     simulator: rpcSimulator(env('RPC_URL', dev ? 'http://127.0.0.1:48700' : undefined)),
@@ -87,22 +88,7 @@ async function main() {
     onError: (error, context) => console.error(`[${context.phase}]`, error),
   });
 
-  automations.on('raise.failed', async (event, ctx) => {
-    const grants = await ctx.consents.list({ step: 'refund', instanceId: event.instanceId });
-    const contributors: string[] = [];
-    for (const grant of grants) {
-      // Only wallets that contributed to this raise have anything to refund.
-      try {
-        await client.participants.get({ instance: event.instanceId, wallet: grant.wallet });
-        contributors.push(grant.wallet);
-      } catch (error) {
-        // Anything but "not a participant" fails the handler, so the delivery
-        // is retried rather than completed without this wallet's refund.
-        if ((error as { details?: { status?: number } }).details?.status !== 404) throw error;
-      }
-    }
-    return contributors.map((wallet) => ctx.step('refund', { wallet, instance: event.instanceId }));
-  });
+  await automations.use(definition);
 
   const MAX_BODY = 64 * 1024;
   class TooLarge extends Error {}

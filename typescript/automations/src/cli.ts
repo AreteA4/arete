@@ -3,13 +3,16 @@ import { join } from 'node:path';
 
 import { DEFAULT_SCHEMA, migrationFiles, runtimeRoleGrants } from './postgres/migrations';
 
-const USAGE = `arete-automations: SQL for the @usearete/automations Postgres store
+const USAGE = `arete-automations: SQL for the @usearete/automations Postgres store, and the a4 dev runner
 
 Usage:
   arete-automations migrations --out <dir> [--schema <name>]
       Write the migrations as numbered SQL files for your own migration tool.
   arete-automations grants --role <name> [--schema <name>]
       Print the grants for a runtime role that reads and writes rows but cannot change the schema.
+  arete-automations dev
+      Run the project's automations against its dev environment. \`a4 dev up\` runs it for
+      [dev.automations] in arete.toml, with its settings in the environment.
 
 The schema defaults to ${DEFAULT_SCHEMA}.`;
 
@@ -49,4 +52,22 @@ export function main(args: string[], out: { log(text: string): void; error(text:
     out.error(`arete-automations: ${(error as Error).message}`);
     return 1;
   }
+}
+
+/** `arete-automations dev`: run until SIGINT or SIGTERM. */
+export async function dev(out: { log(text: string): void; error(text: string): void } = console): Promise<number> {
+  const { configFromEnv, runDev } = await import('./dev/runner');
+  let runner;
+  try {
+    runner = await runDev(configFromEnv(process.env), (line) => out.log(line));
+  } catch (error) {
+    out.error(`arete-automations: ${(error as Error).message}`);
+    return 1;
+  }
+  await new Promise<void>((done) => {
+    process.once('SIGINT', done);
+    process.once('SIGTERM', done);
+  });
+  await runner.stop();
+  return 0;
 }

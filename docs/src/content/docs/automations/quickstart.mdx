@@ -1,13 +1,15 @@
 ---
 title: Your first automation
-description: Refund every contributor who opted in when a token raise fails, using a dev keypair against your dev environment.
+description: Refund every contributor who opted in when a token raise fails, run by a4 dev against your dev environment, then the same handlers in production.
 ---
 
-This guide builds a small backend that refunds contributors automatically
-when a raise fails. It uses a dev wallet as the signer and runs against your
-[dev environment](/cli/local-development/), so no real funds move. A complete
-version, with a webhook endpoint and consent routes, is in the Arete
-repository under `typescript/automations/examples/token-raise`.
+This guide builds automatic refunds: when a raise fails, every contributor
+who opted in is refunded without opening the app. You write the handlers
+once. `a4 dev up` runs them against your
+[dev environment](/cli/local-development/), where no real funds move, and
+your backend runs the same handlers in production. A complete version, with
+a webhook endpoint and consent routes, is in the Arete repository under
+`typescript/automations/examples/token-raise`.
 
 You need a protocol with a participant step the user signs and an event that
 says when to run it. The token-raise protocol has both: a `refund` step, and a
@@ -15,89 +17,168 @@ says when to run it. The token-raise protocol has both: a `refund` step, and a
 
 ## Install
 
+In the protocol's project:
+
 ```bash
-npm install @usearete/automations @usearete/sdk pg
+npm install @usearete/automations @usearete/sdk
+npm install --save-dev tsx
+```
+
+`a4 dev up` deploys the protocol to your dev environment, a fork of mainnet,
+and generates its client where `a4 install` puts it. The module exports the
+definition as `TOKEN_RAISE_PROTOCOL`. `tsx` lets `a4 dev` run your
+TypeScript.
+
+## Write the handlers
+
+```ts
+// automations.ts
+import { defineAutomations } from "@usearete/automations";
+import { TOKEN_RAISE_PROTOCOL } from "./generated/typescript/protocols/token-raise/token-raise.js";
+
+export default defineAutomations(
+  TOKEN_RAISE_PROTOCOL,
+  (automations) => {
+    automations.on("raise.failed", async (event, ctx) => {
+      // Every wallet that agreed to automatic refunds for this raise.
+      const grants = await ctx.consents.list({ step: "refund", instanceId: event.instanceId });
+      return grants.map((grant) => ctx.step("refund", { wallet: grant.wallet, instance: event.instanceId }));
+    });
+  },
+  {
+    // What may be signed: the programs the steps call, and at most
+    // 0.001 SOL leaving a wallet per transaction.
+    policy: { programs: [RAISE_PROGRAM_ID], maxSolPerTransaction: "0.001" },
+  },
+);
+```
+
+A handler receives the event and returns the steps to run, one per wallet
+that opted in. It never prepares or signs anything itself: each step is
+checked against the wallet's consent, the policy and the protocol before it
+is signed. The definition holds no keys, store or URLs; those come from where
+it runs.
+
+## Run it with `a4 dev`
+
+Point `a4 dev` at the module in `arete.toml`:
+
+```toml
+[dev.automations]
+entry = "automations.ts"
+```
+
+```bash
 a4 dev up
 ```
 
-In the protocol's project, `a4 dev up` deploys the protocol to your dev
-environment, a fork of mainnet, and generates its client where
-`a4 install` puts it, for that deployment. The module exports the definition
-as `TOKEN_RAISE_PROTOCOL`. Automations built on this client target the dev
-environment; the [same code moves to mainnet](/automations/production/#move-to-mainnet)
-when you install the published client.
+`a4 dev up` runs the automations next to the protocol:
 
-## Create the automations
+- **The client** is the one it generated for the dev environment's
+  deployment, so the automations target `dev`.
+- **The signer** signs for your dev wallets (`.arete/dev/wallets/`), which
+  stand in for users.
+- **The simulator** reads the fork through the local RPC `a4 dev up` serves.
+- **The store** keeps jobs, consent and spending under
+  `.arete/dev/automations/`.
+- **Events** reach the handlers as signed webhook deliveries. A dev
+  environment sends no webhooks, so `a4 dev` follows the environment's
+  instances and signs each event the way a production webhook is signed.
+
+When you save `automations.ts`, or a redeploy regenerates the client, the
+automations restart. Jobs, consent and spending survive the restart.
+
+## Try it
+
+1. Create a dev wallet and opt it in. `a4 dev consent` signs the consent
+   message with the dev wallet, as a user's wallet would in your app:
+
+   ```bash
+   a4 dev wallet alice
+   a4 dev consent alice --steps refund
+   ```
+
+2. Contribute to a raise from that wallet, then let it fail:
+
+   ```bash
+   a4 dev step contribute --instance <raise> --args '{"amount":"1000000"}' --wallet alice
+   a4 dev warp +2d
+   ```
+
+3. The `raise.failed` event arrives, and the refund runs:
+
+   ```text
+   automations │ completed: refund for <alice> on <raise>: completed
+   ```
+
+If the outcome is `skipped`, check that the wallet's consent covers `refund`.
+If it is `refused`, the reason names the policy rule or limit that stopped it.
+
+## Run the same handlers in production
+
+Your backend builds the runtime and uses the definition:
 
 ```ts
 import { createProtocolClient } from "@usearete/sdk";
 import pg from "pg";
-import { createAutomations, definePolicy, rpcSimulator, SOL } from "@usearete/automations";
-import { keypairSigner } from "@usearete/automations/keypair";
+import { createAutomations, definePolicy, rpcSimulator } from "@usearete/automations";
 import { postgresStore } from "@usearete/automations/postgres";
+import definition from "./automations";
 import { TOKEN_RAISE_PROTOCOL } from "./generated/typescript/protocols/token-raise/token-raise.js";
 
 const client = createProtocolClient(TOKEN_RAISE_PROTOCOL, {
   auth: { secretKey: process.env.ARETE_SECRET_KEY! },
 });
 
-const store = postgresStore(new pg.Pool({ connectionString: process.env.DATABASE_URL }));
-await store.migrate(); // once, from a deploy step in production
-
 const automations = createAutomations({
   client,
-  signer: keypairSigner(devWalletSecretKey), // a dev wallet's secret key; dev and tests only
+  signer, // your wallet provider's signer, for example Privy
   policy: definePolicy({
+    ...definition.policy!,
     deployments: [client.deploymentId],
-    programs: [RAISE_PROGRAM_ID], // the programs the protocol's steps call
-    maxSolPerTransaction: "0.001",
+    clusters: ["mainnet"], // mainnet is allowed only when listed
   }),
-  simulator: rpcSimulator("http://127.0.0.1:48700"), // a4 dev up's local RPC: the fork's state
-  store,
+  simulator: rpcSimulator(process.env.RPC_URL!),
+  store: postgresStore(new pg.Pool({ connectionString: process.env.DATABASE_URL })),
   consent: { domain: "app.example" },
-  onOutcome: (outcome) => console.log(outcome.state, outcome.step, outcome.wallet, outcome.code),
+  onOutcome: (outcome) => notifyUser(outcome),
 });
-```
+await automations.use(definition);
 
-- **The client** uses a secret key, so it runs only on your server.
-- **The policy** limits what may be signed for anyone: these deployments,
-  these programs, and at most 0.001 SOL leaving a wallet per transaction. It
-  allows the dev environment and never mainnet unless you list it.
-- **The simulator** measures what each transaction would move. In a dev
-  environment it must read the fork, through the local RPC `a4 dev up` serves.
-- **The store** keeps triggers, jobs, consent and spending in your database,
-  in its own schema.
-
-## Handle the event
-
-```ts
-automations.on("raise.failed", async (event, ctx) => {
-  // Every wallet that agreed to automatic refunds for this raise.
-  const grants = await ctx.consents.list({ step: "refund", instanceId: event.instanceId });
-  return grants.map((grant) => ctx.step("refund", { wallet: grant.wallet, instance: event.instanceId }));
-});
-
-// While developing: follow the raise's event stream.
-automations.follow(raiseInstanceId);
-
-// In production: receive the event as a signed webhook.
+// Events arrive as signed webhooks.
 export const POST = automations.webhookHandler({ secret: process.env.ARETE_WEBHOOK_SECRET! });
 
 automations.start();
 ```
 
-Both deliver the same event to the same handler, and each event is accepted
-once. The webhook handler checks the delivery's signature, records it and
-answers straight away; set up the endpoint's subscription as described in
-[events](/integrating-protocols/events/#receive-named-emissions-through-webhooks).
-`start()` runs the worker that turns each trigger into steps and each step
-into a signed, submitted transaction.
+- **The client** uses a secret key, so it runs only on your server. With the
+  published client (`a4 install --locked`) the automations target mainnet.
+- **The policy** adds the deployment and mainnet to the definition's limits.
+- **The webhook handler** checks each delivery's signature, records it once
+  and answers straight away; set up the endpoint's subscription as described
+  in [events](/integrating-protocols/events/#receive-named-emissions-through-webhooks).
+- **`start()`** runs the worker that turns each trigger into steps and each
+  step into a signed, submitted transaction.
+
+To run this server against the dev environment while you build it, set
+`forward` instead of `entry`: `a4 dev up` then delivers the events to your
+webhook route, signed with the secret in `.arete/dev/automations/webhook-secret`.
+
+```toml
+[dev.automations]
+forward = "http://localhost:3000/api/arete-webhook"
+```
+
+[Moving to mainnet, step by step →](/automations/production/#move-to-mainnet)
 
 ## Let a user opt in
 
-A user opts in by signing a message that states exactly what you may do:
+In your app, a user opts in by signing a message that states exactly what
+you may do:
 
 ```ts
+import { SOL } from "@usearete/automations";
+
 const fields = {
   wallet,
   deploymentId: client.deploymentId,
@@ -118,21 +199,6 @@ const { grant, warnings } = await automations.consent.grant({
 ```
 
 [What the user signs, and how to present it →](/automations/consent/)
-
-## Try it
-
-1. Contribute to a raise from a dev wallet (`a4 dev wallet` creates and
-   funds one), and opt that wallet in.
-2. Let the raise fail: `a4 dev warp` advances the environment's time past
-   its deadline.
-3. The `raise.failed` event arrives on the stream, and the refund runs:
-
-   ```text
-   completed refund <wallet> completed
-   ```
-
-If the outcome is `skipped`, check that the wallet's consent covers `refund`.
-If it is `refused`, the reason names the policy rule or limit that stopped it.
 
 ## Next
 
