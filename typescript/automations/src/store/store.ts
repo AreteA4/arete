@@ -134,7 +134,8 @@ export interface TransitionInput {
    * those for `keepAssets`.
    */
   readonly ledger?: {
-    readonly record?: readonly Omit<LedgerEntry, 'jobId' | 'recordedAt' | 'voidedAt'>[];
+    /** New entries; `recordedAt` defaults to the transition's `now`. */
+    readonly record?: readonly (Omit<LedgerEntry, 'jobId' | 'recordedAt' | 'voidedAt'> & { readonly recordedAt?: number })[];
     readonly void?: boolean;
     readonly keepAssets?: readonly string[];
   };

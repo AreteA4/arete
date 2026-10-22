@@ -313,6 +313,43 @@ describe('robust list-view sources', () => {
     expect((await store.sources.get('bestRateChanged', 'all'))?.generation).toBe(2);
   });
 
+  it('drops rows a reconnect removed', async () => {
+    const { store, make } = setup();
+    const view = markets();
+    view.set({ id: 'a', apyBps: 500 }, { id: 'b', apyBps: 600 });
+    const handle = make('r').source(rateSource(view));
+    await settle();
+    view.reconnect({ id: 'a', apyBps: 500 }); // b left the view while disconnected
+    await settle();
+    await handle.stop();
+    expect((await deliveries(store)).map((delivery) => (delivery.payload as ViewTrigger).value)).toEqual(['a']);
+  });
+
+  it('never fires a pending change of a row that stopped passing the filter', async () => {
+    const { store, make, clock } = setup();
+    const view = new FakeListView<Position & { watched: boolean }>((position) => position.owner);
+    view.set({ owner: ALICE, health: 1.4, watched: true });
+    const handle = make('r').source(
+      fromViewRows(view, {
+        name: 'healthLow',
+        key: (position) => position.owner,
+        filter: (position) => position.watched,
+        derive: (position) => ({ low: position.health < 1.15 }),
+        changed: (previous, next) => previous !== undefined && !previous.low && next.low,
+        stableFor: '2m',
+      }),
+    );
+    await settle();
+    await clock.advance(120_000);
+    view.set({ owner: ALICE, health: 1.0, watched: true }); // pending: low
+    await settle();
+    view.set({ owner: ALICE, health: 1.0, watched: false }); // excluded before it settles
+    await settle();
+    await clock.advance(120_000);
+    await handle.stop();
+    expect(await deliveries(store)).toEqual([]);
+  });
+
   it('retries a pending value whose promotion failed', async () => {
     const { store, clock } = setup();
     let failNext = false;
