@@ -1,4 +1,4 @@
-export { privyPolicyFor, privySigner } from './privy/privy';
+export { PRIVY_ALLOWED_INSTRUCTIONS, privyPolicyFor, privySigner } from './privy/privy';
 export type {
   PrivyClientLike,
   PrivyPolicy,

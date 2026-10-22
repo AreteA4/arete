@@ -6,6 +6,11 @@ import { decodeTransaction } from '../policy/decode';
 import { decodeBase64, encodeBase64 } from '../policy/encoding';
 import { definePolicy } from '../policy/policy';
 import { PROGRAM } from '../test-support/fake-protocol';
+import { intentFor, prepared, wire } from '../test-support/wire';
+import { encodeBase58 } from '../policy/encoding';
+import { TOKEN_PROGRAMS } from '../policy/authority';
+
+const TOKEN = TOKEN_PROGRAMS[0];
 import { ALICE, ALICE_SEED, harness, storedGrant } from '../test-support/harness';
 import { type PrivyClientLike, privyPolicyFor, privySigner } from './privy';
 
@@ -92,6 +97,25 @@ describe('privySigner', () => {
     expect(h.outcomes).toHaveLength(0);
     expect((await h.stepJobs())[0]).toMatchObject({ state: 'queued', attempts: 1 });
     expect(String(h.errors[0])).toContain('upstream timeout');
+  });
+
+  it('refuses a step Privy cannot allow before asking Privy', async () => {
+    const h = privyHarness('sign');
+    const syncNative = wire(
+      {
+        header: [1, 0, 1],
+        keys: [ALICE, encodeBase58(new Uint8Array(32).fill(31)), TOKEN],
+        instructions: [{ program: 2, accounts: [1], data: [17] }],
+      },
+      'v0',
+    );
+    const intent = intentFor(ALICE, 'v0', [syncNative]);
+    await expect(h.signer.signTransactions({ wallet: ALICE, intent, transactions: prepared([syncNative]) })).rejects.toMatchObject({
+      name: 'SignerRefusal',
+      rule: 'provider_policy',
+      message: expect.stringContaining('Token `syncNative`'),
+    });
+    expect(h.privy.calls).toHaveLength(0);
   });
 
   it('refuses a wallet the app has no server access to', async () => {
@@ -222,6 +246,15 @@ describe('privyPolicyFor', () => {
       operator: 'lte',
       value: '0',
     });
+  });
+
+  it('splits a long program list across rules of at most 100', () => {
+    const programs = Array.from({ length: 120 }, (_, index) => encodeBase58(new Uint8Array(32).fill(index + 1)));
+    const many = definePolicy({ deployments: ['d'], maxSolPerTransaction: '0.01', programs });
+    const rules = privyPolicyFor(many, consent).policy.rules.filter((rule) => rule.name.startsWith('Programs the steps may call'));
+    const values = rules.map((rule) => rule.conditions[0]!.value as string[]);
+    expect(values.map((list) => list.length)).toEqual([100, 24]);
+    expect(new Set(values.flat()).size).toBe(124);
   });
 
   it('needs a programs allow-list', () => {

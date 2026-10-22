@@ -18,7 +18,9 @@ import type { ProtocolTransactionFormat } from '@usearete/sdk';
 
 import type { NormalizedConsent } from '../consent/consent';
 import { SOL } from '../consent/consent';
-import { NATIVE_MINTS, SYSTEM_PROGRAM, TOKEN_PROGRAMS } from '../policy/authority';
+import { instructionName, NATIVE_MINTS, SYSTEM_PROGRAM, TOKEN_PROGRAMS } from '../policy/authority';
+import { decodeTransaction } from '../policy/decode';
+import { decodeBase64 } from '../policy/encoding';
 import { RUNTIME_PROGRAMS, type SignerPolicy } from '../policy/policy';
 import type { DelegationStatus, ProtocolSigner, SignTransactionsInput } from '../signer/signer';
 import { SignerRefusal } from '../signer/signer';
@@ -51,6 +53,41 @@ export interface PrivySignerOptions {
    * legacy and v0 transactions, and v1 message signing is not verified.
    */
   readonly transactionFormats?: readonly ProtocolTransactionFormat[];
+  /**
+   * Refuse, before asking Privy, transactions with top-level System or Token
+   * instructions that `privyPolicyFor` cannot allow (see
+   * {@link PRIVY_ALLOWED_INSTRUCTIONS}), with a reason that says so. On by
+   * default; turn it off if your Privy policy allows more.
+   */
+  readonly refuseUnsupported?: boolean;
+}
+
+/**
+ * The System and Token instructions a policy from `privyPolicyFor` allows.
+ * Privy's Solana policies cannot express the others (for example Token
+ * `syncNative`, which wrapping SOL needs), so its default deny refuses them.
+ */
+export const PRIVY_ALLOWED_INSTRUCTIONS: Readonly<Record<'system' | 'token', readonly string[]>> = {
+  system: ['transfer'],
+  token: ['transferChecked', 'closeAccount', 'initializeAccount3'],
+};
+
+/** The first top-level instruction a `privyPolicyFor` policy would refuse, or `null`. */
+function unsupportedInstruction(transactionBase64: string): string | null {
+  const bytes = decodeBase64(transactionBase64);
+  if (!bytes) return null;
+  const decoded = decodeTransaction(bytes);
+  for (const instruction of decoded.instructions) {
+    const program = decoded.staticKeys[instruction.programIndex];
+    if (program === undefined) continue;
+    const isSystem = program === SYSTEM_PROGRAM;
+    const isToken = (TOKEN_PROGRAMS as readonly string[]).includes(program);
+    if (!isSystem && !isToken) continue;
+    const name = instructionName(program, instruction.data) ?? 'unknown';
+    const allowed = PRIVY_ALLOWED_INSTRUCTIONS[isSystem ? 'system' : 'token'];
+    if (!allowed.includes(name)) return `${isSystem ? 'System' : 'Token'} \`${name}\``;
+  }
+  return null;
 }
 
 /** Whether an error from Privy is its policy refusing, rather than a fault to retry. */
@@ -84,6 +121,16 @@ export function privySigner(options: PrivySignerOptions): ProtocolSigner {
       return { delegated: true, providerPolicy: (details.policy_ids?.length ?? 0) > 0 };
     },
     async signTransactions({ wallet, transactions }: SignTransactionsInput) {
+      if (options.refuseUnsupported !== false) {
+        for (const transaction of transactions) {
+          const unsupported = unsupportedInstruction(transaction.transactionBase64);
+          if (unsupported) {
+            throw new SignerRefusal(
+              `transaction ${transaction.index} has a top-level ${unsupported} instruction, which Privy policies cannot allow; this step cannot be signed through Privy`,
+            );
+          }
+        }
+      }
       const id = await walletId(wallet);
       const signed: string[] = [];
       for (const transaction of transactions) {
@@ -134,6 +181,8 @@ export interface PrivyPolicy {
 }
 
 const CHECKED_BY_INSTRUCTION = new Set<string>([SYSTEM_PROGRAM, ...TOKEN_PROGRAMS]);
+/** The most values Privy's `in` operator accepts. */
+const PRIVY_IN_LIMIT = 100;
 
 function minimum(...values: Array<bigint | undefined>): bigint | undefined {
   return values.reduce<bigint | undefined>((low, value) => (value === undefined ? low : low === undefined || value < low ? value : low), undefined);
@@ -181,9 +230,17 @@ export function privyPolicyFor(
   const solCap = minimum(policy.maxLamportsPerTransaction, perRun[SOL] === undefined ? 0n : BigInt(perRun[SOL]));
   const rules: PrivyPolicyRule[] = [
     { name: 'Never export the key', method: 'exportPrivateKey', conditions: [], action: 'DENY' },
-    rule('Programs the steps may call', [
-      { field_source: 'solana_program_instruction', field: 'programId', operator: 'in', value: programs },
-    ]),
+    // Privy's `in` takes at most 100 values: one rule per hundred programs.
+    ...Array.from({ length: Math.ceil(programs.length / PRIVY_IN_LIMIT) }, (_, chunk) =>
+      rule(chunk === 0 ? 'Programs the steps may call' : `Programs the steps may call (${chunk + 1})`, [
+        {
+          field_source: 'solana_program_instruction',
+          field: 'programId',
+          operator: 'in',
+          value: programs.slice(chunk * PRIVY_IN_LIMIT, (chunk + 1) * PRIVY_IN_LIMIT),
+        },
+      ]),
+    ),
     rule('SOL transfers up to the per-run cap', [
       { field_source: 'solana_system_program_instruction', field: 'instructionName', operator: 'eq', value: 'Transfer' },
       { field_source: 'solana_system_program_instruction', field: 'Transfer.lamports', operator: 'lte', value: String(solCap ?? 0n) },
@@ -218,6 +275,7 @@ export function privyPolicyFor(
     'transactions whose effect cannot be simulated: Privy policies do not read simulations',
     'consent per-window limits: Privy has no cumulative limits on Solana',
     'wrapped SOL spent, and lamports of token accounts closed by CPI',
+    'steps with other top-level System or Token instructions (for example creating an account or syncNative to wrap SOL): Privy refuses them, and privySigner refuses them before asking',
   ];
   return {
     policy: {

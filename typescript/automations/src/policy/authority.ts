@@ -201,7 +201,7 @@ function taggedName(data: Uint8Array, names: readonly string[], fallback: string
 }
 
 /** The instruction's name, for the programs this module checks. */
-function instructionName(program: string, data: Uint8Array): string | null {
+export function instructionName(program: string, data: Uint8Array): string | null {
   if (isTokenProgram(program)) return tokenName(data);
   if (program === SYSTEM_PROGRAM) return taggedName(data, SYSTEM_NAMES, 'systemInstruction');
   if (program === STAKE_PROGRAM) return taggedName(data, STAKE_NAMES, 'stakeInstruction');

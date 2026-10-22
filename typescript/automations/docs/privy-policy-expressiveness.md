@@ -51,6 +51,20 @@ Checked against Privy's policy documentation on 2026-10-22:
 | Consent expiry | Yes | ALLOW only while `system.current_unix_timestamp` is before the grant's expiry. |
 | Exact bytes | Not a policy | The runtime's `messageSha256` check covers it. The adapter must use transaction signing without broadcast (`signTransaction`), not `signAndSendTransaction`, so the runtime submits through Arete. |
 
+## Instructions Privy cannot allow
+
+Privy's token rules cover six instructions, and the generated policy allows
+only System `Transfer` and Token `TransferChecked`, `CloseAccount` and
+`InitializeAccount3` at the top level. A step with any other top-level
+System or Token instruction, such as creating an account or `syncNative` to
+wrap SOL, is refused by Privy's default deny. `privySigner` refuses such a
+step itself, before asking Privy, with a reason naming the instruction
+(`refuseUnsupported: false` turns this off if your own Privy policy allows
+more). Instructions a protocol program makes by CPI are not affected.
+
+The `in` operator takes at most 100 values, so `privyPolicyFor` splits a
+long program allow-list across several rules.
+
 ## What this means
 
 - Protocol steps move funds through the protocol's own program, by CPI.
