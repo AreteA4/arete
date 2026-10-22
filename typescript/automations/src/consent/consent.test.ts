@@ -5,7 +5,8 @@ import { encodeBase58 } from '../policy/encoding';
 import { keypairSigner } from '../keypair';
 import type { ConsentFields } from './consent';
 import { ConsentError, consentMessage, normalizeConsent, SOL } from './consent';
-import { DEPLOYMENT } from '../test-support/fake-protocol';
+import { DEPLOYMENT, feeOnlySimulator } from '../test-support/fake-protocol';
+import type { Simulator } from '../policy/simulator';
 import { ALICE, ALICE_SEED, BOB, harness, storedGrant } from '../test-support/harness';
 
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -315,7 +316,7 @@ describe('consent at run time', () => {
 
   it('frees the window when an intent never lands, and when it slides past', async () => {
     const h = harness(
-      { script: (key) => (key.includes(':a:') ? ['expired'] : ['submitting', 'completed']) },
+      { script: (key) => (key.startsWith('step:dispatch%3Aa:') ? ['expired'] : ['submitting', 'completed']) },
       { consent: { domain: 'app.example' } },
     );
     await h.store.consent.put(
@@ -349,6 +350,34 @@ describe('consent at run time', () => {
       await h.automations.drain();
     }
     expect(h.outcomes.map((outcome) => outcome.code)).toEqual(['chain_failed', 'chain_failed', 'consent_window']);
+  });
+
+  it('counts only the fee of a transaction that failed on chain', async () => {
+    // Each run would move 1,000,000 lamports plus the 5,000 fee; the chain charged 5,000.
+    const transferring: Simulator = {
+      async call(method, params) {
+        if (method === 'getTransaction') return { meta: { fee: 5000, err: { InstructionError: [0, 'Custom'] } } };
+        const result = (await feeOnlySimulator.call(method, params)) as any;
+        if (method === 'simulateTransaction') result.value.accounts[0].lamports -= 1_000_000;
+        return result;
+      },
+    };
+    const h = harness(
+      { script: (key) => (key.startsWith('step:dispatch%3Aa:') ? ['submitting', 'chain_failed'] : ['submitting', 'completed']) },
+      { consent: { domain: 'app.example' }, simulator: transferring },
+    );
+    await h.store.consent.put(
+      storedGrant(ALICE, h.clock.now(), {
+        limits: { perExecution: { [SOL]: '1005000' }, perWindow: { [SOL]: { amount: '1010000', windowMs: 86_400_000 } } },
+      }),
+    );
+    onDeposit(h);
+    await h.automations.dispatch('deposit', { wallet: ALICE }, { id: 'a' });
+    await h.automations.drain();
+    await h.automations.dispatch('deposit', { wallet: ALICE }, { id: 'b' });
+    await h.automations.drain();
+    expect(h.outcomes.map((outcome) => outcome.code)).toEqual(['chain_failed', 'completed']);
+    expect(await h.store.ledger.spent({ wallet: ALICE, deploymentId: DEPLOYMENT, asset: SOL, since: 0 })).toBe(1_010_000n);
   });
 
   it('gives a handler the effective grant per wallet for an instance', async () => {

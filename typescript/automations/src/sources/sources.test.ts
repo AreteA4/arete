@@ -280,6 +280,19 @@ describe('robust list-view sources', () => {
     expect((await deliveries(store)).map((delivery) => (delivery.payload as ViewTrigger).value)).toEqual(['b', 'a']);
   });
 
+  it("takes the baseline from the watcher's own snapshot, not an earlier read", async () => {
+    const { store, make } = setup();
+    const view = markets();
+    view.set({ id: 'a', apyBps: 500 }, { id: 'b', apyBps: 600 });
+    // An earlier read that saw a smaller view than the watcher's snapshot.
+    view.get = async () => [{ id: 'a', apyBps: 500 }];
+    const handle = make('r').source(rateSource(view));
+    await settle();
+    await handle.stop();
+    expect(await deliveries(store)).toEqual([]);
+    expect((await store.sources.get('bestRateChanged', 'all'))?.value).toBe('b');
+  });
+
   it('retries a pending value whose promotion failed', async () => {
     const { store, clock } = setup();
     let failNext = false;
@@ -320,7 +333,7 @@ describe('robust list-view sources', () => {
     await handle.stop();
     release([{ id: 'a', apyBps: 1 }]);
     await settle();
-    expect(view.subscriptions).toBe(0);
+    expect(view.open).toBe(0);
     expect(await store.sources.get('bestRateChanged', 'all')).toBeNull();
   });
 
