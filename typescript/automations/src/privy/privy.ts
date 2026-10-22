@@ -177,7 +177,8 @@ export function privyPolicyFor(
   });
   const programs = [...new Set([...RUNTIME_PROGRAMS, ...policy.programs])].filter((program) => !CHECKED_BY_INSTRUCTION.has(program));
   const perRun = consent.limits.perExecution;
-  const solCap = minimum(policy.maxLamportsPerTransaction, perRun[SOL] === undefined ? undefined : BigInt(perRun[SOL]));
+  // A consent without a SOL limit lets no SOL leave, as the consent check reads it.
+  const solCap = minimum(policy.maxLamportsPerTransaction, perRun[SOL] === undefined ? 0n : BigInt(perRun[SOL]));
   const rules: PrivyPolicyRule[] = [
     { name: 'Never export the key', method: 'exportPrivateKey', conditions: [], action: 'DENY' },
     rule('Programs the steps may call', [

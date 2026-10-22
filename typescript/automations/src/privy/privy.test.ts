@@ -212,6 +212,17 @@ describe('privyPolicyFor', () => {
     expect(unenforced.join('\n')).toContain('no cumulative limits');
   });
 
+  it('allows no SOL transfer when the consent sets no SOL limit', () => {
+    const { policy: privy } = privyPolicyFor(policy, { ...consent, limits: { perExecution: {}, perWindow: {} } });
+    const transfer = privy.rules.find((rule) => rule.name === 'SOL transfers up to the per-run cap')!;
+    expect(transfer.conditions).toContainEqual({
+      field_source: 'solana_system_program_instruction',
+      field: 'Transfer.lamports',
+      operator: 'lte',
+      value: '0',
+    });
+  });
+
   it('needs a programs allow-list', () => {
     const open = definePolicy({ deployments: ['d'], maxSolPerTransaction: '0.01' });
     expect(() => privyPolicyFor(open, consent)).toThrow('programs allow-list');

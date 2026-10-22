@@ -24,6 +24,7 @@ they delegated, inside a consent they signed.
    | `RPC_URL`, `CLUSTER` | The cluster the deployment runs on (default devnet) |
    | `PROGRAMS` | JSON list of the protocol's program ids |
    | `APP_DOMAIN` | The host name users see in the consent message |
+   | `APP_API_TOKEN` | A token your app's backend sends on the consent routes; in a real app, use your session auth and check the user owns the wallet |
    | `SIGNER` | `keypair` (with `DEV_WALLET`, a Solana CLI keypair file) or `privy` |
    | `PRIVY_APP_ID`, `PRIVY_APP_SECRET`, `PRIVY_AUTHORIZATION_KEY`, `PRIVY_WALLETS` | With `SIGNER=privy`: the app, its authorization key, and a JSON map of wallet address to Privy wallet id |
 
@@ -37,9 +38,10 @@ they delegated, inside a consent they signed.
 4. Opt a contributor in from your app:
 
    ```bash
-   curl -X POST localhost:8787/consent/message -d '{"wallet":"<address>","expiresAt":1798761600000}'
+   curl -X POST localhost:8787/consent/message -H "authorization: Bearer $APP_API_TOKEN" \
+     -d '{"wallet":"<address>","expiresAt":1798761600000}'
    # sign `message` with the wallet (signMessage), then:
-   curl -X POST localhost:8787/consent/grant \
+   curl -X POST localhost:8787/consent/grant -H "authorization: Bearer $APP_API_TOKEN" \
      -d '{"wallet":"<address>","expiresAt":1798761600000,"nonce":"<nonce>","issuedAt":<issuedAt>,"signature":"<base58>"}'
    ```
 
@@ -51,7 +53,9 @@ they delegated, inside a consent they signed.
    [completed] refund for <address>: completed
    ```
 
-Opting out: `curl -X DELETE localhost:8787/consent/<address>`.
+Opting out: `curl -X DELETE localhost:8787/consent/<address> -H "authorization: Bearer $APP_API_TOKEN"`.
+Revoking needs no wallet signature, but it does need your app's authority:
+anyone who could call it could stop another user's refunds.
 
 ## What it shows
 

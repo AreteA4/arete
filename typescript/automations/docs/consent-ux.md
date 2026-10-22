@@ -32,9 +32,11 @@ prompt should read as the same agreement.
 - **Expire grants.** Choose an end date that matches the feature, for
   example the end of a raise. Grants scoped to an instance end on their own
   when it is terminal.
-- **Make stopping easy and immediate.** Revoking needs no signature and
-  stops jobs before they sign. Put it in the same place users found the
-  feature.
+- **Make stopping easy and immediate.** Revoking needs no wallet signature
+  and stops jobs before they sign. Put it in the same place users found the
+  feature, behind the same sign-in: only the user (through your app) may
+  revoke their own consent, or anyone could stop someone else's
+  automations.
 - **Tell users what ran.** Use `onOutcome` to notify on every completed,
   refused and failed run, with the amount and a link to the transaction.
   `refused` (over a limit) and `rejected` (the protocol said no) are
