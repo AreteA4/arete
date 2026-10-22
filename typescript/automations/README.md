@@ -5,9 +5,11 @@ step needs the user's signature, a backend prepares it, checks it against a
 signing policy and the user's consent, signs it with a delegated signer, and
 submits it. Arete never holds a key; the signer runs in your backend.
 
-> **Status:** in development and not yet published. The signing policy,
-> signers, runtime, consent, view sources and the Postgres store are here;
-> the Privy adapter and a reference example follow.
+> **Status:** complete, not yet published. Start with
+> [Automating steps for users](docs/automating-steps.md), the
+> [consent UX guide](docs/consent-ux.md) and the
+> [threat model](docs/threat-model.md); `examples/token-raise/` is a
+> complete backend.
 
 ## Use the least powerful mechanism
 
@@ -180,6 +182,29 @@ await store.migrate();                        // once, from a deploy step, with 
   `store.using(client).consent.put(grant)`.
 - Jobs are claimed with `FOR UPDATE SKIP LOCKED`; a partial unique index
   keeps one active step per wallet. Tested on Postgres 15, 16 and 17.
+
+## Privy
+
+```ts
+import { PrivyClient } from '@privy-io/node';
+import { privyPolicyFor, privySigner } from '@usearete/automations/privy';
+
+const signer = privySigner({
+  privy: new PrivyClient({ appId, appSecret }),
+  walletIdFor: async (address) => lookUpPrivyWalletId(address),   // null when you have no server access
+  authorizationPrivateKey: process.env.PRIVY_AUTHORIZATION_KEY!,
+});
+
+// The provider-side bound for one user's consent; attach it to their wallet in Privy.
+const { policy, unenforced } = privyPolicyFor(signingPolicy, grant);
+```
+
+The signer asks Privy to sign (not to send) each prepared transaction, as
+v0 until v1 message signing is verified. A Privy policy refusal ends the job
+`refused(provider_policy)`. Privy's policy sees top-level instructions only,
+so `unenforced` lists what it cannot bound, notably amounts a protocol
+program moves by CPI; see
+[docs/privy-policy-expressiveness.md](docs/privy-policy-expressiveness.md).
 
 ## The signing policy
 
