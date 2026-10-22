@@ -86,11 +86,10 @@ scheduled function so nothing waits for the next request. On Cloudflare
 Workers, for example:
 
 ```ts
-const webhook = automations.webhookHandler({ secret: env.ARETE_WEBHOOK_SECRET });
-
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
-    const response = await webhook(request);
+    // `env` exists only inside the handlers, so the secret is read here.
+    const response = await automations.webhookHandler({ secret: env.ARETE_WEBHOOK_SECRET })(request);
     ctx.waitUntil(automations.drain({ maxJobs: 25 }));
     return response;
   },
