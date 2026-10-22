@@ -24,7 +24,10 @@ export interface PgQueryable {
   query(text: string, values?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>;
 }
 
-/** A pool: hands out clients for transactions. */
+/**
+ * A pool: hands out clients for transactions. A `pg.Pool` is recognized by
+ * its `totalCount`; for another pool, pass `{ executor: 'pool' }`.
+ */
 export interface PgPoolLike extends PgQueryable {
   connect(): Promise<PgQueryable & { release(error?: Error | boolean): void }>;
 }
@@ -32,6 +35,14 @@ export interface PgPoolLike extends PgQueryable {
 export interface PostgresStoreOptions {
   /** Defaults to `arete_automation`. */
   readonly schema?: string;
+  /**
+   * What the executor is: a `pool` (each multi-statement operation runs in
+   * its own transaction on a client from it) or a `client` (operations run
+   * in savepoints, inside whatever transaction the caller has open).
+   * Defaults to `pool` for a `pg.Pool` (it has `totalCount`) and `client`
+   * for anything else, so set it for a pool adapter without `totalCount`.
+   */
+  readonly executor?: 'pool' | 'client';
 }
 
 interface InternalOptions extends PostgresStoreOptions {
@@ -194,7 +205,13 @@ function rowToSource(row: any): SourceState {
 
 export function postgresStore(executor: PgQueryable, options: PostgresStoreOptions = {}): PostgresStore {
   const internal = options as InternalOptions;
-  const clientMode = internal.client === true || !isPool(executor);
+  if (options.executor === 'pool' && typeof (executor as Partial<PgPoolLike>).connect !== 'function') {
+    throw new TypeError("executor: 'pool' needs an executor with connect()");
+  }
+  const clientMode =
+    internal.client === true ||
+    options.executor === 'client' ||
+    (options.executor !== 'pool' && !isPool(executor));
   const name = validSchema(options.schema ?? DEFAULT_SCHEMA);
   const s = quoted(name);
   let checked: Promise<void> | null = null;
@@ -202,7 +219,7 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
   /** Run `fn` atomically: a transaction on a pool, a savepoint on a client. */
   const atomic = async <T>(fn: (db: PgQueryable) => Promise<T>): Promise<T> => {
     if (!clientMode) {
-      const client = await executor.connect();
+      const client = await (executor as PgPoolLike).connect();
       try {
         await client.query('BEGIN');
         const result = await fn(client);
@@ -297,7 +314,7 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
     schema: name,
     schemaVersion,
     checkVersion,
-    using: (client) => postgresStore(client, { schema: name, client: true } as PostgresStoreOptions),
+    using: (client) => postgresStore(client, { schema: name, executor: 'client', client: true } as PostgresStoreOptions),
 
     async bindDeployment(deploymentId) {
       await ready();
