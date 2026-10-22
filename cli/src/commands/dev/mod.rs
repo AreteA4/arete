@@ -50,6 +50,9 @@ use env::EnvArgs;
 
 #[derive(Subcommand, Debug)]
 pub enum DevCommands {
+    /// Internal isolated admission worker. Credentials arrive on stdin.
+    #[command(name = "__admit-local-programs", hide = true)]
+    AdmitLocalPrograms,
     /// Create or wake this project's cloud dev environment, serve it on
     /// 127.0.0.1 (RPC and WebSocket), run the dev UI and, in a protocol
     /// project, deploy the protocol into it and redeploy on change
@@ -470,6 +473,7 @@ pub struct ReplayArgs {
 
 pub fn run(command: DevCommands, json: bool) -> Result<()> {
     match command {
+        DevCommands::AdmitLocalPrograms => up::admission_worker(),
         DevCommands::Up(args) => up(args, json),
         DevCommands::Down(args) => down(args, json),
         DevCommands::Status(args) => block_on(status(args, json)),

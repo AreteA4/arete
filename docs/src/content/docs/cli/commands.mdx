@@ -1055,12 +1055,12 @@ existing file (`.gitignore` only gains missing lines). `--name <name>` sets
 the spec name (`^[a-z][A-Za-z0-9]*$`, default: the directory name in
 camelCase); `--no-install` skips the program install.
 
-When the registry can't install `system-program` (no network, no API key, or a
-registry without the package), init warns and installs the System Program's
-`transfer` instruction from a local IDL instead, `idl/system.idl.json`, with
-the same instruction, account and argument names, so `protocol.ts` is the
-same. `--local-idl` does that without asking the registry. `a4 protocol
-deploy` pushes such a program to your account before it uploads the release.
+The default requires the reviewed registry package. A registry or authentication
+failure stops init with a recovery command; it never substitutes another
+program identity. `--local-idl` explicitly scaffolds its `transfer` instruction
+from `idl/system.idl.json` for offline authoring. `a4 dev up` and `a4 protocol
+deploy` admit local-IDL dependencies privately, record their immutable release
+pins and rebuild before uploading the protocol. The prepared transaction includes any applicable platform fee.
 
 ```bash
 a4 protocol init my-protocol

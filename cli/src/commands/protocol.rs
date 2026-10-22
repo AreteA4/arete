@@ -60,7 +60,7 @@ pub mod local_programs;
 #[derive(Subcommand, Debug)]
 pub enum ProtocolCommands {
     /// Scaffold a protocol project: a template-only tip jar with the System
-    /// Program installed from the registry (a local IDL without it)
+    /// Program installed from the registry (`--local-idl` explicitly opts out)
     Init(init::InitArgs),
     /// Upload a built protocol and deploy it privately
     Deploy(DeployArgs),
