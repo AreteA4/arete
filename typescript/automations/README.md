@@ -6,8 +6,8 @@ signing policy and the user's consent, signs it with a delegated signer, and
 submits it. Arete never holds a key; the signer runs in your backend.
 
 > **Status:** in development and not yet published. The signing policy,
-> signers and runtime are here; signed consent proofs, spending windows, the
-> Postgres store and the Privy adapter follow.
+> signers, runtime and consent are here; the Postgres store, view sources
+> and the Privy adapter follow.
 
 ## Use the least powerful mechanism
 
@@ -71,6 +71,56 @@ After a crash, a job that had signed reads its intent before doing anything
 else. `onOutcome`, `onRefused` and `onRejected` report final states.
 
 A store must pass `runStoreConformance` from `@usearete/automations/testing`.
+
+## Consent
+
+Nothing runs for a wallet without a grant the wallet signed:
+
+```ts
+const automations = createAutomations({ ...options, consent: { domain: 'app.example' } });
+
+// 1. Your backend builds the message; it issues a single-use nonce.
+const proof = await automations.consent.proofMessage({
+  wallet,
+  deploymentId: DCA_DEPLOYMENT,
+  steps: ['buy'],
+  limits: {
+    perExecution: { SOL: '10000', [USDC]: '50000000' },          // lamports / base units, per run
+    perWindow: { [USDC]: { amount: '200000000', window: '30d' } },
+  },
+  params: { amount: '50000000', weekday: 'fri' },                // the user's settings, signed too
+  expiresAt: new Date('2027-01-01'),
+});
+
+// 2. The user's wallet signs `proof.bytes` (signMessage).
+// 3. Your backend rebuilds the message from the same fields and checks the signature.
+const { grant, warnings } = await automations.consent.grant({ ...fields, nonce: proof.nonce, issuedAt: proof.issuedAt, signature });
+
+await automations.consent.revoke({ wallet });                    // no signature needed
+```
+
+- The message is human-readable and bound to your domain. Changing any
+  field, raising a limit or changing a setting needs a new signature.
+- An asset the step moves without a per-run limit is refused
+  (`consent_limit`); going past a window is refused (`consent_window`). The
+  window counts a step from the moment it is signed and stops counting it
+  if its intent never lands. Only one step per wallet runs at a time, so
+  concurrent workers cannot overspend a window.
+- A grant scoped to an instance ends when the instance is terminal.
+- `grant` warns when the signer reports no provider-side policy. The
+  signature records what the user agreed to; it does not stop a compromised
+  backend. The wallet provider's policy and the protocol's on-chain rules do.
+
+Handlers fan out over the wallets that consented:
+
+```ts
+automations.on('weeklyBuy', async (_trigger, ctx) => {
+  const grants = await ctx.consents.list({ step: 'buy' });
+  return grants
+    .filter((grant) => grant.params.weekday === today)
+    .map((grant) => ctx.step('buy', { wallet: grant.wallet, args: { amount: grant.params.amount } }));
+});
+```
 
 ## The signing policy
 

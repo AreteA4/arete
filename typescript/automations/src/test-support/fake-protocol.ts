@@ -80,7 +80,7 @@ export const feeOnlySimulator: Simulator = {
   },
 };
 
-interface IntentRecord {
+export interface IntentRecord {
   intent: ExecutionIntentV1;
   transactions: { index: number; transactionBase64: string }[];
   /** States `intents.get` returns once submitted, the last one repeating. */
@@ -117,6 +117,8 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
   const submitCalls: { executionId: string; signed: string[] }[] = [];
   const allowedCalls: { instance: string; wallet: string }[] = [];
   const eventListeners: ProtocolEventsOptions['onEvent'][] = [];
+  const terminal = new Set<string>();
+  const instanceReads: string[] = [];
   let executions = 0;
 
   const stepClient = (step: string) => ({
@@ -205,6 +207,12 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
         return stateOf(record);
       },
     },
+    instances: {
+      async get(id: string) {
+        instanceReads.push(id);
+        return { terminal: terminal.has(id) };
+      },
+    },
     events(_instanceId, eventOptions) {
       eventListeners.push(eventOptions.onEvent);
       return { lastEventId: undefined, closed: false, close() {} };
@@ -217,6 +225,11 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
     submitCalls,
     allowedCalls,
     intents,
+    instanceReads,
+    /** Make an instance terminal. */
+    endInstance(id: string) {
+      terminal.add(id);
+    },
     /** Emit a stream event to every follower. */
     emit(event: string, id: number, instanceId = 'inst-1', participantId: string | null = null) {
       for (const listener of eventListeners) {
