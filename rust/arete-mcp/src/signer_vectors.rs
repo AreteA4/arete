@@ -571,6 +571,17 @@ fn inner_approve_chain() -> Value {
     value
 }
 
+/// A token move whose simulation reports no inner instructions, as some RPCs
+/// do: an approval made by CPI would not be seen.
+fn without_inner_chain() -> Value {
+    let mut value = token_move_chain(1000);
+    value["simulation"]
+        .as_object_mut()
+        .unwrap()
+        .remove("innerInstructions");
+    value
+}
+
 // ---------------------------------------------------------------------------
 // Cases
 // ---------------------------------------------------------------------------
@@ -1271,6 +1282,11 @@ fn summary_inputs() -> Vec<(&'static str, Value, Value)> {
             inner_approve_chain(),
         ),
         (
+            "a simulation without inner instructions",
+            prepared("dep-1", &[program_token_move()]),
+            without_inner_chain(),
+        ),
+        (
             "two transactions",
             prepared("dep-1", &[sol_transfer(), program_token_move()]),
             two_chains,
@@ -1375,6 +1391,13 @@ async fn check_cases() -> Vec<Value> {
             "dep-1",
             token_move(),
             inner_approve_chain(),
+        ),
+        (
+            "a simulation without inner instructions",
+            policy_with(caps("1000")),
+            "dep-1",
+            token_move(),
+            without_inner_chain(),
         ),
         (
             "without a simulator",

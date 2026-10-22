@@ -274,12 +274,18 @@ interface SignerEffect {
   readonly slots: [number | null, number | null];
 }
 
+/**
+ * Whether the effect is fully measured. A simulation without inner
+ * instructions hides approvals and owner changes made by CPI, so its effect
+ * is unknown.
+ */
 function effectKnown(effect: SignerEffect): boolean {
   return (
     effect.solLamports !== null &&
     effect.unresolved.length === 0 &&
     effect.omittedAccounts === 0 &&
-    effect.closedLamportsOut !== null
+    effect.closedLamportsOut !== null &&
+    effect.innerChecked
   );
 }
 

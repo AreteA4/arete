@@ -317,6 +317,8 @@ export function checkPrepared(policy: SignerPolicy, input: CheckPreparedInput): 
         typeof effect.solLamports === 'string'
       ) {
         why = ' (it closes a token account the simulation could not measure)';
+      } else if (effect.innerInstructionsChecked === false) {
+        why = ' (the simulation reported no inner instructions, so approvals made by CPI cannot be seen)';
       } else if (!simulates) {
         why = ' (no simulator is configured)';
       }

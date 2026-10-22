@@ -380,6 +380,8 @@ impl SignerPolicy {
                     && effect["solLamports"].is_string()
                 {
                     " (it closes a token account the simulation could not measure)".to_string()
+                } else if effect["innerInstructionsChecked"] == false {
+                    " (the simulation reported no inner instructions, so approvals made by CPI cannot be seen)".to_string()
                 } else if !simulates {
                     " (set signer.rpcUrl)".to_string()
                 } else {

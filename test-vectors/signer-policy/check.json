@@ -765,6 +765,110 @@
       "name": "an inner approve"
     },
     {
+      "expect": {
+        "reason": "the signer's balance change in transaction 0 could not be simulated (the simulation reported no inner instructions, so approvals made by CPI cannot be seen), so the caps cannot be checked",
+        "rule": "maxSolPerTransaction"
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "deploymentId": "dep-1",
+        "policy": {
+          "clusters": [
+            "dev"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.05",
+          "maxTokenAmounts": {
+            "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9": "1000"
+          }
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "a simulation without inner instructions"
+    },
+    {
       "compareReason": false,
       "expect": {
         "reason": "the signer's balance change in transaction 0 could not be simulated (set signer.rpcUrl), so the caps cannot be checked",
@@ -933,7 +1037,7 @@
     },
     {
       "expect": {
-        "reason": "the signer's balance change in transaction 0 could not be simulated, so the caps cannot be checked",
+        "reason": "the signer's balance change in transaction 0 could not be simulated (the simulation reported no inner instructions, so approvals made by CPI cannot be seen), so the caps cannot be checked",
         "rule": "maxSolPerTransaction"
       },
       "input": {

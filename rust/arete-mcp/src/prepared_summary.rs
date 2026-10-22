@@ -492,11 +492,15 @@ pub struct SignerEffect {
 
 impl SignerEffect {
     /// Whether every balance change of the signer is known.
+    /// Whether the effect is fully measured. A simulation without inner
+    /// instructions hides approvals and owner changes made by CPI, so its
+    /// effect is unknown.
     pub fn known(&self) -> bool {
         self.sol_lamports.is_some()
             && self.unresolved.is_empty()
             && self.omitted_accounts == 0
             && self.closed_lamports_out.is_some()
+            && self.inner_checked
     }
 }
 
