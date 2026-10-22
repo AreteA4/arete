@@ -363,6 +363,48 @@ describe('robust list-view sources', () => {
     expect(await deliveries(store)).toEqual([]);
   });
 
+  it('drops a snapshot-seeded row removed without lastKnown', async () => {
+    const { store, make } = setup();
+    const view = markets();
+    view.set({ id: 'a', apyBps: 500 }, { id: 'b', apyBps: 600 });
+    view.replay = false; // seeded from the snapshot only: the stream never announced b
+    const handle = make('r').source(rateSource(view));
+    await settle();
+    view.remove('b', false);
+    await settle();
+    await handle.stop();
+    expect((await deliveries(store)).map((delivery) => (delivery.payload as ViewTrigger).value)).toEqual(['a']);
+  });
+
+  it('never promotes a pending change of a seeded row removed without lastKnown', async () => {
+    const { store, make, clock } = setup();
+    const view = new FakeListView<Position>((position) => position.owner);
+    view.set({ owner: ALICE, health: 1.4 }, { owner: BOB, health: 1.4 });
+    view.replay = false;
+    const source = () =>
+      fromViewRows(view, {
+        name: 'healthLow',
+        key: (position: Position) => position.owner,
+        derive: (position: Position) => ({ low: position.health < 1.15 }),
+        changed: (previous, next) => previous !== undefined && !previous.low && next.low,
+        stableFor: '2m',
+      });
+    const first = make('r1').source(source());
+    await settle();
+    await clock.advance(120_000);
+    await first.stop();
+    // While nothing watched, Alice went low: the next replica sees it only in its snapshot.
+    view.rows.set(ALICE, { owner: ALICE, health: 1.0 });
+    const second = make('r2').source(source());
+    await settle(); // pending: low
+    view.remove(ALICE, false);
+    await settle();
+    await clock.advance(120_000);
+    await settle();
+    await second.stop();
+    expect(await deliveries(store)).toEqual([]);
+  });
+
   it('retries a pending value whose promotion failed', async () => {
     const { store, clock } = setup();
     let failNext = false;

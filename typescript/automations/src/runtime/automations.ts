@@ -1083,6 +1083,9 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       rowsByKey.delete(key);
       latest.delete(key);
     };
+    // A removal of a row the stream never announced (seeded from the
+    // snapshot) that carries no `lastKnown`: its key cannot be derived.
+    let unmatchedRemoval = false;
     /** Apply an update: the row and its key, or `undefined` for a removal. */
     const apply = (update: RichUpdate<unknown>): { row: unknown; key: string } | undefined => {
       if (update.type === 'created' || update.type === 'updated') {
@@ -1094,8 +1097,18 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       }
       const key = update.lastKnown !== undefined ? source.rowKey(update.lastKnown) : rowKeys.get(update.key);
       if (key !== undefined) forget(key);
+      else unmatchedRemoval = true;
       rowKeys.delete(update.key);
       return undefined;
+    };
+    /** Drop the rows the view no longer has, reading it when it has no synchronous copy. */
+    const reconcileRemoval = async (): Promise<boolean> => {
+      unmatchedRemoval = false;
+      const current = source.view.getSync?.() ?? (await within(attempt, source.view.get()));
+      if (current === ENDED) return false;
+      const present = new Set(current.map((row) => source.rowKey(row)));
+      for (const key of [...rowsByKey.keys()]) if (!present.has(key)) forget(key);
+      return true;
     };
     /**
      * After a reconnect the SDK replaces the list with a new snapshot and
@@ -1124,6 +1137,8 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     // replaying it leaves every row at its latest value.
     if ((await within(attempt, new Promise<void>((resolve) => setTimeout(resolve, 0)))) === ENDED) return;
     while (queued.length > 0) apply(queued.shift()!);
+    // The snapshot already reflects those removals.
+    unmatchedRemoval = false;
     rows = [...rowsByKey.values()];
     for (const [key, value, observed] of source.signals(rows)) {
       if (!attempt.active) return;
@@ -1165,6 +1180,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       }
       const applied = apply(update);
       if (update.type === 'created') pruneGone();
+      if (unmatchedRemoval && !(await reconcileRemoval())) return;
       rows = [...rowsByKey.values()];
       if (source.rowSignal) {
         if (applied === undefined) continue;

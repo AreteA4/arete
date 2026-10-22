@@ -106,7 +106,8 @@ refused before Privy is asked.
 ### Your own signer
 
 Any provider (a KMS, Turnkey) can be a signer by implementing `ProtocolSigner`:
-`supportedTransactionFormats`, `canSign(wallet)` and
+`kind` (a short name such as `"turnkey"`), `supportedTransactionFormats`,
+`canSign(wallet)` and
 `signTransactions({ wallet, intent, transactions })`, which returns the
 signed transactions. Throw a `SignerRefusal` when the provider declines, so
 the step is refused rather than retried. Optionally implement
