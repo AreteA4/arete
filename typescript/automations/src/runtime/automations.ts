@@ -704,9 +704,15 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
             case 'completed':
               return finish(job, 'completed', { code: 'completed' }, { ...job.progress, signatures });
             case 'chain_failed': {
-              // The transfers rolled back but the fees were charged: the window
-              // keeps exactly the fees, or all the SOL when they cannot be read.
-              const fees = await chargedFees(signatures);
+              // If any transaction of the intent landed successfully, its
+              // outflows really left the wallet, and the ledger cannot tell
+              // them apart from the failed ones: keep every entry. Otherwise
+              // the transfers rolled back and only the fees were charged: keep
+              // exactly the fees, or all the SOL when they cannot be read.
+              const landedOne = state.transactions.some(
+                (transaction) => transaction.signature !== null && !transaction.error,
+              );
+              const fees = landedOne ? null : await chargedFees(signatures);
               return finish(
                 job,
                 'chain_failed',
@@ -715,7 +721,9 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
                   detail: state.transactions.filter((transaction) => transaction.error).map(({ index, error }) => ({ index, error })),
                 },
                 { ...job.progress, signatures },
-                fees === null
+                landedOne
+                  ? {}
+                  : fees === null
                   ? { void: true, keepAssets: [SOL] }
                   : {
                       void: true,
