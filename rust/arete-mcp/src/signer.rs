@@ -15,7 +15,7 @@
 //! deployments = ["<deployment id>"]         # required allow-list
 //! maxSolPerTransaction = 0.05               # required, SOL
 //! programs = ["<program id>"]               # optional allow-list
-//! clusters = ["devnet", "localnet"]         # optional; mainnet only if listed
+//! clusters = ["dev"]                       # optional; mainnet only if listed
 //!
 //! [signer.policy.maxTokenAmounts]           # base units per mint; without
 //! "<mint>" = "5000000"                      # it no token may leave
@@ -48,9 +48,35 @@ pub const ENV_SIGNER_CONFIG: &str = "ARETE_MCP_SIGNER_CONFIG";
 pub const MCP_CONFIG_FILE: &str = ".arete/mcp.toml";
 
 /// Clusters a policy allows when it does not list any.
-pub const DEFAULT_CLUSTERS: [&str; 3] = ["localnet", "devnet", "testnet"];
-/// Every cluster name a policy may list.
-pub const KNOWN_CLUSTERS: [&str; 4] = ["localnet", "devnet", "testnet", "mainnet"];
+pub const DEFAULT_CLUSTERS: [&str; 1] = ["dev"];
+/// Every cluster a target can be: `dev` for a dev environment or a local
+/// runtime (a fork of mainnet), `mainnet` for a published deployment.
+pub const KNOWN_CLUSTERS: [&str; 2] = ["dev", "mainnet"];
+/// Names earlier versions accepted, read so their configs still load:
+/// `localnet` is `dev`; Arete runs on neither `devnet` nor `testnet`, so
+/// those never matched a target and are dropped.
+const LEGACY_CLUSTERS: [(&str, Option<&str>); 3] = [
+    ("localnet", Some("dev")),
+    ("devnet", None),
+    ("testnet", None),
+];
+
+/// A listed cluster in its current name, `None` for one that is dropped.
+pub fn normalize_cluster(cluster: &str) -> Result<Option<&'static str>> {
+    if let Some(known) = KNOWN_CLUSTERS.iter().find(|known| **known == cluster) {
+        return Ok(Some(known));
+    }
+    match LEGACY_CLUSTERS
+        .iter()
+        .find(|(legacy, _)| *legacy == cluster)
+    {
+        Some((_, current)) => Ok(*current),
+        None => bail!(
+            "signer.policy.clusters: '{cluster}' is not one of {}",
+            KNOWN_CLUSTERS.join(", ")
+        ),
+    }
+}
 
 /// Programs the transaction compiler adds around a step's own instructions
 /// (compute budget, memo, fee transfers, token accounts and wrapped SOL).
@@ -247,15 +273,14 @@ impl SignerPolicy {
         };
         let clusters_listed = policy.clusters.is_some();
         let clusters = match policy.clusters {
-            Some(clusters) => {
-                if let Some(bad) = clusters
-                    .iter()
-                    .find(|cluster| !KNOWN_CLUSTERS.contains(&cluster.as_str()))
-                {
-                    bail!(
-                        "signer.policy.clusters: '{bad}' is not one of {}",
-                        KNOWN_CLUSTERS.join(", ")
-                    );
+            Some(listed) => {
+                let mut clusters: Vec<String> = Vec::new();
+                for cluster in &listed {
+                    if let Some(current) = normalize_cluster(cluster)? {
+                        if !clusters.iter().any(|c| c == current) {
+                            clusters.push(current.to_string());
+                        }
+                    }
                 }
                 clusters
             }
@@ -588,10 +613,10 @@ mod tests {
             "clusters"
         );
         assert_eq!(
-            signer.check_target("other", "localnet").unwrap_err().rule,
+            signer.check_target("other", "dev").unwrap_err().rule,
             "deployments"
         );
-        assert!(signer.check_target("d", "localnet").is_ok());
+        assert!(signer.check_target("d", "dev").is_ok());
         for bad in [
             "deployments = []\nmaxSolPerTransaction = 1\n",
             "deployments = [\"d\"]\n",

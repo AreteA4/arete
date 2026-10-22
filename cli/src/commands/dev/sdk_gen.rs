@@ -313,6 +313,14 @@ mod tests {
             provenance["project"]["localBuildDeploymentId"],
             "dep-local-1"
         );
+        // The descriptor marks the dev environment's deployment, which
+        // automations use as their target.
+        let module = std::fs::read_to_string(output.path.join("local-tip-jar.ts")).unwrap();
+        assert!(
+            module.contains("deploymentId: 'dep-local-1', access: 'private', apiUrl:")
+                && module.contains(", environment: 'dev' } as ProtocolDefinition['deployment'],"),
+            "{module}"
+        );
 
         // The same build again changes nothing; a redeploy (a new local
         // deployment of a never-published protocol) regenerates.

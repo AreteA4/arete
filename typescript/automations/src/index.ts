@@ -32,7 +32,7 @@ export type { DelegationStatus, ProtocolSigner, SignTransactionsInput } from './
 export { DEFAULT_TRANSACTION_FORMATS, negotiateTransactionFormat } from './signer/format';
 export { checkPreparedAgainstIntent, checkSignedTransactions } from './signer/verify';
 export { isSignerRefusal, SignerRefusal } from './signer/signer';
-export { createAutomations } from './runtime/automations';
+export { clientCluster, createAutomations } from './runtime/automations';
 export type {
   AutomationClient,
   AutomationEvent,

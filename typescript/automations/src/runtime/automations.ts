@@ -145,8 +145,12 @@ export interface AutomationsOptions<TTypes extends ProtocolTypeMap = ProtocolTyp
   /** Measures what each transaction moves out of the wallet; the policy refuses what it cannot measure. */
   readonly simulator: Simulator;
   readonly store: AutomationStore;
-  /** The cluster the deployment runs on; the policy must list it. */
-  readonly cluster: Cluster;
+  /**
+   * Where the deployment runs; the policy must list it. Defaults to the
+   * client's: `dev` for a client `a4 dev` generated (the deployment in a dev
+   * environment), else `mainnet`.
+   */
+  readonly cluster?: Cluster;
   /** Transaction formats in the deployment's order of preference. Defaults to v1, then v0. */
   readonly transactionFormats?: readonly ProtocolTransactionFormat[];
   /** Identifies this worker in leases. Defaults to a random id. */
@@ -293,10 +297,18 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Where a client's deployment runs: `dev` when `a4 dev` generated it, else `mainnet`. */
+export function clientCluster(client: Pick<AutomationClient, 'definition'>): Cluster {
+  // Read structurally: SDKs before the field carry it untyped.
+  const deployment = client.definition?.deployment as { readonly environment?: string } | undefined;
+  return deployment?.environment === 'dev' ? 'dev' : 'mainnet';
+}
+
 export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeMap>(
   options: AutomationsOptions<TTypes>,
 ): Automations<TTypes> {
-  const { client, signer, policy, simulator, store, cluster } = options;
+  const { client, signer, policy, simulator, store } = options;
+  const cluster = options.cluster ?? clientCluster(client);
   const clock = options.clock ?? systemClock;
   const worker = options.worker ?? randomId();
   const leaseMs = durationMs(options.lease ?? 60_000);

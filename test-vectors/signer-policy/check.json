@@ -75,7 +75,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -156,7 +156,7 @@
         "deploymentId": "dep-2",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -231,7 +231,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -333,7 +333,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -411,7 +411,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -511,7 +511,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -616,7 +616,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -737,7 +737,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -775,7 +775,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -841,7 +841,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -907,7 +907,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -993,7 +993,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -1043,7 +1043,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -1118,7 +1118,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -1190,7 +1190,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -1274,7 +1274,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -1355,7 +1355,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -1439,7 +1439,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -1541,7 +1541,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -1643,7 +1643,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -1748,7 +1748,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -1850,7 +1850,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -1952,7 +1952,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -2036,7 +2036,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -2150,7 +2150,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"

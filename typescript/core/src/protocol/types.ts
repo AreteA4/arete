@@ -68,6 +68,11 @@ export interface ProtocolDeploymentDescriptor {
   readonly apiUrl: string;
   /** Where session tokens are minted, e.g. `https://api.arete.run/ws/sessions`. */
   readonly sessionEndpoint: string;
+  /**
+   * `'dev'` when `a4 dev` generated the client for the deployment in a dev
+   * environment (a fork of mainnet). Absent for a published deployment.
+   */
+  readonly environment?: 'dev';
 }
 
 /** The protocol's own generated stack view that mirrors an instance live. */

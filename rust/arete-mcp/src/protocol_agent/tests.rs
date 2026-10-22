@@ -736,7 +736,7 @@ async fn mainnet_needs_an_explicit_cluster() {
         .await
         .unwrap();
     assert_eq!(refused["rule"], "clusters");
-    assert_eq!(refused["cluster"], "localnet");
+    assert_eq!(refused["cluster"], "dev");
     assert!(is_loopback("http://127.0.0.1:4000"));
     assert!(is_loopback("http://localhost"));
     assert!(is_loopback("http://[::1]:80/api"));
@@ -988,7 +988,7 @@ fn execute_simulates_with_the_signers_rpc() {
     .unwrap();
     let dev_target = || Target {
         api: ProtocolApi::new(reqwest::Client::new(), "http://127.0.0.1:1/api", "", ""),
-        cluster: "localnet",
+        cluster: "dev",
         rpc_url: Some("http://127.0.0.1:3".into()),
         dev: Some(DevClient::new(
             DevProject::new(dir.path()),
@@ -1027,12 +1027,14 @@ fn execute_simulates_with_the_signers_rpc() {
         simulation_rpc(&own, &dev_target()).as_deref(),
         Some("https://own-rpc.example")
     );
-    // ...unless the policy lists localnet explicitly.
-    let local = with_rpc("clusters = [\"localnet\"]\n");
-    assert_eq!(
-        simulation_rpc(&local, &dev_target()).as_deref(),
-        Some("http://127.0.0.1:3")
-    );
+    // ...unless the policy lists dev explicitly (or localnet, its earlier name).
+    for listed in ["dev", "localnet"] {
+        let local = with_rpc(&format!("clusters = [\"{listed}\"]\n"));
+        assert_eq!(
+            simulation_rpc(&local, &dev_target()).as_deref(),
+            Some("http://127.0.0.1:3")
+        );
+    }
     // Without an RPC of its own, the dev session's loopback RPC.
     let bare = config("", "");
     assert_eq!(

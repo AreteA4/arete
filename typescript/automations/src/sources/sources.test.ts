@@ -38,7 +38,7 @@ function setup(
       policy,
       simulator: feeOnlySimulator,
       store,
-      cluster: 'devnet',
+      cluster: 'dev',
       clock,
       worker,
       lease: '30s',
@@ -563,7 +563,7 @@ describe('append-view sources', () => {
       policy,
       simulator: feeOnlySimulator,
       store: memoryStore(),
-      cluster: 'devnet',
+      cluster: 'dev',
       clock: manualClock(),
       onError: (error) => void errors.push(error),
     });

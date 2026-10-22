@@ -1,7 +1,7 @@
 // Automatic refunds for a token raise: when a raise fails, every contributor
 // who opted in is refunded without opening the app.
 //
-//   SIGNER=keypair DEV_WALLET=~/.config/solana/dev.json ...   (cloud dev environments)
+//   SIGNER=keypair DEV_WALLET=~/.config/solana/dev.json ...   (a dev environment)
 //   SIGNER=privy PRIVY_APP_ID=... PRIVY_APP_SECRET=... PRIVY_AUTHORIZATION_KEY=... PRIVY_WALLETS='{"<address>":"<wallet id>"}'
 //
 // See README.md for the whole setup.
@@ -15,7 +15,7 @@ import pg from 'pg';
 
 import {
   type AutomationOutcome,
-  type Cluster,
+  clientCluster,
   createAutomations,
   definePolicy,
   type ProtocolSigner,
@@ -65,19 +65,23 @@ async function main() {
   const notify = (outcome: AutomationOutcome) =>
     console.log(`[${outcome.state}] ${outcome.step} for ${outcome.wallet}: ${outcome.code}${outcome.reason ? ` (${outcome.reason})` : ''}`);
 
+  // A client `a4 dev` generated targets the dev environment; the published
+  // one (`a4 install --locked`) targets mainnet, which the policy allows only
+  // with ALLOW_MAINNET=1.
+  const dev = clientCluster(client) === 'dev';
   const automations = createAutomations({
     client,
     signer: await signerFromEnv(),
     // A refund moves funds into the wallet; only the network fee leaves it.
     policy: definePolicy({
       deployments: [client.deploymentId],
-      clusters: [env('CLUSTER', 'devnet') as Cluster],
+      clusters: env('ALLOW_MAINNET', '') === '1' ? ['dev', 'mainnet'] : ['dev'],
       programs: JSON.parse(env('PROGRAMS', '[]')) as string[],
       maxSolPerTransaction: '0.001',
     }),
-    simulator: rpcSimulator(env('RPC_URL', 'https://api.devnet.solana.com')),
+    // In a dev environment, simulate on the fork through `a4 dev up`'s local RPC.
+    simulator: rpcSimulator(env('RPC_URL', dev ? 'http://127.0.0.1:48700' : undefined)),
     store,
-    cluster: env('CLUSTER', 'devnet') as Cluster,
     consent: { domain: env('APP_DOMAIN', 'localhost') },
     onOutcome: notify,
     onError: (error, context) => console.error(`[${context.phase}]`, error),

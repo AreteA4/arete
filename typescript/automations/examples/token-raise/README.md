@@ -15,6 +15,11 @@ they delegated, inside a consent they signed.
    echo "export * from './generated/typescript/protocols/token-raise/token-raise.js';" > token-raise.ts
    ```
 
+   Develop against a dev environment first: in the protocol's project,
+   `a4 dev up` deploys it to a fork of mainnet and generates a client for
+   that deployment, so the automations target `dev`. `a4 install --locked`
+   puts the published client back, which targets `mainnet`.
+
 2. Set the environment:
 
    | Variable | |
@@ -22,7 +27,8 @@ they delegated, inside a consent they signed.
    | `ARETE_SECRET_KEY` | A secret key for the deployment |
    | `ARETE_WEBHOOK_SECRET` | The signing secret of a webhook endpoint subscribed to `raise.failed`, pointing at `/arete/webhook` |
    | `DATABASE_URL` | Postgres for the store |
-   | `RPC_URL`, `CLUSTER` | The cluster the deployment runs on (default devnet) |
+   | `RPC_URL` | Simulates each transaction. Defaults to `a4 dev up`'s local RPC (`http://127.0.0.1:48700`) for a dev client; required for mainnet |
+   | `ALLOW_MAINNET` | `1` to let the policy sign on mainnet; without it only the dev environment is allowed |
    | `PROGRAMS` | JSON list of the protocol's program ids |
    | `APP_DOMAIN` | The host name users see in the consent message |
    | `APP_API_TOKEN` | A token your app's backend sends on the consent routes; in a real app, use your session auth and check the user owns the wallet |
@@ -46,7 +52,7 @@ they delegated, inside a consent they signed.
      -d '{"wallet":"<address>","expiresAt":1798761600000,"nonce":"<nonce>","issuedAt":<issuedAt>,"signature":"<base58>"}'
    ```
 
-5. Let the raise fail (on a dev environment, warp past its deadline). The
+5. Let the raise fail (in the dev environment, `a4 dev warp` past its deadline). The
    `raise.failed` webhook arrives, the handler finds the opted-in
    contributors of that raise, and each refund runs:
 

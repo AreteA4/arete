@@ -33,8 +33,7 @@ const automations = createAutomations({
   policy: definePolicy({ ... }),
   simulator: rpcSimulator(RPC_URL),
   store: memoryStore(),         // tests and development only
-  cluster: 'mainnet',
-});
+});                             // targets dev for a client `a4 dev` generated, mainnet for a published one
 
 // A protocol event: read state, return the steps to run. Handlers never prepare.
 automations.on('round.settled', async (event, ctx) => {
@@ -219,7 +218,7 @@ import { checkPrepared, checkTarget, definePolicy, rpcSimulator, summarizePrepar
 
 const policy = definePolicy({
   deployments: [DEPLOYMENT_ID],
-  clusters: ['mainnet'],              // mainnet only when listed
+  clusters: ['dev', 'mainnet'],       // defaults to ['dev']; mainnet only when listed
   programs: [VAULT_PROGRAM_ID],       // optional; runtime programs are always allowed
   maxSolPerTransaction: '0.01',       // SOL, wrapped SOL and closed token accounts included
   maxTokenAmounts: { [USDC]: '5000000000' }, // base units; a mint without a cap may not leave
