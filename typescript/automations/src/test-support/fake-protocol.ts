@@ -33,7 +33,7 @@ export function walletOf(seed: Uint8Array): string {
 
 export const policy = definePolicy({
   deployments: [DEPLOYMENT],
-  clusters: ['devnet'],
+  clusters: ['dev'],
   programs: [PROGRAM],
   maxSolPerTransaction: '0.01',
 });

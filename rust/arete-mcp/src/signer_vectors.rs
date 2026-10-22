@@ -419,7 +419,7 @@ fn top_level_approve() -> Vec<u8> {
 }
 
 fn base_policy() -> Value {
-    json!({ "deployments": ["dep-1"], "maxSolPerTransaction": "0.05", "clusters": ["devnet"] })
+    json!({ "deployments": ["dep-1"], "maxSolPerTransaction": "0.05", "clusters": ["dev"] })
 }
 
 fn policy_with(fields: Value) -> Value {
@@ -638,8 +638,16 @@ fn config_cases() -> Vec<Value> {
             json!({ "deployments": ["d"], "maxSolPerTransaction": "1", "maxTokenAmounts": { mint.clone(): 42 } }),
         ),
         (
-            "listing localnet only",
-            json!({ "deployments": ["d"], "maxSolPerTransaction": "1", "clusters": ["localnet"] }),
+            "listing dev only",
+            json!({ "deployments": ["d"], "maxSolPerTransaction": "1", "clusters": ["dev"] }),
+        ),
+        (
+            "localnet, from earlier configs, is read as dev",
+            json!({ "deployments": ["d"], "maxSolPerTransaction": "1", "clusters": ["localnet", "dev", "mainnet"] }),
+        ),
+        (
+            "devnet and testnet, from earlier configs, are dropped",
+            json!({ "deployments": ["d"], "maxSolPerTransaction": "1", "clusters": ["devnet", "testnet"] }),
         ),
         (
             "an empty programs list allows only runtime programs",
@@ -739,19 +747,19 @@ fn target_cases() -> Vec<Value> {
             "an allowed deployment and cluster",
             base_policy(),
             "dep-1",
-            "devnet",
+            "dev",
         ),
         (
             "a deployment outside the allow-list",
             base_policy(),
             "dep-2",
-            "devnet",
+            "dev",
         ),
         (
             "a cluster outside the listed clusters",
-            base_policy(),
+            policy_with(json!({ "clusters": ["mainnet"] })),
             "dep-1",
-            "testnet",
+            "dev",
         ),
         (
             "mainnet is excluded by default",
@@ -760,10 +768,10 @@ fn target_cases() -> Vec<Value> {
             "mainnet",
         ),
         (
-            "localnet is allowed by default",
+            "dev is allowed by default",
             json!({ "deployments": ["dep-1"], "maxSolPerTransaction": "1" }),
             "dep-1",
-            "localnet",
+            "dev",
         ),
         (
             "mainnet when listed",

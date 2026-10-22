@@ -82,7 +82,7 @@ struct Remembered {
 /// One resolved protocol API.
 pub struct Target {
     pub api: ProtocolApi,
-    /// `localnet` or `mainnet`.
+    /// `dev` or `mainnet`.
     pub cluster: &'static str,
     rpc_url: Option<String>,
     dev: Option<DevClient>,
@@ -156,7 +156,7 @@ impl ProtocolAgent {
             let client = DevProject::discover(project.as_deref()).and_then(DevClient::open)?;
             return Ok(Target {
                 api: client.api(),
-                cluster: "localnet",
+                cluster: "dev",
                 rpc_url: Some(client.session.rpc_url.clone()),
                 dev: Some(client),
             });
@@ -202,9 +202,9 @@ impl ProtocolAgent {
             // Arete's API settles on mainnet only and reports no other
             // cluster, so a hosted origin is mainnet: the strictest label,
             // which a signer must list explicitly. A loopback origin is a
-            // local runtime.
+            // local runtime, a fork like a dev environment.
             cluster: if is_loopback(&origin) {
-                "localnet"
+                "dev"
             } else {
                 "mainnet"
             },
@@ -802,7 +802,7 @@ impl ProtocolAgent {
 /// whenever it has one. In an `a4 dev` session the session's local RPC (the
 /// loopback proxy to the dev environment that `a4 dev up` serves) is used
 /// instead only when the signer has no `rpcUrl`, or its policy lists
-/// `localnet` explicitly in `clusters`, since a fork's state is not on the
+/// `dev` explicitly in `clusters`, since a fork's state is not on the
 /// signer's RPC.
 fn simulation_rpc(signer: &LocalSigner, target: &Target) -> Option<String> {
     let session_rpc = target
@@ -812,13 +812,9 @@ fn simulation_rpc(signer: &LocalSigner, target: &Target) -> Option<String> {
         .filter(|url| crate::dev::is_loopback_url(url));
     match (&signer.rpc_url, session_rpc) {
         (Some(own), Some(session)) => {
-            let localnet_listed = signer.policy.clusters_listed
-                && signer.policy.clusters.iter().any(|c| c == "localnet");
-            Some(if localnet_listed {
-                session
-            } else {
-                own.clone()
-            })
+            let dev_listed =
+                signer.policy.clusters_listed && signer.policy.clusters.iter().any(|c| c == "dev");
+            Some(if dev_listed { session } else { own.clone() })
         }
         (Some(own), None) => Some(own.clone()),
         (None, Some(session)) => Some(session),

@@ -3,11 +3,11 @@
     {
       "expect": null,
       "input": {
-        "cluster": "devnet",
+        "cluster": "dev",
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -23,11 +23,11 @@
         "rule": "deployments"
       },
       "input": {
-        "cluster": "devnet",
+        "cluster": "dev",
         "deploymentId": "dep-2",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"
@@ -39,15 +39,15 @@
     },
     {
       "expect": {
-        "reason": "the target cluster is testnet, which the signer's clusters (devnet) do not include",
+        "reason": "the target cluster is dev, which the signer's clusters (mainnet) do not include",
         "rule": "clusters"
       },
       "input": {
-        "cluster": "testnet",
+        "cluster": "dev",
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "mainnet"
           ],
           "deployments": [
             "dep-1"
@@ -59,7 +59,7 @@
     },
     {
       "expect": {
-        "reason": "the target cluster is mainnet, which the signer's clusters (localnet, devnet, testnet) do not include; mainnet must be listed explicitly",
+        "reason": "the target cluster is mainnet, which the signer's clusters (dev) do not include; mainnet must be listed explicitly",
         "rule": "clusters"
       },
       "input": {
@@ -77,7 +77,7 @@
     {
       "expect": null,
       "input": {
-        "cluster": "localnet",
+        "cluster": "dev",
         "deploymentId": "dep-1",
         "policy": {
           "deployments": [
@@ -86,7 +86,7 @@
           "maxSolPerTransaction": "1"
         }
       },
-      "name": "localnet is allowed by default"
+      "name": "dev is allowed by default"
     },
     {
       "expect": null,
@@ -107,7 +107,7 @@
     },
     {
       "expect": {
-        "reason": "the target cluster is mainnet, which the signer's clusters (devnet) do not include; mainnet must be listed explicitly",
+        "reason": "the target cluster is mainnet, which the signer's clusters (dev) do not include; mainnet must be listed explicitly",
         "rule": "clusters"
       },
       "input": {
@@ -115,7 +115,7 @@
         "deploymentId": "dep-1",
         "policy": {
           "clusters": [
-            "devnet"
+            "dev"
           ],
           "deployments": [
             "dep-1"

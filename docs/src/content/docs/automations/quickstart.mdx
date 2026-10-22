@@ -17,11 +17,15 @@ says when to run it. The token-raise protocol has both: a `refund` step, and a
 
 ```bash
 npm install @usearete/automations @usearete/sdk pg
-a4 install protocol token-raise --ts
+a4 dev up
 ```
 
-`a4 install protocol` generates the protocol's client. Its module exports the
-definition as `TOKEN_RAISE_PROTOCOL`.
+In the protocol's project, `a4 dev up` deploys the protocol to your dev
+environment, a fork of mainnet, and generates its client where
+`a4 install` puts it, for that deployment. The module exports the definition
+as `TOKEN_RAISE_PROTOCOL`. Automations built on this client target the dev
+environment; the [same code moves to mainnet](/automations/production/#move-to-mainnet)
+when you install the published client.
 
 ## Create the automations
 
@@ -45,13 +49,11 @@ const automations = createAutomations({
   signer: keypairSigner(devWalletSecretKey), // a dev wallet's secret key; dev and tests only
   policy: definePolicy({
     deployments: [client.deploymentId],
-    clusters: ["devnet"],
     programs: [RAISE_PROGRAM_ID], // the programs the protocol's steps call
     maxSolPerTransaction: "0.001",
   }),
-  simulator: rpcSimulator(process.env.RPC_URL!),
+  simulator: rpcSimulator("http://127.0.0.1:48700"), // a4 dev up's local RPC: the fork's state
   store,
-  cluster: "devnet",
   consent: { domain: "app.example" },
   onOutcome: (outcome) => console.log(outcome.state, outcome.step, outcome.wallet, outcome.code),
 });
@@ -59,9 +61,10 @@ const automations = createAutomations({
 
 - **The client** uses a secret key, so it runs only on your server.
 - **The policy** limits what may be signed for anyone: these deployments,
-  this cluster, these programs, and at most 0.001 SOL leaving a wallet per
-  transaction.
-- **The simulator** measures what each transaction would move, using your RPC.
+  these programs, and at most 0.001 SOL leaving a wallet per transaction. It
+  allows the dev environment and never mainnet unless you list it.
+- **The simulator** measures what each transaction would move. In a dev
+  environment it must read the fork, through the local RPC `a4 dev up` serves.
 - **The store** keeps triggers, jobs, consent and spending in your database,
   in its own schema.
 
@@ -118,9 +121,10 @@ const { grant, warnings } = await automations.consent.grant({
 
 ## Try it
 
-1. Contribute to a raise from a dev wallet, and opt that wallet in.
-2. Let the raise fail. In a dev environment you can advance time past its
-   deadline.
+1. Contribute to a raise from a dev wallet (`a4 dev wallet` creates and
+   funds one), and opt that wallet in.
+2. Let the raise fail: `a4 dev warp` advances the environment's time past
+   its deadline.
 3. The `raise.failed` event arrives on the stream, and the refund runs:
 
    ```text

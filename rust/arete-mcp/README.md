@@ -487,7 +487,7 @@ or a package reference `protocol`; `dev: true` targets the project's dev deploym
   reports on (64) is refused as unknown. With `dev: true` a `project`
   argument must be at or below the server's working directory, the signer
   is funded in the dev environment when it has no SOL, and simulation uses
-  the signer's `rpcUrl` unless the policy lists `localnet` in `clusters`
+  the signer's `rpcUrl` unless the policy lists `dev` in `clusters`
   (the local RPC endpoint of a running `a4 dev up` is used when the signer
   has none).
 

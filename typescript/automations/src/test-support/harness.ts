@@ -70,7 +70,7 @@ export function harness(
       policy,
       simulator: feeOnlySimulator,
       store,
-      cluster: 'devnet',
+      cluster: 'dev',
       clock,
       worker,
       trackInterval: '1s',

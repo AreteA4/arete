@@ -14,7 +14,7 @@ use, and which protections still hold if your backend is ever compromised.
 ```ts
 const policy = definePolicy({
   deployments: [client.deploymentId], // required
-  clusters: ["mainnet"],               // mainnet only when listed
+  clusters: ["dev", "mainnet"],        // defaults to ["dev"]; mainnet only when listed
   programs: [VAULT_PROGRAM_ID],        // optional allow-list
   maxSolPerTransaction: "0.01",        // required, in SOL
   maxTokenAmounts: { [USDC_MINT]: "5000000000" }, // base units per mint
@@ -24,7 +24,8 @@ const policy = definePolicy({
 Before each signature, the step's transactions are simulated against your
 RPC and checked:
 
-- the deployment and cluster are allowed, and every program the transactions
+- the deployment and its cluster are allowed (`dev` for a client `a4 dev`
+  generated, `mainnet` for a published one), and every program the transactions
   call is on the list (the compute budget, memo, system, token and associated
   token programs are always allowed);
 - no transaction hands control of the wallet's funds to someone else: token

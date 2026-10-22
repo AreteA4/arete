@@ -550,9 +550,20 @@ fn render_protocol_module(context: &ProtocolModuleContext<'_>) -> Result<String>
         "  protocolReleaseHash: {},",
         ts_string(&context.protocol.protocol_release_hash)
     )?;
+    // A client `a4 dev` generates calls the deployment in the project's dev
+    // environment, a fork of mainnet, not a published deployment. The
+    // assertion keeps an app on an SDK without the field compiling.
+    let (environment, assertion) = if context.protocol.local_dev {
+        (
+            ", environment: 'dev'",
+            " as ProtocolDefinition['deployment']",
+        )
+    } else {
+        ("", "")
+    };
     writeln!(
         out,
-        "  deployment: {{ deploymentId: {}, access: '{}', apiUrl: {}, sessionEndpoint: {} }},",
+        "  deployment: {{ deploymentId: {}, access: '{}', apiUrl: {}, sessionEndpoint: {}{environment} }}{assertion},",
         ts_string(&deployment.deployment_id),
         deployment.access.as_str(),
         ts_string(&deployment.api_url),

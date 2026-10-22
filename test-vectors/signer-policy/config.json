@@ -4,9 +4,7 @@
       "expect": {
         "policy": {
           "clusters": [
-            "localnet",
-            "devnet",
-            "testnet"
+            "dev"
           ],
           "clustersListed": false,
           "deployments": [
@@ -65,9 +63,7 @@
       "expect": {
         "policy": {
           "clusters": [
-            "localnet",
-            "devnet",
-            "testnet"
+            "dev"
           ],
           "clustersListed": false,
           "deployments": [
@@ -90,9 +86,7 @@
       "expect": {
         "policy": {
           "clusters": [
-            "localnet",
-            "devnet",
-            "testnet"
+            "dev"
           ],
           "clustersListed": false,
           "deployments": [
@@ -115,9 +109,7 @@
       "expect": {
         "policy": {
           "clusters": [
-            "localnet",
-            "devnet",
-            "testnet"
+            "dev"
           ],
           "clustersListed": false,
           "deployments": [
@@ -140,9 +132,7 @@
       "expect": {
         "policy": {
           "clusters": [
-            "localnet",
-            "devnet",
-            "testnet"
+            "dev"
           ],
           "clustersListed": false,
           "deployments": [
@@ -165,9 +155,7 @@
       "expect": {
         "policy": {
           "clusters": [
-            "localnet",
-            "devnet",
-            "testnet"
+            "dev"
           ],
           "clustersListed": false,
           "deployments": [
@@ -190,9 +178,7 @@
       "expect": {
         "policy": {
           "clusters": [
-            "localnet",
-            "devnet",
-            "testnet"
+            "dev"
           ],
           "clustersListed": false,
           "deployments": [
@@ -215,9 +201,7 @@
       "expect": {
         "policy": {
           "clusters": [
-            "localnet",
-            "devnet",
-            "testnet"
+            "dev"
           ],
           "clustersListed": false,
           "deployments": [
@@ -240,9 +224,7 @@
       "expect": {
         "policy": {
           "clusters": [
-            "localnet",
-            "devnet",
-            "testnet"
+            "dev"
           ],
           "clustersListed": false,
           "deployments": [
@@ -265,9 +247,7 @@
       "expect": {
         "policy": {
           "clusters": [
-            "localnet",
-            "devnet",
-            "testnet"
+            "dev"
           ],
           "clustersListed": false,
           "deployments": [
@@ -295,7 +275,7 @@
       "expect": {
         "policy": {
           "clusters": [
-            "localnet"
+            "dev"
           ],
           "clustersListed": true,
           "deployments": [
@@ -308,22 +288,74 @@
       },
       "input": {
         "clusters": [
-          "localnet"
+          "dev"
         ],
         "deployments": [
           "d"
         ],
         "maxSolPerTransaction": "1"
       },
-      "name": "listing localnet only"
+      "name": "listing dev only"
     },
     {
       "expect": {
         "policy": {
           "clusters": [
-            "localnet",
-            "devnet",
-            "testnet"
+            "dev",
+            "mainnet"
+          ],
+          "clustersListed": true,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "1000000000",
+          "maxTokenAmounts": null,
+          "programs": null
+        }
+      },
+      "input": {
+        "clusters": [
+          "localnet",
+          "dev",
+          "mainnet"
+        ],
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": "1"
+      },
+      "name": "localnet, from earlier configs, is read as dev"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [],
+          "clustersListed": true,
+          "deployments": [
+            "d"
+          ],
+          "maxLamportsPerTransaction": "1000000000",
+          "maxTokenAmounts": null,
+          "programs": null
+        }
+      },
+      "input": {
+        "clusters": [
+          "devnet",
+          "testnet"
+        ],
+        "deployments": [
+          "d"
+        ],
+        "maxSolPerTransaction": "1"
+      },
+      "name": "devnet and testnet, from earlier configs, are dropped"
+    },
+    {
+      "expect": {
+        "policy": {
+          "clusters": [
+            "dev"
           ],
           "clustersListed": false,
           "deployments": [

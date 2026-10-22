@@ -18,10 +18,24 @@ import { asString, field, isObject, isPubkey } from './encoding';
 import type { PreparedSummary } from './summary';
 
 /** Clusters a policy allows when it does not list any. */
-export const DEFAULT_CLUSTERS = ['localnet', 'devnet', 'testnet'] as const;
-/** Every cluster name a policy may list. */
-export const KNOWN_CLUSTERS = ['localnet', 'devnet', 'testnet', 'mainnet'] as const;
+export const DEFAULT_CLUSTERS = ['dev'] as const;
+/**
+ * Every cluster a target can be: `dev` for a deployment in a dev environment
+ * (a fork of mainnet), `mainnet` for a published deployment.
+ */
+export const KNOWN_CLUSTERS = ['dev', 'mainnet'] as const;
 export type Cluster = (typeof KNOWN_CLUSTERS)[number];
+
+/**
+ * Names the MCP signer's earlier configs used, read the same way it reads
+ * them: `localnet` is `dev`; Arete runs on neither `devnet` nor `testnet`,
+ * so those are dropped.
+ */
+const LEGACY_CLUSTERS: Readonly<Record<string, Cluster | null>> = {
+  localnet: 'dev',
+  devnet: null,
+  testnet: null,
+};
 
 /**
  * Programs the transaction compiler adds around a step's own instructions
@@ -56,7 +70,7 @@ export interface PolicyInput {
    * token may leave (wrapped SOL counts as SOL instead).
    */
   readonly maxTokenAmounts?: Readonly<Record<string, string | number | bigint>> | null;
-  /** Defaults to localnet, devnet and testnet; mainnet only when listed. */
+  /** Defaults to `dev`; mainnet only when listed. */
   readonly clusters?: readonly Cluster[] | null;
 }
 
@@ -202,10 +216,13 @@ export function definePolicy(input: PolicyInput): SignerPolicy {
   const clustersListed = input.clusters !== undefined && input.clusters !== null;
   let clusters: string[] = [...DEFAULT_CLUSTERS];
   if (clustersListed) {
-    clusters = stringList(input.clusters, 'clusters');
-    const bad = clusters.find((cluster) => !(KNOWN_CLUSTERS as readonly string[]).includes(cluster));
-    if (bad !== undefined) {
-      throw new PolicyError(`policy.clusters: '${bad}' is not one of ${KNOWN_CLUSTERS.join(', ')}`);
+    clusters = [];
+    for (const listed of stringList(input.clusters, 'clusters')) {
+      let cluster: Cluster | null;
+      if ((KNOWN_CLUSTERS as readonly string[]).includes(listed)) cluster = listed as Cluster;
+      else if (Object.hasOwn(LEGACY_CLUSTERS, listed)) cluster = LEGACY_CLUSTERS[listed]!;
+      else throw new PolicyError(`policy.clusters: '${listed}' is not one of ${KNOWN_CLUSTERS.join(', ')}`);
+      if (cluster !== null && !clusters.includes(cluster)) clusters.push(cluster);
     }
   }
   return { deployments, maxLamportsPerTransaction, programs, maxTokenAmounts, clusters, clustersListed };

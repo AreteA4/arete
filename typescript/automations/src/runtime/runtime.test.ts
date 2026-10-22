@@ -8,7 +8,7 @@ import { memoryStore } from '../store/memory';
 import type { AutomationStore } from '../store/store';
 import { DEPLOYMENT, fakeProtocol, feeOnlySimulator, policy } from '../test-support/fake-protocol';
 import { ALICE, BOB, harness, SECRET, storedGrant, walletsSigner } from '../test-support/harness';
-import { createAutomations } from './automations';
+import { clientCluster, createAutomations } from './automations';
 import { scheduleSlot } from './time';
 
 runStoreConformance('memoryStore', async () => memoryStore(), { describe, it, expect });
@@ -204,6 +204,31 @@ describe('the step pipeline', () => {
     expect(h.fake.prepareCalls).toHaveLength(0);
   });
 
+  it('takes the cluster from the client: dev for an a4 dev client, else mainnet', async () => {
+    const published = harness({}, { cluster: undefined });
+    await published.grant(ALICE);
+    onDeposits(published.automations);
+    await published.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await published.automations.drain();
+    expect(published.refused[0]).toMatchObject({ code: 'clusters' });
+    expect(published.refused[0]!.reason).toContain('the target cluster is mainnet');
+
+    const fake = fakeProtocol();
+    const devClient = {
+      ...fake.client,
+      definition: { deployment: { deploymentId: fake.client.deploymentId, environment: 'dev' } } as never,
+    };
+    expect(clientCluster(devClient)).toBe('dev');
+    expect(clientCluster(fake.client)).toBe('mainnet');
+    const dev = harness({}, { cluster: undefined, client: devClient });
+    await dev.grant(ALICE);
+    onDeposits(dev.automations);
+    await dev.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await dev.automations.drain();
+    expect(dev.refused).toHaveLength(0);
+    expect(dev.outcomes[0]).toMatchObject({ state: 'completed' });
+  });
+
   it('refuses when the wallet provider declines', async () => {
     const declining: ProtocolSigner = {
       ...walletsSigner(),
@@ -366,7 +391,7 @@ describe('expiry and reconciliation', () => {
       policy,
       simulator: feeOnlySimulator,
       store: hanging,
-      cluster: 'devnet',
+      cluster: 'dev',
       clock: h.clock,
       worker: 'dying',
     });
@@ -454,7 +479,7 @@ describe('expiry and reconciliation', () => {
       policy,
       simulator: feeOnlySimulator,
       store: h.store,
-      cluster: 'devnet',
+      cluster: 'dev',
     });
     await expect(foreign.runOnce()).rejects.toThrow('belongs to deployment dep-1');
     await expect(foreign.dispatch('x', {}, { id: '2' })).rejects.toThrow('use one store per deployment');
@@ -615,7 +640,7 @@ describe('webhooks and streams', () => {
       policy,
       simulator: feeOnlySimulator,
       store: flaky,
-      cluster: 'devnet',
+      cluster: 'dev',
       clock: h.clock,
       onError: () => undefined,
     });

@@ -203,7 +203,7 @@ rpcUrl = "https://<your-rpc>"             # simulates balance changes
 deployments = ["<deployment id>"]         # required: where it may sign
 maxSolPerTransaction = 0.05               # required: SOL out of the signer per transaction
 programs = ["<program id>"]               # optional: programs a transaction may invoke
-clusters = ["devnet", "localnet"]         # optional; mainnet only when listed
+clusters = ["dev"]                        # optional; mainnet only when listed
 
 [signer.policy.maxTokenAmounts]           # base units out per mint; without
 "<mint>" = "5000000"                      # it no token may leave
@@ -214,9 +214,12 @@ clusters = ["devnet", "localnet"]         # optional; mainnet only when listed
 policy, then signs, submits and waits. The policy checks are:
 
 - `deployments`: the deployment must be listed.
-- `clusters`: a deployment on Arete settles on mainnet; a deployment in a
-  dev environment (`dev: true`) counts as `localnet`. When `clusters` is omitted it is `localnet`, `devnet` and
-  `testnet`, so mainnet must always be listed explicitly.
+- `clusters`: `dev` or `mainnet`. A deployment in a dev environment
+  (`dev: true`) is `dev`; a deployment on Arete settles on mainnet. When
+  `clusters` is omitted it is `dev`, so mainnet must always be listed
+  explicitly. Configs written for earlier versions still load: `localnet` is
+  read as `dev`, and `devnet` and `testnet` (which Arete does not run on) are
+  ignored.
 - `programs`: when set, every program a transaction invokes must be listed.
   The compute budget, memo, System, SPL Token, Token-2022 and associated
   token programs the transaction compiler adds are always allowed. What they
@@ -265,7 +268,7 @@ a real one. The session file's local URLs must be loopback URLs and its API
 an Arete one, and a `project` argument must be at or below the directory the
 MCP server runs in. The signer simulates with its own `rpcUrl` when it has
 one; to simulate against the environment instead (through the local RPC
-endpoint a running `a4 dev up` serves), list `localnet` in `clusters` (or
+endpoint a running `a4 dev up` serves), list `dev` in `clusters` (or
 leave `rpcUrl` out).
 
 ## From code and the command line

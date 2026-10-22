@@ -327,7 +327,7 @@ suite('postgresStore: transactions and concurrency', () => {
         policy,
         simulator: feeOnlySimulator,
         store,
-        cluster: 'devnet',
+        cluster: 'dev',
         clock,
         worker: `w${index}`,
         trackInterval: '1s',

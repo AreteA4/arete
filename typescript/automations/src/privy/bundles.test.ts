@@ -39,12 +39,12 @@ describe.skipIf(!built)('the built entry points', () => {
       signer,
       policy: automationsModule.definePolicy({
         deployments: ['dep-1'],
-        clusters: ['devnet'],
+        clusters: ['dev'],
         maxSolPerTransaction: '0.01',
       }),
       simulator: feeOnlySimulator,
       store,
-      cluster: 'devnet',
+      cluster: 'dev',
       clock,
       onOutcome: (outcome: { state: string; code: string }) => void outcomes.push(outcome),
     });
