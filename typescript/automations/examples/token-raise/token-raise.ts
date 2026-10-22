@@ -1,10 +1,12 @@
 // A stand-in for the module `a4 install protocol token-raise` generates, so
-// this example typechecks on its own. Replace this file with the generated
-// one: it carries the real deployment, hashes and types.
+// this example typechecks on its own. It uses the generator's export names
+// (TOKEN_RAISE_PROTOCOL, TokenRaiseProtocolTypes): replace this file with a
+// re-export of the generated module, which carries the real deployment,
+// hashes and types.
 
 import type { ProtocolDefinition, ProtocolTypeMap } from '@usearete/sdk';
 
-export interface TokenRaiseTypes extends ProtocolTypeMap {
+export interface TokenRaiseProtocolTypes extends ProtocolTypeMap {
   readonly params: object;
   readonly instanceState: 'open' | 'succeeded' | 'failed' | 'finalized';
   readonly participantState: 'contributed' | 'claimed' | 'refunded';
@@ -22,7 +24,7 @@ export interface TokenRaiseTypes extends ProtocolTypeMap {
   };
 }
 
-export const tokenRaise: ProtocolDefinition<TokenRaiseTypes> = {
+export const TOKEN_RAISE_PROTOCOL: ProtocolDefinition<TokenRaiseProtocolTypes> = {
   kind: 'protocol',
   name: 'tokenRaise',
   version: '0.0.0',

@@ -210,6 +210,7 @@ describe('privyPolicyFor', () => {
     });
     expect(unenforced.join('\n')).toContain('Privy checks top-level instructions only');
     expect(unenforced.join('\n')).toContain('no cumulative limits');
+    expect(unenforced.join('\n')).toContain('the transfer caps apply to each instruction');
   });
 
   it('allows no SOL transfer when the consent sets no SOL limit', () => {

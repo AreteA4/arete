@@ -7,11 +7,12 @@ they delegated, inside a consent they signed.
 
 ## Run it
 
-1. Install the protocol and replace `token-raise.ts` with the generated
-   module:
+1. Install the protocol and point `token-raise.ts` at the generated module
+   (it exports `TOKEN_RAISE_PROTOCOL`, which `server.ts` imports):
 
    ```bash
    a4 install protocol token-raise
+   echo "export * from './generated/typescript/protocols/token-raise/token-raise.js';" > token-raise.ts
    ```
 
 2. Set the environment:

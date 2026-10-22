@@ -212,6 +212,7 @@ export function privyPolicyFor(
   }
   const unenforced = [
     'deployments and clusters: Privy does not know which deployment or cluster a transaction is for',
+    'totals: the transfer caps apply to each instruction, so several capped transfers in one transaction or run can add up to more than maxSolPerTransaction, maxTokenAmounts or the consent per-run limits',
     'amounts a protocol program moves by CPI: Privy checks top-level instructions only, so maxSolPerTransaction, maxTokenAmounts and the consent per-run limits bind direct transfers only',
     'authority refusals in inner instructions (approvals or authority changes a program makes by CPI)',
     'transactions whose effect cannot be simulated: Privy policies do not read simulations',

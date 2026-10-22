@@ -26,7 +26,7 @@ import { keypairSigner } from '@usearete/automations/keypair';
 import { postgresStore } from '@usearete/automations/postgres';
 import { type PrivyClientLike, privySigner } from '@usearete/automations/privy';
 
-import { tokenRaise } from './token-raise';
+import { TOKEN_RAISE_PROTOCOL } from './token-raise';
 
 function env(name: string, fallback?: string): string {
   const value = process.env[name] ?? fallback;
@@ -53,7 +53,7 @@ async function signerFromEnv(): Promise<ProtocolSigner> {
 }
 
 async function main() {
-  const client = createProtocolClient(tokenRaise, { auth: { secretKey: env('ARETE_SECRET_KEY') } });
+  const client = createProtocolClient(TOKEN_RAISE_PROTOCOL, { auth: { secretKey: env('ARETE_SECRET_KEY') } });
   const pool = new pg.Pool({ connectionString: env('DATABASE_URL') });
   const store = postgresStore(pool);
   if (process.argv.includes('--migrate')) {
