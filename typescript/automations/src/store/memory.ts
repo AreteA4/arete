@@ -13,7 +13,7 @@ import {
   TERMINAL_DELIVERY_STATES,
   TERMINAL_STEP_STATES,
 } from '../runtime/types';
-import type { AutomationStore, ConsentGrant, LedgerEntry, NewStepJob, SourceState, TransitionInput } from './store';
+import { type AutomationStore, type ConsentGrant, type LedgerEntry, type NewStepJob, type SourceState, StoreDeploymentError, type TransitionInput } from './store';
 
 function isActiveStep(job: Job): boolean {
   return job.kind === 'step' && (ACTIVE_STEP_STATES as readonly string[]).includes(job.state);
@@ -35,6 +35,7 @@ export function memoryStore(): AutomationStore {
   let order = 0;
   const sequence = new Map<string, number>();
   const grants: ConsentGrant[] = [];
+  let deployment: string | null = null;
   const nonces = new Map<string, { expiresAt: number; used: boolean }>();
   const ledger: LedgerEntry[] = [];
   const sourceStates = new Map<string, SourceState>();
@@ -48,12 +49,15 @@ export function memoryStore(): AutomationStore {
 
   const acceptNow = (delivery: Delivery, now: number) => {
     if (deliveries.has(delivery.id)) return false;
+    // Clone first: a value that cannot be stored leaves the store unchanged.
+    const copy = clone(delivery);
     deliveries.set(delivery.id, now);
+    if (jobs.has(delivery.id)) return false;
     insert({
       kind: 'delivery',
       id: delivery.id,
       state: 'queued',
-      delivery: clone(delivery),
+      delivery: copy,
       attempts: 0,
       notBefore: now,
       lease: null,
@@ -83,6 +87,10 @@ export function memoryStore(): AutomationStore {
   };
 
   return {
+    async bindDeployment(deploymentId) {
+      if (deployment !== null && deployment !== deploymentId) throw new StoreDeploymentError(deployment, deploymentId);
+      deployment = deploymentId;
+    },
     deliveries: {
       async accept(delivery: Delivery, now: number) {
         return acceptNow(delivery, now);
@@ -139,7 +147,9 @@ export function memoryStore(): AutomationStore {
         jobs.set(id, next);
         if (input.ledger?.void) {
           for (const [index, entry] of ledger.entries()) {
-            if (entry.jobId === id && entry.voidedAt === null) ledger[index] = { ...entry, voidedAt: input.now };
+            if (entry.jobId === id && entry.voidedAt === null && !input.ledger.keepAssets?.includes(entry.asset)) {
+              ledger[index] = { ...entry, voidedAt: input.now };
+            }
           }
         }
         for (const entry of input.ledger?.record ?? []) {
@@ -158,8 +168,9 @@ export function memoryStore(): AutomationStore {
         if (!job || job.kind !== 'delivery' || job.state !== 'running' || job.lease?.worker !== worker) {
           return false;
         }
+        const requests = steps.map((step) => clone(step.request));
         jobs.set(id, { ...job, state: 'done', lease: null, updatedAt: now, outcome: null });
-        for (const step of steps) {
+        for (const [index, step] of steps.entries()) {
           if (jobs.has(step.id)) continue;
           const created: StepJob = {
             kind: 'step',
@@ -167,7 +178,7 @@ export function memoryStore(): AutomationStore {
             state: 'queued',
             deliveryId: id,
             deploymentId: step.deploymentId,
-            request: clone(step.request),
+            request: requests[index]!,
             progress: { generation: 0 },
             attempts: 0,
             notBefore: now,
@@ -291,6 +302,7 @@ export function memoryStore(): AutomationStore {
           value: clone(next.value),
           generation,
           pending: next.pending ? clone(next.pending) : null,
+          observed: next.observed ?? null,
           version: (current?.version ?? 0) + 1,
           updatedAt: now,
         };
@@ -298,7 +310,7 @@ export function memoryStore(): AutomationStore {
         if (deliver) {
           acceptNow(
             {
-              id: `view:${source}:${key}:${generation}`,
+              id: `view:${encodeURIComponent(source)}:${encodeURIComponent(key)}:${generation}`,
               name: deliver.name,
               source: 'view',
               payload: clone(deliver.payload),
