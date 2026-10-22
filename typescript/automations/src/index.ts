@@ -28,3 +28,6 @@ export type {
 export type { AuthorityFinding } from './policy/authority';
 export { decodeTransaction, TransactionDecodeError } from './policy/decode';
 export type { DecodedTransaction } from './policy/decode';
+export type { ProtocolSigner, SignTransactionsInput } from './signer/signer';
+export { DEFAULT_TRANSACTION_FORMATS, negotiateTransactionFormat } from './signer/format';
+export { checkPreparedAgainstIntent, checkSignedTransactions } from './signer/verify';

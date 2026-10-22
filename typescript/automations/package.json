@@ -13,7 +13,19 @@
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
+    "./keypair": {
+      "types": "./dist/keypair.d.ts",
+      "import": "./dist/keypair.js",
+      "require": "./dist/keypair.cjs"
+    },
     "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "keypair": [
+        "./dist/keypair.d.ts"
+      ]
+    }
   },
   "sideEffects": false,
   "repository": {
@@ -41,7 +53,12 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
     "@scure/base": "1.2.6"
+  },
+  "peerDependencies": {
+    "@usearete/sdk": "^0.43.0"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "16.0.3",
@@ -49,6 +66,7 @@
     "@types/node": "22.20.1",
     "@typescript-eslint/eslint-plugin": "8.71.2",
     "@typescript-eslint/parser": "8.71.2",
+    "@usearete/sdk": "^0.43.0",
     "eslint": "8.57.1",
     "rollup": "3.29.5",
     "rollup-plugin-dts": "6.2.3",
