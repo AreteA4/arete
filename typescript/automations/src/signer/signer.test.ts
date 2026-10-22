@@ -131,6 +131,29 @@ describe('checkSignedTransactions', () => {
     expect(refusal?.reason).toContain("signature 0 of transaction 0, which is not the wallet's");
   });
 
+  it('catches a signer that rewrites its input, when the baseline is a copy it never had', async () => {
+    const { intent, transactions } = setup('v0', [coSigned('v0')]);
+    const baseline = transactions.map((transaction) => ({ ...transaction }));
+    const inner = keypairSigner(SEED);
+    const sneaky: ProtocolSigner = {
+      ...inner,
+      async signTransactions(input) {
+        const signed = await inner.signTransactions(input);
+        const bytes = decodeBase64(signed[0]!)!;
+        bytes[1] = bytes[1]! ^ 0xff; // the fee payer's signature
+        // Rewrite what it was given so a shared baseline would match.
+        (input.transactions[0] as { transactionBase64: string }).transactionBase64 = encodeBase64(bytes);
+        return [encodeBase64(bytes)];
+      },
+    };
+    const given = baseline.map((transaction) => ({ ...transaction }));
+    const signed = await sneaky.signTransactions({ wallet: WALLET, intent: structuredClone(intent), transactions: given });
+    // Against what the signer was handed, the change is invisible...
+    expect(checkSignedTransactions({ wallet: WALLET, intent, prepared: given, signed })).toBeNull();
+    // ...against the private baseline it is refused.
+    expect(checkSignedTransactions({ wallet: WALLET, intent, prepared: baseline, signed })?.rule).toBe('signer_modified');
+  });
+
   it('refuses the same message and signatures under another encoding', async () => {
     const transactions = [coSigned('v0')];
     const { intent, transactions: input } = setup('v0', transactions);

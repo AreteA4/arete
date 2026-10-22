@@ -88,7 +88,9 @@ The signer asks Privy to sign each transaction (never to send it) and signs
 environment. It allows only:
 
 - the programs in your policy;
-- System transfers and token `TransferChecked` up to the per-run caps;
+- System transfers and token `TransferChecked` up to the per-run caps,
+  checked per instruction: several capped transfers in one transaction can
+  add up to more, so totals remain a check in your backend;
 - closing token accounts back to the wallet;
 - signing until the consent expires.
 
