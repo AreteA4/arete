@@ -53,6 +53,11 @@ Generated protocol modules also export a typed webhook verifier. See their
 work idempotent. Your backend owns notifications, email, and external business
 logic.
 
+To run protocol steps for users when an event arrives, for example refunding
+everyone who opted in when a raise fails, use `automations.webhookHandler`
+from `@usearete/automations`. It verifies, records and deduplicates
+deliveries for you. See [Automate steps for users](/automations/overview/).
+
 ## Update declared metadata
 
 ```ts

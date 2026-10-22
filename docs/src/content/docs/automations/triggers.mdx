@@ -1,0 +1,188 @@
+---
+title: Triggers and fan-out
+description: Start automations from protocol events, schedules and live data, and turn one trigger into a step for every user who opted in.
+---
+
+A trigger is what starts an automation: a protocol event, a time of day, or a
+change in live data. Your handler turns it into the steps to run. This page
+covers each kind of trigger, and how one trigger becomes a step per user.
+
+## Handlers
+
+A handler receives the trigger and returns step requests. It reads whatever
+it needs to decide, but never prepares, signs or submits anything itself; the
+library does that for every step it returns, after its checks.
+
+```ts
+automations.on("round.settled", async (event, ctx) => {
+  const grants = await ctx.consents.list({ step: "claim", instanceId: event.instanceId });
+  const steps = [];
+  for (const grant of grants) {
+    const player = await client.participants.get({ instance: event.instanceId, wallet: grant.wallet });
+    if (player.state === "won") {
+      steps.push(ctx.step("claim", { wallet: grant.wallet, instance: event.instanceId }));
+    }
+  }
+  return steps;
+});
+```
+
+The `won` state and `claim` step are this example protocol's; use your
+protocol's own.
+
+`ctx.step(step, { wallet, instance, args }, { cooldown })` describes one step
+for one wallet. Event names and step names are typed from the protocol's
+generated client.
+
+**A trigger means "go and look", not the truth.** Read current state in the
+handler rather than trusting a trigger's payload for amounts. Each step is
+checked again before signing: the protocol's `allowedSteps`, prepare, and a
+simulation. A stale or wrong trigger can only lead to a step that is checked
+and then skipped, refused or rejected.
+
+## Fan-out: one trigger, many users
+
+Most triggers are not about one user. A schedule, a rate change or an event
+about one instance concerns everyone who opted in. `ctx.consents.list` returns
+the active consent grants in the deployment, each with the user's own
+settings:
+
+```ts
+automations.on("weeklyBuy", async (_trigger, ctx) => {
+  const grants = await ctx.consents.list({ step: "buy" });
+  return grants
+    .filter((grant) => grant.params.weekday === today)
+    .map((grant) =>
+      ctx.step("buy", { wallet: grant.wallet, args: { amount: String(grant.params.amount) } }),
+    );
+});
+```
+
+Pass `instanceId` to get one grant per wallet for that instance: a grant
+scoped to the instance wins over one for every instance. The list is a
+starting set; each step checks consent again before it signs.
+
+Every step request becomes its own job, identified by the trigger, the step,
+the wallet and the instance. A handler that fails halfway and runs again
+never doubles a step, and one user's refusal does not affect the others.
+
+## Protocol events
+
+A protocol's reactions can `emit` named events. Receive them as signed
+webhooks in production:
+
+```ts
+export const POST = automations.webhookHandler({ secret: process.env.ARETE_WEBHOOK_SECRET! });
+```
+
+The handler verifies the raw body's signature and timestamp, ignores events
+for other deployments or without a handler, records the delivery once and
+answers straight away. A replay of the same signed body is a duplicate, even
+under a different delivery header. For Express, use
+`automations.expressWebhookHandler(...)` behind
+`express.raw({ type: "application/json" })`.
+
+To follow one instance instead, for example while developing, use its event
+stream:
+
+```ts
+const subscription = automations.follow(instanceId);
+// later: subscription.close();
+```
+
+An event the store could not record is retried until it is saved, so a brief
+database outage does not lose it.
+
+[Set up webhook subscriptions →](/integrating-protocols/events/)
+
+## Schedules
+
+The library has no scheduler of its own, so it runs anywhere, including
+serverless platforms. Your scheduler (Vercel cron, Workers cron triggers, a
+Kubernetes CronJob) dispatches a trigger:
+
+```ts
+import { scheduleSlot } from "@usearete/automations";
+
+await automations.dispatch("weeklyBuy", {}, { id: scheduleSlot("weekly-buy", "week") });
+// → id "weekly-buy:2026-W43"
+```
+
+`dispatch` accepts an id once, and `scheduleSlot` gives the same id for the
+same period (`minute`, `hour`, `day`, `week` or `month`, in UTC). A cron that
+fires twice in one week still runs the buys once. For each user's own day,
+dispatch daily and filter on their settings, as in the fan-out example above.
+
+## Live data
+
+A view source watches a [live view](/using-stacks/connect/) and dispatches
+when a condition becomes true. For example, a savings product moves deposits
+when the best lending market changes:
+
+```ts
+import { fromView } from "@usearete/automations";
+
+// `marketsView` is a list view from an installed stack.
+const bestRate = fromView(marketsView, {
+  name: "bestRateChanged",
+  key: (market) => market.id,
+  derive: (markets) => pickBest(markets, { minEdgeBps: 25 }),
+  changed: (previous, next) => previous !== undefined && previous !== next,
+  stableFor: "2m",
+});
+
+automations.on("bestRateChanged", async (trigger, ctx) => {
+  // trigger.value is the new best market; fan out over the users who opted in.
+});
+
+automations.source(bestRate); // a long-running server
+```
+
+- `fromView` keeps one signal for the whole view (which market is best).
+- `fromViewRows` keeps one per row, for example "this wallet's position
+  health crossed below 1.15". It takes the same `key` and `derive`, plus a
+  `filter` for the rows to watch.
+- `fromAppendView` dispatches one trigger per row appended to an append view,
+  and resumes from the last row it saw.
+
+`changed(previous, next)` says which changes count, so you can ignore the
+first value or require a crossing. `stableFor` makes a new value hold for a
+while before it counts, so one bad update (an oracle blip, a briefly
+mispriced market) does not fire. Put hysteresis, such as a minimum edge, in
+`derive`.
+
+On a serverless platform, poll from your scheduler instead of keeping a
+subscription open. Polling sees the same changes, but only at each poll:
+
+```ts
+export async function GET() {
+  await automations.poll(bestRate);
+}
+```
+
+:::note[Going deeper: exactly once]
+View sources keep their last value per key in your database and advance it
+with compare-and-set; the trigger for a change is recorded in the same write.
+So several replicas watching one view produce one trigger per change, a
+change made while every replica was down fires once on restart, and A → B →
+A → B fires three times.
+
+If replicas can see a view at different times, give the source `observedAt`
+(for example the slot a row was updated at) so an older observation never
+replaces a newer one, or run it on one replica with
+`automations.source(bestRate, { exclusive: true })`. A value that changed and
+changed back while nothing was watching is not seen: views hold current
+state, not history.
+:::
+
+## Cooldowns
+
+Limit how often a user is acted on with a cooldown on the step:
+
+```ts
+ctx.step("rebalance", { wallet, instance, args }, { cooldown: "24h" });
+```
+
+A step that completed for the same wallet within the cooldown is skipped. A
+cooldown limits how often users are acted on; `stableFor` limits how quickly
+a signal is believed. Most view-driven automations want both.

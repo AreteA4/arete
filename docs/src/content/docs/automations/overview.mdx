@@ -1,0 +1,107 @@
+---
+title: Automate steps for users
+description: Run protocol steps that need a user's own signature from your backend, inside limits the user signed, with @usearete/automations.
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+Some protocol steps can only be signed by the user: a deposit from their
+wallet, a refund to it, a claim, a move between positions they own. Without
+help, those steps wait until the user opens your app. `@usearete/automations`
+lets your backend run them for the user when something happens, inside limits
+the user agreed to, with a key the user delegated to you. Arete never holds
+that key.
+
+That opens up products a protocol cannot offer on its own:
+
+- **A savings account that always earns the best rate.** When live lending
+  rates change, move the user's deposit to the market that pays more.
+- **Recurring buys.** Swap a set amount every Friday, from each user's own
+  wallet.
+- **Claim and re-enter.** When a round settles, claim the user's winnings and
+  join the next round.
+- **Automatic refunds.** When a raise fails, refund every contributor who
+  opted in, without anyone opening the app.
+- **Protective actions.** When a borrow position's health drops, repay from
+  the user's savings before it is liquidated.
+
+## Use the weakest tool that works
+
+Delegated signing (your backend signs for the user) is powerful, and the most
+can go wrong with it. Reach for something simpler first:
+
+| Situation                                                                                                | Use                                                                                    |
+| -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Anyone may advance the step                                                                              | A [keeper step](/building-protocols/automation/) in the protocol                       |
+| The money is committed now                                                                               | A deposit straight into the pot or escrow                                              |
+| A fixed recurring payment from a wallet the user keeps using                                             | An on-chain allowance (a subscription program, SPL `approve`, a Squads spending limit) |
+| The user must sign each time, the action is more than a fixed transfer, and the wallet holds their funds | **Automations**                                                                        |
+
+Delegated signing through an embedded wallet only makes sense when that wallet
+is where the user's money already lives. If users must fund a wallet just so
+you can automate it, they have already committed the money, and a direct
+deposit is simpler.
+
+## How it works
+
+Automations is a TypeScript library that runs in your backend, next to your
+own database:
+
+1. **A trigger arrives**: a [webhook](/integrating-protocols/events/) for an
+   event the protocol emits, an instance's event stream, your own cron, or a
+   change in a live view.
+2. **Your handler decides what to do.** It reads current state and returns
+   the steps to run, usually one per wallet that opted in. Handlers never sign
+   or prepare anything themselves.
+3. **Each step runs through the checks.**
+   - The wallet's consent still covers this step, and it is not inside its
+     cooldown.
+   - The protocol allows the step for this wallet now.
+   - The prepared transactions are the ones Arete committed to.
+   - A simulation shows what would leave the wallet, and your signing policy
+     and the user's limits allow that amount.
+4. **The step is signed and submitted.** Your signer (a dev keypair, or an
+   embedded-wallet provider such as Privy) signs the exact bytes. The
+   automations library checks that nothing else changed, submits, and
+   follows the result.
+5. **You hear the outcome**: completed, refused by a limit, rejected by the
+   protocol, or failed on chain, so you can tell the user.
+
+Steps for one wallet run one at a time. Every trigger and step is recorded in
+your database, so retries, duplicate webhooks and restarts never run a step
+twice.
+
+## Where to go next
+
+<CardGrid>
+  <Card title="Your first automation" icon="rocket">
+    Refund contributors when a raise fails, end to end against a dev
+    environment.
+
+    [Start the quickstart →](/automations/quickstart/)
+
+  </Card>
+  <Card title="Triggers and fan-out" icon="random">
+    Webhooks, streams, schedules and live views, and turning one trigger into
+    a step per user.
+
+    [Triggers →](/automations/triggers/)
+
+  </Card>
+  <Card title="Consent and limits" icon="approve-check">
+    What users sign, how limits and spending windows work, and how to design
+    the opt-in screen.
+
+    [Consent →](/automations/consent/)
+
+  </Card>
+  <Card title="Signers and safety" icon="seti:lock">
+    The signing policy, Privy, and what protects users if your backend is
+    compromised.
+
+    [Signers and safety →](/automations/signing/)
+
+  </Card>
+</CardGrid>
+
+[Run automations in production →](/automations/production/)

@@ -83,6 +83,7 @@ Arete can:
 - compose Solana programs into protocols with typed steps, guards, roles, instance and participant lifecycle, reactions, metadata, and events;
 - develop protocols in persistent cloud mainnet forks with local wallets, a dev UI, checkpoints, branches, time control, scenarios, and replay;
 - install protocol clients for apps, and let agents discover wallet actions, prepare steps, inspect transactions, sign locally, submit, and track outcomes;
+- run protocol steps for users from a backend with `@usearete/automations`, triggered by events, schedules or live data, within limits each user signed (https://docs.arete.run/automations/overview/);
 - deploy protocols, with production handler review and separate package publication and public listing;
 - discover relevant programs and stacks from intent through the public catalog;
 - read deployed live views once with `a4 get` (or MCP `read_view`), or follow them with MCP or `a4 stream`;

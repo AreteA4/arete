@@ -55,6 +55,17 @@ an install pinned to a published package.
 
 [Connect your application in development →](/development/application/)
 
+## What runs without the user
+
+A protocol can advance on its own when a step needs no particular signer
+(keeper steps), or propose admin steps to a team's multisig. Steps that need
+a participant's own signature wait for that participant, unless your backend
+runs them for users who opted in. Automations do that within limits each user
+signed, triggered by protocol events, schedules or live data.
+
+[Reactions →](/building-protocols/automation/) ·
+[Automate steps for users →](/automations/overview/)
+
 ## Workflow state and live data
 
 The protocol API reports canonical instance and participant state, available

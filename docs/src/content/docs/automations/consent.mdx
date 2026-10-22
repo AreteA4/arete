@@ -1,0 +1,126 @@
+---
+title: Consent and spending limits
+description: What users sign to opt in to automations, how per-run and per-window limits work, and how to design the opt-in and opt-out experience.
+---
+
+Nothing runs for a wallet until its owner has signed a consent: a short,
+readable message that says which steps you may run, how much may leave their
+wallet, with which settings, and until when. This page covers what that
+message contains, how its limits are enforced, and how to present it.
+
+## What the user signs
+
+Build the message from the fields you want the user to agree to:
+
+```ts
+import { SOL } from "@usearete/automations";
+
+const fields = {
+  wallet,
+  deploymentId: client.deploymentId,
+  steps: ["buy"],
+  limits: {
+    perExecution: { [SOL]: "10000", [USDC_MINT]: "50000000" },
+    perWindow: { [USDC_MINT]: { amount: "200000000", window: "30d" } },
+  },
+  params: { amount: "50000000", weekday: "fri" },
+  expiresAt: new Date("2027-01-01"),
+};
+
+const proof = await automations.consent.proofMessage(fields);
+```
+
+The user's wallet signs `proof.bytes` with `signMessage`. The message reads
+like this:
+
+```text
+app.example asks to run protocol steps for your wallet without asking each time:
+7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU
+
+Deployment: dep_7d1e0b2a
+Instance: any
+Steps: buy
+Per run: 50000000 base units of EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+Per run: 10000 lamports of SOL
+Per 30d: 200000000 base units of EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+Setting "amount": "50000000"
+Setting "weekday": "fri"
+Expires At: 2027-01-01T00:00:00.000Z
+
+Nothing else may leave your wallet through these steps. You can revoke this at any time without signing.
+
+Version: arete.automation-consent/v1
+Nonce: 3yZe7d7bqA1kxH3cMSGvJv
+Issued At: 2026-10-22T12:00:00.000Z
+```
+
+Send the signature back with the same fields:
+
+```ts
+const { grant, warnings } = await automations.consent.grant({
+  ...fields,
+  nonce: proof.nonce,
+  issuedAt: proof.issuedAt,
+  signature, // the wallet's 64-byte signature, or its base58 text
+});
+```
+
+`grant` rebuilds the message from the fields it is given and checks the
+wallet's signature over it, so any changed field, raised limit or different
+setting fails. The nonce works once and expires after ten minutes. Raising a
+limit or changing a setting later needs a new signature.
+
+`warnings` lists what your signer reports missing, such as no delegated
+access to the wallet or no provider-side policy bounding it. Treat a warning
+as a setup step the user still has to finish.
+
+## Limits
+
+Limits are per asset: `SOL` in lamports, or a token mint in its base units.
+
+- **Per run** (`perExecution`): the most one step may move out of the wallet.
+  An asset with no per-run limit may not leave at all, so include `SOL` for
+  network fees.
+- **Per window** (`perWindow`): the most all steps together may move within a
+  rolling window, such as `30d`.
+
+What a step moves is measured by simulating its exact transactions before
+signing. A step over a limit ends `refused`, with a reason naming the limit.
+
+Spending is recorded the moment a step is signed, and only one step per
+wallet runs at a time, so even many workers cannot overspend a window. If a
+transaction never lands, its spending is released; if it fails on chain, only
+the fee it was charged still counts.
+
+## Revoking
+
+```ts
+await automations.consent.revoke({ wallet });                     // everything
+await automations.consent.revoke({ wallet, steps: ["buy"] });     // some steps
+```
+
+Revoking needs no wallet signature and takes effect before the next step
+signs, including steps already queued. Expose it only to the signed-in user
+(through your app's own authentication), or anyone could stop someone else's
+automations. A consent scoped to one instance also ends when that instance
+finishes.
+
+## Design the opt-in
+
+- **Say what will happen in your product's words.** "We'll refund you
+  automatically if this raise fails", not "authorize step `refund`".
+- **Show limits in units people read**, such as "Up to 50 USDC per buy, at
+  most 200 USDC in 30 days". The message states base units; show the human
+  amount next to it.
+- **Give automation its own screen and signature.** Never pre-tick it or
+  bundle it with sign-in or a first deposit.
+- **Ask for what the feature needs, and no more.** Set an end date that fits
+  it, such as the end of a raise.
+- **Make stopping easy.** Put the off switch where users found the feature.
+- **Tell users what ran.** Send a notification from your `onOutcome` hook for
+  every completed, refused and failed step, with the amount and a link to the
+  transaction. `refused` (over a limit) and `rejected` (the protocol said no)
+  are normal outcomes; say why.
+- **Be honest about delegation.** The consent bounds what your backend does.
+  If your backend were compromised, the wallet provider's policy is what still
+  holds; see [signers and safety](/automations/signing/).

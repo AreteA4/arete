@@ -51,6 +51,18 @@ expose those steps and their typed arguments, current state, and events.
 
 [Understand protocols →](/getting-started/what-is-arete/)
 
+## Act for users, even when they are away
+
+Some steps need the user's own signature: a deposit, a refund, a claim, a
+rebalance. With `@usearete/automations`, your backend can run them for users
+who opted in, when an event fires, a schedule comes round, or live data
+changes. Each step stays inside limits the user signed, and the key stays
+with your wallet provider; Arete never holds it. That makes products possible
+that a protocol cannot offer on its own: savings that follow the best rate,
+recurring buys, automatic refunds, claim-and-re-enter.
+
+[Automate steps for users →](/automations/overview/)
+
 ## Develop against real programs
 
 `a4 dev up` runs your protocol in a cloud dev environment: a persistent fork

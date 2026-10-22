@@ -1,0 +1,133 @@
+---
+title: Signers and safety
+description: The signing policy, the exact-bytes checks, keypair and Privy signers, and what protects users if your backend is compromised.
+---
+
+Your backend signs for users, so it matters what stops it signing the wrong
+thing. This page covers the checks every step passes, the signers you can
+use, and which protections still hold if your backend is ever compromised.
+
+## The signing policy
+
+`definePolicy` sets what may be signed for any user:
+
+```ts
+const policy = definePolicy({
+  deployments: [client.deploymentId], // required
+  clusters: ["mainnet"],               // mainnet only when listed
+  programs: [VAULT_PROGRAM_ID],        // optional allow-list
+  maxSolPerTransaction: "0.01",        // required, in SOL
+  maxTokenAmounts: { [USDC_MINT]: "5000000000" }, // base units per mint
+});
+```
+
+Before each signature, the step's transactions are simulated against your
+RPC and checked:
+
+- the deployment and cluster are allowed, and every program the transactions
+  call is on the list (the compute budget, memo, system, token and associated
+  token programs are always allowed);
+- no transaction hands control of the wallet's funds to someone else: token
+  approvals, authority changes, account reassignments, nonce, stake and
+  program-upgrade authority changes are always refused, including inside
+  other programs' calls;
+- the SOL and tokens leaving the wallet stay under the caps. Wrapped SOL
+  counts as SOL, and a token account closed to someone else counts too. A
+  mint without a cap may not leave.
+
+A transaction whose effect cannot be simulated is refused. The rules are the
+same as the [MCP signer policy](/agent-skills/protocols/#the-optional-signer), and both are tested
+against one shared set of cases.
+
+## Exact bytes
+
+A signer may only fill the wallet's signature. Before signing, the prepared
+transactions must match what the protocol committed to (each message's
+hash). After signing, every message must still match, no other byte may have
+changed, and the wallet's signature must verify. A signer that adds an
+instruction or re-encodes a transaction is refused.
+
+## Signers
+
+### Keypair, for development
+
+```ts
+import { keypairSigner } from "@usearete/automations/keypair";
+
+const signer = keypairSigner(devWalletSecretKey);
+```
+
+Use it with dev wallets and tests. A local key has no provider policy behind
+it.
+
+### Privy
+
+[Privy](https://privy.io) server wallets let your app sign for a user who has
+added your app's authorization key as a signer:
+
+```ts
+import { PrivyClient } from "@privy-io/node";
+import { privyPolicyFor, privySigner } from "@usearete/automations/privy";
+
+const signer = privySigner({
+  privy: new PrivyClient({ appId, appSecret }),
+  walletIdFor: async (address) => lookUpPrivyWalletId(address), // null without server access
+  authorizationPrivateKey: process.env.PRIVY_AUTHORIZATION_KEY!,
+});
+
+// The provider-side bound for one user's consent: attach it to their wallet in Privy.
+const { policy: privyPolicy, unenforced } = privyPolicyFor(policy, grant);
+```
+
+The signer asks Privy to sign each transaction (never to send it) and signs
+`v0` transactions. When Privy's policy denies a transaction, the step ends
+`refused` with the rule `provider_policy`.
+
+`privyPolicyFor` builds the policy Privy enforces in its own secure
+environment. It allows only:
+
+- the programs in your policy;
+- System transfers and token `TransferChecked` up to the per-run caps;
+- closing token accounts back to the wallet;
+- signing until the consent expires.
+
+It never allows key export.
+
+Privy's policies only see each transaction's top-level instructions. So for a
+protocol step, where the protocol's program moves the funds, Privy can limit
+which programs are called and until when, but not how much moves. `unenforced`
+lists everything it cannot express, so you can show it honestly. Steps with
+top-level instructions Privy cannot allow (for example wrapping SOL) are
+refused before Privy is asked.
+
+### Your own signer
+
+Any provider (a KMS, Turnkey) can be a signer by implementing `ProtocolSigner`:
+`supportedTransactionFormats`, `canSign(wallet)` and
+`signTransactions({ wallet, intent, transactions })`, which returns the
+signed transactions. Throw a `SignerRefusal` when the provider declines, so
+the step is refused rather than retried. Optionally implement
+`delegationStatus(wallet)` so consent can warn about missing setup.
+
+## If your backend is compromised
+
+| Protection                    | Runs in                   | Holds if your backend is compromised |
+| ----------------------------- | ------------------------- | ------------------------------------ |
+| The protocol's on-chain rules | Solana                    | Yes                                  |
+| The wallet provider's policy  | The provider              | Yes                                  |
+| The signing policy            | Your backend              | No                                   |
+| The user's consent and limits | Your backend              | No                                   |
+| Spending windows              | Your backend (your store) | No                                   |
+| The exact-bytes checks        | Your backend              | No                                   |
+
+Arete never holds, stores or proxies a user's key; it prepares transactions,
+records intents and relays what your backend signed. The consent signature
+records what the user agreed to, but it cannot stop an attacker who controls
+your backend. Keep authorization keys in a secrets manager, keep the program
+allow-list tight, and prefer protocols whose automated steps can only move
+funds between the user's own positions.
+
+The threat model in the Arete repository
+(`typescript/automations/docs/threat-model.md`) covers each threat (forged and
+replayed triggers, crashes after signing, consent forgery, cap races, wrong
+triggers) and what handles it.
