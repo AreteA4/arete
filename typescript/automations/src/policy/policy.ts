@@ -89,7 +89,11 @@ export type RefusalRule =
   /** The signer changed a message, another signature, or the signers. */
   | 'signer_modified'
   /** The wallet's signature slot does not hold its valid signature. */
-  | 'signer_signature';
+  | 'signer_signature'
+  /** The signer cannot sign for the wallet (no key, no session signer). */
+  | 'signer_unavailable'
+  /** The wallet provider's own policy refused to sign. */
+  | 'provider_policy';
 
 /** A policy refusal: the rule and why. */
 export interface Refusal {

@@ -29,4 +29,8 @@ const library = (input, name) => [
   },
 ];
 
-export default [...library("src/index.ts", "index"), ...library("src/keypair.ts", "keypair")];
+export default [
+  ...library("src/index.ts", "index"),
+  ...library("src/keypair.ts", "keypair"),
+  ...library("src/testing.ts", "testing"),
+];

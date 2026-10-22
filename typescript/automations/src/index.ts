@@ -31,3 +31,50 @@ export type { DecodedTransaction } from './policy/decode';
 export type { ProtocolSigner, SignTransactionsInput } from './signer/signer';
 export { DEFAULT_TRANSACTION_FORMATS, negotiateTransactionFormat } from './signer/format';
 export { checkPreparedAgainstIntent, checkSignedTransactions } from './signer/verify';
+export { SignerRefusal } from './signer/signer';
+export { createAutomations } from './runtime/automations';
+export type {
+  AutomationClient,
+  AutomationEvent,
+  AutomationOutcome,
+  Automations,
+  AutomationsOptions,
+  ExpressLikeRequest,
+  ExpressLikeResponse,
+  Handler,
+  HandlerContext,
+  StepOptions,
+  TriggerInfo,
+  WebhookHandlerOptions,
+  WebhookResult,
+} from './runtime/automations';
+export { durationMs, scheduleSlot, systemClock } from './runtime/time';
+export type { Clock, Duration, SchedulePeriod } from './runtime/time';
+export {
+  ACTIVE_STEP_STATES,
+  stepJobId,
+  TERMINAL_DELIVERY_STATES,
+  TERMINAL_STEP_STATES,
+} from './runtime/types';
+export type {
+  Delivery,
+  DeliveryJob,
+  DeliveryJobState,
+  Job,
+  JobOutcome,
+  JobState,
+  StepJob,
+  StepJobState,
+  StepProgress,
+  StepRequest,
+  TriggerSource,
+} from './runtime/types';
+export { memoryStore } from './store/memory';
+export type {
+  AutomationStore,
+  ClaimInput,
+  ConsentGrant,
+  ConsentQuery,
+  NewStepJob,
+  TransitionInput,
+} from './store/store';

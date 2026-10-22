@@ -33,3 +33,18 @@ export interface ProtocolSigner {
   /** The signed transactions, base64 wire bytes, one per input in the same order. */
   signTransactions(input: SignTransactionsInput): Promise<string[]>;
 }
+
+/**
+ * Thrown by a signer that declines to sign, for example because the wallet
+ * provider's own policy refused the transaction. The job ends `refused`
+ * with this rule instead of being retried.
+ */
+export class SignerRefusal extends Error {
+  readonly rule: 'provider_policy' | 'signer_unavailable';
+
+  constructor(message: string, rule: 'provider_policy' | 'signer_unavailable' = 'provider_policy') {
+    super(message);
+    this.name = 'SignerRefusal';
+    this.rule = rule;
+  }
+}
