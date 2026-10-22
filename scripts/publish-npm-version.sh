@@ -17,7 +17,7 @@ Examples:
 Notes:
   - Copies only the npm package directories into a temporary repo snapshot.
   - Rewrites the staged package metadata to the target version.
-  - Publishes in dependency order: hash -> protocol -> sdk -> react -> adapters -> a4 -> mcp.
+  - Publishes in dependency order: hash -> protocol -> sdk -> react -> adapters -> automations -> a4 -> mcp.
   - Keeps the independently versioned hash and protocol packages at their
     checked-in versions.
   - Skips packages that are already published at that exact version.
@@ -220,6 +220,13 @@ fi
 copy_package_dir "$ROOT_DIR/typescript/react" "$STAGING_DIR/typescript/react"
 copy_package_dir "$ROOT_DIR/typescript/adapters/kit" "$STAGING_DIR/typescript/adapters/kit"
 copy_package_dir "$ROOT_DIR/typescript/adapters/web3js" "$STAGING_DIR/typescript/adapters/web3js"
+# Older release sources have no published @usearete/automations.
+AUTOMATIONS=""
+if [[ -f "$ROOT_DIR/typescript/automations/package.json" ]] \
+  && [[ "$(node -p "require('$ROOT_DIR/typescript/automations/package.json').private === true")" != "true" ]]; then
+  AUTOMATIONS=1
+  copy_package_dir "$ROOT_DIR/typescript/automations" "$STAGING_DIR/typescript/automations"
+fi
 copy_package_dir "$ROOT_DIR/packages/arete" "$STAGING_DIR/packages/arete"
 copy_package_dir "$ROOT_DIR/packages/mcp" "$STAGING_DIR/packages/mcp"
 
@@ -234,6 +241,11 @@ rewrite_package_lock "$STAGING_DIR/typescript/adapters/kit/package-lock.json" "$
 
 rewrite_package_json "$STAGING_DIR/typescript/adapters/web3js/package.json" "$VERSION" "^$VERSION"
 rewrite_package_lock "$STAGING_DIR/typescript/adapters/web3js/package-lock.json" "$VERSION" "^$VERSION"
+
+if [[ -n "$AUTOMATIONS" ]]; then
+  rewrite_package_json "$STAGING_DIR/typescript/automations/package.json" "$VERSION" "^$VERSION"
+  rewrite_package_lock "$STAGING_DIR/typescript/automations/package-lock.json" "$VERSION" "^$VERSION"
+fi
 
 rewrite_package_json "$STAGING_DIR/packages/arete/package.json" "$VERSION"
 rewrite_package_json "$STAGING_DIR/packages/mcp/package.json" "$VERSION"
@@ -274,6 +286,12 @@ fi
 publish_package "$STAGING_DIR/typescript/react" "@usearete/react" "npm install ../core --no-save --package-lock=false"
 publish_package "$STAGING_DIR/typescript/adapters/kit" "@usearete/adapter-kit" "npm install ../../core --no-save --package-lock=false"
 publish_package "$STAGING_DIR/typescript/adapters/web3js" "@usearete/adapter-web3js" "npm install ../../core --no-save --package-lock=false"
+if [[ -n "$AUTOMATIONS" ]]; then
+  # Staging drops dist, and the SDK is not rebuilt when it is already
+  # published: build it here so automations compiles against its types.
+  publish_package "$STAGING_DIR/typescript/automations" "@usearete/automations" \
+    "(cd ../core && npm ci && npm run build) && npm install ../core --no-save --package-lock=false"
+fi
 publish_package "$STAGING_DIR/packages/arete" "@usearete/a4"
 publish_package "$STAGING_DIR/packages/mcp" "@usearete/mcp"
 

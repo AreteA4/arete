@@ -5,11 +5,14 @@ step needs the user's signature, a backend prepares it, checks it against a
 signing policy and the user's consent, signs it with a delegated signer, and
 submits it. Arete never holds a key; the signer runs in your backend.
 
-> **Status:** complete, not yet published. Start with
-> [Automating steps for users](docs/automating-steps.md), the
-> [consent UX guide](docs/consent-ux.md) and the
-> [threat model](docs/threat-model.md); `examples/token-raise/` is a
-> complete backend.
+```bash
+npm install @usearete/automations @usearete/sdk
+```
+
+Start with [Automating steps for users](https://github.com/AreteA4/arete/blob/main/typescript/automations/docs/automating-steps.md), the
+[consent UX guide](https://github.com/AreteA4/arete/blob/main/typescript/automations/docs/consent-ux.md) and the
+[threat model](https://github.com/AreteA4/arete/blob/main/typescript/automations/docs/threat-model.md); [`examples/token-raise`](https://github.com/AreteA4/arete/tree/main/typescript/automations/examples/token-raise)
+is a complete backend.
 
 ## Use the least powerful mechanism
 
@@ -227,7 +230,7 @@ v0 until v1 message signing is verified. A Privy policy refusal ends the job
 `refused(provider_policy)`. Privy's policy sees top-level instructions only,
 so `unenforced` lists what it cannot bound, notably amounts a protocol
 program moves by CPI; see
-[docs/privy-policy-expressiveness.md](docs/privy-policy-expressiveness.md).
+[docs/privy-policy-expressiveness.md](https://github.com/AreteA4/arete/blob/main/typescript/automations/docs/privy-policy-expressiveness.md).
 
 ## The signing policy
 
@@ -262,7 +265,7 @@ if (refusal) throw new Error(`${refusal.rule}: ${refusal.reason}`);
   vectors in [`test-vectors/signer-policy/`](../../test-vectors/signer-policy/).
 
 What a wallet provider can enforce on its side is narrower; see
-[docs/privy-policy-expressiveness.md](docs/privy-policy-expressiveness.md).
+[docs/privy-policy-expressiveness.md](https://github.com/AreteA4/arete/blob/main/typescript/automations/docs/privy-policy-expressiveness.md).
 
 ## Signers
 

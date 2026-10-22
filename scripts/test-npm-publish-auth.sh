@@ -134,7 +134,7 @@ import json
 from pathlib import Path
 import sys
 source, target = map(Path, sys.argv[1:])
-for directory in ['typescript/core', 'typescript/hash', 'typescript/protocol', 'typescript/react', 'typescript/adapters/kit', 'typescript/adapters/web3js', 'packages/arete', 'packages/mcp']:
+for directory in ['typescript/core', 'typescript/hash', 'typescript/protocol', 'typescript/react', 'typescript/adapters/kit', 'typescript/adapters/web3js', 'typescript/automations', 'packages/arete', 'packages/mcp']:
     root = target / directory
     root.mkdir(parents=True)
     for name in ['package.json', 'package-lock.json']:
@@ -176,6 +176,7 @@ token_output="$(
 )"
 
 assert_contains "$token_output" "Using npm account: test-account"
+assert_contains "$token_output" "Publishing @usearete/automations@0.3.0"
 [[ -e "$WHOAMI_MARKER" ]]
 [[ -e "$PUBLISH_MARKER" ]]
 
@@ -189,5 +190,23 @@ legacy_output="$(
     "$VERSION_ROOT/scripts/publish-npm-version.sh" 0.3.0 --dry-run
 )"
 assert_contains "$legacy_output" "Using npm trusted publishing"
+
+# Sources from before @usearete/automations was public do not publish it.
+python3 - "$VERSION_ROOT/typescript/automations/package.json" <<'PYPRIVATE'
+import json
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+data = json.loads(path.read_text()); data['private'] = True
+path.write_text(json.dumps(data))
+PYPRIVATE
+private_output="$(
+  env PATH="$FAKE_BIN:$PATH" NPM_TOKEN="test-token" FAKE_CURL_STATUS=404 \
+    "$VERSION_ROOT/scripts/publish-npm-version.sh" 0.3.0 --dry-run
+)"
+if [[ "$private_output" == *"@usearete/automations"* ]]; then
+  printf 'A private automations package was published\n' >&2
+  exit 1
+fi
 
 printf 'npm publishing authentication tests passed\n'

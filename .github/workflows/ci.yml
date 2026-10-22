@@ -687,7 +687,14 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: typescript/automations/package-lock.json
+          cache-dependency-path: |
+            typescript/core/package-lock.json
+            typescript/automations/package-lock.json
+
+      # The lockfile links @usearete/sdk to ../core.
+      - name: Build core dependency
+        working-directory: typescript/core
+        run: npm ci && npm run build
 
       - name: Install dependencies
         run: npm ci
@@ -737,7 +744,14 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: typescript/automations/package-lock.json
+          cache-dependency-path: |
+            typescript/core/package-lock.json
+            typescript/automations/package-lock.json
+
+      # The lockfile links @usearete/sdk to ../core.
+      - name: Build core dependency
+        working-directory: typescript/core
+        run: npm ci && npm run build
 
       - name: Install dependencies
         run: npm ci

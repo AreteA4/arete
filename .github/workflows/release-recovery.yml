@@ -193,6 +193,18 @@ jobs:
             TYPESCRIPT_PROTOCOL_VERSION="$(jq -r '.version' typescript/protocol/package.json)"
             RELEASE_TAGS+=("arete-protocol-npm-v$TYPESCRIPT_PROTOCOL_VERSION")
           fi
+          # @usearete/automations is released with the linked versions from
+          # the first source that publishes it.
+          AUTOMATIONS=""
+          if [[ -f typescript/automations/package.json ]] \
+            && ! jq -e '.private == true' typescript/automations/package.json >/dev/null; then
+            AUTOMATIONS=1
+            if ! jq -e --arg version "$VERSION" '.version == $version' typescript/automations/package.json >/dev/null; then
+              echo "Expected typescript/automations/package.json to have version $VERSION"
+              exit 1
+            fi
+            RELEASE_TAGS+=("arete-automations-v$VERSION")
+          fi
 
           for tag in "${RELEASE_TAGS[@]}"; do
             gh release view "$tag" >/dev/null
@@ -220,6 +232,9 @@ jobs:
           )
           if [[ -n "$TYPESCRIPT_PROTOCOL_VERSION" ]]; then
             NPM_PACKAGES+=("@usearete/protocol|$TYPESCRIPT_PROTOCOL_VERSION")
+          fi
+          if [[ -n "$AUTOMATIONS" ]]; then
+            NPM_PACKAGES+=("@usearete/automations|$VERSION")
           fi
 
           for package_spec in "${NPM_PACKAGES[@]}"; do

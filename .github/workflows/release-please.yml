@@ -55,6 +55,7 @@ jobs:
       adapter_kit_version: ${{ steps.release.outputs['typescript/adapters/kit--version'] }}
       adapter_kit_release_created: ${{ steps.release.outputs['typescript/adapters/kit--release_created'] }}
       adapter_web3js_release_created: ${{ steps.release.outputs['typescript/adapters/web3js--release_created'] }}
+      automations_release_created: ${{ steps.release.outputs['typescript/automations--release_created'] }}
       python_release_created: ${{ steps.release.outputs['python/arete-sdk--release_created'] }}
       prs_created: ${{ steps.release.outputs.prs_created }}
       pr: ${{ steps.release.outputs.pr }}
@@ -291,7 +292,8 @@ jobs:
       needs.release-please.outputs.core_release_created == 'true' ||
       needs.release-please.outputs.react_release_created == 'true' ||
       needs.release-please.outputs.adapter_kit_release_created == 'true' ||
-      needs.release-please.outputs.adapter_web3js_release_created == 'true'
+      needs.release-please.outputs.adapter_web3js_release_created == 'true' ||
+      needs.release-please.outputs.automations_release_created == 'true'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -370,7 +372,8 @@ jobs:
           needs.release-please.outputs.core_release_created == 'true' ||
           needs.release-please.outputs.react_release_created == 'true' ||
           needs.release-please.outputs.adapter_kit_release_created == 'true' ||
-          needs.release-please.outputs.adapter_web3js_release_created == 'true'
+          needs.release-please.outputs.adapter_web3js_release_created == 'true' ||
+          needs.release-please.outputs.automations_release_created == 'true'
         run: npm ci
         working-directory: typescript/core
 
@@ -379,7 +382,8 @@ jobs:
           needs.release-please.outputs.core_release_created == 'true' ||
           needs.release-please.outputs.react_release_created == 'true' ||
           needs.release-please.outputs.adapter_kit_release_created == 'true' ||
-          needs.release-please.outputs.adapter_web3js_release_created == 'true'
+          needs.release-please.outputs.adapter_web3js_release_created == 'true' ||
+          needs.release-please.outputs.automations_release_created == 'true'
         run: npm run build
         working-directory: typescript/core
 
@@ -473,6 +477,42 @@ jobs:
         if: needs.release-please.outputs.adapter_web3js_release_created == 'true'
         run: ../../../scripts/publish-npm-package.sh .
         working-directory: typescript/adapters/web3js
+
+      # The lockfile links ../core, built above.
+      - name: Install automations dependencies
+        if: needs.release-please.outputs.automations_release_created == 'true'
+        run: npm ci
+        working-directory: typescript/automations
+
+      - name: Build automations
+        if: needs.release-please.outputs.automations_release_created == 'true'
+        run: npm run build
+        working-directory: typescript/automations
+
+      # The first publish creates the package with NPM_TOKEN; later ones
+      # use trusted publishing.
+      - name: Publish automations
+        if: needs.release-please.outputs.automations_release_created == 'true'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          status="$(curl --silent --show-error --retry 3 --output /dev/null --write-out '%{http_code}' 'https://registry.npmjs.org/@usearete%2fautomations')"
+          case "$status" in
+            200) env -u NPM_TOKEN -u NODE_AUTH_TOKEN ../../scripts/publish-npm-package.sh . ;;
+            404)
+              if [[ -z "${NPM_TOKEN:-}" ]]; then
+                echo "::error::The first @usearete/automations publish needs the NPM_TOKEN secret with package creation access"
+                exit 1
+              fi
+              NODE_AUTH_TOKEN="$NPM_TOKEN" ../../scripts/publish-npm-package.sh .
+              ;;
+            *)
+              echo "::error::Cannot tell whether @usearete/automations exists (HTTP $status)"
+              exit 1
+              ;;
+          esac
+        shell: bash
+        working-directory: typescript/automations
 
   bundle-templates:
     name: Bundle CLI Templates
