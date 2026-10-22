@@ -50,7 +50,8 @@ automations.start();            // a long-running worker, or `await automations.
 ```
 
 Each trigger becomes a **delivery job** that runs its handler. Each step
-request the handler returns becomes a **step job** (`${deliveryId}:${step}:${wallet}`),
+request the handler returns becomes a **step job** (`${deliveryId}:${step}:${wallet}`, plus
+`:${instance}` for a step on an instance),
 so rerunning a handler never doubles a step. A step job:
 
 1. is skipped without an active consent grant (`no_consent`) or inside its

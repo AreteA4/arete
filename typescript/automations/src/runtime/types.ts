@@ -91,7 +91,7 @@ export interface StepProgress {
 }
 
 interface JobBase {
-  /** Unique: the delivery id for a delivery job, `${deliveryId}:${step}:${wallet}` for a step job. */
+  /** Unique: the delivery id for a delivery job, {@link stepJobId} for a step job. */
   readonly id: string;
   readonly attempts: number;
   /** Not claimable before this time (milliseconds since the epoch). */
@@ -119,6 +119,12 @@ export interface StepJob extends JobBase {
 
 export type Job = DeliveryJob | StepJob;
 
-export function stepJobId(deliveryId: string, request: Pick<StepRequest, 'step' | 'wallet'>): string {
-  return `${deliveryId}:${request.step}:${request.wallet}`;
+/**
+ * A step job's id: `${deliveryId}:${step}:${wallet}`, then `:${instance}`
+ * for a step on an instance, so one trigger can run the same step for one
+ * wallet on several instances.
+ */
+export function stepJobId(deliveryId: string, request: Pick<StepRequest, 'step' | 'wallet' | 'instance'>): string {
+  const base = `${deliveryId}:${request.step}:${request.wallet}`;
+  return request.instance === undefined ? base : `${base}:${request.instance}`;
 }

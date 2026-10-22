@@ -107,7 +107,7 @@ describe('dispatch and handlers', () => {
     expect(h.outcomes[0]!.signatures[0]).toBeTypeOf('string');
     expect(h.fake.prepareCalls[0]!.options).toMatchObject({
       transactionFormat: 'v1',
-      idempotencyKey: `dispatch:tick-1:deposit:${ALICE}:0`,
+      idempotencyKey: `dispatch:tick-1:deposit:${ALICE}:inst-1:0`,
     });
     expect(h.fake.prepareCalls[0]!.input).toEqual({ amount: '1000', wallet: ALICE, instance: 'inst-1' });
   });
@@ -131,6 +131,26 @@ describe('dispatch and handlers', () => {
     await h.automations.drain();
     expect((await h.stepJobs()).map((job) => job.state)).toEqual(['completed', 'completed']);
     expect(h.fake.submitCalls).toHaveLength(2);
+  });
+
+  it('runs the same step for one wallet on several instances', async () => {
+    const h = harness();
+    await h.grant(ALICE);
+    h.automations.on('claims', (_payload, ctx) => [
+      ctx.step('claim', { wallet: ALICE, instance: 'inst-1' }),
+      ctx.step('claim', { wallet: ALICE, instance: 'inst-2' }),
+      ctx.step('claim', { wallet: ALICE, instance: 'inst-2' }),
+    ]);
+    await h.automations.dispatch('claims', {}, { id: 't' });
+    await h.automations.drain();
+    expect((await h.stepJobs()).map((job) => job.id)).toEqual([
+      `dispatch:t:claim:${ALICE}:inst-1`,
+      `dispatch:t:claim:${ALICE}:inst-2`,
+    ]);
+    expect(h.outcomes.map((outcome) => [outcome.instanceId, outcome.state])).toEqual([
+      ['inst-1', 'completed'],
+      ['inst-2', 'completed'],
+    ]);
   });
 
   it('retries a handler that throws, without duplicating step jobs', async () => {
