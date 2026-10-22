@@ -28,7 +28,7 @@ export type {
 export type { AuthorityFinding } from './policy/authority';
 export { decodeTransaction, TransactionDecodeError } from './policy/decode';
 export type { DecodedTransaction } from './policy/decode';
-export type { ProtocolSigner, SignTransactionsInput } from './signer/signer';
+export type { DelegationStatus, ProtocolSigner, SignTransactionsInput } from './signer/signer';
 export { DEFAULT_TRANSACTION_FORMATS, negotiateTransactionFormat } from './signer/format';
 export { checkPreparedAgainstIntent, checkSignedTransactions } from './signer/verify';
 export { SignerRefusal } from './signer/signer';
@@ -39,6 +39,9 @@ export type {
   AutomationOutcome,
   Automations,
   AutomationsOptions,
+  ConsentApi,
+  ConsentGrantInput,
+  ConsentProofRequest,
   ExpressLikeRequest,
   ExpressLikeResponse,
   Handler,
@@ -74,7 +77,20 @@ export type {
   AutomationStore,
   ClaimInput,
   ConsentGrant,
+  ConsentProof,
   ConsentQuery,
+  LedgerEntry,
   NewStepJob,
+  StoredConsentLimits,
   TransitionInput,
 } from './store/store';
+export {
+  CONSENT_PROOF_VERSION,
+  ConsentError,
+  consentMessage,
+  normalizeConsent,
+  SOL,
+  stepOutflows,
+  windowText,
+} from './consent/consent';
+export type { ConsentErrorCode, ConsentFields, ConsentLimits, NormalizedConsent } from './consent/consent';
