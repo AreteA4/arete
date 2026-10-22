@@ -304,6 +304,30 @@ describe('the step pipeline', () => {
   });
 });
 
+describe('the signer boundary', () => {
+  it('checks a signer against a baseline it could not change', async () => {
+    const sneaky: ProtocolSigner = {
+      ...walletsSigner(),
+      async signTransactions(input) {
+        const signed = await walletsSigner().signTransactions(input);
+        // Rewrite what it was given to match a changed result.
+        const changed = signed.map((transaction) => transaction.slice(0, -4) + 'AAAA');
+        (input.transactions as unknown as { transactionBase64: string }[]).forEach((transaction, index) => {
+          transaction.transactionBase64 = changed[index]!;
+        });
+        return changed;
+      },
+    };
+    const h = harness({}, { signer: sneaky });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.refused[0]).toMatchObject({ code: 'signer_modified' });
+    expect(h.fake.submitCalls).toHaveLength(0);
+  });
+});
+
 describe('expiry and reconciliation', () => {
   it('prepares an expired intent once more with a new idempotency key', async () => {
     const h = harness({ script: (key) => (key.endsWith(':0') ? ['expired'] : ['submitting', 'completed']) });
@@ -387,7 +411,7 @@ describe('expiry and reconciliation', () => {
     await h.automations.runOnce(); // the delivery
     void dying.runOnce(); // signs, then never saves
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect((await h.stepJobs())[0]).toMatchObject({ state: 'running', lease: { worker: 'dying' } });
+    expect((await h.stepJobs())[0]).toMatchObject({ state: 'running', lease: { worker: 'dying#1' } });
     h.clock.advance(61_000);
     await h.make('w2').drain();
     expect(h.fake.prepareCalls).toHaveLength(2);
@@ -420,6 +444,57 @@ describe('expiry and reconciliation', () => {
     }
     expect(jobs.map((job) => job.state)).toEqual(['completed', 'completed']);
     expect(h.fake.submitCalls).toHaveLength(2);
+  });
+
+  it("keeps a lapsed claim's late failure off the job another claim took over", async () => {
+    const gates: Array<() => void> = [];
+    const gate = () => new Promise<void>((resolve) => gates.push(resolve));
+    let prepares = 0;
+    const h = harness({
+      onPrepare: async () => {
+        prepares += 1;
+        if (prepares === 1) {
+          await gate();
+          throw new Error('the slow prepare finally fails');
+        }
+      },
+      onSubmit: async () => gate(),
+    });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.runOnce(); // the delivery
+    const slow = h.automations.runOnce(); // blocks in prepare
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    h.clock.advance(61_000); // its lease lapses
+    const taker = h.automations.runOnce(); // another loop of this process: signs, then blocks in submit
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const [during] = await h.stepJobs();
+    expect(during).toMatchObject({ state: 'signed', lease: { worker: expect.stringMatching(/#3$/) } });
+    gates[0]!(); // the slow claim fails now
+    await slow;
+    // It must not have parked or retried the job the other claim holds.
+    expect((await h.stepJobs())[0]).toMatchObject({ state: 'signed', attempts: 0, lease: { worker: during!.lease!.worker } });
+    gates[1]!();
+    await taker;
+    expect((await h.stepJobs())[0]!.state).toBe('completed');
+    expect(h.fake.submitCalls).toHaveLength(1);
+  });
+
+  it('refuses a store that belongs to another deployment', async () => {
+    const h = harness();
+    await h.automations.dispatch('x', {}, { id: '1' });
+    const other = fakeProtocol();
+    const foreign = createAutomations({
+      client: { ...other.client, deploymentId: 'dep-other' },
+      signer: walletsSigner(),
+      policy,
+      simulator: feeOnlySimulator,
+      store: h.store,
+      cluster: 'devnet',
+    });
+    await expect(foreign.runOnce()).rejects.toThrow('belongs to deployment dep-1');
+    await expect(foreign.dispatch('x', {}, { id: '2' })).rejects.toThrow('use one store per deployment');
   });
 
   it('never runs two step jobs of one wallet at once', async () => {
@@ -486,6 +561,25 @@ describe('webhooks and streams', () => {
     expect(h.outcomes[0]).toMatchObject({ state: 'completed', step: 'rebalance' });
   });
 
+  it('dedupes on the signed emission id, not the unsigned delivery header', async () => {
+    const h = harness();
+    await h.grant(ALICE);
+    h.automations.on('vault.rebalanceDue', (event, ctx) => [ctx.step('rebalance', { wallet: ALICE, instance: event.instanceId })]);
+    const body = payload();
+    const now = Math.floor(h.clock.now() / 1000);
+    expect((await h.automations.acceptWebhook(body, signed(body, now, 'dlv-1'), { secret: SECRET })).body).toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    // A replay of the same signed body under a new header id.
+    expect((await h.automations.acceptWebhook(body, signed(body, now, 'dlv-forged'), { secret: SECRET })).body).toEqual({
+      accepted: false,
+      duplicate: true,
+    });
+    await h.automations.drain();
+    expect(h.fake.submitCalls).toHaveLength(1);
+  });
+
   it('refuses forged, stale and malformed deliveries', async () => {
     const h = harness();
     h.automations.on('vault.rebalanceDue', () => []);
@@ -534,6 +628,41 @@ describe('webhooks and streams', () => {
     expect(reply).toMatchObject({ code: 500, body: { error: 'raw-body-required' } });
     await endpoint({ body: Buffer.from(body), headers: signed(body, Math.floor(h.clock.now() / 1000)) }, res);
     expect(reply).toEqual({ code: 200, body: { accepted: true, duplicate: false } });
+  });
+
+  it('retries a stream event whose accept failed, instead of dropping it', async () => {
+    const h = harness();
+    let failures = 2;
+    const flaky: AutomationStore = {
+      ...h.store,
+      deliveries: {
+        ...h.store.deliveries,
+        accept: async (delivery, now) => {
+          if (failures > 0) {
+            failures -= 1;
+            throw new Error('database restarting');
+          }
+          return h.store.deliveries.accept(delivery, now);
+        },
+      },
+    };
+    const automations = createAutomations({
+      client: h.fake.client,
+      signer: walletsSigner(),
+      policy,
+      simulator: feeOnlySimulator,
+      store: flaky,
+      cluster: 'devnet',
+      clock: h.clock,
+      onError: () => undefined,
+    });
+    automations.on('vault.rebalanceDue', () => []);
+    const subscription = automations.follow('inst-1');
+    h.fake.emit('vault.rebalanceDue', 7);
+    h.fake.emit('vault.rebalanceDue', 8);
+    for (let wait = 0; wait < 20; wait += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    subscription.close();
+    expect((await h.store.jobs.list({ kind: 'delivery' })).map((job) => job.id)).toEqual(['stream:inst-1:7', 'stream:inst-1:8']);
   });
 
   it('accepts emitted events from a followed instance once each', async () => {

@@ -265,6 +265,27 @@ export function runStoreConformance(
       expect((await store.consent.list({ wallet: 'alice' })).length).toBe(2);
     });
 
+    it('belongs to one deployment', async () => {
+      const store = await createStore();
+      await store.bindDeployment('dep-1');
+      await store.bindDeployment('dep-1');
+      let refused = false;
+      try {
+        await store.bindDeployment('dep-2');
+      } catch {
+        refused = true;
+      }
+      expect(refused).toBe(true);
+    });
+
+    it('treats a pruned delivery id whose job remains as a duplicate', async () => {
+      const store = await createStore();
+      await store.deliveries.accept(delivery('d1'), T0);
+      expect(await store.deliveries.prune(T0 + 1)).toBe(1);
+      expect(await store.deliveries.accept(delivery('d1'), T0 + 2)).toBe(false);
+      expect((await store.jobs.list({ kind: 'delivery' })).length).toBe(1);
+    });
+
     it('prunes old deliveries and finished jobs only', async () => {
       const store = await createStore();
       await seedSteps(store, 'd1', [step('d1', 'alice'), step('d1', 'bob')]);
