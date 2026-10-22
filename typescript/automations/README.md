@@ -6,8 +6,8 @@ signing policy and the user's consent, signs it with a delegated signer, and
 submits it. Arete never holds a key; the signer runs in your backend.
 
 > **Status:** in development and not yet published. The signing policy,
-> signers, runtime, consent and view sources are here; the Postgres store
-> and the Privy adapter follow.
+> signers, runtime, consent, view sources and the Postgres store are here;
+> the Privy adapter and a reference example follow.
 
 ## Use the least powerful mechanism
 
@@ -156,6 +156,33 @@ restart, a change made while every replica was down fires once; A → B → A
 → B fires three times. A value that changed and changed back while nothing
 was watching is not seen. A trigger means "go and look": handlers read live
 state before returning steps.
+
+## The Postgres store
+
+```ts
+import { postgresStore } from '@usearete/automations/postgres';
+
+const store = postgresStore(pool);            // your pg Pool; opens no connections of its own
+await store.migrate();                        // once, from a deploy step, with a role that may create tables
+```
+
+- Everything lives in one schema, `arete_automation` by default
+  (`postgresStore(pool, { schema })`). Nothing outside it is created,
+  altered or read.
+- Migrations never run at startup. Run `store.migrate()` (transactional,
+  behind an advisory lock, so concurrent callers run one at a time), or
+  export the SQL for your own tool:
+  `npx arete-automations migrations --out db/migrations`. A store whose
+  database is behind refuses to run (`SchemaVersionError`).
+- Use two roles: one that migrates, and a runtime role limited to rows.
+  `npx arete-automations grants --role app_runtime` prints its grants.
+- A `pg.Pool` is detected; for another pool adapter pass
+  `postgresStore(pool, { executor: 'pool' })`.
+- Pass a client instead of a pool to write inside your own transaction, for
+  example a consent grant with the user record:
+  `store.using(client).consent.put(grant)`.
+- Jobs are claimed with `FOR UPDATE SKIP LOCKED`; a partial unique index
+  keeps one active step per wallet. Tested on Postgres 15, 16 and 17.
 
 ## The signing policy
 
