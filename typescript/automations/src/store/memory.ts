@@ -13,7 +13,7 @@ import {
   TERMINAL_DELIVERY_STATES,
   TERMINAL_STEP_STATES,
 } from '../runtime/types';
-import { type AutomationStore, type ConsentGrant, type LedgerEntry, type NewStepJob, StoreDeploymentError, type TransitionInput } from './store';
+import { type AutomationStore, type ConsentGrant, type LedgerEntry, type NewStepJob, type SourceState, StoreDeploymentError, type TransitionInput, cursorAfter } from './store';
 
 function isActiveStep(job: Job): boolean {
   return job.kind === 'step' && (ACTIVE_STEP_STATES as readonly string[]).includes(job.state);
@@ -38,10 +38,34 @@ export function memoryStore(): AutomationStore {
   let deployment: string | null = null;
   const nonces = new Map<string, { expiresAt: number; used: boolean }>();
   const ledger: LedgerEntry[] = [];
+  const sourceStates = new Map<string, SourceState>();
+  const cursors = new Map<string, string>();
+  const sourceLeases = new Map<string, { holder: string; until: number }>();
 
   const insert = (job: Job) => {
     jobs.set(job.id, job);
     sequence.set(job.id, order++);
+  };
+
+  const acceptNow = (delivery: Delivery, now: number) => {
+    if (deliveries.has(delivery.id)) return false;
+    // Clone first: a value that cannot be stored leaves the store unchanged.
+    const copy = clone(delivery);
+    deliveries.set(delivery.id, now);
+    if (jobs.has(delivery.id)) return false;
+    insert({
+      kind: 'delivery',
+      id: delivery.id,
+      state: 'queued',
+      delivery: copy,
+      attempts: 0,
+      notBefore: now,
+      lease: null,
+      createdAt: now,
+      updatedAt: now,
+      outcome: null,
+    });
+    return true;
   };
 
   const walletBusy = (wallet: string, except: string) => {
@@ -69,24 +93,7 @@ export function memoryStore(): AutomationStore {
     },
     deliveries: {
       async accept(delivery: Delivery, now: number) {
-        if (deliveries.has(delivery.id)) return false;
-        // Clone first: a value that cannot be stored leaves the store unchanged.
-        const copy = clone(delivery);
-        deliveries.set(delivery.id, now);
-        if (jobs.has(delivery.id)) return false;
-        insert({
-          kind: 'delivery',
-          id: delivery.id,
-          state: 'queued',
-          delivery: copy,
-          attempts: 0,
-          notBefore: now,
-          lease: null,
-          createdAt: now,
-          updatedAt: now,
-          outcome: null,
-        });
-        return true;
+        return acceptNow(delivery, now);
       },
       async prune(before: number) {
         let removed = 0;
@@ -276,6 +283,59 @@ export function memoryStore(): AutomationStore {
         if (!issued || issued.used || issued.expiresAt <= now) return false;
         nonces.set(nonce, { ...issued, used: true });
         return true;
+      },
+    },
+    sources: {
+      async get(source, key) {
+        const state = sourceStates.get(`${source}\u0000${key}`);
+        return state ? clone(state) : null;
+      },
+      async advance({ source, key, expectedVersion, next, deliver, now }) {
+        const id = `${source}\u0000${key}`;
+        const current = sourceStates.get(id) ?? null;
+        if ((current?.version ?? null) !== expectedVersion) return null;
+        const generation = (current?.generation ?? 0) + (current?.hash === next.hash ? 0 : 1);
+        const state: SourceState = {
+          source,
+          key,
+          hash: next.hash,
+          value: clone(next.value),
+          generation,
+          pending: next.pending ? clone(next.pending) : null,
+          observed: next.observed ?? null,
+          version: (current?.version ?? 0) + 1,
+          updatedAt: now,
+        };
+        // Copy everything before changing anything: a payload that cannot be
+        // stored must leave the source state as it was, or the trigger is lost.
+        const delivery: Delivery | null = deliver
+          ? {
+              id: `view:${encodeURIComponent(source)}:${encodeURIComponent(key)}:${generation}`,
+              name: deliver.name,
+              source: 'view',
+              payload: clone(deliver.payload),
+              receivedAt: now,
+            }
+          : null;
+        const result = clone(state);
+        sourceStates.set(id, state);
+        if (delivery) acceptNow(delivery, now);
+        return result;
+      },
+      async cursor(source) {
+        return cursors.get(source) ?? null;
+      },
+      async putCursor(source, cursor) {
+        if (cursorAfter(cursor, cursors.get(source) ?? null)) cursors.set(source, cursor);
+      },
+      async acquireLease(source, holder, until, now) {
+        const lease = sourceLeases.get(source);
+        if (lease && lease.holder !== holder && lease.until > now) return false;
+        sourceLeases.set(source, { holder, until });
+        return true;
+      },
+      async releaseLease(source, holder) {
+        if (sourceLeases.get(source)?.holder === holder) sourceLeases.delete(source);
       },
     },
     ledger: {

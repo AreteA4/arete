@@ -361,6 +361,122 @@ export function runStoreConformance(
       expect((await store.ledger.list({ wallet: 'alice' }))[0]!.voidedAt).toBe(T0 + 20);
     });
 
+    it('advances view-source state by compare-and-set', async () => {
+      const store = await createStore();
+      const advance = (expectedVersion: number | null, hash: string, deliver = false) =>
+        store.sources.advance({
+          source: 'rates',
+          key: 'all',
+          expectedVersion,
+          next: { hash, value: { best: hash }, pending: null },
+          now: T0,
+          ...(deliver ? { deliver: { name: 'rates', payload: { best: hash } } } : {}),
+        });
+      expect(await store.sources.get('rates', 'all')).toBeNull();
+      const first = await advance(null, 'a', true);
+      expect(first).toEqual({
+        source: 'rates',
+        key: 'all',
+        hash: 'a',
+        value: { best: 'a' },
+        generation: 1,
+        pending: null,
+        observed: null,
+        version: 1,
+        updatedAt: T0,
+      });
+      expect(await advance(null, 'b')).toBeNull();
+      // The same stable hash keeps the generation; a new one moves it on.
+      expect((await advance(1, 'a'))?.generation).toBe(1);
+      expect((await advance(2, 'b', true))?.generation).toBe(2);
+      expect((await advance(3, 'a', true))?.generation).toBe(3);
+      const ids = (await store.jobs.list({ kind: 'delivery' })).map((job) => job.id);
+      expect(ids).toEqual(['view:rates:all:1', 'view:rates:all:2', 'view:rates:all:3']);
+      const [job] = await store.jobs.list({ kind: 'delivery' });
+      expect(job!.kind === 'delivery' && job!.delivery).toEqual({
+        id: 'view:rates:all:1',
+        name: 'rates',
+        source: 'view',
+        payload: { best: 'a' },
+        receivedAt: T0,
+      });
+    });
+
+    it('gives different sources and keys different delivery ids', async () => {
+      const store = await createStore();
+      const deliver = (source: string, key: string) =>
+        store.sources.advance({
+          source,
+          key,
+          expectedVersion: null,
+          next: { hash: 'a', value: 1, pending: null },
+          deliver: { name: source, payload: key },
+          now: T0,
+        });
+      await deliver('rates:wallet', 'alice');
+      await deliver('rates', 'wallet:alice');
+      expect((await store.jobs.list({ kind: 'delivery' })).length).toBe(2);
+    });
+
+    it('lets one of several concurrent writers advance a source key', async () => {
+      const store = await createStore();
+      await store.sources.advance({ source: 's', key: 'k', expectedVersion: null, next: { hash: 'a', value: 1, pending: null }, now: T0 });
+      const results = await Promise.all(
+        ['b', 'c', 'd', 'e'].map((hash) =>
+          store.sources.advance({
+            source: 's',
+            key: 'k',
+            expectedVersion: 1,
+            next: { hash, value: hash, pending: null },
+            deliver: { name: 's', payload: hash },
+            now: T0,
+          }),
+        ),
+      );
+      expect(results.filter((result) => result !== null).length).toBe(1);
+      expect((await store.jobs.list({ kind: 'delivery' })).length).toBe(1);
+    });
+
+    it('keeps a pending value and source cursors', async () => {
+      const store = await createStore();
+      const pending = { hash: 'b', value: 'B', since: T0 + 5 };
+      await store.sources.advance({ source: 's', key: 'k', expectedVersion: null, next: { hash: '', value: null, pending }, now: T0 });
+      expect((await store.sources.get('s', 'k'))?.pending).toEqual(pending);
+      expect(await store.sources.cursor('tape')).toBeNull();
+      await store.sources.putCursor('tape', '1:4', T0);
+      await store.sources.putCursor('tape', '1:9', T0);
+      expect(await store.sources.cursor('tape')).toBe('1:9');
+      // A slow replica never moves the cursor back within an epoch.
+      await store.sources.putCursor('tape', '1:5', T0);
+      expect(await store.sources.cursor('tape')).toBe('1:9');
+      await store.sources.putCursor('tape', '1:10', T0);
+      expect(await store.sources.cursor('tape')).toBe('1:10');
+      // A new epoch is a new tape lifetime: it always moves on.
+      await store.sources.putCursor('tape', '2:0', T0);
+      expect(await store.sources.cursor('tape')).toBe('2:0');
+      // Real epochs are UUIDs; offsets compare within one, and a new epoch moves on.
+      const epoch = '0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b';
+      await store.sources.putCursor('uuid-tape', `${epoch}:4210`, T0);
+      await store.sources.putCursor('uuid-tape', `${epoch}:4209`, T0);
+      expect(await store.sources.cursor('uuid-tape')).toBe(`${epoch}:4210`);
+      await store.sources.putCursor('uuid-tape', `${epoch}:4300`, T0);
+      await store.sources.putCursor('uuid-tape', '7d1e0b2a-0000-4000-8000-000000000000:0', T0);
+      expect(await store.sources.cursor('uuid-tape')).toBe('7d1e0b2a-0000-4000-8000-000000000000:0');
+    });
+
+    it('holds a source lease for one holder until it lapses or is released', async () => {
+      const store = await createStore();
+      expect(await store.sources.acquireLease('s', 'w1', T0 + 100, T0)).toBe(true);
+      expect(await store.sources.acquireLease('s', 'w2', T0 + 100, T0 + 50)).toBe(false);
+      expect(await store.sources.acquireLease('s', 'w1', T0 + 200, T0 + 50)).toBe(true);
+      expect(await store.sources.acquireLease('s', 'w2', T0 + 300, T0 + 150)).toBe(false);
+      expect(await store.sources.acquireLease('s', 'w2', T0 + 300, T0 + 201)).toBe(true);
+      await store.sources.releaseLease('s', 'w1');
+      expect(await store.sources.acquireLease('s', 'w1', T0 + 400, T0 + 202)).toBe(false);
+      await store.sources.releaseLease('s', 'w2');
+      expect(await store.sources.acquireLease('s', 'w1', T0 + 400, T0 + 203)).toBe(true);
+    });
+
     it('keeps the ledger entries of the assets a void keeps', async () => {
       const store = await createStore();
       await seedSteps(store, 'd1', [step('d1', 'alice')]);

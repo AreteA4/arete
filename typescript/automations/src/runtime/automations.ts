@@ -10,6 +10,7 @@ import type {
   ProtocolStepAvailability,
   ProtocolTransactionFormat,
   ProtocolTypeMap,
+  RichUpdate,
 } from '@usearete/sdk';
 
 import { ed25519 } from '@noble/curves/ed25519';
@@ -32,6 +33,7 @@ import { DEFAULT_TRANSACTION_FORMATS, negotiateTransactionFormat } from '../sign
 import type { ProtocolSigner } from '../signer/signer';
 import { isSignerRefusal } from '../signer/signer';
 import { checkPreparedAgainstIntent, checkSignedTransactions } from '../signer/verify';
+import { type AppendSource, type AppendTrigger, evaluateSignal, type ListSource, type ViewSource } from '../sources/view';
 import type { AutomationStore, ConsentGrant, NewStepJob } from '../store/store';
 import { type Clock, type Duration, durationMs, systemClock } from './time';
 import {
@@ -239,12 +241,25 @@ export interface Automations<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
   acceptWebhook(body: string | Uint8Array, headers: WebhookHeadersLike, options: WebhookHandlerOptions): Promise<WebhookResult>;
   /** Follow one instance's event stream and accept its events. */
   follow(instanceId: string, options?: { lastEventId?: string; signal?: AbortSignal }): ProtocolEventSubscription;
+  /**
+   * Watch a view source and accept its triggers until `stop()`. With
+   * `exclusive`, only the replica holding the source's lease subscribes
+   * (the compare-and-set already makes several subscribers correct; the
+   * lease only saves bandwidth).
+   */
+  source(source: ViewSource, options?: { exclusive?: boolean }): SourceHandle;
+  /** Read a list-view source's snapshot once and accept what changed (for a serverless cron). */
+  poll(source: ListSource): Promise<{ delivered: number; pending: number }>;
   /** Claim and run one job. `false` when none was ready. */
   runOnce(): Promise<boolean>;
   /** Run jobs until none is ready (or `maxJobs` ran). Returns how many ran. */
   drain(options?: { maxJobs?: number }): Promise<number>;
   /** Run jobs in the background until `stop()`. */
   start(options?: { pollInterval?: Duration; concurrency?: number }): void;
+  stop(): Promise<void>;
+}
+
+export interface SourceHandle {
   stop(): Promise<void>;
 }
 
@@ -935,6 +950,333 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   let running = false;
   let loops: Promise<void>[] = [];
 
+  // -------------------------------------------------------------------------
+  // View sources
+  // -------------------------------------------------------------------------
+
+  const ENDED = Symbol('ended');
+
+  /** One watch attempt: its iterator, and a promise that settles when it ends. */
+  interface WatchAttempt {
+    active: boolean;
+    iterator?: AsyncIterator<unknown>;
+    ended: Promise<typeof ENDED>;
+    end: () => void;
+  }
+
+  const newAttempt = (): WatchAttempt => {
+    let end = () => undefined as void;
+    const ended = new Promise<typeof ENDED>((resolve) => {
+      end = () => resolve(ENDED);
+    });
+    return { active: true, ended, end };
+  };
+
+  /** Close an attempt: no further work of it runs, and its stream is closed. */
+  const closeAttempt = async (attempt: WatchAttempt) => {
+    attempt.active = false;
+    attempt.end();
+    const iterator = attempt.iterator;
+    attempt.iterator = undefined;
+    try {
+      await iterator?.return?.();
+    } catch {
+      // Closing a stream that already failed.
+    }
+  };
+
+  /** `promise`, unless the attempt ends first. */
+  const within = <T>(attempt: WatchAttempt, promise: Promise<T>): Promise<T | typeof ENDED> =>
+    Promise.race([promise, attempt.ended]);
+
+  const watchList = async (source: ListSource, attempt: WatchAttempt) => {
+    // Signals are evaluated against the rows as of each event, in order.
+    const latest = new Map<string, [unknown, bigint | null]>();
+    const rowsByKey = new Map<string, unknown>();
+    let rows: readonly unknown[] = [];
+    const waiting = new Set<string>();
+    const current = (key: string): [unknown, bigint | null] | undefined => {
+      if (source.rowSignal) return latest.get(key);
+      const signal = source.signals(rows).find(([candidate]) => candidate === key);
+      return signal ? [signal[1], signal[2]] : undefined;
+    };
+    const evaluate = async (key: string, value: unknown, observed: bigint | null): Promise<void> => {
+      const result = await evaluateSignal(store, clock, source, key, value, observed);
+      if (result === 'pending' && !waiting.has(key)) {
+        waiting.add(key);
+        void clock.sleep(source.stableForMs).then(() => settle(key));
+      }
+    };
+    // A pending value is promoted when its timer fires; a failed write is
+    // retried until it lands or the attempt ends.
+    const settle = async (key: string) => {
+      waiting.delete(key);
+      for (let failures = 0; attempt.active; failures += 1) {
+        const signal = current(key);
+        if (!signal) return;
+        try {
+          await evaluate(key, signal[0], signal[1]);
+          return;
+        } catch (error) {
+          report(error, { phase: 'source' });
+          if ((await within(attempt, clock.sleep(backoff(failures + 1)))) === ENDED) return;
+        }
+      }
+    };
+    // Read the stream into a local, unbounded queue from the moment it opens:
+    // the SDK's own buffer is bounded and drops list updates silently.
+    const iterator = source.view.watchRich({ withSnapshot: true })[Symbol.asyncIterator]();
+    attempt.iterator = iterator;
+    const queued: RichUpdate<unknown>[] = [];
+    const waiter: { wake: (() => void) | null } = { wake: null };
+    let finished = false;
+    let failure: unknown = null;
+    void (async () => {
+      try {
+        for (;;) {
+          const next = await within(attempt, iterator.next());
+          if (next === ENDED || next.done) break;
+          queued.push(next.value);
+          waiter.wake?.();
+        }
+      } catch (error) {
+        failure = error;
+      } finally {
+        finished = true;
+        waiter.wake?.();
+      }
+    })();
+    const take = async (): Promise<RichUpdate<unknown> | null> => {
+      while (queued.length === 0 && !finished) {
+        await new Promise<void>((resolve) => {
+          waiter.wake = resolve;
+        });
+        waiter.wake = null;
+      }
+      const update = queued.shift();
+      if (update !== undefined) return update;
+      if (failure !== null) throw failure;
+      return null;
+    };
+    // Seed from the complete current rows: a query that is already open
+    // replays nothing on a new stream, so the stream alone cannot be the
+    // baseline.
+    const snapshot = await within(attempt, source.view.get());
+    if (snapshot === ENDED || !attempt.active) return;
+    const rowKeys = new Map<string, string>();
+    for (const row of snapshot) rowsByKey.set(source.rowKey(row), row);
+    /** Apply an update; the row it leaves, or `undefined` for a removal. */
+    /** A row's signal is forgotten, so no pending `stableFor` change of it can still fire. */
+    const forget = (key: string) => {
+      rowsByKey.delete(key);
+      latest.delete(key);
+    };
+    // A removal of a row the stream never announced (seeded from the
+    // snapshot) that carries no `lastKnown`: its key cannot be derived.
+    let unmatchedRemoval = false;
+    /** Apply an update: the row and its key, or `undefined` for a removal. */
+    const apply = (update: RichUpdate<unknown>): { row: unknown; key: string } | undefined => {
+      if (update.type === 'created' || update.type === 'updated') {
+        const row = update.type === 'created' ? update.data : update.after;
+        const key = source.rowKey(row);
+        rowKeys.set(update.key, key);
+        rowsByKey.set(key, row);
+        return { row, key };
+      }
+      const key = update.lastKnown !== undefined ? source.rowKey(update.lastKnown) : rowKeys.get(update.key);
+      if (key !== undefined) forget(key);
+      else unmatchedRemoval = true;
+      rowKeys.delete(update.key);
+      return undefined;
+    };
+    /** Drop the rows the view no longer has, reading it when it has no synchronous copy. */
+    const reconcileRemoval = async (): Promise<boolean> => {
+      unmatchedRemoval = false;
+      const current = source.view.getSync?.() ?? (await within(attempt, source.view.get()));
+      if (current === ENDED) return false;
+      const present = new Set(current.map((row) => source.rowKey(row)));
+      for (const key of [...rowsByKey.keys()]) if (!present.has(key)) forget(key);
+      return true;
+    };
+    /**
+     * After a reconnect the SDK replaces the list with a new snapshot and
+     * announces only the rows still present; drop the ones the view no
+     * longer has.
+     */
+    const pruneGone = (): number => {
+      const current = source.view.getSync?.();
+      if (!current) return 0;
+      const present = new Set(current.map((row) => source.rowKey(row)));
+      let removed = 0;
+      for (const key of [...rowsByKey.keys()]) {
+        if (!present.has(key)) {
+          forget(key);
+          removed += 1;
+        }
+      }
+      return removed;
+    };
+    const rowJson = (row: unknown) => JSON.stringify(row, (_key, value) => (typeof value === 'bigint' ? value.toString() : value));
+    // Rows a reconnect's rebuild already took in, until the stream announces them.
+    const resynced = new Map<string, string>();
+    // Let the reader drain what the stream already delivered (buffered
+    // events resolve as microtasks, before this timer), then apply it in order
+    // without evaluating: it is already reflected in the snapshot, and
+    // replaying it leaves every row at its latest value.
+    if ((await within(attempt, new Promise<void>((resolve) => setTimeout(resolve, 0)))) === ENDED) return;
+    while (queued.length > 0) apply(queued.shift()!);
+    // A removal that arrived after the snapshot was read may name a row only
+    // the snapshot holds.
+    if (unmatchedRemoval && !(await reconcileRemoval())) return;
+    rows = [...rowsByKey.values()];
+    for (const [key, value, observed] of source.signals(rows)) {
+      if (!attempt.active) return;
+      if (source.rowSignal) latest.set(key, [value, observed]);
+      await evaluate(key, value, observed);
+    }
+    while (attempt.active) {
+      const update = await take();
+      if (update === null || !attempt.active) return;
+      if (!source.rowSignal && update.type === 'created') {
+        const key = source.rowKey(update.data);
+        if (resynced.get(key) === rowJson(update.data)) {
+          // Part of a reconnect already evaluated as a whole.
+          resynced.delete(key);
+          rowKeys.set(update.key, key);
+          continue;
+        }
+        const announcedAgain = rowsByKey.has(key);
+        apply(update);
+        const current = source.view.getSync?.();
+        if ((announcedAgain || pruneGone() > 0) && current) {
+          // A reconnect: the SDK replaced the whole list and now announces it
+          // row by row. Evaluate the new list once, as a whole, not a mix of
+          // old and new rows.
+          rowsByKey.clear();
+          resynced.clear();
+          for (const row of current) {
+            const rowKey = source.rowKey(row);
+            rowsByKey.set(rowKey, row);
+            if (rowKey !== key) resynced.set(rowKey, rowJson(row));
+          }
+        }
+        rows = [...rowsByKey.values()];
+        for (const [signalKey, value, observed] of source.signals(rows)) {
+          if (!attempt.active) return;
+          await evaluate(signalKey, value, observed);
+        }
+        continue;
+      }
+      const applied = apply(update);
+      if (update.type === 'created') pruneGone();
+      if (unmatchedRemoval && !(await reconcileRemoval())) return;
+      rows = [...rowsByKey.values()];
+      if (source.rowSignal) {
+        if (applied === undefined) continue;
+        const signal = source.rowSignal(applied.row);
+        if (!signal) {
+          // It no longer passes the filter: its old signal must not fire.
+          latest.delete(applied.key);
+          continue;
+        }
+        latest.set(signal[0], [signal[1], signal[2]]);
+        await evaluate(signal[0], signal[1], signal[2]);
+        continue;
+      }
+      for (const [key, value, observed] of source.signals(rows)) {
+        if (!attempt.active) return;
+        await evaluate(key, value, observed);
+      }
+    }
+  };
+
+  const watchAppend = async (source: AppendSource, attempt: WatchAttempt) => {
+    const cursor = await within(attempt, store.sources.cursor(source.name));
+    if (cursor === ENDED || !attempt.active) return;
+    const iterator = source.view.watch(cursor ? { after: cursor } : {})[Symbol.asyncIterator]();
+    attempt.iterator = iterator;
+    while (attempt.active) {
+      const next = await within(attempt, iterator.next());
+      if (next === ENDED || next.done || !attempt.active) return;
+      const update = next.value;
+      if (update.type !== 'upsert') continue;
+      if (!update.cursor) throw new Error(`${source.name}: the view is not an append view (its updates carry no cursor)`);
+      if (!source.filter || source.filter(update.data)) {
+        const payload: AppendTrigger = { source: source.name, cursor: update.cursor, row: update.data };
+        await accept({
+          id: `view:${encodeURIComponent(source.name)}:${update.cursor}`,
+          name: source.name,
+          source: 'view',
+          payload,
+        });
+      }
+      await store.sources.putCursor(source.name, update.cursor, clock.now());
+    }
+  };
+
+  const startSource = (source: ViewSource, sourceOptions: { exclusive?: boolean } = {}): SourceHandle => {
+    let stopped = false;
+    const stopping = newAttempt();
+    let attempt: WatchAttempt | null = null;
+    let holding = !sourceOptions.exclusive;
+    const pause = (ms: number) => within(stopping, clock.sleep(ms));
+    const acquire = async () => {
+      try {
+        return await store.sources.acquireLease(source.name, worker, clock.now() + leaseMs, clock.now());
+      } catch (error) {
+        report(error, { phase: 'source' });
+        return false;
+      }
+    };
+    const keepLease = async () => {
+      while (!stopped && holding) {
+        if ((await pause(Math.max(1, Math.floor(leaseMs / 3)))) === ENDED) return;
+        holding = await acquire();
+        if (!holding && attempt) await closeAttempt(attempt);
+      }
+    };
+    const loop = (async () => {
+      let failures = 0;
+      while (!stopped) {
+        if (sourceOptions.exclusive && !holding) {
+          holding = await acquire();
+          if (!holding) {
+            await pause(Math.max(1, Math.floor(leaseMs / 2)));
+            continue;
+          }
+          void keepLease();
+        }
+        const current = newAttempt();
+        attempt = current;
+        try {
+          await bound();
+          if (source.kind === 'list') await watchList(source, current);
+          else await watchAppend(source, current);
+          failures = 0;
+        } catch (error) {
+          if (!stopped) {
+            report(error, { phase: 'source' });
+            failures += 1;
+          }
+        } finally {
+          await closeAttempt(current);
+        }
+        if (!stopped) await pause(failures > 0 ? backoff(failures) : Math.min(reconcileMs, 1000));
+      }
+    })();
+    return {
+      async stop() {
+        stopped = true;
+        stopping.end();
+        if (attempt) await closeAttempt(attempt);
+        await loop;
+        if (sourceOptions.exclusive) {
+          await store.sources.releaseLease(source.name, worker).catch((error: unknown) => report(error, { phase: 'source' }));
+        }
+      },
+    };
+  };
+
   const domain = () => {
     if (!options.consent?.domain) {
       throw new ConsentError('no_domain', 'createAutomations needs consent.domain to build consent proofs');
@@ -1114,6 +1456,19 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
           subscription.close();
         },
       };
+    },
+    source: startSource,
+    async poll(source) {
+      if (source.kind !== 'list') throw new TypeError('only list-view sources can be polled');
+      await bound();
+      let delivered = 0;
+      let pending = 0;
+      for (const [key, value, observed] of source.signals(await source.view.get())) {
+        const result = await evaluateSignal(store, clock, source, key, value, observed);
+        if (result === 'delivered') delivered += 1;
+        if (result === 'pending') pending += 1;
+      }
+      return { delivered, pending };
     },
     runOnce,
     async drain(drainOptions = {}) {
