@@ -16,7 +16,7 @@ import {
   TERMINAL_DELIVERY_STATES,
   TERMINAL_STEP_STATES,
 } from '../runtime/types';
-import { type AutomationStore, type ConsentGrant, type LedgerEntry, type SourceState, StoreDeploymentError } from '../store/store';
+import { type AutomationStore, type ConsentGrant, type LedgerEntry, parseCursor, type SourceState, StoreDeploymentError } from '../store/store';
 import { DEFAULT_SCHEMA, LATEST_SCHEMA_VERSION, MIGRATIONS, quoted, validSchema } from './migrations';
 
 /** What the store needs from a `pg` Pool or Client (or anything with the same `query`). */
@@ -73,7 +73,6 @@ export class SchemaVersionError extends Error {
 }
 
 const UNIQUE_VIOLATION = '23505';
-const UNDEFINED_TABLE = '42P01';
 const ACTIVE = `('${ACTIVE_STEP_STATES.join("', '")}')`;
 const FINISHED = `('${[...TERMINAL_STEP_STATES, ...TERMINAL_DELIVERY_STATES].join("', '")}')`;
 
@@ -186,13 +185,12 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
   };
 
   const schemaVersion = async (): Promise<number> => {
-    try {
-      const { rows } = await executor.query(`SELECT coalesce(max(version), 0) AS version FROM ${s}.schema_migrations`);
-      return num(rows[0]?.version ?? 0);
-    } catch (error) {
-      if (code(error) === UNDEFINED_TABLE || code(error) === '3F000') return 0;
-      throw error;
-    }
+    // Look the table up first: querying a missing one would raise an error
+    // that leaves a caller's transaction aborted.
+    const { rows: found } = await executor.query('SELECT to_regclass($1) IS NOT NULL AS present', [`${s}.schema_migrations`]);
+    if (!found[0]?.present) return 0;
+    const { rows } = await executor.query(`SELECT coalesce(max(version), 0) AS version FROM ${s}.schema_migrations`);
+    return num(rows[0]?.version ?? 0);
   };
 
   const checkVersion = async () => {
@@ -592,10 +590,16 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
       },
       async putCursor(source, cursor, now) {
         await ready();
+        const order = parseCursor(cursor);
+        if (!order) throw new TypeError(`'${cursor}' is not an {epoch}:{offset} cursor`);
+        // Only forward, atomically: a slow replica never rewinds the source.
         await executor.query(
           `INSERT INTO ${s}.source_cursors (source, cursor, updated_at) VALUES ($1, $2, $3)
-           ON CONFLICT (source) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at`,
-          [source, cursor, now],
+           ON CONFLICT (source) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at
+           WHERE ${s}.source_cursors.cursor !~ '^[0-9]+:[0-9]+$'
+              OR (split_part(${s}.source_cursors.cursor, ':', 1)::numeric, split_part(${s}.source_cursors.cursor, ':', 2)::numeric)
+                 < ($4::numeric, $5::numeric)`,
+          [source, cursor, now, order[0].toString(), order[1].toString()],
         );
       },
       async acquireLease(source, holder, until, now) {

@@ -222,6 +222,21 @@ suite('postgresStore: transactions and concurrency', () => {
     expect(job.progress).toEqual({ generation: 1, signatures: [null] });
   });
 
+  it("checks the version without aborting a caller's transaction", async () => {
+    const store = postgresStore(pool, { schema: freshSchema() });
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      expect(await store.using(client).schemaVersion()).toBe(0);
+      await store.using(client).migrate();
+      expect(await store.using(client).schemaVersion()).toBe(LATEST_SCHEMA_VERSION);
+      await client.query('COMMIT');
+    } finally {
+      client.release();
+    }
+    expect(await store.schemaVersion()).toBe(LATEST_SCHEMA_VERSION);
+  });
+
   it('writes inside the caller transaction and rolls back with it', async () => {
     const store = await migratedStore();
     const client = await pool.connect();
