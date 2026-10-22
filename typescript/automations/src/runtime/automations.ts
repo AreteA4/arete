@@ -1090,12 +1090,22 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
      * announces only the rows still present; drop the ones the view no
      * longer has.
      */
-    const pruneGone = () => {
+    const pruneGone = (): number => {
       const current = source.view.getSync?.();
-      if (!current) return;
+      if (!current) return 0;
       const present = new Set(current.map((row) => source.rowKey(row)));
-      for (const key of [...rowsByKey.keys()]) if (!present.has(key)) forget(key);
+      let removed = 0;
+      for (const key of [...rowsByKey.keys()]) {
+        if (!present.has(key)) {
+          forget(key);
+          removed += 1;
+        }
+      }
+      return removed;
     };
+    const rowJson = (row: unknown) => JSON.stringify(row, (_key, value) => (typeof value === 'bigint' ? value.toString() : value));
+    // Rows a reconnect's rebuild already took in, until the stream announces them.
+    const resynced = new Map<string, string>();
     // Let the reader drain what the stream already delivered (buffered
     // events resolve as microtasks, before this timer), then apply it in order
     // without evaluating: it is already reflected in the snapshot, and
@@ -1111,6 +1121,36 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     while (attempt.active) {
       const update = await take();
       if (update === null || !attempt.active) return;
+      if (!source.rowSignal && update.type === 'created') {
+        const key = source.rowKey(update.data);
+        if (resynced.get(key) === rowJson(update.data)) {
+          // Part of a reconnect already evaluated as a whole.
+          resynced.delete(key);
+          rowKeys.set(update.key, key);
+          continue;
+        }
+        const announcedAgain = rowsByKey.has(key);
+        apply(update);
+        const current = source.view.getSync?.();
+        if ((announcedAgain || pruneGone() > 0) && current) {
+          // A reconnect: the SDK replaced the whole list and now announces it
+          // row by row. Evaluate the new list once, as a whole, not a mix of
+          // old and new rows.
+          rowsByKey.clear();
+          resynced.clear();
+          for (const row of current) {
+            const rowKey = source.rowKey(row);
+            rowsByKey.set(rowKey, row);
+            if (rowKey !== key) resynced.set(rowKey, rowJson(row));
+          }
+        }
+        rows = [...rowsByKey.values()];
+        for (const [signalKey, value, observed] of source.signals(rows)) {
+          if (!attempt.active) return;
+          await evaluate(signalKey, value, observed);
+        }
+        continue;
+      }
       const applied = apply(update);
       if (update.type === 'created') pruneGone();
       rows = [...rowsByKey.values()];
