@@ -97,6 +97,11 @@ function asset(name: string, key: string): string {
   if (key !== SOL && !isPubkey(key)) {
     throw new ConsentError('invalid_fields', `${name}: '${key}' is neither SOL nor a mint address`);
   }
+  // Outflows count wrapped SOL as SOL, so a limit keyed by the native mint
+  // would be shown to the user and never applied.
+  if (isNativeMint(key)) {
+    throw new ConsentError('invalid_fields', `${name}: wrapped SOL counts as SOL; set the limit on SOL instead of ${key}`);
+  }
   return key;
 }
 
