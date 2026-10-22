@@ -199,6 +199,18 @@ describe('privyPolicyFor', () => {
             until,
           ],
         },
+        // Wrapped SOL counts as SOL, so its transfers share the SOL cap.
+        ...['So11111111111111111111111111111111111111112', '9pan9bMn5HatX4EJdBwg9VgCa7Uz5HL8N1m5D3NdXejP'].map((mint) => ({
+          name: `Wrapped SOL (${mint}) transfers up to the per-run cap`,
+          method: 'signTransaction',
+          action: 'ALLOW',
+          conditions: [
+            { field_source: 'solana_token_program_instruction', field: 'instructionName', operator: 'eq', value: 'TransferChecked' },
+            { field_source: 'solana_token_program_instruction', field: 'TransferChecked.mint', operator: 'eq', value: mint },
+            { field_source: 'solana_token_program_instruction', field: 'TransferChecked.amount', operator: 'lte', value: '10000000' },
+            until,
+          ],
+        })),
         {
           name: 'Token accounts closed back to the wallet',
           method: 'signTransaction',
