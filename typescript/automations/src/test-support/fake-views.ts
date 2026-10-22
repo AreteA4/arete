@@ -80,6 +80,18 @@ export class FakeListView<T> implements ListViewLike<T> {
     for (const feed of this.feeds) for (const [key, data] of this.rows) feed.push({ type: 'created', key, data });
   }
 
+  /**
+   * Remove a row. With `withLastKnown` false the update carries only the
+   * SDK's entity key, as it may for a row the stream never announced.
+   */
+  remove(key: string, withLastKnown = true) {
+    const before = this.rows.get(key);
+    this.rows.delete(key);
+    for (const feed of this.feeds) {
+      feed.push({ type: 'removed', key, ...(withLastKnown && before !== undefined ? { lastKnown: before } : {}) } as RichUpdate<T>);
+    }
+  }
+
   /** Change rows and tell every subscriber. */
   set(...rows: T[]) {
     for (const row of rows) {
