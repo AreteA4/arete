@@ -30,6 +30,7 @@ export default defineConfig({
             "integrating-protocols/overview",
             "integrating-protocols/execution",
             "integrating-protocols/react",
+            "automations/overview",
             "deploying-protocols/overview",
             "deploying-protocols/trust",
             "agent-skills/protocols",
@@ -83,6 +84,17 @@ export default defineConfig({
             { slug: "building-protocols/handlers" },
             { slug: "building-protocols/automation" },
             { slug: "building-protocols/tutorial-lifecycle" },
+          ],
+        },
+        {
+          label: "Automate for Users",
+          items: [
+            { slug: "automations/overview" },
+            { slug: "automations/quickstart" },
+            { slug: "automations/triggers" },
+            { slug: "automations/consent" },
+            { slug: "automations/signing" },
+            { slug: "automations/production" },
           ],
         },
         {

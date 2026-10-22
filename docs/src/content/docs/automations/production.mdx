@@ -1,0 +1,111 @@
+---
+title: Run automations in production
+description: Store state in Postgres, run migrations and roles, choose how workers run, follow outcomes, and recover from crashes.
+---
+
+In production, automations keep their state in your Postgres database and run
+workers in your backend. This page covers setting up the store, running
+workers on servers or serverless platforms, and what happens when things go
+wrong.
+
+## The Postgres store
+
+```ts
+import { postgresStore } from "@usearete/automations/postgres";
+
+const store = postgresStore(pool); // your pg Pool; no connections of its own
+```
+
+- **Its own schema.** Everything lives in `arete_automation` (or
+  `postgresStore(pool, { schema })`); nothing outside it is created, changed
+  or read.
+- **Migrations never run at startup.** Run `await store.migrate()` from a
+  deploy step. It applies pending migrations in one transaction, and
+  concurrent runs wait for each other. Or export the SQL for your own
+  migration tool:
+
+  ```bash
+  npx arete-automations migrations --out db/migrations
+  ```
+
+  A store whose database is behind refuses to run.
+
+- **Two database roles.** Migrate with a role that can create tables; run with
+  one limited to reading and writing rows.
+  `npx arete-automations grants --role app_runtime` prints its grants.
+- **Inside your transactions.** `store.using(client)` runs store writes inside
+  a transaction you have open, for example to save a consent grant together
+  with your user record.
+- **Other pool libraries.** A `pg.Pool` is detected; for another pool adapter,
+  pass `postgresStore(pool, { executor: "pool" })`.
+
+One store (one schema) serves one deployment. Use a separate schema for each
+deployment your backend automates.
+
+[`memoryStore()`](/automations/quickstart/) is for tests only: it forgets
+everything on restart. A custom store must pass the package's conformance
+suite (`runStoreConformance` from `@usearete/automations/testing`).
+
+## Running workers
+
+On a long-running server:
+
+```ts
+automations.start({ concurrency: 4 });
+// on shutdown:
+await automations.stop();
+```
+
+On a serverless platform, process work after accepting a trigger, and from a
+scheduled function so nothing waits for the next request. On Cloudflare
+Workers, for example:
+
+```ts
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    // `env` exists only inside the handlers, so the secret is read here.
+    const response = await automations.webhookHandler({ secret: env.ARETE_WEBHOOK_SECRET })(request);
+    ctx.waitUntil(automations.drain({ maxJobs: 25 }));
+    return response;
+  },
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(automations.drain({ maxJobs: 100 }));
+  },
+};
+```
+
+Several workers and replicas can run at once. Each job is claimed by one
+worker at a time, and only one step per wallet is in progress.
+
+## Outcomes
+
+Every step ends in one of these states, reported to `onOutcome`:
+
+| State          | What happened                                                                       |
+| -------------- | ----------------------------------------------------------------------------------- |
+| `completed`    | The transactions landed                                                             |
+| `chain_failed` | A transaction failed on chain                                                       |
+| `expired`      | The prepared intent expired twice (it is prepared once more after the first)        |
+| `skipped`      | No active consent, or inside the step's cooldown                                    |
+| `rejected`     | The protocol said no (a guard or an access rule); a normal outcome                  |
+| `refused`      | The signing policy, a consent limit, the exact-bytes checks or the provider refused |
+| `failed`       | It kept failing before signing (for example the protocol API was unreachable)       |
+
+`onRefused` and `onRejected` receive just those outcomes. Each outcome
+carries the step, wallet, instance and a `code`. A readable `reason` is
+optional; fall back to `code` when it is missing.
+
+## Crashes and retries
+
+- **Duplicate triggers.** A trigger with an id already seen is ignored, so
+  webhook retries, a double cron and restarted streams are harmless.
+- **Before signing**, a failure puts the job back in the queue with backoff,
+  and it is prepared again with the same idempotency key.
+- **After signing**, the signed transactions are saved before they are
+  submitted. After a crash or a lost response, the job reads the intent's
+  status before anything else. It submits the saved bytes only if they never
+  reached Arete, and it never signs again or resubmits blindly. While an
+  outcome is unknown, that wallet's other steps wait.
+
+Prune old records from a scheduled job with `store.deliveries.prune(before)`
+and `store.jobs.prune(before)`.

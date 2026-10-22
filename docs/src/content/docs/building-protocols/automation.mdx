@@ -39,6 +39,21 @@ business logic and end-user notifications run in your own application.
 
 [Events and backend integration →](/integrating-protocols/events/)
 
+## When a step needs the user's signature
+
+Reactions can only run steps that need no particular user: keeper steps, or
+admin steps proposed to a multisig. A participant step, such as a deposit
+from the user's wallet or a claim, waits for the user to sign it.
+
+To run those steps for users while they are away, emit an event for the
+moment they should run and handle it with `@usearete/automations` in your
+backend. Users opt in by signing a consent with limits, and your backend
+signs within them through a wallet provider. Design these steps so they can
+only move funds between the user's own positions: then a wrong trigger can at
+worst move a user's funds between places they own.
+
+[Automate steps for users →](/automations/overview/)
+
 ## Metadata belongs beside chain state
 
 Metadata adds application information such as a title or milestone evidence.

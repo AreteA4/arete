@@ -38,6 +38,7 @@ Navigation follows the protocol workflow. Existing page slugs stay stable even w
 | ---------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | Start Here             | `getting-started/`, `using-stacks/quickstart.mdx`, `concepts/protocols.mdx` | Product, first protocol, and mental model                   |
 | Build Protocols        | `building-protocols/`                                                       | Definitions, lifecycle, handlers, automation, and tutorial  |
+| Automate for Users     | `automations/`                                                              | Running users' steps from a backend under signed consent    |
 | Develop and Test       | `cli/local-development.mdx`, `development/`                                 | Cloud environments, application connection, and experiments |
 | Integrate Protocols    | `integrating-protocols/`, `agent-skills/protocols.mdx`                      | Clients, React, execution, events, and MCP                  |
 | Deploy and Publish     | `deploying-protocols/`                                                      | Production, packages, listing, and trust                    |

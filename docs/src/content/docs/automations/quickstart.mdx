@@ -1,0 +1,138 @@
+---
+title: Your first automation
+description: Refund every contributor who opted in when a token raise fails, using a dev keypair against your dev environment.
+---
+
+This guide builds a small backend that refunds contributors automatically
+when a raise fails. It uses a dev wallet as the signer and runs against your
+[dev environment](/cli/local-development/), so no real funds move. A complete
+version, with a webhook endpoint and consent routes, is in the Arete
+repository under `typescript/automations/examples/token-raise`.
+
+You need a protocol with a participant step the user signs and an event that
+says when to run it. The token-raise protocol has both: a `refund` step, and a
+`raise.failed` event its reactions emit.
+
+## Install
+
+```bash
+npm install @usearete/automations @usearete/sdk pg
+a4 install protocol token-raise --ts
+```
+
+`a4 install protocol` generates the protocol's client. Its module exports the
+definition as `TOKEN_RAISE_PROTOCOL`.
+
+## Create the automations
+
+```ts
+import { createProtocolClient } from "@usearete/sdk";
+import pg from "pg";
+import { createAutomations, definePolicy, rpcSimulator, SOL } from "@usearete/automations";
+import { keypairSigner } from "@usearete/automations/keypair";
+import { postgresStore } from "@usearete/automations/postgres";
+import { TOKEN_RAISE_PROTOCOL } from "./generated/typescript/protocols/token-raise/token-raise.js";
+
+const client = createProtocolClient(TOKEN_RAISE_PROTOCOL, {
+  auth: { secretKey: process.env.ARETE_SECRET_KEY! },
+});
+
+const store = postgresStore(new pg.Pool({ connectionString: process.env.DATABASE_URL }));
+await store.migrate(); // once, from a deploy step in production
+
+const automations = createAutomations({
+  client,
+  signer: keypairSigner(devWalletSecretKey), // a dev wallet's secret key; dev and tests only
+  policy: definePolicy({
+    deployments: [client.deploymentId],
+    clusters: ["devnet"],
+    programs: [RAISE_PROGRAM_ID], // the programs the protocol's steps call
+    maxSolPerTransaction: "0.001",
+  }),
+  simulator: rpcSimulator(process.env.RPC_URL!),
+  store,
+  cluster: "devnet",
+  consent: { domain: "app.example" },
+  onOutcome: (outcome) => console.log(outcome.state, outcome.step, outcome.wallet, outcome.code),
+});
+```
+
+- **The client** uses a secret key, so it runs only on your server.
+- **The policy** limits what may be signed for anyone: these deployments,
+  this cluster, these programs, and at most 0.001 SOL leaving a wallet per
+  transaction.
+- **The simulator** measures what each transaction would move, using your RPC.
+- **The store** keeps triggers, jobs, consent and spending in your database,
+  in its own schema.
+
+## Handle the event
+
+```ts
+automations.on("raise.failed", async (event, ctx) => {
+  // Every wallet that agreed to automatic refunds for this raise.
+  const grants = await ctx.consents.list({ step: "refund", instanceId: event.instanceId });
+  return grants.map((grant) => ctx.step("refund", { wallet: grant.wallet, instance: event.instanceId }));
+});
+
+// While developing: follow the raise's event stream.
+automations.follow(raiseInstanceId);
+
+// In production: receive the event as a signed webhook.
+export const POST = automations.webhookHandler({ secret: process.env.ARETE_WEBHOOK_SECRET! });
+
+automations.start();
+```
+
+Both deliver the same event to the same handler, and each event is accepted
+once. The webhook handler checks the delivery's signature, records it and
+answers straight away; set up the endpoint's subscription as described in
+[events](/integrating-protocols/events/#receive-named-emissions-through-webhooks).
+`start()` runs the worker that turns each trigger into steps and each step
+into a signed, submitted transaction.
+
+## Let a user opt in
+
+A user opts in by signing a message that states exactly what you may do:
+
+```ts
+const fields = {
+  wallet,
+  deploymentId: client.deploymentId,
+  steps: ["refund"],
+  // A refund moves funds into the wallet; only the network fee leaves it.
+  limits: { perExecution: { [SOL]: "10000" } },
+  expiresAt: new Date("2027-01-01"),
+};
+
+const proof = await automations.consent.proofMessage(fields);
+// Your app asks the user's wallet to sign `proof.bytes` (signMessage)...
+const { grant, warnings } = await automations.consent.grant({
+  ...fields,
+  nonce: proof.nonce,
+  issuedAt: proof.issuedAt,
+  signature,
+});
+```
+
+[What the user signs, and how to present it →](/automations/consent/)
+
+## Try it
+
+1. Contribute to a raise from a dev wallet, and opt that wallet in.
+2. Let the raise fail. In a dev environment you can advance time past its
+   deadline.
+3. The `raise.failed` event arrives on the stream, and the refund runs:
+
+   ```text
+   completed refund <wallet> completed
+   ```
+
+If the outcome is `skipped`, check that the wallet's consent covers `refund`.
+If it is `refused`, the reason names the policy rule or limit that stopped it.
+
+## Next
+
+- Schedule recurring work, or react to live data:
+  [triggers](/automations/triggers/).
+- Use Privy instead of a dev wallet: [signers](/automations/signing/).
+- Take it to production: [running automations](/automations/production/).
