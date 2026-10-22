@@ -446,6 +446,23 @@ fn wait_for_admission(
     }
 }
 
+/// A marker survives cancellation between writing release pins and clients.
+/// It contains no credentials; the lock remains the source of truth on repair.
+pub(crate) fn recovery_path(dir: &Path) -> PathBuf {
+    dir.join(".arete/dev/local-program-admission.pending")
+}
+
+pub(crate) fn recover(dir: &Path) -> Result<bool> {
+    let marker = recovery_path(dir);
+    if !marker.exists() {
+        return Ok(false);
+    }
+    crate::project::installer::install_project(dir.join("arete.toml"), quiet())
+        .context("Failed to repair interrupted local program admission")?;
+    std::fs::remove_file(marker)?;
+    Ok(true)
+}
+
 /// Write each admitted release into its arete.lock entry and regenerate the
 /// project, so the generated programs and the next build carry them.
 /// Returns whether anything changed.
@@ -469,6 +486,9 @@ fn record(
         })
         .collect();
     if !changed.is_empty() {
+        let marker = recovery_path(dir);
+        std::fs::create_dir_all(marker.parent().context("Admission marker has no parent")?)?;
+        std::fs::write(&marker, b"regenerate clients from arete.lock\n")?;
         let manifest_path = dir.join("arete.toml");
         let lock_path = dir.join("arete.lock");
         let manifest = ProjectManifest::load(&manifest_path)?;
@@ -495,6 +515,7 @@ fn record(
         lock.write_atomic(&lock_path)?;
         install_project(&manifest_path, quiet())
             .context("Failed to regenerate the programs with their releases")?;
+        std::fs::remove_file(marker)?;
         for outcome in &changed {
             progress.success(&format!(
                 "arete.lock: program {} pins release {}",

@@ -411,12 +411,18 @@ struct AdmissionRequest {
     origin: String,
     key: String,
     slug: String,
+    #[serde(default)]
+    repair_only: bool,
 }
 
 fn publish_local_programs(
     request: AdmissionRequest,
     progress: &dyn crate::commands::protocol::local_programs::Progress,
 ) -> Result<bool> {
+    let repaired = crate::commands::protocol::local_programs::recover(&request.root)?;
+    if request.repair_only {
+        return Ok(repaired);
+    }
     let client =
         crate::api_client::ApiClient::with_base_url(&request.origin).with_api_key(request.key);
     let published = crate::commands::protocol::local_programs::publish(
@@ -436,6 +442,7 @@ fn publish_local_programs(
 /// A separate process makes every blocking request, poll and regeneration
 /// cancellable, without leaving a Tokio blocking worker alive after shutdown.
 pub(crate) fn admission_worker() -> Result<()> {
+    crate::project::installer::set_json_output(true);
     struct Progress;
     impl crate::commands::protocol::local_programs::Progress for Progress {
         fn step(&self, message: &str) {
@@ -472,10 +479,7 @@ async fn stop_admission(worker: &mut Option<Child>) -> Result<()> {
 }
 
 async fn admit_local_programs(
-    root: PathBuf,
-    origin: String,
-    key: String,
-    slug: String,
+    request: AdmissionRequest,
     progress: Events,
     worker: &mut Option<Child>,
 ) -> Result<bool> {
@@ -497,14 +501,7 @@ async fn admit_local_programs(
         .stdin
         .take()
         .context("Admission worker stdin is absent")?;
-    stdin
-        .write_all(&serde_json::to_vec(&AdmissionRequest {
-            root,
-            origin,
-            key,
-            slug,
-        })?)
-        .await?;
+    stdin.write_all(&serde_json::to_vec(&request)?).await?;
     drop(stdin);
     let stdout = child
         .stdout
@@ -803,6 +800,23 @@ impl Session<'_> {
     async fn build(&mut self, changed: &[String]) -> Result<()> {
         self.ui.build_started(changed);
         let result = async {
+            // Repair before building when a cancelled worker saved a lock pin
+            // but did not finish regenerating its matching client modules.
+            if crate::commands::protocol::local_programs::recovery_path(&self.project.root).exists()
+            {
+                admit_local_programs(
+                    AdmissionRequest {
+                        root: self.project.root.clone(),
+                        origin: String::new(),
+                        key: String::new(),
+                        slug: String::new(),
+                        repair_only: true,
+                    },
+                    self.events.clone(),
+                    &mut self.admission,
+                )
+                .await?;
+            }
             run_build(&self.config.project_root, &self.events.log).await?;
             if self.config.deploy {
                 let build = super::deploy::read_build(&self.project.root.join(BUILD_DIR))?;
@@ -816,9 +830,18 @@ impl Session<'_> {
                 let origin = self.config.api.origin().to_string();
                 let key = self.config.api.key().to_string();
                 let progress = self.events.clone();
-                let changed =
-                    admit_local_programs(root, origin, key, slug, progress, &mut self.admission)
-                        .await?;
+                let changed = admit_local_programs(
+                    AdmissionRequest {
+                        root,
+                        origin,
+                        key,
+                        slug,
+                        repair_only: false,
+                    },
+                    progress,
+                    &mut self.admission,
+                )
+                .await?;
                 if changed {
                     run_build(&self.config.project_root, &self.events.log).await?;
                 }
@@ -1375,6 +1398,7 @@ mod tests {
             origin: server.base_url().into(),
             key: "a4_sk_test".into(),
             slug: "tip-jar".into(),
+            repair_only: false,
         };
         let changed =
             tokio::task::spawn_blocking(move || publish_local_programs(request, &progress))
