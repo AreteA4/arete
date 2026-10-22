@@ -28,6 +28,11 @@
       "import": "./dist/postgres.js",
       "require": "./dist/postgres.cjs"
     },
+    "./privy": {
+      "types": "./dist/privy.d.ts",
+      "import": "./dist/privy.js",
+      "require": "./dist/privy.cjs"
+    },
     "./package.json": "./package.json"
   },
   "typesVersions": {
@@ -40,6 +45,9 @@
       ],
       "postgres": [
         "./dist/postgres.d.ts"
+      ],
+      "privy": [
+        "./dist/privy.d.ts"
       ]
     }
   },
@@ -57,7 +65,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
-    "lint": "eslint src --ext .ts",
+    "lint": "eslint src examples --ext .ts",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

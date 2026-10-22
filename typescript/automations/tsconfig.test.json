@@ -2,8 +2,32 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "rootDir": ".",
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@usearete/automations": [
+        "./src/index.ts"
+      ],
+      "@usearete/automations/keypair": [
+        "./src/keypair.ts"
+      ],
+      "@usearete/automations/postgres": [
+        "./src/postgres.ts"
+      ],
+      "@usearete/automations/privy": [
+        "./src/privy.ts"
+      ],
+      "@usearete/automations/testing": [
+        "./src/testing.ts"
+      ]
+    }
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "src/**/*.ts",
+    "examples/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
 }

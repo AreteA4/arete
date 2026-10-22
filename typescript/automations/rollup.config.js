@@ -34,6 +34,7 @@ export default [
   ...library("src/keypair.ts", "keypair"),
   ...library("src/testing.ts", "testing"),
   ...library("src/postgres.ts", "postgres"),
+  ...library("src/privy.ts", "privy"),
   {
     input: "src/cli-bin.ts",
     external,

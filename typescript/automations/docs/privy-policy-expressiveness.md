@@ -43,13 +43,27 @@ Checked against Privy's policy documentation on 2026-10-22:
 | `clusters` | No | Privy signs bytes; the cluster is not in the request. The runtime enforces it. |
 | `programs` allow-list | Yes, top-level only | ALLOW `solana_program_instruction.programId in [...]`. Leave the System and Token programs out of this rule, or it overrides their capped rules. Programs reached by CPI are not seen. |
 | Authority refusals (`approve`, `setAuthority`, System `assign`, nonce and stake authority changes, loader instructions) | Partly | By default deny: allow only the System and Token instruction names the step needs, and do not allow the loader or stake programs. Inner instructions are not seen, and Token-2022 is not mentioned, so a protocol program's CPI that approves or reassigns is not caught. |
-| `maxSolPerTransaction` | Partly | A cap on each top-level System `Transfer.lamports`. It is per instruction, not per transaction, and does not see lamports a protocol program moves by CPI, wrapped SOL spent, or token accounts closed to someone else. |
+| `maxSolPerTransaction` | Partly | A cap on each top-level System `Transfer.lamports`, and on each top-level `TransferChecked.amount` of a wrapped SOL mint. It is per instruction, not per transaction, and does not see lamports a protocol program moves by CPI or token accounts closed to someone else. |
 | `maxTokenAmounts` | Partly | A cap on `TransferChecked.amount` with `TransferChecked.mint`, per instruction. `Transfer` has no mint field. Tokens a protocol program moves by CPI are not seen. |
 | "Refuse what cannot be simulated" | No | Conditions cannot read simulated balance changes. |
 | Consent `perExecution` limits | Partly | As the caps above, when the step's own instruction moves the funds; through `solana_instruction_data` when the protocol program has an Anchor IDL whose arguments carry the amount. |
 | Consent `perWindow` limits | No | Cumulative limits over time are only supported for Ethereum methods. |
 | Consent expiry | Yes | ALLOW only while `system.current_unix_timestamp` is before the grant's expiry. |
 | Exact bytes | Not a policy | The runtime's `messageSha256` check covers it. The adapter must use transaction signing without broadcast (`signTransaction`), not `signAndSendTransaction`, so the runtime submits through Arete. |
+
+## Instructions Privy cannot allow
+
+Privy's token rules cover six instructions, and the generated policy allows
+only System `Transfer` and Token `TransferChecked`, `CloseAccount` and
+`InitializeAccount3` at the top level. A step with any other top-level
+System or Token instruction, such as creating an account or `syncNative` to
+wrap SOL, is refused by Privy's default deny. `privySigner` refuses such a
+step itself, before asking Privy, with a reason naming the instruction
+(`refuseUnsupported: false` turns this off if your own Privy policy allows
+more). Instructions a protocol program makes by CPI are not affected.
+
+The `in` operator takes at most 100 values, so `privyPolicyFor` splits a
+long program allow-list across several rules.
 
 ## What this means
 
