@@ -291,6 +291,26 @@ describe('the step pipeline', () => {
     expect(h.refused[0]).toMatchObject({ code: 'provider_policy', reason: 'policy denied: program not allowlisted' });
   });
 
+  it('recognises a refusal from another copy of the class', async () => {
+    // What a signer bundled in another entry point throws: same brand, different class.
+    class ForeignRefusal extends Error {
+      readonly rule = 'provider_policy' as const;
+      readonly [Symbol.for('@usearete/automations/SignerRefusal')] = true;
+    }
+    const declining: ProtocolSigner = {
+      ...walletsSigner(),
+      signTransactions: async () => {
+        throw new ForeignRefusal('denied by the provider');
+      },
+    };
+    const h = harness({}, { signer: declining });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.refused[0]).toMatchObject({ state: 'refused', code: 'provider_policy', reason: 'denied by the provider' });
+  });
+
   it('skips a step inside its cooldown', async () => {
     const h = harness();
     await h.grant(ALICE);

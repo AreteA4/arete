@@ -31,7 +31,7 @@ export type { DecodedTransaction } from './policy/decode';
 export type { ProtocolSigner, SignTransactionsInput } from './signer/signer';
 export { DEFAULT_TRANSACTION_FORMATS, negotiateTransactionFormat } from './signer/format';
 export { checkPreparedAgainstIntent, checkSignedTransactions } from './signer/verify';
-export { SignerRefusal } from './signer/signer';
+export { isSignerRefusal, SignerRefusal } from './signer/signer';
 export { createAutomations } from './runtime/automations';
 export type {
   AutomationClient,
