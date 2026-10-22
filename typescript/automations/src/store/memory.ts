@@ -13,7 +13,7 @@ import {
   TERMINAL_DELIVERY_STATES,
   TERMINAL_STEP_STATES,
 } from '../runtime/types';
-import type { AutomationStore, ConsentGrant, LedgerEntry, NewStepJob, TransitionInput } from './store';
+import type { AutomationStore, ConsentGrant, LedgerEntry, NewStepJob, SourceState, TransitionInput } from './store';
 
 function isActiveStep(job: Job): boolean {
   return job.kind === 'step' && (ACTIVE_STEP_STATES as readonly string[]).includes(job.state);
@@ -37,10 +37,31 @@ export function memoryStore(): AutomationStore {
   const grants: ConsentGrant[] = [];
   const nonces = new Map<string, { expiresAt: number; used: boolean }>();
   const ledger: LedgerEntry[] = [];
+  const sourceStates = new Map<string, SourceState>();
+  const cursors = new Map<string, string>();
+  const sourceLeases = new Map<string, { holder: string; until: number }>();
 
   const insert = (job: Job) => {
     jobs.set(job.id, job);
     sequence.set(job.id, order++);
+  };
+
+  const acceptNow = (delivery: Delivery, now: number) => {
+    if (deliveries.has(delivery.id)) return false;
+    deliveries.set(delivery.id, now);
+    insert({
+      kind: 'delivery',
+      id: delivery.id,
+      state: 'queued',
+      delivery: clone(delivery),
+      attempts: 0,
+      notBefore: now,
+      lease: null,
+      createdAt: now,
+      updatedAt: now,
+      outcome: null,
+    });
+    return true;
   };
 
   const walletBusy = (wallet: string, except: string) => {
@@ -64,21 +85,7 @@ export function memoryStore(): AutomationStore {
   return {
     deliveries: {
       async accept(delivery: Delivery, now: number) {
-        if (deliveries.has(delivery.id)) return false;
-        deliveries.set(delivery.id, now);
-        insert({
-          kind: 'delivery',
-          id: delivery.id,
-          state: 'queued',
-          delivery: clone(delivery),
-          attempts: 0,
-          notBefore: now,
-          lease: null,
-          createdAt: now,
-          updatedAt: now,
-          outcome: null,
-        });
-        return true;
+        return acceptNow(delivery, now);
       },
       async prune(before: number) {
         let removed = 0;
@@ -265,6 +272,57 @@ export function memoryStore(): AutomationStore {
         if (!issued || issued.used || issued.expiresAt <= now) return false;
         nonces.set(nonce, { ...issued, used: true });
         return true;
+      },
+    },
+    sources: {
+      async get(source, key) {
+        const state = sourceStates.get(`${source}\u0000${key}`);
+        return state ? clone(state) : null;
+      },
+      async advance({ source, key, expectedVersion, next, deliver, now }) {
+        const id = `${source}\u0000${key}`;
+        const current = sourceStates.get(id) ?? null;
+        if ((current?.version ?? null) !== expectedVersion) return null;
+        const generation = (current?.generation ?? 0) + (current?.hash === next.hash ? 0 : 1);
+        const state: SourceState = {
+          source,
+          key,
+          hash: next.hash,
+          value: clone(next.value),
+          generation,
+          pending: next.pending ? clone(next.pending) : null,
+          version: (current?.version ?? 0) + 1,
+          updatedAt: now,
+        };
+        sourceStates.set(id, state);
+        if (deliver) {
+          acceptNow(
+            {
+              id: `view:${source}:${key}:${generation}`,
+              name: deliver.name,
+              source: 'view',
+              payload: clone(deliver.payload),
+              receivedAt: now,
+            },
+            now,
+          );
+        }
+        return clone(state);
+      },
+      async cursor(source) {
+        return cursors.get(source) ?? null;
+      },
+      async putCursor(source, cursor) {
+        cursors.set(source, cursor);
+      },
+      async acquireLease(source, holder, until, now) {
+        const lease = sourceLeases.get(source);
+        if (lease && lease.holder !== holder && lease.until > now) return false;
+        sourceLeases.set(source, { holder, until });
+        return true;
+      },
+      async releaseLease(source, holder) {
+        if (sourceLeases.get(source)?.holder === holder) sourceLeases.delete(source);
       },
     },
     ledger: {

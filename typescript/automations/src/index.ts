@@ -46,6 +46,7 @@ export type {
   ExpressLikeResponse,
   Handler,
   HandlerContext,
+  SourceHandle,
   StepOptions,
   TriggerInfo,
   WebhookHandlerOptions,
@@ -81,6 +82,8 @@ export type {
   ConsentQuery,
   LedgerEntry,
   NewStepJob,
+  SourceAdvance,
+  SourceState,
   StoredConsentLimits,
   TransitionInput,
 } from './store/store';
@@ -94,3 +97,15 @@ export {
   windowText,
 } from './consent/consent';
 export type { ConsentErrorCode, ConsentFields, ConsentLimits, NormalizedConsent } from './consent/consent';
+export { AGGREGATE_KEY, fromAppendView, fromView, fromViewRows } from './sources/view';
+export type {
+  AggregateSourceOptions,
+  AppendSource,
+  AppendTrigger,
+  AppendViewLike,
+  ListSource,
+  ListViewLike,
+  RowSourceOptions,
+  ViewSource,
+  ViewTrigger,
+} from './sources/view';

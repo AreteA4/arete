@@ -30,6 +30,7 @@ import { DEFAULT_TRANSACTION_FORMATS, negotiateTransactionFormat } from '../sign
 import type { ProtocolSigner } from '../signer/signer';
 import { SignerRefusal } from '../signer/signer';
 import { checkPreparedAgainstIntent, checkSignedTransactions } from '../signer/verify';
+import { type AppendSource, type AppendTrigger, evaluateSignal, type ListSource, type ViewSource } from '../sources/view';
 import type { AutomationStore, ConsentGrant, NewStepJob } from '../store/store';
 import { type Clock, type Duration, durationMs, systemClock } from './time';
 import {
@@ -237,12 +238,25 @@ export interface Automations<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
   acceptWebhook(body: string | Uint8Array, headers: WebhookHeadersLike, options: WebhookHandlerOptions): Promise<WebhookResult>;
   /** Follow one instance's event stream and accept its events. */
   follow(instanceId: string, options?: { lastEventId?: string; signal?: AbortSignal }): ProtocolEventSubscription;
+  /**
+   * Watch a view source and accept its triggers until `stop()`. With
+   * `exclusive`, only the replica holding the source's lease subscribes
+   * (the compare-and-set already makes several subscribers correct; the
+   * lease only saves bandwidth).
+   */
+  source(source: ViewSource, options?: { exclusive?: boolean }): SourceHandle;
+  /** Read a list-view source's snapshot once and accept what changed (for a serverless cron). */
+  poll(source: ListSource): Promise<{ delivered: number; pending: number }>;
   /** Claim and run one job. `false` when none was ready. */
   runOnce(): Promise<boolean>;
   /** Run jobs until none is ready (or `maxJobs` ran). Returns how many ran. */
   drain(options?: { maxJobs?: number }): Promise<number>;
   /** Run jobs in the background until `stop()`. */
   start(options?: { pollInterval?: Duration; concurrency?: number }): void;
+  stop(): Promise<void>;
+}
+
+export interface SourceHandle {
   stop(): Promise<void>;
 }
 
@@ -801,6 +815,130 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   let running = false;
   let loops: Promise<void>[] = [];
 
+  // -------------------------------------------------------------------------
+  // View sources
+  // -------------------------------------------------------------------------
+
+  interface SourceRun {
+    stopped: boolean;
+    iterator?: AsyncIterator<unknown>;
+  }
+
+  const closeIterator = async (run: SourceRun) => {
+    const iterator = run.iterator;
+    run.iterator = undefined;
+    try {
+      await iterator?.return?.();
+    } catch {
+      // Closing a stream that already failed.
+    }
+  };
+
+  const watchList = async (source: ListSource, run: SourceRun) => {
+    const latest = new Map<string, unknown>();
+    const waiting = new Set<string>();
+    const current = (key: string): unknown =>
+      source.rowSignal
+        ? latest.get(key)
+        : source.signals(source.view.getSync() ?? []).find(([candidate]) => candidate === key)?.[1];
+    const evaluate = async (key: string, value: unknown): Promise<void> => {
+      const result = await evaluateSignal(store, clock, source, key, value);
+      if (result === 'pending' && !waiting.has(key)) {
+        waiting.add(key);
+        void clock.sleep(source.stableForMs).then(async () => {
+          waiting.delete(key);
+          if (run.stopped) return;
+          const value = current(key);
+          if (value !== undefined) await evaluate(key, value).catch((error) => report(error, { phase: 'source' }));
+        });
+      }
+    };
+    for (const [key, value] of source.signals(await source.view.get())) {
+      if (source.rowSignal) latest.set(key, value);
+      await evaluate(key, value);
+    }
+    const iterator = source.view.watchRich({ withSnapshot: true })[Symbol.asyncIterator]();
+    run.iterator = iterator;
+    while (!run.stopped) {
+      const next = await iterator.next();
+      if (next.done) return;
+      const update = next.value;
+      if (source.rowSignal) {
+        if (update.type !== 'created' && update.type !== 'updated') continue;
+        const signal = source.rowSignal(update.type === 'created' ? update.data : update.after);
+        if (!signal) continue;
+        latest.set(signal[0], signal[1]);
+        await evaluate(signal[0], signal[1]);
+      } else {
+        const rows = source.view.getSync();
+        if (!rows) continue;
+        for (const [key, value] of source.signals(rows)) await evaluate(key, value);
+      }
+    }
+  };
+
+  const watchAppend = async (source: AppendSource, run: SourceRun) => {
+    const cursor = await store.sources.cursor(source.name);
+    const iterator = source.view.watch(cursor ? { after: cursor } : {})[Symbol.asyncIterator]();
+    run.iterator = iterator;
+    while (!run.stopped) {
+      const next = await iterator.next();
+      if (next.done) return;
+      const update = next.value;
+      if (update.type !== 'upsert') continue;
+      if (!update.cursor) throw new Error(`${source.name}: the view is not an append view (its updates carry no cursor)`);
+      if (!source.filter || source.filter(update.data)) {
+        const payload: AppendTrigger = { source: source.name, cursor: update.cursor, row: update.data };
+        await accept({ id: `view:${source.name}:${update.cursor}`, name: source.name, source: 'view', payload });
+      }
+      await store.sources.putCursor(source.name, update.cursor, clock.now());
+    }
+  };
+
+  const startSource = (source: ViewSource, sourceOptions: { exclusive?: boolean } = {}): SourceHandle => {
+    const run: SourceRun = { stopped: false };
+    let holding = !sourceOptions.exclusive;
+    const keepLease = async () => {
+      while (!run.stopped && holding) {
+        await clock.sleep(Math.max(1, Math.floor(leaseMs / 3)));
+        if (run.stopped) return;
+        holding = await store.sources.acquireLease(source.name, worker, clock.now() + leaseMs, clock.now());
+        if (!holding) await closeIterator(run);
+      }
+    };
+    const loop = (async () => {
+      let failures = 0;
+      while (!run.stopped) {
+        if (sourceOptions.exclusive && !holding) {
+          holding = await store.sources.acquireLease(source.name, worker, clock.now() + leaseMs, clock.now());
+          if (!holding) {
+            await clock.sleep(Math.max(1, Math.floor(leaseMs / 2)));
+            continue;
+          }
+          void keepLease();
+        }
+        try {
+          if (source.kind === 'list') await watchList(source, run);
+          else await watchAppend(source, run);
+          failures = 0;
+        } catch (error) {
+          if (run.stopped) break;
+          report(error, { phase: 'source' });
+          failures += 1;
+        }
+        if (!run.stopped) await clock.sleep(failures > 0 ? backoff(failures) : Math.min(reconcileMs, 1000));
+      }
+    })();
+    return {
+      async stop() {
+        run.stopped = true;
+        await closeIterator(run);
+        if (sourceOptions.exclusive) await store.sources.releaseLease(source.name, worker);
+        void loop;
+      },
+    };
+  };
+
   const domain = () => {
     if (!options.consent?.domain) {
       throw new ConsentError('no_domain', 'createAutomations needs consent.domain to build consent proofs');
@@ -938,6 +1076,18 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
           report(error, { phase: 'stream' });
         },
       });
+    },
+    source: startSource,
+    async poll(source) {
+      if (source.kind !== 'list') throw new TypeError('only list-view sources can be polled');
+      let delivered = 0;
+      let pending = 0;
+      for (const [key, value] of source.signals(await source.view.get())) {
+        const result = await evaluateSignal(store, clock, source, key, value);
+        if (result === 'delivered') delivered += 1;
+        if (result === 'pending') pending += 1;
+      }
+      return { delivered, pending };
     },
     runOnce,
     async drain(drainOptions = {}) {

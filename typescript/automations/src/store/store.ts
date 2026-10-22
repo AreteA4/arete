@@ -66,6 +66,37 @@ export interface ConsentQuery {
   readonly now: number;
 }
 
+/** What a view source last saw for one key. */
+export interface SourceState {
+  readonly source: string;
+  readonly key: string;
+  /** Canonical-JSON SHA-256 of the stable value. */
+  readonly hash: string;
+  /** The stable derived value (JSON). */
+  readonly value: unknown;
+  /** Increments with every stable change; delivery ids carry it. */
+  readonly generation: number;
+  /** A new value waiting out `stableFor`, if any. */
+  readonly pending: { readonly hash: string; readonly value: unknown; readonly since: number } | null;
+  /** Increments with every write; compare-and-set reads it. */
+  readonly version: number;
+  readonly updatedAt: number;
+}
+
+export interface SourceAdvance {
+  readonly source: string;
+  readonly key: string;
+  /** The version read; `null` when there was no state yet. The write fails if it moved. */
+  readonly expectedVersion: number | null;
+  readonly next: Pick<SourceState, 'hash' | 'value' | 'pending'>;
+  /**
+   * Accept a delivery in the same atomic step, with id
+   * `view:${source}:${key}:${generation}` (the generation after the write).
+   */
+  readonly deliver?: { readonly name: string; readonly payload: unknown };
+  readonly now: number;
+}
+
 /** A step job to create, without its bookkeeping. */
 export interface NewStepJob {
   readonly id: string;
@@ -114,7 +145,8 @@ export interface TransitionInput {
  * - compare-and-set transitions, by state and lease holder;
  * - completing a delivery job and enqueuing its step jobs atomically;
  * - ledger writes atomic with the job transition they belong to;
- * - single-use consent nonces.
+ * - single-use consent nonces;
+ * - compare-and-set on view-source state, with its delivery in the same step.
  *
  * `runStoreConformance` from `@usearete/automations/testing` checks all of
  * these; a custom store must pass it.
@@ -174,6 +206,21 @@ export interface AutomationStore {
     issueNonce(nonce: string, expiresAt: number): Promise<void>;
     /** Use an issued, unexpired nonce once. `false` when it was not issued, expired or used. */
     useNonce(nonce: string, now: number): Promise<boolean>;
+  };
+  readonly sources: {
+    get(source: string, key: string): Promise<SourceState | null>;
+    /**
+     * Write a key's state if its version is still `expectedVersion`. The
+     * generation increments when the stable hash changes. Returns the new
+     * state, or `null` when another writer got there first.
+     */
+    advance(input: SourceAdvance): Promise<SourceState | null>;
+    /** The last cursor an append-view source recorded. */
+    cursor(source: string): Promise<string | null>;
+    putCursor(source: string, cursor: string, now: number): Promise<void>;
+    /** Hold a source exclusively until `until`. `false` while another holder's lease runs. */
+    acquireLease(source: string, holder: string, until: number, now: number): Promise<boolean>;
+    releaseLease(source: string, holder: string): Promise<void>;
   };
   readonly ledger: {
     /** The sum of unvoided entries for the wallet and asset recorded at or after `since`. */

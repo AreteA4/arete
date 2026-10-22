@@ -6,7 +6,7 @@ signing policy and the user's consent, signs it with a delegated signer, and
 submits it. Arete never holds a key; the signer runs in your backend.
 
 > **Status:** in development and not yet published. The signing policy,
-> signers, runtime and consent are here; the Postgres store, view sources
+> signers, runtime, consent and view sources are here; the Postgres store
 > and the Privy adapter follow.
 
 ## Use the least powerful mechanism
@@ -121,6 +121,40 @@ automations.on('weeklyBuy', async (_trigger, ctx) => {
     .map((grant) => ctx.step('buy', { wallet: grant.wallet, args: { amount: grant.params.amount } }));
 });
 ```
+
+## View sources
+
+A view source watches a live view and dispatches when a condition becomes
+true, for example when the best lending rate moves to another market:
+
+```ts
+import { fromView, fromViewRows } from '@usearete/automations';
+
+const bestRate = fromView(client.views['jupiter-lend-rates'].markets.list, {
+  name: 'bestRateChanged',
+  derive: (markets) => pickBest(markets, { minEdgeBps: 25 }),   // hysteresis lives in derive
+  changed: (previous, next) => previous !== undefined && previous !== next,
+  stableFor: '2m',                                               // a new value must hold 2 minutes
+});
+
+automations.on('bestRateChanged', async (trigger, ctx) => { /* fan out over consenting wallets */ });
+
+automations.source(bestRate);                                    // long-running: subscribe
+export async function GET() { await automations.poll(bestRate); } // serverless cron: one snapshot per call
+```
+
+`fromViewRows(view, { name, key, derive, filter })` keeps one signal per
+row, for example "this wallet's position crossed below a health of 1.15".
+`fromAppendView(view, { name })` dispatches one trigger per appended row and
+resumes from its stored cursor.
+
+Exactly once comes from the store: each key's last stable value is
+advanced by compare-and-set and the delivery is accepted in the same step.
+Replicas watching one view produce one delivery per transition; after a
+restart, a change made while every replica was down fires once; A → B → A
+→ B fires three times. A value that changed and changed back while nothing
+was watching is not seen. A trigger means "go and look": handlers read live
+state before returning steps.
 
 ## The signing policy
 

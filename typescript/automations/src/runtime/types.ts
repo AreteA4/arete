@@ -1,11 +1,11 @@
 import type { ExecutionIntentV1, ProtocolPreparedTransaction, ProtocolTransactionFormat } from '@usearete/sdk';
 
 /** Where a trigger came from. */
-export type TriggerSource = 'webhook' | 'stream' | 'dispatch';
+export type TriggerSource = 'webhook' | 'stream' | 'dispatch' | 'view';
 
 /** One accepted trigger: a webhook delivery, a stream event or a dispatch. */
 export interface Delivery {
-  /** Unique per trigger, namespaced by source (`webhook:…`, `stream:…`, `dispatch:…`). */
+  /** Unique per trigger, namespaced by source (`webhook:…`, `stream:…`, `dispatch:…`, `view:…`). */
   readonly id: string;
   /** The handler name: an event name or a dispatch name. */
   readonly name: string;
