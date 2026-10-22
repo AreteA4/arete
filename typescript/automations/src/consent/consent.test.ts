@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { encodeBase58 } from '../policy/encoding';
 import { keypairSigner } from '../keypair';
 import type { ConsentFields } from './consent';
-import { ConsentError, consentMessage, normalizeConsent, SOL } from './consent';
+import { ConsentError, type ConsentLimits, consentMessage, normalizeConsent, SOL } from './consent';
 import { DEPLOYMENT, feeOnlySimulator } from '../test-support/fake-protocol';
 import type { Simulator } from '../policy/simulator';
 import { ALICE, ALICE_SEED, BOB, harness, storedGrant } from '../test-support/harness';
@@ -216,6 +216,18 @@ describe('granting consent', () => {
     await expect(withDomain.automations.consent.proofMessage(fields({ deploymentId: 'dep-other' }))).rejects.toMatchObject({
       code: 'invalid_fields',
     });
+  });
+
+  it('refuses limits keyed by the wrapped SOL mint, which count as SOL', async () => {
+    const h = consentHarness();
+    const wrapped = 'So11111111111111111111111111111111111111112';
+    const cases: ConsentLimits[] = [
+      { perExecution: { [SOL]: '10000', [wrapped]: '5' } },
+      { perExecution: { [SOL]: '10000' }, perWindow: { [wrapped]: { amount: '5', window: '30d' } } },
+    ];
+    for (const limits of cases) {
+      await expect(h.automations.consent.proofMessage(fields({ limits }))).rejects.toThrow(/wrapped SOL counts as SOL/);
+    }
   });
 
   it('revokes without a signature', async () => {
