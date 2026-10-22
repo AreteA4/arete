@@ -31,7 +31,7 @@ import type { Simulator } from '../policy/simulator';
 import { summarizePrepared } from '../policy/summary';
 import { DEFAULT_TRANSACTION_FORMATS, negotiateTransactionFormat } from '../signer/format';
 import type { ProtocolSigner } from '../signer/signer';
-import { SignerRefusal } from '../signer/signer';
+import { isSignerRefusal } from '../signer/signer';
 import { checkPreparedAgainstIntent, checkSignedTransactions } from '../signer/verify';
 import { type AppendSource, type AppendTrigger, evaluateSignal, type ListSource, type ViewSource } from '../sources/view';
 import type { AutomationStore, ConsentGrant, NewStepJob } from '../store/store';
@@ -708,7 +708,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
           transactions: baseline.map((transaction) => ({ ...transaction })),
         });
       } catch (error) {
-        if (error instanceof SignerRefusal) return refuse(job, { rule: error.rule, reason: error.message });
+        if (isSignerRefusal(error)) return refuse(job, { rule: error.rule, reason: error.message });
         throw error;
       }
       const tampered = checkSignedTransactions({ wallet, intent, prepared: baseline, signed: [...signed] });
