@@ -306,20 +306,21 @@ export function memoryStore(): AutomationStore {
           version: (current?.version ?? 0) + 1,
           updatedAt: now,
         };
-        sourceStates.set(id, state);
-        if (deliver) {
-          acceptNow(
-            {
+        // Copy everything before changing anything: a payload that cannot be
+        // stored must leave the source state as it was, or the trigger is lost.
+        const delivery: Delivery | null = deliver
+          ? {
               id: `view:${encodeURIComponent(source)}:${encodeURIComponent(key)}:${generation}`,
               name: deliver.name,
               source: 'view',
               payload: clone(deliver.payload),
               receivedAt: now,
-            },
-            now,
-          );
-        }
-        return clone(state);
+            }
+          : null;
+        const result = clone(state);
+        sourceStates.set(id, state);
+        if (delivery) acceptNow(delivery, now);
+        return result;
       },
       async cursor(source) {
         return cursors.get(source) ?? null;
