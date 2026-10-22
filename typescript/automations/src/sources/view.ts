@@ -38,6 +38,8 @@ import type { AutomationStore } from '../store/store';
 export interface ListViewLike<T> {
   /** The complete current rows (the source seeds from these). */
   get(): Promise<T[]>;
+  /** The rows the open subscription holds now; used to drop rows a reconnect removed. */
+  getSync?(): T[] | undefined;
   watchRich(options?: { withSnapshot?: boolean }): AsyncIterable<RichUpdate<T>>;
 }
 

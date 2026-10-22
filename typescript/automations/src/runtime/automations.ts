@@ -1066,18 +1066,35 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     const rowKeys = new Map<string, string>();
     for (const row of snapshot) rowsByKey.set(source.rowKey(row), row);
     /** Apply an update; the row it leaves, or `undefined` for a removal. */
-    const apply = (update: RichUpdate<unknown>): unknown => {
+    /** A row's signal is forgotten, so no pending `stableFor` change of it can still fire. */
+    const forget = (key: string) => {
+      rowsByKey.delete(key);
+      latest.delete(key);
+    };
+    /** Apply an update: the row and its key, or `undefined` for a removal. */
+    const apply = (update: RichUpdate<unknown>): { row: unknown; key: string } | undefined => {
       if (update.type === 'created' || update.type === 'updated') {
         const row = update.type === 'created' ? update.data : update.after;
         const key = source.rowKey(row);
         rowKeys.set(update.key, key);
         rowsByKey.set(key, row);
-        return row;
+        return { row, key };
       }
       const key = update.lastKnown !== undefined ? source.rowKey(update.lastKnown) : rowKeys.get(update.key);
-      if (key !== undefined) rowsByKey.delete(key);
+      if (key !== undefined) forget(key);
       rowKeys.delete(update.key);
       return undefined;
+    };
+    /**
+     * After a reconnect the SDK replaces the list with a new snapshot and
+     * announces only the rows still present; drop the ones the view no
+     * longer has.
+     */
+    const pruneGone = () => {
+      const current = source.view.getSync?.();
+      if (!current) return;
+      const present = new Set(current.map((row) => source.rowKey(row)));
+      for (const key of [...rowsByKey.keys()]) if (!present.has(key)) forget(key);
     };
     // Let the reader drain what the stream already delivered (buffered
     // events resolve as microtasks, before this timer), then apply it in order
@@ -1094,12 +1111,17 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     while (attempt.active) {
       const update = await take();
       if (update === null || !attempt.active) return;
-      const row = apply(update);
+      const applied = apply(update);
+      if (update.type === 'created') pruneGone();
       rows = [...rowsByKey.values()];
       if (source.rowSignal) {
-        if (row === undefined) continue;
-        const signal = source.rowSignal(row);
-        if (!signal) continue;
+        if (applied === undefined) continue;
+        const signal = source.rowSignal(applied.row);
+        if (!signal) {
+          // It no longer passes the filter: its old signal must not fire.
+          latest.delete(applied.key);
+          continue;
+        }
         latest.set(signal[0], [signal[1], signal[2]]);
         await evaluate(signal[0], signal[1], signal[2]);
         continue;

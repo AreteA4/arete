@@ -70,6 +70,16 @@ export class FakeListView<T> implements ListViewLike<T> {
     return { [Symbol.asyncIterator]: () => feed };
   }
 
+  /**
+   * A reconnect: the list is replaced by `rows`, and subscribers hear only
+   * `created` for the rows present, as the SDK does after a resync.
+   */
+  reconnect(...rows: T[]) {
+    this.rows.clear();
+    for (const row of rows) this.rows.set(this.keyOf(row), row);
+    for (const feed of this.feeds) for (const [key, data] of this.rows) feed.push({ type: 'created', key, data });
+  }
+
   /** Change rows and tell every subscriber. */
   set(...rows: T[]) {
     for (const row of rows) {
