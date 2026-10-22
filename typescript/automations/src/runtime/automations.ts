@@ -392,6 +392,27 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   // Step jobs
   // -------------------------------------------------------------------------
 
+  /** The fees the landed transactions paid, from the chain; `null` when one cannot be read. */
+  const chargedFees = async (signatures: readonly (string | null)[]): Promise<bigint | null> => {
+    let total = 0n;
+    for (const signature of signatures) {
+      if (signature === null) continue; // never landed, so never charged
+      try {
+        const transaction = await simulator.call('getTransaction', [
+          signature,
+          { encoding: 'json', commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+        ]);
+        const fee = (transaction as { meta?: { fee?: unknown } } | null)?.meta?.fee;
+        if (typeof fee !== 'number' || !Number.isSafeInteger(fee) || fee < 0) return null;
+        total += BigInt(fee);
+      } catch (error) {
+        report(error, { phase: 'fees' });
+        return null;
+      }
+    }
+    return total;
+  };
+
   const outcomeOf = (job: StepJob, state: StepJobState, outcome: JobOutcome): AutomationOutcome => ({
     jobId: job.id,
     deliveryId: job.deliveryId,
@@ -433,11 +454,11 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       state: StepJobState,
       outcome: JobOutcome,
       progress: StepJob['progress'] | undefined = undefined,
+      ledger: NonNullable<Parameters<AutomationStore['jobs']['transition']>[1]['ledger']> = { void: true },
     ) => {
-      // Spending counts against a window only when the intent landed. A
-      // transaction that failed on chain still paid its fee, so its SOL stays.
+      // Spending counts against a window only when the intent landed.
       const landed = state === 'completed';
-      const voiding = state === 'chain_failed' ? { void: true, keepAssets: [SOL] } : { void: true };
+      const voiding = ledger;
       const moved = await store.jobs.transition(job.id, {
         worker,
         from: job.state,
@@ -681,7 +702,10 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
           switch (state.state) {
             case 'completed':
               return finish(job, 'completed', { code: 'completed' }, { ...job.progress, signatures });
-            case 'chain_failed':
+            case 'chain_failed': {
+              // The transfers rolled back but the fees were charged: the window
+              // keeps exactly the fees, or all the SOL when they cannot be read.
+              const fees = await chargedFees(signatures);
               return finish(
                 job,
                 'chain_failed',
@@ -690,7 +714,17 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
                   detail: state.transactions.filter((transaction) => transaction.error).map(({ index, error }) => ({ index, error })),
                 },
                 { ...job.progress, signatures },
+                fees === null
+                  ? { void: true, keepAssets: [SOL] }
+                  : {
+                      void: true,
+                      record:
+                        fees > 0n
+                          ? [{ wallet: job.request.wallet, deploymentId: job.deploymentId, asset: SOL, amount: fees.toString() }]
+                          : [],
+                    },
               );
+            }
             case 'rejected':
               return finish(job, 'rejected', { code: 'intent_rejected' }, { ...job.progress, signatures });
             case 'expired':
