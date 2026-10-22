@@ -80,13 +80,14 @@ export const feeOnlySimulator: Simulator = {
   },
 };
 
-interface IntentRecord {
+export interface IntentRecord {
   intent: ExecutionIntentV1;
   transactions: { index: number; transactionBase64: string }[];
   /** States `intents.get` returns once submitted, the last one repeating. */
   script: ProtocolIntentStatus[];
   reads: number;
   submitted: string[] | null;
+  partial: boolean;
 }
 
 export interface PrepareCall {
@@ -98,6 +99,8 @@ export interface PrepareCall {
 export interface FakeProtocolOptions {
   /** States after submit, per prepare generation (by idempotency key suffix). */
   script?: (key: string) => ProtocolIntentStatus[];
+  /** Report a chain failure as partial: an earlier transaction of the intent landed successfully. */
+  partialFailure?: (key: string) => boolean;
   /** Step availability per (step, wallet). Defaults to allowed. */
   allowed?: (step: string, wallet: string) => ProtocolStepAvailability;
   /** Runs inside prepare, before it answers. */
@@ -119,6 +122,8 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
   const submitCalls: { executionId: string; signed: string[] }[] = [];
   const allowedCalls: { instance: string; wallet: string }[] = [];
   const eventListeners: ProtocolEventsOptions['onEvent'][] = [];
+  const terminal = new Set<string>();
+  const instanceReads: string[] = [];
   let executions = 0;
 
   const stepClient = (step: string) => ({
@@ -142,16 +147,21 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
         keys: [wallet, VAULT, options.program ?? PROGRAM],
         instructions: [{ program: 2, accounts: [0, 1], data: [1, ...keyBytes] }],
       };
-      const bytes = wire(message, format);
+      const partial = options.partialFailure?.(key) ?? false;
+      const all = [wire(message, format)];
+      if (partial) {
+        all.push(wire({ ...message, instructions: [{ program: 2, accounts: [0, 1], data: [2, ...keyBytes] }] }, format));
+      }
       executions += 1;
       const executionId = `exec-${executions}`;
-      const intent = intentFor(wallet, format, [bytes], { executionId, step });
+      const intent = intentFor(wallet, format, all, { executionId, step });
       const record: IntentRecord = {
         intent,
-        transactions: [{ index: 0, transactionBase64: encodeBase64(bytes) }],
+        transactions: all.map((bytes, index) => ({ index, transactionBase64: encodeBase64(bytes) })),
         script: options.script?.(key) ?? ['submitting', 'completed'],
         reads: 0,
         submitted: null,
+        partial,
       };
       intents.set(executionId, record);
       byKey.set(key, executionId);
@@ -165,14 +175,21 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
       state = record.script[Math.min(record.reads, record.script.length - 1)]!;
       record.reads += 1;
     }
-    const signature =
+    const signatureOf = (index: number) =>
       record.submitted && state !== 'expired'
-        ? encodeBase58(decodeTransaction(decodeBase64(record.submitted[0]!)!).signatures[0]!)
+        ? encodeBase58(decodeTransaction(decodeBase64(record.submitted[index]!)!).signatures[0]!)
         : null;
+    const signature = signatureOf(0);
     return {
       executionId: record.intent.executionId,
       state,
-      transactions: [{ index: 0, signature, state, ...(state === 'chain_failed' ? { error: 'custom program error: 0x1' } : {}) }],
+      transactions:
+        state === 'chain_failed' && record.partial
+          ? [
+              { index: 0, signature, state: 'confirmed' },
+              { index: 1, signature: signatureOf(1), state, error: 'custom program error: 0x1' },
+            ]
+          : [{ index: 0, signature, state, ...(state === 'chain_failed' ? { error: 'custom program error: 0x1' } : {}) }],
     };
   };
 
@@ -208,6 +225,12 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
         return stateOf(record);
       },
     },
+    instances: {
+      async get(id: string) {
+        instanceReads.push(id);
+        return { terminal: terminal.has(id) };
+      },
+    },
     events(_instanceId, eventOptions) {
       eventListeners.push(eventOptions.onEvent);
       return { lastEventId: undefined, closed: false, close() {} };
@@ -220,6 +243,11 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
     submitCalls,
     allowedCalls,
     intents,
+    instanceReads,
+    /** Make an instance terminal. */
+    endInstance(id: string) {
+      terminal.add(id);
+    },
     /** Emit a stream event to every follower. */
     emit(event: string, id: number, instanceId = 'inst-1', participantId: string | null = null) {
       for (const listener of eventListeners) {

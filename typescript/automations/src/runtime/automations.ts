@@ -12,6 +12,18 @@ import type {
   ProtocolTypeMap,
 } from '@usearete/sdk';
 
+import { ed25519 } from '@noble/curves/ed25519';
+
+import {
+  type ConsentFields,
+  ConsentError,
+  consentMessage,
+  normalizeConsent,
+  SOL,
+  stepOutflows,
+  transactionOutflows,
+} from '../consent/consent';
+import { decodeBase58, encodeBase58 } from '../policy/encoding';
 import type { Cluster, Refusal, SignerPolicy } from '../policy/policy';
 import { checkPrepared, checkTarget } from '../policy/policy';
 import type { Simulator } from '../policy/simulator';
@@ -20,7 +32,7 @@ import { DEFAULT_TRANSACTION_FORMATS, negotiateTransactionFormat } from '../sign
 import type { ProtocolSigner } from '../signer/signer';
 import { isSignerRefusal } from '../signer/signer';
 import { checkPreparedAgainstIntent, checkSignedTransactions } from '../signer/verify';
-import type { AutomationStore, NewStepJob } from '../store/store';
+import type { AutomationStore, ConsentGrant, NewStepJob } from '../store/store';
 import { type Clock, type Duration, durationMs, systemClock } from './time';
 import {
   type Delivery,
@@ -44,6 +56,8 @@ export interface AutomationClient<TTypes extends ProtocolTypeMap = ProtocolTypeM
   submit(intent: ExecutionIntentV1 | string, signedTransactions: readonly (string | Uint8Array)[]): Promise<ProtocolIntentState>;
   readonly intents: { get(executionId: string): Promise<ProtocolIntentState> };
   events?(instanceId: string, options: ProtocolEventsOptions<TTypes>): ProtocolEventSubscription;
+  /** Used to end instance-scoped consent when the instance is terminal. */
+  readonly instances?: { get(id: string): Promise<{ readonly terminal: boolean }> };
 }
 
 interface PreparableStep {
@@ -85,6 +99,14 @@ export interface StepOptions {
 export interface HandlerContext<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
   readonly client: AutomationClient<TTypes>;
   readonly trigger: TriggerInfo;
+  /**
+   * Active consent grants in this deployment, for fan-out: every wallet the
+   * automations may act for. A starting set only; each step job checks
+   * consent again.
+   */
+  readonly consents: {
+    list(query?: { step?: StepName<TTypes> | (string & {}); instanceId?: string }): Promise<ConsentGrant[]>;
+  };
   /** A step request for the handler to return. Handlers never prepare steps themselves. */
   step<S extends StepName<TTypes>>(
     step: S,
@@ -138,6 +160,12 @@ export interface AutomationsOptions<TTypes extends ProtocolTypeMap = ProtocolTyp
   /** Before a pending intent is read again in a later claim. Defaults to 10s, doubling up to 5m. */
   readonly reconcileInterval?: Duration;
   readonly clock?: Clock;
+  /** Consent proofs: the host name users see in the message they sign. */
+  readonly consent?: {
+    readonly domain: string;
+    /** How long a proof message may wait to be signed and granted. Defaults to 10 minutes. */
+    readonly proofTtl?: Duration;
+  };
   /** Every step job that reaches a final state. */
   readonly onOutcome?: (outcome: AutomationOutcome) => void | Promise<void>;
   /** Step jobs refused by the policy or the signer checks. */
@@ -155,12 +183,45 @@ export interface WebhookHandlerOptions {
   readonly toleranceSeconds?: number;
 }
 
+/** A consent proof message for the user's wallet to sign. */
+export interface ConsentProofRequest {
+  /** The UTF-8 message, lines joined by `\n`. */
+  readonly message: string;
+  /** `message` as bytes, for `wallet.signMessage`. */
+  readonly bytes: Uint8Array;
+  readonly nonce: string;
+  /** Milliseconds since the epoch; send it back with the grant. */
+  readonly issuedAt: number;
+}
+
+export interface ConsentGrantInput extends ConsentFields {
+  readonly nonce: string;
+  readonly issuedAt: number;
+  /** The wallet's 64-byte Ed25519 signature over the message, or its base58 text. */
+  readonly signature: Uint8Array | string;
+}
+
+export interface ConsentApi {
+  /** Build the message to sign. Issues a single-use nonce. */
+  proofMessage(fields: ConsentFields): Promise<ConsentProofRequest>;
+  /**
+   * Verify the wallet's signature over the message rebuilt from `fields`,
+   * use the nonce, and store the grant. `warnings` lists what the signer
+   * reports missing on the provider side (no delegation, no provider policy).
+   */
+  grant(input: ConsentGrantInput): Promise<{ grant: ConsentGrant; warnings: string[] }>;
+  /** Revoke without a signature. Queued and running jobs see it before signing. */
+  revoke(input: { wallet: string; steps?: readonly string[]; instanceId?: string }): Promise<number>;
+  list(input: { wallet: string }): Promise<ConsentGrant[]>;
+}
+
 export interface WebhookResult {
   readonly status: number;
   readonly body: Record<string, unknown>;
 }
 
 export interface Automations<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
+  readonly consent: ConsentApi;
   /** Handle an emitted protocol event. */
   on<E extends EventName<TTypes>>(event: E, handler: Handler<AutomationEvent<E, EventState<TTypes, E>>, TTypes>): this;
   /** Handle a dispatched trigger (a cron tick, a view source). */
@@ -230,6 +291,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   const reconcileMs = durationMs(options.reconcileInterval ?? 10_000);
   const formats = options.transactionFormats ?? DEFAULT_TRANSACTION_FORMATS;
   const handlers = new Map<string, Handler<any, TTypes>>();
+  const proofTtlMs = durationMs(options.consent?.proofTtl ?? 600_000);
 
   const report = (error: unknown, context: { jobId?: string; phase: string }) => {
     try {
@@ -250,7 +312,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   // by deployment, so the store refuses a second one.
   let binding: Promise<void> | null = null;
   const bound = () => {
-    binding ??= store.bindDeployment(client.deploymentId).catch((error) => {
+    binding ??= store.bindDeployment(client.deploymentId).catch((error: unknown) => {
       binding = null;
       throw error;
     });
@@ -317,6 +379,80 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   // Step jobs
   // -------------------------------------------------------------------------
 
+  /**
+   * The ledger after a chain failure, per transaction: one that landed
+   * successfully keeps everything it moved; one that failed counts the fee
+   * it was charged (all its SOL when the fee cannot be read); one that never
+   * landed counts nothing.
+   */
+  const failedLedger = async (
+    job: StepJob,
+    state: ProtocolIntentState,
+  ): Promise<NonNullable<Parameters<AutomationStore['jobs']['transition']>[1]['ledger']>> => {
+    const saved = job.progress.outflows;
+    if (!saved) {
+      // Signed before outflows were saved per transaction: if any transaction
+      // landed, keep every entry; otherwise keep the fees, or all the SOL.
+      if (state.transactions.some((transaction) => transaction.signature !== null && !transaction.error)) return {};
+      const fees = await chargedFees(state.transactions.map((transaction) => transaction.signature));
+      return fees === null
+        ? { void: true, keepAssets: [SOL] }
+        : {
+            void: true,
+            record:
+              fees > 0n ? [{ wallet: job.request.wallet, deploymentId: job.deploymentId, asset: SOL, amount: fees.toString() }] : [],
+          };
+    }
+    const spent = new Map<string, bigint>();
+    const add = (asset: string, amount: bigint) => {
+      if (amount > 0n) spent.set(asset, (spent.get(asset) ?? 0n) + amount);
+    };
+    for (const transaction of state.transactions) {
+      const amounts = saved.find((entry) => entry.index === transaction.index)?.amounts ?? {};
+      if (transaction.signature === null) continue;
+      if (!transaction.error) {
+        for (const [asset, amount] of Object.entries(amounts)) add(asset, BigInt(amount));
+        continue;
+      }
+      const fee = await chargedFees([transaction.signature]);
+      add(SOL, fee ?? BigInt(amounts[SOL] ?? '0'));
+    }
+    // The rebuilt entries keep the signing time, so a late failure check
+    // cannot restart the window for spending that is already ageing out.
+    const recordedAt = job.progress.signedAt;
+    return {
+      void: true,
+      record: [...spent].map(([asset, amount]) => ({
+        wallet: job.request.wallet,
+        deploymentId: job.deploymentId,
+        asset,
+        amount: amount.toString(),
+        ...(recordedAt !== undefined ? { recordedAt } : {}),
+      })),
+    };
+  };
+
+  /** The fees the landed transactions paid, from the chain; `null` when one cannot be read. */
+  const chargedFees = async (signatures: readonly (string | null)[]): Promise<bigint | null> => {
+    let total = 0n;
+    for (const signature of signatures) {
+      if (signature === null) continue; // never landed, so never charged
+      try {
+        const transaction = await simulator.call('getTransaction', [
+          signature,
+          { encoding: 'json', commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+        ]);
+        const fee = (transaction as { meta?: { fee?: unknown } } | null)?.meta?.fee;
+        if (typeof fee !== 'number' || !Number.isSafeInteger(fee) || fee < 0) return null;
+        total += BigInt(fee);
+      } catch (error) {
+        report(error, { phase: 'fees' });
+        return null;
+      }
+    }
+    return total;
+  };
+
   const outcomeOf = (job: StepJob, state: StepJobState, outcome: JobOutcome): AutomationOutcome => ({
     jobId: job.id,
     deliveryId: job.deliveryId,
@@ -358,7 +494,11 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       state: StepJobState,
       outcome: JobOutcome,
       progress: StepJob['progress'] | undefined = undefined,
+      ledger: NonNullable<Parameters<AutomationStore['jobs']['transition']>[1]['ledger']> = { void: true },
     ) => {
+      // Spending counts against a window only when the intent landed.
+      const landed = state === 'completed';
+      const voiding = ledger;
       const moved = await store.jobs.transition(job.id, {
         worker,
         from: job.state,
@@ -366,13 +506,19 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
         now: clock.now(),
         outcome,
         ...(progress ? { progress } : {}),
+        ...(landed ? {} : { ledger: voiding }),
       });
       if (!moved) throw new LostLease();
       await notify(outcomeOf(progress ? { ...job, progress: { ...job.progress, ...progress } } : job, state, outcome));
     };
 
     /** Move `job` to another active state, keeping the lease. */
-    const advance = async (job: StepJob, state: StepJobState, progress?: Partial<StepJob['progress']>): Promise<StepJob> => {
+    const advance = async (
+      job: StepJob,
+      state: StepJobState,
+      progress?: Partial<StepJob['progress']>,
+      ledger?: NonNullable<Parameters<AutomationStore['jobs']['transition']>[1]['ledger']>,
+    ): Promise<StepJob> => {
       const moved = await store.jobs.transition(job.id, {
         worker,
         from: job.state,
@@ -380,6 +526,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
         now: clock.now(),
         keepLease: leaseUntil(),
         ...(progress ? { progress } : {}),
+        ...(ledger ? { ledger } : {}),
       });
       if (!moved) throw new LostLease();
       return { ...job, state, progress: { ...job.progress, ...progress } };
@@ -401,14 +548,64 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     const refuse = (job: StepJob, refusal: Refusal) =>
       finish(job, 'refused', { code: refusal.rule, reason: refusal.reason });
 
-    const consentFor = (job: StepJob) =>
-      store.consent.find({
+    /** The active grant for a job; instance-scoped grants end with their instance. */
+    const consentFor = async (job: StepJob): Promise<ConsentGrant | null> => {
+      const grant = await store.consent.find({
         wallet: job.request.wallet,
         deploymentId: job.deploymentId,
         step: job.request.step,
         instanceId: job.request.instance ?? null,
         now: clock.now(),
       });
+      if (grant?.instanceId && client.instances) {
+        const instance = await client.instances.get(grant.instanceId);
+        if (instance.terminal) {
+          await store.consent.revoke({
+            wallet: grant.wallet,
+            deploymentId: grant.deploymentId,
+            instanceId: grant.instanceId,
+            now: clock.now(),
+          });
+          return consentFor(job);
+        }
+      }
+      return grant;
+    };
+
+    /** The grant's limits against what this step moves, and the window spent so far. */
+    const checkLimits = async (job: StepJob, grant: ConsentGrant, outflows: Map<string, bigint>): Promise<Refusal | null> => {
+      for (const [asset, amount] of outflows) {
+        const limit = grant.limits.perExecution[asset];
+        if (limit === undefined) {
+          return {
+            rule: 'consent_limit',
+            reason: `the step moves ${amount} of ${asset} out of the wallet, and the consent sets no per-run limit for it`,
+          };
+        }
+        if (amount > BigInt(limit)) {
+          return {
+            rule: 'consent_limit',
+            reason: `the step moves ${amount} of ${asset} out of the wallet, over the consent's per-run limit of ${limit}`,
+          };
+        }
+        const window = grant.limits.perWindow[asset];
+        if (window) {
+          const spent = await store.ledger.spent({
+            wallet: job.request.wallet,
+            deploymentId: job.deploymentId,
+            asset,
+            since: clock.now() - window.windowMs,
+          });
+          if (spent + amount > BigInt(window.amount)) {
+            return {
+              rule: 'consent_window',
+              reason: `the step moves ${amount} of ${asset}; with ${spent} already moved in the window that exceeds the consent's limit of ${window.amount}`,
+            };
+          }
+        }
+      }
+      return null;
+    };
 
     /** Prepare, check, sign and submit a `running` step job. */
     const attempt = async (job: StepJob): Promise<void> => {
@@ -478,10 +675,14 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       });
       if (refusal) return refuse(job, refusal);
       if (!(await store.jobs.renew(job.id, worker, leaseUntil().until))) throw new LostLease();
-      // Consent can be revoked while the step was prepared and simulated.
-      if (!(await consentFor(job))) {
+      // Consent can be revoked or changed while the step was prepared and simulated.
+      const grant = await consentFor(job);
+      if (!grant) {
         return finish(job, 'skipped', { code: 'no_consent', reason: 'consent was revoked before signing' });
       }
+      const outflows = stepOutflows(summary);
+      const overLimit = await checkLimits(job, grant, outflows);
+      if (overLimit) return refuse(job, overLimit);
       // The signer gets copies; the checks below compare against a baseline it never had.
       const baseline = transactions.map(({ index, transactionBase64 }) => ({ index, transactionBase64 }));
       let signed: string[];
@@ -497,7 +698,20 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       }
       const tampered = checkSignedTransactions({ wallet, intent, prepared: baseline, signed: [...signed] });
       if (tampered) return refuse(job, tampered);
-      const saved = await advance(job, 'signed', { format, intent, prepared: baseline, signed });
+      // Recorded with the signed bytes, before submit, so a crash cannot let a
+      // step escape its window; voided if the intent never lands.
+      const perTransaction = transactionOutflows(summary).map(({ index, amounts }) => ({
+        index,
+        amounts: Object.fromEntries([...amounts].map(([asset, amount]) => [asset, amount.toString()])),
+      }));
+      const saved = await advance(job, 'signed', { format, intent, prepared: baseline, signed, outflows: perTransaction, signedAt: clock.now() }, {
+        record: [...outflows].map(([asset, amount]) => ({
+          wallet,
+          deploymentId: job.deploymentId,
+          asset,
+          amount: amount.toString(),
+        })),
+      });
       return submit(saved);
     };
 
@@ -532,7 +746,8 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
           switch (state.state) {
             case 'completed':
               return finish(job, 'completed', { code: 'completed' }, { ...job.progress, signatures });
-            case 'chain_failed':
+            case 'chain_failed': {
+              const ledger = await failedLedger(job, state);
               return finish(
                 job,
                 'chain_failed',
@@ -541,7 +756,9 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
                   detail: state.transactions.filter((transaction) => transaction.error).map(({ index, error }) => ({ index, error })),
                 },
                 { ...job.progress, signatures },
+                ledger,
               );
+            }
             case 'rejected':
               return finish(job, 'rejected', { code: 'intent_rejected' }, { ...job.progress, signatures });
             case 'expired':
@@ -571,13 +788,12 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       if (job.progress.generation >= 1) {
         return finish(job, 'expired', { code: 'expired', reason: 'the intent expired again after preparing it a second time' });
       }
-      const fresh = await advance(job, 'running', {
-        generation: job.progress.generation + 1,
-        intent: undefined,
-        prepared: undefined,
-        signed: undefined,
-        signatures: undefined,
-      });
+      const fresh = await advance(
+        job,
+        'running',
+        { generation: job.progress.generation + 1, intent: undefined, prepared: undefined, signed: undefined, signatures: undefined },
+        { void: true },
+      );
       return attempt(fresh);
     };
 
@@ -638,6 +854,25 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       const ctx: HandlerContext<TTypes> = {
         client,
         trigger: { name: delivery.name, id: delivery.id, source: delivery.source, receivedAt: delivery.receivedAt },
+        consents: {
+          async list(query = {}) {
+            const grants = await store.consent.active({
+              deploymentId: client.deploymentId,
+              ...(query.step !== undefined ? { step: query.step } : {}),
+              now: clock.now(),
+            });
+            if (query.instanceId === undefined) return grants;
+            // One effective grant per wallet: the instance's own grant wins over
+            // one for every instance, as consent checks choose at run time.
+            const effective = new Map<string, ConsentGrant>();
+            for (const grant of grants) {
+              if (grant.instanceId !== null && grant.instanceId !== query.instanceId) continue;
+              const current = effective.get(grant.wallet);
+              if (!current || (current.instanceId === null && grant.instanceId !== null)) effective.set(grant.wallet, grant);
+            }
+            return [...effective.values()];
+          },
+        },
         step(step, request, stepOptions = {}) {
           return {
             step,
@@ -700,7 +935,96 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   let running = false;
   let loops: Promise<void>[] = [];
 
+  const domain = () => {
+    if (!options.consent?.domain) {
+      throw new ConsentError('no_domain', 'createAutomations needs consent.domain to build consent proofs');
+    }
+    return options.consent.domain;
+  };
+
+  const consent: ConsentApi = {
+    async proofMessage(fields) {
+      await bound();
+      const normalized = normalizeConsent(fields);
+      if (normalized.deploymentId !== client.deploymentId) {
+        throw new ConsentError('invalid_fields', `consent is for ${normalized.deploymentId}, this client runs ${client.deploymentId}`);
+      }
+      const random = new Uint8Array(16);
+      (globalThis.crypto as Crypto).getRandomValues(random);
+      const nonce = encodeBase58(random);
+      const issuedAt = clock.now();
+      const message = consentMessage(domain(), normalized, nonce, issuedAt);
+      await store.consent.issueNonce(nonce, issuedAt + proofTtlMs);
+      return { message, bytes: new TextEncoder().encode(message), nonce, issuedAt };
+    },
+    async grant(input) {
+      await bound();
+      const now = clock.now();
+      const normalized = normalizeConsent(input);
+      if (normalized.deploymentId !== client.deploymentId) {
+        throw new ConsentError('invalid_fields', `consent is for ${normalized.deploymentId}, this client runs ${client.deploymentId}`);
+      }
+      if (normalized.expiresAt <= now) throw new ConsentError('expired', 'the consent has already expired');
+      if (!Number.isSafeInteger(input.issuedAt) || input.issuedAt > now + 60_000 || now - input.issuedAt > proofTtlMs) {
+        throw new ConsentError('proof_stale', 'the proof was issued too long ago; build and sign a new one');
+      }
+      const message = consentMessage(domain(), normalized, input.nonce, input.issuedAt);
+      const signature = typeof input.signature === 'string' ? decodeBase58(input.signature) : input.signature;
+      const walletKey = decodeBase58(normalized.wallet);
+      let valid = false;
+      try {
+        valid =
+          signature !== null &&
+          signature.length === 64 &&
+          walletKey !== null &&
+          ed25519.verify(signature, new TextEncoder().encode(message), walletKey);
+      } catch {
+        valid = false;
+      }
+      if (!valid) {
+        throw new ConsentError('invalid_signature', 'the signature is not the wallet\'s over this consent');
+      }
+      if (!(await store.consent.useNonce(input.nonce, now))) {
+        throw new ConsentError('nonce_not_usable', 'the nonce was not issued, has expired, or was already used');
+      }
+      const grant: ConsentGrant = {
+        ...normalized,
+        grantedAt: now,
+        revokedAt: null,
+        proof: { message, signature: encodeBase58(signature!), nonce: input.nonce, issuedAt: input.issuedAt },
+      };
+      await store.consent.put(grant);
+      const warnings: string[] = [];
+      let status: Awaited<ReturnType<NonNullable<ProtocolSigner['delegationStatus']>>> | undefined;
+      try {
+        status = signer.delegationStatus ? await signer.delegationStatus(normalized.wallet) : undefined;
+      } catch (error) {
+        // The grant is stored; a provider outage must not report it as failed.
+        warnings.push(`the ${signer.kind} signer could not report its delegation: ${String((error as Error)?.message ?? error)}`);
+        return { grant, warnings };
+      }
+      if (!status) {
+        warnings.push(`the ${signer.kind} signer cannot report whether a provider policy bounds what it signs`);
+      } else {
+        if (!status.delegated) warnings.push(`the ${signer.kind} signer has no delegated access to ${normalized.wallet}`);
+        if (!status.providerPolicy) {
+          warnings.push(`no provider policy bounds what the ${signer.kind} signer may sign for ${normalized.wallet}`);
+        }
+      }
+      return { grant, warnings };
+    },
+    async revoke(input) {
+      await bound();
+      return store.consent.revoke({ ...input, deploymentId: client.deploymentId, now: clock.now() });
+    },
+    async list(input) {
+      await bound();
+      return store.consent.list(input);
+    },
+  };
+
   const automations: Automations<TTypes> = {
+    consent,
     on(name: string, handler: Handler<any, TTypes>) {
       handlers.set(name, handler);
       return automations;

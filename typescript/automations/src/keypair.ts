@@ -44,6 +44,13 @@ export function keypairSigner(
     async canSign(wallet) {
       return wallet === publicKey;
     },
+    async delegationStatus(wallet) {
+      return {
+        delegated: wallet === publicKey,
+        providerPolicy: false,
+        detail: 'a local keypair has no provider policy; use it for development only',
+      };
+    },
     async signTransactions({ wallet, transactions }: SignTransactionsInput) {
       if (wallet !== publicKey) {
         throw new Error(`this keypair signs for ${publicKey}, not ${wallet}`);

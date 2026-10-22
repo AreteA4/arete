@@ -1,89 +1,17 @@
 import { signWebhook } from '@usearete/sdk';
 import { describe, expect, it } from 'vitest';
 
-import { keypairSigner } from '../keypair';
 import type { ProtocolSigner } from '../signer/signer';
 import { SignerRefusal } from '../signer/signer';
-import { memoryStore } from '../store/memory';
 import { runStoreConformance } from '../store/conformance';
+import { memoryStore } from '../store/memory';
 import type { AutomationStore } from '../store/store';
-import {
-  DEPLOYMENT,
-  fakeClock,
-  type FakeProtocolOptions,
-  fakeProtocol,
-  feeOnlySimulator,
-  policy,
-  walletOf,
-  walletSeed,
-} from '../test-support/fake-protocol';
-import { type AutomationOutcome, type AutomationsOptions, createAutomations } from './automations';
+import { DEPLOYMENT, fakeProtocol, feeOnlySimulator, policy } from '../test-support/fake-protocol';
+import { ALICE, BOB, harness, SECRET, storedGrant, walletsSigner } from '../test-support/harness';
+import { createAutomations } from './automations';
 import { scheduleSlot } from './time';
-import type { StepJob } from './types';
 
 runStoreConformance('memoryStore', async () => memoryStore(), { describe, it, expect });
-
-const ALICE_SEED = walletSeed(1);
-const ALICE = walletOf(ALICE_SEED);
-const BOB_SEED = walletSeed(2);
-const BOB = walletOf(BOB_SEED);
-const SECRET = 'whsec_test';
-
-/** A signer for both test wallets. */
-function walletsSigner(): ProtocolSigner {
-  const alice = keypairSigner(ALICE_SEED);
-  const bob = keypairSigner(BOB_SEED);
-  return {
-    kind: 'keypair',
-    supportedTransactionFormats: ['v1', 'v0'],
-    canSign: async (wallet) => wallet === ALICE || wallet === BOB,
-    signTransactions: (input) => (input.wallet === ALICE ? alice : bob).signTransactions(input),
-  };
-}
-
-function harness(
-  protocol: FakeProtocolOptions = {},
-  overrides: Partial<AutomationsOptions> & { store?: AutomationStore } = {},
-) {
-  const fake = fakeProtocol(protocol);
-  const clock = fakeClock();
-  const store = overrides.store ?? memoryStore();
-  const outcomes: AutomationOutcome[] = [];
-  const refused: AutomationOutcome[] = [];
-  const rejected: AutomationOutcome[] = [];
-  const errors: unknown[] = [];
-  const make = (worker: string) =>
-    createAutomations({
-      client: fake.client,
-      signer: walletsSigner(),
-      policy,
-      simulator: feeOnlySimulator,
-      store,
-      cluster: 'devnet',
-      clock,
-      worker,
-      trackInterval: '1s',
-      trackFor: '5s',
-      onOutcome: (outcome) => void outcomes.push(outcome),
-      onRefused: (outcome) => void refused.push(outcome),
-      onRejected: (outcome) => void rejected.push(outcome),
-      onError: (error) => void errors.push(error),
-      ...overrides,
-    });
-  const automations = make('w1');
-  const grant = (wallet: string, steps = ['deposit', 'withdraw', 'rebalance', 'claim'], instanceId: string | null = null) =>
-    store.consent.put({
-      wallet,
-      deploymentId: DEPLOYMENT,
-      instanceId,
-      steps,
-      expiresAt: clock.now() + 86_400_000,
-      grantedAt: clock.now(),
-      revokedAt: null,
-    });
-  const stepJobs = async () => (await store.jobs.list({ kind: 'step' })) as StepJob[];
-  return { fake, clock, store, automations, make, outcomes, refused, rejected, errors, grant, stepJobs };
-}
 
 /** Deposit for each wallet named in the dispatch payload. */
 function onDeposits(automations: ReturnType<typeof harness>['automations'], options: { cooldown?: '1h' } = {}) {
@@ -733,15 +661,7 @@ describe('scheduleSlot', () => {
 describe('the worker loop', () => {
   it('starts, runs jobs and stops', async () => {
     const h = harness({}, { clock: { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5))) } });
-    await h.store.consent.put({
-      wallet: ALICE,
-      deploymentId: DEPLOYMENT,
-      instanceId: null,
-      steps: ['deposit'],
-      expiresAt: Date.now() + 60_000,
-      grantedAt: Date.now(),
-      revokedAt: null,
-    });
+    await h.store.consent.put(storedGrant(ALICE, Date.now(), { steps: ['deposit'] }));
     onDeposits(h.automations);
     h.automations.start({ pollInterval: 5, concurrency: 2 });
     await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 'loop' });

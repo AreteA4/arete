@@ -38,6 +38,18 @@ export interface ProtocolSigner {
   canSign(wallet: string): Promise<boolean>;
   /** The signed transactions, base64 wire bytes, one per input in the same order. */
   signTransactions(input: SignTransactionsInput): Promise<string[]>;
+  /**
+   * Whether the backend holds delegated access to `wallet`, and whether a
+   * provider-side policy bounds what it may sign. Granting consent warns
+   * when either is missing.
+   */
+  delegationStatus?(wallet: string): Promise<DelegationStatus>;
+}
+
+export interface DelegationStatus {
+  readonly delegated: boolean;
+  readonly providerPolicy: boolean;
+  readonly detail?: string;
 }
 
 /**

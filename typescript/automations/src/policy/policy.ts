@@ -93,7 +93,11 @@ export type RefusalRule =
   /** The signer cannot sign for the wallet (no key, no session signer). */
   | 'signer_unavailable'
   /** The wallet provider's own policy refused to sign. */
-  | 'provider_policy';
+  | 'provider_policy'
+  /** The step moves more than the consent allows in one run, or an asset it sets no limit for. */
+  | 'consent_limit'
+  /** The step would take the wallet past the consent's limit for its window. */
+  | 'consent_window';
 
 /** A policy refusal: the rule and why. */
 export interface Refusal {

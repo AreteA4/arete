@@ -28,6 +28,22 @@ export interface ConformanceTestApi {
 const LEASE = 30_000;
 const T0 = 1_700_000_000_000;
 
+function grantFor(wallet: string, overrides: Partial<ConsentGrant> = {}): ConsentGrant {
+  return {
+    wallet,
+    deploymentId: 'dep-1',
+    instanceId: null,
+    steps: ['deposit', 'withdraw'],
+    limits: { perExecution: { SOL: '10000' }, perWindow: { SOL: { amount: '30000', windowMs: 86_400_000 } } },
+    params: { amount: '1000', nested: { weekday: 'fri' } },
+    expiresAt: T0 + 1000,
+    grantedAt: T0,
+    revokedAt: null,
+    proof: { message: 'm', signature: 's', nonce: 'n', issuedAt: T0 },
+    ...overrides,
+  };
+}
+
 function delivery(id: string, name = 'tick'): Delivery {
   return { id, name, source: 'dispatch', payload: { n: id }, receivedAt: T0 };
 }
@@ -240,15 +256,7 @@ export function runStoreConformance(
 
     it('stores, finds and revokes consent grants', async () => {
       const store = await createStore();
-      const grant: ConsentGrant = {
-        wallet: 'alice',
-        deploymentId: 'dep-1',
-        instanceId: null,
-        steps: ['deposit', 'withdraw'],
-        expiresAt: T0 + 1000,
-        grantedAt: T0,
-        revokedAt: null,
-      };
+      const grant = grantFor('alice');
       await store.consent.put(grant);
       await store.consent.put({ ...grant, instanceId: 'inst-2', steps: ['claim'] });
       const query = { wallet: 'alice', deploymentId: 'dep-1', step: 'deposit', instanceId: 'inst-1', now: T0 };
@@ -263,6 +271,123 @@ export function runStoreConformance(
       expect(await store.consent.revoke({ wallet: 'alice', deploymentId: 'dep-1', now: T0 + 2 })).toBe(2);
       expect(await store.consent.find({ ...query, step: 'withdraw' })).toBeNull();
       expect((await store.consent.list({ wallet: 'alice' })).length).toBe(2);
+    });
+
+    it('keeps every field of a grant and replaces it per deployment and instance', async () => {
+      const store = await createStore();
+      const grant = grantFor('alice');
+      await store.consent.put(grant);
+      expect(await store.consent.list({ wallet: 'alice' })).toEqual([grant]);
+      const raised = grantFor('alice', { limits: { perExecution: { SOL: '20000' }, perWindow: {} } });
+      await store.consent.put(raised);
+      expect(await store.consent.list({ wallet: 'alice' })).toEqual([raised]);
+    });
+
+    it('prefers the instance grant and revokes by instance', async () => {
+      const store = await createStore();
+      await store.consent.put(grantFor('alice'));
+      await store.consent.put(grantFor('alice', { instanceId: 'inst-1', params: { scoped: true } }));
+      const query = { wallet: 'alice', deploymentId: 'dep-1', step: 'deposit', instanceId: 'inst-1', now: T0 };
+      expect((await store.consent.find(query))?.params).toEqual({ scoped: true });
+      expect(await store.consent.revoke({ wallet: 'alice', deploymentId: 'dep-1', instanceId: 'inst-1', now: T0 + 1 })).toBe(1);
+      expect((await store.consent.find(query))?.instanceId).toBeNull();
+    });
+
+    it('lists the active grants of a deployment for fan-out', async () => {
+      const store = await createStore();
+      await store.consent.put(grantFor('alice'));
+      await store.consent.put(grantFor('bob', { steps: ['claim'] }));
+      await store.consent.put(grantFor('carol', { expiresAt: T0 }));
+      await store.consent.put(grantFor('dave', { revokedAt: T0 }));
+      await store.consent.put(grantFor('erin', { deploymentId: 'dep-2' }));
+      const wallets = async (step?: string) =>
+        (await store.consent.active({ deploymentId: 'dep-1', ...(step ? { step } : {}), now: T0 }))
+          .map((grant) => grant.wallet)
+          .sort();
+      expect(await wallets()).toEqual(['alice', 'bob']);
+      expect(await wallets('deposit')).toEqual(['alice']);
+    });
+
+    it('uses an issued nonce once, before it expires', async () => {
+      const store = await createStore();
+      expect(await store.consent.useNonce('never-issued', T0)).toBe(false);
+      await store.consent.issueNonce('n1', T0 + 100);
+      await store.consent.issueNonce('n2', T0 + 100);
+      const uses = await Promise.all([store.consent.useNonce('n1', T0), store.consent.useNonce('n1', T0)]);
+      expect(uses.filter(Boolean).length).toBe(1);
+      expect(await store.consent.useNonce('n1', T0 + 1)).toBe(false);
+      expect(await store.consent.useNonce('n2', T0 + 100)).toBe(false);
+    });
+
+    it('writes and voids ledger entries with the transition they belong to', async () => {
+      const store = await createStore();
+      await seedSteps(store, 'd1', [step('d1', 'alice')]);
+      const job = await store.jobs.claimNext({ worker: 'w1', leaseMs: LEASE, now: T0 });
+      const spent = (since: number, asset = 'SOL') =>
+        store.ledger.spent({ wallet: 'alice', deploymentId: 'dep-1', asset, since });
+      const record = { record: [{ wallet: 'alice', deploymentId: 'dep-1', asset: 'SOL', amount: '5000' }] };
+      // A transition that fails writes nothing.
+      expect(
+        await store.jobs.transition(job!.id, { worker: 'w2', from: 'running', to: 'signed', now: T0 + 10, ledger: record }),
+      ).toBe(false);
+      expect(await spent(T0)).toBe(0n);
+      expect(
+        await store.jobs.transition(job!.id, {
+          worker: 'w1',
+          from: 'running',
+          to: 'signed',
+          now: T0 + 10,
+          keepLease: { until: T0 + LEASE },
+          ledger: record,
+        }),
+      ).toBe(true);
+      expect(await spent(T0)).toBe(5000n);
+      expect(await spent(T0 + 11)).toBe(0n);
+      expect(await spent(T0, 'other')).toBe(0n);
+      const [entry] = await store.ledger.list({ wallet: 'alice' });
+      expect(entry).toEqual({
+        jobId: job!.id,
+        wallet: 'alice',
+        deploymentId: 'dep-1',
+        asset: 'SOL',
+        amount: '5000',
+        recordedAt: T0 + 10,
+        voidedAt: null,
+      });
+      expect(
+        await store.jobs.transition(job!.id, { worker: 'w1', from: 'signed', to: 'expired', now: T0 + 20, ledger: { void: true } }),
+      ).toBe(true);
+      expect(await spent(T0)).toBe(0n);
+      expect((await store.ledger.list({ wallet: 'alice' }))[0]!.voidedAt).toBe(T0 + 20);
+    });
+
+    it('keeps the ledger entries of the assets a void keeps', async () => {
+      const store = await createStore();
+      await seedSteps(store, 'd1', [step('d1', 'alice')]);
+      const job = await store.jobs.claimNext({ worker: 'w1', leaseMs: LEASE, now: T0 });
+      await store.jobs.transition(job!.id, {
+        worker: 'w1',
+        from: 'running',
+        to: 'signed',
+        now: T0,
+        keepLease: { until: T0 + LEASE },
+        ledger: {
+          record: [
+            { wallet: 'alice', deploymentId: 'dep-1', asset: 'SOL', amount: '5000' },
+            { wallet: 'alice', deploymentId: 'dep-1', asset: 'mint', amount: '7' },
+          ],
+        },
+      });
+      await store.jobs.transition(job!.id, {
+        worker: 'w1',
+        from: 'signed',
+        to: 'chain_failed',
+        now: T0 + 1,
+        ledger: { void: true, keepAssets: ['SOL'] },
+      });
+      const spent = (asset: string) => store.ledger.spent({ wallet: 'alice', deploymentId: 'dep-1', asset, since: 0 });
+      expect(await spent('SOL')).toBe(5000n);
+      expect(await spent('mint')).toBe(0n);
     });
 
     it('belongs to one deployment', async () => {

@@ -13,7 +13,7 @@ import {
   TERMINAL_DELIVERY_STATES,
   TERMINAL_STEP_STATES,
 } from '../runtime/types';
-import { type AutomationStore, type ConsentGrant, type NewStepJob, StoreDeploymentError, type TransitionInput } from './store';
+import { type AutomationStore, type ConsentGrant, type LedgerEntry, type NewStepJob, StoreDeploymentError, type TransitionInput } from './store';
 
 function isActiveStep(job: Job): boolean {
   return job.kind === 'step' && (ACTIVE_STEP_STATES as readonly string[]).includes(job.state);
@@ -36,6 +36,8 @@ export function memoryStore(): AutomationStore {
   const sequence = new Map<string, number>();
   const grants: ConsentGrant[] = [];
   let deployment: string | null = null;
+  const nonces = new Map<string, { expiresAt: number; used: boolean }>();
+  const ledger: LedgerEntry[] = [];
 
   const insert = (job: Job) => {
     jobs.set(job.id, job);
@@ -136,6 +138,16 @@ export function memoryStore(): AutomationStore {
           return false;
         }
         jobs.set(id, next);
+        if (input.ledger?.void) {
+          for (const [index, entry] of ledger.entries()) {
+            if (entry.jobId === id && entry.voidedAt === null && !input.ledger.keepAssets?.includes(entry.asset)) {
+              ledger[index] = { ...entry, voidedAt: input.now };
+            }
+          }
+        }
+        for (const entry of input.ledger?.record ?? []) {
+          ledger.push({ ...clone(entry), jobId: id, recordedAt: entry.recordedAt ?? input.now, voidedAt: null });
+        }
         return true;
       },
       async renew(id, worker, until) {
@@ -217,7 +229,7 @@ export function memoryStore(): AutomationStore {
         grants.push(clone(grant));
       },
       async find({ wallet, deploymentId, step, instanceId, now }) {
-        const match = grants.find(
+        const candidates = grants.filter(
           (grant) =>
             grant.wallet === wallet &&
             grant.deploymentId === deploymentId &&
@@ -226,22 +238,64 @@ export function memoryStore(): AutomationStore {
             grant.revokedAt === null &&
             grant.expiresAt > now,
         );
+        // A grant scoped to the instance is more specific than one for every instance.
+        const match = candidates.find((grant) => grant.instanceId !== null) ?? candidates[0];
         return match ? clone(match) : null;
       },
-      async revoke({ wallet, deploymentId, steps, now }) {
+      async revoke({ wallet, deploymentId, steps, instanceId, now }) {
         let revoked = 0;
         for (const [index, grant] of grants.entries()) {
           if (grant.wallet !== wallet || grant.deploymentId !== deploymentId || grant.revokedAt !== null) continue;
+          if (instanceId !== undefined && grant.instanceId !== instanceId) continue;
           if (steps && !grant.steps.some((step) => steps.includes(step))) continue;
           const remaining = steps ? grant.steps.filter((step) => !steps.includes(step)) : [];
-          grants[index] =
-            remaining.length > 0 ? { ...grant, steps: remaining } : { ...grant, revokedAt: now };
+          grants[index] = remaining.length > 0 ? { ...grant, steps: remaining } : { ...grant, revokedAt: now };
           revoked += 1;
         }
         return revoked;
       },
       async list({ wallet }) {
         return grants.filter((grant) => grant.wallet === wallet).map(clone);
+      },
+      async active({ deploymentId, step, now }) {
+        return grants
+          .filter(
+            (grant) =>
+              grant.deploymentId === deploymentId &&
+              grant.revokedAt === null &&
+              grant.expiresAt > now &&
+              (step === undefined || grant.steps.includes(step)),
+          )
+          .map(clone);
+      },
+      async issueNonce(nonce, expiresAt) {
+        if (!nonces.has(nonce)) nonces.set(nonce, { expiresAt, used: false });
+      },
+      async useNonce(nonce, now) {
+        const issued = nonces.get(nonce);
+        if (!issued || issued.used || issued.expiresAt <= now) return false;
+        nonces.set(nonce, { ...issued, used: true });
+        return true;
+      },
+    },
+    ledger: {
+      async spent({ wallet, deploymentId, asset, since }) {
+        let total = 0n;
+        for (const entry of ledger) {
+          if (
+            entry.wallet === wallet &&
+            entry.deploymentId === deploymentId &&
+            entry.asset === asset &&
+            entry.voidedAt === null &&
+            entry.recordedAt >= since
+          ) {
+            total += BigInt(entry.amount);
+          }
+        }
+        return total;
+      },
+      async list({ wallet }) {
+        return ledger.filter((entry) => entry.wallet === wallet).map(clone);
       },
     },
   };
