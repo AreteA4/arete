@@ -211,6 +211,7 @@ fn sibling_registration() -> HookAction {
             instruction_type: CONTRIBUTE.to_string(),
             pda_from_sibling: true,
             seed_from_sibling: false,
+            required_fields: Default::default(),
         }),
         seed_expr: Some(instance_id()),
         guard: Some(binary(
@@ -636,4 +637,64 @@ fn identical_pathless_sibling_redelivery_keeps_a_newer_mapping() {
     contribute(&mut vm, &bytecode, "sig-3", "SharedPosition", 2);
     assert_eq!(instance(&vm, "new")["raised"], json!(before + 2));
     assert_eq!(instance(&vm, "old")["raised"], 40);
+}
+
+#[test]
+fn sibling_predicates_filter_runtime_legs_before_and_after_memo() {
+    let mut registration = sibling_registration();
+    if let HookAction::RegisterPdaMapping {
+        sibling: Some(selector),
+        ..
+    } = &mut registration
+    {
+        selector.required_fields.insert(
+            "__update_context.protocol_activity_attestation".into(),
+            json!(ATTESTATION),
+        );
+    }
+    let bytecode = MultiEntityBytecode::new()
+        .add_entity(ENTITY.to_string(), instance_spec(registration), 0)
+        .build();
+    for memo_first in [false, true] {
+        let mut vm = VmContext::new();
+        let feed = |vm: &mut VmContext| {
+            for (path, position, key) in [
+                ("0", "Treasury", ""),
+                ("2", "Vault", ATTESTATION),
+                ("3", "CreatorFee", ""),
+            ] {
+                let ctx = context("sig-predicate", path)
+                    .with_metadata("protocol_activity_attestation".into(), json!(key));
+                vm.process_event(
+                    &bytecode,
+                    json!({"data":{"amount":40},"accounts":{"position":position}}),
+                    CONTRIBUTE,
+                    Some(&ctx),
+                    None,
+                )
+                .unwrap();
+            }
+        };
+        if !memo_first {
+            feed(&mut vm);
+        }
+        memo(
+            &mut vm,
+            &bytecode,
+            "sig-predicate",
+            "arete:p2:inst-1:-:a",
+            ATTESTATION,
+        );
+        if memo_first {
+            feed(&mut vm);
+        }
+        // Only the operation's account registers; subsequent direct updates
+        // on fee destinations must not route into this instance.
+        let before = instance(&vm, "inst-1")["raised"].clone();
+        contribute(&mut vm, &bytecode, "sig-other", "Treasury", 99);
+        contribute(&mut vm, &bytecode, "sig-other2", "CreatorFee", 99);
+        assert_eq!(instance(&vm, "inst-1")["raised"], before);
+        contribute(&mut vm, &bytecode, "sig-other3", "Vault", 2);
+        assert_eq!(instance(&vm, "inst-1")["raised"], json!(42));
+    }
 }

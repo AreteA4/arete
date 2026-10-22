@@ -93,6 +93,9 @@ pub struct StackSourceOptions {
     /// `interim` (the default) or `full`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<StackProfile>,
+    /// Hosted runtime capability; kept opt-in until runtime deployment.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub operation_boundaries: bool,
     /// Program sources by alias.
     pub programs: BTreeMap<String, StackProgramSource>,
     /// Full profile: the deployment revision's attestation public key (base58).
@@ -1287,6 +1290,55 @@ fn memo_context(spec: &ProtocolSpecV1, options: &StackSourceOptions) -> GenResul
 // Entry point
 // ---------------------------------------------------------------------------
 
+fn guard_operation_activity(value: &mut Value, sources: &[String], attestation: &str) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                guard_operation_activity(value, sources, attestation);
+            }
+        }
+        Value::Object(object) => {
+            if object.get("sibling").is_some_and(Value::is_string) {
+                object.insert(
+                    "sibling_where".into(),
+                    json!({"__protocol_activity_attestation":attestation}),
+                );
+            }
+            let references = match object.get("from") {
+                Some(Value::String(from)) => vec![from.as_str()],
+                Some(Value::Array(from)) => from.iter().filter_map(Value::as_str).collect(),
+                _ => vec![],
+            };
+            if references.iter().any(|reference| {
+                sources.iter().any(|source| {
+                    *reference == source || reference.starts_with(&format!("{source}."))
+                })
+            }) {
+                let member = format!(
+                    "__protocol_activity_attestation == {}",
+                    literal(attestation)
+                );
+                let guard =
+                    if object.get("via").and_then(Value::as_str) == Some("instance_accounts") {
+                        "__protocol_attestation == \"\" || __protocol_activity_attestation != \"\""
+                            .to_string()
+                    } else {
+                        member
+                    };
+                let guard = match object.get("guard").and_then(Value::as_str) {
+                    Some(existing) => format!("({existing}) && ({guard})"),
+                    None => guard,
+                };
+                object.insert("guard".into(), Value::String(guard));
+            }
+            for value in object.values_mut() {
+                guard_operation_activity(value, sources, attestation);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Generate the protocol stack source of a validated spec.
 ///
 /// The output depends only on `spec` and `options`. With the TypeScript
@@ -1369,6 +1421,16 @@ pub fn generate_stack_source(
                 "ProtocolParticipant".into(),
                 full_participant_entity(&steps, &groups, &ctx)?,
             );
+            if options.operation_boundaries {
+                let attestation = options
+                    .attestation
+                    .as_deref()
+                    .expect("full context validated");
+                let sources = all_sources(&groups);
+                for entity in entities.values_mut() {
+                    guard_operation_activity(entity, &sources, attestation);
+                }
+            }
         }
     }
 

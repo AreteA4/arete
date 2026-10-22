@@ -160,6 +160,8 @@ export type StackProgramSource =
 export interface GenerateStackSourceOptions {
   /** `interim` (default) or `full`. */
   profile?: StackProfile;
+  /** Hosted runtime capability: only operation-span instructions contribute activity. */
+  operationBoundaries?: boolean;
   /** Program sources by alias. */
   programs?: Readonly<Record<string, StackProgramSource>>;
   /** Full profile: the deployment revision's attestation public key (base58). */
@@ -855,6 +857,28 @@ function memoContext(spec: ProtocolSpecV1, options: GenerateStackSourceOptions):
 // Entry point
 // ---------------------------------------------------------------------------
 
+/** Exclude injected runtime legs without making assumptions about destinations. */
+function guardOperationActivity(value: Json, sources: string[], attestation: string): void {
+  if (value === null || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const child of value) guardOperationActivity(child, sources, attestation);
+    return;
+  }
+  if (typeof value.sibling === "string") {
+    value.sibling_where = { __protocol_activity_attestation: attestation };
+  }
+  const from = typeof value.from === "string" ? [value.from] : Array.isArray(value.from) ? value.from : [];
+  const activitySource = from.some((ref) => typeof ref === "string"
+    && sources.some((source) => ref === source || ref.startsWith(`${source}.`)));
+  if (activitySource) {
+    const member = `__protocol_activity_attestation == ${literal(attestation)}`;
+    const guard = value.via === "instance_accounts"
+      ? '__protocol_attestation == "" || __protocol_activity_attestation != ""' : member;
+    value.guard = typeof value.guard === "string" ? `(${value.guard}) && (${guard})` : guard;
+  }
+  for (const child of Object.values(value)) guardOperationActivity(child, sources, attestation);
+}
+
 /** Generate the protocol stack source of a validated spec. */
 export function generateStackSource(
   spec: ProtocolSpecV1,
@@ -899,6 +923,12 @@ export function generateStackSource(
     entities.ProtocolActivity = fullActivityEntity(groups, ctx);
     entities.ProtocolInstance = fullInstanceEntity(spec, primary, groups, ctx);
     entities.ProtocolParticipant = fullParticipantEntity(steps, groups, ctx);
+    if (options.operationBoundaries === true) {
+      const sources = allSources(groups);
+      for (const entity of Object.values(entities)) {
+        guardOperationActivity(entity, sources, options.attestation!);
+      }
+    }
   }
 
   const base = `${pascal(spec.name)}Protocol`;

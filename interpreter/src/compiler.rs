@@ -997,6 +997,12 @@ impl<S> TypedCompiler<S> {
                 let paths = captures
                     .entry(sibling.instruction_type.clone())
                     .or_default();
+                for path in sibling.required_fields.keys() {
+                    let path = FieldPath::new(&path.split('.').collect::<Vec<_>>());
+                    if !paths.contains(&path) {
+                        paths.push(path);
+                    }
+                }
                 for (from_sibling, path) in [
                     (sibling.pda_from_sibling, pda_field),
                     (sibling.seed_from_sibling, seed_field),
