@@ -88,6 +88,8 @@ export interface StepProgress {
   readonly signed?: readonly string[];
   /** Transaction signatures once the intent has them. */
   readonly signatures?: readonly (string | null)[];
+  /** When the step was signed: its spending counts against windows from then. */
+  readonly signedAt?: number;
   /** What each transaction moves out of the wallet (decimal amounts per asset), saved at signing. */
   readonly outflows?: readonly { readonly index: number; readonly amounts: Readonly<Record<string, string>> }[];
 }
