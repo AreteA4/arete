@@ -477,6 +477,61 @@ up`'s local RPC endpoint when the signer has no `rpcUrl` of its own or its
 policy lists `dev`, and funds the signer in the environment when it has
 no SOL. See [Protocols for agents](/agent-skills/protocols/).
 
+## Automations
+
+[Automations](/automations/overview/) run protocol steps for users from your
+backend. `a4 dev up` runs them against the environment when `arete.toml`
+names the module that exports them:
+
+```toml
+[dev.automations]
+entry = "automations.ts"   # exports defineAutomations(...) as its default
+watch = ["lib"]            # optional: more paths that restart them
+```
+
+It starts `arete-automations dev` from `@usearete/automations` (install it,
+and `tsx` for TypeScript, in the project) with:
+
+- the client `a4 dev` generated, so the target is the dev environment's
+  deployment and never mainnet;
+- a signer for every dev wallet in `.arete/dev/wallets/`;
+- a policy for that deployment with the definition's limits;
+- simulation through the local RPC endpoint;
+- a store under `.arete/dev/automations/` that keeps jobs, consent and
+  spending across restarts;
+- the environment's protocol events as signed webhook deliveries. A dev
+  environment sends no webhooks, so `a4 dev` follows its instances and signs
+  each event with the project's dev secret
+  (`.arete/dev/automations/webhook-secret`), with the same body and headers
+  a production delivery has. Events from before the first run are not
+  delivered.
+
+Its output is printed as `automations │ ...` lines, with every outcome. It
+restarts when a file in the entry's directory (or the entry itself, at the
+project root), a `watch` path or the generated client changes. The client must
+name the environment's current deployment: after a redeploy without a new
+client (`--no-sdk`), the automations stop until `a4 dev sdk` regenerates it.
+
+To run your own server instead (its webhook route and consent routes), set
+`forward` to its webhook URL. `a4 dev up` then only delivers the signed
+events there; start the server with `ARETE_WEBHOOK_SECRET` set to the
+contents of `.arete/dev/automations/webhook-secret`:
+
+```toml
+[dev.automations]
+forward = "http://localhost:3000/api/arete-webhook"
+```
+
+`a4 dev consent` opts a dev wallet in, signing the consent message with the
+wallet's key as a user's wallet would in your app (entry mode only):
+
+| Command                                                          | Does                                                                                                      |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `a4 dev consent <wallet> --steps <a,b>`                          | grants the steps for 30 days, with a fee-only limit (`SOL=10000000` per step)                             |
+| `--limit <asset>=<amount>`, `--window <asset>=<amount>/<window>` | per-step limits (`SOL` in lamports, a mint in base units) and rolling limits such as `SOL=1000000000/30d` |
+| `--param key=value`, `--instance <id>`, `--days <n>`             | settings the handlers read, one instance only, and the length                                             |
+| `a4 dev consent <wallet> --revoke [--steps <a,b>]`               | revokes the wallet's consent (or only those steps)                                                        |
+
 ## The dev UI and its event feed
 
 `a4 dev up` also serves a small HTTP server on `127.0.0.1` at the port base

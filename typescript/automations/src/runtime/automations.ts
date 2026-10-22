@@ -5,6 +5,7 @@ import type {
   ProtocolEventsOptions,
   ProtocolEventSubscription,
   ProtocolIntentState,
+  ProtocolParticipantDetail,
   ProtocolPrepareOptions,
   ProtocolPrepareResult,
   ProtocolStepAvailability,
@@ -35,6 +36,7 @@ import { isSignerRefusal } from '../signer/signer';
 import { checkPreparedAgainstIntent, checkSignedTransactions } from '../signer/verify';
 import { type AppendSource, type AppendTrigger, evaluateSignal, type ListSource, type ViewSource } from '../sources/view';
 import type { AutomationStore, ConsentGrant, NewStepJob } from '../store/store';
+import { type AutomationsDefinition, type AutomationsSetup, connectStack, type StackConnector } from './define';
 import { type Clock, type Duration, durationMs, systemClock } from './time';
 import {
   type Delivery,
@@ -60,6 +62,10 @@ export interface AutomationClient<TTypes extends ProtocolTypeMap = ProtocolTypeM
   events?(instanceId: string, options: ProtocolEventsOptions<TTypes>): ProtocolEventSubscription;
   /** Used to end instance-scoped consent when the instance is terminal. */
   readonly instances?: { get(id: string): Promise<{ readonly terminal: boolean }> };
+  /** Present on a real client: a handler reads a participant's current state with it. */
+  readonly participants?: {
+    get(input: { instance: string; wallet: string; signal?: AbortSignal }): Promise<ProtocolParticipantDetail<TTypes>>;
+  };
 }
 
 interface PreparableStep {
@@ -252,6 +258,12 @@ export interface Automations<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
    * lease only saves bandwidth).
    */
   source(source: ViewSource, options?: { exclusive?: boolean }): SourceHandle;
+  /**
+   * Register a definition's handlers and view sources (see
+   * `defineAutomations`). `connect` opens the stacks its sources read;
+   * it defaults to the SDK's own connection.
+   */
+  use(definition: AutomationsDefinition<TTypes>, options?: { connect?: StackConnector }): Promise<this>;
   /** Read a list-view source's snapshot once and accept what changed (for a serverless cron). */
   poll(source: ListSource): Promise<{ delivered: number; pending: number }>;
   /** Claim and run one job. `false` when none was ready. */
@@ -1470,6 +1482,21 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       };
     },
     source: startSource,
+    async use(definition, useOptions = {}) {
+      // A definition for another protocol would register handlers for events
+      // this deployment never emits.
+      const own = client.definition?.name;
+      if (own !== undefined && definition.protocol.name !== own) {
+        throw new Error(`the definition is for protocol ${definition.protocol.name}, but the client is for ${own}`);
+      }
+      const setup: AutomationsSetup<TTypes> = {
+        on: ((name: string, handler: Handler<any, TTypes>) => automations.on(name, handler)) as never,
+        source: startSource,
+        connect: useOptions.connect ?? connectStack,
+      };
+      await definition.setup(setup);
+      return automations;
+    },
     async poll(source) {
       if (source.kind !== 'list') throw new TypeError('only list-view sources can be polled');
       await bound();

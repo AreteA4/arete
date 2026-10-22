@@ -11,15 +11,17 @@ wrong.
 ## Move to mainnet
 
 Develop in your [dev environment](/cli/local-development/), then run the same
-handlers on mainnet. Only configuration changes:
+handlers on mainnet. The handlers live in a definition (`defineAutomations`)
+that `a4 dev up` runs in development and your backend runs with
+`automations.use(definition)`. Only configuration changes:
 
 1. **Install the published client.** `a4 install --locked` replaces the client
    `a4 dev` generated with the published one. The automations take their
    target from the client: `dev` for the dev environment's deployment,
    `mainnet` for the published one.
 2. **Allow mainnet in the policy.** A policy allows only `dev` unless it lists
-   mainnet: `definePolicy({ ..., clusters: ["mainnet"] })`. The deployment id
-   changes with the client, so build `deployments` from
+   mainnet: `definePolicy({ ...definition.policy, deployments: [client.deploymentId], clusters: ["mainnet"] })`.
+   The deployment id changes with the client, so build `deployments` from
    `client.deploymentId` rather than writing it in.
 3. **Point the simulator at your RPC.** `rpcSimulator(process.env.RPC_URL)`,
    a mainnet RPC instead of `a4 dev up`'s local one.

@@ -73,6 +73,27 @@ else. `onOutcome`, `onRefused` and `onRejected` report final states.
 
 A store must pass `runStoreConformance` from `@usearete/automations/testing`.
 
+## Definitions and `a4 dev`
+
+Put the handlers and view sources in a definition, apart from the client,
+signer, store and secrets:
+
+```ts
+// automations.ts
+export default defineAutomations(TOKEN_RAISE_PROTOCOL, (automations) => {
+  automations.on('raise.failed', async (event, ctx) => { /* ... */ });
+}, { policy: { programs: [RAISE_PROGRAM_ID], maxSolPerTransaction: '0.001' } });
+```
+
+`[dev.automations] entry = "automations.ts"` in the protocol project's
+arete.toml makes `a4 dev up` run it (`arete-automations dev`) against the
+project's dev environment: dev wallets sign, a saved memory store keeps jobs
+and consent across restarts, and the environment's events arrive as signed
+webhook deliveries. It restarts when the handlers or the generated client
+change. In production, `await automations.use(definition)` registers the same
+handlers on a runtime you configure, with
+`definePolicy({ ...definition.policy, deployments, clusters })`.
+
 ## Consent
 
 Nothing runs for a wallet without a grant the wallet signed:

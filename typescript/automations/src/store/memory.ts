@@ -29,18 +29,50 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-export function memoryStore(): AutomationStore {
-  const deliveries = new Map<string, number>();
-  const jobs = new Map<string, Job>();
-  let order = 0;
-  const sequence = new Map<string, number>();
-  const grants: ConsentGrant[] = [];
-  let deployment: string | null = null;
-  const nonces = new Map<string, { expiresAt: number; used: boolean }>();
-  const ledger: LedgerEntry[] = [];
-  const sourceStates = new Map<string, SourceState>();
-  const cursors = new Map<string, string>();
+/**
+ * A memory store's contents, for `a4 dev` to keep across restarts. Opaque:
+ * write it with `v8.serialize` and read it back with `v8.deserialize`.
+ */
+export interface MemoryStoreState {
+  readonly version: 1;
+  readonly deliveries: Map<string, number>;
+  readonly jobs: Map<string, Job>;
+  readonly order: number;
+  readonly sequence: Map<string, number>;
+  readonly grants: ConsentGrant[];
+  readonly deployment: string | null;
+  readonly nonces: Map<string, { expiresAt: number; used: boolean }>;
+  readonly ledger: LedgerEntry[];
+  readonly sourceStates: Map<string, SourceState>;
+  readonly cursors: Map<string, string>;
+}
+
+const STATES = new WeakMap<AutomationStore, () => MemoryStoreState>();
+
+/** A copy of a memory store's contents (source leases are not kept). */
+export function memoryStoreState(store: AutomationStore): MemoryStoreState {
+  const state = STATES.get(store);
+  if (!state) throw new TypeError('not a memory store');
+  return state();
+}
+
+export function memoryStore(options: { state?: MemoryStoreState } = {}): AutomationStore {
+  const initial = options.state ? clone(options.state) : null;
+  if (initial && initial.version !== 1) throw new TypeError('unknown memory store state');
+  const deliveries = initial?.deliveries ?? new Map<string, number>();
+  const jobs = initial?.jobs ?? new Map<string, Job>();
+  let order = initial?.order ?? 0;
+  const sequence = initial?.sequence ?? new Map<string, number>();
+  const grants: ConsentGrant[] = initial?.grants ?? [];
+  let deployment: string | null = initial?.deployment ?? null;
+  const nonces = initial?.nonces ?? new Map<string, { expiresAt: number; used: boolean }>();
+  const ledger: LedgerEntry[] = initial?.ledger ?? [];
+  const sourceStates = initial?.sourceStates ?? new Map<string, SourceState>();
+  const cursors = initial?.cursors ?? new Map<string, string>();
   const sourceLeases = new Map<string, { holder: string; until: number }>();
+  // A restored state's workers stopped with the process that saved it, so
+  // their claims are released rather than left to expire.
+  for (const [id, job] of jobs) if (job.lease) jobs.set(id, { ...job, lease: null });
 
   const insert = (job: Job) => {
     jobs.set(job.id, job);
@@ -86,7 +118,7 @@ export function memoryStore(): AutomationStore {
     return isActiveStep(job);
   };
 
-  return {
+  const store: AutomationStore = {
     async bindDeployment(deploymentId) {
       if (deployment !== null && deployment !== deploymentId) throw new StoreDeploymentError(deployment, deploymentId);
       deployment = deploymentId;
@@ -359,4 +391,8 @@ export function memoryStore(): AutomationStore {
       },
     },
   };
+  STATES.set(store, () =>
+    clone({ version: 1, deliveries, jobs, order, sequence, grants, deployment, nonces, ledger, sourceStates, cursors }),
+  );
+  return store;
 }

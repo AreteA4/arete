@@ -42,6 +42,6 @@ export default [
       resolve(),
       typescript({ tsconfig: "./tsconfig.json", declaration: false, declarationMap: false }),
     ],
-    output: { file: "dist/cli.js", format: "esm", sourcemap: false, banner: "#!/usr/bin/env node" },
+    output: { file: "dist/cli.js", format: "esm", sourcemap: false, inlineDynamicImports: true, banner: "#!/usr/bin/env node" },
   },
 ];

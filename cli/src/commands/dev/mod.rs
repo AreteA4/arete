@@ -22,6 +22,7 @@
 //! [`arete_mcp::dev`], which the MCP server's `dev_*` tools share.
 
 pub mod api;
+pub mod automations;
 pub mod capture;
 pub mod custom_stacks;
 pub mod deploy;
@@ -125,6 +126,40 @@ pub enum DevCommands {
     /// Regenerate this protocol's installed client from the local build now
     /// (`a4 dev up` does it after every deploy)
     Sdk(SdkArgs),
+    /// Opt a dev wallet in to the project's automations ([dev.automations]):
+    /// it signs a consent for the steps, as a user's wallet would
+    Consent(ConsentArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ConsentArgs {
+    #[command(flatten)]
+    pub project: ProjectArgs,
+    /// A dev wallet name or address
+    pub wallet: String,
+    /// The steps it may run, comma-separated (with --revoke: only these)
+    #[arg(long, value_delimiter = ',', required_unless_present = "revoke")]
+    pub steps: Vec<String>,
+    /// The most of an asset one step may move out: `SOL=<lamports>` or
+    /// `<mint>=<base units>`; repeat per asset (default SOL=10000000, fees only)
+    #[arg(long = "limit", value_name = "ASSET=AMOUNT")]
+    pub limits: Vec<String>,
+    /// A rolling limit over all steps: `<asset>=<amount>/<window>`, e.g.
+    /// `SOL=100000000/30d`; repeatable
+    #[arg(long = "window", value_name = "ASSET=AMOUNT/WINDOW")]
+    pub windows: Vec<String>,
+    /// A setting the handlers read from the grant's params: `key=value`; repeatable
+    #[arg(long = "param", value_name = "KEY=VALUE")]
+    pub params: Vec<String>,
+    /// Only this instance (default: every instance of the deployment)
+    #[arg(long)]
+    pub instance: Option<String>,
+    /// Days until the consent ends
+    #[arg(long, default_value_t = 30)]
+    pub days: u64,
+    /// Revoke the wallet's consent instead
+    #[arg(long)]
+    pub revoke: bool,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -545,6 +580,7 @@ pub fn run(command: DevCommands, json: bool) -> Result<()> {
         }),
         DevCommands::Capture(args) => capture::capture(args, json),
         DevCommands::Sdk(args) => sdk(args, json),
+        DevCommands::Consent(args) => consent(args, json),
         DevCommands::Replay(args) => block_on(async move {
             let text = std::fs::read_to_string(&args.file)
                 .with_context(|| format!("Failed to read {}", args.file.display()))?;
@@ -839,6 +875,98 @@ fn down(args: DownArgs, json: bool) -> Result<()> {
 /// local build now. `--ts`/`--rust`/`--python` choose the targets when
 /// arete.toml does not install the protocol yet (else `[dev] sdk`, else
 /// TypeScript); an installed dependency keeps its own.
+/// The JSON `a4 dev consent` sends to the running automations.
+fn consent_request(args: &ConsentArgs, now_ms: u128) -> Result<Value> {
+    fn pair<'a>(text: &'a str, what: &str) -> Result<(&'a str, &'a str)> {
+        text.split_once('=')
+            .filter(|(key, value)| !key.is_empty() && !value.is_empty())
+            .with_context(|| format!("{what} `{text}` is not KEY=VALUE"))
+    }
+    let mut per_execution = serde_json::Map::new();
+    for limit in &args.limits {
+        let (asset, amount) = pair(limit, "--limit")?;
+        per_execution.insert(asset.into(), json!(amount));
+    }
+    if per_execution.is_empty() && !args.revoke {
+        per_execution.insert("SOL".into(), json!("10000000"));
+    }
+    let mut per_window = serde_json::Map::new();
+    for window in &args.windows {
+        let (asset, rest) = pair(window, "--window")?;
+        let (amount, window) = rest
+            .split_once('/')
+            .with_context(|| format!("--window `{window}` is not ASSET=AMOUNT/WINDOW"))?;
+        per_window.insert(asset.into(), json!({ "amount": amount, "window": window }));
+    }
+    let mut params = serde_json::Map::new();
+    for param in &args.params {
+        let (key, value) = pair(param, "--param")?;
+        params.insert(key.into(), json!(value));
+    }
+    let mut limits = json!({ "perExecution": per_execution });
+    if !per_window.is_empty() {
+        limits["perWindow"] = Value::Object(per_window);
+    }
+    Ok(json!({
+        "wallet": args.wallet,
+        "steps": args.steps,
+        "limits": limits,
+        "params": params,
+        "instanceId": args.instance,
+        "expiresAt": now_ms + u128::from(args.days) * 86_400_000,
+        "revoke": args.revoke,
+    }))
+}
+
+/// `a4 dev consent`: sign a consent grant with a dev wallet, through the
+/// automations `a4 dev up` runs.
+fn consent(args: ConsentArgs, json: bool) -> Result<()> {
+    let root = project_root(&args.project)?;
+    let (port, token) = automations::control(&root)?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis();
+    let request = consent_request(&args, now_ms)?;
+    let response = reqwest::blocking::Client::new()
+        .post(format!("http://127.0.0.1:{port}/consent"))
+        .bearer_auth(token)
+        .json(&request)
+        .send()
+        .context("Could not reach the automations `a4 dev up` runs")?;
+    let ok = response.status().is_success();
+    let body: Value = response.json().unwrap_or(Value::Null);
+    if !ok {
+        bail!(
+            "{}",
+            body["error"]
+                .as_str()
+                .unwrap_or("the automations refused the consent")
+        );
+    }
+    if json {
+        println!("{body}");
+    } else if args.revoke {
+        println!(
+            "Revoked {} consent grant(s) of {}",
+            body["revoked"],
+            body["wallet"].as_str().unwrap_or(&args.wallet)
+        );
+    } else {
+        println!(
+            "{} consented to {} until {} days from now",
+            body["grant"]["wallet"].as_str().unwrap_or(&args.wallet),
+            args.steps.join(", "),
+            args.days
+        );
+        for warning in body["warnings"].as_array().into_iter().flatten() {
+            if let Some(warning) = warning.as_str() {
+                println!("  note: {warning}");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn sdk(args: SdkArgs, json: bool) -> Result<()> {
     use crate::project::manifest::InstallTarget;
     let root = project_root(&args.project)?;
@@ -1140,6 +1268,62 @@ mod tests {
         let mut argv = vec!["dev"];
         argv.extend_from_slice(args);
         Cli::try_parse_from(argv).map(|cli| cli.command)
+    }
+
+    #[test]
+    fn builds_a_consent_request() {
+        let DevCommands::Consent(args) = parse(&[
+            "consent",
+            "alice",
+            "--steps",
+            "refund,claim",
+            "--limit",
+            "SOL=5000",
+            "--window",
+            "SOL=20000/30d",
+            "--param",
+            "weekday=fri",
+            "--days",
+            "2",
+        ])
+        .unwrap() else {
+            panic!("not consent");
+        };
+        assert_eq!(
+            consent_request(&args, 1_000).unwrap(),
+            json!({
+                "wallet": "alice",
+                "steps": ["refund", "claim"],
+                "limits": {
+                    "perExecution": { "SOL": "5000" },
+                    "perWindow": { "SOL": { "amount": "20000", "window": "30d" } },
+                },
+                "params": { "weekday": "fri" },
+                "instanceId": null,
+                "expiresAt": 1_000 + 2 * 86_400_000u64,
+                "revoke": false,
+            })
+        );
+        // Fees only by default; --revoke needs no steps.
+        let DevCommands::Consent(args) = parse(&["consent", "alice", "--steps", "refund"]).unwrap()
+        else {
+            panic!("not consent");
+        };
+        assert_eq!(
+            consent_request(&args, 0).unwrap()["limits"],
+            json!({ "perExecution": { "SOL": "10000000" } })
+        );
+        assert!(parse(&["consent", "alice"]).is_err());
+        let DevCommands::Consent(args) = parse(&["consent", "alice", "--revoke"]).unwrap() else {
+            panic!("not consent");
+        };
+        assert_eq!(consent_request(&args, 0).unwrap()["revoke"], true);
+        let DevCommands::Consent(bad) =
+            parse(&["consent", "alice", "--steps", "x", "--limit", "SOL"]).unwrap()
+        else {
+            panic!("not consent");
+        };
+        assert!(consent_request(&bad, 0).is_err());
     }
 
     #[test]

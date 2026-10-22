@@ -1,3 +1,9 @@
-import { main } from './cli';
+import { dev, main } from './cli';
 
-process.exitCode = main(process.argv.slice(2));
+if (process.argv[2] === 'dev') {
+  dev().then((code) => {
+    process.exit(code);
+  });
+} else {
+  process.exitCode = main(process.argv.slice(2));
+}

@@ -33,6 +33,8 @@ export { DEFAULT_TRANSACTION_FORMATS, negotiateTransactionFormat } from './signe
 export { checkPreparedAgainstIntent, checkSignedTransactions } from './signer/verify';
 export { isSignerRefusal, SignerRefusal } from './signer/signer';
 export { clientCluster, createAutomations } from './runtime/automations';
+export { connectStack, defineAutomations, isAutomationsDefinition } from './runtime/define';
+export type { AutomationsDefinition, AutomationsSetup, DefinitionPolicy, StackConnector } from './runtime/define';
 export type {
   AutomationClient,
   AutomationEvent,
