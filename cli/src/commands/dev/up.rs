@@ -9,6 +9,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,6 +24,8 @@ use arete_mcp::dev_env::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, Command};
 
 use super::api::DevApi;
 use super::deploy::{run_build, DeployOutcome, DeploySettings, DeployState, Deployer, BUILD_DIR};
@@ -399,6 +402,73 @@ struct Session<'a> {
     /// for.
     sdk_generated_for: Option<(String, String)>,
     ui: DevUi,
+    admission: Option<Child>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AdmissionRequest {
+    root: PathBuf,
+    origin: String,
+    key: String,
+    slug: String,
+}
+
+fn publish_local_programs(
+    request: AdmissionRequest,
+    progress: &dyn crate::commands::protocol::local_programs::Progress,
+) -> Result<bool> {
+    let client =
+        crate::api_client::ApiClient::with_base_url(&request.origin).with_api_key(request.key);
+    let published = crate::commands::protocol::local_programs::publish(
+        &client,
+        &request.root,
+        &crate::commands::protocol::local_programs::PublishOptions {
+            slug: &request.slug,
+            dry_run: false,
+            record: true,
+            wait: Duration::from_secs(180),
+        },
+        progress,
+    )?;
+    Ok(published.lock_changed)
+}
+
+/// A separate process makes every blocking request, poll and regeneration
+/// cancellable, without leaving a Tokio blocking worker alive after shutdown.
+pub(crate) fn admission_worker() -> Result<()> {
+    struct Progress;
+    impl crate::commands::protocol::local_programs::Progress for Progress {
+        fn step(&self, message: &str) {
+            self.info(message);
+        }
+        fn success(&self, message: &str) {
+            self.info(message);
+        }
+        fn info(&self, message: &str) {
+            println!("{}", json!({"message": message}));
+        }
+    }
+    let request = serde_json::from_reader(std::io::stdin())?;
+    let changed = match publish_local_programs(request, &Progress) {
+        Ok(changed) => changed,
+        Err(error) => {
+            println!("{}", json!({"error": format!("{error:#}")}));
+            return Err(error);
+        }
+    };
+    println!("{}", json!({"lockChanged": changed}));
+    Ok(())
+}
+
+async fn stop_admission(worker: &mut Option<Child>) -> Result<()> {
+    if let Some(mut child) = worker.take() {
+        // kill() also waits/reaps; finished workers are reaped by wait().
+        if child.try_wait()?.is_none() {
+            child.kill().await?;
+        }
+        child.wait().await?;
+    }
+    Ok(())
 }
 
 async fn admit_local_programs(
@@ -407,25 +477,64 @@ async fn admit_local_programs(
     key: String,
     slug: String,
     progress: Events,
+    worker: &mut Option<Child>,
 ) -> Result<bool> {
-    // Construct and drop blocking HTTP clients on the worker, not Tokio.
-    tokio::task::spawn_blocking(move || {
-        let client = crate::api_client::ApiClient::with_base_url(&origin).with_api_key(key);
-        let published = crate::commands::protocol::local_programs::publish(
-            &client,
-            &root,
-            &crate::commands::protocol::local_programs::PublishOptions {
-                slug: &slug,
-                dry_run: false,
-                record: true,
-                wait: Duration::from_secs(180),
-            },
-            &progress,
-        )?;
-        Ok(published.lock_changed)
-    })
-    .await
-    .context("Local program admission worker failed")?
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .arg("dev")
+        .arg("__admit-local-programs")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true);
+    *worker = Some(
+        command
+            .spawn()
+            .context("Failed to start local program admission")?,
+    );
+    let child = worker.as_mut().context("Admission worker is absent")?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("Admission worker stdin is absent")?;
+    stdin
+        .write_all(&serde_json::to_vec(&AdmissionRequest {
+            root,
+            origin,
+            key,
+            slug,
+        })?)
+        .await?;
+    drop(stdin);
+    let stdout = child
+        .stdout
+        .take()
+        .context("Admission worker stdout is absent")?;
+    let mut lines = BufReader::new(stdout).lines();
+    let mut changed = None;
+    let mut failure = None;
+    while let Some(line) = lines.next_line().await? {
+        let event: Value =
+            serde_json::from_str(&line).context("Invalid admission worker output")?;
+        if let Some(message) = event["message"].as_str() {
+            progress.emit("program", message, json!({}));
+        }
+        if let Some(error) = event["error"].as_str() {
+            failure = Some(error.to_string());
+        }
+        if let Some(value) = event["lockChanged"].as_bool() {
+            changed = Some(value);
+        }
+    }
+    let status = child.wait().await?;
+    *worker = None;
+    if !status.success() {
+        bail!(
+            "Local program admission failed: {}",
+            failure.unwrap_or_else(|| status.to_string())
+        );
+    }
+    changed.context("Admission worker did not report its result")
 }
 
 /// Run `a4 dev up` until Ctrl-C or SIGTERM (`a4 dev down`).
@@ -519,11 +628,11 @@ pub async fn run(config: UpConfig) -> Result<()> {
         stack_looked_up: None,
         sdk_generated_for: None,
         ui,
+        admission: None,
     };
-    let result = match session.start(&token).await {
-        Ok(()) => session.supervise().await,
-        Err(error) => Err(error),
-    };
+    let result = session.supervise(&token).await;
+    let stopped = stop_admission(&mut session.admission).await;
+    let result = result.and(stopped);
     let Session {
         events, ui, proxy, ..
     } = session;
@@ -707,7 +816,9 @@ impl Session<'_> {
                 let origin = self.config.api.origin().to_string();
                 let key = self.config.api.key().to_string();
                 let progress = self.events.clone();
-                let changed = admit_local_programs(root, origin, key, slug, progress).await?;
+                let changed =
+                    admit_local_programs(root, origin, key, slug, progress, &mut self.admission)
+                        .await?;
                 if changed {
                     run_build(&self.config.project_root, &self.events.log).await?;
                 }
@@ -1036,7 +1147,7 @@ impl Session<'_> {
         Ok(())
     }
 
-    async fn supervise(&mut self) -> Result<()> {
+    async fn supervise(&mut self, token: &dev_env::EnvToken) -> Result<()> {
         // One Ctrl-C listener and one SIGTERM stream for the whole session:
         // a signal that arrives while a pass is debouncing or building is
         // kept, and interrupts that pass, instead of being lost between two
@@ -1048,6 +1159,11 @@ impl Session<'_> {
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         #[cfg(not(unix))]
         let mut terminate = ();
+        tokio::select! {
+            _ = &mut ctrl_c => return Ok(()),
+            _ = terminated(&mut terminate) => return Ok(()),
+            result = self.start(token) => result?,
+        }
         let watching = self.config.watch;
         let mut snapshot = if watching {
             watch::snapshot(&self.project.root)
@@ -1176,6 +1292,57 @@ async fn terminated(_: &mut ()) {
 
 #[cfg(test)]
 mod tests {
+    // Run only in the subprocess below: an HTTP request that never replies.
+    #[test]
+    #[ignore]
+    fn admission_blocked_request_child() {
+        let Ok(url) = std::env::var("A4_TEST_ADMISSION_BLOCKED_URL") else {
+            return;
+        };
+        let _ = reqwest::blocking::Client::new().get(url).send();
+    }
+
+    #[tokio::test]
+    async fn shutdown_kills_and_reaps_admission_during_a_blocked_request() {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            let _ = ready_tx.send(());
+            // Stay silent until killing the worker closes the connection.
+            while stream.read(&mut byte).unwrap_or(0) > 0 {}
+        });
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "commands::dev::up::tests::admission_blocked_request_child",
+                "--ignored",
+            ])
+            .env("A4_TEST_ADMISSION_BLOCKED_URL", url)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let mut worker = Some(child);
+        tokio::time::timeout(Duration::from_secs(10), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), stop_admission(&mut worker))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(worker.is_none());
+        assert!(!pid_alive(pid));
+        server.join().unwrap();
+    }
+
     #[tokio::test]
     async fn dev_admission_records_the_exact_release_before_the_next_build() {
         use crate::api_client::test_support::MockServer;
@@ -1203,15 +1370,17 @@ mod tests {
             json: false,
             log: LogSink::open(&dir.path().join("test.log"), "test", false).unwrap(),
         };
-        let changed = admit_local_programs(
-            root.clone(),
-            server.base_url().into(),
-            "a4_sk_test".into(),
-            "tip-jar".into(),
-            progress,
-        )
-        .await
-        .unwrap();
+        let request = AdmissionRequest {
+            root: root.clone(),
+            origin: server.base_url().into(),
+            key: "a4_sk_test".into(),
+            slug: "tip-jar".into(),
+        };
+        let changed =
+            tokio::task::spawn_blocking(move || publish_local_programs(request, &progress))
+                .await
+                .unwrap()
+                .unwrap();
         assert!(changed);
         let lock = crate::project::ProjectLock::load(root.join("arete.lock")).unwrap();
         assert_eq!(

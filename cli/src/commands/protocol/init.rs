@@ -463,6 +463,13 @@ fn scaffold_with(
         written.push(".gitignore".into());
     }
 
+    write_new(
+        dir,
+        "README.md",
+        &readme(&dir_name, &name, args.local_idl && !args.no_install),
+    )?;
+    written.push("README.md".into());
+
     let warnings = Vec::new();
     let system_program = if args.no_install {
         None
@@ -480,9 +487,6 @@ fn scaffold_with(
         written.push(SYSTEM_IDL_PATH.into());
         install_local_system(&absolute)?;
     }
-    let local_idl = system_program == Some(SystemProgramSource::LocalIdl);
-    write_new(dir, "README.md", &readme(&dir_name, &name, local_idl))?;
-    written.push("README.md".into());
     if system_program.is_some() {
         written.push("arete.lock".into());
         written.push("generated/typescript/programs/system/".into());
@@ -779,6 +783,10 @@ mod tests {
             message.contains("a4 install program system-program"),
             "{message}"
         );
+        assert!(root.join("README.md").is_file());
+        assert!(std::fs::read_to_string(root.join("README.md"))
+            .unwrap()
+            .contains("a4 dev up"));
         assert!(!root.join(SYSTEM_IDL_PATH).exists());
         assert!(!root.join("arete.lock").exists());
     }

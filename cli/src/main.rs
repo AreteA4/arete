@@ -987,6 +987,21 @@ enum BuildCommands {
 fn main() {
     let cli = Cli::parse();
 
+    // Internal IPC worker: use only its explicit stdin identity, with no
+    // profile lookup, consent banner or unrelated stdout before its frames.
+    if matches!(
+        &cli.command,
+        Some(Commands::Dev(
+            commands::dev::DevCommands::AdmitLocalPrograms
+        ))
+    ) {
+        if let Err(error) = commands::dev::up::admission_worker() {
+            eprintln!("Local program admission failed: {error:#}");
+            process::exit(1);
+        }
+        return;
+    }
+
     // Set ARETE_API_URL env var if --api-url flag is provided
     // This ensures all ApiClient instances use the correct URL
     if let Some(ref api_url) = cli.api_url {
