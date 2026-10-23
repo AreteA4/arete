@@ -5,7 +5,7 @@ import { encodeBase58 } from '../policy/encoding';
 import { keypairSigner } from '../keypair';
 import type { ConsentFields } from './consent';
 import { ConsentError, type ConsentLimits, consentMessage, normalizeConsent, SOL } from './consent';
-import { DEPLOYMENT, feeOnlySimulator } from '../test-support/fake-protocol';
+import { DEPLOYMENT, feeOnlySimulator, stepKeyPrefix } from '../test-support/fake-protocol';
 import type { Simulator } from '../policy/simulator';
 import { ALICE, ALICE_SEED, BOB, harness, storedGrant } from '../test-support/harness';
 
@@ -240,6 +240,9 @@ describe('granting consent', () => {
 });
 
 describe('consent at run time', () => {
+  // Dispatch `a`'s deposit for ALICE on inst-1, the step `onDeposit` runs.
+  const DEPOSIT_A = stepKeyPrefix('dispatch:a', { step: 'deposit', wallet: ALICE, instance: 'inst-1' });
+
   function onDeposit(h: ReturnType<typeof consentHarness>) {
     h.automations.on<{ wallet: string; instance?: string }>('deposit', (payload, ctx) => [
       ctx.step('deposit', { wallet: payload.wallet, instance: payload.instance ?? 'inst-1' }),
@@ -328,7 +331,7 @@ describe('consent at run time', () => {
 
   it('frees the window when an intent never lands, and when it slides past', async () => {
     const h = harness(
-      { script: (key) => (key.startsWith('step:dispatch%3Aa:') ? ['expired'] : ['submitting', 'completed']) },
+      { script: (key) => (key.startsWith(DEPOSIT_A) ? ['expired'] : ['submitting', 'completed']) },
       { consent: { domain: 'app.example' } },
     );
     await h.store.consent.put(
@@ -375,7 +378,7 @@ describe('consent at run time', () => {
       },
     };
     const h = harness(
-      { script: (key) => (key.startsWith('step:dispatch%3Aa:') ? ['submitting', 'chain_failed'] : ['submitting', 'completed']) },
+      { script: (key) => (key.startsWith(DEPOSIT_A) ? ['submitting', 'chain_failed'] : ['submitting', 'completed']) },
       { consent: { domain: 'app.example' }, simulator: transferring },
     );
     await h.store.consent.put(
@@ -405,7 +408,7 @@ describe('consent at run time', () => {
     };
     const h = harness(
       {
-        script: (key) => (key.startsWith('step:dispatch%3Aa:') ? ['submitting', 'chain_failed'] : ['submitting', 'completed']),
+        script: (key) => (key.startsWith(DEPOSIT_A) ? ['submitting', 'chain_failed'] : ['submitting', 'completed']),
         partialFailure: () => true,
       },
       { consent: { domain: 'app.example' }, simulator: transferring },
@@ -440,10 +443,10 @@ describe('consent at run time', () => {
       {
         // The first intent stays unconfirmed until the clock has moved on, then fails in part.
         script: (key) =>
-          key.startsWith('step:dispatch%3Aa:')
+          key.startsWith(DEPOSIT_A)
             ? [...Array<'submitting'>(4).fill('submitting'), 'chain_failed']
             : ['submitting', 'completed'],
-        partialFailure: (key) => key.startsWith('step:dispatch%3Aa:'),
+        partialFailure: (key) => key.startsWith(DEPOSIT_A),
       },
       { consent: { domain: 'app.example' }, simulator: transferring, trackFor: '1s', trackInterval: '1s' },
     );

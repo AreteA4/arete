@@ -44,6 +44,7 @@ import {
   type DeliveryJob,
   type Job,
   type JobOutcome,
+  prepareIdempotencyKey,
   type StepJob,
   type StepJobState,
   type StepRequest,
@@ -703,7 +704,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       }
       const result = await stepClient.prepare(
         { ...request.args, wallet, ...(request.instance !== undefined ? { instance: request.instance } : {}) },
-        { transactionFormat: format, idempotencyKey: `${job.id}:${job.progress.generation}` },
+        { transactionFormat: format, idempotencyKey: prepareIdempotencyKey(job.id, job.progress.generation) },
       );
       if (!result.ok) {
         return finish(job, 'rejected', {
