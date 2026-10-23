@@ -17,7 +17,16 @@ import { definePolicy } from '../policy/policy';
 import type { Simulator } from '../policy/simulator';
 import type { AutomationClient } from '../runtime/automations';
 import type { Clock } from '../runtime/time';
+import { prepareIdempotencyKey, type StepRequest, stepJobId } from '../runtime/types';
 import { intentFor, wire } from './wire';
+
+/**
+ * The prefix (`step:<hash>:`) of every idempotency key one step job's
+ * prepares send, whatever the generation, for `script` and `partialFailure`.
+ */
+export function stepKeyPrefix(deliveryId: string, request: Pick<StepRequest, 'step' | 'wallet' | 'instance'>): string {
+  return prepareIdempotencyKey(stepJobId(deliveryId, request), 0).slice(0, -1);
+}
 
 export const DEPLOYMENT = 'dep-1';
 export const PROGRAM = encodeBase58(new Uint8Array(32).fill(40));
@@ -136,6 +145,10 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
       await options.onPrepare?.(call);
       const rejected = options.rejectPrepare?.(step);
       if (rejected) return { ok: false, rejection: { rejected, step } };
+      // The API's rule: a longer or percent-encoded key is a 400.
+      if (prepareOptions?.idempotencyKey !== undefined && !/^[A-Za-z0-9._:-]{1,128}$/.test(prepareOptions.idempotencyKey)) {
+        throw new Error('idempotencyKey must match ^[A-Za-z0-9._:-]{1,128}$');
+      }
       const key = prepareOptions?.idempotencyKey ?? `key-${prepareCalls.length}`;
       const existing = byKey.get(key);
       if (existing) {
