@@ -26,6 +26,10 @@ export const TOKEN_PROGRAMS = [
   'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
 ] as const;
 export const SYSTEM_PROGRAM = '11111111111111111111111111111111';
+
+/** Why a transaction with a durable nonce is refused. */
+export const DURABLE_NONCE =
+  'makes it a durable-nonce transaction, valid until the nonce advances instead of expiring';
 export const UPGRADEABLE_LOADER = 'BPFLoaderUpgradeab1e11111111111111111111111';
 export const STAKE_PROGRAM = 'Stake11111111111111111111111111111111111111';
 /** Wrapped SOL mints (SPL Token and Token-2022). */
@@ -304,12 +308,25 @@ export function checkTopLevel(
   if (signerIndex < 0) return out;
   const key = (index: number): string | null =>
     decoded.staticKeys[index] ?? lookupKeys[index - decoded.staticKeys.length] ?? null;
+  // A transaction that starts by advancing a nonce uses a durable nonce
+  // instead of a recent blockhash: whoever the nonce authority is, the signed
+  // bytes stay valid until the nonce advances, so they could land long after
+  // the step was checked and its consent revoked.
+  const first = decoded.instructions[0];
+  if (
+    first !== undefined &&
+    decoded.staticKeys[first.programIndex] === SYSTEM_PROGRAM &&
+    instructionName(SYSTEM_PROGRAM, first.data) === 'advanceNonce'
+  ) {
+    out.findings.push({ programId: SYSTEM_PROGRAM, instruction: 'advanceNonce', inner: false, reason: DURABLE_NONCE });
+  }
   for (const instruction of decoded.instructions) {
     const program = decoded.staticKeys[instruction.programIndex];
     if (program === undefined) continue;
     const name = instructionName(program, instruction.data);
     if (name === null) continue;
     if (!instruction.accounts.includes(signerIndex)) continue;
+    if (program === SYSTEM_PROGRAM && name === 'advanceNonce') continue;
     const first = instruction.accounts[0];
     const closed = first === undefined ? null : key(first);
     checkOne(program, name, false, closed, instruction.accounts[1] === signerIndex, out);

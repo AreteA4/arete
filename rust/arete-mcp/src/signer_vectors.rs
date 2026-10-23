@@ -996,6 +996,12 @@ fn authority_cases() -> Vec<Value> {
         ));
     }
     top_level.push((
+        "System advanceNonce with another nonce authority".into(),
+        SYSTEM_PROGRAM,
+        vec![1, 1],
+        u32_data(4),
+    ));
+    top_level.push((
         "System data too short for a tag".into(),
         SYSTEM_PROGRAM,
         vec![0, 1],
