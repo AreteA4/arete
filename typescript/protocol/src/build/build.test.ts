@@ -257,9 +257,13 @@ describe("arete-protocol build", () => {
 
   it("bundles a handler that imports a generated program module", async () => {
     // `programs/vote/` is the CLI's golden program module, importing its
-    // runtime from `@usearete/sdk/program`. The project gets a stand-in
-    // `@usearete/sdk` whose `./program` export re-exports the SDK source,
-    // and the `zod` the SDK itself installs.
+    // runtime from `@usearete/sdk/program`, plus a curated extension shaped
+    // like a registry program's (SPL addresses, PDA and ATA helpers,
+    // prepared instructions, transactions and flows). The project gets a
+    // stand-in `@usearete/sdk` that exports only `./program`, re-exporting
+    // the SDK source, and the `zod` the SDK itself installs: an extension
+    // that reached for the root entry would fail to resolve here, as the
+    // root entry fails the handler bundle in a real project.
     const sdkSource = resolve(here, "../../../core");
     const sdkModules = join(sdkSource, "node_modules");
     if (!existsSync(join(sdkModules, "zod")) || !existsSync(join(sdkModules, "@noble", "ed25519"))) {

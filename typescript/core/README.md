@@ -206,6 +206,8 @@ import { pingInstruction } from '@programs/vote';
 const ix = buildInstruction(pingInstruction, { payer: wallet });
 ```
 
+It also carries what a program's curated extensions build with: the SPL and system program addresses, `deriveAssociatedTokenAccount`, PDA seed and base58 helpers, the prepared-operation builders (`createPreparedInstruction`, `createPreparedTransaction`, `createPreparedFlow`) and the operation markers (`instructionOperation`, `transactionOperation`, `flowOperation`). Extensions for a program module import from `@usearete/sdk/program` only, so a handler that imports the module still bundles.
+
 The root `@usearete/sdk` entry re-exports the same values, so a program built through one entry works with the other.
 
 ### Semantic Operations
