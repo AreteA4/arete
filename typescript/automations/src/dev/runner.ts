@@ -19,7 +19,7 @@
  */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
@@ -268,6 +268,8 @@ export async function runDev(
   const devDir = join(config.root, '.arete', 'dev');
   const stateDir = join(devDir, 'automations');
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  // A mode given at creation does not change what already exists.
+  chmodSync(stateDir, 0o700);
   const session = await readSession(config.root, log);
 
   // Events before the first run are history, not triggers.
@@ -322,6 +324,7 @@ export async function runDev(
       const next = serialize(memoryStoreState(store));
       if (!next.equals(saved)) {
         writeFileSync(`${storePath}.tmp`, next, { mode: 0o600 });
+        chmodSync(`${storePath}.tmp`, 0o600);
         renameSync(`${storePath}.tmp`, storePath);
         saved = next;
       }
@@ -391,6 +394,7 @@ export async function runDev(
   const server = await startControl(config.port, token, automations, pumpClient.deploymentId, join(devDir, 'wallets'), log);
   const port = (server.address() as { port: number }).port;
   writeFileSync(join(stateDir, 'runner.json'), JSON.stringify({ pid: process.pid, port, token }), { mode: 0o600 });
+  chmodSync(join(stateDir, 'runner.json'), 0o600);
   log(
     automations
       ? `running ${config.entry} against deployment ${session.deploymentId}`
