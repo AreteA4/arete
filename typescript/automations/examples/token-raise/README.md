@@ -5,6 +5,13 @@ opening the app. `refund` is a participant step: it needs the
 contributor's own signature, so this backend signs it for them with a key
 they delegated, inside a consent they signed.
 
+This is a pattern to adapt to your own protocol, not a published package.
+It assumes a protocol shaped like a token raise: a `contribute` step, a
+`refund` participant step, and a `raise.failed` event emitted when the raise
+ends below its soft cap. `token-raise.ts` is a stand-in for that protocol's
+generated client; replace it with your protocol's client and rename the
+steps and event to match.
+
 ## Develop with `a4 dev`
 
 `automations.ts` holds the handlers. In the protocol's project, point
@@ -28,16 +35,27 @@ deployment. It signs for the dev wallets, keeps jobs and consent under
 webhook deliveries, and restarts them when you save `automations.ts` or the
 client is regenerated. Opt a dev wallet in and let a raise fail:
 
-```bash
-a4 dev wallet alice                          # a funded dev wallet
-a4 dev consent alice --steps refund          # alice signs the consent
-a4 dev step contribute --instance <raise> --args '{"amount":"1000000"}' --wallet alice
-a4 dev warp +2d                              # past the raise's deadline
-```
+1. Create a raise with a deadline a few minutes away, leaving time to
+   contribute (any minimum the create step enforces still applies), and a
+   soft cap above what alice will contribute, so it fails.
+2. Opt alice in and contribute before the deadline:
 
-```text
-automations │ completed: refund for <alice's address> on <raise>: completed
-```
+   ```bash
+   a4 dev wallet alice                          # a funded dev wallet
+   a4 dev consent alice --steps refund          # alice signs the consent
+   a4 dev step contribute --instance <raise> --args '{"amount":"1000000"}' --wallet alice
+   ```
+
+3. Wait for the deadline to pass. The raise fails, `raise.failed` arrives
+   and alice's refund runs:
+
+   ```text
+   automations │ completed: refund for <alice's address> on <raise>: completed
+   ```
+
+Don't use `a4 dev warp` to skip ahead: it moves the dev environment's chain
+clock only, and the raise's deadline follows real time, so warping does not
+end the raise.
 
 To run the whole server below against the dev environment instead (the
 consent routes too), use `forward = "http://localhost:8787/arete/webhook"`
@@ -46,12 +64,14 @@ and start `server.ts` with `ARETE_WEBHOOK_SECRET` set to the contents of
 
 ## Run it in production
 
-1. Install the protocol and point `token-raise.ts` at the generated module
-   (it exports `TOKEN_RAISE_PROTOCOL`, which `server.ts` imports):
+1. Install your protocol's client and point `token-raise.ts` at the
+   generated module. `server.ts` and `automations.ts` import the protocol
+   definition from it as `TOKEN_RAISE_PROTOCOL`, so re-export it under that
+   name or rename the import:
 
    ```bash
-   a4 install protocol token-raise
-   echo "export * from './generated/typescript/protocols/token-raise/token-raise.js';" > token-raise.ts
+   a4 install protocol <your-protocol>
+   echo "export { YOUR_PROTOCOL as TOKEN_RAISE_PROTOCOL } from './generated/typescript/protocols/<your-protocol>/<your-protocol>.js';" > token-raise.ts
    ```
 
    Develop against a dev environment first: in the protocol's project,
@@ -91,8 +111,10 @@ and start `server.ts` with `ARETE_WEBHOOK_SECRET` set to the contents of
      -d '{"wallet":"<address>","expiresAt":1798761600000,"nonce":"<nonce>","issuedAt":<issuedAt>,"signature":"<base58>"}'
    ```
 
-5. Let the raise fail (in the dev environment, `a4 dev warp` past its deadline). The
-   `raise.failed` webhook arrives, the handler finds the opted-in
+5. Let the raise fail: in the dev environment, create one with a short
+   deadline and a soft cap it won't reach, contribute, and wait for the
+   deadline (`a4 dev warp` moves the chain clock only and does not end it).
+   The `raise.failed` webhook arrives, the handler finds the opted-in
    contributors of that raise, and each refund runs:
 
    ```text

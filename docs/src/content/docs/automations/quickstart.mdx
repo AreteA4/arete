@@ -12,8 +12,10 @@ a webhook endpoint and consent routes, is in the Arete repository under
 `typescript/automations/examples/token-raise`.
 
 You need a protocol with a participant step the user signs and an event that
-says when to run it. The token-raise protocol has both: a `refund` step, and a
-`raise.failed` event its reactions emit.
+says when to run it. This guide uses a token-raise protocol as the example: a
+`contribute` step, a `refund` step, and a `raise.failed` event its reactions
+emit when a raise ends below its soft cap. Use your own protocol's steps,
+event and generated module in their place.
 
 ## Install
 
@@ -42,7 +44,19 @@ export default defineAutomations(
     automations.on("raise.failed", async (event, ctx) => {
       // Every wallet that agreed to automatic refunds for this raise.
       const grants = await ctx.consents.list({ step: "refund", instanceId: event.instanceId });
-      return grants.map((grant) => ctx.step("refund", { wallet: grant.wallet, instance: event.instanceId }));
+      const contributors: string[] = [];
+      for (const grant of grants) {
+        // Only wallets that contributed to this raise have anything to refund.
+        try {
+          await ctx.client.participants!.get({ instance: event.instanceId, wallet: grant.wallet });
+          contributors.push(grant.wallet);
+        } catch (error) {
+          // Anything but "not a participant" fails the handler, so the
+          // delivery is retried.
+          if ((error as { details?: { status?: number } }).details?.status !== 404) throw error;
+        }
+      }
+      return contributors.map((wallet) => ctx.step("refund", { wallet, instance: event.instanceId }));
     });
   },
   {
@@ -54,7 +68,7 @@ export default defineAutomations(
 ```
 
 A handler receives the event and returns the steps to run, one per wallet
-that opted in. It never prepares or signs anything itself: each step is
+that opted in and contributed. It never prepares or signs anything itself: each step is
 checked against the wallet's consent, the policy and the protocol before it
 is signed. The definition holds no keys, store or URLs; those come from where
 it runs.
@@ -98,14 +112,18 @@ automations restart. Jobs, consent and spending survive the restart.
    a4 dev consent alice --steps refund
    ```
 
-2. Contribute to a raise from that wallet, then let it fail:
+2. Create a raise with a deadline a few minutes away, leaving time to
+   contribute (any minimum the create step enforces still applies), and a
+   soft cap above the contribution below, so it fails. Contribute from the
+   wallet before the deadline:
 
    ```bash
    a4 dev step contribute --instance <raise> --args '{"amount":"1000000"}' --wallet alice
-   a4 dev warp +2d
    ```
 
-3. The `raise.failed` event arrives, and the refund runs:
+3. Wait for the deadline to pass. `a4 dev warp` won't get you there: it moves
+   the dev environment's chain clock only, and the raise's deadline follows
+   real time. The `raise.failed` event arrives, and the refund runs:
 
    ```text
    automations │ completed: refund for <alice> on <raise>: completed
