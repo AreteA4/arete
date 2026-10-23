@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { fakeClock, fakeProtocol, feeOnlySimulator } from '../test-support/fake-protocol';
+import { fakeClock, fakeProtocol, feeOnlySimulator, PROGRAM } from '../test-support/fake-protocol';
 import { ALICE, storedGrant } from '../test-support/harness';
 
 const index = new URL('../../dist/index.js', import.meta.url);
@@ -40,6 +40,7 @@ describe.skipIf(!built)('the built entry points', () => {
       policy: automationsModule.definePolicy({
         deployments: ['dep-1'],
         clusters: ['dev'],
+        programs: [PROGRAM],
         maxSolPerTransaction: '0.01',
       }),
       simulator: feeOnlySimulator,

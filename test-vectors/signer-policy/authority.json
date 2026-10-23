@@ -826,7 +826,14 @@
     {
       "expect": {
         "closedToOthers": [],
-        "findings": []
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "advanceNonce",
+            "programId": "11111111111111111111111111111111",
+            "reason": "makes it a durable-nonce transaction, valid until the nonce advances instead of expiring"
+          }
+        ]
       },
       "input": {
         "kind": "topLevel",
@@ -994,6 +1001,26 @@
         "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQQNAAAA"
       },
       "name": "top level: System systemInstruction13"
+    },
+    {
+      "expect": {
+        "closedToOthers": [],
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "advanceNonce",
+            "programId": "11111111111111111111111111111111",
+            "reason": "makes it a durable-nonce transaction, valid until the nonce advances instead of expiring"
+          }
+        ]
+      },
+      "input": {
+        "kind": "topLevel",
+        "lookupKeys": [],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAQQEAAAA"
+      },
+      "name": "top level: System advanceNonce with another nonce authority"
     },
     {
       "expect": {

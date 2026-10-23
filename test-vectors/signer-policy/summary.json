@@ -2138,6 +2138,160 @@
     {
       "expect": {
         "programsInvoked": [
+          "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+        ],
+        "signaturesStillRequired": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "signerBalanceChanges": {
+          "available": true,
+          "complete": false,
+          "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+          "sol": "-0.000005",
+          "solLamports": "-5000",
+          "tokens": []
+        },
+        "simulationErrors": [],
+        "transactions": [
+          {
+            "accountsWritten": [
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD",
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv"
+            ],
+            "accountsWrittenComplete": true,
+            "feePayer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+            "index": 0,
+            "programs": [
+              {
+                "programId": "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+                "roles": []
+              }
+            ],
+            "serverSimulation": null,
+            "signatures": {
+              "missing": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ],
+              "present": [],
+              "required": [
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+              ]
+            },
+            "signerEffect": {
+              "closedAccountLamportsOut": "0",
+              "innerInstructionsChecked": false,
+              "known": false,
+              "omittedAccounts": 0,
+              "preStateSlot": 100,
+              "simulatedSlot": 101,
+              "sol": "-0.000005",
+              "solLamports": "-5000",
+              "tokens": [],
+              "unresolvedLookupTables": []
+            },
+            "simulation": {
+              "err": null,
+              "logsTail": [
+                "Program log: ok"
+              ]
+            },
+            "unresolvedWritableAccounts": [],
+            "unsafeInstructions": [],
+            "version": "legacy"
+          }
+        ]
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "a simulation without inner instructions"
+    },
+    {
+      "expect": {
+        "programsInvoked": [
           "11111111111111111111111111111111",
           "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
         ],

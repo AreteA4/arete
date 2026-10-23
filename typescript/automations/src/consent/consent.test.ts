@@ -60,9 +60,9 @@ describe('the consent message', () => {
         'Setting "weekday": "fri"',
         'Expires At: 2027-01-01T00:00:00.000Z',
         '',
-        'Nothing else may leave your wallet through these steps. You can revoke this at any time without signing.',
+        'These limits count the SOL and SPL tokens that leave your wallet, network fees included. You can revoke this at any time without signing.',
         '',
-        'Version: arete.automation-consent/v1',
+        'Version: arete.automation-consent/v2',
         'Nonce: 3yZe7d7bqA1kxH3cMSGvJv',
         'Issued At: 2026-10-22T12:00:00.000Z',
       ].join('\n'),
@@ -97,9 +97,9 @@ describe('the consent message', () => {
     expect(normalized.params).toEqual({ schedule: { weekday: 'fri' } });
   });
 
-  it('says so when nothing may leave the wallet', () => {
+  it('says so when no SOL or tokens may leave the wallet', () => {
     const message = consentMessage('app.example', normalizeConsent(fields({ limits: {} })), '3yZe7d7bqA1kxH3cMSGvJv', 0);
-    expect(message).toContain('Per run: nothing may leave your wallet');
+    expect(message).toContain('Per run: no SOL or tokens may leave your wallet');
   });
 
   it('refuses fields it cannot state plainly', () => {

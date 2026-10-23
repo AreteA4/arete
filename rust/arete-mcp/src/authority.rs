@@ -59,6 +59,10 @@ const TOKEN_ALLOWED: [&str; 24] = [
     "createNativeMint",
 ];
 
+/// Why a transaction with a durable nonce is refused.
+pub const DURABLE_NONCE: &str =
+    "makes it a durable-nonce transaction, valid until the nonce advances instead of expiring";
+
 /// System instructions the signer may take part in.
 const SYSTEM_ALLOWED: [&str; 7] = [
     "createAccount",
@@ -321,6 +325,26 @@ pub fn check_top_level(
                 .flatten()
         })
     };
+    // A transaction that starts by advancing a nonce uses a durable nonce
+    // instead of a recent blockhash: whoever the nonce authority is, the
+    // signed bytes stay valid until the nonce advances, so they could land
+    // long after the step was checked and its consent revoked.
+    if let Some(first) = decoded.instructions.first() {
+        if decoded
+            .static_keys
+            .get(first.program_index)
+            .map(String::as_str)
+            == Some(SYSTEM_PROGRAM)
+            && u32_tag(&first.data) == Some(4)
+        {
+            out.findings.push(Finding {
+                program: SYSTEM_PROGRAM.to_string(),
+                instruction: "advanceNonce".to_string(),
+                inner: false,
+                reason: DURABLE_NONCE.to_string(),
+            });
+        }
+    }
     for instruction in &decoded.instructions {
         let Some(program) = decoded.static_keys.get(instruction.program_index) else {
             continue;
@@ -329,6 +353,9 @@ pub fn check_top_level(
             continue;
         };
         if !instruction.accounts.contains(&signer_index) {
+            continue;
+        }
+        if name == "advanceNonce" && program == SYSTEM_PROGRAM {
             continue;
         }
         let closed = instruction.accounts.first().and_then(|&index| key(index));

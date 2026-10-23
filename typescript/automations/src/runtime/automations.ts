@@ -25,7 +25,8 @@ import {
   stepOutflows,
   transactionOutflows,
 } from '../consent/consent';
-import { decodeBase58, encodeBase58 } from '../policy/encoding';
+import { decodeTransaction } from '../policy/decode';
+import { decodeBase58, decodeBase64, encodeBase58 } from '../policy/encoding';
 import type { Cluster, Refusal, SignerPolicy } from '../policy/policy';
 import { checkPrepared, checkTarget } from '../policy/policy';
 import type { Simulator } from '../policy/simulator';
@@ -320,6 +321,14 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   options: AutomationsOptions<TTypes>,
 ): Automations<TTypes> {
   const { client, signer, policy, simulator, store } = options;
+  // Only SOL and SPL token balances are measured: a program outside the
+  // allow-list could move anything else (NFTs, positions it holds), so
+  // automations need one.
+  if (policy.programs === null) {
+    throw new TypeError(
+      'createAutomations: the policy must list `programs`, the programs your steps call; without it any program could run with the signer',
+    );
+  }
   const cluster = options.cluster ?? clientCluster(client);
   const clock = options.clock ?? systemClock;
   const worker = options.worker ?? randomId();
@@ -822,8 +831,66 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       }
     };
 
-    /** An expired intent is prepared again once, with a new idempotency key. */
+    /**
+     * Whether the transactions an expired intent signed can still land. The
+     * chain decides, not the intent: a transaction that landed keeps its
+     * spending, and one whose blockhash is still valid could land after a
+     * second signing, spending twice. Blockhashes are checked first and the
+     * signatures after, on a view at least that recent, so a transaction
+     * landing between the two reads is not missed.
+     */
+    const earlierAttempt = async (job: StepJob): Promise<'landed' | 'live' | 'gone'> => {
+      const signed = (job.progress.signed ?? []).map((base64) => decodeTransaction(decodeBase64(base64)!));
+      if (signed.length === 0) return 'gone';
+      let expiredAt = 0;
+      for (const blockhash of new Set(signed.map((transaction) => transaction.recentBlockhash))) {
+        const valid = (await simulator.call('isBlockhashValid', [blockhash, { commitment: 'processed' }])) as {
+          context?: { slot?: unknown };
+          value?: unknown;
+        } | null;
+        if (valid?.value !== false) return 'live';
+        const slot = valid.context?.slot;
+        if (typeof slot !== 'number') throw new Error('isBlockhashValid returned no slot');
+        expiredAt = Math.max(expiredAt, slot);
+      }
+      const signatures = signed.map((transaction) => encodeBase58(transaction.signatures[0]!));
+      const statuses = (await simulator.call('getSignatureStatuses', [signatures, { searchTransactionHistory: true }])) as {
+        context?: { slot?: unknown };
+        value?: readonly unknown[];
+      } | null;
+      if (!Array.isArray(statuses?.value)) throw new Error('getSignatureStatuses returned no statuses');
+      if (statuses.value.some((status) => status !== null)) return 'landed';
+      const seenAt = statuses.context?.slot;
+      // An RPC behind the expiry check could have missed a late landing.
+      if (typeof seenAt !== 'number' || seenAt < expiredAt) return 'live';
+      return 'gone';
+    };
+
+    /**
+     * An expired intent is prepared again once, with a new idempotency key,
+     * after the chain shows its transactions can no longer land. A second
+     * expiry ends the job, keeping the spending of anything that landed.
+     */
     const prepareAgain = async (job: StepJob): Promise<void> => {
+      let earlier: 'landed' | 'live' | 'gone';
+      try {
+        earlier = await earlierAttempt(job);
+      } catch (error) {
+        report(error, { jobId: job.id, phase: 'expired' });
+        return park(job, backoff(job.attempts + 1), job.attempts + 1);
+      }
+      if (earlier === 'landed') {
+        // Keep its spending; never sign the step again.
+        return finish(
+          job,
+          'failed',
+          { code: 'landed_after_expiry', reason: 'the intent expired, but a transaction it signed landed on chain' },
+          undefined,
+          {},
+        );
+      }
+      // Still able to land: wait for its blockhash to expire first.
+      if (earlier === 'live') return park(job, backoff(job.attempts + 1), job.attempts + 1);
       if (job.progress.generation >= 1) {
         return finish(job, 'expired', { code: 'expired', reason: 'the intent expired again after preparing it a second time' });
       }

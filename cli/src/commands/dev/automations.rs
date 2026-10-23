@@ -155,12 +155,26 @@ pub fn state_dir(root: &Path) -> PathBuf {
     root.join(".arete").join("dev").join("automations")
 }
 
+/// Only the owner may read `path`: a mode set when a file is created does
+/// not change one that already exists.
+fn owner_only(path: &Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+}
+
 /// The project's dev webhook secret, created on first use (mode 0600).
 pub fn webhook_secret(root: &Path) -> Result<String> {
     let path = state_dir(root).join("webhook-secret");
     if let Ok(secret) = std::fs::read_to_string(&path) {
         let secret = secret.trim();
         if !secret.is_empty() {
+            owner_only(&state_dir(root), 0o700);
+            owner_only(&path, 0o600);
             return Ok(secret.to_string());
         }
     }
@@ -171,6 +185,7 @@ pub fn webhook_secret(root: &Path) -> Result<String> {
         bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
     );
     std::fs::create_dir_all(state_dir(root))?;
+    owner_only(&state_dir(root), 0o700);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -182,6 +197,7 @@ pub fn webhook_secret(root: &Path) -> Result<String> {
         .open(&path)
         .with_context(|| format!("Failed to write {}", path.display()))?;
     writeln!(file, "{secret}")?;
+    owner_only(&path, 0o600);
     Ok(secret)
 }
 
@@ -470,6 +486,20 @@ mod tests {
         ] {
             assert!(parse(bad, dir.path()).is_err(), "{bad}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_webhook_secret_is_made_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(state_dir(dir.path())).unwrap();
+        let path = state_dir(dir.path()).join("webhook-secret");
+        std::fs::write(&path, "whsec_dev_existing\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(webhook_secret(dir.path()).unwrap(), "whsec_dev_existing");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

@@ -56,6 +56,9 @@ export function fakeClock(start = 1_700_000_000_000): Clock & { advance(ms: numb
 /** A chain where each transaction costs the wallet a 5000-lamport fee and nothing else. */
 export const feeOnlySimulator: Simulator = {
   async call(method, params) {
+    // Nothing signed earlier landed, and every earlier blockhash has expired.
+    if (method === 'getSignatureStatuses') return { context: { slot: 12 }, value: (params[0] as string[]).map(() => null) };
+    if (method === 'isBlockhashValid') return { context: { slot: 12 }, value: false };
     if (method === 'getMultipleAccounts') {
       const addresses = params[0] as string[];
       return {

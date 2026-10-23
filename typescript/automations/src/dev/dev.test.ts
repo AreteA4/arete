@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deserialize, serialize } from 'node:v8';
@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeBase58, encodeBase58 } from '../policy/encoding';
 import { defineAutomations } from '../runtime/define';
 import { memoryStore, memoryStoreState } from '../store/memory';
-import { fakeProtocol } from '../test-support/fake-protocol';
+import { fakeProtocol, PROGRAM } from '../test-support/fake-protocol';
 import { ALICE, harness, storedGrant } from '../test-support/harness';
 import { type PumpClient, type SignedDelivery, signDelivery, startEventPump } from './events';
 import { devStackConnector, loadDefinition, projectTsImport, runDev } from './runner';
@@ -22,11 +22,15 @@ const tick = async (times = 20) => {
 };
 
 function definitionFor(name = 'vault') {
-  return defineAutomations({ name, deployment: { deploymentId: 'dep' } } as never, (automations) => {
-    automations.on('vault.rebalanceDue', (event: { instanceId: string }, ctx) => [
-      ctx.step('rebalance', { wallet: ALICE, instance: event.instanceId }),
-    ]);
-  });
+  return defineAutomations(
+    { name, deployment: { deploymentId: 'dep' } } as never,
+    (automations) => {
+      automations.on('vault.rebalanceDue', (event: { instanceId: string }, ctx) => [
+        ctx.step('rebalance', { wallet: ALICE, instance: event.instanceId }),
+      ]);
+    },
+    { policy: { programs: [PROGRAM], maxSolPerTransaction: '0.01' } },
+  );
 }
 
 /** The fake client with the instance listing the pump needs. */
@@ -265,11 +269,14 @@ describe('runDev', () => {
         setup(automations) {
           automations.on('vault.rebalanceDue', (event) => { globalThis.__devSeen.push(event.id); return []; });
         },
+        policy: { programs: ['${PROGRAM}'], maxSolPerTransaction: '0.01' },
       };\n`,
     );
     // The fake's events are dated 2026-10-22: count them as after the first run.
     mkdirSync(join(devDir, 'automations'), { recursive: true });
     writeFileSync(join(devDir, 'automations', 'since'), '0');
+    // A store from before the owner-only mode, readable by others.
+    writeFileSync(join(devDir, 'automations', 'store.bin'), serialize(memoryStoreState(memoryStore())), { mode: 0o644 });
     const seen: string[] = [];
     (globalThis as unknown as { __devSeen: string[] }).__devSeen = seen;
     const lines: string[] = [];
@@ -291,6 +298,10 @@ describe('runDev', () => {
     );
     const runner = await started;
     expect(lines[0]).toMatch(/waiting for the protocol to deploy/);
+    if (process.platform !== 'win32') {
+      expect(statSync(join(devDir, 'automations', 'store.bin')).mode & 0o777).toBe(0o600);
+      expect(statSync(join(devDir, 'automations', 'runner.json')).mode & 0o777).toBe(0o600);
+    }
 
     await tick();
     fake.emit('vault.rebalanceDue', 41);

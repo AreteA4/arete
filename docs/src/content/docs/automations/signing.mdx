@@ -15,7 +15,7 @@ use, and which protections still hold if your backend is ever compromised.
 const policy = definePolicy({
   deployments: [client.deploymentId], // required
   clusters: ["dev", "mainnet"],        // defaults to ["dev"]; mainnet only when listed
-  programs: [VAULT_PROGRAM_ID],        // optional allow-list
+  programs: [VAULT_PROGRAM_ID],        // required: the programs your steps call
   maxSolPerTransaction: "0.01",        // required, in SOL
   maxTokenAmounts: { [USDC_MINT]: "5000000000" }, // base units per mint
 });
@@ -90,8 +90,9 @@ environment. It allows only:
 - the programs in your policy;
 - System transfers and token `TransferChecked` up to the per-run caps
   (wrapped SOL up to the SOL cap, since it counts as SOL), checked per
-  instruction: several capped transfers in one transaction can add up to
-  more, so totals remain a check in your backend;
+  instruction: several capped transfers in one transaction, or one
+  transaction after another, can add up to more, so totals remain a check
+  in your backend;
 - closing token accounts back to the wallet;
 - signing until the consent expires.
 
@@ -128,9 +129,13 @@ the step is refused rather than retried. Optionally implement
 Arete never holds, stores or proxies a user's key; it prepares transactions,
 records intents and relays what your backend signed. The consent signature
 records what the user agreed to, but it cannot stop an attacker who controls
-your backend. Keep authorization keys in a secrets manager, keep the program
-allow-list tight, and prefer protocols whose automated steps can only move
-funds between the user's own positions.
+your backend. Privy's caps do not restrict where a transfer goes, so such an
+attacker can repeat capped transfers to themselves until the delegation
+expires or is removed: the caps slow a drain, they do not bound it, and
+revoking a consent in your backend does not change Privy's policy. Keep
+authorization keys in a secrets manager, keep delegations short, keep the
+program allow-list tight, and prefer protocols whose automated steps can only
+move funds between the user's own positions.
 
 The threat model in the Arete repository
 (`typescript/automations/docs/threat-model.md`) covers each threat (forged and
