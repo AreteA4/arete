@@ -41,6 +41,7 @@ mod config;
 mod project;
 mod registry_signatures;
 mod selfhost;
+mod squads;
 mod telemetry;
 mod templates;
 mod ui;

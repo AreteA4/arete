@@ -312,6 +312,132 @@ impl ProtocolAgent {
         Ok(body)
     }
 
+    /// `protocol_squads_proposer`: the calling account's Squads proposer for
+    /// the deployment, with its SOL balance when an RPC is available
+    /// (`rpc_url`, else the target's).
+    pub async fn squads_proposer(&self, args: &TargetArgs, rpc_url: Option<&str>) -> Result<Value> {
+        let target = self.target(args, None)?;
+        let deployment = self.deployment(&target, args, None).await?;
+        let mut body = target.api.squads_proposer(&deployment).await?;
+        let proposer = body["pubkey"].as_str().unwrap_or_default().to_string();
+        let balance = self.proposer_balance(&target, rpc_url, &proposer).await;
+        if let Some(object) = body.as_object_mut() {
+            object.insert("deploymentId".into(), json!(deployment));
+            object.insert("target".into(), json!(target.label()));
+            object.extend(balance);
+            object.insert(
+                "next".into(),
+                json!(format!(
+                    "Add {proposer} to the team's Squads v4 multisig as a member with exactly the Initiate permission (mask 1), and keep it funded with a little SOL: it pays the fee and rent of every proposal. protocol_squads_add_proposer returns the transaction that proposes the addition; protocol_squads_status checks it."
+                )),
+            );
+        }
+        Ok(body)
+    }
+
+    /// `protocol_squads_status`: whether the proposer is an Initiate-only
+    /// member of `multisig`, with its SOL balance when an RPC is available.
+    pub async fn squads_status(
+        &self,
+        args: &TargetArgs,
+        multisig: &str,
+        rpc_url: Option<&str>,
+    ) -> Result<Value> {
+        let multisig = squads_multisig(multisig)?;
+        let target = self.target(args, None)?;
+        let deployment = self.deployment(&target, args, None).await?;
+        let mut body = target.api.squads_status(&deployment, &multisig).await?;
+        let proposer = body["proposer"].as_str().unwrap_or_default().to_string();
+        // Newer servers report the balance and what one proposal needs;
+        // older ones omit both, and the balance is read from an RPC.
+        let balance = match body["proposerLamports"].as_u64() {
+            Some(lamports) => balance_fields(lamports, body["proposerMinLamports"].as_u64()),
+            None => self.proposer_balance(&target, rpc_url, &proposer).await,
+        };
+        let next = squads_status_next(&body);
+        if let Some(object) = body.as_object_mut() {
+            object.insert("deploymentId".into(), json!(deployment));
+            object.insert("target".into(), json!(target.label()));
+            object.extend(balance);
+            object.insert("next".into(), json!(next));
+        }
+        Ok(body)
+    }
+
+    /// `protocol_squads_add_proposer`: the unsigned transaction proposing
+    /// to add the proposer to `multisig`, for `member` to sign and send.
+    /// `member` is a public key (in a dev session also a dev wallet name).
+    pub async fn squads_add_proposer(
+        &self,
+        args: &TargetArgs,
+        multisig: &str,
+        member: &str,
+        transaction_format: Option<&str>,
+    ) -> Result<Value> {
+        let multisig = squads_multisig(multisig)?;
+        let target = self.target(args, None)?;
+        let deployment = self.deployment(&target, args, None).await?;
+        let member = self.wallet(&target, member)?;
+        let mut body = target
+            .api
+            .squads_add_proposer(&deployment, &multisig, &member, transaction_format)
+            .await?;
+        let next = format!(
+            "{member} signs this transaction and sends it (it pays the fee and the proposal's rent). Then the multisig's members approve and execute config proposal {} (transaction {}) in Squads; protocol_squads_status reports `ready` once it has executed.",
+            body["proposal"].as_str().unwrap_or("?"),
+            body["transactionIndex"]
+        );
+        if let Some(object) = body.as_object_mut() {
+            object.insert("deploymentId".into(), json!(deployment));
+            object.insert("target".into(), json!(target.label()));
+            object.insert("next".into(), json!(next));
+        }
+        Ok(body)
+    }
+
+    /// The proposer's balance fields: `proposerLamports` (null when no RPC
+    /// answered), `balance` (`ok`, `low` or `unavailable`) and, unless it
+    /// is `ok`, `balanceNote`.
+    async fn proposer_balance(
+        &self,
+        target: &Target,
+        rpc_url: Option<&str>,
+        proposer: &str,
+    ) -> serde_json::Map<String, Value> {
+        let lamports = if proposer.is_empty() {
+            Err(anyhow!("the server named no proposer"))
+        } else {
+            let params = json!([proposer, { "commitment": "confirmed" }]);
+            match (rpc_url.filter(|url| !url.trim().is_empty()), &target.dev) {
+                (None, Some(dev)) => dev.rpc("getBalance", params).await,
+                (rpc_url, _) => match rpc_url.or(target.rpc_url.as_deref()) {
+                    Some(url) => rpc_call(&self.http, url, "getBalance", params).await,
+                    None => Err(anyhow!(
+                        "no RPC URL is configured ({ENV_RPC_URL}, or the signer's rpcUrl)"
+                    )),
+                },
+            }
+            .and_then(|result| {
+                result["value"]
+                    .as_u64()
+                    .ok_or_else(|| anyhow!("getBalance returned no value"))
+            })
+        };
+        match lamports {
+            Ok(lamports) => balance_fields(lamports, None),
+            Err(error) => {
+                let mut fields = serde_json::Map::new();
+                fields.insert("proposerLamports".into(), Value::Null);
+                fields.insert("balance".into(), json!("unavailable"));
+                fields.insert(
+                    "balanceNote".into(),
+                    json!(format!("The balance was not read: {error:#}")),
+                );
+                fields
+            }
+        }
+    }
+
     /// `protocol_instances`.
     pub async fn instances(
         &self,
@@ -903,6 +1029,89 @@ fn body_has_cursor(object: &serde_json::Map<String, Value>) -> bool {
 
 fn is_pubkey(value: &str) -> bool {
     bs58::decode(value).into_vec().map(|bytes| bytes.len()) == Ok(32)
+}
+
+/// Lamports below which the Squads proposer is reported low on SOL.
+pub const SQUADS_PROPOSER_LOW_LAMPORTS: u64 = 50_000_000;
+
+/// A `multisig` argument: a base58 public key.
+fn squads_multisig(multisig: &str) -> Result<String> {
+    let multisig = multisig.trim();
+    if is_pubkey(multisig) {
+        Ok(multisig.to_string())
+    } else {
+        Err(invalid(format!(
+            "`multisig` '{multisig}' is not a base58 public key (the Squads multisig account)"
+        )))
+    }
+}
+
+/// The balance fields for `lamports`: low below `minimum` (what one
+/// proposal needs, when the server says) or else below
+/// [`SQUADS_PROPOSER_LOW_LAMPORTS`].
+fn balance_fields(lamports: u64, minimum: Option<u64>) -> serde_json::Map<String, Value> {
+    let mut fields = serde_json::Map::new();
+    fields.insert("proposerLamports".into(), json!(lamports));
+    if let Some(minimum) = minimum {
+        fields.insert("proposerMinLamports".into(), json!(minimum));
+    }
+    let threshold = minimum.unwrap_or(SQUADS_PROPOSER_LOW_LAMPORTS);
+    if lamports < threshold {
+        fields.insert("balance".into(), json!("low"));
+        fields.insert(
+            "balanceNote".into(),
+            json!(format!(
+                "The proposer holds {} SOL{}. It pays the fee and rent of every proposal, so fund it or proposals will fail.",
+                lamports as f64 / 1e9,
+                minimum
+                    .map(|minimum| format!(" and one proposal needs {} SOL", minimum as f64 / 1e9))
+                    .unwrap_or_default()
+            )),
+        );
+    } else {
+        fields.insert("balance".into(), json!("ok"));
+    }
+    fields
+}
+
+/// What to do after a Squads status answer, phrased for the MCP tools.
+pub fn squads_status_next(status: &Value) -> String {
+    if status["ready"] == true {
+        return "The proposer can propose to this multisig. Keep it funded: it pays the fee and rent of every proposal.".into();
+    }
+    match status["problem"].as_str() {
+        Some("proposer_unfunded") => format!(
+            "The proposer is a valid member but holds too little SOL to pay for a proposal{}. Send SOL to {} (in `a4 dev`, `a4 dev fund {}`), then check again.",
+            status["proposerMinLamports"]
+                .as_u64()
+                .map(|minimum| format!(" (one needs {} SOL)", minimum as f64 / 1e9))
+                .unwrap_or_default(),
+            status["proposer"].as_str().unwrap_or("the proposer"),
+            status["proposer"].as_str().unwrap_or("<proposer>")
+        ),
+        Some("permissions_invalid") => format!(
+            "The proposer is a member with permission mask {} instead of exactly Initiate (mask 1). Remove it with a config proposal in Squads, then add it again with protocol_squads_add_proposer.",
+            status["mask"]
+        ),
+        _ => "The proposer is not a member of this multisig. protocol_squads_add_proposer with `multisig` and a `member` that has the Initiate permission returns the transaction that proposes adding it; after that member sends it, the multisig's members approve and execute the config proposal in Squads.".into(),
+    }
+}
+
+/// One JSON-RPC call to `url`; a JSON-RPC error is an error.
+async fn rpc_call(http: &reqwest::Client, url: &str, method: &str, params: Value) -> Result<Value> {
+    let response: Value = http
+        .post(url)
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
+        .send()
+        .await
+        .context("The RPC is unreachable")?
+        .json()
+        .await
+        .context("The RPC returned a body that is not JSON")?;
+    if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
+        bail!("{method} failed: {error}");
+    }
+    Ok(response.get("result").cloned().unwrap_or(Value::Null))
 }
 
 fn is_loopback(origin: &str) -> bool {

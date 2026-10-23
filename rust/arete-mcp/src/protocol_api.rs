@@ -415,6 +415,171 @@ impl ProtocolApi {
     }
 }
 
+/// The Squads onboarding routes of a deployment
+/// (`/protocol-deployments/{d}/squads/*`), read with a read-only session.
+impl ProtocolApi {
+    async fn squads(
+        &self,
+        deployment: &str,
+        method: reqwest::Method,
+        route: &str,
+        body: Option<Value>,
+        what: &str,
+    ) -> Result<Value> {
+        let token = self.token(deployment, &READ_SCOPES).await?;
+        let path = format!(
+            "/protocol-deployments/{}/squads/{route}",
+            path_segment(deployment)?
+        );
+        let url = format!("{}{path}", self.api_base);
+        let mut request = self.http.request(method, &url).bearer_auth(&token);
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| format!("The protocol API is unreachable at {url}"))?;
+        let status = response.status();
+        let header_code = response
+            .headers()
+            .get("x-error-code")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let text = response.text().await.unwrap_or_default();
+        let body = serde_json::from_str(&text).unwrap_or(Value::String(text));
+        if !status.is_success() {
+            let code = header_code
+                .filter(|code| !code.trim().is_empty())
+                .or_else(|| body.get("code").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_default();
+            return Err(anyhow!(SquadsRefused {
+                what: what.to_string(),
+                status: status.as_u16(),
+                code,
+                body,
+            }));
+        }
+        Ok(body)
+    }
+
+    /// The calling account's Squads proposer for `deployment`:
+    /// `{pubkey, permissions: "initiate", rootKeyId}`.
+    pub async fn squads_proposer(&self, deployment: &str) -> Result<Value> {
+        self.squads(
+            deployment,
+            reqwest::Method::GET,
+            "proposer",
+            None,
+            "Reading the Squads proposer",
+        )
+        .await
+    }
+
+    /// Whether the proposer is an Initiate-only member of `multisig`:
+    /// `{ready, member, mask, threshold, multisig, proposer, problem?}`.
+    pub async fn squads_status(&self, deployment: &str, multisig: &str) -> Result<Value> {
+        self.squads(
+            deployment,
+            reqwest::Method::GET,
+            &format!("status?multisig={}", query_value(multisig)),
+            None,
+            "Reading the Squads proposer status",
+        )
+        .await
+    }
+
+    /// An unsigned transaction creating a config proposal that adds the
+    /// proposer to `multisig` with Initiate only, for `member` to sign,
+    /// send and pay.
+    pub async fn squads_add_proposer(
+        &self,
+        deployment: &str,
+        multisig: &str,
+        member: &str,
+        transaction_format: Option<&str>,
+    ) -> Result<Value> {
+        let mut body = json!({ "multisig": multisig, "member": member });
+        if let Some(format) = transaction_format {
+            body["transactionFormat"] = json!(format);
+        }
+        self.squads(
+            deployment,
+            reqwest::Method::POST,
+            "add-proposer",
+            Some(body),
+            "Preparing the add-proposer proposal",
+        )
+        .await
+    }
+}
+
+/// A Squads onboarding route refused the request.
+#[derive(Debug)]
+pub struct SquadsRefused {
+    pub what: String,
+    pub status: u16,
+    pub code: String,
+    pub body: Value,
+}
+
+impl SquadsRefused {
+    /// The code, lowercase with `_` separators.
+    pub fn normalized_code(&self) -> String {
+        self.code.trim().to_ascii_lowercase().replace('-', "_")
+    }
+}
+
+impl std::fmt::Display for SquadsRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let code = self.normalized_code();
+        match squads_refusal_hint(&code) {
+            Some(hint) => write!(
+                f,
+                "{} refused ({}, {}): {hint}",
+                self.what, self.status, self.code
+            ),
+            None => {
+                let message = self
+                    .body
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| self.body.to_string());
+                write!(f, "{} failed ({}): {message}", self.what, self.status)
+            }
+        }
+    }
+}
+
+impl std::error::Error for SquadsRefused {}
+
+/// What to do about a Squads onboarding refusal `code` (normalized by
+/// [`SquadsRefused::normalized_code`]); `None` for other codes.
+pub fn squads_refusal_hint(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "member_cannot_initiate" => {
+            "`member` is not a member of this multisig with the Initiate permission. Pass a member who can initiate proposals: it signs, sends and pays for the add-proposer proposal."
+        }
+        "proposer_already_member" => {
+            "The proposer is already a member of this multisig. Check its status; there is nothing to add."
+        }
+        "proposer_permissions_invalid" => {
+            "The proposer is a member of this multisig with permissions other than Initiate only. Remove it from the multisig with a config proposal in Squads, then add it again."
+        }
+        "squads_multisig_controlled" => {
+            "This multisig has a config authority, so members cannot change it by proposal. Its config authority must add the proposer (Initiate only) directly."
+        }
+        "squads_multisig_missing" => {
+            "No Squads v4 multisig exists at that address. Pass the multisig account, not one of its vaults."
+        }
+        "protocol_squads_not_used" => {
+            "This deployment has no step whose authority is a Squads proposer, so it needs no proposer."
+        }
+        _ => return None,
+    })
+}
+
 /// Whether an intent state is final.
 pub fn is_final(state: &Value) -> bool {
     state["state"]

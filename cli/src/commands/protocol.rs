@@ -56,6 +56,7 @@ const MAX_SLUG_LEN: usize = 63;
 pub mod init;
 pub mod listing;
 pub mod local_programs;
+pub mod squads;
 
 #[derive(Subcommand, Debug)]
 pub enum ProtocolCommands {
@@ -76,6 +77,10 @@ pub enum ProtocolCommands {
     RequestListing(listing::RequestListingArgs),
     /// Show your deployment's listing state
     ListingStatus(listing::ListingArgs),
+    /// Bring your own Squads v4 multisig: the account's proposer, whether
+    /// it can propose to a multisig, and the transaction that adds it
+    #[command(subcommand)]
+    Squads(squads::SquadsCommands),
 }
 
 /// Options for `a4 protocol actions`.
@@ -158,7 +163,26 @@ pub fn run(command: ProtocolCommands, json: bool) -> Result<()> {
         ProtocolCommands::Show(args) => listing::show(&args, json),
         ProtocolCommands::RequestListing(args) => listing::request_listing(&args, json),
         ProtocolCommands::ListingStatus(args) => listing::listing_status(&args, json),
+        ProtocolCommands::Squads(command) => squads::run(command, json),
     }
+}
+
+/// The `commands` an activation refusal names when a step's Squads proposer
+/// cannot propose to its multisig yet (`commands.addProposer`,
+/// `commands.status`), as one line to print.
+fn squads_activation_commands(error: &anyhow::Error) -> Option<String> {
+    let api_error = error.downcast_ref::<crate::api_client::ApiClientError>()?;
+    let commands = api_error.problem.extra.get("commands")?;
+    let add = commands["addProposer"].as_str();
+    let status = commands["status"].as_str();
+    let mut parts = Vec::new();
+    if let Some(add) = add {
+        parts.push(format!("Add the Squads proposer: `{add}`"));
+    }
+    if let Some(status) = status {
+        parts.push(format!("check it: `{status}`"));
+    }
+    (!parts.is_empty()).then(|| format!("{}.", parts.join("; then ")))
 }
 
 /// Whether `target` names a deployment (an id) rather than a protocol
@@ -169,8 +193,19 @@ fn is_deployment_id(target: &str) -> bool {
 
 /// The tool target of `a4 protocol actions`.
 pub fn actions_target(args: &ActionsArgs) -> Result<arete_mcp::protocol_agent::TargetArgs> {
-    let dev = args.dev || args.project.is_some();
-    let (deployment, protocol) = match args.target.as_deref().map(str::trim) {
+    protocol_target(args.target.as_deref(), args.dev, args.project.as_deref())
+}
+
+/// A deployment target as `a4 protocol actions` and `a4 protocol squads`
+/// take it: a deployment id or a protocol package reference, or, with
+/// `--dev` / `--project`, by default the `a4 dev` session's deployment.
+pub fn protocol_target(
+    target: Option<&str>,
+    dev: bool,
+    project: Option<&str>,
+) -> Result<arete_mcp::protocol_agent::TargetArgs> {
+    let dev = dev || project.is_some();
+    let (deployment, protocol) = match target.map(str::trim) {
         Some(target) if !target.is_empty() => {
             if is_deployment_id(target) {
                 (Some(target.to_string()), None)
@@ -183,7 +218,7 @@ pub fn actions_target(args: &ActionsArgs) -> Result<arete_mcp::protocol_agent::T
     };
     Ok(arete_mcp::protocol_agent::TargetArgs {
         dev,
-        project: args.project.clone(),
+        project: project.map(str::to_string),
         deployment,
         protocol,
     })
@@ -1125,7 +1160,13 @@ pub fn execute(client: &ApiClient, args: &DeployArgs, json: bool) -> Result<Depl
                     "Public deployments are created by an operator; self-serve deployments are private",
                 ));
             }
-            Err(error) => return Err(error.context("Failed to activate the deployment")),
+            Err(error) => {
+                let context = match squads_activation_commands(&error) {
+                    Some(commands) => format!("Failed to activate the deployment. {commands}"),
+                    None => "Failed to activate the deployment".to_string(),
+                };
+                return Err(error.context(context));
+            }
         }
     }
 

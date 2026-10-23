@@ -445,6 +445,21 @@ reference `protocol`.
 See [Protocols for agents](/agent-skills/protocols/) for the flow, the
 summary and the signer config.
 
+#### Squads onboarding tools
+
+A step whose authority is `squadsProposer` is proposed to the team's own
+Squads v4 multisig by a proposer key Arete holds for the account (one per
+account, shared by its deployments). The proposer may only initiate: add it
+to the multisig as a member with exactly the Initiate permission (mask 1) and
+fund it with a little SOL, since it pays the fee and rent of each proposal.
+The members still approve and execute. These tools never sign.
+
+| Tool                           | Arguments                                                                         | What it does                                                                                                                                                                 |
+| ------------------------------ | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `protocol_squads_proposer`     | `deployment?` \| `protocol?`, `dev?`                                              | the proposer's `pubkey`, `permissions` (`initiate`) and its SOL balance when an RPC is configured                                                                            |
+| `protocol_squads_status`       | `multisig`, `deployment?` \| `protocol?`, `dev?`                                  | `ready`, `member`, `mask`, `threshold`, `problem` (`not_member`, `permissions_invalid`, `proposer_unfunded`), balance and minimum, and `next`                                |
+| `protocol_squads_add_proposer` | `multisig`, `member`, `transaction_format?`, `deployment?` \| `protocol?`, `dev?` | the unsigned transaction creating a config proposal that adds the proposer; `member` (a member with Initiate) signs, sends and pays, then the members approve and execute it |
+
 ### Streaming tools
 
 Stateful, for following a view over time. A session calls `connect` once, then
