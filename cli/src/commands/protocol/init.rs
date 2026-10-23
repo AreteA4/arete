@@ -37,7 +37,7 @@ use crate::project::manifest::InstallTarget;
 use crate::project::runtime::{lockstep_version, ZOD_RANGE};
 
 /// The `@usearete/protocol` range a new project depends on.
-pub const PROTOCOL_PACKAGE_RANGE: &str = "^0.2.1"; // x-release-please-version
+pub const PROTOCOL_PACKAGE_RANGE: &str = "^0.2.2"; // x-release-please-version
 
 /// The registry package init installs the System Program from.
 pub const SYSTEM_PROGRAM_PACKAGE: &str = "system-program";

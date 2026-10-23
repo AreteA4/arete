@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/AreteA4/arete/compare/arete-protocol-npm-v0.2.1...arete-protocol-npm-v0.2.2) (2026-10-22)
+
+
+### Bug Fixes
+
+* exclude injected runtime legs from protocol activity ([56e3baa](https://github.com/AreteA4/arete/commit/56e3baa2d3235ae4e4ce0279b5f3e7b85745dfff))
+* scope protocol activity joins to attested operation instructions ([119048b](https://github.com/AreteA4/arete/commit/119048bf5caefdfcef5e097d443a5a6f80ab0473))
+
 ## [0.2.1](https://github.com/AreteA4/arete/compare/arete-protocol-npm-v0.2.0...arete-protocol-npm-v0.2.1) (2026-10-20)
 
 

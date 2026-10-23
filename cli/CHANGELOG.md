@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## [0.44.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.44.0...a4-cli-v0.44.1) (2026-10-22)
+
+
+### Bug Fixes
+
+* **cli:** a4 dev config errors say what is wrong ([9f26ddd](https://github.com/AreteA4/arete/commit/9f26ddd77c2350b4843e779083b1cdd533d16c53))
+* **cli:** a4 dev config errors say what is wrong ([575405f](https://github.com/AreteA4/arete/commit/575405ffd9b05e938d453b612b96e39f6d178f3e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.44.0 to 0.44.1
+    * arete-artifacts bumped from 0.5.1 to 0.5.2
+    * arete-hash bumped from 0.6.1 to 0.6.2
+    * arete-mcp bumped from 0.44.0 to 0.44.1
+  * build-dependencies
+    * arete-hash bumped from 0.6.1 to 0.6.2
+
 ## [0.44.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.43.0...a4-cli-v0.44.0) (2026-10-22)
 
 
