@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deserialize, serialize } from 'node:v8';
@@ -275,6 +275,8 @@ describe('runDev', () => {
     // The fake's events are dated 2026-10-22: count them as after the first run.
     mkdirSync(join(devDir, 'automations'), { recursive: true });
     writeFileSync(join(devDir, 'automations', 'since'), '0');
+    // A store from before the owner-only mode, readable by others.
+    writeFileSync(join(devDir, 'automations', 'store.bin'), serialize(memoryStoreState(memoryStore())), { mode: 0o644 });
     const seen: string[] = [];
     (globalThis as unknown as { __devSeen: string[] }).__devSeen = seen;
     const lines: string[] = [];
@@ -296,6 +298,10 @@ describe('runDev', () => {
     );
     const runner = await started;
     expect(lines[0]).toMatch(/waiting for the protocol to deploy/);
+    if (process.platform !== 'win32') {
+      expect(statSync(join(devDir, 'automations', 'store.bin')).mode & 0o777).toBe(0o600);
+      expect(statSync(join(devDir, 'automations', 'runner.json')).mode & 0o777).toBe(0o600);
+    }
 
     await tick();
     fake.emit('vault.rebalanceDue', 41);

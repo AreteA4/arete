@@ -361,11 +361,62 @@ describe('expiry and reconciliation', () => {
     expect(ledger.every((entry) => entry.voidedAt === null)).toBe(true);
   });
 
+  it('keeps the spending when the second intent expired but landed', async () => {
+    let generation = 0;
+    const landedSecond: Simulator = {
+      call: async (method, params) => {
+        if (method === 'getSignatureStatuses') {
+          generation += 1;
+          return {
+            context: { slot: 12 },
+            value: (params[0] as string[]).map(() => (generation >= 2 ? { slot: 12, err: null } : null)),
+          };
+        }
+        return feeOnlySimulator.call(method, params);
+      },
+    };
+    const h = harness({ script: () => ['expired'] }, { simulator: landedSecond });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.fake.prepareCalls).toHaveLength(2);
+    expect(h.outcomes[0]).toMatchObject({ state: 'failed', code: 'landed_after_expiry' });
+    const ledger = await h.store.ledger.list({ wallet: ALICE });
+    expect(ledger.some((entry) => entry.voidedAt === null)).toBe(true);
+  });
+
+  it('does not trust signature statuses older than the blockhash expiry', async () => {
+    let statusReads = 0;
+    const lagging: Simulator = {
+      call: async (method, params) => {
+        if (method === 'isBlockhashValid') return { context: { slot: 20 }, value: false };
+        if (method === 'getSignatureStatuses') {
+          statusReads += 1;
+          // Behind the expiry check at first, then caught up.
+          return { context: { slot: statusReads < 3 ? 19 : 20 }, value: (params[0] as string[]).map(() => null) };
+        }
+        return feeOnlySimulator.call(method, params);
+      },
+    };
+    const h = harness({ script: (key) => (key.endsWith(':0') ? ['expired'] : ['submitting', 'completed']) }, { simulator: lagging });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    for (let round = 0; round < 10 && h.outcomes.length === 0; round++) {
+      await h.automations.drain();
+      h.clock.advance(60_000);
+    }
+    expect(statusReads).toBe(3);
+    expect(h.fake.prepareCalls).toHaveLength(2);
+    expect(h.outcomes[0]).toMatchObject({ state: 'completed' });
+  });
+
   it('waits for an expired intent\'s blockhash to expire before preparing again', async () => {
     let validChecks = 0;
     const live: Simulator = {
       call: async (method, params) => {
-        if (method === 'isBlockhashValid') return { value: ++validChecks < 3 };
+        if (method === 'isBlockhashValid') return { context: { slot: 12 }, value: ++validChecks < 3 };
         return feeOnlySimulator.call(method, params);
       },
     };

@@ -311,6 +311,8 @@ export async function runDev(
     const storePath = join(stateDir, 'store.bin');
     let state: MemoryStoreState | undefined;
     if (existsSync(storePath)) {
+      // It may predate the owner-only mode; it keeps consent and jobs.
+      chmodSync(storePath, 0o600);
       state = deserialize(readFileSync(storePath)) as MemoryStoreState;
       if (state.deployment !== null && state.deployment !== client.deploymentId) {
         renameSync(storePath, join(stateDir, `store-${state.deployment}.bin`));
