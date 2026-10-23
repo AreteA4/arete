@@ -56,6 +56,8 @@ export {
 export type { 
   InstructionHandler,
   InstructionHandlerConfig,
+  InstructionParams,
+  CheckedInstructionParams,
   BuildOptions,
   ExecuteOptions,
   ExecutionResult,
@@ -66,6 +68,7 @@ export {
   executeInstruction,
   createInstructionHandler,
   createInstructionExecutor,
+  InstructionParamsError,
 } from './executor';
 export type {
   SeedDef,

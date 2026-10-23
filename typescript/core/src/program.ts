@@ -20,6 +20,7 @@ export {
   buildInstruction,
   bytes,
   createInstructionHandler,
+  InstructionParamsError,
   literal,
   pda,
 } from './instructions';
@@ -31,10 +32,12 @@ export type {
   BuildOptions,
   BuiltAccountMeta,
   BuiltInstruction,
+  CheckedInstructionParams,
   EnumVariant,
   ErrorMetadata,
   InstructionHandler,
   InstructionHandlerConfig,
+  InstructionParams,
   SeedDef,
 } from './instructions';
 

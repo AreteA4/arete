@@ -82,6 +82,7 @@ describe('@usearete/sdk/program', () => {
 
   it('exports every runtime helper a generated program module imports', () => {
     expect(Object.keys(program).sort()).toEqual([
+      'InstructionParamsError',
       'PROGRAM_OPERATION_EXTENSIONS',
       'account',
       'arg',
