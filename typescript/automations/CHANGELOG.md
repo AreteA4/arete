@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.44.3](https://github.com/AreteA4/arete/compare/arete-automations-v0.44.2...arete-automations-v0.44.3) (2026-10-23)
+
+
+### Bug Fixes
+
+* **automations:** send a prepare idempotency key the API accepts ([24831a6](https://github.com/AreteA4/arete/commit/24831a6235a098d566a626454279f3cca62c445c))
+* **automations:** send a prepare idempotency key the API accepts ([3f9d8cd](https://github.com/AreteA4/arete/commit/3f9d8cd1a60c134fb1cea01fa1374d37bd7aef18))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.44.2 to ^0.44.3
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.44.2 to ^0.44.3
+
 ## [0.44.2](https://github.com/AreteA4/arete/compare/arete-automations-v0.44.1...arete-automations-v0.44.2) (2026-10-23)
 
 
