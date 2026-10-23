@@ -144,7 +144,8 @@ example the self-loop `{ machine: "participant", from: ["left"], to: "left" }`
 `lowerProtocol(definition)` returns `{ spec, handlers }`. It fills every
 default so the output is canonical: empty collections, `access: "secret"` on
 create and role steps and `"public"` on other wallet steps (none on keeper and
-Squads steps), `ix` as an alias for `instruction`, and a step with `handler: fn`
+Squads steps), no `vaultIndex` on a Squads step that names vault 0, `ix` as an
+alias for `instruction`, and a step with `handler: fn`
 becomes `{ kind: "handler", export, programs }`. Object-shorthand args and
 params (`{ amount: "u64" }`) make every property required, sorted.
 `RejectionCode<typeof protocol, "contribute">` is the union of that step's

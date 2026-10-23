@@ -105,7 +105,7 @@ fn invalid_documents_fail_with_stable_codes() {
 #[test]
 fn validated_specs_round_trip_canonically() {
     let corpus = corpus();
-    for name in ["tokenRaise", "escrowResolution"] {
+    for name in ["tokenRaise", "tokenRaiseVaultIndex", "escrowResolution"] {
         let doc = document(&corpus, name);
         let spec = validate_protocol_spec_value(&doc).unwrap();
         assert_eq!(
@@ -258,6 +258,31 @@ fn fee_adjustment_is_additive() {
     fees.total = "10000000".into();
     assert_eq!(restored.hash().unwrap(), plain.hash().unwrap());
     assert_ne!(capped.hash().unwrap(), plain.hash().unwrap());
+}
+
+#[test]
+fn squads_vault_index_is_additive() {
+    let corpus = corpus();
+    let plain = validate_protocol_spec_value(&document(&corpus, "tokenRaise")).unwrap();
+    let vault = validate_protocol_spec_value(&document(&corpus, "tokenRaiseVaultIndex")).unwrap();
+    assert_eq!(
+        plain.steps["finalize"].authority.squads_vault_index(),
+        Some(0)
+    );
+    assert_eq!(
+        vault.steps["finalize"].authority.squads_vault_index(),
+        Some(3)
+    );
+    assert_eq!(plain.steps["claim"].authority.squads_vault_index(), None);
+    // Clearing the index gives the original hash: an absent index is vault 0.
+    let mut restored = vault.clone();
+    let step = restored.steps.get_mut("finalize").unwrap();
+    let AuthorityV1::SquadsProposer { vault_index, .. } = &mut step.authority else {
+        panic!("finalize is a squadsProposer step");
+    };
+    *vault_index = None;
+    assert_eq!(restored.hash().unwrap(), plain.hash().unwrap());
+    assert_ne!(vault.hash().unwrap(), plain.hash().unwrap());
 }
 
 #[test]

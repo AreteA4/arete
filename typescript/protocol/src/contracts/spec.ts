@@ -435,10 +435,16 @@ function shapeStep(value: unknown, path: string): void {
     ["participant", []],
     ["role", ["role"]],
     ["keeper", []],
-    ["squadsProposer", ["multisig"]],
+    ["squadsProposer", ["multisig", "vaultIndex"]],
   ]);
   if (kind === "role") identifierValue(authority.req("role"), authority.pathOf("role"));
-  if (kind === "squadsProposer") expression(authority.req("multisig"), authority.pathOf("multisig"));
+  if (kind === "squadsProposer") {
+    expression(authority.req("multisig"), authority.pathOf("multisig"));
+    const vaultIndex = authority.opt("vaultIndex");
+    if (vaultIndex !== undefined && asInteger(vaultIndex, authority.pathOf("vaultIndex"), 0, 255) === 0) {
+      err("invalid-value", authority.pathOf("vaultIndex"), "omit vaultIndex for vault 0 instead of giving 0");
+    }
+  }
   const access = step.opt("access");
   if (access !== undefined) oneOf(access, step.pathOf("access"), ["public", "secret"]);
   shapeObjectSchema(step.req("args"), step.pathOf("args"));

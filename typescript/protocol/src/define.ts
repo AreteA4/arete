@@ -353,8 +353,20 @@ function lowerMachine(machine: MachineInput): MachineV1 {
   };
 }
 
-function lowerAuthority(authority: AuthorityInput): AuthorityV1 {
-  return typeof authority === "string" ? ({ kind: authority } as AuthorityV1) : authority;
+function lowerAuthority(authority: AuthorityInput, path: string): AuthorityV1 {
+  if (typeof authority === "string") return { kind: authority } as AuthorityV1;
+  if (authority.kind !== "squadsProposer") return authority;
+  // Vault 0 is the default: the canonical spec omits it, so a definition that
+  // names vault 0 hashes the same as one that leaves it out.
+  const { vaultIndex } = authority;
+  if (vaultIndex !== undefined && (!Number.isInteger(vaultIndex) || vaultIndex < 0 || vaultIndex > 255)) {
+    definitionError(`${path}/vaultIndex`, "vaultIndex must be an integer in 0..=255");
+  }
+  return {
+    kind: "squadsProposer",
+    multisig: authority.multisig,
+    ...(vaultIndex !== undefined && vaultIndex !== 0 ? { vaultIndex } : {}),
+  };
 }
 
 function lowerGuards(guards: GuardsInput | undefined): GuardV1[] {
@@ -440,7 +452,7 @@ function lowerTransition(transition: TransitionInput): TransitionV1 {
 
 function lowerStep(name: string, step: StepInput, handlers: LoweredProtocol, programs: ProgramTable): StepV1 {
   const path = `/steps/${name}`;
-  const authority = lowerAuthority(step.authority);
+  const authority = lowerAuthority(step.authority, `${path}/authority`);
   // Create and role steps default to `secret`: instances are created and roles
   // acted on from a backend. Other wallet steps default to `public`.
   const access: StepAccess | undefined =

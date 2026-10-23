@@ -646,7 +646,7 @@ fn shape_step(value: &Value, path: &str) -> ProtocolResult<()> {
             ("participant", &[]),
             ("role", &["role"]),
             ("keeper", &[]),
-            ("squadsProposer", &["multisig"]),
+            ("squadsProposer", &["multisig", "vaultIndex"]),
         ],
     )?;
     match kind {
@@ -655,6 +655,16 @@ fn shape_step(value: &Value, path: &str) -> ProtocolResult<()> {
         }
         "squadsProposer" => {
             expression(authority.req("multisig")?, &authority.path_of("multisig"))?;
+            if let Some(value) = authority.opt("vaultIndex")? {
+                let path = authority.path_of("vaultIndex");
+                if as_integer(value, &path, 0, u8::MAX.into())? == 0 {
+                    return Err(err(
+                        "invalid-value",
+                        &path,
+                        "omit vaultIndex for vault 0 instead of giving 0",
+                    ));
+                }
+            }
         }
         _ => {}
     }
