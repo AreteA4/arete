@@ -459,6 +459,10 @@ access = "private"            # the only accepted value
 launchDefaults = "resources/launch-defaults.json"
 ```
 
+A `[protocol.resources]` entry is either a path to a JSON file (a string) or
+the value itself as an inline TOML value, such as
+`launchDefaults = { tokenDecimals = 6 }`.
+
 ### Cloud dev environments (`a4 dev`)
 
 `a4 dev up` develops a project against an Arete cloud dev environment: a

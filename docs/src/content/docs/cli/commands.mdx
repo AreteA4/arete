@@ -1184,6 +1184,27 @@ access = "private"            # the only accepted value
 launchDefaults = "resources/launch-defaults.json"
 ```
 
+`[protocol.resources]` gives a value for each resource the spec declares, in
+one of two forms:
+
+- A string is the path to a JSON file holding the value, relative to the
+  project directory.
+- Any other TOML value (an inline table, array, number or boolean) is the
+  value itself, converted to JSON.
+
+```toml
+[protocol.resources]
+launchDefaults = { tokenDecimals = 6, minRaise = 1000000 }
+```
+
+Write a string-valued resource as a JSON file, since a string is read as a
+path. Either form must match the resource's schema in the spec, and the same
+JSON rules apply to both (integers must be within the
+JavaScript safe range). TOML dates are not accepted; write them as strings.
+`--resource <name>=<file>` overrides the entry for that resource. A resource
+the spec declares with no value fails the deploy with a message naming both
+forms.
+
 ### a4 protocol actions \[protocol|deployment\]
 
 `a4 protocol actions` lists what a wallet can do now on a protocol

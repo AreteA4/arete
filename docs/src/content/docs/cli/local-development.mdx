@@ -144,7 +144,7 @@ to fill in, `a4 dev` names a key generated once per project in
 again only when the document changes.
 
 Resources the spec declares need a value, as for `a4 protocol deploy`:
-`--resource <name>=<file>` or `[protocol.resources]`. Each new deployment
+`--resource <name>=<file>` or `[protocol.resources]` (a JSON file path or an inline TOML value). Each new deployment
 publishes a version of each. These are the same `[protocol]` settings
 `a4 protocol deploy` reads (`slug`, `name`, `fee_policy`, `resources`).
 

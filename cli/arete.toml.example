@@ -40,5 +40,7 @@ name = "Token Raise"
 fee_policy = "./fee-policy.json"
 access = "private" # self-serve deployments are private
 
+# A string is a path to a JSON file; any other TOML value is the value itself.
 [protocol.resources]
 launchDefaults = "./resources/launch-defaults.json"
+# launchDefaults = { tokenDecimals = 6 }
