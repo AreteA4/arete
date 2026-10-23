@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## [0.44.2](https://github.com/AreteA4/arete/compare/a4-cli-v0.44.1...a4-cli-v0.44.2) (2026-10-23)
+
+
+### Bug Fixes
+
+* **automations:** harden signing after the threat-model review ([e7ee98c](https://github.com/AreteA4/arete/commit/e7ee98cf1206930d0cbb20dd9ecd2655c2a3c625))
+* **dev:** keep the dev automations state owner-only when it already exists ([64cbe47](https://github.com/AreteA4/arete/commit/64cbe47827b974ba3fddc92e0f554dc9b042057a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.44.1 to 0.44.2
+    * arete-mcp bumped from 0.44.1 to 0.44.2
+
 ## [0.44.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.44.0...a4-cli-v0.44.1) (2026-10-22)
 
 

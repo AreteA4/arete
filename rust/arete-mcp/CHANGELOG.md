@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.44.2](https://github.com/AreteA4/arete/compare/arete-mcp-v0.44.1...arete-mcp-v0.44.2) (2026-10-23)
+
+
+### Bug Fixes
+
+* **automations:** harden signing after the threat-model review ([e7ee98c](https://github.com/AreteA4/arete/commit/e7ee98cf1206930d0cbb20dd9ecd2655c2a3c625))
+* **signer:** refuse a step when the simulation reports no inner instructions ([345abe9](https://github.com/AreteA4/arete/commit/345abe9076a7c1a4f2319a2eef67b260c8101745))
+* **signer:** refuse durable-nonce transactions ([8cb6ff3](https://github.com/AreteA4/arete/commit/8cb6ff3d0fc217328851c3a989743980a31900b1))
+
 ## [0.44.1](https://github.com/AreteA4/arete/compare/arete-mcp-v0.44.0...arete-mcp-v0.44.1) (2026-10-22)
 
 

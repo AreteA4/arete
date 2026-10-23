@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.44.2](https://github.com/AreteA4/arete/compare/arete-automations-v0.44.1...arete-automations-v0.44.2) (2026-10-23)
+
+
+### Bug Fixes
+
+* **automations:** check expiry before signatures, on every expired intent; tighten an existing dev store ([e009598](https://github.com/AreteA4/arete/commit/e009598ce245c45c65340e55208064d23a41ec63))
+* **automations:** check the chain before preparing an expired intent again ([1cf7458](https://github.com/AreteA4/arete/commit/1cf74583ed24b0addd3920c96b35f2ac61ff2272))
+* **automations:** consent says what the limits cover; automations need a programs allow-list ([f49d862](https://github.com/AreteA4/arete/commit/f49d8628d68d8c38dd9a829f575d8e4bb0b0bcac))
+* **automations:** harden signing after the threat-model review ([e7ee98c](https://github.com/AreteA4/arete/commit/e7ee98cf1206930d0cbb20dd9ecd2655c2a3c625))
+* **dev:** keep the dev automations state owner-only when it already exists ([64cbe47](https://github.com/AreteA4/arete/commit/64cbe47827b974ba3fddc92e0f554dc9b042057a))
+* **signer:** refuse a step when the simulation reports no inner instructions ([345abe9](https://github.com/AreteA4/arete/commit/345abe9076a7c1a4f2319a2eef67b260c8101745))
+* **signer:** refuse durable-nonce transactions ([8cb6ff3](https://github.com/AreteA4/arete/commit/8cb6ff3d0fc217328851c3a989743980a31900b1))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.44.1 to ^0.44.2
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.44.1 to ^0.44.2
+
 ## [0.44.1](https://github.com/AreteA4/arete/compare/arete-automations-v0.44.0...arete-automations-v0.44.1) (2026-10-22)
 
 
