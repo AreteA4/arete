@@ -25,7 +25,8 @@ import {
   stepOutflows,
   transactionOutflows,
 } from '../consent/consent';
-import { decodeBase58, encodeBase58 } from '../policy/encoding';
+import { decodeTransaction } from '../policy/decode';
+import { decodeBase58, decodeBase64, encodeBase58 } from '../policy/encoding';
 import type { Cluster, Refusal, SignerPolicy } from '../policy/policy';
 import { checkPrepared, checkTarget } from '../policy/policy';
 import type { Simulator } from '../policy/simulator';
@@ -822,11 +823,54 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       }
     };
 
+    /**
+     * Whether the transactions an expired intent signed can still land. The
+     * chain decides, not the intent: a transaction that landed keeps its
+     * spending, and one whose blockhash is still valid could land after a
+     * second signing, spending twice.
+     */
+    const earlierAttempt = async (job: StepJob): Promise<'landed' | 'live' | 'gone'> => {
+      const signed = (job.progress.signed ?? []).map((base64) => decodeTransaction(decodeBase64(base64)!));
+      if (signed.length === 0) return 'gone';
+      const signatures = signed.map((transaction) => encodeBase58(transaction.signatures[0]!));
+      const statuses = (await simulator.call('getSignatureStatuses', [signatures, { searchTransactionHistory: true }])) as {
+        value?: readonly unknown[];
+      } | null;
+      if (!Array.isArray(statuses?.value)) throw new Error('getSignatureStatuses returned no statuses');
+      if (statuses.value.some((status) => status !== null)) return 'landed';
+      for (const blockhash of new Set(signed.map((transaction) => transaction.recentBlockhash))) {
+        const valid = (await simulator.call('isBlockhashValid', [blockhash, { commitment: 'processed' }])) as {
+          value?: unknown;
+        } | null;
+        if (valid?.value !== false) return 'live';
+      }
+      return 'gone';
+    };
+
     /** An expired intent is prepared again once, with a new idempotency key. */
     const prepareAgain = async (job: StepJob): Promise<void> => {
       if (job.progress.generation >= 1) {
         return finish(job, 'expired', { code: 'expired', reason: 'the intent expired again after preparing it a second time' });
       }
+      let earlier: 'landed' | 'live' | 'gone';
+      try {
+        earlier = await earlierAttempt(job);
+      } catch (error) {
+        report(error, { jobId: job.id, phase: 'expired' });
+        return park(job, backoff(job.attempts + 1), job.attempts + 1);
+      }
+      if (earlier === 'landed') {
+        // Keep its spending; never sign the step a second time.
+        return finish(
+          job,
+          'failed',
+          { code: 'landed_after_expiry', reason: 'the intent expired, but a transaction it signed landed on chain' },
+          undefined,
+          {},
+        );
+      }
+      // Still able to land: wait for its blockhash to expire first.
+      if (earlier === 'live') return park(job, backoff(job.attempts + 1), job.attempts + 1);
       const fresh = await advance(
         job,
         'running',

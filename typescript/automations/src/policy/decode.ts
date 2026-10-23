@@ -32,6 +32,8 @@ export interface DecodedTransaction {
   readonly instructionPrograms: readonly string[];
   readonly instructions: readonly CompiledInstruction[];
   readonly lookups: readonly Lookup[];
+  /** The recent blockhash (the lifetime specifier of a v1 message), base58. */
+  readonly recentBlockhash: string;
 }
 
 export class TransactionDecodeError extends Error {
@@ -127,7 +129,7 @@ export function decodeTransaction(bytes: Uint8Array): DecodedTransaction {
     staticKeys.push(encodeBase58(reader.take(32)));
   }
   const writableStatic = writableIndexes(keyCount, required, readonlySigned, readonlyUnsigned);
-  reader.take(32); // recent blockhash
+  const recentBlockhash = encodeBase58(reader.take(32));
   const instructionCount = reader.compactU16();
   const instructionPrograms: string[] = [];
   const instructions: CompiledInstruction[] = [];
@@ -163,6 +165,7 @@ export function decodeTransaction(bytes: Uint8Array): DecodedTransaction {
     instructionPrograms,
     instructions,
     lookups,
+    recentBlockhash,
   };
 }
 
@@ -177,7 +180,7 @@ function decodeV1(bytes: Uint8Array): DecodedTransaction {
   if ((mask & ~V1_KNOWN_CONFIG_BITS) >>> 0 !== 0) {
     throw new TransactionDecodeError('unsupported v1 transaction configuration');
   }
-  reader.take(32); // lifetime specifier
+  const recentBlockhash = encodeBase58(reader.take(32));
   const instructionCount = reader.byte();
   const keyCount = reader.byte();
   const staticKeys: string[] = [];
@@ -220,6 +223,7 @@ function decodeV1(bytes: Uint8Array): DecodedTransaction {
     instructionPrograms,
     instructions,
     lookups: [],
+    recentBlockhash,
   };
 }
 

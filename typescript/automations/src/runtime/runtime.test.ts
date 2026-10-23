@@ -1,6 +1,7 @@
 import { signWebhook } from '@usearete/sdk';
 import { describe, expect, it } from 'vitest';
 
+import type { Simulator } from '../policy/simulator';
 import type { ProtocolSigner } from '../signer/signer';
 import { SignerRefusal } from '../signer/signer';
 import { runStoreConformance } from '../store/conformance';
@@ -335,6 +336,46 @@ describe('expiry and reconciliation', () => {
     await h.automations.drain();
     expect(h.fake.prepareCalls).toHaveLength(2);
     expect(h.outcomes[0]).toMatchObject({ state: 'expired', code: 'expired' });
+  });
+
+  it('keeps the spending and never signs again when an expired intent landed after all', async () => {
+    const landed: Simulator = {
+      call: async (method, params) =>
+        method === 'getSignatureStatuses'
+          ? { value: (params[0] as string[]).map(() => ({ slot: 12, confirmationStatus: 'confirmed', err: null })) }
+          : feeOnlySimulator.call(method, params),
+    };
+    const h = harness({ script: () => ['expired'] }, { simulator: landed });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.fake.prepareCalls).toHaveLength(1);
+    expect(h.outcomes[0]).toMatchObject({ state: 'failed', code: 'landed_after_expiry' });
+    const ledger = await h.store.ledger.list({ wallet: ALICE });
+    expect(ledger.length).toBeGreaterThan(0);
+    expect(ledger.every((entry) => entry.voidedAt === null)).toBe(true);
+  });
+
+  it('waits for an expired intent\'s blockhash to expire before preparing again', async () => {
+    let validChecks = 0;
+    const live: Simulator = {
+      call: async (method, params) => {
+        if (method === 'isBlockhashValid') return { value: ++validChecks < 3 };
+        return feeOnlySimulator.call(method, params);
+      },
+    };
+    const h = harness({ script: (key) => (key.endsWith(':0') ? ['expired'] : ['submitting', 'completed']) }, { simulator: live });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    for (let round = 0; round < 10 && h.outcomes.length === 0; round++) {
+      await h.automations.drain();
+      h.clock.advance(60_000);
+    }
+    expect(validChecks).toBe(3);
+    expect(h.fake.prepareCalls).toHaveLength(2);
+    expect(h.outcomes[0]).toMatchObject({ state: 'completed' });
   });
 
   it('reconciles a lost submit response through the intent instead of submitting again', async () => {
