@@ -321,6 +321,14 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   options: AutomationsOptions<TTypes>,
 ): Automations<TTypes> {
   const { client, signer, policy, simulator, store } = options;
+  // Only SOL and SPL token balances are measured: a program outside the
+  // allow-list could move anything else (NFTs, positions it holds), so
+  // automations need one.
+  if (policy.programs === null) {
+    throw new TypeError(
+      'createAutomations: the policy must list `programs`, the programs your steps call; without it any program could run with the signer',
+    );
+  }
   const cluster = options.cluster ?? clientCluster(client);
   const clock = options.clock ?? systemClock;
   const worker = options.worker ?? randomId();

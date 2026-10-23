@@ -15,7 +15,7 @@ use, and which protections still hold if your backend is ever compromised.
 const policy = definePolicy({
   deployments: [client.deploymentId], // required
   clusters: ["dev", "mainnet"],        // defaults to ["dev"]; mainnet only when listed
-  programs: [VAULT_PROGRAM_ID],        // optional allow-list
+  programs: [VAULT_PROGRAM_ID],        // required: the programs your steps call
   maxSolPerTransaction: "0.01",        // required, in SOL
   maxTokenAmounts: { [USDC_MINT]: "5000000000" }, // base units per mint
 });

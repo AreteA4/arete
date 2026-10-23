@@ -294,6 +294,10 @@ describe('the step pipeline', () => {
 });
 
 describe('the signer boundary', () => {
+  it('needs the policy to list the programs the steps call', () => {
+    expect(() => harness({}, { policy: { ...policy, programs: null } })).toThrow(/must list `programs`/);
+  });
+
   it('checks a signer against a baseline it could not change', async () => {
     const sneaky: ProtocolSigner = {
       ...walletsSigner(),

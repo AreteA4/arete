@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeBase58, encodeBase58 } from '../policy/encoding';
 import { defineAutomations } from '../runtime/define';
 import { memoryStore, memoryStoreState } from '../store/memory';
-import { fakeProtocol } from '../test-support/fake-protocol';
+import { fakeProtocol, PROGRAM } from '../test-support/fake-protocol';
 import { ALICE, harness, storedGrant } from '../test-support/harness';
 import { type PumpClient, type SignedDelivery, signDelivery, startEventPump } from './events';
 import { devStackConnector, loadDefinition, projectTsImport, runDev } from './runner';
@@ -22,11 +22,15 @@ const tick = async (times = 20) => {
 };
 
 function definitionFor(name = 'vault') {
-  return defineAutomations({ name, deployment: { deploymentId: 'dep' } } as never, (automations) => {
-    automations.on('vault.rebalanceDue', (event: { instanceId: string }, ctx) => [
-      ctx.step('rebalance', { wallet: ALICE, instance: event.instanceId }),
-    ]);
-  });
+  return defineAutomations(
+    { name, deployment: { deploymentId: 'dep' } } as never,
+    (automations) => {
+      automations.on('vault.rebalanceDue', (event: { instanceId: string }, ctx) => [
+        ctx.step('rebalance', { wallet: ALICE, instance: event.instanceId }),
+      ]);
+    },
+    { policy: { programs: [PROGRAM], maxSolPerTransaction: '0.01' } },
+  );
 }
 
 /** The fake client with the instance listing the pump needs. */
@@ -265,6 +269,7 @@ describe('runDev', () => {
         setup(automations) {
           automations.on('vault.rebalanceDue', (event) => { globalThis.__devSeen.push(event.id); return []; });
         },
+        policy: { programs: ['${PROGRAM}'], maxSolPerTransaction: '0.01' },
       };\n`,
     );
     // The fake's events are dated 2026-10-22: count them as after the first run.

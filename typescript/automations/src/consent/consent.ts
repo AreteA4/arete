@@ -23,7 +23,7 @@ import type { StoredConsentLimits } from '../store/store';
 /** The asset key for SOL (wrapped SOL included), in lamports. */
 export const SOL = 'SOL';
 
-export const CONSENT_PROOF_VERSION = 'arete.automation-consent/v1';
+export const CONSENT_PROOF_VERSION = 'arete.automation-consent/v2';
 
 type Amount = string | number | bigint;
 
@@ -185,14 +185,14 @@ function amountLine(key: string, amount: string): string {
  * Setting <key as a JSON string>: <RFC 8785 JSON of the value>       (one line per key, sorted)
  * Expires At: <ISO 8601 UTC>
  *
- * Nothing else may leave your wallet through these steps. You can revoke this at any time without signing.
+ * These limits count the SOL and SPL tokens that leave your wallet, network fees included. You can revoke this at any time without signing.
  *
- * Version: arete.automation-consent/v1
+ * Version: arete.automation-consent/v2
  * Nonce: <nonce>
  * Issued At: <ISO 8601 UTC>
  * ```
  *
- * Without per-run limits the message says that nothing may leave the wallet.
+ * Without per-run limits the message says that no SOL or tokens may leave the wallet.
  */
 export function consentMessage(domain: string, consent: NormalizedConsent, nonce: string, issuedAt: number): string {
   if (!/^[A-Za-z0-9.-]+(:\d+)?$/.test(domain)) {
@@ -211,7 +211,7 @@ export function consentMessage(domain: string, consent: NormalizedConsent, nonce
     `Instance: ${consent.instanceId ?? 'any'}`,
     `Steps: ${consent.steps.join(', ')}`,
     ...(perRun.length === 0
-      ? ['Per run: nothing may leave your wallet']
+      ? ['Per run: no SOL or tokens may leave your wallet']
       : perRun.map(([key, amount]) => `Per run: ${amountLine(key, amount)}`)),
     ...Object.entries(limits.perWindow).map(
       ([key, { amount, windowMs }]) => `Per ${windowText(windowMs)}: ${amountLine(key, amount)}`,
@@ -222,7 +222,7 @@ export function consentMessage(domain: string, consent: NormalizedConsent, nonce
       .map((key) => `Setting ${JSON.stringify(key)}: ${canonicalizeJson(consent.params[key])}`),
     `Expires At: ${new Date(consent.expiresAt).toISOString()}`,
     '',
-    'Nothing else may leave your wallet through these steps. You can revoke this at any time without signing.',
+    'These limits count the SOL and SPL tokens that leave your wallet, network fees included. You can revoke this at any time without signing.',
     '',
     `Version: ${CONSENT_PROOF_VERSION}`,
     `Nonce: ${nonce}`,
