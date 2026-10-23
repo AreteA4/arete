@@ -101,5 +101,5 @@ export {
 
 // Types only: an extension annotates reads and program surfaces with them.
 // The values behind them (chain and client) stay out of this entry.
-export type { ChainClient } from './chain';
+export type { ChainClient, RawAccountInfo } from './chain';
 export type { ProgramInterface, TypedAccountReader } from './client';
