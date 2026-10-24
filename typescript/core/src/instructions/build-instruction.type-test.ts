@@ -8,10 +8,12 @@
 
 import type { WalletAdapter } from '../wallet/types';
 import {
+  type BuildOptions,
   buildInstruction,
   createInstructionExecutor,
   createInstructionHandler,
   executeInstruction,
+  type ExecuteOptions,
   type InstructionParams,
 } from './executor';
 
@@ -278,6 +280,15 @@ declare const undefinedAccounts: { accounts: { mint: string; destination: string
 buildInstruction(MintToInstruction, { amount: 1n }, undefinedAccounts);
 const definedAccounts = { accounts: { mint: MINT, destination: MINT, authority: MINT } };
 buildInstruction(MintToInstruction, { amount: 1n }, definedAccounts);
+// Prebuilt options of a wider type, such as `ExecuteOptions`, are accepted.
+declare const sharedOptions: ExecuteOptions;
+buildInstruction(MintToInstruction, { amount: 1n, mint: MINT, destination: MINT, authority: MINT }, sharedOptions);
+executor.build(MintToInstruction, { amount: 1n, mint: MINT, destination: MINT, authority: MINT }, sharedOptions);
+interface AppBuildOptions extends BuildOptions {
+  label: string;
+}
+declare const appOptions: AppBuildOptions;
+buildInstruction(MintToInstruction, { amount: 1n, mint: MINT, destination: MINT, authority: MINT }, appOptions);
 // Options keys are still checked.
 // @ts-expect-error `remainingAccount` is not a build option
 buildInstruction(MintToInstruction, { amount: 1n, mint: MINT, destination: MINT, authority: MINT }, { remainingAccount: [] });

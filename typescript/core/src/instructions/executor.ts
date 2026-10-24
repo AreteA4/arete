@@ -268,23 +268,35 @@ export type CheckedInstructionParams<THandler, TParams, TAccountKeys extends str
     : AcceptedInstructionParams<InstructionParams<THandler>, SuppliedAccountKeys<THandler, TAccountKeys>>;
 
 /**
- * The `accounts` keys an options type guarantees are present. Only a required,
- * defined `accounts` map counts: an optional one may be absent at run time,
- * so its keys relax nothing.
+ * Options that are sure to supply the accounts named in `TAccountKeys`: the
+ * `accounts` map is required and defined. Only these relax the params check;
+ * an optional map may be absent at run time.
  */
-type GuaranteedAccountKeys<TOptions> = TOptions extends { accounts: infer TAccounts }
-  ? undefined extends TAccounts
-    ? never
-    : Extract<keyof TAccounts, string>
-  : never;
+type OptionsSupplyingAccounts<TOptions, TAccountKeys extends string> = Omit<TOptions, 'accounts'> & {
+  accounts: { [K in TAccountKeys]: string };
+};
 
 /**
- * `TOptions`, with keys that are not part of `TBase` rejected. Inferring the
- * options type skips excess-property checks, so this restores them.
+ * Call signatures of the bound executor's `build`/`execute`: the first
+ * overload applies when the options supply accounts, the second to any other
+ * options, which leave params fully checked.
  */
-type ExactOptions<TOptions, TBase> = TOptions & {
-  [K in Exclude<keyof TOptions, keyof TBase>]?: never;
-};
+interface BoundInstructionCall<TOptions, TResult> {
+  <
+    THandler extends InstructionHandler<any, any>,
+    TParams = InstructionParams<THandler>,
+    TAccountKeys extends string = never,
+  >(
+    handler: THandler,
+    params: CheckedInstructionParams<THandler, TParams, TAccountKeys>,
+    options: OptionsSupplyingAccounts<TOptions, TAccountKeys>
+  ): TResult;
+  <THandler extends InstructionHandler<any, any>, TParams = InstructionParams<THandler>>(
+    handler: THandler,
+    params: CheckedInstructionParams<THandler, TParams>,
+    options?: TOptions
+  ): TResult;
+}
 
 /**
  * Thrown by {@link buildInstruction} when a params object does not match the
@@ -495,13 +507,25 @@ function splitParams(
 export function buildInstruction<
   THandler extends InstructionHandler<any, any>,
   TParams = InstructionParams<THandler>,
-  TOptions extends BuildOptions = BuildOptions,
+  TAccountKeys extends string = never,
 >(
   handler: THandler,
-  params: CheckedInstructionParams<THandler, TParams, GuaranteedAccountKeys<TOptions>>,
-  buildOptions?: ExactOptions<TOptions, BuildOptions>
+  params: CheckedInstructionParams<THandler, TParams, TAccountKeys>,
+  options: OptionsSupplyingAccounts<BuildOptions, TAccountKeys>
+): BuiltInstruction;
+export function buildInstruction<
+  THandler extends InstructionHandler<any, any>,
+  TParams = InstructionParams<THandler>,
+>(
+  handler: THandler,
+  params: CheckedInstructionParams<THandler, TParams>,
+  options?: BuildOptions
+): BuiltInstruction;
+export function buildInstruction(
+  handler: InstructionHandler<any, any>,
+  params: Record<string, unknown>,
+  options: BuildOptions = {}
 ): BuiltInstruction {
-  const options: BuildOptions = buildOptions ?? {};
   const { args, accountOverrides, resolve } = splitParams(
     handler,
     params as unknown as Record<string, unknown>,
@@ -541,23 +565,31 @@ export function buildInstruction<
  * against the handler's IDL error definitions and surfaced as an
  * {@link InstructionError}.
  */
-export async function executeInstruction<
+export function executeInstruction<
   THandler extends InstructionHandler<any, any>,
   TParams = InstructionParams<THandler>,
-  TOptions extends ExecuteOptions = ExecuteOptions,
+  TAccountKeys extends string = never,
 >(
   handler: THandler,
-  params: CheckedInstructionParams<THandler, TParams, GuaranteedAccountKeys<TOptions>>,
-  executeOptions?: ExactOptions<TOptions, ExecuteOptions>
+  params: CheckedInstructionParams<THandler, TParams, TAccountKeys>,
+  options: OptionsSupplyingAccounts<ExecuteOptions, TAccountKeys>
+): Promise<ExecutionResult>;
+export function executeInstruction<
+  THandler extends InstructionHandler<any, any>,
+  TParams = InstructionParams<THandler>,
+>(
+  handler: THandler,
+  params: CheckedInstructionParams<THandler, TParams>,
+  options?: ExecuteOptions
+): Promise<ExecutionResult>;
+export async function executeInstruction(
+  handler: InstructionHandler<any, any>,
+  params: Record<string, unknown>,
+  options: ExecuteOptions = {}
 ): Promise<ExecutionResult> {
-  const options: ExecuteOptions = executeOptions ?? {};
   let instruction: BuiltInstruction;
   try {
-    instruction = buildInstruction(
-      handler as InstructionHandler<any, any>,
-      params as unknown as Record<string, unknown>,
-      options as BuildOptions
-    );
+    instruction = buildInstruction(handler, params, options);
   } catch (cause) {
     throw new TransactionExecutionError({
       status: 'not-submitted',
@@ -593,35 +625,20 @@ export async function executeInstruction<
 /**
  * Creates an instruction executor bound to a specific wallet.
  */
-export function createInstructionExecutor(wallet: WalletAdapter) {
+export function createInstructionExecutor(wallet: WalletAdapter): {
+  execute: BoundInstructionCall<Omit<ExecuteOptions, 'wallet'>, Promise<ExecutionResult>>;
+  build: BoundInstructionCall<Omit<BuildOptions, 'wallet'>, BuiltInstruction>;
+} {
   return {
-    execute: async <
-      THandler extends InstructionHandler<any, any>,
-      TParams = InstructionParams<THandler>,
-      TOptions extends Omit<ExecuteOptions, 'wallet'> = Omit<ExecuteOptions, 'wallet'>,
-    >(
-      handler: THandler,
-      params: CheckedInstructionParams<THandler, TParams, GuaranteedAccountKeys<TOptions>>,
-      options?: ExactOptions<TOptions, Omit<ExecuteOptions, 'wallet'>>
-    ) => {
-      const executeOptions: ExecuteOptions = { ...options, wallet };
-      return executeInstruction(
-        handler,
-        params as unknown as Record<string, unknown>,
-        executeOptions
-      );
-    },
-    build: <
-      THandler extends InstructionHandler<any, any>,
-      TParams = InstructionParams<THandler>,
-      TOptions extends Omit<BuildOptions, 'wallet'> = Omit<BuildOptions, 'wallet'>,
-    >(
-      handler: THandler,
-      params: CheckedInstructionParams<THandler, TParams, GuaranteedAccountKeys<TOptions>>,
-      options?: ExactOptions<TOptions, Omit<BuildOptions, 'wallet'>>
-    ) => {
-      const buildOptions: BuildOptions = { ...options, wallet };
-      return buildInstruction(handler, params as unknown as Record<string, unknown>, buildOptions);
-    },
+    execute: (
+      handler: InstructionHandler<any, any>,
+      params: Record<string, unknown>,
+      options?: Omit<ExecuteOptions, 'wallet'>
+    ) => executeInstruction(handler, params, { ...options, wallet }),
+    build: (
+      handler: InstructionHandler<any, any>,
+      params: Record<string, unknown>,
+      options?: Omit<BuildOptions, 'wallet'>
+    ) => buildInstruction(handler, params, { ...options, wallet }),
   };
 }
