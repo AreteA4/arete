@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.46.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.45.0...arete-mcp-v0.46.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** arete-protocol check and build refuse Squads steps whose multisig reads the instance, args, params or wallet. Declare the multisig as a resource and use resources.<name>.multisig.
+
+### Features
+
+* **protocol:** a Squads step's multisig comes from a resource ([b10b64f](https://github.com/AreteA4/arete/commit/b10b64f641edc7e193aae71d3a17eb4dec1bc9ad))
+
 ## [0.45.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.44.3...arete-mcp-v0.45.0) (2026-10-24)
 
 
