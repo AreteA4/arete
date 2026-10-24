@@ -488,30 +488,6 @@ impl ProtocolApi {
         )
         .await
     }
-
-    /// An unsigned transaction creating a config proposal that adds the
-    /// proposer to `multisig` with Initiate only, for `member` to sign,
-    /// send and pay.
-    pub async fn squads_add_proposer(
-        &self,
-        deployment: &str,
-        multisig: &str,
-        member: &str,
-        transaction_format: Option<&str>,
-    ) -> Result<Value> {
-        let mut body = json!({ "multisig": multisig, "member": member });
-        if let Some(format) = transaction_format {
-            body["transactionFormat"] = json!(format);
-        }
-        self.squads(
-            deployment,
-            reqwest::Method::POST,
-            "add-proposer",
-            Some(body),
-            "Preparing the add-proposer proposal",
-        )
-        .await
-    }
 }
 
 /// A Squads onboarding route refused the request.
@@ -562,18 +538,6 @@ impl std::error::Error for SquadsRefused {}
 /// [`SquadsRefused::normalized_code`]); `None` for other codes.
 pub fn squads_refusal_hint(code: &str) -> Option<&'static str> {
     Some(match code {
-        "member_cannot_initiate" => {
-            "`member` is not a member of this multisig with the Initiate permission. Pass a member who can initiate proposals: it signs, sends and pays for the add-proposer proposal."
-        }
-        "proposer_already_member" => {
-            "The proposer is already a member of this multisig. Check its status; there is nothing to add."
-        }
-        "proposer_permissions_invalid" => {
-            "The proposer is a member of this multisig with permissions other than Initiate only. Remove it from the multisig with a config proposal in Squads, then add it again."
-        }
-        "squads_multisig_controlled" => {
-            "This multisig has a config authority, so members cannot change it by proposal. Its config authority must add the proposer (Initiate only) directly."
-        }
         "squads_multisig_missing" => {
             "No Squads v4 multisig exists at that address. Pass the multisig account, not one of its vaults."
         }

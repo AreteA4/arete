@@ -894,8 +894,8 @@ pub const SQUADS_PROPOSER_MISSING_EVENT: &str = "arete.squads.proposerMissing";
 /// Data of the system event `arete.squads.proposerMissing`: an admin step's
 /// Squads proposal is parked because the calling account's proposer is not an
 /// Initiate-only member of the multisig. It is retried with backoff for up to
-/// 24 hours; add the proposer ([`ProtocolSquadsAddProposerRequest`]) to
-/// unblock it.
+/// 24 hours; adding the proposer (on the dashboard or in the Squads app)
+/// unblocks it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtocolSquadsProposerMissingData {
@@ -921,50 +921,6 @@ pub struct ProtocolSquadsProposer {
     /// The root the proposer derives from; `None` for an environment key.
     #[serde(default)]
     pub root_key_id: Option<String>,
-}
-
-/// Body of `squads/add-proposer`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProtocolSquadsAddProposerRequest {
-    /// The team's Squads v4 multisig.
-    pub multisig: String,
-    /// A member with the Initiate permission who signs and pays.
-    pub member: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transaction_format: Option<ProtocolTransactionFormat>,
-}
-
-impl ProtocolSquadsAddProposerRequest {
-    pub fn new(multisig: impl Into<String>, member: impl Into<String>) -> Self {
-        Self {
-            multisig: multisig.into(),
-            member: member.into(),
-            transaction_format: None,
-        }
-    }
-
-    pub fn with_transaction_format(mut self, format: ProtocolTransactionFormat) -> Self {
-        self.transaction_format = Some(format);
-        self
-    }
-}
-
-/// An unsigned transaction creating a Squads config proposal that adds the
-/// proposer with Initiate only. `member` signs and sends it; the team then
-/// approves and executes the proposal in Squads.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProtocolSquadsAddProposerResult {
-    pub transaction_base64: String,
-    pub transaction_format: ProtocolTransactionFormat,
-    pub transaction_index: u64,
-    pub proposal: String,
-    pub config_transaction: String,
-    pub multisig: String,
-    pub member: String,
-    pub proposer: String,
-    pub last_valid_block_height: u64,
 }
 
 /// Whether the calling account's proposer can propose to a multisig.

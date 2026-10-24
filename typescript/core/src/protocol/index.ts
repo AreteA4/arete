@@ -122,8 +122,6 @@ export type {
   ProtocolStepAvailabilityFor,
   ProtocolStepDefinition,
   ProtocolStepScope,
-  ProtocolSquadsAddProposerInput,
-  ProtocolSquadsAddProposerResult,
   ProtocolSquadsProposer,
   ProtocolSquadsProposerMissingData,
   ProtocolSquadsProposerProblem,

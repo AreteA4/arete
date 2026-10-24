@@ -265,56 +265,16 @@ pub fn transaction_signature(transaction: &[u8]) -> Result<String> {
     Ok(bs58::encode(first).into_string())
 }
 
-/// Where JSON-RPC calls go: the project's dev environment, or an RPC URL.
+/// Where JSON-RPC calls go: the project's dev environment (the only chain
+/// these helpers send to).
 pub enum Chain<'a> {
     Dev(&'a DevClient),
-    Url { http: reqwest::Client, url: String },
 }
 
 impl Chain<'_> {
-    pub fn url(url: &str) -> Chain<'static> {
-        Chain::Url {
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
-            url: url.to_string(),
-        }
-    }
-
     pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
         match self {
             Chain::Dev(client) => client.rpc(method, params).await,
-            Chain::Url { http, url } => {
-                let response: Value = http
-                    .post(url)
-                    .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
-                    .send()
-                    .await
-                    .with_context(|| format!("The RPC {url} is unreachable"))?
-                    .json()
-                    .await
-                    .with_context(|| format!("{method} returned no JSON"))?;
-                if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
-                    let logs = error
-                        .pointer("/data/logs")
-                        .and_then(Value::as_array)
-                        .map(|logs| {
-                            logs.iter()
-                                .filter_map(Value::as_str)
-                                .collect::<Vec<_>>()
-                                .join("\n  ")
-                        })
-                        .filter(|logs| !logs.is_empty())
-                        .map(|logs| format!("\n  {logs}"))
-                        .unwrap_or_default();
-                    bail!(
-                        "{method} failed: {}{logs}",
-                        error["message"].as_str().unwrap_or("unknown error")
-                    );
-                }
-                Ok(response["result"].clone())
-            }
         }
     }
 

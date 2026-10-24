@@ -1089,7 +1089,7 @@ async fn event_streams_start_after_a_given_id_and_stop_on_drop() {
 }
 
 #[tokio::test]
-async fn squads_onboarding_reads_the_proposer_builds_the_proposal_and_checks_status() {
+async fn squads_onboarding_reads_the_proposer_and_checks_status() {
     let squads = "/api/protocol-deployments/dep_1/squads".to_string();
     let routes = squads.clone();
     let (mock, base) = mock(move |request, index| {
@@ -1099,20 +1099,6 @@ async fn squads_onboarding_reads_the_proposer_builds_the_proposal_and_checks_sta
         }
         let body = if path == format!("{routes}/proposer") {
             json!({ "pubkey": "Proposer1", "permissions": "initiate", "rootKeyId": "root-1" })
-        } else if path == format!("{routes}/add-proposer") {
-            if request.body["member"] == "Voter1" {
-                return (
-                    422,
-                    vec![],
-                    json!({ "error": "cannot initiate", "code": "member_cannot_initiate" })
-                        .to_string(),
-                );
-            }
-            json!({
-                "transactionBase64": "AQID", "transactionFormat": "v0", "transactionIndex": 10,
-                "proposal": "Proposal1", "configTransaction": "Config1", "multisig": "Multisig1",
-                "member": "Member1", "proposer": "Proposer1", "lastValidBlockHeight": 900
-            })
         } else if path == format!("{routes}/status") {
             json!({
                 "ready": true, "member": true, "mask": 1, "threshold": 2,
@@ -1131,27 +1117,6 @@ async fn squads_onboarding_reads_the_proposer_builds_the_proposal_and_checks_sta
     assert_eq!(proposer.permissions, "initiate");
     assert_eq!(proposer.root_key_id.as_deref(), Some("root-1"));
 
-    let built = client
-        .squads()
-        .add_proposer(
-            &ProtocolSquadsAddProposerRequest::new("Multisig1", "Member1")
-                .with_transaction_format(ProtocolTransactionFormat::V0),
-        )
-        .await
-        .unwrap();
-    assert_eq!(built.transaction_index, 10);
-    assert_eq!(built.transaction_format, ProtocolTransactionFormat::V0);
-    let refused = client
-        .squads()
-        .add_proposer(&ProtocolSquadsAddProposerRequest::new(
-            "Multisig1",
-            "Voter1",
-        ))
-        .await
-        .unwrap_err();
-    assert_eq!(refused.status(), Some(422));
-    assert_eq!(refused.wire_code(), Some("member_cannot_initiate"));
-
     let status = client.squads().status("Multisig1").await.unwrap();
     assert!(status.ready);
     assert_eq!(status.mask, Some(1));
@@ -1159,17 +1124,9 @@ async fn squads_onboarding_reads_the_proposer_builds_the_proposal_and_checks_sta
 
     let api = mock.api();
     assert_eq!(api[0].path, format!("{squads}/proposer"));
-    assert_eq!(api[1].method, Method::POST);
-    assert_eq!(
-        api[1].body,
-        json!({ "multisig": "Multisig1", "member": "Member1", "transactionFormat": "v0" })
-    );
-    assert_eq!(
-        api[2].body,
-        json!({ "multisig": "Multisig1", "member": "Voter1" })
-    );
-    assert_eq!(api[3].path, format!("{squads}/status"));
-    assert_eq!(api[3].query.as_deref(), Some("multisig=Multisig1"));
+    assert_eq!(api[1].path, format!("{squads}/status"));
+    assert_eq!(api[1].query.as_deref(), Some("multisig=Multisig1"));
+    assert_eq!(api.len(), 2);
 }
 
 #[tokio::test]

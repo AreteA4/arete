@@ -216,17 +216,7 @@ fn respond(state: &Shared, method: &str, path: &str, body: &Value) -> (u16, Valu
                     )
                 }
             }
-            "add-proposer" if body["member"] == b58(&[63; 32]) => (
-                422,
-                json!({ "error": "member cannot initiate", "code": "member_cannot_initiate" }),
-            ),
-            "add-proposer" => (
-                200,
-                json!({ "transactionBase64": "AQ==", "transactionFormat": body["transactionFormat"].as_str().unwrap_or("v0"),
-                    "transactionIndex": 7, "proposal": b58(&[64; 32]), "configTransaction": b58(&[65; 32]),
-                    "multisig": body["multisig"], "member": body["member"], "proposer": proposer,
-                    "lastValidBlockHeight": 1000 }),
-            ),
+            "add-proposer" => panic!("Arete builds no add-proposer transaction"),
             _ => (404, json!({ "error": "not found" })),
         };
     }
@@ -839,7 +829,6 @@ fn the_execute_tool_is_listed_only_with_a_signer() {
         "protocol_intent",
         "protocol_squads_proposer",
         "protocol_squads_status",
-        "protocol_squads_add_proposer",
         "squads_status",
         "squads_attach",
         "dev_actions",
@@ -848,7 +837,12 @@ fn the_execute_tool_is_listed_only_with_a_signer() {
     }
     assert!(!listed.iter().any(|name| name == "protocol_execute"));
     // Arete builds no account Squads transactions.
-    for gone in ["squads_add_proposer", "squads_submit", "squads_create"] {
+    for gone in [
+        "squads_add_proposer",
+        "squads_submit",
+        "squads_create",
+        "protocol_squads_add_proposer",
+    ] {
         assert!(!listed.iter().any(|name| name == gone), "{gone} listed");
     }
 
@@ -1174,7 +1168,7 @@ async fn receipts_are_fetched_and_verified_offline_and_on_chain() {
 }
 
 #[tokio::test]
-async fn squads_onboarding_reads_the_proposer_status_and_add_proposer_transaction() {
+async fn squads_onboarding_reads_the_proposer_and_status_and_builds_nothing() {
     let (origin, state) = mock_api();
     let agent = ProtocolAgent::new(None).with_api(&origin, "a4_sk_test");
     let target = hosted(Some("d-1"));
@@ -1207,34 +1201,22 @@ async fn squads_onboarding_reads_the_proposer_status_and_add_proposer_transactio
         .await
         .unwrap();
     assert_eq!(missing["problem"], "not_member");
-    assert!(missing["next"]
-        .as_str()
-        .unwrap()
-        .contains("protocol_squads_add_proposer"));
+    let next = missing["next"].as_str().unwrap();
+    assert!(
+        next.contains(&format!(
+            "https://app.arete.run/dashboard/squads/{}",
+            b58(&[66; 32])
+        )),
+        "{next}"
+    );
+    assert!(next.contains("squads-v4 program SDK"), "{next}");
+    assert!(!next.contains("protocol_squads_add_proposer"), "{next}");
     let error = agent
         .squads_status(&target, "not-a-key", None)
         .await
         .unwrap_err();
     assert!(error.downcast_ref::<InvalidArgs>().is_some(), "{error}");
 
-    let member = b58(&[67; 32]);
-    let added = agent
-        .squads_add_proposer(&target, &b58(&[62; 32]), &member, Some("v1"))
-        .await
-        .unwrap();
-    assert_eq!(added["transactionIndex"], 7);
-    assert_eq!(added["transactionFormat"], "v1");
-    assert!(added["next"].as_str().unwrap().starts_with(&member));
-    let request = seen(&state)
-        .into_iter()
-        .rev()
-        .find(|seen| seen.path.ends_with("/add-proposer"))
-        .unwrap();
-    assert_eq!(request.method, "POST");
-    assert_eq!(
-        request.body,
-        json!({ "multisig": b58(&[62; 32]), "member": member, "transactionFormat": "v1" })
-    );
     // The routes are read with a read-only protocol session.
     let mint = seen(&state)
         .into_iter()
@@ -1243,38 +1225,21 @@ async fn squads_onboarding_reads_the_proposer_status_and_add_proposer_transactio
     assert_eq!(mint.body["scopes"], json!(["protocol:read"]));
     assert_eq!(mint.body["targetId"], "d-1");
 
-    let refused = agent
-        .squads_add_proposer(&target, &b58(&[62; 32]), &b58(&[63; 32]), None)
-        .await
-        .unwrap_err();
-    let refusal = refused
-        .downcast_ref::<crate::protocol_api::SquadsRefused>()
-        .unwrap();
-    assert_eq!(refusal.status, 422);
-    assert_eq!(refusal.code, "member_cannot_initiate");
-    assert!(
-        refused.to_string().contains("with the Initiate permission"),
-        "{refused}"
-    );
+    assert!(seen(&state)
+        .iter()
+        .all(|seen| !seen.path.ends_with("/add-proposer")));
 }
 
 #[test]
 fn squads_refusals_carry_what_to_do() {
-    for code in [
-        "member_cannot_initiate",
-        "proposer_already_member",
-        "proposer_permissions_invalid",
-        "squads_multisig_controlled",
-        "squads_multisig_missing",
-        "protocol_squads_not_used",
-    ] {
+    for code in ["squads_multisig_missing", "protocol_squads_not_used"] {
         assert!(
             crate::protocol_api::squads_refusal_hint(code).is_some(),
             "{code}"
         );
     }
     let refusal = crate::protocol_api::SquadsRefused {
-        what: "Preparing the add-proposer proposal".into(),
+        what: "Reading the Squads proposer status".into(),
         status: 409,
         code: "protocol-squads-not-used".into(),
         body: json!({ "error": "no squads step" }),
@@ -1295,13 +1260,22 @@ fn squads_refusals_carry_what_to_do() {
         "Reading the Squads proposer failed (500): boom"
     );
     assert!(squads_status_next(
-        &json!({ "ready": false, "problem": "permissions_invalid", "mask": 7 })
+        &json!({ "ready": false, "problem": "permissions_invalid", "mask": 7 }),
+        false
     )
     .contains("mask 7"));
+    let dev = squads_status_next(
+        &json!({ "ready": false, "problem": "not_member", "multisig": "Ms1", "proposer": "Prop1" }),
+        true,
+    );
+    assert!(
+        dev.contains("`a4 dev squads add-proposer --multisig Ms1 --proposer Prop1 --wallet <a dev wallet that can initiate>`"),
+        "{dev}"
+    );
 }
 
 #[test]
-fn the_squads_tools_take_a_target_a_multisig_and_a_member() {
+fn the_squads_tools_take_a_target_and_a_multisig() {
     let tools = crate::AreteMcp::with_protocol_agent(ProtocolAgent::new(None)).tools();
     let schema = |name: &str| -> Value {
         let tool = tools
@@ -1323,33 +1297,16 @@ fn the_squads_tools_take_a_target_a_multisig_and_a_member() {
     };
     assert!(required("protocol_squads_proposer").is_empty());
     assert_eq!(required("protocol_squads_status"), ["multisig"]);
-    assert_eq!(
-        required("protocol_squads_add_proposer"),
-        ["member", "multisig"]
-    );
-    for name in [
-        "protocol_squads_proposer",
-        "protocol_squads_status",
-        "protocol_squads_add_proposer",
-    ] {
+    for name in ["protocol_squads_proposer", "protocol_squads_status"] {
         let properties = &schema(name)["properties"];
         for target in ["deployment", "protocol", "dev", "project"] {
             assert!(properties.get(target).is_some(), "{name} has no {target}");
         }
     }
-    assert!(schema("protocol_squads_add_proposer")["properties"]
-        .get("transaction_format")
-        .is_some());
-    // Nothing here signs: the add-proposer tool returns the transaction.
-    let add = tools
+    // Arete builds no Squads transactions.
+    assert!(tools
         .iter()
-        .find(|tool| tool.name == "protocol_squads_add_proposer")
-        .unwrap();
-    assert!(add
-        .description
-        .as_deref()
-        .unwrap()
-        .contains("Nothing is signed or sent"));
+        .all(|tool| tool.name != "protocol_squads_add_proposer"));
 }
 
 #[tokio::test]

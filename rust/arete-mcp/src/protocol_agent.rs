@@ -328,7 +328,8 @@ impl ProtocolAgent {
             object.insert(
                 "next".into(),
                 json!(format!(
-                    "Add {proposer} to the team's Squads v4 multisig as a member with exactly the Initiate permission (mask 1), and keep it funded with a little SOL: it pays the fee and rent of every proposal. protocol_squads_add_proposer returns the transaction that proposes the addition; protocol_squads_status checks it."
+                    "Add {proposer} to the team's Squads v4 multisig as a member with exactly the Initiate permission (mask 1), and keep it funded with a little SOL: it pays the fee and rent of every proposal. {} protocol_squads_status checks it.",
+                    squads_add_hint(target.dev.is_some(), None, &proposer)
                 )),
             );
         }
@@ -354,42 +355,11 @@ impl ProtocolAgent {
             Some(lamports) => balance_fields(lamports, body["proposerMinLamports"].as_u64()),
             None => self.proposer_balance(&target, rpc_url, &proposer).await,
         };
-        let next = squads_status_next(&body);
+        let next = squads_status_next(&body, target.dev.is_some());
         if let Some(object) = body.as_object_mut() {
             object.insert("deploymentId".into(), json!(deployment));
             object.insert("target".into(), json!(target.label()));
             object.extend(balance);
-            object.insert("next".into(), json!(next));
-        }
-        Ok(body)
-    }
-
-    /// `protocol_squads_add_proposer`: the unsigned transaction proposing
-    /// to add the proposer to `multisig`, for `member` to sign and send.
-    /// `member` is a public key (in a dev session also a dev wallet name).
-    pub async fn squads_add_proposer(
-        &self,
-        args: &TargetArgs,
-        multisig: &str,
-        member: &str,
-        transaction_format: Option<&str>,
-    ) -> Result<Value> {
-        let multisig = squads_multisig(multisig)?;
-        let target = self.target(args, None)?;
-        let deployment = self.deployment(&target, args, None).await?;
-        let member = self.wallet(&target, member)?;
-        let mut body = target
-            .api
-            .squads_add_proposer(&deployment, &multisig, &member, transaction_format)
-            .await?;
-        let next = format!(
-            "{member} signs this transaction and sends it (it pays the fee and the proposal's rent). Then the multisig's members approve and execute config proposal {} (transaction {}) in Squads; protocol_squads_status reports `ready` once it has executed.",
-            body["proposal"].as_str().unwrap_or("?"),
-            body["transactionIndex"]
-        );
-        if let Some(object) = body.as_object_mut() {
-            object.insert("deploymentId".into(), json!(deployment));
-            object.insert("target".into(), json!(target.label()));
             object.insert("next".into(), json!(next));
         }
         Ok(body)
@@ -1074,11 +1044,35 @@ fn balance_fields(lamports: u64, minimum: Option<u64>) -> serde_json::Map<String
     fields
 }
 
+/// How to add the proposer to a multisig. Arete builds no Squads
+/// transactions: on a dev environment `a4 dev squads add-proposer` builds
+/// the config proposal locally; elsewhere the team uses the dashboard or
+/// the Squads app, and code the squads-v4 program SDK.
+pub fn squads_add_hint(dev: bool, multisig: Option<&str>, proposer: &str) -> String {
+    let multisig = multisig.unwrap_or("<multisig>");
+    if dev {
+        format!(
+            "In `a4 dev`, `a4 dev squads add-proposer --multisig {multisig} --proposer {proposer} --wallet <a dev wallet that can initiate>` opens the config proposal; then `a4 dev squads approve` and `a4 dev squads execute` it."
+        )
+    } else {
+        format!(
+            "Send the team to {} (any browser wallet, Ledger included), or the Squads app: Members → Add member → paste the proposer → permission Initiate only → approve and execute. {SQUADS_PROGRAM_SDK_HINT}",
+            if multisig == "<multisig>" {
+                SQUADS_DASHBOARD_URL.to_string()
+            } else {
+                squads_dashboard_url(Some(multisig))
+            }
+        )
+    }
+}
+
 /// What to do after a Squads status answer, phrased for the MCP tools.
-pub fn squads_status_next(status: &Value) -> String {
+pub fn squads_status_next(status: &Value, dev: bool) -> String {
     if status["ready"] == true {
         return "The proposer can propose to this multisig. Keep it funded: it pays the fee and rent of every proposal.".into();
     }
+    let multisig = status["multisig"].as_str();
+    let proposer = status["proposer"].as_str().unwrap_or("<proposer>");
     match status["problem"].as_str() {
         Some("proposer_unfunded") => format!(
             "The proposer is a valid member but holds too little SOL to pay for a proposal{}. Send SOL to {} (in `a4 dev`, `a4 dev fund {}`), then check again.",
@@ -1087,13 +1081,17 @@ pub fn squads_status_next(status: &Value) -> String {
                 .map(|minimum| format!(" (one needs {} SOL)", minimum as f64 / 1e9))
                 .unwrap_or_default(),
             status["proposer"].as_str().unwrap_or("the proposer"),
-            status["proposer"].as_str().unwrap_or("<proposer>")
+            proposer
         ),
         Some("permissions_invalid") => format!(
-            "The proposer is a member with permission mask {} instead of exactly Initiate (mask 1). Remove it with a config proposal in Squads, then add it again with protocol_squads_add_proposer.",
-            status["mask"]
+            "The proposer is a member with permission mask {} instead of exactly Initiate (mask 1). Remove it with a config proposal in Squads, then add it again. {}",
+            status["mask"],
+            squads_add_hint(dev, multisig, proposer)
         ),
-        _ => "The proposer is not a member of this multisig. protocol_squads_add_proposer with `multisig` and a `member` that has the Initiate permission returns the transaction that proposes adding it; after that member sends it, the multisig's members approve and execute the config proposal in Squads.".into(),
+        _ => format!(
+            "The proposer is not a member of this multisig. {}",
+            squads_add_hint(dev, multisig, proposer)
+        ),
     }
 }
 

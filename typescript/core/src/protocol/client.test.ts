@@ -972,27 +972,13 @@ describe('protocol events', () => {
 
 describe('squads onboarding', () => {
   const MULTISIG = 'Mu1tisig11111111111111111111111111111111111';
-  const MEMBER = 'Member1111111111111111111111111111111111111';
   const PROPOSER = 'Proposer11111111111111111111111111111111111';
   const SQUADS = `${API}/protocol-deployments/${DEPLOYMENT_ID}/squads`;
 
-  it('reads the proposer, builds the add-proposer transaction and checks status', async () => {
+  it('reads the proposer and checks status', async () => {
     const mock = mockFetch((call) => {
       if (call.url === `${SQUADS}/proposer` && call.method === 'GET') {
         return json({ pubkey: PROPOSER, permissions: 'initiate', rootKeyId: 'proposer-root-1' });
-      }
-      if (call.url === `${SQUADS}/add-proposer` && call.method === 'POST') {
-        return json({
-          transactionBase64: 'AQID',
-          transactionFormat: (call.body as { transactionFormat?: string }).transactionFormat ?? 'v1',
-          transactionIndex: 10,
-          proposal: 'Proposal1111111111111111111111111111111111',
-          configTransaction: 'Config11111111111111111111111111111111111',
-          multisig: MULTISIG,
-          member: MEMBER,
-          proposer: PROPOSER,
-          lastValidBlockHeight: 900,
-        });
       }
       if (call.url.startsWith(`${SQUADS}/status?`)) {
         return json({
@@ -1016,36 +1002,29 @@ describe('squads onboarding', () => {
       permissions: 'initiate',
       rootKeyId: 'proposer-root-1',
     });
-    const built = await client.squads.addProposer({
-      multisig: MULTISIG,
-      member: MEMBER,
-      transactionFormat: 'v0',
-    });
-    expect(built.transactionFormat).toBe('v0');
-    expect(built.transactionIndex).toBe(10);
+    // Arete builds no Squads transactions.
+    expect('addProposer' in client.squads).toBe(false);
     const status = await client.squads.status(MULTISIG);
     expect(status).toMatchObject({ ready: false, member: false, mask: null, problem: 'not_member' });
 
     const requests = mock.requests();
     expect(requests.map((call) => `${call.method} ${call.url}`)).toEqual([
       `GET ${SQUADS}/proposer`,
-      `POST ${SQUADS}/add-proposer`,
       `GET ${SQUADS}/status?multisig=${MULTISIG}`,
     ]);
-    expect(requests[1]!.body).toEqual({ multisig: MULTISIG, member: MEMBER, transactionFormat: 'v0' });
     expect(requests.every((call) => call.headers.get('authorization') === 'Bearer tok-1')).toBe(true);
     client.close();
   });
 
   it('surfaces coded refusals', async () => {
     const mock = mockFetch((call) =>
-      call.url === `${SQUADS}/add-proposer`
-        ? json({ error: 'cannot initiate', code: 'member_cannot_initiate' }, 422)
+      call.url.startsWith(`${SQUADS}/status?`)
+        ? json({ error: 'not used', code: 'protocol-squads-not-used' }, 409)
         : undefined
     );
     const client = createProtocolClient(DEFINITION, { auth: { token: 't' }, fetch: mock.fetch });
-    await expect(client.squads.addProposer({ multisig: MULTISIG, member: MEMBER })).rejects.toMatchObject({
-      details: expect.objectContaining({ wireErrorCode: 'member_cannot_initiate' }),
+    await expect(client.squads.status(MULTISIG)).rejects.toMatchObject({
+      details: expect.objectContaining({ wireErrorCode: 'protocol-squads-not-used' }),
     });
     await expect(client.squads.status('')).rejects.toMatchObject({ code: 'INVALID_CONFIG' });
     client.close();

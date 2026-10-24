@@ -679,7 +679,7 @@ def test_decimal_args_converts_named_integers_only():
 
 
 @pytest.mark.asyncio
-async def test_squads_onboarding_reads_the_proposer_builds_the_proposal_and_checks_status():
+async def test_squads_onboarding_reads_the_proposer_and_checks_status():
     squads = f"{API}/protocol-deployments/{DEPLOYMENT}/squads"
 
     def route(request: httpx.Request) -> httpx.Response:
@@ -688,26 +688,6 @@ async def test_squads_onboarding_reads_the_proposer_builds_the_proposal_and_chec
         if base == f"{squads}/proposer":
             return httpx.Response(
                 200, json={"pubkey": "Proposer1", "permissions": "initiate", "rootKeyId": "root-1"}
-            )
-        if base == f"{squads}/add-proposer":
-            body = json.loads(request.content)
-            if body["member"] == "Voter1":
-                return httpx.Response(
-                    422, json={"error": "cannot initiate", "code": "member_cannot_initiate"}
-                )
-            return httpx.Response(
-                200,
-                json={
-                    "transactionBase64": "AQID",
-                    "transactionFormat": body.get("transactionFormat", "v1"),
-                    "transactionIndex": 10,
-                    "proposal": "Proposal1",
-                    "configTransaction": "Config1",
-                    "multisig": body["multisig"],
-                    "member": body["member"],
-                    "proposer": "Proposer1",
-                    "lastValidBlockHeight": 900,
-                },
             )
         if base == f"{squads}/status":
             return httpx.Response(
@@ -726,31 +706,16 @@ async def test_squads_onboarding_reads_the_proposer_builds_the_proposal_and_chec
     client, server = make_client(route, auth=AuthConfig(secret_key="a4_sk_test"))
     proposer = await client.squads.proposer()
     assert proposer == {"pubkey": "Proposer1", "permissions": "initiate", "rootKeyId": "root-1"}
-    built = await client.squads.add_proposer(
-        multisig="Multisig1", member="Member1", transaction_format="v0"
-    )
-    assert built["transactionFormat"] == "v0"
-    assert built["transactionIndex"] == 10
-    with pytest.raises(HttpRequestError) as refused:
-        await client.squads.add_proposer(multisig="Multisig1", member="Voter1")
-    assert refused.value.status == 422
+    assert not hasattr(client.squads, "add_proposer")
     status = await client.squads.status("Multisig1")
     assert status["problem"] == "not_member"
     assert status["mask"] is None
     calls = server.calls()
     assert [(call.method, call.url.path) for call in calls] == [
         ("GET", f"/api/protocol-deployments/{DEPLOYMENT}/squads/proposer"),
-        ("POST", f"/api/protocol-deployments/{DEPLOYMENT}/squads/add-proposer"),
-        ("POST", f"/api/protocol-deployments/{DEPLOYMENT}/squads/add-proposer"),
         ("GET", f"/api/protocol-deployments/{DEPLOYMENT}/squads/status"),
     ]
-    assert json.loads(calls[1].content) == {
-        "multisig": "Multisig1",
-        "member": "Member1",
-        "transactionFormat": "v0",
-    }
-    assert json.loads(calls[2].content) == {"multisig": "Multisig1", "member": "Voter1"}
-    assert calls[3].url.params["multisig"] == "Multisig1"
+    assert calls[1].url.params["multisig"] == "Multisig1"
     await client.aclose()
 
 

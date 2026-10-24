@@ -442,7 +442,8 @@ class ProtocolSquadsProposerMissingData(TypedDict):
     """Data of ``arete.squads.proposerMissing``: an admin step's proposal is
     parked because the calling account's proposer is not an Initiate-only
     member of the multisig. It is retried with backoff for up to 24 hours;
-    add the proposer with ``client.squads.add_proposer`` to unblock it."""
+    adding the proposer (on the dashboard or in the Squads app) unblocks
+    it."""
 
     id: int
     deploymentId: str
@@ -484,22 +485,6 @@ class ProtocolSquadsProposer(TypedDict):
     """Always ``initiate``: the proposer may propose and nothing else."""
     rootKeyId: Optional[str]
     """The root the proposer derives from; ``None`` for an environment key."""
-
-
-class ProtocolSquadsAddProposerResult(TypedDict):
-    """An unsigned transaction creating a Squads config proposal that adds the
-    proposer with Initiate only. ``member`` signs and sends it; the team then
-    approves and executes the proposal in Squads."""
-
-    transactionBase64: str
-    transactionFormat: ProtocolTransactionFormat
-    transactionIndex: int
-    proposal: str
-    configTransaction: str
-    multisig: str
-    member: str
-    proposer: str
-    lastValidBlockHeight: int
 
 
 class ProtocolSquadsStatus(TypedDict, total=False):
